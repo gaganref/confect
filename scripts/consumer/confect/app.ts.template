@@ -1,0 +1,10 @@
+import { App } from "@confect/core";
+import { CounterApi } from "../components/counter/confect/api";
+import counter from "../components/counter/convex/convex.config";
+import env from "./env";
+export default App.make({
+  env,
+  mounts: {
+    counter: App.mount(counter, { httpPrefix: "/counter", api: CounterApi }),
+  },
+});

@@ -1,0 +1,21 @@
+import { Callback, FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+import { OnResult } from "./callbacks";
+export default GroupSpec.make()
+  .addFunction(
+    FunctionSpec.publicQuery({
+      name: "increment",
+      args: () => ({ value: Schema.Finite }),
+      returns: () => Schema.Finite,
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
+      name: "notify",
+      args: () => ({
+        value: Schema.Finite,
+        onResult: Callback.handle(OnResult),
+      }),
+      returns: () => Schema.Finite,
+    }),
+  );

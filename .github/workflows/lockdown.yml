@@ -1,0 +1,21 @@
+name: Close external pull requests
+
+on:
+  pull_request_target:
+    types: [opened]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  lockdown:
+    if: github.event.pull_request.head.repo.full_name != github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: dessant/repo-lockdown@17c2cc64a91eff426f242b05dd523c6f098889b6 # v5.0.2
+        with:
+          process-only: prs
+          close-pr: true
+          lock-pr: true
+          pr-lock-reason: resolved
+          pr-comment: "This repository takes no external pull requests. It is a personal fork of rjdellecese/confect; please send changes upstream."

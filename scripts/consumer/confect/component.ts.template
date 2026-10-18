@@ -1,0 +1,4 @@
+import { Component } from "@confect/core";
+import contract from "../components/counter/confect/_generated/component";
+import { components } from "./_generated/components";
+export const counter = Component.bind(contract, components.counter);

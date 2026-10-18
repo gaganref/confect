@@ -1,0 +1,193 @@
+name: Publish fork builds
+
+on:
+  workflow_call:
+    inputs:
+      publish:
+        description: Publish after the caller's checks pass.
+        required: true
+        type: boolean
+      n:
+        description: Unused build number above all existing builds.
+        required: false
+        type: string
+  pull_request:
+    branches:
+      - main
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Check this existing build without publishing. New builds publish automatically after a push to main.
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  stage:
+    name: Rename and pack
+    if: >-
+      github.event_name == 'pull_request' ||
+      (inputs.publish == true &&
+      github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && inputs.version == '')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      ready: ${{ steps.bootstrap.outputs.ready }}
+      version: ${{ steps.pack.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/confect-setup
+      - run: bun test ./scripts
+      - run: pnpm check:pack-contents
+      - name: Require the initial packages
+        if: github.event_name != 'pull_request'
+        id: bootstrap
+        run: |
+          status=$(curl --silent --show-error --output /dev/null --write-out '%{http_code}' https://registry.npmjs.org/@gaganref%2Fconfect-core)
+          case "$status" in
+            200) echo 'ready=true' >> "$GITHUB_OUTPUT" ;;
+            404) echo "::notice::bootstrap first: no @gaganref/confect-core on npm yet, nothing published"; echo 'ready=false' >> "$GITHUB_OUTPUT" ;;
+            *) echo "Registry returned HTTP $status" >&2; exit 1 ;;
+          esac
+      - name: Choose version and stage fork packages
+        if: github.event_name == 'pull_request' || steps.bootstrap.outputs.ready == 'true'
+        id: pack
+        env:
+          BUILD_NUMBER: ${{ inputs.n }}
+          EVENT_NAME: ${{ github.event_name }}
+        run: |
+          if [ "$EVENT_NAME" = pull_request ]; then
+            bun scripts/stageForkPackages.ts "$RUNNER_TEMP/confect-packages" "" --dry-run
+          else
+            bun scripts/stageForkPackages.ts "$RUNNER_TEMP/confect-packages" "$BUILD_NUMBER"
+          fi
+          jq -r '"version=\(.version)"' "$RUNNER_TEMP/confect-packages/plan.json" >> "$GITHUB_OUTPUT"
+      - name: Upload staged packages
+        if: steps.pack.outcome == 'success'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: confect-npm-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/confect-packages/tarballs/*.tgz
+            ${{ runner.temp }}/confect-packages/plan.json
+          if-no-files-found: error
+
+  publish:
+    name: Publish to public npm
+    needs: stage
+    if: >-
+      needs.stage.outputs.ready == 'true' && inputs.publish == true &&
+      github.repository == 'gaganref/confect' && github.ref == 'refs/heads/main' &&
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') && inputs.version == ''
+    runs-on: ubuntu-latest
+    environment: npm
+    outputs:
+      version: ${{ needs.stage.outputs.version }}
+    concurrency:
+      group: fork-npm-publish
+      cancel-in-progress: false
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ".node-version"
+      - name: Require a trusted-publishing npm version
+        run: |
+          node -e 'const [major, minor, patch] = process.argv[1].split(".").map(Number); if (major < 11 || (major === 11 && (minor < 5 || (minor === 5 && patch < 1)))) process.exit(1)' "$(npm -v)"
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: confect-npm-${{ github.run_id }}
+          path: ${{ runner.temp }}/confect-packages
+      - name: Publish staged tarballs
+        run: |
+          for tarball in "$RUNNER_TEMP/confect-packages/tarballs/"*.tgz; do
+            npm publish "$tarball" --provenance --access public --tag latest --registry https://registry.npmjs.org
+          done
+
+  install-check:
+    name: Install and exercise a fresh consumer
+    needs: [stage, publish]
+    if: >-
+      !cancelled() &&
+      ((needs.publish.result == 'success' && needs.publish.outputs.version != '') ||
+      (github.event_name == 'pull_request' && needs.stage.result == 'success') ||
+      (github.event_name == 'workflow_dispatch' && inputs.version != ''))
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      BUILD_VERSION: ${{ inputs.version || needs.publish.outputs.version || needs.stage.outputs.version }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: ./.github/actions/bun-setup
+      - uses: pnpm/action-setup@0977fd99725f1db4007ccb2928dbb4e90d06cc86 # v6.0.10
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version-file: ".node-version"
+          cache: "pnpm"
+      - run: pnpm install --frozen-lockfile
+      - name: Download the PR's packed build
+        if: github.event_name == 'pull_request'
+        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: confect-npm-${{ github.run_id }}
+          path: ${{ runner.temp }}/confect-packages
+      - name: Write the scratch consumer
+        run: |
+          if [ "${{ github.event_name }}" = pull_request ]; then
+            bun scripts/forkConsumer.ts "$RUNNER_TEMP/confect-consumer" "$BUILD_VERSION" "$RUNNER_TEMP/confect-packages/tarballs"
+          else
+            bun scripts/forkConsumer.ts "$RUNNER_TEMP/confect-consumer" "$BUILD_VERSION"
+          fi
+      - name: Install the build with strict peers
+        working-directory: ${{ runner.temp }}/confect-consumer
+        run: |
+          pnpm install --strict-peer-dependencies
+          bash install-command.txt
+      - name: Generate code with the installed CLI
+        working-directory: ${{ runner.temp }}/confect-consumer
+        run: |
+          pnpm confect codegen --component-dir components/counter/convex
+          pnpm confect codegen
+      - name: Typecheck the consumer
+        working-directory: ${{ runner.temp }}/confect-consumer
+        run: pnpm exec tsc --noEmit
+      - name: Exercise the declaration, component and callback
+        working-directory: ${{ runner.temp }}/confect-consumer
+        run: pnpm exec vitest run
+      - name: Print the verified install command
+        if: github.event_name != 'pull_request'
+        working-directory: ${{ runner.temp }}/confect-consumer
+        run: |
+          {
+            echo 'INSTALL COMMAND:'
+            cat install-command.txt
+            echo
+            echo 'Registry: public npm. Installation needs no token.'
+            echo 'Use the generated package.json for the pinned consumer and test dependencies.'
+            echo 'pnpm-workspace.yaml (peer overrides, fresh-build exclusions and build policy):'
+            cat pnpm-workspace.yaml
+          } | tee -a "$GITHUB_STEP_SUMMARY"
+      - name: Upload the consumer lockfile and install recipe
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: confect-consumer-${{ github.run_id }}
+          path: |
+            ${{ runner.temp }}/confect-consumer/pnpm-lock.yaml
+            ${{ runner.temp }}/confect-consumer/package.json
+            ${{ runner.temp }}/confect-consumer/pnpm-workspace.yaml
+            ${{ runner.temp }}/confect-consumer/install-command.txt
+          if-no-files-found: error

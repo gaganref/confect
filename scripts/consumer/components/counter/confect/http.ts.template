@@ -1,0 +1,10 @@
+import { Http } from "@confect/core";
+import * as Effect from "effect/Effect";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import { CounterApi } from "./api";
+export default Http.make({
+  api: CounterApi,
+  handlers: HttpApiBuilder.group(CounterApi, "health", (handle) =>
+    handle.handle("health", () => Effect.succeed("component ready")),
+  ),
+});

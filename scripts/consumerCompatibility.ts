@@ -40,7 +40,7 @@ export type Manager = "npm" | "pnpm";
 
 export const consumerDependencies = (profile: Profile, lane: Lane) => ({
   effect: lane === "baseline" ? "4.0.4" : "^4.0.4",
-  convex: lane === "baseline" ? "1.45.0" : "^1.45.0",
+  convex: lane === "baseline" ? "1.46.0" : "^1.46.0",
   "@effect/platform-node": lane === "baseline" ? "4.0.4" : "^4.0.4",
   ...(lane === "baseline" ? { "@effect/platform-node-shared": "4.0.4" } : {}),
   ...(lane === "baseline"
