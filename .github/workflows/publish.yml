@@ -152,6 +152,35 @@ jobs:
           else
             bun scripts/forkConsumer.ts "$RUNNER_TEMP/confect-consumer" "$BUILD_VERSION"
           fi
+      - name: Wait for the registry to serve the build
+        if: github.event_name != 'pull_request'
+        shell: bash
+        run: |
+          set -euo pipefail
+          packages=(alchemy cli core foldkit js react server test)
+          started=$SECONDS
+          deadline=$((started + 900))
+          while true; do
+            pending=()
+            for p in "${packages[@]}"; do
+              remaining=$((deadline - SECONDS))
+              if (( remaining <= 0 )) || ! curl -fsS -H 'Accept: application/vnd.npm.install-v1+json' "https://registry.npmjs.org/@gaganref%2fconfect-$p" --max-time "$remaining" |
+                jq -e --arg v "$BUILD_VERSION" '.versions[$v] != null' > /dev/null; then
+                pending+=("@gaganref/confect-$p")
+              fi
+            done
+            echo "Packages still pending: ${pending[*]:-none}"
+            if (( ${#pending[@]} == 0 )); then
+              echo "Registry serves the build after $((SECONDS - started)) seconds."
+              exit 0
+            fi
+            if (( SECONDS >= deadline )); then
+              echo "::error::Registry did not serve the build within 15 minutes. Pending: ${pending[*]}"
+              exit 1
+            fi
+            remaining=$((deadline - SECONDS))
+            sleep "$((remaining < 20 ? remaining : 20))"
+          done
       - name: Install the build with strict peers
         working-directory: ${{ runner.temp }}/confect-consumer
         run: |
