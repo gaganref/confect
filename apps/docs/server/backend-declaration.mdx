@@ -1,0 +1,239 @@
+---
+icon: "file-code"
+title: "Backend Declaration"
+description: "Declare a backend's env, mounted components, auth providers and HTTP API in confect/, and let codegen write convex.config.ts, auth.config.ts and a manifest."
+---
+
+A backend declaration describes your Convex backend in four files beside your functions. `confect codegen` and `confect dev` then write `convex/convex.config.ts`, `convex/auth.config.ts`, `convex/http.ts` and `confect/_generated/manifest.ts` from it, so the env your handlers read, the env Convex validates, the env each mounted component receives and the env your infrastructure supplies all come from one place.
+
+After upgrading to the fork based on upstream 10.3.1, run `confect codegen` again. The generator output changed; do not keep files emitted by the previous generator.
+
+The declaration is opt-in. It applies when `confect/app.ts` exists. Without that file, you write `convex/convex.config.ts` yourself and `confect/auth.ts` and `confect/http.ts` keep their [existing forms](/concepts/project-structure).
+
+| File              | Holds                                | Codegen writes                                           |
+| ----------------- | ------------------------------------ | -------------------------------------------------------- |
+| `confect/env.ts`  | `Env.make(name, { ... })`            | The `env` of `convex/convex.config.ts`, and the manifest |
+| `confect/app.ts`  | `App.make({ env, mounts })`          | `convex/convex.config.ts`, and the manifest              |
+| `confect/auth.ts` | `Auth.make(app, { providers })`      | `convex/auth.config.ts`                                  |
+| `confect/http.ts` | `Http.make({ api, handlers, docs })` | `convex/http.ts`                                         |
+
+## `env.ts`
+
+Declare every environment variable the backend reads, once, with its backend's name:
+
+```ts confect/env.ts
+import { Env } from "@confect/core";
+
+export default Env.make("tenant", {
+  EMAIL_FROM: Env.string(),
+  RESEND_API_KEY: Env.secret(),
+  EMAIL_TRANSPORT: Env.literals(["resend", "log"]),
+  PLATFORM_URL: Env.optional(Env.string()),
+});
+```
+
+Each entry is an Effect `Config`. Import the env in a handler and yield an entry to read it:
+
+```ts confect/emails.impl.ts
+import * as Effect from "effect/Effect";
+import env from "./env";
+
+export const configuration = Effect.gen(function* () {
+  const from = yield* env.EMAIL_FROM; // string
+  const key = yield* env.RESEND_API_KEY; // Redacted<string>
+  const transport = yield* env.EMAIL_TRANSPORT; // "resend" | "log"
+  const platform = yield* env.PLATFORM_URL; // Option<string>
+  return { from, key, transport, platform };
+});
+```
+
+| Constructor           | Handler reads       | Convex validator               |
+| --------------------- | ------------------- | ------------------------------ |
+| `Env.string()`        | `string`            | `v.string()`                   |
+| `Env.secret()`        | `Redacted<string>`  | `v.string()`                   |
+| `Env.literals([...])` | one of the literals | `v.union(v.literal(...), ...)` |
+| `Env.optional(entry)` | `Option<...>`       | `v.optional(...)`              |
+
+The name is the backend's identity. An entry from one backend's env cannot be bound in another backend's mounts. For a [Confect-authored component](/server/components), the name is also the component's Convex name.
+
+Reads resolve through Confect's [Convex-aware `ConfigProvider`](/server/environment-variables), as any other `Config` does. Import `env.ts` from handlers, never `app.ts`: `app.ts` imports component definitions, which load only in Convex's config analysis.
+
+## `app.ts`
+
+List the components the backend mounts and the env each receives:
+
+```ts confect/app.ts
+import { App } from "@confect/core";
+import workpool from "@convex-dev/workpool/convex.config.js";
+import email from "@acme/email/convex.config.js";
+import { EmailApi } from "@acme/email/api";
+import env from "./env";
+
+export default App.make({
+  env,
+  mounts: {
+    email: App.mount(email, {
+      httpPrefix: "/email",
+      api: EmailApi,
+      env: {
+        FROM: env.EMAIL_FROM,
+        RESEND_API_KEY: env.RESEND_API_KEY,
+        TRANSPORT: env.EMAIL_TRANSPORT,
+      },
+    }),
+    importsPool: App.mount(workpool),
+  },
+});
+```
+
+The record key is the mount name. `App.mount` takes the default export of a component's `convex.config` module and types `env` against the component's own `defineComponent({ env })` declaration. These fail to typecheck:
+
+- leaving out a binding the component requires
+- binding an optional entry to a required slot
+- binding a value outside a literal slot's values
+- binding a slot the component does not declare
+- binding an entry from another backend's env (reported at `App.make`)
+
+A binding is an entry of your env, or a constant string. `api` is the component's `HttpApi`; codegen uses it to check routes. It requires `httpPrefix`.
+
+Codegen writes the matching Convex definition:
+
+```ts convex/convex.config.ts
+// Generated by `confect codegen` from confect/app.ts. Do not edit.
+import { defineApp } from "convex/server";
+import { v } from "convex/values";
+import workpool from "@convex-dev/workpool/convex.config.js";
+import email from "@acme/email/convex.config.js";
+
+const app = defineApp({
+  env: {
+    EMAIL_FROM: v.string(),
+    RESEND_API_KEY: v.string(),
+    EMAIL_TRANSPORT: v.union(v.literal("resend"), v.literal("log")),
+    PLATFORM_URL: v.optional(v.string()),
+  },
+});
+
+app.use(email, {
+  name: "email",
+  httpPrefix: "/email",
+  env: {
+    FROM: app.env.EMAIL_FROM,
+    RESEND_API_KEY: app.env.RESEND_API_KEY,
+    TRANSPORT: app.env.EMAIL_TRANSPORT,
+  },
+});
+
+app.use(workpool, {
+  name: "importsPool",
+});
+
+export default app;
+```
+
+A Confect-authored component declares itself with `App.make({ kind: "component", env, mounts })`, with `env.ts` and `app.ts` in its own `confect/` directory. `confect codegen --component-dir` writes its `defineComponent(name, { env })`. The kind defaults to `"app"`; codegen rejects a declaration whose kind differs from the target directory. Components can mount other components, but `Auth.make` accepts only app declarations.
+
+## `auth.ts`
+
+Declare the identity providers whose tokens the backend accepts. This is Convex's own [provider list](https://docs.convex.dev/auth/advanced/custom-auth). Use `Auth.siteUrl` where `domain`, `issuer` or `jwks` points at the deployment's own site URL:
+
+```ts confect/auth.ts
+import { Auth } from "@confect/core";
+import app from "./app";
+
+export default Auth.make(app, {
+  providers: [
+    { domain: "https://login.example.edu", applicationID: "tenant" },
+    {
+      type: "customJwt",
+      applicationID: "tenant",
+      issuer: Auth.siteUrl(),
+      jwks: Auth.siteUrl(app.mounts.email, "/.well-known/jwks.json"),
+      algorithm: "RS256",
+    },
+  ],
+});
+```
+
+Codegen writes `convex/auth.config.ts` with each site URL as a `process.env.CONVEX_SITE_URL` expression, typed with `satisfies AuthConfig`. Components cannot declare `auth.ts`.
+
+## `http.ts`
+
+Declare the backend's own `HttpApi` and its handlers. `docs` is optional and serves a Scalar page for the api at that path:
+
+```ts confect/http.ts
+import { Http } from "@confect/core";
+import { TenantApi, TenantHandlers } from "./api";
+
+export default Http.make({
+  api: TenantApi,
+  handlers: TenantHandlers,
+  docs: "/docs",
+});
+```
+
+Every route is an `HttpApi` endpoint. Codegen writes `convex/http.ts`, which serves it through [`HttpRouter`](/server/http-api):
+
+```ts convex/http.ts
+// Generated by `confect codegen` from confect/http.ts. Do not edit.
+import { HttpRouter } from "@confect/server";
+import schema from "../confect/_generated/schema";
+import http from "../confect/http";
+
+export default HttpRouter.forSchema(schema)(http.routes, { api: http.api });
+```
+
+The schema supplies the backend's capabilities; `{ api }` supplies endpoint labels for Convex logs and the dashboard. Mounted components serve their own routes under their prefixes; your middleware does not run in front of them.
+
+Codegen fails when an app route or the docs page is at or under a mount's prefix, because Convex accepts such a route and lets it silently shadow the component's. It also fails when two routes share a method and path after adding each mount's `api` under its prefix, and when two mount prefixes overlap. These checks run even without `http.ts`.
+
+## The manifest
+
+`confect/_generated/manifest.ts` is plain data with no imports. Infrastructure that deploys the backend reads it instead of backend code:
+
+```ts confect/_generated/manifest.ts
+export default {
+  name: "tenant",
+  env: {
+    EMAIL_FROM: { kind: "string", optional: false },
+    RESEND_API_KEY: { kind: "secret", optional: false },
+    EMAIL_TRANSPORT: {
+      kind: "literals",
+      values: ["resend", "log"],
+      optional: false,
+    },
+    PLATFORM_URL: { kind: "string", optional: true },
+  },
+  http: { mounts: { email: "/email" } },
+  digest: "sha256:…",
+} as const;
+```
+
+`Manifest.Values` types the values a deployment supplies. A missing required variable, a plain string for a secret, and a value outside a literal's values fail to typecheck; optional variables may be omitted:
+
+```ts
+import type { Manifest } from "@confect/core";
+import * as Redacted from "effect/Redacted";
+import manifest from "../backend/confect/_generated/manifest";
+
+const values: Manifest.Values<typeof manifest> = {
+  EMAIL_FROM: "noreply@example.edu",
+  RESEND_API_KEY: Redacted.make(process.env.RESEND_API_KEY ?? ""),
+  EMAIL_TRANSPORT: "resend",
+};
+```
+
+`digest` changes whenever a file that `env.ts`, `app.ts` or `auth.ts` imports from your project changes, or the `convex` version or generator format does. Codegen writes the manifest before it validates anything else, and removes it when the declaration fails, so a stale manifest never outlives the declaration it came from.
+
+## Development
+
+Run `confect dev` alongside `convex dev`. Confect watches declaration inputs and their project imports, regenerates the Convex config, auth, HTTP entry point and manifest, and leaves deployment to Convex. Run component watchers separately with `confect dev --component-dir components/counter/convex` when developing a local component.
+
+## Adopting the declaration
+
+1. Write `confect/env.ts` and `confect/app.ts` from your current `convex/convex.config.ts`.
+2. Move a hand-written `confect/auth.ts` into `Auth.make(app, { providers })`, and `confect/http.ts` into `Http.make`.
+3. Delete `convex/convex.config.ts`, and `convex/auth.config.ts` if you wrote it yourself.
+4. Run `confect codegen`.
+
+Codegen refuses to overwrite a `convex.config.ts` or `auth.config.ts` it did not write, and prints which declaration file now owns it. To stop using the declaration, delete `confect/app.ts` and write `convex/convex.config.ts` yourself again.

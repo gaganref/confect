@@ -49,6 +49,20 @@ export const layer = TestConfect_.layer(
 );
 ```
 
+For a [declared backend](/server/backend-declaration), codegen also writes a test-only registry. Pass the generated app to register the app's components and their nested installations automatically. Mount names and HTTP prefixes come from the declaration; tests need no `register` callback or `httpMounts` list.
+
+```ts
+import { TestConfect } from "@confect/test";
+import app from "../confect/_generated/testing";
+
+export const Test = TestConfect.TestConfect<typeof app.schema>();
+export const layer = TestConfect.layer(app);
+```
+
+The generated registry imports each component's deploy schema from its resolved Convex directory and supplies lazy module loaders. Keep it in test imports only. It is separate from the runtime schema and function wrappers, so production functions retain their per-group bundles. Regenerate it when adding functions or changing component installations. The schema-based constructor above remains available for hand-written component kits and custom HTTP router loaders.
+
+You can also pass an authored `App` value with its registry as `TestConfect.layer(app, registry)`. This reads mount names and HTTP prefixes from that value. Prefer the generated one-argument form when a component definition has nested `use` calls; codegen evaluates those definitions with Convex's config loader. The test layer retains the shared process-env and module-cache limitations described below.
+
 Every time the `TestConfect` layer is constructed, a new test database is created. If you want a clean database for each test, provide the layer on a per-test basis (as shown below). If you want to share state across tests in a describe block, you can provide the layer at a higher scope instead.
 
 ## Writing tests
@@ -200,6 +214,97 @@ Effect.gen(function* () {
   const body = yield* Effect.promise(() => response.json());
 });
 ```
+
+### Register component test kits
+
+Pass an options object with a `register` callback as the fourth argument to `TestConfect.layer`. It runs synchronously during layer construction, after the test backend exists and before the service is available. The callback receives a registration function for the component's Convex schema and module loaders.
+
+```ts test/TestConfect.ts
+import { TestConfect } from "@confect/test";
+import { register } from "@example/counter/testing";
+import applicationSchema from "./confect/_generated/schema";
+import convexSchema from "./confect/_generated/convexSchema";
+
+export const layer = TestConfect.layer(
+  applicationSchema,
+  convexSchema,
+  import.meta.glob("./convex/**/!(*.*.*)*.*s"),
+  {
+    register: (registerComponent) => {
+      register(registerComponent, "counter");
+    },
+  },
+);
+```
+
+Use the same component path as the installation in `convex.config.ts`. Register nested components separately with their full path, such as `"counter/child"`. Once registered, call bound references with `query`, `mutation`, and `action`. You can also register after setup with the existing effectful `registerComponent` method.
+
+### Fetch mounted component routes
+
+Add `httpMounts` to describe the routes your application exposes. TestConfect does not evaluate `convex.config.ts`. Each descriptor pairs a registered `componentPath` with its `httpPrefix`.
+
+```ts
+const layer = TestConfect.layer(
+  applicationSchema,
+  convexSchema,
+  applicationModules,
+  {
+    register: (registerComponent) => {
+      register(registerComponent, "first");
+      register(registerComponent, "second");
+    },
+    httpMounts: [
+      { componentPath: "first", httpPrefix: "/email" },
+      { componentPath: "second", httpPrefix: "/other-email" },
+    ],
+  },
+);
+
+const program = Effect.gen(function* () {
+  const c = yield* TestConfect.TestConfect<typeof applicationSchema>();
+  return yield* c.fetch("/email/webhook", { method: "POST", body: "payload" });
+}).pipe(Effect.provide(layer));
+```
+
+`fetch` selects the longest matching prefix at a path segment boundary. `/email/webhook` and the bare `/email` path match `/email`; `/emails/webhook` does not. The bare-prefix behavior can differ from Convex's trailing-slash mount routing. Trailing slashes on prefixes are ignored. Each prefix must be unique and start with `/`, without a query or fragment. Unmatched requests use the application's HTTP module as before. A mounted request does not require an application HTTP module. For a nested component, use its full host-visible prefix, such as `/parent/child`. This explicit table selects mounts before application routes; it does not reproduce Convex's full configuration and route precedence.
+
+The selected component receives its own action context. Route lookup uses the path after the prefix, while the handler receives the full mounted request URL. During HTTP module construction and handler execution, `CONVEX_SITE_URL` is the application's site URL plus the mount prefix. Set the application's `CONVEX_SITE_URL` before fetching if you need a specific origin; otherwise TestConfect uses `https://some.convex.site`. The previous environment value is restored after the request, including when construction fails. `withIdentity` accessors use the same mounts; components still have no application auth capability.
+
+### Construct a router for each mount
+
+HTTP layers can read configuration while their module is constructed. ES imports cache modules across installations and tests. For two mounts of the same component, provide a module loader that constructs a fresh router. Keep the router factory in a separate module from the production HTTP entry point:
+
+```ts src/testing.ts
+import type { TestConfect } from "@confect/test";
+import schema from "./convex/schema";
+
+const modules = import.meta.glob("./convex/**/!(*.*.*)*.*s");
+
+export const register = (
+  registerComponent: TestConfect.RegisterComponent,
+  name: string,
+) => {
+  registerComponent(name, schema, {
+    ...modules,
+    "./convex/http.ts": () =>
+      import("./confect/httpFactory").then(({ makeHttp }) => ({
+        default: makeHttp(),
+      })),
+  });
+};
+```
+
+`makeHttp` must construct `HttpRouter.forSchema(componentSchema)(routes)` and any configuration-dependent route layers on each call. The production `confect/http.ts` can export `makeHttp()` as its default. TestConfect caches each mount's resulting router, including construction failures. A plain dynamic import of an already constructed router cannot provide separate construction-time configuration for two mounts.
+
+<Warning>
+  Mounted HTTP tests share the process environment. Fetches through one layer,
+  including its identity accessors, run sequentially. Other layers and
+  concurrent queries, mutations, or actions can still observe the temporary
+  environment. Component modules can also see application environment variables.
+  Run tests that need environment isolation on a local Convex backend.
+</Warning>
+
+The mounted bridge buffers request and response bodies and reconstructs response headers. It does not test streaming or repeated response headers faithfully. `originalUrl` retains the mount path and query, but its origin comes from the test site URL, not a real incoming connection. Module imports that already captured configuration keep those values. Use local-backend tests for behavior that depends on these differences.
 
 ## Testing scheduled functions
 

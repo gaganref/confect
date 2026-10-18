@@ -57,6 +57,8 @@ Effect.gen(function* () {
 });
 ```
 
-Cancellation follows Convex's semantics: a pending function will not run. An action that has already started continues running, but any new functions it schedules are canceled. A mutation is canceled atomically or cannot be canceled if it has already committed. Convex cancellation errors surface as Effect defects, matching `runAfter` and `runAt`.
+Inside a component, use its generated `Scheduler` service. Both scheduling methods return a component-scoped `_scheduled_functions` ID, and `cancel` accepts that same ID type. Application IDs and IDs from another component scope fail to compile.
+
+Cancellation follows Convex's semantics: a pending function will not run. An action that has already started continues running, but any new functions it schedules are canceled. A pending mutation is canceled atomically. Canceling a completed job leaves its result unchanged. Convex cancellation errors surface as Effect defects, matching `runAfter` and `runAt`.
 
 For the full scheduling APIs, see the [Effect `Duration` documentation](https://effect.website/docs/data-types/duration/), the [Effect `DateTime` documentation](https://effect.website/docs/data-types/datetime/), and the [Convex scheduling documentation](https://docs.convex.dev/scheduling/scheduled-functions).

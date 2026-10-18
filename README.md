@@ -1,5 +1,9 @@
 # Confect 🧁
 
+This is a fork of [Confect](https://github.com/rjdellecese/confect). See [FORK.md](FORK.md) for builds, installation, and maintenance, and [CHANGES.md](CHANGES.md) for the fork additions.
+
+## About Confect
+
 Confect is a framework that deeply integrates Effect with Convex. It's more than just Effect bindings! Confect allows you to:
 
 - Define your Convex database schema using Effect schemas.
