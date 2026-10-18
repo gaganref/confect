@@ -29,6 +29,8 @@
       "@confect/cli/*": ["./packages/cli/src/*"],
       "@confect/test": ["./packages/test/src/index.ts"],
       "@confect/test/*": ["./packages/test/src/*"],
+      "@confect/alchemy": ["./packages/alchemy/src/index.ts"],
+      "@confect/alchemy/*": ["./packages/alchemy/src/*"],
       "~/*": ["./packages/server/test/mock-backend/fixtures/confect/*"]
     }
   },
@@ -42,5 +44,11 @@
     "tools/*/src/**/*",
     "tools/*/test/**/*"
   ],
-  "exclude": ["tools/oxlint-rules", "tools/test-types"]
+  "exclude": [
+    "tools/oxlint-rules",
+    "tools/test-types",
+    // Convex emits unused imports and an incorrect nested API import in these
+    // unused helpers. Imported ComponentApi types remain in the checked graph.
+    "packages/server/test/local-backend/fixtures/components/*/convex/_generated"
+  ]
 }

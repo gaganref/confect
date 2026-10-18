@@ -86,7 +86,7 @@ export const add = (
             declaration,
           ),
         })),
-        Match.tag("Config", () => ({
+        Match.tag("Config", "Env", "App", "Callbacks", () => ({
           ...state,
           needsFull: true,
         })),
@@ -106,6 +106,34 @@ export const add = (
             ? Work.Reconcile()
             : Work.None(),
     optional: next.optional,
+  };
+};
+
+export interface Backend {
+  readonly declared: boolean;
+  readonly component: boolean;
+}
+
+/**
+ * Full generation writes a declared backend's `convex/http.ts` and
+ * `auth.config.ts` and rejects a component's `auth.ts`, so those edits need it
+ * instead of the optional-file writers.
+ */
+export const forBackend = (pending: Pending, backend: Backend): Pending => {
+  const generated = HashSet.filter(pending.optional, (file) =>
+    Match.value(file).pipe(
+      Match.when("Http", () => backend.declared),
+      Match.when("Auth", () => backend.declared || backend.component),
+      Match.when("Crons", () => false),
+      Match.exhaustive,
+    ),
+  );
+  if (HashSet.isEmpty(generated)) return pending;
+  return {
+    work: Work.Full(),
+    optional: backend.declared
+      ? HashSet.difference(pending.optional, generated)
+      : pending.optional,
   };
 };
 

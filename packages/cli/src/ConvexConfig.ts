@@ -1,10 +1,12 @@
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Match from "effect/Match";
 import type * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import * as Path from "effect/Path";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as String from "effect/String";
@@ -26,6 +28,7 @@ export interface InstalledComponent {
    * component was defined with).
    */
   readonly name: string;
+  readonly httpPrefix?: string;
   /**
    * The directory the component's definition lives in, mirroring the Convex
    * runtime's convention (a `componentDefinitionPath` identifies the
@@ -40,11 +43,60 @@ export interface InstalledComponent {
 const COMPONENT_CONFIG_NAMESPACE = "confect-component-config";
 
 /**
+ * Where the plugin records how a definition was imported: the specifier as
+ * written and the file it resolved to. Codegen reads it to write the import of
+ * each mounted component into the generated `convex.config.ts`.
+ */
+export const COMPONENT_IMPORT_KEY = "~confect/componentImport";
+
+export interface ComponentImport {
+  readonly specifier: string;
+  readonly path: string;
+}
+
+export const componentImportOf = (
+  definition: unknown,
+): Option.Option<ComponentImport> => {
+  if (!Predicate.hasProperty(definition, COMPONENT_IMPORT_KEY)) {
+    return Option.none();
+  }
+  const recorded = definition[COMPONENT_IMPORT_KEY];
+  return Predicate.hasProperty(recorded, "specifier") &&
+    Predicate.isString(recorded.specifier) &&
+    Predicate.hasProperty(recorded, "path") &&
+    Predicate.isString(recorded.path)
+    ? Option.some({ specifier: recorded.specifier, path: recorded.path })
+    : Option.none();
+};
+
+/**
  * Matches the trailing `convex.config` segment of a component-definition import
  * (with or without an extension), e.g. `@convex-dev/workpool/convex.config` or
  * `./waitlist/convex.config.ts`.
  */
 const CONVEX_CONFIG_SUFFIX = /[/\\]convex\.config(\.[cm]?[jt]s)?$/;
+
+/**
+ * Resolve the same config spellings that Convex accepts, for configs and test
+ * kits.
+ */
+export const resolveDefinition = (
+  specifier: string,
+  importer: string,
+  path: Path.Path,
+): Option.Option<string> => {
+  const extension = path.extname(specifier);
+  const candidates = [
+    specifier,
+    ...(extension === ".js" ? [specifier.slice(0, -3) + ".ts"] : []),
+    ...(extension !== ".js" && extension !== ".ts"
+      ? [specifier + ".js", specifier + ".ts"]
+      : []),
+  ];
+  return Option.firstSomeOf(
+    candidates.map((candidate) => Bundler.resolveModule(candidate, importer)),
+  );
+};
 
 /**
  * `convex/server`'s `app.use(definition)` rejects any definition object that
@@ -81,21 +133,8 @@ export const componentConfigPlugin = (path: Path.Path): esbuild.Plugin => ({
       // Component definitions are conventionally imported extensionless
       // (`.../convex.config`), which npm `exports` maps resolve but plain
       // file resolution may not—probe the same candidates Convex does.
-      const extension = path.extname(args.path);
-      const candidates = [
-        args.path,
-        ...(extension === ".js"
-          ? [String.slice(0, -".js".length)(args.path) + ".ts"]
-          : []),
-        ...(extension !== ".js" && extension !== ".ts"
-          ? [args.path + ".js", args.path + ".ts"]
-          : []),
-      ];
-
       return pipe(
-        candidates,
-        Array.map((candidate) => Bundler.resolveModule(candidate, importer)),
-        Option.firstSomeOf,
+        resolveDefinition(args.path, importer, path),
         Option.match({
           onNone: () => undefined,
           onSome: (resolved) => ({
@@ -138,7 +177,7 @@ export const componentConfigPlugin = (path: Path.Path): esbuild.Plugin => ({
           contents: Array.join(
             [
               `import real from ${JSON.stringify(args.path)};`,
-              `export default { ...real, componentDefinitionPath: ${JSON.stringify(componentDefinitionPath)}, defaultName: real._name };`,
+              `export default { ...real, componentDefinitionPath: ${JSON.stringify(componentDefinitionPath)}, defaultName: real._name, [${JSON.stringify(COMPONENT_IMPORT_KEY)}]: ${JSON.stringify({ specifier, path: args.path })} };`,
             ],
             "\n",
           ),
@@ -154,6 +193,7 @@ export const componentConfigPlugin = (path: Path.Path): esbuild.Plugin => ({
  * `componentDefinitionPath` injected by {@link componentConfigPlugin}.
  */
 const AppDefinitionAnalysis = Schema.Struct({
+  httpMounts: Schema.optionalKey(Schema.Record(Schema.String, Schema.String)),
   childComponents: Schema.Array(
     Schema.Struct({
       name: Schema.String,
@@ -187,6 +227,7 @@ export const discoverInstalledComponents = Effect.fn(
 )(function* (
   convexConfigPath: string,
   displayPath: string,
+  kind: "app" | "component" = "app",
 ): Effect.fn.Return<
   ReadonlyArray<InstalledComponent>,
   BuildError | InvalidConvexConfigError,
@@ -203,16 +244,24 @@ export const discoverInstalledComponents = Effect.fn(
     | null
     | undefined;
 
+  const definition = Match.value(kind).pipe(
+    Match.when("app", () => ({ isRoot: true, constructor: "defineApp" })),
+    Match.when("component", () => ({
+      isRoot: false,
+      constructor: "defineComponent",
+    })),
+    Match.exhaustive,
+  );
+
   if (
     app === null ||
     typeof app !== "object" ||
-    app._isRoot !== true ||
+    app._isRoot !== definition.isRoot ||
     typeof app.export !== "function"
   ) {
     return yield* new InvalidConvexConfigError({
       configPath: displayPath,
-      reason:
-        "it must default-export the app definition created by `defineApp()`.",
+      reason: `it must default-export the ${kind} definition created by \`${definition.constructor}()\`.`,
     });
   }
 
@@ -239,12 +288,18 @@ export const discoverInstalledComponents = Effect.fn(
 
   const components = pipe(
     decoded.childComponents,
-    Array.map(
-      ({ name, path: componentDefinitionPath }): InstalledComponent => ({
+    Array.map(({ name, path: componentDefinitionPath }): InstalledComponent => {
+      const httpPrefix = Object.entries(decoded.httpMounts ?? {}).find(
+        ([, reference]) => reference === `_reference/childComponent/${name}`,
+      )?.[0];
+      return {
         name,
         componentDefinitionPath,
-      }),
-    ),
+        ...(httpPrefix === undefined
+          ? {}
+          : { httpPrefix: httpPrefix.replace(/\/$/, "") }),
+      };
+    }),
     Array.sort(byName),
   );
 
@@ -281,6 +336,31 @@ export const discoverInstalledComponents = Effect.fn(
   }
 
   return components;
+});
+
+/**
+ * The name passed to `defineComponent`, independent of the package's ID scope.
+ */
+export const componentName = Effect.fnUntraced(function* (configPath: string) {
+  const path = yield* Path.Path;
+  const { module } = yield* Bundler.bundle(configPath, {
+    plugins: [componentConfigPlugin(path)],
+  }).pipe(
+    Effect.mapError((error) =>
+      fromBundlerError("convex/convex.config.ts", error),
+    ),
+  );
+  const definition: unknown = module.default;
+  if (
+    !Predicate.hasProperty(definition, "_name") ||
+    !Predicate.isString(definition._name)
+  ) {
+    return yield* new InvalidConvexConfigError({
+      configPath: "convex/convex.config.ts",
+      reason: "the component definition must have a string name.",
+    });
+  }
+  return definition._name;
 });
 
 /**

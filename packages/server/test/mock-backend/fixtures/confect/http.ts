@@ -46,6 +46,30 @@ const MetaApiLive = HttpApiBuilder.group(MetaApi, "meta", (handlers) =>
   handlers.handle("ping", () => Effect.succeed("pong")),
 );
 
+class ActionsApi extends HttpApi.make("ActionsApi").add(
+  HttpApiGroup.make("actions").add(
+    HttpApiEndpoint.post("cancel", "/actions/:id:cancel", {
+      params: Schema.Struct({ id: Schema.String }),
+      success: Schema.String,
+    }),
+    HttpApiEndpoint.post("archive", "/actions/:id:archive", {
+      params: Schema.Struct({ id: Schema.String }),
+      success: Schema.String,
+    }),
+    HttpApiEndpoint.post("literal", "/literal/:status", {
+      params: Schema.Struct({}),
+      success: Schema.String,
+    }),
+  ),
+) {}
+
+const ActionsLive = HttpApiBuilder.group(ActionsApi, "actions", (handlers) =>
+  handlers
+    .handle("cancel", ({ params }) => Effect.succeed(`cancelled ${params.id}`))
+    .handle("archive", ({ params }) => Effect.succeed(`archived ${params.id}`))
+    .handle("literal", () => Effect.succeed("literal colon")),
+);
+
 const withTestHeader: HttpMiddleware.HttpMiddleware = (httpApp) =>
   Effect.map(httpApp, (response) =>
     HttpServerResponse.setHeader(response, "x-confect-middleware", "applied"),
@@ -55,6 +79,7 @@ const http = ConfectHttpRouter.make(
   Layer.mergeAll(
     HttpApiBuilder.layer(NotesApi).pipe(Layer.provide(NotesApiLive)),
     HttpApiBuilder.layer(MetaApi).pipe(Layer.provide(MetaApiLive)),
+    HttpApiBuilder.layer(ActionsApi).pipe(Layer.provide(ActionsLive)),
     HttpApiScalar.layer(NotesApi, { path: "/api/docs" }),
     HttpRouter.add("GET", "/health", HttpServerResponse.text("OK")),
     HttpRouter.add(
@@ -74,6 +99,7 @@ const http = ConfectHttpRouter.make(
     ),
     HttpRouter.middleware(withTestHeader, { global: true }),
   ),
+  { api: NotesApi.addHttpApi(ActionsApi) },
 );
 
 // A plain Convex route on the same router: Convex matches exact paths before

@@ -41,6 +41,7 @@ import { ConfectDirectory } from "./ConfectDirectory";
 import { CONVEX_CONFIG_FILENAME } from "./ConvexConfig";
 import { ConvexDirectory } from "./ConvexDirectory";
 import { ProjectRoot } from "./ProjectRoot";
+import * as RestoreWatcher from "./RestoreWatcher";
 
 const COALESCE_QUIESCENCE = Duration.millis(300);
 
@@ -73,6 +74,8 @@ interface State {
   readonly observation: Ref.Ref<WatchBuild.State>;
   readonly lock: Semaphore.Semaphore;
   readonly topology: WatchTopology.WatchTopology;
+  // Whether the last discovery found `confect/app.ts`.
+  readonly declared: Ref.Ref<boolean>;
 }
 
 type RefreshOutcome = Data.TaggedEnum<{
@@ -121,6 +124,7 @@ export const make = Effect.fnUntraced(function* () {
     observation: yield* Ref.make<WatchBuild.State>(WatchBuild.State.Initial()),
     lock: yield* Semaphore.make(1),
     topology: yield* WatchTopology.make(pendingRef),
+    declared: yield* Ref.make(false),
   };
   const restartWith = (invalidation: Effect.Effect<void>) =>
     invalidation.pipe(
@@ -130,17 +134,33 @@ export const make = Effect.fnUntraced(function* () {
   const restart = restartWith(state.topology.invalidate);
   const restartEntry = (entry: EntryPoint.Kind) =>
     restartWith(state.topology.invalidateEntry(entry));
+  const duringRestoreRef = yield* Ref.make<
+    Effect.Effect<void, never, Scope.Scope>
+  >(Effect.void);
   return {
-    run: Effect.all(
-      [
-        Effect.scoped(
-          entryPointsWatcher(signal, pendingRef, restartQueue, state),
-        ),
+    run: Effect.gen(function* () {
+      const structure = yield* RestoreWatcher.make(
         confectStructureWatcher(signal, pendingRef, restart, restartEntry),
-        convexConfigStructureWatcher(restart),
-      ],
-      { concurrency: "unbounded" },
-    ).pipe(Effect.asVoid),
+      );
+      yield* Ref.set(duringRestoreRef, structure.duringRestore);
+      yield* Effect.all(
+        [
+          Effect.scoped(
+            entryPointsWatcher(signal, pendingRef, restartQueue, state),
+          ),
+          structure.failure,
+          convexConfigStructureWatcher(restart, state.declared),
+        ],
+        { concurrency: "unbounded" },
+      );
+    }).pipe(Effect.scoped),
+    duringRestore: Effect.flatten(Ref.get(duringRestoreRef)),
+    // Restored output makes esbuild rebuild; observe that, then drop the work
+    // it queued so the restore does not trigger another generation.
+    discardRestoreEchoes: refresh(state).pipe(
+      Effect.ignore,
+      Effect.andThen(Ref.set(pendingRef, SyncState.empty)),
+    ),
     refresh: refresh(state),
     next: Queue.take(signal).pipe(
       Effect.andThen(
@@ -339,6 +359,7 @@ const entryPointsWatcher = Effect.fnUntraced(function* (
     const revision = yield* watcher.topology.revision;
     const current = yield* Ref.get(watcher.lifecycle);
     const entries = yield* EntryPoint.discover;
+    yield* Ref.set(watcher.declared, entries.some(EntryPoint.Kind.$is("App")));
     const desiredPaths = HashSet.fromIterable(
       entries.map((entry) => entry.absolutePath),
     );
@@ -627,6 +648,7 @@ const confectStructureWatcher = Effect.fnUntraced(function* (
  */
 const convexConfigStructureWatcher = Effect.fnUntraced(function* (
   restart: Effect.Effect<unknown>,
+  declared: Ref.Ref<boolean>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -634,15 +656,23 @@ const convexConfigStructureWatcher = Effect.fnUntraced(function* (
 
   yield* pipe(
     fs.watch(convexDirectory),
-    Stream.runForEach((event) => {
-      if (path.relative(convexDirectory, event.path) !== CONVEX_CONFIG_FILENAME)
-        return Effect.void;
-      return Match.value(event).pipe(
-        Match.tag("Update", () => Effect.void),
-        Match.tag("Create", "Remove", () => restart),
-        Match.exhaustive,
-      );
-    }),
+    Stream.runForEach((event) =>
+      Effect.gen(function* () {
+        // A declared backend's config is codegen output; reacting to its
+        // writes would rerun codegen for nothing.
+        if (
+          path.relative(convexDirectory, event.path) !==
+            CONVEX_CONFIG_FILENAME ||
+          (yield* Ref.get(declared))
+        )
+          return;
+        yield* Match.value(event).pipe(
+          Match.tag("Update", () => Effect.void),
+          Match.tag("Create", "Remove", () => restart),
+          Match.exhaustive,
+        );
+      }),
+    ),
   );
 });
 

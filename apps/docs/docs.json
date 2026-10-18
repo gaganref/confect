@@ -77,7 +77,8 @@
           "server/cron-jobs",
           "server/search",
           "server/components",
-          "server/environment-variables"
+          "server/environment-variables",
+          "server/backend-declaration"
         ]
       },
       {
@@ -94,7 +95,7 @@
       },
       {
         "group": "Guides",
-        "pages": ["guides/testing"]
+        "pages": ["guides/testing", "guides/alchemy"]
       }
     ]
   },
@@ -237,6 +238,10 @@
       "destination": "/server/environment-variables"
     },
     {
+      "source": "/v9/server/backend-declaration",
+      "destination": "/server/backend-declaration"
+    },
+    {
       "source": "/v9/clients/react",
       "destination": "/clients/react"
     },
@@ -255,6 +260,10 @@
     {
       "source": "/v9/guides/testing",
       "destination": "/guides/testing"
+    },
+    {
+      "source": "/v9/guides/alchemy",
+      "destination": "/guides/alchemy"
     },
     {
       "source": "/v10/getting-started/introduction",
@@ -373,6 +382,10 @@
       "destination": "/server/environment-variables"
     },
     {
+      "source": "/v10/server/backend-declaration",
+      "destination": "/server/backend-declaration"
+    },
+    {
       "source": "/v10/clients/react",
       "destination": "/clients/react"
     },
@@ -391,6 +404,10 @@
     {
       "source": "/v10/guides/testing",
       "destination": "/guides/testing"
+    },
+    {
+      "source": "/v10/guides/alchemy",
+      "destination": "/guides/alchemy"
     }
   ]
 }

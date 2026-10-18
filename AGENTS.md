@@ -1,3 +1,5 @@
+See [FORK.md](FORK.md) for fork instructions.
+
 # Capy repository instructions
 
 - Never read `.env.local` files.

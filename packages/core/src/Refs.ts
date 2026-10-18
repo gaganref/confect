@@ -26,7 +26,8 @@ type GroupRefs<
     FilteredFunctions<
       GroupSpec.Functions<Group>,
       Predicate,
-      MiddlewareSpec.Error<GroupSpec.MiddlewareSpecs<Group>>
+      MiddlewareSpec.Error<GroupSpec.MiddlewareSpecs<Group>>,
+      MiddlewareSpec.EncodedError<GroupSpec.MiddlewareSpecs<Group>>
     >
 >;
 
@@ -52,6 +53,7 @@ type FilteredFunctions<
   FunctionSpecs extends FunctionSpec.AnyWithProps,
   Predicate extends Ref.Any,
   MiddlewareError,
+  MiddlewareEncodedError,
 > = {
   [
     Name in FunctionSpec.Name<FunctionSpecs> as FunctionSpec.WithName<
@@ -64,16 +66,9 @@ type FilteredFunctions<
       : never
   ]: FunctionSpec.WithName<FunctionSpecs, Name> extends infer F extends
     FunctionSpec.AnyWithProps
-    ? Ref.FromFunctionSpec<
-        F,
-        F extends {
-          readonly functionProvenance: { readonly _tag: "Confect" };
-        }
-          ?
-              | MiddlewareError
-              | MiddlewareSpec.Error<FunctionSpec.MiddlewareSpecs<F>>
-          : never
-      >
+    ? F extends { readonly functionProvenance: { readonly _tag: "Confect" } }
+      ? Ref.FromFunctionSpec<F, MiddlewareError, MiddlewareEncodedError>
+      : Ref.FromFunctionSpec<F>
     : never;
 };
 

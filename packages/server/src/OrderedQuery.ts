@@ -1,3 +1,4 @@
+import type * as IdScope from "@confect/core/IdScope";
 import type {
   ExpressionOrValue,
   FilterBuilder,
@@ -9,13 +10,22 @@ import { identity, pipe } from "effect/Function";
 import type { Option } from "effect";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
+import type * as DatabaseSchema from "./DatabaseSchema";
 import * as Document from "./Document";
 import type * as TableInfo from "./TableInfo";
 import type * as Table from "./Table";
 
+type NativePaginate<TableInfo_ extends TableInfo.AnyWithProps, Doc> = (
+  options: PaginationOptions,
+  filter?: (
+    q: FilterBuilder<TableInfo.ConvexTableInfo<TableInfo_>>,
+  ) => ExpressionOrValue<boolean>,
+) => Effect.Effect<PaginationResult<Doc>, Document.DocumentDecodeError>;
+
 export type OrderedQuery<
   TableInfo_ extends TableInfo.AnyWithProps,
   Doc = TableInfo_["document"],
+  TargetKind extends DatabaseSchema.Target["kind"] = "app",
 > = {
   readonly first: () => Effect.Effect<
     Option.Option<Doc>,
@@ -29,20 +39,44 @@ export type OrderedQuery<
     Document.DocumentDecodeError
   >;
   readonly stream: () => Stream.Stream<Doc, Document.DocumentDecodeError>;
-  readonly paginate: (
-    options: PaginationOptions,
-    filter?: (
-      q: FilterBuilder<TableInfo.ConvexTableInfo<TableInfo_>>,
-    ) => ExpressionOrValue<boolean>,
-  ) => Effect.Effect<PaginationResult<Doc>, Document.DocumentDecodeError>;
+  /**
+   * Native pagination is application-only. Use `QueryStream.paginate` for
+   * component index queries.
+   */
+  readonly paginate: {
+    readonly app: NativePaginate<TableInfo_, Doc>;
+    readonly component: {
+      readonly "Native pagination is unavailable in components. Use QueryStream.paginate for index queries.": never;
+    };
+  }[TargetKind];
 };
 
-export const make = <Table_ extends Table.AnyWithProps>(
+export function make<Table_ extends Table.AnyWithProps>(
+  query: ConvexOrderedQuery<
+    TableInfo.ConvexTableInfo<TableInfo.TableInfo<Table_>>
+  >,
+  table: Table_ & { readonly scope: IdScope.App },
+): OrderedQuery<TableInfo.TableInfo<Table_>>;
+export function make<Table_ extends Table.AnyWithProps>(
   query: ConvexOrderedQuery<
     TableInfo.ConvexTableInfo<TableInfo.TableInfo<Table_>>
   >,
   table: Table_,
-): OrderedQuery<TableInfo.TableInfo<Table_>> => {
+): OrderedQuery<
+  TableInfo.TableInfo<Table_>,
+  TableInfo.TableInfo<Table_>["document"],
+  Table.Scope<Table_> extends IdScope.App ? "app" : "component"
+>;
+export function make<Table_ extends Table.AnyWithProps>(
+  query: ConvexOrderedQuery<
+    TableInfo.ConvexTableInfo<TableInfo.TableInfo<Table_>>
+  >,
+  table: Table_,
+): OrderedQuery<
+  TableInfo.TableInfo<Table_>,
+  TableInfo.TableInfo<Table_>["document"],
+  DatabaseSchema.Target["kind"]
+> {
   type TableInfo_ = TableInfo.TableInfo<Table_>;
   type OrderedQueryFunction<
     FunctionName extends keyof OrderedQuery<TableInfo_>,
@@ -64,34 +98,33 @@ export const make = <Table_ extends Table.AnyWithProps>(
   const collect: OrderedQueryFunction<"collect"> = () =>
     pipe(stream(), Stream.runCollect);
 
-  const paginate: OrderedQueryFunction<"paginate"> = Effect.fn(
-    "OrderedQuery.paginate",
-  )(function* (options, filter) {
-    const filteredQuery = filter !== undefined ? query.filter(filter) : query;
+  const paginate: NativePaginate<TableInfo_, TableInfo_["document"]> =
+    Effect.fn("OrderedQuery.paginate")(function* (options, filter) {
+      const filteredQuery = filter !== undefined ? query.filter(filter) : query;
 
-    const paginationResult = yield* Effect.promise(() =>
-      filteredQuery.paginate(options),
-    );
+      const paginationResult = yield* Effect.promise(() =>
+        filteredQuery.paginate(options),
+      );
 
-    const parsedPage = yield* Effect.forEach(
-      paginationResult.page,
-      Document.decode(table),
-    );
+      const parsedPage = yield* Effect.forEach(
+        paginationResult.page,
+        Document.decode(table),
+      );
 
-    return {
-      page: parsedPage,
-      isDone: paginationResult.isDone,
-      continueCursor: paginationResult.continueCursor,
-      /* v8 ignore start */
-      ...(paginationResult.splitCursor
-        ? { splitCursor: paginationResult.splitCursor }
-        : {}),
-      ...(paginationResult.pageStatus
-        ? { pageStatus: paginationResult.pageStatus }
-        : {}),
-      /* v8 ignore stop */
-    };
-  });
+      return {
+        page: parsedPage,
+        isDone: paginationResult.isDone,
+        continueCursor: paginationResult.continueCursor,
+        /* v8 ignore start */
+        ...(paginationResult.splitCursor
+          ? { splitCursor: paginationResult.splitCursor }
+          : {}),
+        ...(paginationResult.pageStatus
+          ? { pageStatus: paginationResult.pageStatus }
+          : {}),
+        /* v8 ignore stop */
+      };
+    });
 
   return {
     first,
@@ -100,4 +133,4 @@ export const make = <Table_ extends Table.AnyWithProps>(
     paginate,
     stream,
   };
-};
+}

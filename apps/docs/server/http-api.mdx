@@ -4,7 +4,7 @@ title: "HTTP API"
 description: "Define HTTP endpoints using Effect's HTTP modules."
 ---
 
-Confect's HTTP integration mounts an Effect HTTP router onto Convex: you register routes with Effect's `effect/http` and `effect/http-api` modules—`HttpApi` endpoints, plain routes, interactive [Scalar](https://github.com/scalar/scalar) docs, middleware—and Confect serves them from a single Convex HTTP action, supplying its [services](/concepts/services) to your handlers on every request.
+Confect mounts an Effect HTTP router onto Convex. Register `HttpApi` endpoints, plain routes, interactive [Scalar](https://github.com/scalar/scalar) docs, and middleware with Effect's `effect/http` and `effect/http-api` modules. Confect serves them from a single Convex HTTP action and supplies its [services](/concepts/services) to your handlers on every request.
 
 ## Defining an API
 
@@ -60,11 +60,11 @@ const ApiLive = HttpApiBuilder.group(Api, "notes", (handlers) =>
 export const layer = HttpApiBuilder.layer(Api).pipe(Layer.provide(ApiLive));
 ```
 
-`HttpApiBuilder.layer(Api)` registers the API's routes; `Layer.provide(ApiLive)` supplies its group handlers. Forgetting a group is a **compile-time error**—the unprovided group requirement is rejected where the layer is mounted.
+`HttpApiBuilder.layer(Api)` registers the API's routes; `Layer.provide(ApiLive)` supplies its group handlers. Forgetting a group causes a compile-time error where you mount the layer.
 
 ## API documentation
 
-`HttpApiScalar.layer` serves interactive docs, powered by Scalar and generated from your endpoint definitions and `OpenApi` annotations. Set `baseServerURL` to your deployment's [site URL](https://docs.convex.dev/production/environment-variables#system-environment-variables) so the docs page's "try it" requests target the right host—Confect installs a Convex-aware `ConfigProvider`, so `Config` reads (in layer construction, route handlers, and middleware alike) resolve against your [Convex environment variables](https://docs.convex.dev/production/environment-variables).
+`HttpApiScalar.layer` serves interactive docs, powered by Scalar and generated from your endpoint definitions and `OpenApi` annotations. Set `baseServerURL` to your deployment's [site URL](https://docs.convex.dev/production/environment-variables#system-environment-variables) so the docs page's "try it" requests target the right host. Confect installs a Convex-aware `ConfigProvider`, so `Config` reads (in layer construction, route handlers, and middleware alike) resolve against your [Convex environment variables](https://docs.convex.dev/production/environment-variables).
 
 ```ts confect/http/ScalarDocs.ts
 import * as Config from "effect/Config";
@@ -91,7 +91,7 @@ export const layer = Layer.unwrap(
 
 ## Creating the router
 
-Create the Convex HTTP router in `confect/http.ts` with `HttpRouter.make` from `@confect/server`. It takes a single `Layer` that registers your routes—merge your API and docs layers with any other building blocks from Effect's `effect/http`:
+Create the Convex HTTP router in `confect/http.ts` with `HttpRouter.make` from `@confect/server`. Pass a `Layer` that registers your routes and `{ api }` with the same `HttpApi` definition. Merge your API and docs layers with any other building blocks from Effect's `effect/http`:
 
 - `HttpRouter.add(method, path, handler)` registers a plain route.
 - `HttpRouter.middleware(fn, { global: true })` applies middleware to every route.
@@ -117,8 +117,27 @@ export default ConfectHttpRouter.make(
       global: true,
     }),
   ),
+  { api: NotesApi.Api },
 );
 ```
+
+## Route labels in logs and the dashboard
+
+With `{ api }`, Convex's completion logs and dashboard list endpoint patterns such as `GET /users/:id` instead of `GET /*`. Pass the same API you register with `HttpApiBuilder.layer`. If you register several APIs, combine their definitions with `HttpApi.addHttpApi` and supply the combined API for labels.
+
+Prefer `HttpApi` endpoints for application routes so Convex can show their methods and patterns. Plain `HttpRouter.add` routes and Scalar docs pages still work, but API reflection cannot list them in the dashboard. Unmatched requests and plain Effect routes outside the supplied API keep the catch-all completion label. A plain Effect route that shadows an API pattern still receives that pattern's label. Explicit Convex routes added with `.route(...)` keep their own dashboard entries and labels.
+
+Omitting `{ api }` preserves the catch-all dashboard rows and completion labels. If the supplied API has no endpoints with methods Convex supports, the dashboard keeps the catch-all rows so component routers remain mountable.
+
+For a component, pass the option to the schema-bound constructor:
+
+```ts
+const http = ConfectHttpRouter.forSchema(schema)(routes, { api });
+```
+
+The component API's paths and labels stay relative to its HTTP mount. For example, a component endpoint `/users/:id` mounted under `/directory` serves `/directory/users/42` and logs `GET /users/:id`.
+
+Do not declare an application endpoint beneath a component's HTTP mount. Convex uses the dashboard route entries to select between application and component routers, and an exact application endpoint can shadow a component route.
 
 ## Routing semantics
 

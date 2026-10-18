@@ -11,7 +11,7 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import { vi } from "vitest";
 import { DatabaseWriter } from "./fixtures/confect/_generated/services";
 import { Id } from "./fixtures/confect/_generated/id";
-import { NotesApi } from "./fixtures/confect/http";
+import fixtureHttp, { NotesApi } from "./fixtures/confect/http";
 import * as TestConfect from "./TestConfect";
 import convexSchema from "./fixtures/confect/_generated/convexSchema";
 
@@ -163,12 +163,41 @@ describe("HttpRouter", () => {
       }).pipe(Effect.provide(TestConfect.layer)),
   );
 
+  it.effect(
+    "keeps literal-colon labels aligned with Effect endpoint dispatch",
+    () =>
+      Effect.gen(function* () {
+        const c = yield* TestConfect.TestConfect;
+        for (const [path, label, body] of [
+          ["/actions/42:cancel", "/actions/:id:cancel", "cancelled 42"],
+          ["/actions/42:archive", "/actions/:id:archive", "archived 42"],
+          ["/literal/:status", "/literal/:status", "literal colon"],
+        ]) {
+          const response = yield* c.fetch(path, { method: "POST" });
+          expect(fixtureHttp.lookup(path, "POST")?.slice(1)).toEqual([
+            "POST",
+            label,
+          ]);
+          expect(response.status).toBe(200);
+          expect(yield* Effect.promise(() => response.json())).toBe(body);
+        }
+        const missing = yield* c.fetch("/literal/ready", { method: "POST" });
+        expect(fixtureHttp.lookup("/literal/ready", "POST")?.slice(1)).toEqual([
+          "POST",
+          "/*",
+        ]);
+        expect(missing.status).toBe(404);
+        expect(yield* Effect.promise(() => missing.text())).toBe("");
+      }).pipe(Effect.provide(TestConfect.layer)),
+  );
+
   it.effect("unmatched paths get the Effect router's 404", () =>
     Effect.gen(function* () {
       const c = yield* TestConfect.TestConfect;
 
       const response = yield* c.fetch("/no-such-route");
       assertEquals(response.status, 404);
+      assertEquals(yield* Effect.promise(() => response.text()), "");
     }).pipe(Effect.provide(TestConfect.layer)),
   );
 });

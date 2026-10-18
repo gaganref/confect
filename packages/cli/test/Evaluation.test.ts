@@ -174,7 +174,10 @@ layer(NodeServices.layer, { excludeTestServices: true })("Evaluation", (it) => {
           )
           .pipe(Effect.result);
         assert(Result.isFailure(failed));
-        expect(failed.failure.diagnostic).toContain("GroupSpec");
+        expect(failed.failure).toMatchObject({
+          _tag: "EvaluationError",
+          diagnostic: expect.stringContaining("GroupSpec"),
+        });
         expectWorkersExited();
         yield* project.write("confect/notes.spec.ts", Project.spec);
         yield* project.write("confect/notes.impl.ts", Project.impl);
@@ -255,9 +258,12 @@ if (globalThis.__confectEvaluationCount !== 1) throw new Error("Evaluation leake
           .provide(Evaluation.validate(paths))
           .pipe(Effect.result);
         assert(Result.isFailure(failed));
-        expect(failed.failure.diagnostic).toContain(
-          "does not implement every function",
-        );
+        expect(failed.failure).toMatchObject({
+          _tag: "EvaluationError",
+          diagnostic: expect.stringContaining(
+            "does not implement every function",
+          ),
+        });
         expectWorkersExited();
         yield* project.write("confect/notes.impl.ts", Project.impl);
         yield* project.provide(Evaluation.validate(paths));
@@ -281,7 +287,10 @@ if (globalThis.__confectEvaluationCount !== 1) throw new Error("Evaluation leake
           .provide(Evaluation.validate(paths))
           .pipe(Effect.result);
         assert(Result.isFailure(failed));
-        expect(failed.failure.diagnostic).toContain("23");
+        expect(failed.failure).toMatchObject({
+          _tag: "EvaluationError",
+          diagnostic: expect.stringContaining("23"),
+        });
         expectWorkersExited();
         yield* project.write("confect/notes.impl.ts", Project.impl);
         yield* project.provide(Evaluation.validate(paths));

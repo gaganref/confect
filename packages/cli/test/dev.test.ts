@@ -1,14 +1,13 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, layer } from "@effect/vitest";
 import { vi } from "vitest";
-import * as Command from "effect/cli/Command";
 import * as Deferred from "effect/Deferred";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as esbuild from "esbuild";
-import { dev } from "@confect/cli/confect/dev";
+import { devHandler } from "@confect/cli/confect/dev";
 import { ConfectDirectory } from "@confect/cli/ConfectDirectory";
 import { ConvexDirectory } from "@confect/cli/ConvexDirectory";
 import { ProjectRoot } from "@confect/cli/ProjectRoot";
@@ -117,7 +116,7 @@ layer(NodeServices.layer, { excludeTestServices: true })(
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => context.mockImplementation(original)),
           );
-          yield* Command.runWith(dev, { version: "test" })([]).pipe(
+          yield* devHandler.pipe(
             Effect.provideService(ProjectRoot, {
               get: Effect.succeed(project.root),
             }),
@@ -222,7 +221,7 @@ export default GroupImpl.make(databaseSchema, spec).pipe(Layer.provide(FunctionI
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => context.mockImplementation(original)),
           );
-          yield* Command.runWith(dev, { version: "test" })([]).pipe(
+          yield* devHandler.pipe(
             Effect.provideService(ProjectRoot, {
               get: Effect.succeed(project.root),
             }),
@@ -306,7 +305,7 @@ export default GroupImpl.make(databaseSchema, spec).pipe(Layer.provide(FunctionI
           yield* Effect.addFinalizer(() =>
             Effect.sync(() => context.mockImplementation(original)),
           );
-          yield* Command.runWith(dev, { version: "test" })([]).pipe(
+          yield* devHandler.pipe(
             Effect.provideService(ProjectRoot, {
               get: Effect.succeed(project.root),
             }),

@@ -1,4 +1,4 @@
-import { GenericId } from "@confect/core";
+import { GenericId, IdScope } from "@confect/core";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import {
   defineTable,
@@ -269,5 +269,19 @@ describe("Table.tableDefinition", () => {
       void Table.tableDefinition(notes);
       expect(calls.count).toBe(1);
     });
+  });
+});
+
+describe("Table.systemTablesForScope", () => {
+  it("reuses system table definitions within a scope and keeps scopes separate", () => {
+    const scope = IdScope.component("@example/system-tables");
+    const tables = Table.systemTablesForScope(scope);
+    expect(Table.systemTablesForScope(scope)).toBe(tables);
+    expect(tables._storage.scope).toBe(scope);
+    expect(tables._scheduled_functions.scope).toBe(scope);
+    const other = Table.systemTablesForScope(IdScope.app);
+    expect(other).not.toBe(tables);
+    expect(other._storage.scope).toBe(IdScope.app);
+    expect(GenericId.scope(tables._storage.Doc.fields._id.ast)).toBe(scope);
   });
 });
