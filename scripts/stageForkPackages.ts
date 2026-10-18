@@ -48,6 +48,9 @@ export const stageForkPackages = (
     scripts: _scripts,
     ...rest
   } = manifest;
+  // The publishing command decides provenance; a manifest key would force it on, and terminal publishes have no identity provider.
+  const { provenance: _provenance, ...inheritedPublishConfig } =
+    manifest.publishConfig ?? {};
   const dependencies = Object.fromEntries(
     (
       ["dependencies", "peerDependencies", "optionalDependencies"] as const
@@ -81,10 +84,9 @@ export const stageForkPackages = (
     },
     bugs: { url: "https://github.com/gaganref/confect" },
     publishConfig: {
-      ...manifest.publishConfig,
+      ...inheritedPublishConfig,
       registry: "https://registry.npmjs.org",
       access: "public",
-      provenance: true,
     },
   };
 };
