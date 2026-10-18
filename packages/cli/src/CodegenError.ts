@@ -35,6 +35,19 @@ export class SpecMissingDefaultGroupSpecError extends Schema.TaggedError<SpecMis
   },
 ) {}
 
+export class RemoveBusyError extends Schema.TaggedError<RemoveBusyError>()(
+  "RemoveBusyError",
+  { path: Schema.String, attempts: Schema.Finite, cause: Schema.Unknown },
+) {}
+
+export class ComponentNodeGroupError extends Schema.TaggedError<ComponentNodeGroupError>()(
+  "ComponentNodeGroupError",
+  {
+    specPath: Schema.String,
+    groupPath: Schema.String,
+  },
+) {}
+
 export class SpecImportsServerError extends Schema.TaggedError<SpecImportsServerError>()(
   "SpecImportsServerError",
   {
@@ -156,12 +169,48 @@ export class InvalidConvexConfigError extends Schema.TaggedError<InvalidConvexCo
   },
 ) {}
 
+export class InvalidDeclarationError extends Schema.TaggedError<InvalidDeclarationError>()(
+  "InvalidDeclarationError",
+  {
+    declarationPath: Schema.String,
+    reason: Schema.String,
+  },
+) {}
+
+export class HandWrittenConvexFileError extends Schema.TaggedError<HandWrittenConvexFileError>()(
+  "HandWrittenConvexFileError",
+  {
+    convexPath: Schema.String,
+    declarationPath: Schema.String,
+  },
+) {}
+
+export class DeclarationKindMismatchError extends Schema.TaggedError<DeclarationKindMismatchError>()(
+  "DeclarationKindMismatchError",
+  {
+    declarationPath: Schema.String,
+    declaredKind: Schema.Literals(["app", "component"]),
+    targetKind: Schema.Literals(["app", "component"]),
+  },
+) {}
+
+export class CallbackPrefixError extends Schema.TaggedError<CallbackPrefixError>()(
+  "CallbackPrefixError",
+  {
+    declarationPath: Schema.String,
+    contractId: Schema.String,
+    componentName: Schema.String,
+  },
+) {}
+
 export const CodegenError = Schema.Union([
   SnapshotError,
   BuildError,
   MissingImplFileError,
   MissingSpecFileError,
   SpecMissingDefaultGroupSpecError,
+  ComponentNodeGroupError,
+  RemoveBusyError,
   SpecImportsServerError,
   InvalidMiddlewareAttachmentError,
   ImplMissingSpecImportError,
@@ -176,6 +225,10 @@ export const CodegenError = Schema.Union([
   LegacySchemaFileError,
   ConflictingDocNameError,
   InvalidConvexConfigError,
+  InvalidDeclarationError,
+  HandWrittenConvexFileError,
+  DeclarationKindMismatchError,
+  CallbackPrefixError,
 ]);
 export type CodegenError = typeof CodegenError.Type;
 
@@ -372,6 +425,51 @@ const renderParentChildNameCollisionError = (
  */
 export const renderCodegenError = (error: CodegenError): string => {
   if (isBuildError(error)) return renderBuildError(error);
+  // The renderer pipeline below is at Effect's pipe arity limit, so the
+  // fork's errors render here.
+  if (error._tag === "ComponentNodeGroupError") {
+    return singleLine(
+      `Group "${error.groupPath}" in ${error.specPath} uses the Node runtime. Convex components do not support Node.js functions.`,
+    );
+  }
+  if (error._tag === "RemoveBusyError") {
+    return singleLine(
+      "Could not remove ",
+      formatPath(error.path),
+      ` after ${error.attempts} attempts because it is busy. Close other tools using it and try again.`,
+    );
+  }
+  if (error._tag === "InvalidDeclarationError") {
+    return singleLine(
+      "Declaration ",
+      formatPath(error.declarationPath),
+      ` is invalid: ${error.reason}`,
+    );
+  }
+  if (error._tag === "DeclarationKindMismatchError") {
+    return singleLine(
+      "Declaration ",
+      formatPath(error.declarationPath),
+      ` declares kind "${error.declaredKind}", but the target directory is kind "${error.targetKind}".`,
+    );
+  }
+  if (error._tag === "CallbackPrefixError") {
+    return singleLine(
+      "Callback contract ",
+      `"${error.contractId}" in `,
+      formatPath(error.declarationPath),
+      ` must start with "${error.componentName}/" for component "${error.componentName}".`,
+    );
+  }
+  if (error._tag === "HandWrittenConvexFileError") {
+    return singleLine(
+      "Found a hand-written ",
+      formatPath(error.convexPath),
+      ". `confect codegen` writes it from ",
+      formatPath(error.declarationPath),
+      " now; move its contents there and delete the file.",
+    );
+  }
   return Match.value(error).pipe(
     Match.tag("SnapshotError", ({ reason, relativePath, pathSegments }) =>
       singleLine(

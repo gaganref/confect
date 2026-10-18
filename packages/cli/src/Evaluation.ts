@@ -15,6 +15,8 @@ import * as RpcClient from "effect/rpc/RpcClient";
 import type { RpcClientError } from "effect/rpc/RpcClientError";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import type * as Array from "effect/Array";
+import * as Match from "effect/Match";
+import { ComponentNodeGroupError, logCodegenError } from "./CodegenError";
 import * as EntryPoint from "./EntryPoint";
 import * as GenerationSnapshot from "./GenerationSnapshot";
 import { ConfectDirectory } from "./ConfectDirectory";
@@ -27,6 +29,13 @@ export const RequestContext = Schema.Struct({
   projectRoot: Schema.String,
   confectDirectory: Schema.String,
   convexDirectory: Schema.String,
+  target: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("app") }),
+    Schema.Struct({
+      kind: Schema.Literal("component"),
+      definition: Schema.String,
+    }),
+  ]),
   minimumLogLevel: Schema.Literals(LogLevel.values),
 });
 export type RequestContext = typeof RequestContext.Type;
@@ -36,16 +45,19 @@ export class EvaluationError extends Schema.TaggedError<EvaluationError>()(
   { diagnostic: Schema.String },
 ) {}
 
+// A rejected Node group stays typed so the caller can restore component output.
+const Failure = Schema.Union([EvaluationError, ComponentNodeGroupError]);
+
 export const requests = RpcGroup.make(
   Rpc.make("Previous", {
     payload: RequestContext,
     success: FunctionPaths,
-    error: EvaluationError,
+    error: Failure,
   }),
   Rpc.make("Generate", {
     payload: RequestContext,
     success: GenerationSnapshot.GenerationSnapshot,
-    error: EvaluationError,
+    error: Failure,
   }),
   Rpc.make("Validate", {
     payload: Schema.Struct({
@@ -53,7 +65,7 @@ export const requests = RpcGroup.make(
       paths: Schema.Array(ImplModulePath),
     }),
     success: Schema.Void,
-    error: EvaluationError,
+    error: Failure,
   }),
   Rpc.make("Update", {
     payload: Schema.Struct({
@@ -63,7 +75,7 @@ export const requests = RpcGroup.make(
       paths: Schema.Array(ImplModulePath),
     }),
     success: GenerationSnapshot.GenerationSnapshot,
-    error: EvaluationError,
+    error: Failure,
   }),
 );
 
@@ -71,12 +83,23 @@ const withWorker = Effect.fn("Evaluation.withWorker")(function* <A>(
   run: (
     client: RpcClient.RpcClient<RpcGroup.Rpcs<typeof requests>, RpcClientError>,
     requestContext: RequestContext,
-  ) => Effect.Effect<A, EvaluationError | RpcClientError>,
+  ) => Effect.Effect<
+    A,
+    EvaluationError | ComponentNodeGroupError | RpcClientError
+  >,
 ) {
   const requestContext = {
     projectRoot: yield* ProjectRoot.get,
     confectDirectory: yield* ConfectDirectory.get,
     convexDirectory: yield* ConvexDirectory.get,
+    target: Match.value(yield* ConvexDirectory.target).pipe(
+      Match.when({ kind: "app" }, () => ({ kind: "app" as const })),
+      Match.when({ kind: "component" }, ({ scope }) => ({
+        kind: "component" as const,
+        definition: scope.slice("component:".length),
+      })),
+      Match.exhaustive,
+    ),
     minimumLogLevel: yield* References.MinimumLogLevel,
   };
   return yield* Effect.scoped(
@@ -160,11 +183,14 @@ export const validate = (paths: ReadonlyArray<ImplModulePath>) =>
   );
 
 export const catchAndLog = <A, R>(
-  effect: Effect.Effect<A, EvaluationError, R>,
+  effect: Effect.Effect<A, EvaluationError | ComponentNodeGroupError, R>,
 ): Effect.Effect<Option.Option<A>, never, R> =>
   effect.pipe(
     Effect.asSome,
-    Effect.catchTag("EvaluationError", ({ diagnostic }) =>
-      Console.error(diagnostic).pipe(Effect.as(Option.none<A>())),
-    ),
+    Effect.catchTags({
+      EvaluationError: ({ diagnostic }) =>
+        Console.error(diagnostic).pipe(Effect.as(Option.none<A>())),
+      ComponentNodeGroupError: (error) =>
+        logCodegenError(error).pipe(Effect.as(Option.none<A>())),
+    }),
   );

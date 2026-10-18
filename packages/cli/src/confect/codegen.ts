@@ -1,21 +1,26 @@
-import { Spec } from "@confect/core";
+import { App, Callback, Env, type GroupSpec, Spec } from "@confect/core";
 import * as Command from "effect/cli/Command";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
+import type * as PlatformError from "effect/PlatformError";
+import type { BuildError } from "../BuildError";
 import { pipe } from "effect/Function";
 import * as HashSet from "effect/HashSet";
 import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
+import type * as Scope from "effect/Scope";
 import * as Bundler from "../Bundler";
+import { fromBundlerError } from "../BuildError";
 import * as CodegenError from "../CodegenError";
 import { LegacySchemaFileError } from "../CodegenError";
 import { ConfectDirectory } from "../ConfectDirectory";
 import * as ConvexConfig from "../ConvexConfig";
 import { ConvexDirectory } from "../ConvexDirectory";
+import * as DirectoryOptions from "../DirectoryOptions";
 import * as DocName from "../DocName";
 import * as FunctionPaths from "../FunctionPaths";
 import * as FunctionModule from "../FunctionModule";
@@ -40,6 +45,7 @@ import {
   logWarn,
 } from "../log";
 import { ProjectRoot } from "../ProjectRoot";
+import { preserveComponentOutput } from "../Rollback";
 import { assemblyNodesFromLeaves } from "../SpecAssemblyNode";
 import * as TableModule from "../TableModule";
 import * as templates from "../templates";
@@ -52,8 +58,14 @@ import {
   touchConvexSchema,
   writeFileStringAndLog,
 } from "../utils";
+import { syncDeclaration, syncDeclaredHttp } from "./declaration";
 
 const GENERATED_DIRNAME = "_generated";
+
+const isComponent = Effect.map(
+  ConvexDirectory.target,
+  (target) => target.kind === "component",
+);
 
 const GENERATED_SPEC_PATH = Effect.map(Path.Path, (path) =>
   path.join(GENERATED_DIRNAME, "spec.ts"),
@@ -92,7 +104,7 @@ const LEGACY_PATHS = Effect.gen(function* () {
   ];
 });
 
-export const codegen = Command.make("codegen", {}, () =>
+export const codegen = Command.make("codegen", DirectoryOptions.flags, () =>
   Effect.gen(function* () {
     yield* logPending("Performing initial sync…");
     yield* codegenHandler.pipe(
@@ -102,13 +114,19 @@ export const codegen = Command.make("codegen", {}, () =>
     );
   }),
 ).pipe(
+  Command.provide(DirectoryOptions.layer),
   Command.withDescription(
-    "Generate `confect/_generated` files and the contents of the `convex` directory (except `convex.config.ts` and `tsconfig.json`)",
+    "Generate `confect/_generated` files and the contents of the `convex` directory (except `tsconfig.json`, and `convex.config.ts` unless `confect/app.ts` declares the backend)",
   ),
 );
 
 const runCodegen = Effect.gen(function* () {
+  yield* validateComponentConfiguration;
   yield* generateConfectGeneratedDirectory;
+  // A declared backend's `convex.config.ts` and manifest come first: the
+  // components registry below reads the config, and nothing may validate
+  // against a manifest the current declaration did not produce.
+  const declared = yield* syncDeclaration;
   // Reject a legacy `confect/schema.ts` up front so the user-facing
   // migration message surfaces before any bundler error from impl
   // validation (each impl imports `_generated/schema.ts`).
@@ -120,6 +138,10 @@ const runCodegen = Effect.gen(function* () {
   const tableModules = yield* TableModule.discover;
   yield* warnIfNoTables(tableModules);
   yield* generateIdConstructor(tableModules);
+  // Tables and specs can use bound component IDs and schemas, so their
+  // imports need the registry even on a project's first codegen run.
+  yield* generateComponents;
+  yield* validateCallbackPrefixes(declared);
   // Now that `_generated/id.ts` is on disk, bundle each table module and
   // check its default export is an `UnnamedTable`. Surface diagnostics
   // here (rather than later) so they appear before impl-validation noise.
@@ -129,6 +151,7 @@ const runCodegen = Effect.gen(function* () {
   yield* removeObsoleteTableWrappers(tableModules);
   yield* generateRuntimeSchema(tableModules);
   const leaves = yield* loadAll;
+  yield* rejectComponentNodeGroups(leaves);
   yield* removeLegacyFiles;
   const snapshot = yield* Effect.fromResult(
     GenerationSnapshot.fromLoadedLeaves(leaves),
@@ -142,13 +165,11 @@ const runCodegen = Effect.gen(function* () {
     [
       removeGeneratedApi,
       generateRefs,
+      generateComponentContract(tableModules),
       removeGeneratedNodeApi,
       generateDocs(tableModules),
       generateServices,
       generateConvexSchema(tableModules),
-      // Must land before impl validation: impls may import the generated
-      // components registry, so it has to exist when their bundles are built.
-      generateComponents,
     ],
     { concurrency: "unbounded" },
   );
@@ -159,12 +180,20 @@ const runCodegen = Effect.gen(function* () {
     [
       FunctionModule.generateFunctions(snapshot),
       generateConvexSchemaReexport,
-      logGenerated(generateHttp),
+      logGenerated(
+        Option.match(declared, {
+          onNone: () => generateHttp,
+          onSome: syncDeclaredHttp,
+        }),
+      ),
       logGenerated(generateCrons),
-      logGenerated(generateAuthConfig),
+      Option.isNone(declared)
+        ? logGenerated(generateAuthConfig)
+        : Effect.succeedNone,
     ],
     { concurrency: "unbounded" },
   );
+  if (Option.isSome(declared)) yield* generateTesting(declared.value);
   return {
     functionPaths,
     snapshot,
@@ -175,10 +204,15 @@ export const generateWithSnapshot = runCodegen.pipe(
   Effect.withSpan("Cli.codegen"),
 );
 
-export const codegenHandler = generateWithSnapshot.pipe(
-  Effect.tap(() => touchConvexSchema),
-  Effect.map(({ functionPaths }) => ({ functionPaths })),
-);
+export const makeCodegenHandler = (
+  duringRestore?: Effect.Effect<void, never, Scope.Scope>,
+) =>
+  preserveComponentOutput(generateWithSnapshot, duringRestore).pipe(
+    Effect.tap(() => touchConvexSchema),
+    Effect.map(({ functionPaths }) => ({ functionPaths })),
+  );
+
+export const codegenHandler = makeCodegenHandler();
 
 export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
   function* (
@@ -195,6 +229,7 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
     yield* TableModule.validate(tables);
     return yield* withImplFiles(paths, (leaves) =>
       Effect.gen(function* () {
+        yield* rejectComponentNodeGroups(leaves);
         const next = yield* Effect.fromResult(
           GenerationSnapshot.update(snapshot, leaves),
         );
@@ -208,6 +243,116 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
     );
   },
 );
+
+// Convex components cannot run Node.js functions, at any nesting depth.
+const validateComponentGroupRuntime = (
+  group: GroupSpec.AnyWithProps,
+  groupPath: string,
+  specPath: string,
+): Result.Result<void, CodegenError.ComponentNodeGroupError> =>
+  Result.gen(function* () {
+    if (group.runtime === "Node") {
+      return yield* Result.fail(
+        new CodegenError.ComponentNodeGroupError({ specPath, groupPath }),
+      );
+    }
+    for (const [name, child] of Object.entries(group.groups)) {
+      yield* validateComponentGroupRuntime(
+        child,
+        `${groupPath}.${name}`,
+        specPath,
+      );
+    }
+  });
+
+const rejectComponentNodeGroups = Effect.fnUntraced(function* (
+  leaves: ReadonlyArray<LoadedLeafModule>,
+) {
+  if ((yield* ConvexDirectory.target).kind === "app") return;
+  yield* Effect.forEach(leaves, (leaf) =>
+    Effect.fromResult(
+      validateComponentGroupRuntime(
+        leaf.spec,
+        leaf.groupPathDot,
+        leaf.relativePath,
+      ),
+    ),
+  );
+});
+
+const validateCallbackPrefixes = Effect.fnUntraced(function* (
+  declared: Option.Option<App.Any>,
+) {
+  if ((yield* ConvexDirectory.target).kind !== "component") return;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const callbacksPath = path.join(yield* ConfectDirectory.get, "callbacks.ts");
+  if (!(yield* fs.exists(callbacksPath))) return;
+  const name = Option.isSome(declared)
+    ? Env.name(App.env(declared.value))
+    : yield* ConvexConfig.componentName(
+        path.join(
+          yield* ConvexDirectory.get,
+          ConvexConfig.CONVEX_CONFIG_FILENAME,
+        ),
+      );
+  const { module } = yield* Bundler.bundle(callbacksPath).pipe(
+    Effect.mapError((error) => fromBundlerError("confect/callbacks.ts", error)),
+  );
+  for (const contract of Object.values(module)) {
+    if (Callback.isContract(contract) && !contract.id.startsWith(`${name}/`)) {
+      return yield* new CodegenError.CallbackPrefixError({
+        declarationPath: "confect/callbacks.ts",
+        contractId: contract.id,
+        componentName: name,
+      });
+    }
+  }
+});
+
+const validateComponentConfiguration = Effect.gen(function* () {
+  return yield* Match.value((yield* ConvexDirectory.target).kind).pipe(
+    Match.when("app", () => Effect.void),
+    Match.when("component", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const confectDirectory = yield* ConfectDirectory.get;
+        const authPath = path.join(confectDirectory, "auth.ts");
+        if (yield* fs.exists(authPath)) {
+          return yield* new CodegenError.InvalidConvexConfigError({
+            configPath: authPath,
+            reason:
+              "Components cannot configure application authentication. Pass identity explicitly through function arguments.",
+          });
+        }
+      }),
+    ),
+    Match.exhaustive,
+  );
+});
+
+const generateComponentContract = Effect.fnUntraced(function* (
+  tables: ReadonlyArray<TableModule.TableModule>,
+) {
+  return yield* Match.value((yield* ConvexDirectory.target).kind).pipe(
+    Match.when("app", () => Effect.void),
+    Match.when("component", () =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const directory = yield* ConfectDirectory.get;
+        const contents = yield* templates.componentContract({
+          tableNames: Array.map(tables, (table) => table.tableName),
+        });
+        yield* writeFileStringAndLog(
+          path.join(directory, GENERATED_DIRNAME, "component.ts"),
+          contents,
+        );
+      }),
+    ),
+    Match.exhaustive,
+  );
+});
 
 const generateConfectGeneratedDirectory = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -499,7 +644,13 @@ const generateIdConstructor = Effect.fnUntraced(function* (
     tableModules,
     (tableModule) => tableModule.tableName,
   );
-  const contents = yield* templates.id({ tableNames });
+  const contents = yield* Match.value(yield* ConvexDirectory.target).pipe(
+    Match.when({ kind: "app" }, () => templates.id({ tableNames })),
+    Match.when({ kind: "component" }, ({ scope }) =>
+      templates.id({ tableNames, scope }),
+    ),
+    Match.exhaustive,
+  );
 
   yield* writeFileStringAndLog(idPath, contents);
 });
@@ -535,6 +686,7 @@ const generateTableWrappers = Effect.fnUntraced(function* (
       const contents = yield* templates.tableWrapper({
         tableName: tableModule.tableName,
         unnamedImportPath,
+        component: yield* isComponent,
       });
       yield* writeFileStringAndLog(wrapperPath, contents);
     }),
@@ -590,7 +742,10 @@ const generateRuntimeSchema = Effect.fnUntraced(function* (
   const schemaPath = path.join(confectDirectory, generatedSchemaPath);
 
   const bindings = yield* tableModuleBindings(tableModules, schemaPath);
-  const contents = yield* templates.runtimeSchema({ tableModules: bindings });
+  const contents = yield* templates.runtimeSchema({
+    tableModules: bindings,
+    component: yield* isComponent,
+  });
 
   yield* writeFileStringAndLog(schemaPath, contents);
 });
@@ -652,6 +807,7 @@ const generateServices = Effect.gen(function* () {
 
   const servicesContentsString = yield* templates.services({
     schemaImportPath,
+    component: yield* isComponent,
   });
 
   yield* writeFileStringAndLog(servicesPath, servicesContentsString);
@@ -735,7 +891,8 @@ const generateRefs = Effect.gen(function* () {
  * components installed in `convex/convex.config.ts` (see
  * {@link templates.components}). The file is emitted even when there is no
  * `convex.config.ts` (as an empty registry) so the import surface stays stable.
- * It must exist before impl validation because impl modules may import it.
+ * It must exist before loading tables and specs because they may import bound
+ * component IDs and schemas.
  */
 export const generateComponents = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -760,6 +917,7 @@ export const generateComponents = Effect.gen(function* () {
     ? yield* ConvexConfig.discoverInstalledComponents(
         convexConfigPath,
         path.relative(projectRoot, convexConfigPath),
+        (yield* ConvexDirectory.target).kind,
       )
     : [];
 
@@ -780,7 +938,16 @@ export const generateComponents = Effect.gen(function* () {
   yield* writeFileStringAndLog(componentsPath, contents);
 });
 
-const logGenerated = (effect: typeof generateHttp) =>
+const logGenerated = <E, R>(
+  effect: Effect.Effect<
+    Option.Option<{
+      readonly change: "Added" | "Modified" | "Unchanged";
+      readonly convexFilePath: string;
+    }>,
+    E,
+    R
+  >,
+) =>
   effect.pipe(
     Effect.tap(
       Option.match({
@@ -795,3 +962,128 @@ const logGenerated = (effect: typeof generateHttp) =>
       }),
     ),
   );
+
+/**
+ * Test-only imports never enter the runtime schema or function wrappers.
+ */
+const quote = (value: string) => JSON.stringify(value);
+
+const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const convexDirectory = yield* ConvexDirectory.get;
+  const generated = path.join(confectDirectory, "_generated");
+  const relative = (file: string) => {
+    const value = path.relative(generated, file).split(path.sep).join("/");
+    return value.startsWith(".") ? value : `./${value}`;
+  };
+  const imports = [
+    'import schema from "./schema";',
+    'import convexSchema from "./convexSchema";',
+  ];
+  const moduleMap = Effect.fnUntraced(function* (directory: string) {
+    const files = (yield* fs.readDirectory(directory, { recursive: true }))
+      .filter(
+        (file) =>
+          /\.[cm]?[jt]s$/.test(file) &&
+          !file.endsWith(".d.ts") &&
+          !file.split(path.sep).includes("_generated") &&
+          !file.includes(".config."),
+      )
+      .sort();
+    return `{ "_generated/testing.ts": () => Promise.resolve({}),\n${files
+      .map((file) => {
+        const specifier = relative(path.join(directory, file));
+        return `${quote(file.split(path.sep).join("/"))}: () => import(${quote(specifier.replace(/\.[cm]?[jt]s$/, ""))}),`;
+      })
+      .join("\n")}\n}`;
+  });
+  const components: Array<string> = [];
+  const httpMounts: Array<string> = [];
+  const kits = new Map<string, string>();
+  const visit = Effect.fnUntraced(function* (
+    directory: string,
+    prefix: string,
+    kind: "app" | "component",
+    parentHttpPrefix: string | undefined,
+  ): Effect.fn.Return<
+    void,
+    | PlatformError.PlatformError
+    | BuildError
+    | CodegenError.InvalidConvexConfigError,
+    FileSystem.FileSystem | Path.Path
+  > {
+    const config = path.join(directory, ConvexConfig.CONVEX_CONFIG_FILENAME);
+    if (!(yield* fs.exists(config))) return;
+    const installed = yield* ConvexConfig.discoverInstalledComponents(
+      config,
+      relative(config),
+      kind,
+    );
+    for (const component of installed) {
+      const name = prefix + component.name;
+      const resolved = path.isAbsolute(component.componentDefinitionPath)
+        ? component.componentDefinitionPath
+        : path.dirname(
+            yield* ConvexConfig.resolveDefinition(
+              `${component.componentDefinitionPath}/convex.config`,
+              config,
+              path,
+            ).pipe(
+              Effect.fromOption,
+              Effect.mapError(
+                () =>
+                  new CodegenError.InvalidConvexConfigError({
+                    configPath: relative(config),
+                    reason: `Cannot resolve component ${component.componentDefinitionPath} for testing.`,
+                  }),
+              ),
+            ),
+          );
+      const localPrefix =
+        prefix === ""
+          ? App.mounts(app).find((mount) => mount.name === component.name)
+              ?.httpPrefix
+          : component.httpPrefix;
+      const httpPrefix =
+        parentHttpPrefix === undefined || localPrefix === undefined
+          ? undefined
+          : `${parentHttpPrefix.replace(/\/+$/, "")}${localPrefix}`.replace(
+              /\/+$/,
+              "",
+            ) || "/";
+      if (
+        httpPrefix !== undefined &&
+        ((yield* fs.exists(path.join(resolved, "http.ts"))) ||
+          (yield* fs.exists(path.join(resolved, "http.js"))))
+      ) {
+        httpMounts.push(
+          `{ componentPath: ${quote(name)}, httpPrefix: ${quote(httpPrefix)} }`,
+        );
+      }
+      let identifier = kits.get(resolved);
+      if (identifier === undefined) {
+        identifier = `component${kits.size}`;
+        kits.set(resolved, identifier);
+        imports.push(
+          `import ${identifier}Schema from ${quote(relative(path.join(resolved, "schema")))};`,
+        );
+        imports.push(
+          `const ${identifier} = { schema: ${identifier}Schema, modules: ${yield* moduleMap(resolved)} };`,
+        );
+      }
+      components.push(`${quote(name)}: ${identifier},`);
+      yield* visit(resolved, `${name}/`, "component", httpPrefix);
+    }
+  });
+  yield* visit(convexDirectory, "", (yield* ConvexDirectory.target).kind, "");
+  yield* writeFileStringAndLog(
+    path.join(generated, "testing.ts"),
+    [
+      "// Generated by `confect codegen`. Test-only; do not import in backend functions.",
+      ...imports,
+      `export default { httpMounts: [${httpMounts.join(",")}], schema, convexSchema, modules: ${yield* moduleMap(convexDirectory)}, components: {${components.join("\n")}} };`,
+    ].join("\n"),
+  );
+});

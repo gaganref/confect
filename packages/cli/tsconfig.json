@@ -21,6 +21,11 @@
       "@confect/cli/*": ["./src/*"]
     }
   },
-  "exclude": ["coverage", "dist", "node_modules"],
+  "exclude": [
+    "coverage",
+    "dist",
+    "node_modules",
+    "test/integration/consumer-*"
+  ],
   "extends": ["../../tsconfig.base.json"]
 }

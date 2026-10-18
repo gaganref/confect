@@ -9,6 +9,10 @@ export default mergeConfig(
     test: {
       root: import.meta.dirname,
       include: ["test/*.test.ts", "test/integration/*.test.ts"],
+      // A slow Windows runner measured 5.0s against the 5s default timeout.
+      ...(process.platform === "win32"
+        ? { testTimeout: 15_000, hookTimeout: 15_000 }
+        : {}),
     },
   }),
 );

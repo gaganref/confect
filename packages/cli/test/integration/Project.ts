@@ -1,4 +1,6 @@
+import { remove } from "@confect/cli/Remove";
 import * as Effect from "effect/Effect";
+import * as Clock from "effect/Clock";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Queue from "effect/Queue";
@@ -65,10 +67,17 @@ export const writtenFiles = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
 export const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const root = yield* fs.makeTempDirectoryScoped({
-    directory: import.meta.dirname,
-    prefix: "consumer-",
-  });
+  const root = yield* Effect.acquireRelease(
+    fs.makeTempDirectory({
+      directory: import.meta.dirname,
+      prefix: "consumer-",
+    }),
+    (directory) =>
+      remove(directory).pipe(
+        Effect.provideService(Clock.Clock, Clock.Clock.defaultValue()),
+        Effect.orDie,
+      ),
+  );
   const write = (file: string, contents: string) =>
     fs.writeFileString(path.join(root, file), contents);
   yield* fs.makeDirectory(path.join(root, "confect", "tables"), {
@@ -84,12 +93,19 @@ export const make = Effect.gen(function* () {
   yield* write("confect/notes.spec.ts", spec);
   yield* write("confect/notes.impl.ts", impl);
 
-  const start = Effect.fnUntraced(function* (command: "dev" | "codegen") {
+  const start = Effect.fnUntraced(function* (
+    command: "dev" | "codegen",
+    args: ReadonlyArray<string> = [],
+  ) {
     const spawner = yield* ChildProcessSpawner;
     const handle = yield* spawner.spawn(
       ChildProcess.make(
         process.execPath,
-        [path.resolve(import.meta.dirname, "../../bin/confect.mjs"), command],
+        [
+          path.resolve(import.meta.dirname, "../../bin/confect.mjs"),
+          command,
+          ...args,
+        ],
         { cwd: root, extendEnv: true, env: { NO_COLOR: "1" } },
       ),
     );
@@ -153,4 +169,17 @@ export const make = Effect.gen(function* () {
       }),
     );
   return { root, write, start, generatedFiles, provide };
+});
+
+export const makeNodeComponent = Effect.gen(function* () {
+  const project = yield* make;
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  yield* fs.remove(path.join(project.root, "confect"), { recursive: true });
+  yield* fs.copy(
+    path.join(import.meta.dirname, "../fixtures/node-component"),
+    project.root,
+    { overwrite: true },
+  );
+  return project;
 });

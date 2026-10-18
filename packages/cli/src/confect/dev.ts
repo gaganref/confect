@@ -15,11 +15,13 @@ import * as Result from "effect/Result";
 import * as String from "effect/String";
 import type * as esbuild from "esbuild";
 import * as Ansi from "../Ansi";
+import { renderCodegenError } from "../CodegenError";
 import * as SyncState from "../SyncState";
 import type { OptionalFile } from "../EntryPoint";
 import * as Watcher from "../Watcher";
 import * as Evaluation from "../Evaluation";
 import { ConvexDirectory } from "../ConvexDirectory";
+import * as DirectoryOptions from "../DirectoryOptions";
 import * as FunctionPaths from "../FunctionPaths";
 import * as GenerationSnapshot from "../GenerationSnapshot";
 import type { ImplModulePath } from "../ImplModulePath";
@@ -34,12 +36,14 @@ import {
   logSuccess,
 } from "../log";
 import { ProjectRoot } from "../ProjectRoot";
+import { preserveComponentOutput } from "../Rollback";
 import {
   generateAuthConfig,
   generateCrons,
   generateHttp,
   touchConvexSchema,
 } from "../utils";
+import { isDeclared } from "./declaration";
 
 const changeChar = (change: "Added" | "Removed" | "Modified") =>
   Match.value(change).pipe(
@@ -119,18 +123,25 @@ const logFunctionPathDiff = Effect.fnUntraced(function* (
   );
 });
 
-export const dev = Command.make("dev", {}, () =>
-  Effect.gen(function* () {
-    yield* logPending("Performing initial sync…");
-    const previousFunctionPaths = yield* Evaluation.loadPreviousFunctionPaths;
+export const devHandler = Effect.gen(function* () {
+  yield* logPending("Performing initial sync…");
+  const previousFunctionPaths = yield* Evaluation.loadPreviousFunctionPaths;
 
-    const watcher = yield* Watcher.make();
+  const watcher = yield* Watcher.make();
 
-    yield* Effect.all([watcher.run, syncLoop(previousFunctionPaths, watcher)], {
-      concurrency: "unbounded",
-    });
-  }),
-).pipe(Command.withDescription("Start the Confect development server"));
+  yield* Effect.all([watcher.run, syncLoop(previousFunctionPaths, watcher)], {
+    concurrency: "unbounded",
+  });
+});
+
+export const dev = Command.make(
+  "dev",
+  DirectoryOptions.flags,
+  () => devHandler,
+).pipe(
+  Command.withDescription("Start the Confect development server"),
+  Command.provide(DirectoryOptions.layer),
+);
 
 const esbuildMessageKey = (m: esbuild.Message): string =>
   `${m.location?.file ?? ""}:${m.location?.line ?? ""}:${m.location?.column ?? ""}:${m.text}`;
@@ -204,18 +215,29 @@ const syncLoop = Effect.fnUntraced(function* (
   return yield* Effect.forever(
     Effect.gen(function* () {
       yield* Effect.logDebug("Running sync loop…");
-      const pending = yield* watcher.next;
+      const taken = yield* watcher.next;
 
       const phase = yield* Ref.get(phaseRef);
       const firstSync = SyncState.Phase.$is("Bootstrapping")(phase);
       if (!firstSync) yield* logMessages;
 
-      if (!SyncState.isDirty(pending)) return;
+      if (!SyncState.isDirty(taken)) return;
 
-      const optional = yield* Ref.updateAndGet(
-        optionalPendingRef,
-        HashSet.union(pending.optional),
+      const declared = yield* isDeclared;
+      const pending = SyncState.forBackend(
+        {
+          ...taken,
+          optional: yield* Ref.updateAndGet(
+            optionalPendingRef,
+            HashSet.union(taken.optional),
+          ),
+        },
+        {
+          declared,
+          component: (yield* ConvexDirectory.target).kind === "component",
+        },
       );
+      const optional = pending.optional;
       const operation = SyncState.plan(phase, pending);
       yield* Effect.logDebug("Planned development sync").pipe(
         Effect.annotateLogs({
@@ -233,7 +255,13 @@ const syncLoop = Effect.fnUntraced(function* (
       )
         yield* logPending("Dependencies may have changed, reloading…");
 
-      const regenerate = (generation: typeof Evaluation.generateSnapshot) =>
+      const regenerate = <R>(
+        generation: Effect.Effect<
+          GenerationSnapshot.GenerationSnapshot,
+          Effect.Error<typeof Evaluation.generateSnapshot>,
+          R
+        >,
+      ) =>
         Effect.gen(function* () {
           const current = yield* generation.pipe(
             Effect.tap((snapshot) =>
@@ -263,6 +291,29 @@ const syncLoop = Effect.fnUntraced(function* (
           }
           return SyncState.Outcome.Succeeded({ snapshot: current.value });
         });
+      const preserved = <R>(
+        generation: Effect.Effect<
+          GenerationSnapshot.GenerationSnapshot,
+          Effect.Error<typeof Evaluation.generateSnapshot>,
+          R
+        >,
+      ) =>
+        preserveComponentOutput(generation, watcher.duringRestore).pipe(
+          Effect.tapErrorTag(
+            "ComponentNodeGroupError",
+            () => watcher.discardRestoreEchoes,
+          ),
+          Effect.catchTags({
+            RemoveBusyError: (error) =>
+              Effect.fail(
+                new Evaluation.EvaluationError({
+                  diagnostic: renderCodegenError(error),
+                }),
+              ),
+            // Output that cannot be restored leaves nothing to serve.
+            PlatformError: Effect.die,
+          }),
+        );
       const validate = (
         paths: ReadonlyArray<ImplModulePath>,
         snapshot: GenerationSnapshot.GenerationSnapshot,
@@ -279,11 +330,13 @@ const syncLoop = Effect.fnUntraced(function* (
           return SyncState.Outcome.Succeeded({ snapshot });
         });
       const outcome = yield* SyncState.Operation.$match(operation, {
-        Generate: () => regenerate(Evaluation.generateSnapshot),
+        Generate: () => regenerate(preserved(Evaluation.generateSnapshot)),
         Validate: ({ paths, snapshot }) => validate(paths, snapshot),
         Update: ({ snapshot, declarations, paths }) =>
           regenerate(
-            Evaluation.updateDeclarations(snapshot, declarations, paths),
+            preserved(
+              Evaluation.updateDeclarations(snapshot, declarations, paths),
+            ),
           ),
       });
       yield* Ref.set(phaseRef, SyncState.transition(outcome));

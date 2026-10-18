@@ -90,22 +90,23 @@ it("automatically retries only failed bootstrap generation", () => {
   }
 });
 
-it.each([EntryPoint.Kind.Config()])(
-  "requests full generation for $_tag entries",
-  (entry) => {
-    const optional = SyncState.add(SyncState.empty, [
-      EntryPoint.Kind.Http({ relativePath: "http.ts" }),
-      EntryPoint.Kind.Crons({ relativePath: "crons.ts" }),
-      EntryPoint.Kind.Auth({ relativePath: "auth.ts" }),
-    ]);
-    const pending = SyncState.add(optional, [entry]);
-    expect(pending.work._tag).toBe("Full");
-    expect(pending.optional).toEqual(HashSet.make("Http", "Crons", "Auth"));
-    expect(optional.work._tag).toBe("None");
-    expect(SyncState.isDirty(optional)).toBe(true);
-    expect(SyncState.isDirty(SyncState.empty)).toBe(false);
-  },
-);
+it.each([
+  EntryPoint.Kind.Config(),
+  EntryPoint.Kind.Env({ relativePath: "env.ts" }),
+  EntryPoint.Kind.App({ relativePath: "app.ts" }),
+])("requests full generation for $_tag entries", (entry) => {
+  const optional = SyncState.add(SyncState.empty, [
+    EntryPoint.Kind.Http({ relativePath: "http.ts" }),
+    EntryPoint.Kind.Crons({ relativePath: "crons.ts" }),
+    EntryPoint.Kind.Auth({ relativePath: "auth.ts" }),
+  ]);
+  const pending = SyncState.add(optional, [entry]);
+  expect(pending.work._tag).toBe("Full");
+  expect(pending.optional).toEqual(HashSet.make("Http", "Crons", "Auth"));
+  expect(optional.work._tag).toBe("None");
+  expect(SyncState.isDirty(optional)).toBe(true);
+  expect(SyncState.isDirty(SyncState.empty)).toBe(false);
+});
 
 it("coalesces implementation work without mutating earlier requests", () => {
   const first = ImplModulePath.make("first.impl.ts");
@@ -279,4 +280,48 @@ it("coalesces dependency-aware declarations and impls without mutating previous 
   expect(SyncState.full(pending).work._tag).toBe("Full");
   expect(SyncState.add(SyncState.full(pending), [spec]).work._tag).toBe("Full");
   expect(SyncState.add(pending, [], true).work._tag).toBe("Full");
+});
+
+const optionalFiles = SyncState.add(SyncState.empty, [
+  EntryPoint.Kind.Http({ relativePath: "http.ts" }),
+  EntryPoint.Kind.Crons({ relativePath: "crons.ts" }),
+  EntryPoint.Kind.Auth({ relativePath: "auth.ts" }),
+]);
+
+it("leaves an undeclared application's optional files to their writers", () => {
+  expect(
+    SyncState.forBackend(optionalFiles, { declared: false, component: false }),
+  ).toBe(optionalFiles);
+});
+
+it("generates a declared backend's HTTP and auth files in full generation", () => {
+  const pending = SyncState.forBackend(optionalFiles, {
+    declared: true,
+    component: false,
+  });
+  expect(pending.work._tag).toBe("Full");
+  expect(pending.optional).toEqual(HashSet.make("Crons"));
+});
+
+it("validates a component's auth file in full generation", () => {
+  const pending = SyncState.forBackend(optionalFiles, {
+    declared: false,
+    component: true,
+  });
+  expect(pending.work._tag).toBe("Full");
+  expect(pending.optional).toEqual(HashSet.make("Http", "Crons", "Auth"));
+  const httpOnly = SyncState.add(SyncState.empty, [
+    EntryPoint.Kind.Http({ relativePath: "http.ts" }),
+  ]);
+  expect(
+    SyncState.forBackend(httpOnly, { declared: false, component: true }),
+  ).toBe(httpOnly);
+});
+
+it("requires full generation when exported callback contracts change", () => {
+  expect(
+    SyncState.add(SyncState.empty, [
+      EntryPoint.Kind.Callbacks({ relativePath: "callbacks.ts" }),
+    ]).work,
+  ).toEqual(SyncState.Work.Full());
 });

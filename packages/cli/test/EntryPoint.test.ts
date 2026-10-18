@@ -104,6 +104,49 @@ it.effect("discovers typed entries with logical and canonical paths", () =>
   }).pipe(Effect.provide(NodePath.layer)),
 );
 
+it.effect(
+  "discovers a declaration and leaves its generated Convex config out",
+  () =>
+    Effect.gen(function* () {
+      const path = yield* Path.Path;
+      const confect = path.resolve("/project/confect");
+      const convex = path.resolve("/project/convex");
+      const existing = HashSet.make(
+        path.join(confect, "env.ts"),
+        path.join(confect, "app.ts"),
+        path.join(confect, "http.ts"),
+        path.join(convex, "convex.config.ts"),
+      );
+      const entries = yield* EntryPoint.discover.pipe(
+        Effect.provideService(ConfectDirectory, {
+          get: Effect.succeed(confect),
+        }),
+        Effect.provideService(ConvexDirectory, { get: Effect.succeed(convex) }),
+        Effect.provide(
+          FileSystem.layerNoop({
+            exists: (file) => Effect.succeed(HashSet.has(existing, file)),
+            readDirectory: () => Effect.succeed([]),
+            realPath: (file) => Effect.succeed(file),
+          }),
+        ),
+      );
+      expect(entries.map((entry) => entry._tag)).toEqual([
+        "Env",
+        "App",
+        "Http",
+      ]);
+    }).pipe(Effect.provide(NodePath.layer)),
+);
+
+it("parses declaration files as entries", () => {
+  expect(EntryPoint.parse("env.ts")).toEqual(
+    Option.some(EntryPoint.Kind.Env({ relativePath: "env.ts" })),
+  );
+  expect(EntryPoint.parse("app.ts")).toEqual(
+    Option.some(EntryPoint.Kind.App({ relativePath: "app.ts" })),
+  );
+});
+
 it.effect.each([1, 2, 3])(
   "restarts discovery when scan %s loses a directory without dropping surviving entries",
   (failedScan) =>

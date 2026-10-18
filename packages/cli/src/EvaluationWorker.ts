@@ -1,11 +1,14 @@
 import * as NodeRuntime from "@effect/platform-node/NodeRuntime";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as NodeWorkerRunner from "@effect/platform-node/NodeWorkerRunner";
+import * as IdScope from "@confect/core/IdScope";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
+import * as Schema from "effect/Schema";
 import * as RpcServer from "effect/rpc/RpcServer";
 import * as esbuild from "esbuild";
 import * as CodegenError from "./CodegenError";
@@ -38,18 +41,42 @@ const evaluate = <A, E, R>(
     }),
     Effect.provideService(ConvexDirectory, {
       get: Effect.succeed(requestContext.convexDirectory),
+      target: Match.value(requestContext.target).pipe(
+        Match.when({ kind: "app" }, () => ({
+          kind: "app" as const,
+          scope: IdScope.app,
+        })),
+        Match.when({ kind: "component" }, ({ definition }) => ({
+          kind: "component" as const,
+          scope: IdScope.component(definition),
+        })),
+        Match.exhaustive,
+      ),
     }),
-    Effect.catchCause((cause) => {
-      const failure = Cause.findErrorOption(cause);
-      return Effect.fail(
-        new EvaluationError({
-          diagnostic:
-            Option.isSome(failure) && CodegenError.isCodegenError(failure.value)
-              ? CodegenError.renderCodegenError(failure.value)
-              : Cause.pretty(cause),
-        }),
-      );
-    }),
+    Effect.catchCause(
+      (
+        cause,
+      ): Effect.Effect<
+        never,
+        EvaluationError | CodegenError.ComponentNodeGroupError
+      > => {
+        const failure = Cause.findErrorOption(cause);
+        if (
+          Option.isSome(failure) &&
+          Schema.is(CodegenError.ComponentNodeGroupError)(failure.value)
+        )
+          return Effect.fail(failure.value);
+        return Effect.fail(
+          new EvaluationError({
+            diagnostic:
+              Option.isSome(failure) &&
+              CodegenError.isCodegenError(failure.value)
+                ? CodegenError.renderCodegenError(failure.value)
+                : Cause.pretty(cause),
+          }),
+        );
+      },
+    ),
   );
 
 const handlers = requests.toLayer({
