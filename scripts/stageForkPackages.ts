@@ -142,7 +142,7 @@ export const chooseBuildVersion = (
   versions: ReadonlyArray<string>,
   override = "",
 ): Result.Result<string, InvalidBuildVersion | BuildNumberUnavailable> => {
-  const prefix = `${base}-gaganref.`;
+  const prefix = `${base}-fork.`;
   const builds = versions
     .filter((version) => version.startsWith(prefix))
     .map((version) => version.slice(prefix.length))
@@ -254,7 +254,7 @@ const stage = Effect.fn("ForkPackages.stage")(function* (
   const selected = yield* Effect.fromResult(
     chooseBuildVersion(base, versions.flat(), build),
   );
-  const version = dryRun ? `${base}-gaganref.0` : selected;
+  const version = dryRun ? `${base}-fork.0` : selected;
   const stagingDirectory = path.resolve(destination);
   yield* fs.makeDirectory(stagingDirectory);
   for (const directory of ["packages", "tarballs", "original"])

@@ -20,9 +20,7 @@ test("rejects the previous identity and accepts only the exact fork login", () =
   for (const token of forbidden) {
     expect(hasOldIdentity(`before ${token.toUpperCase()} after`)).toBe(true);
   }
-  expect(hasOldIdentity("@gaganref/confect-core 10.3.1-gaganref.1")).toBe(
-    false,
-  );
+  expect(hasOldIdentity("@gaganref/confect-core 10.3.1-fork.1")).toBe(false);
   expect(hasOldIdentity("https://github.com/gaganref/confect")).toBe(false);
   expect(hasOldIdentity(["gaganref", "extra"].join(""))).toBe(true);
 });

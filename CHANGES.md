@@ -17,7 +17,7 @@ until the fork adopts a release containing it.
 `main` tracks upstream 10.3.1
 ([`eaa5da76`](https://github.com/rjdellecese/confect/commit/eaa5da76881455fe38d8d633eedbf79ebc5af01a)).
 The move from 10.2.0 (`1f75cb80`) landed by merge, and each later release lands
-the same way. Fork builds on this base use `10.3.1-gaganref.N`. The 10.3.1
+the same way. Fork builds on this base use `10.3.1-fork.N`. The 10.3.1
 generator changes generated output, so consumers run `confect codegen` after
 upgrading.
 
@@ -316,7 +316,7 @@ Upstream: fork only.
 ### Publish aliased GitHub Packages builds
 
 Stage renamed `@gaganref/confect-*` tarballs at a shared
-`<upstream-version>-gaganref.N` version while retaining `@confect/*` dependency
+`<upstream-version>-fork.N` version while retaining `@confect/*` dependency
 keys through exact aliases. Publish on pushes to main, serialize publication,
 and dry-run packing on PRs so consumers can install fork code without rewriting
 imports. Choose a fresh build number after a partial publish.
