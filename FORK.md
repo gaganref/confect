@@ -12,7 +12,7 @@ The two remotes are `origin` = <https://github.com/gaganref/confect> and `upstre
 
 ## Builds and installation
 
-Every merge to `main` automatically publishes a build to public npm after the same commit's Packages checks pass. Builds use `<upstream>-gaganref.N`, such as `10.3.1-gaganref.1`. Source packages retain their `@confect/*` names. `scripts/stageForkPackages.ts` stages eight `@gaganref/confect-*` packages, rewrites internal dependencies as exact aliases, and selects an unused build number across the package set. The `stage` job installs, builds, tests, and packs without publishing identity. The `publish` job downloads the staged artifact and publishes with npm trusted publishing and provenance, without a stored publish token. The `latest` dist-tag follows the newest build.
+Every merge to `main` automatically publishes a build to public npm after the same commit's Packages checks pass. Builds use `<upstream>-fork.N`, such as `10.3.1-fork.1`. Source packages retain their `@confect/*` names. `scripts/stageForkPackages.ts` stages eight `@gaganref/confect-*` packages, rewrites internal dependencies as exact aliases, and selects an unused build number across the package set. The `stage` job installs, builds, tests, and packs without publishing identity. The `publish` job downloads the staged artifact and publishes with npm trusted publishing and provenance, without a stored publish token. The `latest` dist-tag follows the newest build.
 
 Choose a green [Packages run](https://github.com/gaganref/confect/actions/workflows/packages.yml) that published a build. Replace `<version>` below with that exact version. Pin every alias to the same build. Aliases preserve `@confect/*` imports. Installation needs no registry authentication.
 

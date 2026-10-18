@@ -37,10 +37,10 @@ test.each(directories)(
             ),
           );
         const before = encodeJson(input);
-        const output = stageForkPackages(input, "10.2.0-gaganref.7");
+        const output = stageForkPackages(input, "10.2.0-fork.7");
         expect(output).toMatchObject({
           name: `@gaganref/confect-${input.name.slice("@confect/".length)}`,
-          version: "10.2.0-gaganref.7",
+          version: "10.2.0-fork.7",
           repository: {
             type: "git",
             url: "git+https://github.com/gaganref/confect.git",
@@ -67,7 +67,7 @@ test.each(directories)(
                   Object.entries(dependencies).map(([name, range]) => [
                     name,
                     name.startsWith("@confect/")
-                      ? `npm:@gaganref/confect-${name.slice("@confect/".length)}@10.2.0-gaganref.7`
+                      ? `npm:@gaganref/confect-${name.slice("@confect/".length)}@10.2.0-fork.7`
                       : range,
                   ]),
                 ),
@@ -91,18 +91,18 @@ test("rewrites all internal dependency maps and retains external ranges and meta
       peerDependenciesMeta: { "@confect/core": { optional: true } },
       publishConfig: { access: "restricted", provenance: false, tag: "build" },
     },
-    "10.2.0-gaganref.7",
+    "10.2.0-fork.7",
   );
   expect(output).toMatchObject({
     dependencies: {
-      "@confect/core": "npm:@gaganref/confect-core@10.2.0-gaganref.7",
+      "@confect/core": "npm:@gaganref/confect-core@10.2.0-fork.7",
       effect: "^4.0.0",
     },
     optionalDependencies: {
-      "@confect/server": "npm:@gaganref/confect-server@10.2.0-gaganref.7",
+      "@confect/server": "npm:@gaganref/confect-server@10.2.0-fork.7",
     },
     peerDependencies: {
-      "@confect/core": "npm:@gaganref/confect-core@10.2.0-gaganref.7",
+      "@confect/core": "npm:@gaganref/confect-core@10.2.0-fork.7",
     },
     peerDependenciesMeta: { "@confect/core": { optional: true } },
     publishConfig: {
@@ -116,24 +116,22 @@ test("rewrites all internal dependency maps and retains external ranges and meta
 
 test("starts at one and advances past the highest published build for this base", () => {
   expect(Result.getOrThrow(chooseBuildVersion("10.2.0", []))).toBe(
-    "10.2.0-gaganref.1",
+    "10.2.0-fork.1",
   );
   expect(
     Result.getOrThrow(
       chooseBuildVersion("10.2.0", [
-        "10.2.0-gaganref.2",
-        "10.2.0-gaganref.10",
-        "10.3.0-gaganref.99",
+        "10.2.0-fork.2",
+        "10.2.0-fork.10",
+        "10.3.0-fork.99",
         "10.2.0-next.90",
-        "10.2.0-gaganref.11.extra",
+        "10.2.0-fork.11.extra",
       ]),
     ),
-  ).toBe("10.2.0-gaganref.11");
+  ).toBe("10.2.0-fork.11");
   expect(
-    Result.getOrThrow(
-      chooseBuildVersion("10.2.0", ["10.2.0-gaganref.10"], "30"),
-    ),
-  ).toBe("10.2.0-gaganref.30");
+    Result.getOrThrow(chooseBuildVersion("10.2.0", ["10.2.0-fork.10"], "30")),
+  ).toBe("10.2.0-fork.30");
 });
 
 test.each(["0", "-1", "1.5", "1e2", "01", "abc", "9007199254740992"])(
@@ -149,7 +147,7 @@ test.each(["0", "-1", "1.5", "1e2", "01", "abc", "9007199254740992"])(
 test("rejects a prerelease base and exhausted build numbers", () => {
   for (const result of [
     chooseBuildVersion("10.2.0-next.1", []),
-    chooseBuildVersion("10.2.0", ["10.2.0-gaganref.9007199254740991"]),
+    chooseBuildVersion("10.2.0", ["10.2.0-fork.9007199254740991"]),
   ]) {
     expect(Result.isFailure(result) && result.failure._tag).toBe(
       "InvalidBuildVersion",
@@ -158,10 +156,10 @@ test("rejects a prerelease base and exhausted build numbers", () => {
 });
 
 test("rejects an explicit version that any package has already published", () => {
-  const result = chooseBuildVersion("10.2.0", ["10.2.0-gaganref.7"], "7");
+  const result = chooseBuildVersion("10.2.0", ["10.2.0-fork.7"], "7");
   expect(Result.isFailure(result) && result.failure).toMatchObject({
     _tag: "BuildNumberUnavailable",
-    version: "10.2.0-gaganref.7",
+    version: "10.2.0-fork.7",
     highestBuild: 7,
   });
 });
@@ -203,10 +201,10 @@ test("requires all source packages to share the core base version", () => {
 });
 
 test("rejects an unused override below the highest existing number", () => {
-  const result = chooseBuildVersion("10.2.0", ["10.2.0-gaganref.10"], "7");
+  const result = chooseBuildVersion("10.2.0", ["10.2.0-fork.10"], "7");
   expect(Result.isFailure(result) && result.failure).toMatchObject({
     _tag: "BuildNumberUnavailable",
-    version: "10.2.0-gaganref.7",
+    version: "10.2.0-fork.7",
     highestBuild: 10,
   });
 });
@@ -228,7 +226,7 @@ const registryVersions = (body: string, status = 200) =>
     Effect.provide(BunServices.layer),
   );
 
-test.each([{ gaganref: "10.2.0-gaganref.1" }, {}])(
+test.each([{ gaganref: "10.2.0-fork.1" }, {}])(
   "reads every published version without a latest tag %j",
   (tags) =>
     Effect.runPromise(
@@ -236,21 +234,21 @@ test.each([{ gaganref: "10.2.0-gaganref.1" }, {}])(
         JSON.stringify({
           "dist-tags": tags,
           versions: {
-            "10.2.0-gaganref.1": {},
-            "10.2.0-gaganref.4": {},
-            "10.1.0-gaganref.99": {},
+            "10.2.0-fork.1": {},
+            "10.2.0-fork.4": {},
+            "10.1.0-fork.99": {},
           },
         }),
       ).pipe(
         Effect.map((versions) => {
           expect(versions).toEqual([
-            "10.2.0-gaganref.1",
-            "10.2.0-gaganref.4",
-            "10.1.0-gaganref.99",
+            "10.2.0-fork.1",
+            "10.2.0-fork.4",
+            "10.1.0-fork.99",
           ]);
           expect(
             Result.getOrThrow(chooseBuildVersion("10.2.0", versions)),
-          ).toBe("10.2.0-gaganref.5");
+          ).toBe("10.2.0-fork.5");
         }),
       ),
     ),

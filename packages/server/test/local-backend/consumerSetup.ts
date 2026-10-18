@@ -18,7 +18,7 @@ const prepare = Effect.gen(function* () {
       [
         path.join(root, "scripts/forkConsumer.ts"),
         destination,
-        "10.3.1-gaganref.0",
+        "10.3.1-fork.0",
       ],
       { stdout: "inherit", stderr: "inherit" },
     ),

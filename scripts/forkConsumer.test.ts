@@ -12,15 +12,15 @@ import {
 } from "./forkConsumer";
 
 test("pins all four public aliases to the requested fork build", () => {
-  expect(Result.getOrThrow(consumerManifest("10.2.0-gaganref.7"))).toEqual({
+  expect(Result.getOrThrow(consumerManifest("10.2.0-fork.7"))).toEqual({
     name: "confect-install-check",
     private: true,
     type: "module",
     dependencies: {
-      "@confect/core": "npm:@gaganref/confect-core@10.2.0-gaganref.7",
-      "@confect/server": "npm:@gaganref/confect-server@10.2.0-gaganref.7",
-      "@confect/test": "npm:@gaganref/confect-test@10.2.0-gaganref.7",
-      "@confect/cli": "npm:@gaganref/confect-cli@10.2.0-gaganref.7",
+      "@confect/core": "npm:@gaganref/confect-core@10.2.0-fork.7",
+      "@confect/server": "npm:@gaganref/confect-server@10.2.0-fork.7",
+      "@confect/test": "npm:@gaganref/confect-test@10.2.0-fork.7",
+      "@confect/cli": "npm:@gaganref/confect-cli@10.2.0-fork.7",
       convex: "1.46.0",
       "convex-test": "0.0.60",
       effect: "4.0.4",
@@ -38,7 +38,7 @@ test("pins all four public aliases to the requested fork build", () => {
 
 test("uses packed fork packages without fetching their internal aliases", () => {
   const manifest = Result.getOrThrow(
-    consumerManifest("10.2.0-gaganref.0", "/tmp/build/tarballs"),
+    consumerManifest("10.2.0-fork.0", "/tmp/build/tarballs"),
   );
   expect(manifest.dependencies).toMatchObject({
     "@confect/core": "file:/tmp/build/tarballs/core.tgz",
@@ -49,9 +49,9 @@ test("uses packed fork packages without fetching their internal aliases", () => 
 });
 
 test("prints the executable strict add command for the generated aliases", () => {
-  const manifest = Result.getOrThrow(consumerManifest("10.2.0-gaganref.7"));
+  const manifest = Result.getOrThrow(consumerManifest("10.2.0-fork.7"));
   expect(installCommand(manifest)).toBe(
-    "pnpm add --strict-peer-dependencies '@confect/core@npm:@gaganref/confect-core@10.2.0-gaganref.7' '@confect/server@npm:@gaganref/confect-server@10.2.0-gaganref.7' '@confect/test@npm:@gaganref/confect-test@10.2.0-gaganref.7' '@confect/cli@npm:@gaganref/confect-cli@10.2.0-gaganref.7'",
+    "pnpm add --strict-peer-dependencies '@confect/core@npm:@gaganref/confect-core@10.2.0-fork.7' '@confect/server@npm:@gaganref/confect-server@10.2.0-fork.7' '@confect/test@npm:@gaganref/confect-test@10.2.0-fork.7' '@confect/cli@npm:@gaganref/confect-cli@10.2.0-fork.7'",
   );
 });
 
@@ -66,11 +66,11 @@ test("writes and refreshes a consumer with aligned peers", () =>
       );
       yield* writeConsumer(
         directory,
-        Result.getOrThrow(consumerManifest("10.2.0-gaganref.0")),
+        Result.getOrThrow(consumerManifest("10.2.0-fork.0")),
       );
       yield* writeConsumer(
         directory,
-        Result.getOrThrow(consumerManifest("10.2.0-gaganref.0")),
+        Result.getOrThrow(consumerManifest("10.2.0-fork.0")),
       );
       const manifest = yield* fs.readFileString(
         path.join(directory, "package.json"),
@@ -81,19 +81,19 @@ test("writes and refreshes a consumer with aligned peers", () =>
         ),
       ).toMatchObject({
         dependencies: {
-          "@confect/core": "npm:@gaganref/confect-core@10.2.0-gaganref.0",
-          "@confect/server": "npm:@gaganref/confect-server@10.2.0-gaganref.0",
-          "@confect/test": "npm:@gaganref/confect-test@10.2.0-gaganref.0",
-          "@confect/cli": "npm:@gaganref/confect-cli@10.2.0-gaganref.0",
+          "@confect/core": "npm:@gaganref/confect-core@10.2.0-fork.0",
+          "@confect/server": "npm:@gaganref/confect-server@10.2.0-fork.0",
+          "@confect/test": "npm:@gaganref/confect-test@10.2.0-fork.0",
+          "@confect/cli": "npm:@gaganref/confect-cli@10.2.0-fork.0",
         },
       });
       expect(
         yield* fs.readFileString(path.join(directory, "pnpm-workspace.yaml")),
       ).toBe(`minimumReleaseAgeExclude:
-  - "@gaganref/confect-core@10.2.0-gaganref.0"
-  - "@gaganref/confect-server@10.2.0-gaganref.0"
-  - "@gaganref/confect-test@10.2.0-gaganref.0"
-  - "@gaganref/confect-cli@10.2.0-gaganref.0"
+  - "@gaganref/confect-core@10.2.0-fork.0"
+  - "@gaganref/confect-server@10.2.0-fork.0"
+  - "@gaganref/confect-test@10.2.0-fork.0"
+  - "@gaganref/confect-cli@10.2.0-fork.0"
 
 overrides:
   effect: 4.0.4
@@ -129,7 +129,7 @@ test("writes a declared host, mounted component and callback consumer", () =>
       );
       yield* writeConsumer(
         directory,
-        Result.getOrThrow(consumerManifest("10.2.0-gaganref.0")),
+        Result.getOrThrow(consumerManifest("10.2.0-fork.0")),
       );
       for (const file of [
         "confect/env.ts",
@@ -167,9 +167,9 @@ test.each([
   "",
   "latest",
   "10.2.0",
-  "10.2.0-gaganref.01",
-  "1.0.0-gaganref.1\n",
-  "1.0.0-gaganref.1\r",
+  "10.2.0-fork.01",
+  "1.0.0-fork.1\n",
+  "1.0.0-fork.1\r",
   "'; exit 0",
 ])("rejects a non-build version %j before writing a consumer", (version) => {
   const result = consumerManifest(version);
