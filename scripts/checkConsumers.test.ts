@@ -36,9 +36,9 @@ test("runs an external node_modules package manager without restoring inherited 
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const root = yield* fs.makeTempDirectoryScoped({
-        prefix: "confect-manager-test-",
-      });
+      const root = yield* fs
+        .makeTempDirectoryScoped({ prefix: "confect-manager-test-" })
+        .pipe(Effect.flatMap(fs.realPath));
       const repository = path.join(root, "repository");
       const toolBin = path.join(root, "setup-pnpm/node_modules/.bin");
       const workspaceBin = path.join(repository, "node_modules/.bin");
@@ -92,9 +92,9 @@ test("walks actual package resolution paths, including a nested peer mismatch", 
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const directory = yield* fs.makeTempDirectoryScoped({
-        prefix: "confect-graph-test-",
-      });
+      const directory = yield* fs
+        .makeTempDirectoryScoped({ prefix: "confect-graph-test-" })
+        .pipe(Effect.flatMap(fs.realPath));
       for (const [location, manifest] of [
         [
           "",
