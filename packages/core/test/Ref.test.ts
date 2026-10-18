@@ -1,3 +1,5 @@
+import { Component, GroupSpec, IdScope } from "@confect/core";
+import { componentsGeneric } from "convex/server";
 import type {
   FunctionReference,
   FunctionVisibility,
@@ -7,6 +9,7 @@ import type {
   RegisteredQuery,
 } from "convex/server";
 import { ConvexError } from "convex/values";
+import { makeFunctionReference } from "convex/server";
 import { it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as MutableRef from "effect/MutableRef";
@@ -15,12 +18,126 @@ import * as Schema from "effect/Schema";
 import { describe, expect, expectTypeOf, test } from "@effect/vitest";
 import { vi } from "vitest";
 
+import * as FunctionProvenance from "@confect/core/FunctionProvenance";
 import * as FunctionSpec from "@confect/core/FunctionSpec";
 import * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
 import * as PaginationOptions from "@confect/core/PaginationOptions";
 import * as PaginationResult from "@confect/core/PaginationResult";
 import * as Ref from "@confect/core/Ref";
 import type * as RuntimeAndFunctionType from "@confect/core/RuntimeAndFunctionType";
+import * as TestSpec from "./TestSpec";
+
+describe("Callable", () => {
+  test("accepts own public and host internal refs with the same call contract", () => {
+    const functionSpec = FunctionSpec.publicQuery({
+      name: "greet",
+      args: () => ({ name: Schema.String }),
+      returns: () => Schema.String,
+      error: () => Schema.Struct({ message: Schema.String }),
+    });
+    const own = Ref.make("greetings", functionSpec);
+    const spec = TestSpec.fromGroups({
+      greetings: GroupSpec.make().addFunction(functionSpec),
+    });
+    const native = componentsGeneric() as unknown as {
+      first: Component.Api<typeof spec, "first">;
+    };
+    const bound = Component.bind(
+      Component.make(spec, IdScope.component("greetings"), []),
+      native.first,
+    );
+    const use = (ref: Ref.Callable<typeof own>) =>
+      Ref.encodeArgsSync(ref, { name: "Ada" });
+    expect(use(own)).toEqual({ name: "Ada" });
+    expect(use(bound.greetings.greet)).toEqual({ name: "Ada" });
+    expectTypeOf<Ref.Args<Ref.Callable<typeof own>>>().toEqualTypeOf<{
+      readonly name: string;
+    }>();
+    expectTypeOf<
+      Ref.Returns<Ref.Callable<typeof own>>
+    >().toEqualTypeOf<string>();
+    expectTypeOf<Ref.Error<Ref.Callable<typeof own>>>().toEqualTypeOf<{
+      readonly message: string;
+    }>();
+    expectTypeOf<
+      Ref.GetFunctionVisibility<Ref.Callable<typeof own>>
+    >().toEqualTypeOf<"public" | "internal">();
+    const different = Ref.make(
+      "greetings",
+      FunctionSpec.publicQuery({
+        name: "count",
+        returns: () => Schema.Int,
+      }),
+    );
+    // @ts-expect-error A different function contract is incompatible.
+    const incompatible: Ref.Callable<typeof own> = different;
+    const requiresVolume = Ref.make(
+      "greetings",
+      FunctionSpec.publicQuery({
+        name: "loud",
+        args: () => ({ name: Schema.String, volume: Schema.Int }),
+        returns: () => Schema.String,
+        error: () => Schema.Struct({ message: Schema.String }),
+      }),
+    );
+    // @ts-expect-error A shared handler cannot supply an extra required argument.
+    const missingArgument: Ref.Callable<typeof own> = requiresVolume;
+    void missingArgument;
+    // @ts-expect-error A callable ref does not promise public visibility.
+    const publicOnly: Ref.AnyPublic = bound.greetings.greet as Ref.Callable<
+      typeof own
+    >;
+    void [incompatible, publicOnly];
+  });
+});
+
+describe("isRef", () => {
+  const confect = Ref.make(
+    "notes",
+    FunctionSpec.publicQuery({ name: "list", returns: () => Schema.String }),
+  );
+  const convex = Ref.fromFunctionReference(
+    makeFunctionReference<"query">("notes:list"),
+  );
+  const convexFromSpec = Ref.make(
+    "notes",
+    FunctionSpec.convexPublicQuery<RegisteredQuery<"public", {}, string>>()(
+      "list",
+    ),
+  );
+
+  test("recognizes both provenances and narrows unknown values", () => {
+    expect(Ref.isRef(confect)).toBe(true);
+    expect(Ref.isRef(convex)).toBe(true);
+    expect(Ref.isRef(convexFromSpec)).toBe(true);
+    expect(confect[Ref.TypeId]).toBe(Ref.TypeId);
+    expect(convex[Ref.TypeId]).toBe(Ref.TypeId);
+    expect(convexFromSpec[Ref.TypeId]).toBe(Ref.TypeId);
+    const value: unknown = confect;
+    if (Ref.isRef(value)) {
+      expectTypeOf(value).toEqualTypeOf<Ref.Any>();
+      expect(value.convexFunctionName).toBe("notes:list");
+    }
+  });
+
+  test("rejects non-references and namespaces with reference-like keys", () => {
+    for (const value of [
+      null,
+      undefined,
+      "notes:list",
+      {},
+      { convexFunctionName: "notes:list" },
+      { _tag: "Confect", convexFunctionName: "notes:list" },
+      { _tag: "Convex", convexFunctionName: "notes:list" },
+      { _tag: "Unknown", convexFunctionName: "notes:list" },
+      { _tag: "Convex", convexFunctionName: 1 },
+      { _tag: "Confect" },
+      { convexFunctionName: confect, _tag: convex },
+    ]) {
+      expect(Ref.isRef(value)).toBe(false);
+    }
+  });
+});
 
 describe("runWithCodec", () => {
   class NotFound extends Schema.TaggedError<NotFound>()("NotFound", {
@@ -203,6 +320,69 @@ describe("FunctionReference", () => {
     >();
   });
 
+  test("keeps the declared returns and error codecs", () => {
+    class NotFound extends Schema.TaggedError<NotFound>()("NotFound", {
+      id: Schema.String,
+    }) {}
+    const _spec = FunctionSpec.internalMutation({
+      name: "count",
+      returns: () => Schema.FiniteFromString,
+      error: () => NotFound,
+    });
+    type Ref_ = Ref.FromFunctionSpec<typeof _spec>;
+    expectTypeOf<Ref.ReturnsSchema<Ref_>>().toEqualTypeOf<
+      typeof Schema.FiniteFromString
+    >();
+    expectTypeOf<Ref.ReturnsSchema<Ref_>["Encoded"]>().toEqualTypeOf<string>();
+    expectTypeOf<Ref.ErrorSchema<Ref_>>().toEqualTypeOf<typeof NotFound>();
+    expectTypeOf<Ref.Returns<Ref_>>().toEqualTypeOf<number>();
+    expectTypeOf<Ref.Error<Ref_>>().toEqualTypeOf<NotFound>();
+  });
+
+  test("a function without an error schema has no error codec", () => {
+    const _spec = FunctionSpec.internalMutation({
+      name: "reset",
+      returns: () => Schema.Null,
+    });
+    type Ref_ = Ref.FromFunctionSpec<typeof _spec>;
+    expectTypeOf<Ref.ErrorSchema<Ref_>>().toBeNever();
+  });
+
+  test("ConfectRef keeps its codecs, so encodings tell refs apart", () => {
+    type StringOnWire = Ref.ConfectRef<
+      RuntimeAndFunctionType.ConvexMutation,
+      "internal",
+      {},
+      typeof Schema.FiniteFromString
+    >;
+    type NumberOnWire = Ref.ConfectRef<
+      RuntimeAndFunctionType.ConvexMutation,
+      "internal",
+      {},
+      typeof Schema.Finite
+    >;
+    expectTypeOf<
+      Ref.ReturnsSchema<StringOnWire>["Encoded"]
+    >().toEqualTypeOf<string>();
+    expectTypeOf<Ref.Returns<NumberOnWire>>().toEqualTypeOf<
+      Ref.Returns<StringOnWire>
+    >();
+    expectTypeOf<NumberOnWire>().not.toExtend<StringOnWire>();
+    expectTypeOf<NumberOnWire>().toExtend<Ref.AnyMutation>();
+  });
+
+  test("Ref built from value types erases its codecs", () => {
+    type Ref_ = Ref.Ref<
+      RuntimeAndFunctionType.ConvexQuery,
+      "public",
+      {},
+      number
+    >;
+    expectTypeOf<Ref.ReturnsSchema<Ref_>>().toEqualTypeOf<
+      Schema.Codec<any, any>
+    >();
+  });
+
   test("empty args", () => {
     const _spec = FunctionSpec.internalMutation({
       name: "reset",
@@ -317,6 +497,45 @@ describe("OptionalArgs", () => {
       [args: { readonly id: string }]
     >();
   });
+});
+
+describe("fromProvenance", () => {
+  it.effect(
+    "calls the given reference through the provenance's codecs without building them first",
+    () =>
+      Effect.gen(function* () {
+        const args = vi.fn(() => ({ count: Schema.FiniteFromString }));
+        const returns = vi.fn(() => Schema.FiniteFromString);
+        const native = makeFunctionReference<"mutation">("counter:add");
+        const ref = Ref.fromProvenance(
+          "counter:add",
+          FunctionProvenance.Confect(args, returns),
+          [],
+          native,
+        ) as Ref.ConfectRef<
+          RuntimeAndFunctionType.ConvexMutation,
+          "internal",
+          { readonly count: typeof Schema.FiniteFromString },
+          typeof Schema.FiniteFromString
+        >;
+        expect([args.mock.calls.length, returns.mock.calls.length]).toEqual([
+          0, 0,
+        ]);
+
+        const seen = MutableRef.make<ReadonlyArray<unknown>>([]);
+        const result = yield* Ref.runWithCodec(
+          ref,
+          { count: 2 },
+          (functionReference, encodedArgs) => {
+            MutableRef.set(seen, [functionReference, encodedArgs]);
+            return Promise.resolve("3");
+          },
+        );
+        expect(result).toBe(3);
+        expect(MutableRef.get(seen)).toEqual([native, { count: "2" }]);
+        expect(Ref.getConvexFunctionName(ref)).toBe("counter:add");
+      }),
+  );
 });
 
 describe("getFunctionReference", () => {
