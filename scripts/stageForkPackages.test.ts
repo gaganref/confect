@@ -50,7 +50,6 @@ test.each(directories)(
           publishConfig: {
             registry: "https://registry.npmjs.org",
             access: "public",
-            provenance: true,
           },
           exports: input.exports,
         });
@@ -108,10 +107,10 @@ test("rewrites all internal dependency maps and retains external ranges and meta
     publishConfig: {
       access: "public",
       registry: "https://registry.npmjs.org",
-      provenance: true,
       tag: "build",
     },
   });
+  expect(output.publishConfig).not.toHaveProperty("provenance");
 });
 
 test("starts at one and advances past the highest published build for this base", () => {

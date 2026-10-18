@@ -36,7 +36,7 @@ bun scripts/stageForkPackages.ts <dir> 1
 npm publish <tarball> --access public --tag latest
 ```
 
-Repeat the last command for each tarball in `<dir>/tarballs`. Use the interactive login and two-factor prompt, never a token.
+Repeat the last command for each tarball in `<dir>/tarballs`. Use the interactive login and two-factor prompt, never a token. The bootstrap publish from a terminal carries no provenance attestation; every build from build 2 onward is published by the workflow with `--provenance` and trusted publishing.
 
 Then add a trusted publisher to each of the eight packages with these settings:
 
