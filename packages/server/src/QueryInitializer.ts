@@ -1,3 +1,4 @@
+import type * as IdScope from "@confect/core/IdScope";
 import type {
   OrderedQuery as ConvexOrderedQuery,
   QueryInitializer as ConvexQueryInitializer,
@@ -28,6 +29,7 @@ import type {
   IndexFieldTypesForEq,
 } from "@confect/core/Types";
 import type * as DataModel from "./DataModel";
+import type * as DatabaseSchema from "./DatabaseSchema";
 import * as Document from "./Document";
 import * as OrderedQuery from "./OrderedQuery";
 import * as QueryStream from "./QueryStream";
@@ -50,10 +52,11 @@ export interface QueryInitializer<
   DataModel_ extends DataModel.AnyWithProps,
   TableName extends DataModel.TableNames<DataModel_>,
   Doc = DataModel.DocumentWithName<DataModel_, TableName>,
+  TargetKind extends DatabaseSchema.Target["kind"] = "app",
 > {
   readonly get: {
     (
-      id: GenericId<TableName>,
+      id: DataModel.Id<DataModel_, TableName>,
     ): Effect.Effect<Doc, Document.DocumentDecodeError | GetByIdFailure>;
     <
       IndexName extends keyof Indexes<
@@ -82,7 +85,11 @@ export interface QueryInitializer<
         >,
       ) => IndexRange,
       order?: OrderDirection,
-    ): OrderedQuery.OrderedQuery<TableInfoFor<DataModel_, TableName>, Doc>;
+    ): OrderedQuery.OrderedQuery<
+      TableInfoFor<DataModel_, TableName>,
+      Doc,
+      TargetKind
+    >;
     <
       IndexName extends keyof Indexes<
         ConvexTableInfoFor<DataModel_, TableName>
@@ -90,7 +97,11 @@ export interface QueryInitializer<
     >(
       indexName: IndexName,
       order?: OrderDirection,
-    ): OrderedQuery.OrderedQuery<TableInfoFor<DataModel_, TableName>, Doc>;
+    ): OrderedQuery.OrderedQuery<
+      TableInfoFor<DataModel_, TableName>,
+      Doc,
+      TargetKind
+    >;
   };
   readonly search: <
     IndexName extends keyof SearchIndexes<
@@ -104,7 +115,11 @@ export interface QueryInitializer<
         NamedSearchIndex<ConvexTableInfoFor<DataModel_, TableName>, IndexName>
       >,
     ) => SearchFilter,
-  ) => OrderedQuery.OrderedQuery<TableInfoFor<DataModel_, TableName>, Doc>;
+  ) => OrderedQuery.OrderedQuery<
+    TableInfoFor<DataModel_, TableName>,
+    Doc,
+    TargetKind
+  >;
   /**
    * EXPERIMENTAL—stream-first querying (see `notes/stream-based-querying.md`).
    *
@@ -210,7 +225,16 @@ export interface QueryInitializer<
   };
 }
 
-export const make = <
+export function make<
+  Tables extends Table.AnyWithProps,
+  TableName extends Table.Name<Tables>,
+>(
+  convexDatabaseReader: BaseDatabaseReader<
+    DataModel.ToConvex<DataModel.FromTables<Tables>>
+  >,
+  table: Table.WithName<Tables, TableName> & { readonly scope: IdScope.App },
+): QueryInitializer<DataModel.FromTables<Tables>, TableName>;
+export function make<
   Tables extends Table.AnyWithProps,
   TableName extends Table.Name<Tables>,
 >(
@@ -218,11 +242,37 @@ export const make = <
     DataModel.ToConvex<DataModel.FromTables<Tables>>
   >,
   table: Table.WithName<Tables, TableName>,
-): QueryInitializer<DataModel.FromTables<Tables>, TableName> => {
+): QueryInitializer<
+  DataModel.FromTables<Tables>,
+  TableName,
+  DataModel.DocumentWithName<DataModel.FromTables<Tables>, TableName>,
+  Table.Scope<Table.WithName<Tables, TableName>> extends IdScope.App
+    ? "app"
+    : "component"
+>;
+export function make<
+  Tables extends Table.AnyWithProps,
+  TableName extends Table.Name<Tables>,
+>(
+  convexDatabaseReader: BaseDatabaseReader<
+    DataModel.ToConvex<DataModel.FromTables<Tables>>
+  >,
+  table: Table.WithName<Tables, TableName>,
+): QueryInitializer<
+  DataModel.FromTables<Tables>,
+  TableName,
+  DataModel.DocumentWithName<DataModel.FromTables<Tables>, TableName>,
+  DatabaseSchema.Target["kind"]
+> {
   const tableName = table.tableName;
   type DataModel_ = DataModel.FromTables<Tables>;
   type ConvexDataModel_ = DataModel.ToConvex<DataModel_>;
-  type ThisQueryInitializer = QueryInitializer<DataModel_, TableName>;
+  type ThisQueryInitializer = QueryInitializer<
+    DataModel_,
+    TableName,
+    DataModel.DocumentWithName<DataModel_, TableName>,
+    DatabaseSchema.Target["kind"]
+  >;
   type QueryInitializerFunction<
     FunctionName extends keyof ThisQueryInitializer,
   > = ThisQueryInitializer[FunctionName];
@@ -431,7 +481,7 @@ export const make = <
     search,
     stream,
   };
-};
+}
 
 export const getById =
   <Tables extends Table.AnyWithProps, TableName extends Table.Name<Tables>>(

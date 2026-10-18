@@ -21,9 +21,16 @@ export default defineConfig({
     root: import.meta.dirname,
     name: "@confect/server (local-backend)",
     include: ["test/local-backend/**/*.test.ts"],
-    exclude: [...configDefaults.exclude, "**/*.spec.ts"],
+    exclude: [
+      ...configDefaults.exclude,
+      "**/*.spec.ts",
+      "test/local-backend/.consumer/**",
+    ],
     fileParallelism: false,
-    globalSetup: ["./test/local-backend/setup.ts"],
+    globalSetup: [
+      "./test/local-backend/setup.ts",
+      "./test/local-backend/consumerSetup.ts",
+    ],
     testTimeout: 60_000,
     hookTimeout: 120_000,
   },

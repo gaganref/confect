@@ -1,4 +1,5 @@
 import type { FunctionSpec, RuntimeAndFunctionType } from "@confect/core";
+import * as IdScope from "@confect/core/IdScope";
 import type * as FunctionProvenance from "@confect/core/FunctionProvenance";
 import * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
 import {
@@ -10,6 +11,7 @@ import {
   type FunctionVisibility,
   type GenericActionCtx,
   type GenericDataModel,
+  type StorageReader as ConvexStorageReader,
   type RegisteredAction,
   type RegisteredMutation,
   type RegisteredQuery,
@@ -40,6 +42,7 @@ import * as StorageActionWriter from "./StorageActionWriter";
 import type * as StorageReader from "./StorageReader";
 import * as StorageWriter from "./StorageWriter";
 import * as VectorSearch from "./VectorSearch";
+import type * as Handler from "./Handler";
 
 export type Any =
   | RegisteredQuery<FunctionVisibility, DefaultFunctionArgs, any>
@@ -270,6 +273,7 @@ export const actionFunctionBase = <
   handler,
   resolvedMiddlewares = [],
   createLayer,
+  scope = IdScope.app,
 }: {
   name: string;
   functionVisibility: FunctionVisibility;
@@ -281,9 +285,10 @@ export const actionFunctionBase = <
   createLayer: (
     ctx: GenericActionCtx<DataModel.ToConvex<DataModel.FromSchema<Schema>>>,
   ) => Layer.Layer<R>;
+  scope?: IdScope.IdScope;
 }) => ({
-  args: compileArgsSchema(args),
-  returns: compileReturnsSchema(returns),
+  args: compileArgsSchema(args, scope),
+  returns: compileReturnsSchema(returns, scope),
   handler: (
     ctx: GenericActionCtx<DataModel.ToConvex<DataModel.FromSchema<Schema>>>,
     actualArgs: ConvexArgs,
@@ -315,22 +320,7 @@ export const actionFunctionBase = <
 
 export type ActionServices<
   DatabaseSchema_ extends DatabaseSchema.AnyWithProps,
-> =
-  | Scheduler.Scheduler
-  | Auth.Auth
-  | ExecutionMetadata.ExecutionMetadata
-  | RequestMetadata.RequestMetadata
-  | Storage.Storage
-  | StorageReader.StorageReader
-  | StorageWriter.StorageWriter
-  | StorageActionWriter.StorageActionWriter
-  | QueryRunner.QueryRunner
-  | MutationRunner.MutationRunner
-  | ActionRunner.ActionRunner
-  | VectorSearch.VectorSearch<DataModel.FromSchema<DatabaseSchema_>>
-  | ActionCtx.ActionCtx<
-      DataModel.ToConvex<DataModel.FromSchema<DatabaseSchema_>>
-    >;
+> = Handler.ActionServices<DatabaseSchema_>;
 
 /**
  * The ctx-backed action services that don't depend on a Confect database
@@ -363,6 +353,39 @@ export const actionLayer = <
   >,
 ) =>
   Layer.mergeAll(
-    baseActionLayer(ctx),
+    Scheduler.layer<DatabaseSchema.Scope<DatabaseSchema_>>(
+      ctx.scheduler,
+      databaseSchema.target.scope,
+    ),
+    Auth.layerForTarget<DatabaseSchema_["target"]>(
+      databaseSchema.target,
+      ctx.auth,
+    ),
+    ExecutionMetadata.layer(ctx.meta),
+    RequestMetadata.layer(ctx.meta),
+    storageLayer<DatabaseSchema.Scope<DatabaseSchema_>>(ctx.storage),
+    StorageWriter.StorageWriter.layer<DatabaseSchema.Scope<DatabaseSchema_>>(
+      ctx.storage,
+      databaseSchema.target.scope,
+    ),
+    StorageActionWriter.StorageActionWriter.layer<
+      DatabaseSchema.Scope<DatabaseSchema_>
+    >(ctx.storage, databaseSchema.target.scope),
+    QueryRunner.layer(ctx.runQuery.bind(ctx)),
+    MutationRunner.layer(ctx.runMutation.bind(ctx)),
+    ActionRunner.layer(ctx.runAction.bind(ctx)),
+    ActionCtx.layer<
+      DataModel.ToConvex<DataModel.FromSchema<DatabaseSchema_>>,
+      DatabaseSchema.Scope<DatabaseSchema_>
+    >(ctx, databaseSchema.target.scope),
     VectorSearch.layer(ctx.vectorSearch.bind(ctx)),
   );
+
+// Scoped readers share the same runtime service and ID strings. Reuse the
+// reader supplied by Storage so both APIs keep the same reader instance.
+export const storageLayer = <Scope extends IdScope.IdScope>(
+  reader: ConvexStorageReader,
+): Layer.Layer<Storage.Storage | StorageReader.ForScope<Scope>> =>
+  Storage.layer(reader) as Layer.Layer<
+    Storage.Storage | StorageReader.ForScope<Scope>
+  >;

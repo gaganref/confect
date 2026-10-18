@@ -27,6 +27,22 @@ import type { GenericId } from "convex/values";
  */
 
 export type DataModel = {
+  callbackEvents: {
+    document: {
+      run: string;
+      status: "queued" | "sent" | "delivered" | "bounced";
+      _id: Id<"callbackEvents">;
+      _creationTime: number;
+    };
+    fieldPaths: "_creationTime" | "_id" | "run" | "status";
+    indexes: {
+      by_id: ["_id"];
+      by_creation_time: ["_creationTime"];
+      by_run: ["run", "_creationTime"];
+    };
+    searchIndexes: {};
+    vectorIndexes: {};
+  };
   transactionNotes: {
     document: {
       caseId: string;

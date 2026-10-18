@@ -1226,10 +1226,13 @@ describe("QueryStream", () => {
 
           const reader = yield* DatabaseReader;
           const notes = reader.table("notes").stream("by_text");
-          // The first element's effect finishes last.
+          // The first element's effect finishes last. It yields to the
+          // scheduler rather than sleeping: queries and mutations cannot
+          // call setTimeout.
           const slowForA = (text: string) =>
-            Effect.succeed(text.toUpperCase()).pipe(
-              Effect.delay(text === "a" ? "30 millis" : "1 millis"),
+            Effect.yieldNow.pipe(
+              Effect.repeat({ times: text === "a" ? 20 : 0 }),
+              Effect.as(text.toUpperCase()),
             );
 
           const shouted = notes.pipe(
