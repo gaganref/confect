@@ -1,4 +1,4 @@
-import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/storage";
+import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/storage.js";
 
 export const deleteBlob = registeredFunctions.deleteBlob;
 export const generateUploadUrl = registeredFunctions.generateUploadUrl;

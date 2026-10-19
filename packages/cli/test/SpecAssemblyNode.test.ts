@@ -16,7 +16,7 @@ const leaf = (
   pathSegments,
   groupPathDot: pathSegments.join("."),
   exportName: pathSegments[pathSegments.length - 1]!,
-  specImportPath: `../${relativePath.slice(0, -".ts".length)}`,
+  specImportPath: `../${relativePath.slice(0, -".ts".length)}.js`,
 });
 
 describe("SpecAssemblyNode", () => {
@@ -29,12 +29,12 @@ describe("SpecAssemblyNode", () => {
       ]);
       const contents = yield* render(nodes);
 
-      expect(contents).toContain('import env from "../env.spec";');
+      expect(contents).toContain('import env from "../env.spec.js";');
       expect(contents).toContain(
-        'import notesAndRandom_notes from "../notesAndRandom/notes.spec";',
+        'import notesAndRandom_notes from "../notesAndRandom/notes.spec.js";',
       );
       expect(contents).toContain(
-        'import notesAndRandom_random from "../notesAndRandom/random.spec";',
+        'import notesAndRandom_random from "../notesAndRandom/random.spec.js";',
       );
       expect(contents).toContain(
         `["notesAndRandom"]: GroupSpec.addGroupsAt(GroupSpec.make(), {
@@ -64,9 +64,9 @@ describe("SpecAssemblyNode", () => {
         ]);
         const contents = yield* render(nodes);
 
-        expect(contents).toContain('import notes from "../notes.spec";');
+        expect(contents).toContain('import notes from "../notes.spec.js";');
         expect(contents).toContain(
-          'import notes_archived from "../notes/archived.spec";',
+          'import notes_archived from "../notes/archived.spec.js";',
         );
         expect(contents).toContain(
           `["notes"]: GroupSpec.addGroupsAt(notes, {
@@ -182,19 +182,19 @@ describe("SpecAssemblyNode", () => {
         const contents = yield* render(nodes);
 
         expect(contents).toContain(
-          'import scripts_operational_inviteUser_mutations from "../scripts/operational/inviteUser/mutations.spec";',
+          'import scripts_operational_inviteUser_mutations from "../scripts/operational/inviteUser/mutations.spec.js";',
         );
         expect(contents).toContain(
-          'import scripts_operational_inviteUser_queries from "../scripts/operational/inviteUser/queries.spec";',
+          'import scripts_operational_inviteUser_queries from "../scripts/operational/inviteUser/queries.spec.js";',
         );
         expect(contents).toContain(
-          'import scripts_operational_seed_mutations from "../scripts/operational/seed/mutations.spec";',
+          'import scripts_operational_seed_mutations from "../scripts/operational/seed/mutations.spec.js";',
         );
         expect(contents).toContain(
-          'import scripts_operational_seedTestUser_mutations from "../scripts/operational/seedTestUser/mutations.spec";',
+          'import scripts_operational_seedTestUser_mutations from "../scripts/operational/seedTestUser/mutations.spec.js";',
         );
         expect(contents).toContain(
-          'import scripts_operational_seedTestUser_queries from "../scripts/operational/seedTestUser/queries.spec";',
+          'import scripts_operational_seedTestUser_queries from "../scripts/operational/seedTestUser/queries.spec.js";',
         );
 
         const importLines = contents
@@ -304,12 +304,12 @@ for (const { name, pathLayer, sep } of [
         const contents = yield* render(nodes);
 
         expect(contents).toContain(
-          'import notesAndRandom_notes from "../notesAndRandom/notes.spec";',
+          'import notesAndRandom_notes from "../notesAndRandom/notes.spec.js";',
         );
         expect(contents).toContain(
-          'import scripts_operational_seed_mutations from "../scripts/operational/seed/mutations.spec";',
+          'import scripts_operational_seed_mutations from "../scripts/operational/seed/mutations.spec.js";',
         );
-        expect(contents).toContain('import env from "../env.spec";');
+        expect(contents).toContain('import env from "../env.spec.js";');
         expect(contents).not.toContain("\\");
       }),
     );

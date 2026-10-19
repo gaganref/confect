@@ -2,7 +2,7 @@
 
 exports[`declaration emit > refs.ts emits a declaration without TS7056 1`] = `
 "import { Refs } from "@confect/core";
-import spec from "./spec";
+import spec from "./spec.js";
 declare const refs: Refs.FromSpec<typeof spec>;
 export default refs;
 "
@@ -10,10 +10,10 @@ export default refs;
 
 exports[`declaration emit > schema.ts emits a declaration without TS7056 1`] = `
 "import { DatabaseSchema as $DatabaseSchema } from "@confect/server";
-import events from "./tables/events";
-import notes from "./tables/notes";
-import tags from "./tables/tags";
-import users from "./tables/users";
+import events from "./tables/events.js";
+import notes from "./tables/notes.js";
+import tags from "./tables/tags.js";
+import users from "./tables/users.js";
 declare const databaseSchema: $DatabaseSchema.DatabaseSchema<{
     readonly events: typeof events;
     readonly notes: typeof notes;
@@ -26,8 +26,8 @@ export default databaseSchema;
 
 exports[`declaration emit > services.d.ts prints public types by name 1`] = `
 "import { ActionCtx as ActionCtx_, Auth as Auth_, type DataModel, DatabaseReader as DatabaseReader_, DatabaseWriter as DatabaseWriter_, ExecutionMetadata as ExecutionMetadata_, MutationCtx as MutationCtx_, MutationRunner as MutationRunner_, MutationTransactionContext as MutationTransactionContext_, QueryCtx as QueryCtx_, QueryRunner as QueryRunner_, QueryTransactionContext as QueryTransactionContext_, RequestMetadata as RequestMetadata_, Storage as Storage_, StorageActionWriter as StorageActionWriter_, StorageReader as StorageReader_, StorageWriter as StorageWriter_, TransactionMetadata as TransactionMetadata_, VectorSearch as VectorSearch_ } from "@confect/server";
-import type schemaDefinition from "./schema";
-import type { Docs } from "./docs";
+import type schemaDefinition from "./schema.js";
+import type { Docs } from "./docs.js";
 export declare const Auth: typeof Auth_.Auth;
 export type Auth = typeof Auth.Identifier;
 export declare const ExecutionMetadata: typeof ExecutionMetadata_.ExecutionMetadata;
@@ -117,20 +117,20 @@ export type ActionCtx = typeof ActionCtx.Identifier;
 
 exports[`declaration emit > spec.ts emits a declaration without TS7056 1`] = `
 "import { GroupSpec, Spec } from "@confect/core";
-import databaseReader from "../databaseReader.spec";
-import groups_aliasImporter from "../groups/aliasImporter.spec";
-import groups_cjsImporter from "../groups/cjsImporter.spec";
-import groups_middleware from "../groups/middleware.spec";
-import groups_middlewareHelpers from "../groups/middlewareHelpers.spec";
-import groups_middlewareOptions from "../groups/middlewareOptions.spec";
-import groups_middlewareOrder from "../groups/middlewareOrder.spec";
-import groups_notes from "../groups/notes.spec";
-import groups_random from "../groups/random.spec";
-import groups_random_stats from "../groups/random/stats.spec";
-import groups_runners from "../groups/runners.spec";
-import groups_scheduling from "../groups/scheduling.spec";
-import groups_typedErrors from "../groups/typedErrors.spec";
-import typedErrorsNode from "../typedErrorsNode.spec";
+import databaseReader from "../databaseReader.spec.js";
+import groups_aliasImporter from "../groups/aliasImporter.spec.js";
+import groups_cjsImporter from "../groups/cjsImporter.spec.js";
+import groups_middleware from "../groups/middleware.spec.js";
+import groups_middlewareHelpers from "../groups/middlewareHelpers.spec.js";
+import groups_middlewareOptions from "../groups/middlewareOptions.spec.js";
+import groups_middlewareOrder from "../groups/middlewareOrder.spec.js";
+import groups_notes from "../groups/notes.spec.js";
+import groups_random from "../groups/random.spec.js";
+import groups_random_stats from "../groups/random/stats.spec.js";
+import groups_runners from "../groups/runners.spec.js";
+import groups_scheduling from "../groups/scheduling.spec.js";
+import groups_typedErrors from "../groups/typedErrors.spec.js";
+import typedErrorsNode from "../typedErrorsNode.spec.js";
 declare const spec: Spec.Spec<{
     readonly databaseReader: GroupSpec.NamedAt<typeof databaseReader, "databaseReader">;
     readonly groups: GroupSpec.NamedAt<GroupSpec.GroupSpec<"Convex", "groups", never, GroupSpec.NamedAt<typeof groups_aliasImporter, "aliasImporter"> | GroupSpec.NamedAt<typeof groups_cjsImporter, "cjsImporter"> | GroupSpec.NamedAt<typeof groups_middleware, "middleware"> | GroupSpec.NamedAt<typeof groups_middlewareHelpers, "middlewareHelpers"> | GroupSpec.NamedAt<typeof groups_middlewareOptions, "middlewareOptions"> | GroupSpec.NamedAt<typeof groups_middlewareOrder, "middlewareOrder"> | GroupSpec.NamedAt<typeof groups_notes, "notes"> | GroupSpec.NamedAt<GroupSpec.AddGroups<typeof groups_random, GroupSpec.NamedAt<typeof groups_random_stats, "stats">>, "random"> | GroupSpec.NamedAt<typeof groups_runners, "runners"> | GroupSpec.NamedAt<typeof groups_scheduling, "scheduling"> | GroupSpec.NamedAt<typeof groups_typedErrors, "typedErrors">>, "groups">;

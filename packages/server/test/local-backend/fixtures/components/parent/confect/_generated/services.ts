@@ -19,9 +19,9 @@ import {
   TransactionMetadata as TransactionMetadata_,
   VectorSearch as VectorSearch_,
 } from "@confect/server";
-import type schemaDefinition from "./schema";
-import type { Docs } from "./docs";
-import type { scope } from "./id";
+import type schemaDefinition from "./schema.js";
+import type { Docs } from "./docs.js";
+import type { scope } from "./id.js";
 
 
 export const ExecutionMetadata = ExecutionMetadata_.ExecutionMetadata;

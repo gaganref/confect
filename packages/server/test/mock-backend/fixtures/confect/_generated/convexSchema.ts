@@ -1,10 +1,10 @@
 import { defineSchema as $defineSchema } from "convex/server";
 import { Table as $Table } from "@confect/server";
 
-import events from "./tables/events";
-import notes from "./tables/notes";
-import tags from "./tables/tags";
-import users from "./tables/users";
+import events from "./tables/events.js";
+import notes from "./tables/notes.js";
+import tags from "./tables/tags.js";
+import users from "./tables/users.js";
 
 export default $defineSchema({
   events: $Table.tableDefinition(events),

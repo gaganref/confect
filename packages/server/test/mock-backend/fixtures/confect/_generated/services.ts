@@ -21,8 +21,8 @@ import {
   TransactionMetadata as TransactionMetadata_,
   VectorSearch as VectorSearch_,
 } from "@confect/server";
-import type schemaDefinition from "./schema";
-import type { Docs } from "./docs";
+import type schemaDefinition from "./schema.js";
+import type { Docs } from "./docs.js";
 
 export const Auth = Auth_.Auth;
 export type Auth = typeof Auth.Identifier;

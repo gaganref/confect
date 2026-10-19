@@ -1,4 +1,4 @@
-import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/cacheStubbed";
+import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/cacheStubbed.js";
 
 export const confectNoTime = registeredFunctions.confectNoTime;
 export const confectWithClock = registeredFunctions.confectWithClock;

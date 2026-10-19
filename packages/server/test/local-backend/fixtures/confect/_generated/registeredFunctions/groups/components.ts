@@ -1,10 +1,10 @@
 import { ConvexFunctionDefinitions, RegisteredConvexFunction, type RegisteredFunctions } from "@confect/server";
-import databaseSchema from "../../schema";
-import groupLayer from "../../../groups/components.impl";
+import databaseSchema from "../../schema.js";
+import groupLayer from "../../../groups/components.impl.js";
 
 const forward = <Ctx, Args, Returns>(handler: (ctx: Ctx, args: Args) => Promise<Returns>) => (ctx: Ctx, args: Args) => handler(ctx, args);
 
-const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../../../groups/components.spec")["default"]>(databaseSchema, groupLayer);
+const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../../../groups/components.spec.js")["default"]>(databaseSchema, groupLayer);
 
 export default {
 ["exercise"]: RegisteredConvexFunction.register({ ...definitions["exercise"], handler: forward(definitions["exercise"].handler) }),
@@ -22,4 +22,4 @@ export default {
 ["page"]: RegisteredConvexFunction.register({ ...definitions["page"], handler: forward(definitions["page"].handler) }),
 ["environment"]: RegisteredConvexFunction.register({ ...definitions["environment"], handler: forward(definitions["environment"].handler) }),
 ["ticks"]: RegisteredConvexFunction.register({ ...definitions["ticks"], handler: forward(definitions["ticks"].handler) }),
-} as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/components.spec")["default"]>;
+} as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/components.spec.js")["default"]>;

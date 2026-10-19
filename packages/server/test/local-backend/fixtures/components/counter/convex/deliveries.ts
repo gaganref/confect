@@ -1,4 +1,4 @@
-import registeredFunctions from "../confect/_generated/registeredFunctions/deliveries";
+import registeredFunctions from "../confect/_generated/registeredFunctions/deliveries.js";
 
 export const breach = registeredFunctions.breach;
 export const deliver = registeredFunctions.deliver;

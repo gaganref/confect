@@ -300,7 +300,7 @@ const renderImplMissingSpecImportError = (
   return singleLine(
     "Impl ",
     formatPath(error.implPath),
-    ` does not import its sibling spec; add \`import ${stem} from "./${stem}.spec"\` and pass it to FunctionImpl.make/GroupImpl.make.`,
+    ` does not import its sibling spec; add \`import ${stem} from "./${stem}.spec.js"\` and pass it to FunctionImpl.make/GroupImpl.make.`,
   );
 };
 

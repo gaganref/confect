@@ -1,8 +1,8 @@
 import { DatabaseSchema as $DatabaseSchema } from "@confect/server";
 
-import notes from "./tables/notes";
-import tags from "./tables/tags";
-import users from "./tables/users";
+import notes from "./tables/notes.js";
+import tags from "./tables/tags.js";
+import users from "./tables/users.js";
 
 const databaseSchema: $DatabaseSchema.DatabaseSchema<{
   readonly notes: typeof notes;

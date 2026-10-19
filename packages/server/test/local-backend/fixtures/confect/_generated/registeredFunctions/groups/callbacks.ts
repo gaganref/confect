@@ -1,10 +1,10 @@
 import { ConvexFunctionDefinitions, RegisteredConvexFunction, type RegisteredFunctions } from "@confect/server";
-import databaseSchema from "../../schema";
-import groupLayer from "../../../groups/callbacks.impl";
+import databaseSchema from "../../schema.js";
+import groupLayer from "../../../groups/callbacks.impl.js";
 
 const forward = <Ctx, Args, Returns>(handler: (ctx: Ctx, args: Args) => Promise<Returns>) => (ctx: Ctx, args: Args) => handler(ctx, args);
 
-const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../../../groups/callbacks.spec")["default"]>(databaseSchema, groupLayer);
+const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../../../groups/callbacks.spec.js")["default"]>(databaseSchema, groupLayer);
 
 export default {
 ["onEvent"]: RegisteredConvexFunction.register({ ...definitions["onEvent"], handler: forward(definitions["onEvent"].handler) }),
@@ -16,4 +16,4 @@ export default {
 ["createMismatched"]: RegisteredConvexFunction.register({ ...definitions["createMismatched"], handler: forward(definitions["createMismatched"].handler) }),
 ["get"]: RegisteredConvexFunction.register({ ...definitions["get"], handler: forward(definitions["get"].handler) }),
 ["events"]: RegisteredConvexFunction.register({ ...definitions["events"], handler: forward(definitions["events"].handler) }),
-} as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/callbacks.spec")["default"]>;
+} as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/callbacks.spec.js")["default"]>;

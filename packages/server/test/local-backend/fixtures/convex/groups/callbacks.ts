@@ -1,4 +1,4 @@
-import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/callbacks";
+import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/callbacks.js";
 
 export const breach = registeredFunctions.breach;
 export const createMismatched = registeredFunctions.createMismatched;

@@ -1,4 +1,4 @@
-import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/typedErrors";
+import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/typedErrors.js";
 
 export const deleteNoteOrFail = registeredFunctions.deleteNoteOrFail;
 export const failingAction = registeredFunctions.failingAction;

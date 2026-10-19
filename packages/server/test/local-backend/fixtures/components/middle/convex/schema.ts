@@ -1,1 +1,1 @@
-export { default } from "../confect/_generated/convexSchema";
+export { default } from "../confect/_generated/convexSchema.js";
