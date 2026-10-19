@@ -342,9 +342,10 @@ Upstream: fork only.
 
 ### Run checks on the fork branch
 
-Run package and example workflows on `main` so fork PRs receive
-the same checks as upstream. Disable upstream release and documentation deployment in this repository while
-retaining documentation checks.
+Run package, example, documentation, and staged-build checks on pull requests
+to any base branch so stacked changes receive the same checks as changes to
+`main`. Keep push checks on `main`. Disable upstream release and documentation
+deployment in this repository while retaining documentation checks.
 
 Changeset: none; CI triggers only.
 Upstream: fork only.
