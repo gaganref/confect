@@ -200,6 +200,18 @@ consumer host's HTTP route, callback and declared env on a real local backend.
 Changeset: `declared-test-backend.md`.
 Upstream: planned; no linked proposal verified.
 
+### Register packaged components through their test entry
+
+Register a component mounted from another package through its public
+`<package>/test` export and its `register(t, name)`, the Convex component
+convention. The generated test registry previously serialized the resolved
+physical path, so it imported files from the pnpm store or from another
+workspace package's private directory, and its committed output differed
+across lockfiles. Fail codegen when the package has no `/test` export.
+
+Changeset: `component-test-entry.md`.
+Upstream: fork only; upstream has no generated test registry.
+
 ### Keep fork housekeeping separate
 
 Move fork prose and rules from README.md and AGENTS.md into FORK.md so upstream

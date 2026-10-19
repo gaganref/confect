@@ -1023,9 +1023,11 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
     );
     for (const component of installed) {
       const name = prefix + component.name;
-      const resolved = path.isAbsolute(component.componentDefinitionPath)
-        ? component.componentDefinitionPath
-        : path.dirname(
+      // A bare definition belongs to another package. Its directory is read
+      // here but never written out; tests reach it through `<package>/test`.
+      const fromPackage = !path.isAbsolute(component.componentDefinitionPath);
+      const resolved = fromPackage
+        ? path.dirname(
             yield* ConvexConfig.resolveDefinition(
               `${component.componentDefinitionPath}/convex.config`,
               config,
@@ -1040,7 +1042,8 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
                   }),
               ),
             ),
-          );
+          )
+        : component.componentDefinitionPath;
       const localPrefix =
         prefix === ""
           ? App.mounts(app).find((mount) => mount.name === component.name)
@@ -1066,15 +1069,34 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
       if (identifier === undefined) {
         identifier = `component${kits.size}`;
         kits.set(resolved, identifier);
-        imports.push(
-          `import ${identifier}Schema from ${quote(relative(path.join(resolved, "schema")))};`,
-        );
-        imports.push(
-          `const ${identifier} = { schema: ${identifier}Schema, modules: ${yield* moduleMap(resolved)} };`,
-        );
+        if (fromPackage) {
+          const testEntry = `${component.componentDefinitionPath}/test`;
+          if (Option.isNone(Bundler.resolveModule(testEntry, config))) {
+            return yield* new CodegenError.InvalidConvexConfigError({
+              configPath: relative(config),
+              reason: `the component package ${quote(component.componentDefinitionPath)} has no ${quote(testEntry)} export. Tests register a component from another package through that entry's \`register(t, name)\`.`,
+            });
+          }
+          imports.push(
+            `import { register as ${identifier}Register } from ${quote(testEntry)};`,
+          );
+          imports.push(
+            `const ${identifier} = { register: ${identifier}Register };`,
+          );
+        } else {
+          imports.push(
+            `import ${identifier}Schema from ${quote(relative(path.join(resolved, "schema")))};`,
+          );
+          imports.push(
+            `const ${identifier} = { schema: ${identifier}Schema, modules: ${yield* moduleMap(resolved)} };`,
+          );
+        }
       }
       components.push(`${quote(name)}: ${identifier},`);
-      yield* visit(resolved, `${name}/`, "component", httpPrefix);
+      // A package's `register` installs its own children.
+      if (!fromPackage) {
+        yield* visit(resolved, `${name}/`, "component", httpPrefix);
+      }
     }
   });
   yield* visit(convexDirectory, "", (yield* ConvexDirectory.target).kind, "");
