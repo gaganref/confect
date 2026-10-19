@@ -12,7 +12,7 @@ The impl-only edit cases count module evaluations instead of asserting a machine
 
 The readiness cases also cover edits received during validation. After full codegen writes generated files, the watcher joins any in-flight build and then performs a fresh rebuild before reporting success. This prevents a subsequent edit from being absorbed into an older dependency snapshot; queued user changes must remain pending rather than being discarded as generated-file echoes.
 
-A structural rescan that keeps the same entry points also refreshes the existing dependency snapshot before releasing pending work. Otherwise, a saved source can be read by generation before esbuild observes it, then queued again during that generation. Controlled watcher tests cover both Create and Remove notifications for existing files.
+A structural rescan that keeps the same entry points also refreshes the existing dependency snapshot before releasing pending work. Otherwise, a saved source can be read by generation before esbuild observes it, then queued again during that generation. Controlled watcher tests cover both Create and Remove notifications for existing files. If snapshot verification fails, pending work becomes full generation so its existing error boundary can report the failure and recover on a later edit.
 
 Startup takes the first watcher snapshot before initial codegen. The source-level startup tests edit a dependency at the first build's `onStart` boundary and check the generated exports at the first readiness message, covering dependencies both inside and outside `confect/`. Process tests also remove auth, HTTP, and cron sources while an impl is invalid, then verify that recovery removes their generated outputs without deleting manually managed optional files.
 

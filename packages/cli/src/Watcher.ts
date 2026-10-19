@@ -379,7 +379,11 @@ const entryPointsWatcher = Effect.fnUntraced(function* (
         Empty: () => completedInitial,
         Active: ({ initial: activeInitial }) => Effect.succeed(activeInitial),
       });
-      yield* refreshCurrent(current);
+      yield* refreshCurrent(current).pipe(
+        Effect.catchTag("WatcherOperationError", () =>
+          Ref.update(pendingRef, SyncState.full),
+        ),
+      );
       yield* watcher.topology.reconcile(revision, initial);
       return;
     }
