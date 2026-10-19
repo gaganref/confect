@@ -117,7 +117,7 @@ const controlledWatcher = Effect.fnUntraced(function* (
     Effect.sync(() => context.mockImplementation(original)),
   );
   const watcher = yield* Watcher.make();
-  yield* watcher.run.pipe(
+  const running = yield* watcher.run.pipe(
     project.provide,
     Effect.provideService(FileSystem.FileSystem, {
       ...fs,
@@ -149,6 +149,7 @@ const controlledWatcher = Effect.fnUntraced(function* (
         Effect.provideService(Clock.Clock, withoutCoalescing),
       ),
     },
+    running,
     coalescedNext: watcher.next,
     project,
     events,
@@ -721,6 +722,66 @@ layer(NodeServices.layer, { excludeTestServices: true })(
 layer(NodeServices.layer, { excludeTestServices: true })(
   "refresh failures and lifecycle",
   (test) => {
+    test.effect(
+      "recovers a structural refresh read failure through full generation",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const runPromise = Effect.runPromiseWith(yield* Effect.context());
+          let removeInput = false;
+          const { watcher, running, project, events } =
+            yield* controlledWatcher({
+              afterPlugins: [
+                {
+                  name: "remove-structural-input-after-observation",
+                  setup(build) {
+                    const root = build.initialOptions.absWorkingDir;
+                    assert(root);
+                    build.onEnd(() =>
+                      removeInput
+                        ? runPromise(
+                            fs.remove(path.join(root, "confect/notes.spec.ts")),
+                          )
+                        : undefined,
+                    );
+                  },
+                },
+              ],
+            });
+          yield* watcher.refresh;
+          yield* watcher.next;
+          removeInput = true;
+          yield* project.write(
+            "confect/notes.impl.ts",
+            "export const value = 2;",
+          );
+          yield* Queue.offer(events, {
+            _tag: "Create",
+            path: `${project.root}/confect/notes.impl.ts`,
+          });
+          expect(
+            yield* Effect.raceFirst(watcher.next, Fiber.join(running)),
+          ).toMatchObject({
+            work: { _tag: "Full" },
+          });
+          removeInput = false;
+          yield* project.write(
+            "confect/notes.spec.ts",
+            "export const value = 2;",
+          );
+          yield* Queue.offer(events, {
+            _tag: "Create",
+            path: `${project.root}/confect/notes.spec.ts`,
+          });
+          expect((yield* watcher.next).work._tag).toBe("Declarations");
+          expect(Watcher.isRefreshSuccessful(yield* watcher.refresh)).toBe(
+            true,
+          );
+        }).pipe(Effect.scoped, Effect.timeout("10 seconds")),
+      { timeout: 15000 },
+    );
+
     test.effect(
       "keeps verification read failures readable at the dev logging boundary",
       () =>
