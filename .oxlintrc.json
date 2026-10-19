@@ -12,16 +12,11 @@
   ],
   "jsPlugins": [
     "confect-oxlint-rules",
-    {
-      "name": "jsdoc-style",
-      "specifier": "eslint-plugin-jsdoc"
-    }
+    { "name": "jsdoc-style", "specifier": "eslint-plugin-jsdoc" }
   ],
   "settings": {
     "jsdoc": {
-      "tagNamePreference": {
-        "typeParam": "typeParam"
-      }
+      "tagNamePreference": { "typeParam": "typeParam" }
     }
   },
   "options": {
@@ -57,22 +52,12 @@
         "preserveMainDescriptionPostDelimiter": true
       }
     ],
-    "jsdoc-style/no-multi-asterisks": [
-      "error",
-      {
-        "allowWhitespace": true
-      }
-    ],
+    "jsdoc-style/no-multi-asterisks": ["error", { "allowWhitespace": true }],
     "jsdoc-style/require-asterisk-prefix": "error",
     "jsdoc-style/require-hyphen-before-param-description": [
       "error",
       "always",
-      {
-        "tags": {
-          "template": "always",
-          "typeParam": "always"
-        }
-      }
+      { "tags": { "template": "always", "typeParam": "always" } }
     ],
     "no-unused-vars": [
       "error",
@@ -97,6 +82,16 @@
   },
   "overrides": [
     {
+      "files": ["packages/*/src/**/*.ts"],
+      "rules": {
+        "import/extensions": [
+          "error",
+          "always",
+          { "ignorePackages": true, "checkTypeImports": true }
+        ]
+      }
+    },
+    {
       "files": [
         "packages/cli/src/Evaluation.ts",
         "packages/cli/test/Evaluation.test.ts"
@@ -117,12 +112,7 @@
       "rules": {
         "unicorn/filename-case": [
           "error",
-          {
-            "cases": {
-              "camelCase": true,
-              "pascalCase": true
-            }
-          }
+          { "cases": { "camelCase": true, "pascalCase": true } }
         ]
       }
     },
@@ -184,18 +174,6 @@
       "rules": {
         "confect/prefer-effect-vitest": "error",
         "confect/prefer-test-each": "error"
-      }
-    },
-    {
-      "files": ["packages/*/src/**/*.ts"],
-      "rules": {
-        "import/extensions": [
-          "error",
-          "always",
-          {
-            "ignorePackages": true
-          }
-        ]
       }
     }
   ]
