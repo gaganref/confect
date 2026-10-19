@@ -389,6 +389,33 @@ layer(NodeServices.layer, { excludeTestServices: true })(
       { timeout: 15000 },
     );
 
+    test.effect.each(["Create", "Remove"] as const)(
+      "observes the saved source before consuming an existing-entry %s event",
+      (eventTag) =>
+        Effect.gen(function* () {
+          const { watcher, project, events } = yield* controlledWatcher({
+            files: ["notes.impl.ts"],
+          });
+          yield* watcher.refresh;
+          expect((yield* watcher.next).work._tag).toBe("Full");
+          yield* project.write(
+            "confect/notes.impl.ts",
+            "export const value = 2;",
+          );
+          yield* Queue.offer(events, {
+            _tag: eventTag,
+            path: `${project.root}/confect/notes.impl.ts`,
+          });
+          expect((yield* watcher.next).work).toEqual({
+            _tag: "Impls",
+            paths: ["notes.impl.ts"],
+          });
+          yield* watcher.refresh;
+          expect(yield* watcher.pending).toEqual(SyncState.empty);
+        }).pipe(Effect.scoped, Effect.timeout("10 seconds")),
+      { timeout: 15000 },
+    );
+
     test.effect.each([
       ["Create", "notes.spec.ts"],
       ["Remove", "notes.spec.ts"],
