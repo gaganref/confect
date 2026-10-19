@@ -1,4 +1,4 @@
-import registeredFunctions from "../confect/_generated/registeredFunctions/workpool";
+import registeredFunctions from "../confect/_generated/registeredFunctions/workpool.js";
 
 export const backgroundWork = registeredFunctions.backgroundWork;
 export const enqueue = registeredFunctions.enqueue;

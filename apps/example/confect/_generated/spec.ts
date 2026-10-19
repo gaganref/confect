@@ -1,11 +1,11 @@
 import { GroupSpec, Spec } from "@confect/core";
-import email from "../email.spec";
-import env from "../env.spec";
-import notes_and_random_notes from "../notes_and_random/notes.spec";
-import notes_and_random_random from "../notes_and_random/random.spec";
-import users from "../users.spec";
-import viewer from "../viewer.spec";
-import workpool from "../workpool.spec";
+import email from "../email.spec.js";
+import env from "../env.spec.js";
+import notes_and_random_notes from "../notes_and_random/notes.spec.js";
+import notes_and_random_random from "../notes_and_random/random.spec.js";
+import users from "../users.spec.js";
+import viewer from "../viewer.spec.js";
+import workpool from "../workpool.spec.js";
 
 const spec: Spec.Spec<{
   readonly email: GroupSpec.NamedAt<typeof email, "email">;
