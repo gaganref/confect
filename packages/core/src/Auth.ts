@@ -1,7 +1,7 @@
 import type { AuthProvider } from "convex/server";
 import * as Predicate from "effect/Predicate";
-import type * as App from "./App";
-import type { TypeError } from "./Types";
+import type * as App from "./App.js";
+import type { TypeError } from "./Types.js";
 
 const TypeId = "~@confect/core/Auth";
 const SiteUrlTypeId = "~@confect/core/Auth/SiteUrl";

@@ -1,6 +1,6 @@
 import * as Command from "effect/cli/Command";
-import { codegen } from "./confect/codegen";
-import { dev } from "./confect/dev";
+import { codegen } from "./confect/codegen.js";
+import { dev } from "./confect/dev.js";
 
 export const confect = Command.make("confect").pipe(
   Command.withDescription("Generate and sync Confect files with Convex"),

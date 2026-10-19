@@ -3,9 +3,9 @@ import type { GenericId } from "convex/values";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import { StorageActionWriter } from "./StorageActionWriter";
-import { StorageReader } from "./StorageReader";
-import { StorageWriter } from "./StorageWriter";
+import { StorageActionWriter } from "./StorageActionWriter.js";
+import { StorageReader } from "./StorageReader.js";
+import { StorageWriter } from "./StorageWriter.js";
 
 const make = Effect.gen(function* () {
   const reader = yield* StorageReader;

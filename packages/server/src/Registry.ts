@@ -1,6 +1,6 @@
 import * as Context from "effect/Context";
 import * as Ref from "effect/Ref";
-import type { RegistryItems } from "./RegistryItems";
+import type { RegistryItems } from "./RegistryItems.js";
 
 /**
  * Effect `Context.Reference` shared by everything that touches a group's

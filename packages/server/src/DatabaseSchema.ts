@@ -3,7 +3,7 @@ import * as Data from "effect/Data";
 import * as Result from "effect/Result";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
-import type * as Table from "./Table";
+import type * as Table from "./Table.js";
 
 export class EmptyDatabaseScopeError extends Data.TaggedError(
   "EmptyDatabaseScopeError",

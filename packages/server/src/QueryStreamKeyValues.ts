@@ -12,7 +12,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as SchemaIssue from "effect/SchemaIssue";
-import type * as QueryStreamOrderDirection from "./QueryStreamOrderDirection";
+import type * as QueryStreamOrderDirection from "./QueryStreamOrderDirection.js";
 
 const UNDEFINED_SENTINEL = { $undefined: true } as const;
 const KeyValue = Schema.Json.pipe(

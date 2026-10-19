@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import * as RelativeModulePath from "./RelativeModulePath";
+import * as RelativeModulePath from "./RelativeModulePath.js";
 
 export const ImplModulePath = RelativeModulePath.withSuffix(".impl.ts").pipe(
   Schema.brand("@confect/cli/ImplModulePath"),

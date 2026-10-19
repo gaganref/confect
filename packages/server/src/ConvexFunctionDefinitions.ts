@@ -3,14 +3,14 @@ import * as Match from "effect/Match";
 import * as Record from "effect/Record";
 import type * as GroupSpec from "@confect/core/GroupSpec";
 import type * as FunctionSpec from "@confect/core/FunctionSpec";
-import type * as DatabaseSchema from "./DatabaseSchema";
-import type * as GroupImpl from "./GroupImpl";
-import * as GroupRegistry from "./GroupRegistry";
-import * as FunctionRegistryItem from "./FunctionRegistryItem";
-import * as RegisteredConvexFunction from "./RegisteredConvexFunction";
-import type * as RegisteredFunctions from "./RegisteredFunctions";
-import * as ResolvedMiddleware from "./ResolvedMiddleware";
-import { mapLeaves } from "./internal/utils";
+import type * as DatabaseSchema from "./DatabaseSchema.js";
+import type * as GroupImpl from "./GroupImpl.js";
+import * as GroupRegistry from "./GroupRegistry.js";
+import * as FunctionRegistryItem from "./FunctionRegistryItem.js";
+import * as RegisteredConvexFunction from "./RegisteredConvexFunction.js";
+import type * as RegisteredFunctions from "./RegisteredFunctions.js";
+import * as ResolvedMiddleware from "./ResolvedMiddleware.js";
+import { mapLeaves } from "./internal/utils.js";
 
 export interface Definitions {
   readonly [name: string]: RegisteredConvexFunction.Definition | Definitions;

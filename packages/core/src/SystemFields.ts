@@ -1,4 +1,4 @@
-import type * as IdScope from "./IdScope";
+import type * as IdScope from "./IdScope.js";
 import type { SystemFields as NonIdSystemFields } from "convex/server";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
@@ -11,7 +11,7 @@ import * as SchemaAST from "effect/SchemaAST";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as Struct from "effect/Struct";
-import * as GenericId from "./GenericId";
+import * as GenericId from "./GenericId.js";
 
 /**
  * Produces a schema for Convex system fields. In Confect, system fields include

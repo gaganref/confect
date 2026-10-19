@@ -8,7 +8,7 @@ import type {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import type * as DataModel from "./DataModel";
+import type * as DataModel from "./DataModel.js";
 
 type ConvexVectorSearch<DataModel_ extends DataModel.AnyWithProps> =
   GenericActionCtx<DataModel.ToConvex<DataModel_>>["vectorSearch"];

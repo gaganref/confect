@@ -3,10 +3,10 @@ import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import type { CodeProps } from "../Code";
-import { CommandRunner, type PushTarget } from "./CommandRunner";
-import * as Loopback from "./Loopback";
-import { PushLock } from "./PushLock";
+import type { CodeProps } from "../Code.js";
+import { CommandRunner, type PushTarget } from "./CommandRunner.js";
+import * as Loopback from "./Loopback.js";
+import { PushLock } from "./PushLock.js";
 
 export class InvalidDeploymentTarget extends Schema.TaggedError<InvalidDeploymentTarget>()(
   "InvalidDeploymentTarget",

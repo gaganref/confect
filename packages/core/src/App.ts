@@ -2,7 +2,7 @@ import type { ComponentDefinition, EnvDefinition } from "convex/server";
 import type { Infer, Validator } from "convex/values";
 import type * as HttpApi from "effect/http-api/HttpApi";
 import * as Predicate from "effect/Predicate";
-import type * as Env from "./Env";
+import type * as Env from "./Env.js";
 
 const TypeId = "~@confect/core/App";
 const MountTypeId = "~@confect/core/App/Mount";

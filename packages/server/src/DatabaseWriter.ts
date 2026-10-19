@@ -11,12 +11,12 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Record from "effect/Record";
-import * as DatabaseSchema from "./DatabaseSchema";
-import type * as DataModel from "./DataModel";
-import type { DocumentByName as DocumentByName_ } from "./DataModel";
-import * as Document from "./Document";
-import * as QueryInitializer from "./QueryInitializer";
-import type * as Table from "./Table";
+import * as DatabaseSchema from "./DatabaseSchema.js";
+import type * as DataModel from "./DataModel.js";
+import type { DocumentByName as DocumentByName_ } from "./DataModel.js";
+import * as Document from "./Document.js";
+import * as QueryInitializer from "./QueryInitializer.js";
+import type * as Table from "./Table.js";
 
 /**
  * The argument accepted by `patch`: like `Partial<Doc>` without system fields,

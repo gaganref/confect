@@ -10,10 +10,10 @@ import { identity, pipe } from "effect/Function";
 import type { Option } from "effect";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
-import type * as DatabaseSchema from "./DatabaseSchema";
-import * as Document from "./Document";
-import type * as TableInfo from "./TableInfo";
-import type * as Table from "./Table";
+import type * as DatabaseSchema from "./DatabaseSchema.js";
+import * as Document from "./Document.js";
+import type * as TableInfo from "./TableInfo.js";
+import type * as Table from "./Table.js";
 
 type NativePaginate<TableInfo_ extends TableInfo.AnyWithProps, Doc> = (
   options: PaginationOptions,

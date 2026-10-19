@@ -28,20 +28,27 @@ export const consumerManifest = (version: string, tarballs?: string) => {
     private: true,
     type: "module",
     dependencies: {
+      "@confect/alchemy": forkPackage("alchemy"),
       "@confect/core": forkPackage("core"),
+      "@confect/foldkit": forkPackage("foldkit"),
+      "@confect/js": forkPackage("js"),
+      "@confect/react": forkPackage("react"),
       "@confect/server": forkPackage("server"),
       "@confect/test": forkPackage("test"),
       "@confect/cli": forkPackage("cli"),
+      alchemy: "2.0.0-beta.82",
+      foldkit: "0.165.0",
+      react: "19.3.0",
       convex: "1.46.0",
       "convex-test": "0.0.60",
       effect: "4.0.4",
       "@effect/platform-node": "4.0.4",
     },
-    // Pinned to the versions this workspace itself is verified against, so the
-    // consumer typechecks and tests with the same toolchain; a bump is one edit.
+    // Alchemy pulls in capnp-es, whose compiler peer admits TypeScript 5 and 6.
     devDependencies: {
       "@types/node": "26.6.5",
-      typescript: "7.0.2",
+      "@types/react": "19.3.0",
+      typescript: "6.0.3",
       vite: "8.3.4",
       vitest: "5.0.3",
     },
@@ -105,6 +112,7 @@ export const writeConsumer = Effect.fn("ConsumerFixture.write")(function* (
       `  "@effect/platform-node-shared": ${manifest.dependencies["@effect/platform-node"]}`,
       "allowBuilds:",
       "  esbuild: false",
+      "  workerd: false",
       "",
     ].join("\n"),
   );

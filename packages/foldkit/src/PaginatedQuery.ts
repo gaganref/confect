@@ -9,7 +9,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as SchemaIssue from "effect/SchemaIssue";
-import * as Client from "./Client";
+import * as Client from "./Client.js";
 
 /**
  * Identifies the cursor range fetched for one page.

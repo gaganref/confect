@@ -3,10 +3,10 @@ import type * as Effect from "effect/Effect";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
 import type { unhandled } from "effect/Types";
-import type * as FunctionProvenance from "./FunctionProvenance";
-import type * as FunctionSpec from "./FunctionSpec";
-import * as Lazy from "./Lazy";
-import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType";
+import type * as FunctionProvenance from "./FunctionProvenance.js";
+import type * as FunctionSpec from "./FunctionSpec.js";
+import * as Lazy from "./Lazy.js";
+import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 
 export const TypeId = "~@confect/core/MiddlewareSpec";
 export type TypeId = typeof TypeId;

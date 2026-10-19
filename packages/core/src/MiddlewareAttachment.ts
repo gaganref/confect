@@ -1,7 +1,7 @@
 import * as Data from "effect/Data";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import type * as MiddlewareSpec from "./MiddlewareSpec";
+import type * as MiddlewareSpec from "./MiddlewareSpec.js";
 
 export type MiddlewareAttachment<
   MiddlewareSpec_ extends MiddlewareSpec.AnyMiddlewareSpec =

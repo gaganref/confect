@@ -5,7 +5,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as ConvexDirectory from "./ConvexDirectory";
+import * as ConvexDirectory from "./ConvexDirectory.js";
 
 export class ConfectDirectory extends Context.Service<
   ConfectDirectory,

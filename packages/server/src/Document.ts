@@ -4,10 +4,10 @@ import * as Effect from "effect/Effect";
 import * as Function from "effect/Function";
 import * as Schema from "effect/Schema";
 import type { ReadonlyRecord } from "effect/Record";
-import type * as DatabaseSchema from "./DatabaseSchema";
-import type * as DataModel from "./DataModel";
-import type * as TableInfo from "./TableInfo";
-import type * as Table from "./Table";
+import type * as DatabaseSchema from "./DatabaseSchema.js";
+import type * as DataModel from "./DataModel.js";
+import type * as TableInfo from "./TableInfo.js";
+import type * as Table from "./Table.js";
 
 export type Document<
   Schema_ extends DatabaseSchema.AnyWithProps,

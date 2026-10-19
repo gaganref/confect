@@ -1,11 +1,11 @@
-import * as ConvexFunctionDefinitions from "./ConvexFunctionDefinitions";
+import * as ConvexFunctionDefinitions from "./ConvexFunctionDefinitions.js";
 import type * as FunctionSpec from "@confect/core/FunctionSpec";
 import type * as GroupSpec from "@confect/core/GroupSpec";
 import type * as Spec from "@confect/core/Spec";
 import type { Layer, Types } from "effect";
-import type * as DatabaseSchema from "./DatabaseSchema";
-import type * as GroupImpl from "./GroupImpl";
-import type * as RegisteredFunction from "./RegisteredFunction";
+import type * as DatabaseSchema from "./DatabaseSchema.js";
+import type * as GroupImpl from "./GroupImpl.js";
+import type * as RegisteredFunction from "./RegisteredFunction.js";
 
 export type RegisteredFunctions<Spec_ extends Spec.AnyWithProps> =
   Types.Simplify<RegisteredFunctionsHelper<Spec.Groups<Spec_>>>;

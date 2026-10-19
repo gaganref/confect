@@ -12,8 +12,8 @@ import type {
 import type { GenericValidator } from "convex/values";
 import type { Schema, Types } from "effect";
 import type { WithSystemFields } from "@confect/core/SystemFields";
-import type * as Document_ from "./Document";
-import type * as Table from "./Table";
+import type * as Document_ from "./Document.js";
+import type * as Table from "./Table.js";
 
 export declare const TypeId: "~@confect/server/TableInfo";
 export type TypeId = typeof TypeId;

@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import * as GroupPath from "./GroupPath";
+import * as GroupPath from "./GroupPath.js";
 
 /**
  * The path to a function in the Confect API.

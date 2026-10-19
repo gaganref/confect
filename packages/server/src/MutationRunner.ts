@@ -4,7 +4,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Schema from "effect/Schema";
-import * as MutationTransactionContext from "./MutationTransactionContext";
+import * as MutationTransactionContext from "./MutationTransactionContext.js";
 
 export type Options = MutationTransactionContext.MutationOptions;
 

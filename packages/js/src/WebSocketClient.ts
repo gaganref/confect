@@ -2,9 +2,9 @@ import { ConvexClient } from "convex/browser";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as InternalWebSocketClient from "./internal/WebSocketClient";
+import * as InternalWebSocketClient from "./internal/WebSocketClient.js";
 
-export { WebSocketClientError } from "./internal/WebSocketClient";
+export { WebSocketClientError } from "./internal/WebSocketClient.js";
 
 const make = (
   address: string,

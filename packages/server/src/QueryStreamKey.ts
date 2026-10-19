@@ -1,8 +1,8 @@
 import * as Data from "effect/Data";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
-import * as QueryStreamKeyLayout from "./QueryStreamKeyLayout";
-import type * as QueryStreamKeyValues from "./QueryStreamKeyValues";
+import * as QueryStreamKeyLayout from "./QueryStreamKeyLayout.js";
+import type * as QueryStreamKeyValues from "./QueryStreamKeyValues.js";
 
 const TypeId = "~@confect/server/QueryStreamKey";
 

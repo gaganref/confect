@@ -6,7 +6,7 @@ import * as Layer from "effect/Layer";
 import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import type * as DatabaseSchema from "./DatabaseSchema";
+import type * as DatabaseSchema from "./DatabaseSchema.js";
 
 const make = (auth: ConvexAuth) => ({
   getUserIdentity: Effect.promise(() => auth.getUserIdentity()).pipe(

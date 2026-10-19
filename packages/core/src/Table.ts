@@ -1,7 +1,7 @@
-import * as IdScope from "./IdScope";
-import * as Lazy from "./Lazy";
-import * as SystemFields from "./SystemFields";
-import type { TableSchemaToTableValidator } from "./SchemaToValidator";
+import * as IdScope from "./IdScope.js";
+import * as Lazy from "./Lazy.js";
+import * as SystemFields from "./SystemFields.js";
+import type { TableSchemaToTableValidator } from "./SchemaToValidator.js";
 import type {
   SystemFields as ConvexSystemFields,
   Expand,

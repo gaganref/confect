@@ -1,7 +1,7 @@
 import type * as GroupSpec from "@confect/core/GroupSpec";
 import type * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
-import * as Registry from "./Registry";
-import * as RegistryItems from "./RegistryItems";
+import * as Registry from "./Registry.js";
+import * as RegistryItems from "./RegistryItems.js";
 import * as Array from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -9,9 +9,9 @@ import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Ref from "effect/Ref";
-import type * as DatabaseSchema from "./DatabaseSchema";
-import type * as FunctionImpl from "./FunctionImpl";
-import type * as MiddlewareImpl from "./MiddlewareImpl";
+import type * as DatabaseSchema from "./DatabaseSchema.js";
+import type * as FunctionImpl from "./FunctionImpl.js";
+import type * as MiddlewareImpl from "./MiddlewareImpl.js";
 
 export const TypeId = "~@confect/server/GroupImpl";
 export type TypeId = typeof TypeId;

@@ -6,27 +6,27 @@ import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import { fromBundlerError } from "../BuildError";
-import * as Bundler from "../Bundler";
+import { fromBundlerError } from "../BuildError.js";
+import * as Bundler from "../Bundler.js";
 import {
   HandWrittenConvexFileError,
   DeclarationKindMismatchError,
   InvalidDeclarationError,
-} from "../CodegenError";
-import { ConfectDirectory } from "../ConfectDirectory";
-import * as ConvexConfig from "../ConvexConfig";
-import { ConvexDirectory } from "../ConvexDirectory";
-import * as Declaration from "../Declaration";
-import { logFileRemoved } from "../log";
-import { ProjectRoot } from "../ProjectRoot";
-import * as templates from "../templates";
+} from "../CodegenError.js";
+import { ConfectDirectory } from "../ConfectDirectory.js";
+import * as ConvexConfig from "../ConvexConfig.js";
+import { ConvexDirectory } from "../ConvexDirectory.js";
+import * as Declaration from "../Declaration.js";
+import { logFileRemoved } from "../log.js";
+import { ProjectRoot } from "../ProjectRoot.js";
+import * as templates from "../templates.js";
 import {
   removePathIfExists,
   toModuleImportPath,
   toPosixPath,
   writeFileString,
   writeFileStringAndLog,
-} from "../utils";
+} from "../utils.js";
 
 /**
  * Bumped when the generated files change shape, so a manifest written by an

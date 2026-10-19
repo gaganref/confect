@@ -29,8 +29,8 @@ import * as Scope from "effect/Scope";
 import * as Schema from "effect/Schema";
 import * as String from "effect/String";
 import * as esbuild from "esbuild";
-import { BundlerError } from "./BuildError";
-import { logCoalescedBuildWarnings } from "./log";
+import { BundlerError } from "./BuildError.js";
+import { logCoalescedBuildWarnings } from "./log.js";
 
 export interface Bundled {
   readonly module: any;

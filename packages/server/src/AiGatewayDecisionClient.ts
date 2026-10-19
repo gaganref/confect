@@ -2,14 +2,14 @@ import * as OpenRouterClient from "@effect/ai-openrouter/OpenRouterClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as HttpClient from "effect/http/HttpClient";
-import * as InternalAiGatewayDecisionClient from "./internal/AiGatewayDecisionClient";
-import * as AiGatewayServiceToken from "./internal/AiGatewayServiceToken";
+import * as InternalAiGatewayDecisionClient from "./internal/AiGatewayDecisionClient.js";
+import * as AiGatewayServiceToken from "./internal/AiGatewayServiceToken.js";
 
 export {
   AiGatewayDisabled,
   AiGatewayError,
   AiGatewayUnavailable,
-} from "./internal/AiGatewayServiceToken";
+} from "./internal/AiGatewayServiceToken.js";
 
 /**
  * The client configured for Convex AI gateway decisions.

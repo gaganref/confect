@@ -17,11 +17,11 @@ import * as Semaphore from "effect/Semaphore";
 import * as Stream from "effect/Stream";
 import * as HttpClient from "effect/http/HttpClient";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
-import { processEnvironment } from "./CommandRunner";
-import * as FileLock from "./FileLock";
-import * as Loopback from "./Loopback";
-import { userCache } from "./UserCache";
-import { extract } from "./Zip";
+import { processEnvironment } from "./CommandRunner.js";
+import * as FileLock from "./FileLock.js";
+import * as Loopback from "./Loopback.js";
+import { userCache } from "./UserCache.js";
+import { extract } from "./Zip.js";
 
 /**
  * The backend release a new local deployment runs. An existing data directory

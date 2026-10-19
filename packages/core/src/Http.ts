@@ -8,7 +8,7 @@ import type * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import type * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as HttpApiScalar from "effect/http-api/HttpApiScalar";
-import * as App from "./App";
+import * as App from "./App.js";
 
 const TypeId = "~@confect/core/Http";
 

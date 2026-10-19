@@ -1,9 +1,9 @@
 import type { DefaultFunctionArgs } from "convex/server";
 import * as Data from "effect/Data";
 import * as Schema from "effect/Schema";
-import * as Lazy from "./Lazy";
-import * as PaginationOptions from "./PaginationOptions";
-import * as PaginationResult from "./PaginationResult";
+import * as Lazy from "./Lazy.js";
+import * as PaginationOptions from "./PaginationOptions.js";
+import * as PaginationResult from "./PaginationResult.js";
 
 /**
  * A field map accepted as Confect function args. Restricting each field to a

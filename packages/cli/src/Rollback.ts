@@ -3,12 +3,12 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import type * as Scope from "effect/Scope";
-import { ComponentNodeGroupError, logCodegenError } from "./CodegenError";
-import { ConfectDirectory } from "./ConfectDirectory";
-import { CONVEX_CONFIG_FILENAME } from "./ConvexConfig";
-import { ConvexDirectory } from "./ConvexDirectory";
-import { logFileRemoved, logWarn } from "./log";
-import { remove } from "./Remove";
+import { ComponentNodeGroupError, logCodegenError } from "./CodegenError.js";
+import { ConfectDirectory } from "./ConfectDirectory.js";
+import { CONVEX_CONFIG_FILENAME } from "./ConvexConfig.js";
+import { ConvexDirectory } from "./ConvexDirectory.js";
+import { logFileRemoved, logWarn } from "./log.js";
+import { remove } from "./Remove.js";
 
 const isNodeGroupRejection = Schema.is(ComponentNodeGroupError);
 

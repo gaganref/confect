@@ -40,6 +40,18 @@ Changeset: none; the merge brings upstream's changesets, and the Convex peer flo
 is recorded under "Type component callbacks".
 Upstream: fork only.
 
+## Package compatibility
+
+### Resolve declarations under NodeNext
+
+Write relative source imports with explicit `.js` extensions so the declarations
+resolve under NodeNext. Check all public entries from the eight packed fork
+packages in the fresh consumer with `skipLibCheck: false`, and lint source imports
+for explicit extensions. The CLI ships a binary and has no declaration entry.
+
+Changeset: `nodenext-declarations.md`.
+Upstream: planned; no proposal submitted.
+
 ## Component authoring and contracts
 
 ### Check component declarations

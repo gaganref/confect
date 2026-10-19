@@ -8,8 +8,8 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Scope from "effect/Scope";
-import * as FileLock from "./FileLock";
-import { userCache } from "./UserCache";
+import * as FileLock from "./FileLock.js";
+import { userCache } from "./UserCache.js";
 
 export class PushLockError extends Schema.TaggedError<PushLockError>()(
   "PushLockError",

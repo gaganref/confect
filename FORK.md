@@ -20,7 +20,12 @@ Choose a green [Packages run](https://github.com/gaganref/confect/actions/workfl
 pnpm add --strict-peer-dependencies '@confect/core@npm:@gaganref/confect-core@<version>' '@confect/server@npm:@gaganref/confect-server@<version>' '@confect/test@npm:@gaganref/confect-test@<version>' '@confect/cli@npm:@gaganref/confect-cli@<version>'
 ```
 
-PRs exercise the staged tarballs in a fresh strict-peer consumer before publication. The check generates a declared backend and a component mounted at `/counter`, calls the component through the host, checks callback arguments and results, and fetches the declared HTTP routes. Each successful install check uploads its pinned manifest, lockfile, and install command. `bun scripts/forkConsumer.ts <dir> <version>` regenerates the consumer. Dispatch "Packages" on `main` with a higher unused `n` to recover from a build number collision after all checks pass. Dispatch "Publish fork builds" with an existing version to check an installed build without publishing again.
+PRs exercise all eight staged tarballs in a fresh strict-peer consumer before publication.
+Every public declaration entry typechecks with NodeNext and `skipLibCheck: false`.
+The probe uses TypeScript 6.0.3, within Alchemy's transitive compiler peer range.
+It keeps implicit-any checks but disables strict null checks because Alchemy
+beta.82 and Effect require incompatible optional-property settings. The generated
+application retains its separate strict typecheck. The check generates a declared backend and a component mounted at `/counter`, calls the component through the host, checks callback arguments and results, and fetches the declared HTTP routes. Each successful install check uploads its pinned manifest, lockfile, and install command. `bun scripts/forkConsumer.ts <dir> <version>` regenerates the consumer. Dispatch "Packages" on `main` with a higher unused `n` to recover from a build number collision after all checks pass. Dispatch "Publish fork builds" with an existing version to check an installed build without publishing again.
 
 ## Initial publication
 

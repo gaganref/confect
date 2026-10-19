@@ -13,11 +13,11 @@ import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
 
-import { ConvexClient } from "./ConvexClient";
-import type { Providers } from "./Providers";
-import { resourceName } from "./internal/ResourceIdentity";
-import { checkpointCreate, shouldAdopt } from "./internal/Lifecycle";
-import { boot, dataDirectories, remove } from "./internal/LocalBackend";
+import { ConvexClient } from "./ConvexClient.js";
+import type { Providers } from "./Providers.js";
+import { resourceName } from "./internal/ResourceIdentity.js";
+import { checkpointCreate, shouldAdopt } from "./internal/Lifecycle.js";
+import { boot, dataDirectories, remove } from "./internal/LocalBackend.js";
 
 export interface DeploymentProps {
   readonly projectId: number;

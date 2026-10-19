@@ -1,28 +1,28 @@
 import type * as FunctionSpec from "@confect/core/FunctionSpec";
 import type * as GroupSpec from "@confect/core/GroupSpec";
 import * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
-import * as Registry from "./Registry";
+import * as Registry from "./Registry.js";
 import type { FunctionType } from "convex/server";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
-import type * as Auth from "./Auth";
-import type * as DatabaseReader from "./DatabaseReader";
-import type * as DatabaseSchema from "./DatabaseSchema";
-import type * as Handler from "./Handler";
-import type { ExecutionMetadata } from "./ExecutionMetadata";
-import type { RequestMetadata } from "./RequestMetadata";
-import type { TransactionMetadata } from "./TransactionMetadata";
-import type * as MutationRunner from "./MutationRunner";
-import type * as QueryRunner from "./QueryRunner";
-import type { QueryTransactionContext } from "./QueryTransactionContext";
-import type * as Scheduler from "./Scheduler";
-import type { Storage } from "./Storage";
-import type * as StorageReader from "./StorageReader";
-import type * as StorageWriter from "./StorageWriter";
-import * as MiddlewareRegistryItem from "./MiddlewareRegistryItem";
-import { setNestedProperty } from "./internal/utils";
+import type * as Auth from "./Auth.js";
+import type * as DatabaseReader from "./DatabaseReader.js";
+import type * as DatabaseSchema from "./DatabaseSchema.js";
+import type * as Handler from "./Handler.js";
+import type { ExecutionMetadata } from "./ExecutionMetadata.js";
+import type { RequestMetadata } from "./RequestMetadata.js";
+import type { TransactionMetadata } from "./TransactionMetadata.js";
+import type * as MutationRunner from "./MutationRunner.js";
+import type * as QueryRunner from "./QueryRunner.js";
+import type { QueryTransactionContext } from "./QueryTransactionContext.js";
+import type * as Scheduler from "./Scheduler.js";
+import type { Storage } from "./Storage.js";
+import type * as StorageReader from "./StorageReader.js";
+import type * as StorageWriter from "./StorageWriter.js";
+import * as MiddlewareRegistryItem from "./MiddlewareRegistryItem.js";
+import { setNestedProperty } from "./internal/utils.js";
 
 /**
  * Marker service produced by providing a middleware's implementation to a

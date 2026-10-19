@@ -12,8 +12,6 @@ on:
         required: false
         type: string
   pull_request:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       version:
@@ -191,6 +189,9 @@ jobs:
         run: |
           pnpm confect codegen --component-dir components/counter/convex
           pnpm confect codegen
+      - name: Typecheck every public entry under NodeNext
+        working-directory: ${{ runner.temp }}/confect-consumer
+        run: node checkNodeNext.mjs
       - name: Typecheck the consumer
         working-directory: ${{ runner.temp }}/confect-consumer
         run: pnpm exec tsc --noEmit

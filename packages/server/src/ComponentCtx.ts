@@ -17,7 +17,7 @@ import type {
   VectorIndexNames,
   VectorSearchQuery,
 } from "convex/server";
-import type { PatchValue } from "./DatabaseWriter";
+import type { PatchValue } from "./DatabaseWriter.js";
 
 /**
  * Distinguishes raw component services from structurally compatible app ctxs.

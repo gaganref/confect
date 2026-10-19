@@ -12,11 +12,11 @@ import type {
   BuildError,
   BundleFailedError,
   ImportFailedError,
-} from "./BuildError";
-import * as Ansi from "./Ansi";
-import type * as FunctionPath from "./FunctionPath";
-import * as GroupPath from "./GroupPath";
-import { ProjectRoot } from "./ProjectRoot";
+} from "./BuildError.js";
+import * as Ansi from "./Ansi.js";
+import type * as FunctionPath from "./FunctionPath.js";
+import * as GroupPath from "./GroupPath.js";
+import { ProjectRoot } from "./ProjectRoot.js";
 
 // --- Path styling ---
 

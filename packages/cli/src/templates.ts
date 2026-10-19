@@ -2,11 +2,11 @@ import type * as IdScope from "@confect/core/IdScope";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import type * as GroupSpec from "@confect/core/GroupSpec";
-import { CodeBlockWriter } from "./CodeBlockWriter";
+import { CodeBlockWriter } from "./CodeBlockWriter.js";
 import {
   render as renderSpecAssembly,
   type SpecAssemblyNode,
-} from "./SpecAssemblyNode";
+} from "./SpecAssemblyNode.js";
 
 /**
  * Emit `convex/schema.ts` as a one-line re-export of the codegen-emitted deploy

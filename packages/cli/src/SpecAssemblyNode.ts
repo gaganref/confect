@@ -1,8 +1,8 @@
-import type { LeafModule } from "./LeafModule";
+import type { LeafModule } from "./LeafModule.js";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
-import { CodeBlockWriter } from "./CodeBlockWriter";
+import { CodeBlockWriter } from "./CodeBlockWriter.js";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import * as Record from "effect/Record";

@@ -1,9 +1,9 @@
 import { ConvexHttpClient } from "convex/browser";
 import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
-import * as InternalHttpClient from "./internal/HttpClient";
+import * as InternalHttpClient from "./internal/HttpClient.js";
 
-export { HttpClientError } from "./internal/HttpClient";
+export { HttpClientError } from "./internal/HttpClient.js";
 
 const make = (
   address: string,

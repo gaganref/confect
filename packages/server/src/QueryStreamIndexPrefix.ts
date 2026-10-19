@@ -1,8 +1,8 @@
 import * as Array from "effect/Array";
 import * as Data from "effect/Data";
 import * as Result from "effect/Result";
-import type * as QueryStreamKey from "./QueryStreamKey";
-import type * as QueryStreamKeyValues from "./QueryStreamKeyValues";
+import type * as QueryStreamKey from "./QueryStreamKey.js";
+import type * as QueryStreamKeyValues from "./QueryStreamKeyValues.js";
 
 const TypeId = "~@confect/server/QueryStreamIndexPrefix";
 

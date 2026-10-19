@@ -1,4 +1,4 @@
-import type * as MiddlewareAttachment from "./MiddlewareAttachment";
+import type * as MiddlewareAttachment from "./MiddlewareAttachment.js";
 import type {
   DefaultFunctionArgs,
   FunctionType,
@@ -9,10 +9,10 @@ import type {
 } from "convex/server";
 import type * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
-import * as FunctionProvenance from "./FunctionProvenance";
-import { validateConfectFunctionIdentifier } from "./Identifier";
-import type * as MiddlewareSpec from "./MiddlewareSpec";
-import * as RuntimeAndFunctionType from "./RuntimeAndFunctionType";
+import * as FunctionProvenance from "./FunctionProvenance.js";
+import { validateConfectFunctionIdentifier } from "./Identifier.js";
+import type * as MiddlewareSpec from "./MiddlewareSpec.js";
+import * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 
 export const TypeId = "~@confect/core/FunctionSpec";
 export type TypeId = typeof TypeId;

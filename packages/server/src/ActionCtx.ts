@@ -1,7 +1,7 @@
 import type * as IdScope from "@confect/core/IdScope";
 import type { GenericActionCtx, GenericDataModel } from "convex/server";
 import * as Context from "effect/Context";
-import type * as ComponentCtx from "./ComponentCtx";
+import type * as ComponentCtx from "./ComponentCtx.js";
 import * as Layer from "effect/Layer";
 
 export type ActionCtxTag<

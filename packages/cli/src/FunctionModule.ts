@@ -5,14 +5,14 @@ import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as HashSet from "effect/HashSet";
 import * as Match from "effect/Match";
-import * as GenerationSnapshot from "./GenerationSnapshot";
-import * as GroupPath from "./GroupPath";
-import * as GroupPaths from "./GroupPaths";
-import { CodeBlockWriter } from "./CodeBlockWriter";
-import { logFileAdded, logFileModified, logFileRemoved } from "./log";
-import { ConfectDirectory } from "./ConfectDirectory";
-import { ConvexDirectory } from "./ConvexDirectory";
-import { removePathIfExists, toModuleImportPath } from "./utils";
+import * as GenerationSnapshot from "./GenerationSnapshot.js";
+import * as GroupPath from "./GroupPath.js";
+import * as GroupPaths from "./GroupPaths.js";
+import { CodeBlockWriter } from "./CodeBlockWriter.js";
+import { logFileAdded, logFileModified, logFileRemoved } from "./log.js";
+import { ConfectDirectory } from "./ConfectDirectory.js";
+import { ConvexDirectory } from "./ConvexDirectory.js";
+import { removePathIfExists, toModuleImportPath } from "./utils.js";
 
 export const render = ({
   functionNames,

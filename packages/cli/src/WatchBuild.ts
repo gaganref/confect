@@ -13,7 +13,7 @@ import * as Option from "effect/Option";
 import type { PlatformError } from "effect/PlatformError";
 import * as Result from "effect/Result";
 import type * as esbuild from "esbuild";
-import * as WatchGraph from "./WatchGraph";
+import * as WatchGraph from "./WatchGraph.js";
 
 export type Failure = Data.TaggedEnum<{
   BuildFailed: {

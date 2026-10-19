@@ -11,18 +11,18 @@ import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as RpcServer from "effect/rpc/RpcServer";
 import * as esbuild from "esbuild";
-import * as CodegenError from "./CodegenError";
-import { ConfectDirectory } from "./ConfectDirectory";
-import { ConvexDirectory } from "./ConvexDirectory";
-import type { RequestContext } from "./Evaluation";
-import { EvaluationError, requests } from "./Evaluation";
-import { validateImplFiles } from "./LeafModule";
-import { ProjectRoot } from "./ProjectRoot";
+import * as CodegenError from "./CodegenError.js";
+import { ConfectDirectory } from "./ConfectDirectory.js";
+import { ConvexDirectory } from "./ConvexDirectory.js";
+import type { RequestContext } from "./Evaluation.js";
+import { EvaluationError, requests } from "./Evaluation.js";
+import { validateImplFiles } from "./LeafModule.js";
+import { ProjectRoot } from "./ProjectRoot.js";
 import {
   generateWithSnapshot,
   loadPreviousFunctionPaths,
   updateDeclarations,
-} from "./confect/codegen";
+} from "./confect/codegen.js";
 
 const evaluate = <A, E, R>(
   requestContext: RequestContext,

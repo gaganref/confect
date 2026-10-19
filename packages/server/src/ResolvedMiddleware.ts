@@ -1,8 +1,8 @@
 import * as MiddlewareAttachment from "@confect/core/MiddlewareAttachment";
 import type * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
 import * as Result from "effect/Result";
-import type * as FunctionRegistryItem from "./FunctionRegistryItem";
-import type * as MiddlewareRegistryItem from "./MiddlewareRegistryItem";
+import type * as FunctionRegistryItem from "./FunctionRegistryItem.js";
+import type * as MiddlewareRegistryItem from "./MiddlewareRegistryItem.js";
 
 /**
  * A middleware spec paired with its implementation for one function's type—the
