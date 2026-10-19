@@ -374,7 +374,7 @@ test.each([
 );
 ```
 
-Codegen resolves each component's schema and module loaders and supplies the declaration's installation paths and HTTP prefixes. The tests exercise both the host and mounted routes. The same fixture checks host-to-component calls, the callback result `43`, and validator mismatch rejection.
+Codegen supplies each local component's schema and module loaders, registers each component from another package through its `<package>/test` export, and supplies the declaration's installation paths and HTTP prefixes. The tests exercise both the host and mounted routes. The same fixture checks host-to-component calls, the callback result `43`, and validator mismatch rejection.
 
 Nested installations and their full HTTP prefixes are generated automatically. The schema-based constructor remains available for manual registration and custom loaders. A component reused at multiple HTTP mounts needs a fresh router factory per HTTP module loader. See [mounted component HTTP tests](/guides/testing#fetch-mounted-component-routes) for module-cache and process-environment limits.
 

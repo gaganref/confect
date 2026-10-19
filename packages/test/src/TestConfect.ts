@@ -301,21 +301,42 @@ class TestConfectImpl<
 }
 
 /**
+ * How a test registers one installed component: its own schema and modules, or
+ * the `register(t, name)` a component package exports from `<package>/test`,
+ * which also registers the package's own children.
+ */
+export type ComponentKit =
+  | {
+      readonly schema: SchemaDefinition<GenericSchema, boolean>;
+      readonly modules: Record<string, () => Promise<any>>;
+    }
+  | {
+      register(
+        t: { readonly registerComponent: RegisterComponent },
+        name: string,
+      ): unknown;
+    };
+
+const registerKit = (
+  registerComponent: RegisterComponent,
+  name: string,
+  kit: ComponentKit,
+) => {
+  if ("register" in kit) {
+    kit.register({ registerComponent }, name);
+  } else {
+    registerComponent(name, kit.schema, kit.modules);
+  }
+};
+
+/**
  * Codegen's test-only schema and module registry.
  */
 export type Registry<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> = {
   readonly schema: DatabaseSchema_;
   readonly convexSchema: SchemaDefinition<GenericSchema, true>;
   readonly modules: Record<string, () => Promise<any>>;
-  readonly components: Readonly<
-    Record<
-      string,
-      {
-        readonly schema: SchemaDefinition<GenericSchema, boolean>;
-        readonly modules: Record<string, () => Promise<any>>;
-      }
-    >
-  >;
+  readonly components: Readonly<Record<string, ComponentKit>>;
 };
 
 /**
@@ -380,7 +401,7 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
                   name === mount.name || name.startsWith(`${mount.name}/`),
               )
             ) {
-              registerComponent(name, component.schema, component.modules);
+              registerKit(registerComponent, name, component);
             }
           }
         },
@@ -393,7 +414,7 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       httpMounts: app.httpMounts,
       register: (registerComponent) => {
         for (const [name, component] of Object.entries(app.components)) {
-          registerComponent(name, component.schema, component.modules);
+          registerKit(registerComponent, name, component);
         }
       },
     });

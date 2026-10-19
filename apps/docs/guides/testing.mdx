@@ -59,7 +59,7 @@ export const Test = TestConfect.TestConfect<typeof app.schema>();
 export const layer = TestConfect.layer(app);
 ```
 
-The generated registry imports each component's deploy schema from its resolved Convex directory and supplies lazy module loaders. Keep it in test imports only. It is separate from the runtime schema and function wrappers, so production functions retain their per-group bundles. Regenerate it when adding functions or changing component installations. The schema-based constructor above remains available for hand-written component kits and custom HTTP router loaders.
+The generated registry imports the schema and lazy module loaders of each component in your own package by a relative path. A component mounted from another package is registered through that package's public test entry. The registry imports `register` from `<package>/test` and calls `register(t, name)`, the convention of Convex components such as `@convex-dev/workpool/test`. That `register` also registers the package's own nested components. Codegen fails when the package has no `/test` export, and it never writes another package's private file paths. Keep the registry in test imports only. It is separate from the runtime schema and function wrappers, so production functions retain their per-group bundles. Regenerate it when adding functions or changing component installations. The schema-based constructor above remains available for hand-written component kits and custom HTTP router loaders.
 
 You can also pass an authored `App` value with its registry as `TestConfect.layer(app, registry)`. This reads mount names and HTTP prefixes from that value. Prefer the generated one-argument form when a component definition has nested `use` calls; codegen evaluates those definitions with Convex's config loader. The test layer retains the shared process-env and module-cache limitations described below.
 
@@ -217,11 +217,11 @@ Effect.gen(function* () {
 
 ### Register component test kits
 
-Pass an options object with a `register` callback as the fourth argument to `TestConfect.layer`. It runs synchronously during layer construction, after the test backend exists and before the service is available. The callback receives a registration function for the component's Convex schema and module loaders.
+Pass an options object with a `register` callback as the fourth argument to `TestConfect.layer`. It runs synchronously during layer construction, after the test backend exists and before the service is available. The callback receives a registration function for the component's Convex schema and module loaders. A component package's test entry takes it as `t.registerComponent`.
 
 ```ts test/TestConfect.ts
 import { TestConfect } from "@confect/test";
-import { register } from "@example/counter/testing";
+import { register } from "@example/counter/test";
 import applicationSchema from "./confect/_generated/schema";
 import convexSchema from "./confect/_generated/convexSchema";
 
@@ -231,13 +231,13 @@ export const layer = TestConfect.layer(
   import.meta.glob("./convex/**/!(*.*.*)*.*s"),
   {
     register: (registerComponent) => {
-      register(registerComponent, "counter");
+      register({ registerComponent }, "counter");
     },
   },
 );
 ```
 
-Use the same component path as the installation in `convex.config.ts`. Register nested components separately with their full path, such as `"counter/child"`. Once registered, call bound references with `query`, `mutation`, and `action`. You can also register after setup with the existing effectful `registerComponent` method.
+Use the same component path as the installation in `convex.config.ts`. A package's `register` installs its own nested components under that path. Register any other nested component with its full path, such as `"counter/child"`. Once registered, call bound references with `query`, `mutation`, and `action`. You can also register after setup with the existing effectful `registerComponent` method.
 
 ### Fetch mounted component routes
 
@@ -250,8 +250,8 @@ const layer = TestConfect.layer(
   applicationModules,
   {
     register: (registerComponent) => {
-      register(registerComponent, "first");
-      register(registerComponent, "second");
+      register({ registerComponent }, "first");
+      register({ registerComponent }, "second");
     },
     httpMounts: [
       { componentPath: "first", httpPrefix: "/email" },
@@ -274,17 +274,17 @@ The selected component receives its own action context. Route lookup uses the pa
 
 HTTP layers can read configuration while their module is constructed. ES imports cache modules across installations and tests. For two mounts of the same component, provide a module loader that constructs a fresh router. Keep the router factory in a separate module from the production HTTP entry point:
 
-```ts src/testing.ts
+```ts src/test.ts
 import type { TestConfect } from "@confect/test";
 import schema from "./convex/schema";
 
 const modules = import.meta.glob("./convex/**/!(*.*.*)*.*s");
 
 export const register = (
-  registerComponent: TestConfect.RegisterComponent,
+  t: { readonly registerComponent: TestConfect.RegisterComponent },
   name: string,
 ) => {
-  registerComponent(name, schema, {
+  t.registerComponent(name, schema, {
     ...modules,
     "./convex/http.ts": () =>
       import("./confect/httpFactory").then(({ makeHttp }) => ({

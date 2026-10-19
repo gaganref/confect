@@ -36,6 +36,7 @@ import {
 } from "@confect/cli/TableModule";
 import {
   HandWrittenConvexFileError,
+  InvalidConvexConfigError,
   InvalidDeclarationError,
 } from "@confect/cli/CodegenError";
 import * as Project from "./integration/Project";
@@ -1036,6 +1037,87 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           expect(
             yield* project.read("confect/_generated/testing.ts"),
           ).toContain('httpPrefix: "/"');
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "registers a mounted package's component through its public test entry",
+      () =>
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const project = yield* declarationProject;
+          yield* project.write(
+            "confect/app.ts",
+            (yield* project.read("confect/app.ts"))
+              .replace(
+                'import env from "./env";',
+                'import env from "./env";\nimport workpool from "@convex-dev/workpool/convex.config";',
+              )
+              .replace(
+                "  mounts: {",
+                "  mounts: {\n    pool: App.mount(workpool),",
+              ),
+          );
+          yield* project.run;
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(testing).toContain(
+            'import { register as component1Register } from "@convex-dev/workpool/test";',
+          );
+          expect(testing).toContain('"pool": component1,');
+          expect(testing).not.toContain(".pnpm");
+          expect(testing).not.toContain("node_modules");
+          const generated = path.join(project.root, "confect/_generated");
+          const escaping = Array.filter(
+            [...testing.matchAll(/(?:from |import\()"([^"]+)"/g)].map(
+              ([, specifier]) => specifier!,
+            ),
+            (specifier) =>
+              specifier.startsWith(".") &&
+              !path
+                .resolve(generated, specifier)
+                .startsWith(project.root + path.sep),
+          );
+          expect(escaping).toEqual([]);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "rejects a mounted package's component without a test entry",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const project = yield* declarationProject;
+          yield* fs.makeDirectory(
+            path.join(project.root, "node_modules/no-test-kit"),
+            { recursive: true },
+          );
+          yield* project.write(
+            "node_modules/no-test-kit/package.json",
+            '{ "name": "no-test-kit", "type": "module", "exports": { "./convex.config": "./convex.config.js" } }\n',
+          );
+          yield* project.write(
+            "node_modules/no-test-kit/convex.config.js",
+            'import { defineComponent } from "convex/server";\nexport default defineComponent("noTestKit");\n',
+          );
+          yield* project.write(
+            "confect/app.ts",
+            (yield* project.read("confect/app.ts"))
+              .replace(
+                'import env from "./env";',
+                'import env from "./env";\nimport kit from "no-test-kit/convex.config";',
+              )
+              .replace("  mounts: {", "  mounts: {\n    kit: App.mount(kit),"),
+          );
+          expect(yield* Effect.flip(project.run)).toEqual(
+            new InvalidConvexConfigError({
+              configPath: "../../convex/convex.config.ts",
+              reason:
+                'the component package "no-test-kit" has no "no-test-kit/test" export. Tests register a component from another package through that entry\'s `register(t, name)`.',
+            }),
+          );
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
