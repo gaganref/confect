@@ -1,5 +1,5 @@
 import { GroupSpec, Spec } from "@confect/core";
-import counter from "../counter.spec";
+import counter from "../counter.spec.js";
 
 const spec: Spec.Spec<{
   readonly counter: GroupSpec.NamedAt<typeof counter, "counter">;

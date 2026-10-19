@@ -1,4 +1,4 @@
-import registeredFunctions from "../confect/_generated/registeredFunctions/counter";
+import registeredFunctions from "../confect/_generated/registeredFunctions/counter.js";
 
 export const create = registeredFunctions.create;
 export const list = registeredFunctions.list;
