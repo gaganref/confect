@@ -85,7 +85,7 @@ const runtimeSchemaEffect = Effect.fnUntraced(function* ({
   yield* cbw.blankLine();
 
   if (component) {
-    yield* cbw.writeLine(`import { target as $target } from "./id";`);
+    yield* cbw.writeLine(`import { target as $target } from "./id.js";`);
   }
 
   if (tableModules.length === 0) {
@@ -271,7 +271,7 @@ const tableWrapperEffect = Effect.fnUntraced(function* ({
   const cbw = new CodeBlockWriter({ indentNumberOfSpaces: 2 });
 
   yield* cbw.writeLine(`import unnamed from "${unnamedImportPath}";`);
-  if (component) yield* cbw.writeLine(`import { scope } from "../id";`);
+  if (component) yield* cbw.writeLine(`import { scope } from "../id.js";`);
   yield* cbw.blankLine();
   yield* cbw.writeLine(
     `export default unnamed("${tableName}"${component ? ", scope" : ""});`,
@@ -444,8 +444,8 @@ export const componentContract = Effect.fnUntraced(function* ({
 }) {
   const cbw = new CodeBlockWriter({ indentNumberOfSpaces: 2 });
   yield* cbw.writeLine('import { Component } from "@confect/core";');
-  yield* cbw.writeLine('import spec from "./spec";');
-  yield* cbw.writeLine('import { scope } from "./id";');
+  yield* cbw.writeLine('import spec from "./spec.js";');
+  yield* cbw.writeLine('import { scope } from "./id.js";');
   yield* cbw.blankLine();
   const names = Array.map(
     [...tableNames, "_storage", "_scheduled_functions"],
@@ -661,8 +661,8 @@ const servicesEffect = Effect.fnUntraced(function* ({
   yield* cbw.writeLine(
     `import type schemaDefinition from "${schemaImportPath}";`,
   );
-  yield* cbw.writeLine(`import type { Docs } from "./docs";`);
-  if (component) yield* cbw.writeLine(`import type { scope } from "./id";`);
+  yield* cbw.writeLine(`import type { Docs } from "./docs.js";`);
+  if (component) yield* cbw.writeLine(`import type { scope } from "./id.js";`);
   yield* cbw.blankLine();
 
   // Auth

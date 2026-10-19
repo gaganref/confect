@@ -1,10 +1,10 @@
 import { ConvexFunctionDefinitions, RegisteredConvexFunction, type RegisteredFunctions } from "@confect/server";
-import databaseSchema from "../../schema";
-import groupLayer from "../../../groups/typedErrors.impl";
+import databaseSchema from "../../schema.js";
+import groupLayer from "../../../groups/typedErrors.impl.js";
 
 const forward = <Ctx, Args, Returns>(handler: (ctx: Ctx, args: Args) => Promise<Returns>) => (ctx: Ctx, args: Args) => handler(ctx, args);
 
-const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../../../groups/typedErrors.spec")["default"]>(databaseSchema, groupLayer);
+const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../../../groups/typedErrors.spec.js")["default"]>(databaseSchema, groupLayer);
 
 export default {
 ["getNoteOrFail"]: RegisteredConvexFunction.register({ ...definitions["getNoteOrFail"], handler: forward(definitions["getNoteOrFail"].handler) }),
@@ -16,4 +16,4 @@ export default {
 ["tryFailingAction"]: RegisteredConvexFunction.register({ ...definitions["tryFailingAction"], handler: forward(definitions["tryFailingAction"].handler) }),
 ["internalGetNoteOrFail"]: RegisteredConvexFunction.register({ ...definitions["internalGetNoteOrFail"], handler: forward(definitions["internalGetNoteOrFail"].handler) }),
 ["tryInternalGetNote"]: RegisteredConvexFunction.register({ ...definitions["tryInternalGetNote"], handler: forward(definitions["tryInternalGetNote"].handler) }),
-} as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/typedErrors.spec")["default"]>;
+} as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/typedErrors.spec.js")["default"]>;

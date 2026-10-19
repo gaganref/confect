@@ -1,4 +1,4 @@
-import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/components";
+import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/components.js";
 
 export const cancel = registeredFunctions.cancel;
 export const declaredError = registeredFunctions.declaredError;

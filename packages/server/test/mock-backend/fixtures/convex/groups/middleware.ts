@@ -1,4 +1,4 @@
-import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/middleware";
+import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/middleware.js";
 
 export const firstNoteForViewer = registeredFunctions.firstNoteForViewer;
 export const shoutName = registeredFunctions.shoutName;

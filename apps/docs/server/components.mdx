@@ -352,7 +352,7 @@ Import the generated test app to register declared components and their HTTP mou
 import { TestConfect } from "@confect/test";
 import * as Effect from "effect/Effect";
 import { expect, test } from "vitest";
-import app from "./confect/_generated/testing";
+import app from "./confect/_generated/testing.js";
 
 const Test = TestConfect.TestConfect<typeof app.schema>();
 const layer = TestConfect.layer(app);

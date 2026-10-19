@@ -1,5 +1,5 @@
 import { GroupSpec, Spec } from "@confect/core";
-import parent from "../parent.spec";
+import parent from "../parent.spec.js";
 
 const spec: Spec.Spec<{
   readonly parent: GroupSpec.NamedAt<typeof parent, "parent">;

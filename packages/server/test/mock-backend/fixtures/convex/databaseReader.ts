@@ -1,4 +1,4 @@
-import registeredFunctions from "../confect/_generated/registeredFunctions/databaseReader";
+import registeredFunctions from "../confect/_generated/registeredFunctions/databaseReader.js";
 
 export const getNote = registeredFunctions.getNote;
 export const listNotes = registeredFunctions.listNotes;

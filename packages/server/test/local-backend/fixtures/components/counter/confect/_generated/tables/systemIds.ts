@@ -1,4 +1,4 @@
-import unnamed from "../../tables/systemIds";
-import { scope } from "../id";
+import unnamed from "../../tables/systemIds.js";
+import { scope } from "../id.js";
 
 export default unnamed("systemIds", scope);

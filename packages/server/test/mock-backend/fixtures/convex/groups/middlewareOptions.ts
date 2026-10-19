@@ -1,4 +1,4 @@
-import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/middlewareOptions";
+import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/middlewareOptions.js";
 
 export const action = registeredFunctions.action;
 export const longName = registeredFunctions.longName;

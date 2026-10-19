@@ -1,13 +1,13 @@
 import { ConvexFunctionDefinitions, RegisteredConvexFunction, type RegisteredFunctions } from "@confect/server";
-import databaseSchema from "../schema";
-import groupLayer from "../../parent.impl";
+import databaseSchema from "../schema.js";
+import groupLayer from "../../parent.impl.js";
 
 const forward = <Ctx, Args, Returns>(handler: (ctx: Ctx, args: Args) => Promise<Returns>) => (ctx: Ctx, args: Args) => handler(ctx, args);
 
-const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../../parent.spec")["default"]>(databaseSchema, groupLayer);
+const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../../parent.spec.js")["default"]>(databaseSchema, groupLayer);
 
 export default {
 ["create"]: RegisteredConvexFunction.register({ ...definitions["create"], handler: forward(definitions["create"].handler) }),
 ["list"]: RegisteredConvexFunction.register({ ...definitions["list"], handler: forward(definitions["list"].handler) }),
 ["location"]: RegisteredConvexFunction.register({ ...definitions["location"], handler: forward(definitions["location"].handler) }),
-} as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../parent.spec")["default"]>;
+} as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../parent.spec.js")["default"]>;

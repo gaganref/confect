@@ -110,7 +110,7 @@ export const specImportPathFromGenerated = Effect.fnUntraced(function* (
     path,
     yield* removePathExtension(specRelativePath),
   );
-  return `../${withoutExt}`;
+  return `../${withoutExt}.js`;
 });
 
 export const specPathForImpl = (implRelativePath: string) =>

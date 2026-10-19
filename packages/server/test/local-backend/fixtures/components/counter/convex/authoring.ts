@@ -1,4 +1,4 @@
-import registeredFunctions from "../confect/_generated/registeredFunctions/authoring";
+import registeredFunctions from "../confect/_generated/registeredFunctions/authoring.js";
 
 export const probe = registeredFunctions.probe;
 export const read = registeredFunctions.read;

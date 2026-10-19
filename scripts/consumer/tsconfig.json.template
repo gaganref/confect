@@ -1,10 +1,11 @@
 {
   "compilerOptions": {
     "target": "ESNext",
-    "module": "ESNext",
-    "moduleResolution": "Bundler",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
     "strict": true,
-    "skipLibCheck": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": false,
     "noEmit": true,
     "types": [
       "node",

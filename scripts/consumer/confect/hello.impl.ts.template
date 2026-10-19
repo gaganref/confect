@@ -2,16 +2,16 @@ import { Callback, FunctionImpl, GroupImpl } from "@confect/server";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
-import env from "./env";
+import env from "./env.js";
 import {
   OnCheckedArgs,
   OnResult,
-} from "../components/counter/confect/callbacks";
-import schema from "./_generated/schema";
-import refs from "./_generated/refs";
-import { MutationRunner, QueryRunner } from "./_generated/services";
-import { counter } from "./component";
-import hello from "./hello.spec";
+} from "../components/counter/confect/callbacks.js";
+import schema from "./_generated/schema.js";
+import refs from "./_generated/refs.js";
+import { MutationRunner, QueryRunner } from "./_generated/services.js";
+import { counter } from "./component.js";
+import hello from "./hello.spec.js";
 const readMarker = FunctionImpl.make(schema, hello, "readMarker", () =>
   Effect.gen(function* () { return Option.getOrElse(yield* env.INSTALL_MARKER, () => "unset"); }).pipe(Effect.orDie),
 );

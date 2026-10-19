@@ -1,9 +1,9 @@
 import { defineSchema as $defineSchema } from "convex/server";
 import { Table as $Table } from "@confect/server";
 
-import counters from "./tables/counters";
-import deliveries from "./tables/deliveries";
-import systemIds from "./tables/systemIds";
+import counters from "./tables/counters.js";
+import deliveries from "./tables/deliveries.js";
+import systemIds from "./tables/systemIds.js";
 
 export default $defineSchema({
   counters: $Table.tableDefinition(counters),

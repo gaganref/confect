@@ -1,5 +1,5 @@
 import type { Document } from "@confect/server";
-import type schemaDefinition from "./schema";
+import type schemaDefinition from "./schema.js";
 
 export type CallbackEventsDoc = Document.Document<typeof schemaDefinition, "callbackEvents">;
 export type TransactionNotesDoc = Document.Document<typeof schemaDefinition, "transactionNotes">;

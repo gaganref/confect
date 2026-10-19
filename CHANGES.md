@@ -52,6 +52,18 @@ for explicit extensions. The CLI ships a binary and has no declaration entry.
 Changeset: `nodenext-declarations.md`.
 Upstream: planned; no proposal submitted.
 
+### Generate NodeNext-compatible test kits
+
+Emit explicit runtime extensions for every relative codegen import, including
+Convex wrappers and test module loaders. Keep source-extension module-map keys
+for convex-test. Name each package namespace or local kit after its first mount,
+sanitize identifiers and suffix collisions, and emit all imports before local kits.
+The fresh installed consumer now checks the complete generated app under strict
+NodeNext with `skipLibCheck: false`.
+
+Changeset: `nodenext-codegen-test-kits.md`.
+Upstream: planned; no proposal submitted.
+
 ## Component authoring and contracts
 
 ### Check component declarations

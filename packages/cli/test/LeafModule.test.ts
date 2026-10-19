@@ -199,7 +199,7 @@ for (const { name, pathLayer, sep } of PLATFORMS) {
             yield* specImportPathFromGenerated(
               p("notesAndRandom", "notes.spec.ts"),
             ),
-          ).toBe("../notesAndRandom/notes.spec");
+          ).toBe("../notesAndRandom/notes.spec.js");
         }),
     );
 

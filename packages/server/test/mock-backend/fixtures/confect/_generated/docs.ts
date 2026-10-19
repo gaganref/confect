@@ -1,5 +1,5 @@
 import type { Document } from "@confect/server";
-import type schemaDefinition from "./schema";
+import type schemaDefinition from "./schema.js";
 
 export type EventsDoc = Document.Document<typeof schemaDefinition, "events">;
 export type NotesDoc = Document.Document<typeof schemaDefinition, "notes">;

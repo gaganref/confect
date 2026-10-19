@@ -1,10 +1,10 @@
 import { ConvexFunctionDefinitions, RegisteredConvexFunction, type RegisteredFunctions } from "@confect/server";
-import databaseSchema from "../../schema";
-import groupLayer from "../../../groups/transactions.impl";
+import databaseSchema from "../../schema.js";
+import groupLayer from "../../../groups/transactions.impl.js";
 
 const forward = <Ctx, Args, Returns>(handler: (ctx: Ctx, args: Args) => Promise<Returns>) => (ctx: Ctx, args: Args) => handler(ctx, args);
 
-const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../../../groups/transactions.spec")["default"]>(databaseSchema, groupLayer);
+const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../../../groups/transactions.spec.js")["default"]>(databaseSchema, groupLayer);
 
 export default {
 ["read"]: RegisteredConvexFunction.register({ ...definitions["read"], handler: forward(definitions["read"].handler) }),
@@ -15,4 +15,4 @@ export default {
 ["limitedWrite"]: RegisteredConvexFunction.register({ ...definitions["limitedWrite"], handler: forward(definitions["limitedWrite"].handler) }),
 ["rollback"]: RegisteredConvexFunction.register({ ...definitions["rollback"], handler: forward(definitions["rollback"].handler) }),
 ["staleRead"]: RegisteredConvexFunction.register({ ...definitions["staleRead"], handler: forward(definitions["staleRead"].handler) }),
-} as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/transactions.spec")["default"]>;
+} as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/transactions.spec.js")["default"]>;
