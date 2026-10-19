@@ -6,14 +6,14 @@ import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Order from "effect/Order";
-import { fromBundlerError } from "./BuildError";
-import * as Bundler from "./Bundler";
+import { fromBundlerError } from "./BuildError.js";
+import * as Bundler from "./Bundler.js";
 import {
   DuplicateTableNameError,
   InvalidTableDefaultExportError,
   InvalidTableFilenameError,
-} from "./CodegenError";
-import { ConfectDirectory } from "./ConfectDirectory";
+} from "./CodegenError.js";
+import { ConfectDirectory } from "./ConfectDirectory.js";
 
 export const TABLES_DIRNAME = "tables";
 

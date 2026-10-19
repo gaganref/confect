@@ -4,8 +4,8 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Semaphore from "effect/Semaphore";
-import type { Kind } from "./EntryPoint";
-import * as SyncState from "./SyncState";
+import type { Kind } from "./EntryPoint.js";
+import * as SyncState from "./SyncState.js";
 
 type State = Data.TaggedEnum<{
   Reconciling: { readonly revision: number };

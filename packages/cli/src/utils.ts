@@ -7,10 +7,10 @@ import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
 import * as String from "effect/String";
-import { logFileAdded, logFileModified } from "./log";
-import { ConfectDirectory } from "./ConfectDirectory";
-import { ConvexDirectory } from "./ConvexDirectory";
-import * as templates from "./templates";
+import { logFileAdded, logFileModified } from "./log.js";
+import { ConfectDirectory } from "./ConfectDirectory.js";
+import { ConvexDirectory } from "./ConvexDirectory.js";
+import * as templates from "./templates.js";
 
 export const removePathExtension = Effect.fnUntraced(function* (
   pathStr: string,

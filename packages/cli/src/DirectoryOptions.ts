@@ -6,9 +6,9 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Schema from "effect/Schema";
 import * as Flag from "effect/cli/Flag";
-import * as ConfectDirectory from "./ConfectDirectory";
-import * as ConvexDirectory from "./ConvexDirectory";
-import * as ProjectRoot from "./ProjectRoot";
+import * as ConfectDirectory from "./ConfectDirectory.js";
+import * as ConvexDirectory from "./ConvexDirectory.js";
+import * as ProjectRoot from "./ProjectRoot.js";
 
 export const flags = {
   componentDir: Flag.String("component-dir").pipe(

@@ -82,6 +82,16 @@
   },
   "overrides": [
     {
+      "files": ["packages/*/src/**/*.ts"],
+      "rules": {
+        "import/extensions": [
+          "error",
+          "always",
+          { "ignorePackages": true, "checkTypeImports": true }
+        ]
+      }
+    },
+    {
       "files": [
         "packages/cli/src/Evaluation.ts",
         "packages/cli/test/Evaluation.test.ts"

@@ -1,6 +1,6 @@
 import * as Schema from "effect/Schema";
-import { ImplModulePath } from "./ImplModulePath";
-import * as RelativeModulePath from "./RelativeModulePath";
+import { ImplModulePath } from "./ImplModulePath.js";
+import * as RelativeModulePath from "./RelativeModulePath.js";
 
 export const SpecModulePath = RelativeModulePath.withSuffix(".spec.ts").pipe(
   Schema.brand("@confect/cli/SpecModulePath"),

@@ -5,8 +5,8 @@ import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
-import * as IdScope from "./IdScope";
-import type * as Ref from "./Ref";
+import * as IdScope from "./IdScope.js";
+import type * as Ref from "./Ref.js";
 
 const ConvexId = "~@confect/core/ConvexId";
 const ConvexIdScope = "~@confect/core/ConvexIdScope";

@@ -1,6 +1,6 @@
-import type * as DatabaseSchema from "./DatabaseSchema";
-import type * as Table from "./Table";
-import type * as TableInfo from "./TableInfo";
+import type * as DatabaseSchema from "./DatabaseSchema.js";
+import type * as Table from "./Table.js";
+import type * as TableInfo from "./TableInfo.js";
 import type * as GenericId from "@confect/core/GenericId";
 
 export declare const TypeId: "~@confect/server/DataModel";

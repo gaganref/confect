@@ -8,11 +8,11 @@ import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
-import { ConvexClient } from "./ConvexClient";
-import type { Providers } from "./Providers";
-import { resourceName } from "./internal/ResourceIdentity";
-import { checkpointCreate } from "./internal/Lifecycle";
-import { adminKey, dataDirectories } from "./internal/LocalBackend";
+import { ConvexClient } from "./ConvexClient.js";
+import type { Providers } from "./Providers.js";
+import { resourceName } from "./internal/ResourceIdentity.js";
+import { checkpointCreate } from "./internal/Lifecycle.js";
+import { adminKey, dataDirectories } from "./internal/LocalBackend.js";
 
 export interface DeployKeyProps {
   readonly deploymentName: string;

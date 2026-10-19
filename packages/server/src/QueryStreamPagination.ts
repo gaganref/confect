@@ -4,8 +4,8 @@ import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import type * as QueryStreamKey from "./QueryStreamKey";
-import * as QueryStreamKeyValues from "./QueryStreamKeyValues";
+import type * as QueryStreamKey from "./QueryStreamKey.js";
+import * as QueryStreamKeyValues from "./QueryStreamKeyValues.js";
 
 const PageSize = Schema.Natural.pipe(
   Schema.brand("~@confect/server/QueryStreamPagination/PageSize"),

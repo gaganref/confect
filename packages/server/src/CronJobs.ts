@@ -11,7 +11,7 @@ import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
-import type * as CronJob from "./CronJob";
+import type * as CronJob from "./CronJob.js";
 
 export const TypeId = "~@confect/server/CronJobs";
 export type TypeId = typeof TypeId;

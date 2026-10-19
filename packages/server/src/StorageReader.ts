@@ -7,7 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { BlobNotFoundError } from "./BlobNotFoundError";
+import { BlobNotFoundError } from "./BlobNotFoundError.js";
 import type * as ScopedId from "@confect/core/GenericId";
 
 export type Service<Scope extends IdScope.IdScope = IdScope.App> = {

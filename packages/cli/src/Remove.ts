@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schedule from "effect/Schedule";
-import { RemoveBusyError } from "./CodegenError";
+import { RemoveBusyError } from "./CodegenError.js";
 
 const MAX_ATTEMPTS = 4;
 

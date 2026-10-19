@@ -1,4 +1,4 @@
-export * as Client from "./Client";
-export * as Command from "./Command";
-export * as PaginatedQuery from "./PaginatedQuery";
-export * as Subscription from "./Subscription";
+export * as Client from "./Client.js";
+export * as Command from "./Command.js";
+export * as PaginatedQuery from "./PaginatedQuery.js";
+export * as Subscription from "./Subscription.js";

@@ -55,19 +55,19 @@ import * as String from "effect/String";
 import * as Result from "effect/Result";
 import * as Tuple from "effect/Tuple";
 import type * as Types from "effect/Types";
-import * as Document from "./Document";
-import type * as Table from "./Table";
-import * as QueryStreamCursor from "./QueryStreamCursor";
-import * as QueryStreamKeyLabels from "./QueryStreamKeyLabels";
-import * as QueryStreamKeyLayout from "./QueryStreamKeyLayout";
-import * as QueryStreamOrderDirection from "./QueryStreamOrderDirection";
-import * as QueryStreamKeyValues from "./QueryStreamKeyValues";
-import * as QueryStreamIndexPrefix from "./QueryStreamIndexPrefix";
-import * as QueryStreamKey from "./QueryStreamKey";
-import * as QueryStreamKeyBounds from "./QueryStreamKeyBounds";
-import * as QueryStreamIndexRange from "./QueryStreamIndexRange";
-import * as QueryStreamPagination from "./QueryStreamPagination";
-import * as QueryStreamReadBudget from "./QueryStreamReadBudget";
+import * as Document from "./Document.js";
+import type * as Table from "./Table.js";
+import * as QueryStreamCursor from "./QueryStreamCursor.js";
+import * as QueryStreamKeyLabels from "./QueryStreamKeyLabels.js";
+import * as QueryStreamKeyLayout from "./QueryStreamKeyLayout.js";
+import * as QueryStreamOrderDirection from "./QueryStreamOrderDirection.js";
+import * as QueryStreamKeyValues from "./QueryStreamKeyValues.js";
+import * as QueryStreamIndexPrefix from "./QueryStreamIndexPrefix.js";
+import * as QueryStreamKey from "./QueryStreamKey.js";
+import * as QueryStreamKeyBounds from "./QueryStreamKeyBounds.js";
+import * as QueryStreamIndexRange from "./QueryStreamIndexRange.js";
+import * as QueryStreamPagination from "./QueryStreamPagination.js";
+import * as QueryStreamReadBudget from "./QueryStreamReadBudget.js";
 
 /**
  * A page exhausted its read budget without a safe logical continuation.
@@ -165,14 +165,14 @@ export class MissingReversalRecipeError extends Data.TaggedError(
 export {
   EmptyInitialPageError,
   InvalidPageSizeError,
-} from "./QueryStreamPagination";
+} from "./QueryStreamPagination.js";
 
 /**
  * Invalid numeric read limits.
  *
  * @experimental
  */
-export { InvalidReadLimitError } from "./QueryStreamReadBudget";
+export { InvalidReadLimitError } from "./QueryStreamReadBudget.js";
 
 /**
  * Runtime identifier used to distinguish query streams from plain streams.

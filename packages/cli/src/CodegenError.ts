@@ -5,10 +5,10 @@ import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
-import { BuildError, isBuildError } from "./BuildError";
-import { SnapshotError } from "./SnapshotError";
-import * as Ansi from "./Ansi";
-import { formatPath, renderBuildError } from "./log";
+import { BuildError, isBuildError } from "./BuildError.js";
+import { SnapshotError } from "./SnapshotError.js";
+import * as Ansi from "./Ansi.js";
+import { formatPath, renderBuildError } from "./log.js";
 
 // --- Variants ---
 

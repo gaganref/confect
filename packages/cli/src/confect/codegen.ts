@@ -6,27 +6,27 @@ import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import type * as PlatformError from "effect/PlatformError";
-import type { BuildError } from "../BuildError";
+import type { BuildError } from "../BuildError.js";
 import { pipe } from "effect/Function";
 import * as HashSet from "effect/HashSet";
 import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import type * as Scope from "effect/Scope";
-import * as Bundler from "../Bundler";
-import { fromBundlerError } from "../BuildError";
-import * as CodegenError from "../CodegenError";
-import { LegacySchemaFileError } from "../CodegenError";
-import { ConfectDirectory } from "../ConfectDirectory";
-import * as ConvexConfig from "../ConvexConfig";
-import { ConvexDirectory } from "../ConvexDirectory";
-import * as DirectoryOptions from "../DirectoryOptions";
-import * as DocName from "../DocName";
-import * as FunctionPaths from "../FunctionPaths";
-import * as FunctionModule from "../FunctionModule";
-import * as GenerationSnapshot from "../GenerationSnapshot";
-import * as EntryPoint from "../EntryPoint";
-import type { ImplModulePath } from "../ImplModulePath";
+import * as Bundler from "../Bundler.js";
+import { fromBundlerError } from "../BuildError.js";
+import * as CodegenError from "../CodegenError.js";
+import { LegacySchemaFileError } from "../CodegenError.js";
+import { ConfectDirectory } from "../ConfectDirectory.js";
+import * as ConvexConfig from "../ConvexConfig.js";
+import { ConvexDirectory } from "../ConvexDirectory.js";
+import * as DirectoryOptions from "../DirectoryOptions.js";
+import * as DocName from "../DocName.js";
+import * as FunctionPaths from "../FunctionPaths.js";
+import * as FunctionModule from "../FunctionModule.js";
+import * as GenerationSnapshot from "../GenerationSnapshot.js";
+import * as EntryPoint from "../EntryPoint.js";
+import type { ImplModulePath } from "../ImplModulePath.js";
 import {
   implPathForSpec,
   loadAll,
@@ -35,7 +35,7 @@ import {
   withImplFiles,
   type LeafModule,
   type LoadedLeafModule,
-} from "../LeafModule";
+} from "../LeafModule.js";
 import {
   logFileAdded,
   logFileModified,
@@ -43,12 +43,12 @@ import {
   logPending,
   logSuccess,
   logWarn,
-} from "../log";
-import { ProjectRoot } from "../ProjectRoot";
-import { preserveComponentOutput } from "../Rollback";
-import { assemblyNodesFromLeaves } from "../SpecAssemblyNode";
-import * as TableModule from "../TableModule";
-import * as templates from "../templates";
+} from "../log.js";
+import { ProjectRoot } from "../ProjectRoot.js";
+import { preserveComponentOutput } from "../Rollback.js";
+import { assemblyNodesFromLeaves } from "../SpecAssemblyNode.js";
+import * as TableModule from "../TableModule.js";
+import * as templates from "../templates.js";
 import {
   generateAuthConfig,
   generateCrons,
@@ -57,8 +57,8 @@ import {
   toModuleImportPath,
   touchConvexSchema,
   writeFileStringAndLog,
-} from "../utils";
-import { syncDeclaration, syncDeclaredHttp } from "./declaration";
+} from "../utils.js";
+import { syncDeclaration, syncDeclaredHttp } from "./declaration.js";
 
 const GENERATED_DIRNAME = "_generated";
 

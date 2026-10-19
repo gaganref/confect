@@ -1,11 +1,11 @@
-import * as MiddlewareAttachment from "./MiddlewareAttachment";
+import * as MiddlewareAttachment from "./MiddlewareAttachment.js";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
-import type * as FunctionSpec from "./FunctionSpec";
-import type * as MiddlewareSpec from "./MiddlewareSpec";
-import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType";
-import { validateConfectFunctionIdentifier } from "./Identifier";
+import type * as FunctionSpec from "./FunctionSpec.js";
+import type * as MiddlewareSpec from "./MiddlewareSpec.js";
+import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
+import { validateConfectFunctionIdentifier } from "./Identifier.js";
 
 export const TypeId = "~@confect/core/GroupSpec";
 export type TypeId = typeof TypeId;

@@ -4,8 +4,8 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Schema from "effect/Schema";
-import * as MutationTransactionContext from "./MutationTransactionContext";
-import * as QueryTransactionContext from "./QueryTransactionContext";
+import * as MutationTransactionContext from "./MutationTransactionContext.js";
+import * as QueryTransactionContext from "./QueryTransactionContext.js";
 
 export type Options = MutationTransactionContext.QueryOptions;
 

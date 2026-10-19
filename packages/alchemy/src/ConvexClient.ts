@@ -11,7 +11,7 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import type * as HttpClientResponse from "effect/http/HttpClientResponse";
-import * as Loopback from "./internal/Loopback";
+import * as Loopback from "./internal/Loopback.js";
 
 export type Project = ManagementApi.ProjectResponse;
 export type CreatedProject = ManagementApi.PlatformCreateProjectResponse;

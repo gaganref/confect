@@ -30,18 +30,18 @@ import {
   tsconfigPathsToRegExp,
 } from "bundle-require";
 import * as esbuild from "esbuild";
-import * as Bundler from "./Bundler";
-import * as WatchBuild from "./WatchBuild";
-import * as WatchTopology from "./WatchTopology";
-import * as SyncState from "./SyncState";
-import type { Pending } from "./SyncState";
-import * as EntryPoint from "./EntryPoint";
-import type { EntryPoint as Entry } from "./EntryPoint";
-import { ConfectDirectory } from "./ConfectDirectory";
-import { CONVEX_CONFIG_FILENAME } from "./ConvexConfig";
-import { ConvexDirectory } from "./ConvexDirectory";
-import { ProjectRoot } from "./ProjectRoot";
-import * as RestoreWatcher from "./RestoreWatcher";
+import * as Bundler from "./Bundler.js";
+import * as WatchBuild from "./WatchBuild.js";
+import * as WatchTopology from "./WatchTopology.js";
+import * as SyncState from "./SyncState.js";
+import type { Pending } from "./SyncState.js";
+import * as EntryPoint from "./EntryPoint.js";
+import type { EntryPoint as Entry } from "./EntryPoint.js";
+import { ConfectDirectory } from "./ConfectDirectory.js";
+import { CONVEX_CONFIG_FILENAME } from "./ConvexConfig.js";
+import { ConvexDirectory } from "./ConvexDirectory.js";
+import { ProjectRoot } from "./ProjectRoot.js";
+import * as RestoreWatcher from "./RestoreWatcher.js";
 
 const COALESCE_QUIESCENCE = Duration.millis(300);
 

@@ -1,4 +1,4 @@
-import * as IdScope from "./IdScope";
+import * as IdScope from "./IdScope.js";
 import type {
   GenericId as ConvexGenericId,
   PropertyValidators,
@@ -30,7 +30,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import * as String from "effect/String";
 
-import * as GenericId from "./GenericId";
+import * as GenericId from "./GenericId.js";
 import type {
   IsAny,
   IsOptional,
@@ -39,7 +39,7 @@ import type {
   IsUnion,
   TypeError,
   UnionToTuple,
-} from "./Types";
+} from "./Types.js";
 
 // Args
 

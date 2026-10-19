@@ -1,6 +1,6 @@
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
-import * as GroupSpec from "./GroupSpec";
+import * as GroupSpec from "./GroupSpec.js";
 
 export const TypeId = "~@confect/core/Spec";
 export type TypeId = typeof TypeId;

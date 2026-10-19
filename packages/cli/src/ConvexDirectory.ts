@@ -8,7 +8,7 @@ import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
-import * as ProjectRoot from "./ProjectRoot";
+import * as ProjectRoot from "./ProjectRoot.js";
 import type * as DatabaseSchema from "@confect/server/DatabaseSchema";
 
 export class ConvexDirectory extends Context.Service<

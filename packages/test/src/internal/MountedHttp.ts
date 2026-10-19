@@ -10,7 +10,7 @@ import type {
 import { actionGeneric } from "convex/server";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
-import type { HttpMount, RegisterComponent } from "../TestConfect";
+import type { HttpMount, RegisterComponent } from "../TestConfect.js";
 
 declare const process: { env: Record<string, string | undefined> };
 

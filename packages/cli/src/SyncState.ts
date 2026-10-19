@@ -3,9 +3,9 @@ import * as Data from "effect/Data";
 import * as HashSet from "effect/HashSet";
 import * as HashMap from "effect/HashMap";
 import * as Match from "effect/Match";
-import type { Declaration, Kind, OptionalFile } from "./EntryPoint";
-import type { ImplModulePath } from "./ImplModulePath";
-import type { GenerationSnapshot } from "./GenerationSnapshot";
+import type { Declaration, Kind, OptionalFile } from "./EntryPoint.js";
+import type { ImplModulePath } from "./ImplModulePath.js";
+import type { GenerationSnapshot } from "./GenerationSnapshot.js";
 
 export type Work = Data.TaggedEnum<{
   None: {};

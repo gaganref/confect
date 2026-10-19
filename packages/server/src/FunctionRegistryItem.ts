@@ -5,7 +5,7 @@ import type { FunctionType, FunctionVisibility } from "convex/server";
 import * as Match from "effect/Match";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
-import type * as Handler from "./Handler";
+import type * as Handler from "./Handler.js";
 
 export const TypeId = "~@confect/server/FunctionRegistryItem";
 export type TypeId = typeof TypeId;

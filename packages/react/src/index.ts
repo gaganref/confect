@@ -20,10 +20,10 @@ import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import { useCallback, useMemo, useState } from "react";
 
-import * as OptimisticLocalStore from "./OptimisticLocalStore";
-import * as PaginatedQueryResult from "./PaginatedQueryResult";
-import * as QueryResult from "./QueryResult";
-import * as StreamPagination from "./StreamPagination";
+import * as OptimisticLocalStore from "./OptimisticLocalStore.js";
+import * as PaginatedQueryResult from "./PaginatedQueryResult.js";
+import * as QueryResult from "./QueryResult.js";
+import * as StreamPagination from "./StreamPagination.js";
 
 export {
   OptimisticLocalStore,

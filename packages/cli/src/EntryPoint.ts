@@ -8,14 +8,14 @@ import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import { ImplModulePath } from "./ImplModulePath";
-import * as SpecModulePath from "./SpecModulePath";
-import { TableModulePath } from "./TableModulePath";
-import { ConfectDirectory } from "./ConfectDirectory";
-import { ConvexDirectory } from "./ConvexDirectory";
-import { CONVEX_CONFIG_FILENAME } from "./ConvexConfig";
-import { discoverLeafImplFiles, discoverLeafSpecFiles } from "./LeafModule";
-import { discoverTableFiles, type TableModule } from "./TableModule";
+import { ImplModulePath } from "./ImplModulePath.js";
+import * as SpecModulePath from "./SpecModulePath.js";
+import { TableModulePath } from "./TableModulePath.js";
+import { ConfectDirectory } from "./ConfectDirectory.js";
+import { ConvexDirectory } from "./ConvexDirectory.js";
+import { CONVEX_CONFIG_FILENAME } from "./ConvexConfig.js";
+import { discoverLeafImplFiles, discoverLeafSpecFiles } from "./LeafModule.js";
+import { discoverTableFiles, type TableModule } from "./TableModule.js";
 
 export type Kind = Data.TaggedEnum<{
   Env: { readonly relativePath: "env.ts" };

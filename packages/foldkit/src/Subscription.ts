@@ -8,8 +8,8 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import type * as FoldkitSubscription from "foldkit/subscription";
-import * as PaginatedQuery from "./PaginatedQuery";
-import * as Client from "./Client";
+import * as PaginatedQuery from "./PaginatedQuery.js";
+import * as Client from "./Client.js";
 
 /**
  * Everything a reactive query subscription against `Query` can fail with: the

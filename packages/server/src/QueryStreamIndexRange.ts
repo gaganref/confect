@@ -11,10 +11,10 @@ import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import type * as Types from "effect/Types";
-import * as QueryStreamIndexPrefix from "./QueryStreamIndexPrefix";
-import * as QueryStreamKeyBounds from "./QueryStreamKeyBounds";
-import * as QueryStreamKeyValues from "./QueryStreamKeyValues";
-import type * as QueryStreamOrderDirection from "./QueryStreamOrderDirection";
+import * as QueryStreamIndexPrefix from "./QueryStreamIndexPrefix.js";
+import * as QueryStreamKeyBounds from "./QueryStreamKeyBounds.js";
+import * as QueryStreamKeyValues from "./QueryStreamKeyValues.js";
+import type * as QueryStreamOrderDirection from "./QueryStreamOrderDirection.js";
 
 type Head<FieldPaths extends ReadonlyArray<string>> =
   FieldPaths extends readonly [infer H extends string, ...ReadonlyArray<string>]

@@ -1,10 +1,10 @@
 import * as Effect from "effect/Effect";
 import type * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
-import * as Registry from "./Registry";
-import type * as RegistryItems from "./RegistryItems";
-import type * as GroupImpl from "./GroupImpl";
-import * as MiddlewareRegistryItem from "./MiddlewareRegistryItem";
+import * as Registry from "./Registry.js";
+import type * as RegistryItems from "./RegistryItems.js";
+import type * as GroupImpl from "./GroupImpl.js";
+import * as MiddlewareRegistryItem from "./MiddlewareRegistryItem.js";
 
 export const make = (
   groupLayer: Layer.Layer<GroupImpl.GroupImpl<"Finalized">>,

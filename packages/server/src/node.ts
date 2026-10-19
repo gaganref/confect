@@ -1,1 +1,1 @@
-export * as RegisteredNodeFunction from "./RegisteredNodeFunction";
+export * as RegisteredNodeFunction from "./RegisteredNodeFunction.js";

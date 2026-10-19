@@ -14,19 +14,19 @@ import * as Ref from "effect/Ref";
 import * as Result from "effect/Result";
 import * as String from "effect/String";
 import type * as esbuild from "esbuild";
-import * as Ansi from "../Ansi";
-import { renderCodegenError } from "../CodegenError";
-import * as SyncState from "../SyncState";
-import type { OptionalFile } from "../EntryPoint";
-import * as Watcher from "../Watcher";
-import * as Evaluation from "../Evaluation";
-import { ConvexDirectory } from "../ConvexDirectory";
-import * as DirectoryOptions from "../DirectoryOptions";
-import * as FunctionPaths from "../FunctionPaths";
-import * as GenerationSnapshot from "../GenerationSnapshot";
-import type { ImplModulePath } from "../ImplModulePath";
-import type * as GroupPath from "../GroupPath";
-import type * as GroupPaths from "../GroupPaths";
+import * as Ansi from "../Ansi.js";
+import { renderCodegenError } from "../CodegenError.js";
+import * as SyncState from "../SyncState.js";
+import type { OptionalFile } from "../EntryPoint.js";
+import * as Watcher from "../Watcher.js";
+import * as Evaluation from "../Evaluation.js";
+import { ConvexDirectory } from "../ConvexDirectory.js";
+import * as DirectoryOptions from "../DirectoryOptions.js";
+import * as FunctionPaths from "../FunctionPaths.js";
+import * as GenerationSnapshot from "../GenerationSnapshot.js";
+import type { ImplModulePath } from "../ImplModulePath.js";
+import type * as GroupPath from "../GroupPath.js";
+import type * as GroupPaths from "../GroupPaths.js";
 import {
   logCoalescedBuildErrors,
   logCoalescedBuildWarnings,
@@ -34,16 +34,16 @@ import {
   logFunctionRemoved,
   logPending,
   logSuccess,
-} from "../log";
-import { ProjectRoot } from "../ProjectRoot";
-import { preserveComponentOutput } from "../Rollback";
+} from "../log.js";
+import { ProjectRoot } from "../ProjectRoot.js";
+import { preserveComponentOutput } from "../Rollback.js";
 import {
   generateAuthConfig,
   generateCrons,
   generateHttp,
   touchConvexSchema,
-} from "../utils";
-import { isDeclared } from "./declaration";
+} from "../utils.js";
+import { isDeclared } from "./declaration.js";
 
 const changeChar = (change: "Added" | "Removed" | "Modified") =>
   Match.value(change).pipe(

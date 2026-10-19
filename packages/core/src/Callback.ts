@@ -6,9 +6,9 @@ import type {
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
-import * as FunctionProvenance from "./FunctionProvenance";
-import * as Ref from "./Ref";
-import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType";
+import * as FunctionProvenance from "./FunctionProvenance.js";
+import * as Ref from "./Ref.js";
+import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 
 export const TypeId = "~@confect/core/Callback";
 export type TypeId = typeof TypeId;

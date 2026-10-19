@@ -1,12 +1,12 @@
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
-import * as QueryStreamKey from "./QueryStreamKey";
+import * as QueryStreamKey from "./QueryStreamKey.js";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
-import * as QueryStreamKeyLayout from "./QueryStreamKeyLayout";
-import * as QueryStreamKeyValues from "./QueryStreamKeyValues";
+import * as QueryStreamKeyLayout from "./QueryStreamKeyLayout.js";
+import * as QueryStreamKeyValues from "./QueryStreamKeyValues.js";
 
 // Serialized labels are a cursor boundary representation. They include every
 // runtime position but do not preserve implicitness.

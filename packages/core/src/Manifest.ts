@@ -1,5 +1,5 @@
 import type * as Redacted from "effect/Redacted";
-import type * as Env from "./Env";
+import type * as Env from "./Env.js";
 
 /**
  * The shape of `confect/_generated/manifest.ts`: plain data with no imports,

@@ -2,14 +2,14 @@ import * as OpenAiClient from "@effect/ai-openai-compat/OpenAiClient";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as HttpClient from "effect/http/HttpClient";
-import * as InternalAiGatewayLanguageClient from "./internal/AiGatewayLanguageClient";
-import * as AiGatewayServiceToken from "./internal/AiGatewayServiceToken";
+import * as InternalAiGatewayLanguageClient from "./internal/AiGatewayLanguageClient.js";
+import * as AiGatewayServiceToken from "./internal/AiGatewayServiceToken.js";
 
 export {
   AiGatewayDisabled,
   AiGatewayError,
   AiGatewayUnavailable,
-} from "./internal/AiGatewayServiceToken";
+} from "./internal/AiGatewayServiceToken.js";
 
 /**
  * The client service configured for Convex AI gateway language models.

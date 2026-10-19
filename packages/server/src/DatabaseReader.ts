@@ -2,10 +2,10 @@ import type { GenericDatabaseReader } from "convex/server";
 import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
 import type { BaseDatabaseReader } from "@confect/core/Types";
-import * as DatabaseSchema from "./DatabaseSchema";
-import type * as DataModel from "./DataModel";
-import * as QueryInitializer from "./QueryInitializer";
-import * as Table from "./Table";
+import * as DatabaseSchema from "./DatabaseSchema.js";
+import type * as DataModel from "./DataModel.js";
+import * as QueryInitializer from "./QueryInitializer.js";
+import * as Table from "./Table.js";
 
 type IncludedTables<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> =
   | DatabaseSchema.Tables<DatabaseSchema_>

@@ -1,1 +1,1 @@
-export * as TestConfect from "./TestConfect";
+export * as TestConfect from "./TestConfect.js";

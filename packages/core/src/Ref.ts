@@ -1,4 +1,4 @@
-import type * as MiddlewareAttachment from "./MiddlewareAttachment";
+import type * as MiddlewareAttachment from "./MiddlewareAttachment.js";
 import type {
   DefaultFunctionArgs,
   FunctionReference as ConvexFunctionReference,
@@ -14,11 +14,11 @@ import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
-import type * as FunctionProvenance from "./FunctionProvenance";
-import type * as FunctionSpec from "./FunctionSpec";
-import * as Lazy from "./Lazy";
-import * as MiddlewareSpec from "./MiddlewareSpec";
-import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType";
+import type * as FunctionProvenance from "./FunctionProvenance.js";
+import type * as FunctionSpec from "./FunctionSpec.js";
+import * as Lazy from "./Lazy.js";
+import * as MiddlewareSpec from "./MiddlewareSpec.js";
+import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 
 export const TypeId = "~@confect/core/Ref";
 export type TypeId = typeof TypeId;

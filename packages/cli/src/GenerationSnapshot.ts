@@ -11,15 +11,15 @@ import * as Schema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as SchemaIssue from "effect/SchemaIssue";
 import * as String from "effect/String";
-import { ParentChildNameCollisionError } from "./CodegenError";
-import * as FunctionPath from "./FunctionPath";
-import * as FunctionPaths from "./FunctionPaths";
-import * as GroupPath from "./GroupPath";
-import type { LoadedLeafModule } from "./LeafModule";
-import * as SpecModulePath from "./SpecModulePath";
-import { SnapshotError } from "./SnapshotError";
+import { ParentChildNameCollisionError } from "./CodegenError.js";
+import * as FunctionPath from "./FunctionPath.js";
+import * as FunctionPaths from "./FunctionPaths.js";
+import * as GroupPath from "./GroupPath.js";
+import type { LoadedLeafModule } from "./LeafModule.js";
+import * as SpecModulePath from "./SpecModulePath.js";
+import { SnapshotError } from "./SnapshotError.js";
 
-export { SnapshotError } from "./SnapshotError";
+export { SnapshotError } from "./SnapshotError.js";
 
 export const GroupSummary = Schema.Struct({
   path: GroupPath.GroupPath,

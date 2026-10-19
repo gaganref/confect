@@ -1,8 +1,8 @@
 import * as Array from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Record from "effect/Record";
-import * as FunctionRegistryItem from "./FunctionRegistryItem";
-import * as MiddlewareRegistryItem from "./MiddlewareRegistryItem";
+import * as FunctionRegistryItem from "./FunctionRegistryItem.js";
+import * as MiddlewareRegistryItem from "./MiddlewareRegistryItem.js";
 
 /**
  * Runtime tree that mirrors a `Spec`'s group structure. Values remain unknown

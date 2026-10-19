@@ -3,9 +3,9 @@ import * as Data from "effect/Data";
 import * as Option from "effect/Option";
 import * as Order from "effect/Order";
 import * as Result from "effect/Result";
-import * as QueryStreamKey from "./QueryStreamKey";
-import * as QueryStreamKeyLayout from "./QueryStreamKeyLayout";
-import * as QueryStreamKeyValues from "./QueryStreamKeyValues";
+import * as QueryStreamKey from "./QueryStreamKey.js";
+import * as QueryStreamKeyLayout from "./QueryStreamKeyLayout.js";
+import * as QueryStreamKeyValues from "./QueryStreamKeyValues.js";
 
 // A bound's key may be a *prefix* of the full key: bounding by `["a"]` means
 // bounding by the whole family of keys that start with `"a"`. To compare

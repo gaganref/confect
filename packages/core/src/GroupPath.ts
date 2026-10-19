@@ -1,4 +1,4 @@
-import type * as GroupSpec from "./GroupSpec";
+import type * as GroupSpec from "./GroupSpec.js";
 
 /**
  * Recursively generates paths for a group and its nested groups.

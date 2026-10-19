@@ -3,7 +3,7 @@ import * as Effect from "effect/Effect";
 import * as Match from "effect/Match";
 import type * as Schema from "effect/Schema";
 import * as FoldkitCommand from "foldkit/command";
-import * as Client from "./Client";
+import * as Client from "./Client.js";
 
 /**
  * Everything a Command against `Ref_` can fail with before it is folded into an

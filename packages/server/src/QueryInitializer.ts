@@ -28,15 +28,15 @@ import type {
   BaseDatabaseReader,
   IndexFieldTypesForEq,
 } from "@confect/core/Types";
-import type * as DataModel from "./DataModel";
-import type * as DatabaseSchema from "./DatabaseSchema";
-import * as Document from "./Document";
-import * as OrderedQuery from "./OrderedQuery";
-import * as QueryStream from "./QueryStream";
-import type * as QueryStreamKeyLabels from "./QueryStreamKeyLabels";
-import * as QueryStreamIndexRange from "./QueryStreamIndexRange";
-import type { QueryStreamOrderDirection as OrderDirection } from "./QueryStreamOrderDirection";
-import type * as Table from "./Table";
+import type * as DataModel from "./DataModel.js";
+import type * as DatabaseSchema from "./DatabaseSchema.js";
+import * as Document from "./Document.js";
+import * as OrderedQuery from "./OrderedQuery.js";
+import * as QueryStream from "./QueryStream.js";
+import type * as QueryStreamKeyLabels from "./QueryStreamKeyLabels.js";
+import * as QueryStreamIndexRange from "./QueryStreamIndexRange.js";
+import type { QueryStreamOrderDirection as OrderDirection } from "./QueryStreamOrderDirection.js";
+import type * as Table from "./Table.js";
 
 type ConvexTableInfoFor<
   DataModel_ extends DataModel.AnyWithProps,

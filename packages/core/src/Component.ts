@@ -7,17 +7,17 @@ import { memoize, pipe } from "effect/Function";
 import * as Match from "effect/Match";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
-import type * as FunctionProvenance from "./FunctionProvenance";
-import type * as FunctionSpec from "./FunctionSpec";
-import * as GenericId from "./GenericId";
-import type * as GroupSpec from "./GroupSpec";
-import * as IdScope from "./IdScope";
-import * as Lazy from "./Lazy";
-import type * as MiddlewareSpec from "./MiddlewareSpec";
-import * as Ref from "./Ref";
-import type * as Refs from "./Refs";
-import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType";
-import * as Spec from "./Spec";
+import type * as FunctionProvenance from "./FunctionProvenance.js";
+import type * as FunctionSpec from "./FunctionSpec.js";
+import * as GenericId from "./GenericId.js";
+import type * as GroupSpec from "./GroupSpec.js";
+import * as IdScope from "./IdScope.js";
+import * as Lazy from "./Lazy.js";
+import type * as MiddlewareSpec from "./MiddlewareSpec.js";
+import * as Ref from "./Ref.js";
+import type * as Refs from "./Refs.js";
+import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
+import * as Spec from "./Spec.js";
 
 export class EmptyComponentScopeError extends Data.TaggedError(
   "EmptyComponentScopeError",

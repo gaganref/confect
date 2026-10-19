@@ -4,6 +4,6 @@
  * builds its default export once per dev session.
  */
 import type * as RpcServer from "alchemy/Local/RpcServer";
-import { localLayer } from "../Deployment";
+import { localLayer } from "../Deployment.js";
 
 export default localLayer satisfies RpcServer.ProviderLayer;

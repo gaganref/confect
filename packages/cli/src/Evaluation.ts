@@ -16,14 +16,14 @@ import type { RpcClientError } from "effect/rpc/RpcClientError";
 import * as RpcGroup from "effect/rpc/RpcGroup";
 import type * as Array from "effect/Array";
 import * as Match from "effect/Match";
-import { ComponentNodeGroupError, logCodegenError } from "./CodegenError";
-import * as EntryPoint from "./EntryPoint";
-import * as GenerationSnapshot from "./GenerationSnapshot";
-import { ConfectDirectory } from "./ConfectDirectory";
-import { ConvexDirectory } from "./ConvexDirectory";
-import { FunctionPaths } from "./FunctionPaths";
-import { ImplModulePath } from "./ImplModulePath";
-import { ProjectRoot } from "./ProjectRoot";
+import { ComponentNodeGroupError, logCodegenError } from "./CodegenError.js";
+import * as EntryPoint from "./EntryPoint.js";
+import * as GenerationSnapshot from "./GenerationSnapshot.js";
+import { ConfectDirectory } from "./ConfectDirectory.js";
+import { ConvexDirectory } from "./ConvexDirectory.js";
+import { FunctionPaths } from "./FunctionPaths.js";
+import { ImplModulePath } from "./ImplModulePath.js";
+import { ProjectRoot } from "./ProjectRoot.js";
 
 export const RequestContext = Schema.Struct({
   projectRoot: Schema.String,

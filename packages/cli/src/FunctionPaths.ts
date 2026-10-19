@@ -4,9 +4,9 @@ import * as HashSet from "effect/HashSet";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
-import * as FunctionPath from "./FunctionPath";
-import * as GroupPath from "./GroupPath";
-import * as GroupPaths from "./GroupPaths";
+import * as FunctionPath from "./FunctionPath.js";
+import * as GroupPath from "./GroupPath.js";
+import * as GroupPaths from "./GroupPaths.js";
 
 export const FunctionPaths = Schema.HashSet(FunctionPath.FunctionPath).pipe(
   Schema.brand("@confect/cli/FunctionPaths"),

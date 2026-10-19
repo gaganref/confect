@@ -11,10 +11,10 @@ import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as String from "effect/String";
 import type * as esbuild from "esbuild";
-import { fromBundlerError, type BuildError } from "./BuildError";
-import * as Bundler from "./Bundler";
-import { InvalidConvexConfigError } from "./CodegenError";
-import { toPosixPath } from "./utils";
+import { fromBundlerError, type BuildError } from "./BuildError.js";
+import * as Bundler from "./Bundler.js";
+import { InvalidConvexConfigError } from "./CodegenError.js";
+import { toPosixPath } from "./utils.js";
 
 export const CONVEX_CONFIG_FILENAME = "convex.config.ts";
 

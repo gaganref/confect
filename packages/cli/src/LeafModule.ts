@@ -13,8 +13,8 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as String from "effect/String";
-import { fromBundlerError } from "./BuildError";
-import * as Bundler from "./Bundler";
+import { fromBundlerError } from "./BuildError.js";
+import * as Bundler from "./Bundler.js";
 import {
   MissingImplFileError,
   MissingSpecFileError,
@@ -26,10 +26,10 @@ import {
   InvalidMiddlewareAttachmentError,
   SpecImportsServerError,
   SpecMissingDefaultGroupSpecError,
-} from "./CodegenError";
-import { ConfectDirectory } from "./ConfectDirectory";
-import { ImplModulePath } from "./ImplModulePath";
-import { removePathExtension, toPosixPath } from "./utils";
+} from "./CodegenError.js";
+import { ConfectDirectory } from "./ConfectDirectory.js";
+import { ImplModulePath } from "./ImplModulePath.js";
+import { removePathExtension, toPosixPath } from "./utils.js";
 
 export interface LeafModule {
   readonly relativePath: string;

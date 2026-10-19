@@ -8,9 +8,9 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 
-import * as ConvexClient from "./ConvexClient";
-import type { Providers } from "./Providers";
-import { checkpointCreate, shouldAdopt } from "./internal/Lifecycle";
+import * as ConvexClient from "./ConvexClient.js";
+import type { Providers } from "./Providers.js";
+import { checkpointCreate, shouldAdopt } from "./internal/Lifecycle.js";
 
 export interface EnvironmentVariablesProps {
   readonly url: string;

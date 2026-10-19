@@ -7,10 +7,10 @@ import type {
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import type { Options as MutationOptions } from "./QueryTransactionContext";
+import type { Options as MutationOptions } from "./QueryTransactionContext.js";
 
 export type { TransactionLimits } from "convex/server";
-export type { Options as MutationOptions } from "./QueryTransactionContext";
+export type { Options as MutationOptions } from "./QueryTransactionContext.js";
 export type QueryOptions = AdvancedRunQueryOptions;
 
 const make = (

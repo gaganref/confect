@@ -11,16 +11,23 @@ import {
   writeConsumer,
 } from "./forkConsumer";
 
-test("pins all four public aliases to the requested fork build", () => {
+test("pins all eight public aliases to the requested fork build", () => {
   expect(Result.getOrThrow(consumerManifest("10.2.0-fork.7"))).toEqual({
     name: "confect-install-check",
     private: true,
     type: "module",
     dependencies: {
+      "@confect/alchemy": "npm:@gaganref/confect-alchemy@10.2.0-fork.7",
+      "@confect/foldkit": "npm:@gaganref/confect-foldkit@10.2.0-fork.7",
+      "@confect/js": "npm:@gaganref/confect-js@10.2.0-fork.7",
+      "@confect/react": "npm:@gaganref/confect-react@10.2.0-fork.7",
       "@confect/core": "npm:@gaganref/confect-core@10.2.0-fork.7",
       "@confect/server": "npm:@gaganref/confect-server@10.2.0-fork.7",
       "@confect/test": "npm:@gaganref/confect-test@10.2.0-fork.7",
       "@confect/cli": "npm:@gaganref/confect-cli@10.2.0-fork.7",
+      alchemy: "2.0.0-beta.82",
+      foldkit: "0.165.0",
+      react: "19.3.0",
       convex: "1.46.0",
       "convex-test": "0.0.60",
       effect: "4.0.4",
@@ -28,7 +35,8 @@ test("pins all four public aliases to the requested fork build", () => {
     },
     devDependencies: {
       "@types/node": "26.6.5",
-      typescript: "7.0.2",
+      "@types/react": "19.3.0",
+      typescript: "6.0.3",
       vite: "8.3.4",
       vitest: "5.0.3",
     },
@@ -51,7 +59,7 @@ test("uses packed fork packages without fetching their internal aliases", () => 
 test("prints the executable strict add command for the generated aliases", () => {
   const manifest = Result.getOrThrow(consumerManifest("10.2.0-fork.7"));
   expect(installCommand(manifest)).toBe(
-    "pnpm add --strict-peer-dependencies '@confect/core@npm:@gaganref/confect-core@10.2.0-fork.7' '@confect/server@npm:@gaganref/confect-server@10.2.0-fork.7' '@confect/test@npm:@gaganref/confect-test@10.2.0-fork.7' '@confect/cli@npm:@gaganref/confect-cli@10.2.0-fork.7'",
+    "pnpm add --strict-peer-dependencies '@confect/alchemy@npm:@gaganref/confect-alchemy@10.2.0-fork.7' '@confect/core@npm:@gaganref/confect-core@10.2.0-fork.7' '@confect/foldkit@npm:@gaganref/confect-foldkit@10.2.0-fork.7' '@confect/js@npm:@gaganref/confect-js@10.2.0-fork.7' '@confect/react@npm:@gaganref/confect-react@10.2.0-fork.7' '@confect/server@npm:@gaganref/confect-server@10.2.0-fork.7' '@confect/test@npm:@gaganref/confect-test@10.2.0-fork.7' '@confect/cli@npm:@gaganref/confect-cli@10.2.0-fork.7'",
   );
 });
 
@@ -90,7 +98,11 @@ test("writes and refreshes a consumer with aligned peers", () =>
       expect(
         yield* fs.readFileString(path.join(directory, "pnpm-workspace.yaml")),
       ).toBe(`minimumReleaseAgeExclude:
+  - "@gaganref/confect-alchemy@10.2.0-fork.0"
   - "@gaganref/confect-core@10.2.0-fork.0"
+  - "@gaganref/confect-foldkit@10.2.0-fork.0"
+  - "@gaganref/confect-js@10.2.0-fork.0"
+  - "@gaganref/confect-react@10.2.0-fork.0"
   - "@gaganref/confect-server@10.2.0-fork.0"
   - "@gaganref/confect-test@10.2.0-fork.0"
   - "@gaganref/confect-cli@10.2.0-fork.0"
@@ -102,6 +114,7 @@ overrides:
   "@effect/platform-node-shared": 4.0.4
 allowBuilds:
   esbuild: false
+  workerd: false
 `);
       expect(
         yield* fs.exists(path.join(directory, "convex/_generated/api.ts")),

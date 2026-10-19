@@ -1,5 +1,5 @@
 import * as Schema from "effect/Schema";
-import * as RelativeModulePath from "./RelativeModulePath";
+import * as RelativeModulePath from "./RelativeModulePath.js";
 
 export const TableModulePath = RelativeModulePath.withSuffix(".ts")
   .check(Schema.makeFilter((value) => value.split(/[/\\]/)[0] === "tables"))

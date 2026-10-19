@@ -6,7 +6,7 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import type * as Types from "effect/Types";
 
-import * as QueryStreamKeyLabels from "./QueryStreamKeyLabels";
+import * as QueryStreamKeyLabels from "./QueryStreamKeyLabels.js";
 
 /**
  * One runtime position of a stream key. Explicit IDs and their aliases are

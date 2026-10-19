@@ -1,15 +1,15 @@
 import type * as FunctionSpec from "@confect/core/FunctionSpec";
 import type * as GroupSpec from "@confect/core/GroupSpec";
 import type * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
-import * as Registry from "./Registry";
+import * as Registry from "./Registry.js";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
-import type * as DatabaseSchema from "./DatabaseSchema";
-import type * as Handler from "./Handler";
-import { setNestedProperty } from "./internal/utils";
-import * as FunctionRegistryItem from "./FunctionRegistryItem";
+import type * as DatabaseSchema from "./DatabaseSchema.js";
+import type * as Handler from "./Handler.js";
+import { setNestedProperty } from "./internal/utils.js";
+import * as FunctionRegistryItem from "./FunctionRegistryItem.js";
 
 export interface FunctionImpl<Name_ extends string> {
   readonly name: Name_;
