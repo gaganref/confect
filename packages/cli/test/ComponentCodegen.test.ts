@@ -99,8 +99,8 @@ export default Table.make(() => Schema.Struct({ name: Schema.String }));
       const schema = yield* fs.readFileString(
         `${directory}/confect/_generated/schema.ts`,
       );
-      expect(schema).toContain('import target from "./tables/target";');
-      expect(schema).toContain('import { target as $target } from "./id";');
+      expect(schema).toContain('import target from "./tables/target.js";');
+      expect(schema).toContain('import { target as $target } from "./id.js";');
       expect(schema).toContain("typeof $target");
       expect(schema).toContain("}, $target)");
       expect(

@@ -1,5 +1,5 @@
 import { RegisteredFunctions } from "@confect/server";
-import databaseSchema from "../../schema";
-import groupLayer from "../../../groups/cacheControl.impl";
+import databaseSchema from "../../schema.js";
+import groupLayer from "../../../groups/cacheControl.impl.js";
 
-export default RegisteredFunctions.buildForGroup<typeof import("../../../groups/cacheControl.spec")["default"]>(databaseSchema, groupLayer);
+export default RegisteredFunctions.buildForGroup<typeof import("../../../groups/cacheControl.spec.js")["default"]>(databaseSchema, groupLayer);

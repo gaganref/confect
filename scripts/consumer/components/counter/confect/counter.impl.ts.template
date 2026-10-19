@@ -1,9 +1,9 @@
 import { FunctionImpl, GroupImpl } from "@confect/server";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import schema from "./_generated/schema";
-import { MutationRunner } from "./_generated/services";
-import spec from "./counter.spec";
+import schema from "./_generated/schema.js";
+import { MutationRunner } from "./_generated/services.js";
+import spec from "./counter.spec.js";
 const increment = FunctionImpl.make(schema, spec, "increment", ({ value }) =>
   Effect.succeed(value + 1),
 );

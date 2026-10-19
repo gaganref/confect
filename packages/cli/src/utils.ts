@@ -35,7 +35,9 @@ export const toModuleImportPath = Effect.fnUntraced(function* (
     path,
     yield* removePathExtension(relativePath),
   );
-  return String.startsWith(".")(withoutExt) ? withoutExt : `./${withoutExt}`;
+  return String.startsWith(".")(withoutExt)
+    ? `${withoutExt}.js`
+    : `./${withoutExt}.js`;
 });
 
 export const writeFileStringAndLog = Effect.fnUntraced(function* (

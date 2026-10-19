@@ -1,7 +1,7 @@
 import { GroupSpec, Spec } from "@confect/core";
-import authoring from "../authoring.spec";
-import counter from "../counter.spec";
-import deliveries from "../deliveries.spec";
+import authoring from "../authoring.spec.js";
+import counter from "../counter.spec.js";
+import deliveries from "../deliveries.spec.js";
 
 const spec: Spec.Spec<{
   readonly authoring: GroupSpec.NamedAt<typeof authoring, "authoring">;

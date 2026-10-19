@@ -1,4 +1,4 @@
-import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/transactions";
+import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/transactions.js";
 
 export const limitedRead = registeredFunctions.limitedRead;
 export const limitedReadFromMutation = registeredFunctions.limitedReadFromMutation;

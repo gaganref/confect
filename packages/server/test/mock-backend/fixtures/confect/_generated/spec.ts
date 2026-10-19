@@ -1,18 +1,18 @@
 import { GroupSpec, Spec } from "@confect/core";
-import databaseReader from "../databaseReader.spec";
-import groups_aliasImporter from "../groups/aliasImporter.spec";
-import groups_cjsImporter from "../groups/cjsImporter.spec";
-import groups_middleware from "../groups/middleware.spec";
-import groups_middlewareHelpers from "../groups/middlewareHelpers.spec";
-import groups_middlewareOptions from "../groups/middlewareOptions.spec";
-import groups_middlewareOrder from "../groups/middlewareOrder.spec";
-import groups_notes from "../groups/notes.spec";
-import groups_random from "../groups/random.spec";
-import groups_random_stats from "../groups/random/stats.spec";
-import groups_runners from "../groups/runners.spec";
-import groups_scheduling from "../groups/scheduling.spec";
-import groups_typedErrors from "../groups/typedErrors.spec";
-import typedErrorsNode from "../typedErrorsNode.spec";
+import databaseReader from "../databaseReader.spec.js";
+import groups_aliasImporter from "../groups/aliasImporter.spec.js";
+import groups_cjsImporter from "../groups/cjsImporter.spec.js";
+import groups_middleware from "../groups/middleware.spec.js";
+import groups_middlewareHelpers from "../groups/middlewareHelpers.spec.js";
+import groups_middlewareOptions from "../groups/middlewareOptions.spec.js";
+import groups_middlewareOrder from "../groups/middlewareOrder.spec.js";
+import groups_notes from "../groups/notes.spec.js";
+import groups_random from "../groups/random.spec.js";
+import groups_random_stats from "../groups/random/stats.spec.js";
+import groups_runners from "../groups/runners.spec.js";
+import groups_scheduling from "../groups/scheduling.spec.js";
+import groups_typedErrors from "../groups/typedErrors.spec.js";
+import typedErrorsNode from "../typedErrorsNode.spec.js";
 
 const spec: Spec.Spec<{
   readonly databaseReader: GroupSpec.NamedAt<typeof databaseReader, "databaseReader">;

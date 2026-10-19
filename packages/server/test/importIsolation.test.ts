@@ -36,17 +36,21 @@ layer(TestLayer)("import isolation", (it) => {
         );
         const contents = yield* fs.readFileString(registry);
         // The DatabaseSchema value is imported (cheap: table schemas only).
-        expect(contents).toContain('import databaseSchema from "../../schema"');
+        expect(contents).toContain(
+          'import databaseSchema from "../../schema.js"',
+        );
         // The project-wide api/spec modules must NOT be runtime-imported—importing them is what drags every sibling spec into this one
         // function's bundle.
         expect(contents).not.toMatch(
-          /^import .* from "[^"]*\/(api|nodeApi)";$/m,
+          /^import .* from "[^"]*\/(api|nodeApi)(?:\.js)?";$/m,
         );
-        expect(contents).not.toMatch(/^import .* from "[^"]*\/spec";$/m);
+        expect(contents).not.toMatch(
+          /^import .* from "[^"]*\/spec(?:\.js)?";$/m,
+        );
         // The group's own leaf spec is referenced type-only, so it is erased
         // at transpile time (and the project-wide assembled spec is not used).
         expect(contents).toContain(
-          'typeof import("../../../groups/notes.spec")["default"]',
+          'typeof import("../../../groups/notes.spec.js")["default"]',
         );
       }),
   );

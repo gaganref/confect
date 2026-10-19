@@ -1,11 +1,11 @@
 import { TestConfect } from "@confect/test";
 import * as Effect from "effect/Effect";
 import { expect, test } from "vitest";
-import registry from "./confect/_generated/testing";
-import auth from "./convex/auth.config";
-import manifest from "./confect/_generated/manifest";
-import refs from "./confect/_generated/refs";
-import databaseSchema from "./confect/_generated/schema";
+import registry from "./confect/_generated/testing.js";
+import auth from "./convex/auth.config.js";
+import manifest from "./confect/_generated/manifest.js";
+import refs from "./confect/_generated/refs.js";
+import databaseSchema from "./confect/_generated/schema.js";
 
 const Test = TestConfect.TestConfect<typeof databaseSchema>();
 const layer = TestConfect.layer(registry);

@@ -1,4 +1,4 @@
-import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/componentAuthoring";
+import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/componentAuthoring.js";
 
 export const probe = registeredFunctions.probe;
 export const read = registeredFunctions.read;

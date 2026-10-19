@@ -170,7 +170,7 @@ const componentImport = Effect.fnUntraced(function* () {
       const relative = toPosixPath(
         path,
         path.relative(convexDirectory, recorded.path),
-      ).replace(/\.[cm]?[jt]s$/, "");
+      ).replace(/\.([cm]?)[jt]s$/, ".$1js");
       return {
         importPath: bare
           ? recorded.specifier
@@ -253,13 +253,15 @@ const writeDeclaration = Effect.gen(function* () {
     ConvexConfig.CONVEX_CONFIG_FILENAME,
   );
   const authConfigPath = path.join(convexDirectory, "auth.config.ts");
-  const legacyAuthConfig = yield* templates.authConfig({
-    authImportPath: yield* toModuleImportPath(
-      path.relative(convexDirectory, authPath),
-    ),
-  });
+  const authImportPath = yield* toModuleImportPath(
+    path.relative(convexDirectory, authPath),
+  );
+  const legacyAuthConfigs = yield* Effect.forEach(
+    [authImportPath, authImportPath.replace(/\.js$/, "")],
+    (importPath) => templates.authConfig({ authImportPath: importPath }),
+  );
   yield* assertOwned(convexConfigPath, "app.ts", []);
-  yield* assertOwned(authConfigPath, "auth.ts", [legacyAuthConfig]);
+  yield* assertOwned(authConfigPath, "auth.ts", legacyAuthConfigs);
 
   if (target === "app") {
     const digest = Declaration.digest({

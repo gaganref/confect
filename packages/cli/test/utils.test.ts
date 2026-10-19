@@ -34,14 +34,14 @@ for (const { name, pathLayer, sep } of SPECIFIER_PLATFORMS) {
       Effect.gen(function* () {
         expect(
           yield* toModuleImportPath(p("..", "_generated", "schema.ts")),
-        ).toBe("../_generated/schema");
+        ).toBe("../_generated/schema.js");
       }),
     );
 
     it.effect("toModuleImportPath prefixes a bare sibling path with ./", () =>
       Effect.gen(function* () {
         expect(yield* toModuleImportPath(p("tables", "notes.ts"))).toBe(
-          "./tables/notes",
+          "./tables/notes.js",
         );
       }),
     );

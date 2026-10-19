@@ -1,6 +1,6 @@
 import { Callback, FunctionSpec, GroupSpec } from "@confect/core";
 import * as Schema from "effect/Schema";
-import { OnResult } from "./callbacks";
+import { OnResult } from "./callbacks.js";
 export default GroupSpec.make()
   .addFunction(
     FunctionSpec.publicQuery({

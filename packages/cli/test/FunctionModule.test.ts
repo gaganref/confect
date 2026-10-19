@@ -108,8 +108,10 @@ const runGenerateForNodeGroupEffect = Effect.fnUntraced(function* ({
 
   const importMatch = contents.match(/from "([^"]+)"/);
   assert(importMatch !== null, "expected a registry import in the module");
-  const resolved =
-    path.resolve(path.dirname(modulePath), importMatch[1]!) + ".ts";
+  const resolved = path.resolve(
+    path.dirname(modulePath),
+    importMatch[1]!.replace(/\.js$/, ".ts"),
+  );
   const resolves = yield* fs.exists(resolved);
 
   return { contents, resolves };

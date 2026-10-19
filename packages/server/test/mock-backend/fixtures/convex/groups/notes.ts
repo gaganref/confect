@@ -1,4 +1,4 @@
-import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/notes";
+import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/notes.js";
 
 export const delete_ = registeredFunctions.delete_;
 export const getFirst = registeredFunctions.getFirst;
