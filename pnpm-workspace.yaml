@@ -17,6 +17,8 @@ allowBuilds:
   sharp: true
   workerd: false
 
+ignoreWorkspaceCycles: true
+
 minimumReleaseAge: 10080
 
 minimumReleaseAgeExclude:
