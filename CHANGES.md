@@ -197,6 +197,17 @@ tagged failure with the path, attempts, and cause.
 Changeset: `quiet-windows-restore.md`.
 Upstream: unrecorded; no linked proposal verified.
 
+### Observe saved sources before resuming generation
+
+Refresh the existing dependency watcher before completing a structural rescan
+that keeps the same entry points. This prevents a repaired source from being
+queued again after generation has already read it, without discarding edits
+received during generation. Keep the module-evaluation assertions and add
+controlled Create and Remove regressions.
+
+Changeset: `observe-existing-entry-saves.md`.
+Upstream: shares the bug on main; submission goes through the maintainer.
+
 ## Testing and documentation
 
 ### Declared apps drive tests and Backend env

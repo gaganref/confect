@@ -379,6 +379,7 @@ const entryPointsWatcher = Effect.fnUntraced(function* (
         Empty: () => completedInitial,
         Active: ({ initial: activeInitial }) => Effect.succeed(activeInitial),
       });
+      yield* refreshCurrent(current);
       yield* watcher.topology.reconcile(revision, initial);
       return;
     }
@@ -482,101 +483,96 @@ const entryPointsWatcher = Effect.fnUntraced(function* (
   );
 }, Effect.provide(NodeCrypto.layer));
 
-const refresh = Effect.fnUntraced(function* (watcher: State) {
-  return yield* watcher.lock.withPermit(
-    Effect.gen(function* () {
-      const current = yield* Ref.get(watcher.lifecycle);
-      return yield* WatcherLifecycle.$match(current, {
-        Empty: () => Effect.succeed(RefreshOutcome.Empty()),
-        Uninitialized: () =>
-          Effect.fail(
-            new OperationError({
-              operation: "refresh",
-              cause: "The dependency watcher is not initialized",
-            }),
-          ),
-        Active: ({ context, identifyRequest, progress, verifyInputs }) =>
-          Effect.gen(function* () {
-            const runSync = Effect.runSyncWith(yield* Effect.context());
-            const barrier = WatchBuild.captureBarrier(yield* Ref.get(progress));
-            const rebuild = Effect.gen(function* () {
-              const built = yield* Effect.tryPromise({
-                try: () => {
-                  const promise = context.rebuild();
-                  runSync(
-                    Ref.update(progress, (currentProgress) =>
-                      WatchBuild.request(
-                        currentProgress,
-                        identifyRequest(promise),
-                      ),
-                    ),
-                  );
-                  return promise;
-                },
-                catch: (cause) =>
-                  new OperationError({ operation: "rebuild", cause }),
-              }).pipe(Effect.result);
-              const currentProgress = yield* Ref.get(progress);
-              const completed = WatchBuild.getCompletion(currentProgress);
-              if (Result.isFailure(built)) {
-                const rejected = parseFailure(built.failure.cause);
-                if (Option.isNone(rejected)) return yield* built.failure;
-                if (WatchBuild.joinedWithoutCompletion(currentProgress))
-                  return Option.none<WatchBuild.Completion>();
-                if (
-                  Option.isNone(completed) ||
-                  !WatchBuild.Outcome.$is("Failed")(completed.value.outcome)
-                )
-                  return yield* new OperationError({
-                    operation: "rebuild",
-                    cause: rejected.value.errors,
-                  });
-              }
-              if (WatchBuild.joinedWithoutCompletion(currentProgress))
-                return Option.none<WatchBuild.Completion>();
-              const observed = yield* Effect.fromOption(completed).pipe(
-                Effect.mapError(
-                  () =>
-                    new OperationError({
-                      operation: "rebuild",
-                      cause: "esbuild completed without a build observation",
-                    }),
+const refreshCurrent = Effect.fnUntraced(function* (current: WatcherLifecycle) {
+  return yield* WatcherLifecycle.$match(current, {
+    Empty: () => Effect.succeed(RefreshOutcome.Empty()),
+    Uninitialized: () =>
+      Effect.fail(
+        new OperationError({
+          operation: "refresh",
+          cause: "The dependency watcher is not initialized",
+        }),
+      ),
+    Active: ({ context, identifyRequest, progress, verifyInputs }) =>
+      Effect.gen(function* () {
+        const runSync = Effect.runSyncWith(yield* Effect.context());
+        const barrier = WatchBuild.captureBarrier(yield* Ref.get(progress));
+        const rebuild = Effect.gen(function* () {
+          const built = yield* Effect.tryPromise({
+            try: () => {
+              const promise = context.rebuild();
+              runSync(
+                Ref.update(progress, (currentProgress) =>
+                  WatchBuild.request(currentProgress, identifyRequest(promise)),
                 ),
               );
-              if (
-                WatchBuild.isFresh(barrier, observed) &&
-                WatchBuild.Outcome.$is("Succeeded")(observed.outcome)
-              ) {
-                const unchanged = yield* verifyInputs(
-                  observed.outcome.snapshot,
-                ).pipe(
-                  Effect.mapError(
-                    ({ cause }) =>
-                      new OperationError({ operation: "refresh", cause }),
-                  ),
-                );
-                if (!unchanged) return Option.none<WatchBuild.Completion>();
-              }
-              return Option.some(observed);
-            }).pipe(
-              Effect.ensuring(Ref.update(progress, WatchBuild.endRequest)),
-            );
-            const completed = yield* rebuild.pipe(
-              Effect.repeat({
-                while: (observed) =>
-                  Option.isNone(observed) ||
-                  !WatchBuild.isFresh(barrier, observed.value),
-              }),
-              Effect.flatMap((observed) =>
-                Effect.fromOption(observed).pipe(Effect.orDie),
+              return promise;
+            },
+            catch: (cause) =>
+              new OperationError({ operation: "rebuild", cause }),
+          }).pipe(Effect.result);
+          const currentProgress = yield* Ref.get(progress);
+          const completed = WatchBuild.getCompletion(currentProgress);
+          if (Result.isFailure(built)) {
+            const rejected = parseFailure(built.failure.cause);
+            if (Option.isNone(rejected)) return yield* built.failure;
+            if (WatchBuild.joinedWithoutCompletion(currentProgress))
+              return Option.none<WatchBuild.Completion>();
+            if (
+              Option.isNone(completed) ||
+              !WatchBuild.Outcome.$is("Failed")(completed.value.outcome)
+            )
+              return yield* new OperationError({
+                operation: "rebuild",
+                cause: rejected.value.errors,
+              });
+          }
+          if (WatchBuild.joinedWithoutCompletion(currentProgress))
+            return Option.none<WatchBuild.Completion>();
+          const observed = yield* Effect.fromOption(completed).pipe(
+            Effect.mapError(
+              () =>
+                new OperationError({
+                  operation: "rebuild",
+                  cause: "esbuild completed without a build observation",
+                }),
+            ),
+          );
+          if (
+            WatchBuild.isFresh(barrier, observed) &&
+            WatchBuild.Outcome.$is("Succeeded")(observed.outcome)
+          ) {
+            const unchanged = yield* verifyInputs(
+              observed.outcome.snapshot,
+            ).pipe(
+              Effect.mapError(
+                ({ cause }) =>
+                  new OperationError({ operation: "refresh", cause }),
               ),
             );
-            return RefreshOutcome.Observed({ outcome: completed.outcome });
+            if (!unchanged) return Option.none<WatchBuild.Completion>();
+          }
+          return Option.some(observed);
+        }).pipe(Effect.ensuring(Ref.update(progress, WatchBuild.endRequest)));
+        const completed = yield* rebuild.pipe(
+          Effect.repeat({
+            while: (observed) =>
+              Option.isNone(observed) ||
+              !WatchBuild.isFresh(barrier, observed.value),
           }),
-      });
-    }),
-  );
+          Effect.flatMap((observed) =>
+            Effect.fromOption(observed).pipe(Effect.orDie),
+          ),
+        );
+        return RefreshOutcome.Observed({ outcome: completed.outcome });
+      }),
+  });
 });
+
+const refresh = (watcher: State) =>
+  watcher.lock.withPermit(
+    Ref.get(watcher.lifecycle).pipe(Effect.flatMap(refreshCurrent)),
+  );
 
 const confectStructureWatcher = Effect.fnUntraced(function* (
   signal: Queue.Queue<void>,
