@@ -54,3 +54,29 @@ it.effect("fetches a nested installation through its declared prefixes", () =>
     expect(yield* Effect.promise(() => response.json())).toBe("9");
   }).pipe(Effect.provide(TestConfect.layer(registry))),
 );
+
+it.effect("registers a component through its test entry's register", () =>
+  Effect.gen(function* () {
+    const test = yield* TestConfect.TestConfect<typeof registry.schema>();
+    const response = yield* test.fetch("/first/members/3");
+    expect(response.status).toBe(200);
+    expect(yield* Effect.promise(() => response.json())).toBe("3");
+  }).pipe(
+    Effect.provide(
+      TestConfect.layer({
+        ...registry,
+        components: {
+          ...registry.components,
+          first: {
+            register: (t, name) =>
+              t.registerComponent(
+                name,
+                registry.components.first.schema,
+                registry.components.first.modules,
+              ),
+          },
+        },
+      }),
+    ),
+  ),
+);
