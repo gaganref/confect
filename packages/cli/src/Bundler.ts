@@ -110,6 +110,33 @@ export const resolveModule = (
   );
 
 /**
+ * The names `file` exports, read by esbuild without evaluating the module, so a
+ * test kit that only runs under Vite (`import.meta.glob`) can be checked. Bare
+ * imports stay external, so a name re-exported from another package is not
+ * listed.
+ */
+export const exportNames = (file: string) =>
+  Effect.tryPromise({
+    try: () =>
+      esbuild.build({
+        entryPoints: [file],
+        bundle: true,
+        packages: "external",
+        format: "esm",
+        platform: "node",
+        write: false,
+        metafile: true,
+        logLevel: "silent",
+        outdir: "out",
+      }),
+    catch: (cause) => new BundlerError({ cause }),
+  }).pipe(
+    Effect.map(({ metafile }) =>
+      Object.values(metafile.outputs).flatMap(({ exports }) => exports),
+    ),
+  );
+
+/**
  * Bundles first-party workspace dependencies that `bundle-require` would
  * otherwise externalize and hand to Node's native ESM resolver. Resolves each
  * bare specifier and, following symlinks, bundles it when its real path lives

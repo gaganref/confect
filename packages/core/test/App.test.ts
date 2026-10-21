@@ -36,7 +36,7 @@ describe("App", () => {
           httpPrefix: "/email",
           env: { ...emailEnv, PLATFORM_URL: env.PLATFORM_URL },
         }),
-        importsPool: App.mount(workpool),
+        importsPool: App.mount(workpool, { testing: "workpool-kit/testing" }),
         literalEmail: App.mount(email, {
           env: { FROM: "noreply@example.test", KEY: "k", TRANSPORT: "log" },
         }),
@@ -50,6 +50,7 @@ describe("App", () => {
         httpPrefix: "/email",
         api: undefined,
         env: { ...emailEnv, PLATFORM_URL: env.PLATFORM_URL },
+        testing: undefined,
       },
       {
         name: "importsPool",
@@ -57,6 +58,7 @@ describe("App", () => {
         httpPrefix: undefined,
         api: undefined,
         env: {},
+        testing: "workpool-kit/testing",
       },
       {
         name: "literalEmail",
@@ -64,6 +66,7 @@ describe("App", () => {
         httpPrefix: undefined,
         api: undefined,
         env: { FROM: "noreply@example.test", KEY: "k", TRANSPORT: "log" },
+        testing: undefined,
       },
     ]);
     expect(App.isApp(app)).toBe(true);
@@ -73,6 +76,9 @@ describe("App", () => {
   it("types each mount's env against the component's own declaration", () => {
     App.mount(workpool);
     App.mount(email, { env: emailEnv });
+    App.mount(email, { env: emailEnv, testing: "email-kit/testing" });
+    // @ts-expect-error A test kit is named by its module specifier.
+    App.mount(workpool, { testing: true });
     // @ts-expect-error The options are required when the component has required env.
     App.mount(email);
     // @ts-expect-error An HTTP prefix does not stand in for required env.
