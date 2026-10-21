@@ -43,6 +43,8 @@ export const consumerManifest = (version: string, tarballs?: string) => {
       "convex-test": "0.0.60",
       effect: "4.0.4",
       "@effect/platform-node": "4.0.4",
+      // A wrapper package's test kit, named by a mount in confect/app.ts.
+      "counter-kit": "link:./kits/counter-kit",
     },
     // Alchemy pulls in capnp-es, whose compiler peer admits TypeScript 5 and 6.
     devDependencies: {

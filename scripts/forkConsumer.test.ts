@@ -32,6 +32,7 @@ test("pins all eight public aliases to the requested fork build", () => {
       "convex-test": "0.0.60",
       effect: "4.0.4",
       "@effect/platform-node": "4.0.4",
+      "counter-kit": "link:./kits/counter-kit",
     },
     devDependencies: {
       "@types/node": "26.6.5",

@@ -304,6 +304,8 @@ without running it and fails, naming the mount, on a relative specifier, an
 unresolved module or a missing `register`. The option is test-only and stays out
 of the deployment manifest's mount data. It covers the generating backend's own
 mounts; a package mount inside a local component still uses `<package>/test`.
+The packed consumer mounts its counter a second time through a linked kit, so the
+installed CLI's import is checked under NodeNext and run by its tests.
 
 Changeset: `mount-test-kit.md`.
 Upstream: planned; it builds on the fork-only generated test registry, and no
