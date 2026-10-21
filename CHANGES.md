@@ -127,6 +127,19 @@ Application schemas keep native pagination.
 Changeset: `scoped-scheduler-cancel-pagination.md`.
 Upstream: planned; no linked proposal verified.
 
+### Lift official component clients
+
+Add `OfficialComponent` to `@confect/server`. `make` lifts an official Convex
+component's client so handlers call its promise methods without a ctx. Each
+method's runner comes from its ctx parameter, and a rejection dies with
+`ComponentCallFailed`. `encodeCall` and `encodeField` encode a ref's arguments
+for methods that take a function reference. Wrapper packages carried identical
+private copies of this adapter; the move keeps its behaviour and types.
+Registered query, mutation and action tests exercise the native ctx runners.
+
+Changeset: `official-component-adapter.md`.
+Upstream: planned; no proposal submitted.
+
 ## Backend declarations and HTTP routing
 
 ### Declare a backend in `confect/`

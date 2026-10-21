@@ -28,6 +28,7 @@ export * as MiddlewareRegistryItem from "./MiddlewareRegistryItem.js";
 export * as MutationCtx from "./MutationCtx.js";
 export * as MutationRunner from "./MutationRunner.js";
 export * as MutationTransactionContext from "./MutationTransactionContext.js";
+export * as OfficialComponent from "./OfficialComponent.js";
 export * as OrderedQuery from "./OrderedQuery.js";
 export * as QueryCtx from "./QueryCtx.js";
 export * as QueryInitializer from "./QueryInitializer.js";
