@@ -196,7 +196,7 @@ export const make = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
               () =>
                 new QueryInitializer.GetByIdFailure({
                   tableName,
-                  id: id as unknown as string,
+                  id,
                 }),
             ),
           ),
@@ -217,7 +217,7 @@ export const make = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
               Effect.fail(
                 new Document.DocumentEncodeError({
                   tableName,
-                  id: id as unknown as string,
+                  id,
                   parseError,
                 }),
               ),
