@@ -575,16 +575,12 @@ describe("DatabaseWriter", () => {
             .patch(id as never, patch as never)
             .pipe(
               Effect.as(null),
-              Effect.catch((error) =>
-                Effect.succeed({
-                  _tag: error._tag,
-                  message: error.message.replace(id, "<id>"),
-                }),
+              Effect.catch(({ _tag, message }) =>
+                Effect.succeed({ _tag, message: message.replace(id, "<id>") }),
               ),
             );
-          const { _id, _creationTime, ...storedFields } = (yield* Effect.promise(
-            () => ctx.db.get(id),
-          ))!;
+          const { _id, _creationTime, ...storedFields } =
+            (yield* Effect.promise(() => ctx.db.get(id)))!;
           return { error, stored: storedFields };
         }),
         Schema.Any,
