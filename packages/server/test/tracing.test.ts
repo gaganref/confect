@@ -343,6 +343,9 @@ describe("server operation tracing", () => {
         const insert = vi
           .fn<GenericDatabaseWriter<ConvexDataModel>["insert"]>()
           .mockResolvedValue(noteId);
+        const patch = vi
+          .fn<GenericDatabaseWriter<ConvexDataModel>["patch"]>()
+          .mockResolvedValue(undefined);
         const replace = vi
           .fn<GenericDatabaseWriter<ConvexDataModel>["replace"]>()
           .mockResolvedValue(undefined);
@@ -351,6 +354,7 @@ describe("server operation tracing", () => {
           .mockResolvedValue({ _id: noteId, _creationTime: 1, value: "1" });
         const writer = DatabaseWriter.make(databaseSchema, {
           insert,
+          patch,
           replace,
           get,
         } as unknown as GenericDatabaseWriter<ConvexDataModel>).table("notes");
@@ -375,10 +379,8 @@ describe("server operation tracing", () => {
           ["notes", { value: "2" }],
         ]);
         expect(get).toHaveBeenCalledExactlyOnceWith(noteId);
-        expect(replace.mock.calls).toEqual([
-          [noteId, { value: "3" }],
-          [noteId, { value: "4" }],
-        ]);
+        expect(patch.mock.calls).toEqual([[noteId, { value: "3" }]]);
+        expect(replace.mock.calls).toEqual([[noteId, { value: "4" }]]);
         expect(recorder.spans.map((span) => span.name)).toEqual([
           "DatabaseWriter.insert",
           "DatabaseWriter.patch",
@@ -391,13 +393,12 @@ describe("server operation tracing", () => {
   it.effect("keeps document encoding failures inside the write span", () =>
     Effect.gen(function* () {
       const recorder = yield* makeRecorder;
-      const replace =
-        vi.fn<GenericDatabaseWriter<ConvexDataModel>["replace"]>();
+      const patch = vi.fn<GenericDatabaseWriter<ConvexDataModel>["patch"]>();
       const get = vi
         .fn<GenericDatabaseWriter<ConvexDataModel>["get"]>()
         .mockResolvedValue({ _id: noteId, _creationTime: 1, value: "1" });
       const writer = DatabaseWriter.make(databaseSchema, {
-        replace,
+        patch,
         get,
       } as unknown as GenericDatabaseWriter<ConvexDataModel>).table("notes");
       const error = yield* writer
@@ -405,7 +406,7 @@ describe("server operation tracing", () => {
         .pipe(Effect.flip, Effect.withTracer(recorder.tracer));
 
       assert.instanceOf(error, Document.DocumentEncodeError);
-      expect(replace).not.toHaveBeenCalled();
+      expect(patch).not.toHaveBeenCalled();
       expect(recorder.spans).toHaveLength(1);
       const span = recorder.spans[0]!;
       expect(span.name).toBe("DatabaseWriter.patch");

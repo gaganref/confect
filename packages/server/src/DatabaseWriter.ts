@@ -10,11 +10,14 @@ import { pipe } from "effect/Function";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
+import * as Result from "effect/Result";
 import * as DatabaseSchema from "./DatabaseSchema.js";
 import type * as DataModel from "./DataModel.js";
 import type { DocumentByName as DocumentByName_ } from "./DataModel.js";
 import * as Document from "./Document.js";
+import * as DocumentPatch from "./internal/DocumentPatch.js";
 import * as QueryInitializer from "./QueryInitializer.js";
 import type * as Table from "./Table.js";
 
@@ -131,38 +134,108 @@ export const make = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       return id as unknown as DataModel.Id<DataModel_, TableName>;
     });
 
+    // A codec whose encoding spans fields cannot encode a patch on its own, so
+    // the patch is merged into the decoded document and the result replaces it.
+    const replacePatched = (
+      id: DataModel.Id<DataModel_, TableName>,
+      patchedValues: PatchValue<
+        Document.WithoutSystemFields<DocumentByName_<DataModel_, TableName>>
+      >,
+    ) =>
+      Effect.gen(function* () {
+        const originalDecodedDoc = yield* QueryInitializer.getById<
+          Table.AnyWithProps,
+          TableName
+        >(
+          convexDatabaseWriter as any,
+          tableDef,
+        )(id as unknown as GenericId<TableName>);
+
+        const updatedEncodedDoc = yield* pipe(
+          patchedValues,
+          Record.reduce(originalDecodedDoc, (acc, value, key) =>
+            value === undefined
+              ? Record.remove(acc, key)
+              : Record.set(acc, key, value),
+          ),
+          Document.encode(tableDef),
+        );
+
+        yield* Effect.promise(() =>
+          convexDatabaseWriter.replace(
+            id as unknown as GenericId<TableName>,
+            updatedEncodedDoc as Expand<
+              BetterOmit<
+                DocumentByName<DataModel.ToConvex<DataModel_>, TableName>,
+                "_creationTime" | "_id"
+              >
+            >,
+          ),
+        );
+      });
+
     const patch = Effect.fn("DatabaseWriter.patch")(function* (
       id: DataModel.Id<DataModel_, TableName>,
       patchedValues: PatchValue<
         Document.WithoutSystemFields<DocumentByName_<DataModel_, TableName>>
       >,
     ) {
-      const originalDecodedDoc = yield* QueryInitializer.getById<
-        Table.AnyWithProps,
-        TableName
-      >(
-        convexDatabaseWriter as any,
-        tableDef,
-      )(id as unknown as GenericId<TableName>);
+      const encodePatch = DocumentPatch.encoder(tableDef);
+      if (encodePatch === undefined) {
+        return yield* replacePatched(id, patchedValues);
+      }
 
-      const updatedEncodedDoc = yield* pipe(
-        patchedValues,
-        Record.reduce(originalDecodedDoc, (acc, value, key) =>
-          value === undefined
-            ? Record.remove(acc, key)
-            : Record.set(acc, key, value),
+      const storedDoc = yield* pipe(
+        Effect.promise(() =>
+          convexDatabaseWriter.get(id as unknown as GenericId<TableName>),
         ),
-        Document.encode(tableDef),
+        Effect.andThen((value) =>
+          Effect.fromResult(
+            Result.fromNullishOr(
+              value,
+              () =>
+                new QueryInitializer.GetByIdFailure({
+                  tableName,
+                  id,
+                }),
+            ),
+          ),
+        ),
+      );
+      // The patch must encode and the patched document must decode. When
+      // either fails, the stored document decides whose fault that is.
+      const encodedPatch = yield* pipe(
+        encodePatch(patchedValues),
+        Effect.mapError(({ message }) => message),
+        Effect.tap((delta) =>
+          pipe(
+            { ...storedDoc, ...delta },
+            Record.filter(Predicate.isNotUndefined),
+            Document.decode(tableDef),
+            Effect.mapError(({ parseError }) => parseError),
+          ),
+        ),
+        Effect.catch((parseError) =>
+          pipe(
+            Document.decode(storedDoc, tableDef),
+            Effect.andThen(
+              Effect.fail(
+                new Document.DocumentEncodeError({
+                  tableName,
+                  id,
+                  parseError,
+                }),
+              ),
+            ),
+          ),
+        ),
       );
 
       yield* Effect.promise(() =>
-        convexDatabaseWriter.replace(
+        convexDatabaseWriter.patch(
           id as unknown as GenericId<TableName>,
-          updatedEncodedDoc as Expand<
-            BetterOmit<
-              DocumentByName<DataModel.ToConvex<DataModel_>, TableName>,
-              "_creationTime" | "_id"
-            >
+          encodedPatch as Partial<
+            DocumentByName<DataModel.ToConvex<DataModel_>, TableName>
           >,
         ),
       );
