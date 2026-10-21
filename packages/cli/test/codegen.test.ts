@@ -1145,7 +1145,10 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       { timeout: 30000 },
     );
 
-    it.effect.each([
+    it.effect.each<{
+      readonly shape: string;
+      readonly files: Readonly<Record<string, string>>;
+    }>([
       {
         shape: "a TypeScript barrel re-exporting another module",
         files: {
