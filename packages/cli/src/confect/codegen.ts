@@ -1049,6 +1049,7 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
     prefix: string,
     kind: "app" | "component",
     parentHttpPrefix: string | undefined,
+    registeredByKit: boolean,
   ): Effect.fn.Return<
     void,
     | PlatformError.PlatformError
@@ -1113,56 +1114,72 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
           `{ componentPath: ${quote(name)}, httpPrefix: ${quote(httpPrefix)} }`,
         );
       }
-      const kitKey = kitEntry ?? resolved;
-      let identifier = kits.get(kitKey);
-      if (identifier === undefined) {
-        const cleaned = name.replaceAll(/[^A-Za-z0-9_$]/g, "_");
-        const base = /^[A-Za-z_$]/.test(cleaned) ? cleaned : `_${cleaned}`;
-        identifier = `${base}Kit`;
-        let schemaIdentifier = `${base}Schema`;
-        for (
-          let n = 2;
-          identifiers.has(identifier) || identifiers.has(schemaIdentifier);
-          n++
-        ) {
-          identifier = `${base}Kit${n}`;
-          schemaIdentifier = `${base}Schema${n}`;
-        }
-        identifiers.add(identifier);
-        identifiers.add(schemaIdentifier);
-        kits.set(kitKey, identifier);
-        if (kitEntry === undefined) {
-          imports.push(
-            `import ${schemaIdentifier} from ${quote(relative(path.join(resolved, "schema.js")))};`,
-          );
-          declarations.push(
-            `const ${identifier} = { schema: ${schemaIdentifier}, modules: ${yield* moduleMap(resolved)} };`,
-          );
-        } else {
-          if (mount?.testing !== undefined) {
-            yield* checkTestKit(
-              mount.name,
-              mount.testing,
-              config,
-              configDisplay,
-            );
-          } else if (Option.isNone(Bundler.resolveModule(kitEntry, config))) {
-            return yield* new CodegenError.InvalidConvexConfigError({
-              configPath: relative(config),
-              reason: `the component package ${quote(component.componentDefinitionPath)} has no ${quote(kitEntry)} export. Tests register a component from another package through that entry's \`register(t, name)\`.`,
-            });
+      // A kit's `register` installs the mount's own children, so below it the
+      // walk only collects HTTP mounts.
+      if (!registeredByKit) {
+        const kitKey = kitEntry ?? resolved;
+        let identifier = kits.get(kitKey);
+        if (identifier === undefined) {
+          const cleaned = name.replaceAll(/[^A-Za-z0-9_$]/g, "_");
+          const base = /^[A-Za-z_$]/.test(cleaned) ? cleaned : `_${cleaned}`;
+          identifier = `${base}Kit`;
+          let schemaIdentifier = `${base}Schema`;
+          for (
+            let n = 2;
+            identifiers.has(identifier) || identifiers.has(schemaIdentifier);
+            n++
+          ) {
+            identifier = `${base}Kit${n}`;
+            schemaIdentifier = `${base}Schema${n}`;
           }
-          imports.push(`import * as ${identifier} from ${quote(kitEntry)};`);
+          identifiers.add(identifier);
+          identifiers.add(schemaIdentifier);
+          kits.set(kitKey, identifier);
+          if (kitEntry === undefined) {
+            imports.push(
+              `import ${schemaIdentifier} from ${quote(relative(path.join(resolved, "schema.js")))};`,
+            );
+            declarations.push(
+              `const ${identifier} = { schema: ${schemaIdentifier}, modules: ${yield* moduleMap(resolved)} };`,
+            );
+          } else {
+            if (mount?.testing !== undefined) {
+              yield* checkTestKit(
+                mount.name,
+                mount.testing,
+                config,
+                configDisplay,
+              );
+            } else if (Option.isNone(Bundler.resolveModule(kitEntry, config))) {
+              return yield* new CodegenError.InvalidConvexConfigError({
+                configPath: relative(config),
+                reason: `the component package ${quote(component.componentDefinitionPath)} has no ${quote(kitEntry)} export. Tests register a component from another package through that entry's \`register(t, name)\`.`,
+              });
+            }
+            imports.push(`import * as ${identifier} from ${quote(kitEntry)};`);
+          }
         }
+        components.push(`${quote(name)}: ${identifier},`);
       }
-      components.push(`${quote(name)}: ${identifier},`);
-      // A kit's `register` installs the mount's own children.
-      if (kitEntry === undefined) {
-        yield* visit(resolved, `${name}/`, "component", httpPrefix);
+      // A package's own `register` installs its children.
+      if (!fromPackage) {
+        yield* visit(
+          resolved,
+          `${name}/`,
+          "component",
+          httpPrefix,
+          registeredByKit || kitEntry !== undefined,
+        );
       }
     }
   });
-  yield* visit(convexDirectory, "", (yield* ConvexDirectory.target).kind, "");
+  yield* visit(
+    convexDirectory,
+    "",
+    (yield* ConvexDirectory.target).kind,
+    "",
+    false,
+  );
   yield* writeFileStringAndLog(
     path.join(generated, "testing.ts"),
     [

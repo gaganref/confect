@@ -26,7 +26,7 @@ const left_deep_childKit = { schema: left_deep_childSchema, modules: { "_generat
 "parent.ts": () => import("../../components/inner/convex/parent.js"),
 "schema.ts": () => import("../../components/inner/convex/schema.js"),
 } };
-export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{ componentPath: "left/child", httpPrefix: "/left/child" },{ componentPath: "left/deep/child/child", httpPrefix: "/left/deep/child/child" },{ componentPath: "second", httpPrefix: "/second" }], schema, convexSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
+export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{ componentPath: "left/child", httpPrefix: "/left/child" },{ componentPath: "left/deep/child/child", httpPrefix: "/left/deep/child/child" },{ componentPath: "right/child", httpPrefix: "/right/child" },{ componentPath: "right/deep/child/child", httpPrefix: "/right/deep/child/child" },{ componentPath: "second", httpPrefix: "/second" }], schema, convexSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "groups/cacheControl.ts": () => import("../../convex/groups/cacheControl.js"),
 "groups/cacheStubbed.ts": () => import("../../convex/groups/cacheStubbed.js"),
 "groups/callbacks.ts": () => import("../../convex/groups/callbacks.js"),
