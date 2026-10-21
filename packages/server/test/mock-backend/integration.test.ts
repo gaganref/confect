@@ -2,10 +2,18 @@ import { assert, describe, expect, expectTypeOf, it } from "@effect/vitest";
 import { assertEquals } from "@effect/vitest/utils";
 import { FunctionSpec } from "@confect/core";
 import * as FunctionRegistryItem from "@confect/server/FunctionRegistryItem";
+import * as OfficialComponent from "@confect/server/OfficialComponent";
 import * as RegisteredConvexFunction from "@confect/server/RegisteredConvexFunction";
 import { RegisteredNodeFunction } from "@confect/server/node";
 import { convexTest } from "convex-test";
-import { makeFunctionReference } from "convex/server";
+import {
+  internalMutationGeneric,
+  internalQueryGeneric,
+  makeFunctionReference,
+  type GenericActionCtx,
+  type GenericDataModel,
+} from "convex/server";
+import { v } from "convex/values";
 import * as Console from "effect/Console";
 import * as TestConsole from "effect/testing/TestConsole";
 import confectSchema from "./fixtures/confect/_generated/schema";
@@ -136,6 +144,104 @@ describe("Storage", () => {
           "./fixtures/convex/storage.ts": () =>
             Promise.resolve({ run: registered }),
         });
+        expect(yield* Effect.promise(() => invoke(t))).toBe(expected);
+      }),
+  );
+});
+
+describe("OfficialComponent", () => {
+  const readRef = makeFunctionReference<"query", {}, string>("official:read");
+  const writeRef = makeFunctionReference<"mutation", { text: string }, string>(
+    "official:write",
+  );
+  const official = OfficialComponent.make("notes", {
+    read(ctx: Pick<GenericActionCtx<GenericDataModel>, "runQuery">) {
+      return ctx.runQuery(readRef, {});
+    },
+    write(
+      ctx: Pick<GenericActionCtx<GenericDataModel>, "runMutation">,
+      text: string,
+    ) {
+      return ctx.runMutation(writeRef, { text });
+    },
+    writeFromAction(ctx: GenericActionCtx<GenericDataModel>, text: string) {
+      return ctx.runMutation(writeRef, { text });
+    },
+  });
+  const targets = {
+    read: internalQueryGeneric({
+      args: {},
+      handler: (ctx) =>
+        ctx.db
+          .query("notes")
+          .first()
+          .then((note) => note?.text ?? "missing"),
+    }),
+    write: internalMutationGeneric({
+      args: { text: v.string() },
+      handler: (ctx, { text }) =>
+        ctx.db
+          .insert("notes", { text })
+          .then((id) => ctx.db.get("notes", id))
+          .then((note) => note?.text ?? "missing"),
+    }),
+  };
+  const cases = [
+    {
+      name: "query",
+      spec: FunctionSpec.publicQuery({
+        name: "run",
+        returns: () => Schema.String,
+      }),
+      handler: official("read"),
+      invoke: (t: ReturnType<typeof convexTest>) =>
+        t.query(makeFunctionReference<"query">("lifted:run"), {}),
+      expected: "query note",
+    },
+    {
+      name: "mutation",
+      spec: FunctionSpec.publicMutation({
+        name: "run",
+        returns: () => Schema.String,
+      }),
+      handler: official("write", "mutation note"),
+      invoke: (t: ReturnType<typeof convexTest>) =>
+        t.mutation(makeFunctionReference<"mutation">("lifted:run"), {}),
+      expected: "mutation note",
+    },
+    {
+      name: "action",
+      spec: FunctionSpec.publicAction({
+        name: "run",
+        returns: () => Schema.String,
+      }),
+      handler: official("writeFromAction", "action note"),
+      invoke: (t: ReturnType<typeof convexTest>) =>
+        t.action(makeFunctionReference<"action">("lifted:run"), {}),
+      expected: "action note",
+    },
+  ];
+
+  it.effect.each(cases)(
+    "lifts a call through a registered $name and its native runner",
+    ({ spec, handler, invoke, expected }) =>
+      Effect.gen(function* () {
+        const item = FunctionRegistryItem.make({
+          functionSpec: spec,
+          groupMiddlewareAttachments: [],
+          handler: () => handler,
+        });
+        assert(item._tag === "Confect");
+        const registered = RegisteredConvexFunction.make(confectSchema, item);
+        const t = convexTest(convexSchema, {
+          ...import.meta.glob("./fixtures/convex/_generated/*.js"),
+          "./fixtures/convex/official.ts": () => Promise.resolve(targets),
+          "./fixtures/convex/lifted.ts": () =>
+            Promise.resolve({ run: registered }),
+        });
+        yield* Effect.promise(() =>
+          t.run((ctx) => ctx.db.insert("notes", { text: "query note" })),
+        );
         expect(yield* Effect.promise(() => invoke(t))).toBe(expected);
       }),
   );
