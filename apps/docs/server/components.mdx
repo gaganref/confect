@@ -309,6 +309,94 @@ Bind a child contract with `Component.bind(childContract, components.child, { pa
 
 Component handlers use their own database, scoped storage services and scheduler. Generated raw contexts omit `auth`; application `Auth` and unified `Storage` are unavailable. Pass identity explicitly in arguments. Native database pagination is unavailable in component readers; use [`QueryStream.paginate`](/server/database/streams#paginating-a-stream) for index queries. Confect does not replace native search pagination or rewrite plain Convex handlers.
 
+## Wrap an official component
+
+An official Convex component ships a client whose methods take a native ctx first and return a promise. `OfficialComponent.make` lifts such a client into Effect so Confect handlers call it without a ctx. This client is the shape a component's package ships:
+
+```ts limiter/client.ts
+import {
+  createFunctionHandle,
+  type DefaultFunctionArgs,
+  type FunctionArgs,
+  type FunctionReference,
+  type FunctionReturnType,
+} from "convex/server";
+import type { ComponentApi } from "./_generated/component.js";
+
+type RunQueryCtx = {
+  runQuery: <Q extends FunctionReference<"query", "internal">>(
+    query: Q,
+    args: FunctionArgs<Q>,
+  ) => Promise<FunctionReturnType<Q>>;
+};
+type RunMutationCtx = {
+  runMutation: <M extends FunctionReference<"mutation", "internal">>(
+    mutation: M,
+    args: FunctionArgs<M>,
+  ) => Promise<FunctionReturnType<M>>;
+};
+
+export class Limiter {
+  constructor(private readonly component: ComponentApi) {}
+
+  remaining(ctx: RunQueryCtx, key: string): Promise<number> {
+    return ctx.runQuery(this.component.lib.remaining, { key });
+  }
+
+  consume(ctx: RunMutationCtx, key: string, count: number): Promise<number> {
+    return ctx.runMutation(this.component.lib.consume, { key, count });
+  }
+
+  async schedule(
+    ctx: RunMutationCtx,
+    fn: FunctionReference<"mutation", "internal">,
+    fnArgs: DefaultFunctionArgs,
+  ): Promise<string> {
+    const handle = await createFunctionHandle(fn);
+    return ctx.runMutation(this.component.lib.schedule, { handle, fnArgs });
+  }
+}
+```
+
+Lift it once, beside the host's mount:
+
+```ts confect/limiter.ts
+import { OfficialComponent } from "@confect/server";
+import { Limiter } from "limiter";
+import { components } from "./_generated/components";
+
+export const limiter = OfficialComponent.make(
+  "limiter",
+  new Limiter(components.limiter),
+);
+```
+
+`limiter("remaining", key)` is an `Effect<number, never, QueryRunner>` and `limiter("consume", key, 1)` an `Effect<number, never, MutationRunner>`. Each method's runner comes from the ctx its first parameter accepts. It is `QueryRunner` when query, mutation and action ctxs all satisfy the parameter, `MutationRunner` when mutation and action ctxs do, and `ActionRunner` when only an action ctx does. A method an action ctx cannot satisfy, such as one that needs `ctx.db`, is left out of the method names. The call reads the native ctx from the running handler and passes your arguments after it:
+
+```ts confect/jobs.impl.ts
+import { FunctionImpl, OfficialComponent } from "@confect/server";
+import * as Effect from "effect/Effect";
+import schema from "./_generated/schema";
+import refs from "./_generated/refs";
+import jobs from "./jobs.spec";
+import { limiter } from "./limiter";
+
+const start = FunctionImpl.make(schema, jobs, "start", ({ key }) =>
+  Effect.gen(function* () {
+    if ((yield* limiter("consume", key, 1)) < 0) return null;
+    const call = yield* OfficialComponent.encodeCall(refs.internal.jobs.run, {
+      key,
+    });
+    yield* limiter("schedule", call.reference, call.args);
+    return null;
+  }),
+);
+```
+
+`encodeCall` encodes a ref's arguments through its codecs and returns `{ reference, args }`, the function reference and wire record an official method expects. `encodeField(ref, key, value)` encodes one declared argument field, for a method that takes a single field rather than a whole argument record.
+
+A rejected promise is a defect, not a typed error. The effect dies with `ComponentCallFailed`, carrying the `component` name, the `method` and the rejection as `cause`. Calling outside a Confect handler dies with `<component> called outside a Confect handler`.
+
 ## What codegen rejects
 
 Codegen protects hand-written config files. Move their contents into declarations and delete them before opting in. The messages below omit terminal styling and the leading cross; placeholders stand for values from your project.
