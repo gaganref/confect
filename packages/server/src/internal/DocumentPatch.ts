@@ -4,7 +4,6 @@ import * as Effect from "effect/Effect";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
-import * as Document from "../Document.js";
 import type * as Table from "../Table.js";
 
 export type EncodedPatch = Record.ReadonlyRecord<
@@ -14,8 +13,7 @@ export type EncodedPatch = Record.ReadonlyRecord<
 
 export type PatchEncoder = (
   patch: Record.ReadonlyRecord<string, unknown>,
-  id: string,
-) => Effect.Effect<EncodedPatch, Document.DocumentEncodeError>;
+) => Effect.Effect<EncodedPatch, Schema.SchemaError>;
 
 const patchEncoders = new WeakMap<Table.AnyWithProps, PatchEncoder | null>();
 
@@ -77,7 +75,7 @@ const makePatchEncoder = (table: Table.AnyWithProps): PatchEncoder | null => {
       ];
     }),
   );
-  return (patch, id) =>
+  return (patch) =>
     pipe(
       fieldEncoders,
       Record.filter((_, name) => Object.hasOwn(patch, name)),
@@ -87,14 +85,5 @@ const makePatchEncoder = (table: Table.AnyWithProps): PatchEncoder | null => {
           : encode(patch[name]),
       ),
       Effect.all,
-      Effect.catchIf(Schema.isSchemaError, (schemaError) =>
-        Effect.fail(
-          new Document.DocumentEncodeError({
-            tableName: table.tableName,
-            id,
-            parseError: schemaError.message,
-          }),
-        ),
-      ),
     );
 };

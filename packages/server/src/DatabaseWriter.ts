@@ -202,15 +202,20 @@ export const make = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
           ),
         ),
       );
-      const encodedPatch = yield* encodePatch(patchedValues, id);
-
-      // The patched document must decode. When it does not, the stored
-      // document decides whose fault that is.
-      yield* pipe(
-        { ...storedDoc, ...encodedPatch },
-        Record.filter(Predicate.isNotUndefined),
-        Document.decode(tableDef),
-        Effect.catchTag("DocumentDecodeError", ({ parseError }) =>
+      // The patch must encode and the patched document must decode. When
+      // either fails, the stored document decides whose fault that is.
+      const encodedPatch = yield* pipe(
+        encodePatch(patchedValues),
+        Effect.mapError(({ message }) => message),
+        Effect.tap((encodedPatch) =>
+          pipe(
+            { ...storedDoc, ...encodedPatch },
+            Record.filter(Predicate.isNotUndefined),
+            Document.decode(tableDef),
+            Effect.mapError(({ parseError }) => parseError),
+          ),
+        ),
+        Effect.catch((parseError) =>
           pipe(
             Document.decode(storedDoc, tableDef),
             Effect.andThen(
