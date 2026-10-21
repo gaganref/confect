@@ -293,6 +293,22 @@ across lockfiles. Fail codegen when the package has no `/test` export.
 Changeset: `component-test-entry.md`.
 Upstream: fork only; upstream has no generated test registry.
 
+### Name a mount's test kit
+
+Add `App.mount`'s `testing` option, a package specifier for the module whose
+`register(t, name)` the generated test registry calls for that mount in place of
+`<package>/test`. Some official kits leave out a nested component, such as
+aggregate's batch worker, so a wrapper package ships a kit that registers it.
+Hosts had to replace the generated entry by hand. Codegen reads the kit's exports
+without running it and fails, naming the mount, on a relative specifier, an
+unresolved module or a missing `register`. The option is test-only and stays out
+of the deployment manifest's mount data. It covers the generating backend's own
+mounts; a package mount inside a local component still uses `<package>/test`.
+
+Changeset: `mount-test-kit.md`.
+Upstream: planned; it builds on the fork-only generated test registry, and no
+proposal is submitted.
+
 ### Keep fork housekeeping separate
 
 Move fork prose and rules from README.md and AGENTS.md into FORK.md so upstream

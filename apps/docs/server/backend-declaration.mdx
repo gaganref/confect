@@ -96,6 +96,8 @@ The record key is the mount name. `App.mount` takes the default export of a comp
 
 A binding is an entry of your env, or a constant string. `api` is the component's `HttpApi`; codegen uses it to check routes. It requires `httpPrefix`.
 
+`testing` names a test kit by package specifier, such as `App.mount(aggregate, { testing: "<wrapper>/testing" })`. The [generated test registry](/guides/testing) then calls that module's `register(t, name)` for the mount in place of the component package's own `<package>/test`. Use it when a wrapper package ships a kit that also registers nested components the official kit leaves out.
+
 Codegen writes the matching Convex definition:
 
 ```ts convex/convex.config.ts
