@@ -5,6 +5,7 @@ import firstSchema from "../../components/counter/convex/schema.js";
 import leftSchema from "../../components/parent/convex/schema.js";
 import left_deepSchema from "../../components/middle/convex/schema.js";
 import left_deep_childSchema from "../../components/inner/convex/schema.js";
+import * as rightKit from "parent-kit/testing";
 const firstKit = { schema: firstSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "authoring.ts": () => import("../../components/counter/convex/authoring.js"),
 "counter.ts": () => import("../../components/counter/convex/counter.js"),
@@ -25,7 +26,7 @@ const left_deep_childKit = { schema: left_deep_childSchema, modules: { "_generat
 "parent.ts": () => import("../../components/inner/convex/parent.js"),
 "schema.ts": () => import("../../components/inner/convex/schema.js"),
 } };
-export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{ componentPath: "left/child", httpPrefix: "/left/child" },{ componentPath: "left/deep/child/child", httpPrefix: "/left/deep/child/child" },{ componentPath: "right/child", httpPrefix: "/right/child" },{ componentPath: "right/deep/child/child", httpPrefix: "/right/deep/child/child" },{ componentPath: "second", httpPrefix: "/second" }], schema, convexSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
+export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{ componentPath: "left/child", httpPrefix: "/left/child" },{ componentPath: "left/deep/child/child", httpPrefix: "/left/deep/child/child" },{ componentPath: "second", httpPrefix: "/second" }], schema, convexSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "groups/cacheControl.ts": () => import("../../convex/groups/cacheControl.js"),
 "groups/cacheStubbed.ts": () => import("../../convex/groups/cacheStubbed.js"),
 "groups/callbacks.ts": () => import("../../convex/groups/callbacks.js"),
@@ -45,9 +46,5 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "left/deep": left_deepKit,
 "left/deep/child": left_deep_childKit,
 "left/deep/child/child": firstKit,
-"right": leftKit,
-"right/child": firstKit,
-"right/deep": left_deepKit,
-"right/deep/child": left_deep_childKit,
-"right/deep/child/child": firstKit,
+"right": rightKit,
 "second": firstKit,} };

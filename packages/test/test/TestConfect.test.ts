@@ -37,6 +37,19 @@ it.effect(
     }).pipe(Effect.provide(TestConfect.layer(registry))),
 );
 
+it.effect(
+  "registers a mount and its nested child through the test kit it names",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* TestConfect.TestConfect<typeof registry.schema>();
+      const { right } = yield* test.mutation(
+        refs.public.groups.components.exercise,
+        { run: "kit" },
+      );
+      expect(right).toEqual([13]);
+    }).pipe(Effect.provide(TestConfect.layer(registry))),
+);
+
 it.effect("takes HTTP prefixes from an App value", () =>
   Effect.gen(function* () {
     const test = yield* TestConfect.TestConfect<typeof registry.schema>();

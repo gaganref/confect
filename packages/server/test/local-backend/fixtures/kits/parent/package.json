@@ -1,0 +1,10 @@
+{
+  "name": "parent-kit",
+  "description": "Internal fixture: a wrapper package's test kit for the parent component.",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./testing": "./testing.ts"
+  }
+}
