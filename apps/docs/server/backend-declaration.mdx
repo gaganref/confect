@@ -98,6 +98,8 @@ A binding is an entry of your env, or a constant string. `api` is the component'
 
 `testing` names a test kit by package specifier, such as `App.mount(aggregate, { testing: "<wrapper>/testing" })`. The [generated test registry](/guides/testing) then calls that module's `register(t, name)` for the mount in place of the component package's own `<package>/test`. Use it when a wrapper package ships a kit that also registers nested components the official kit leaves out.
 
+`testing` applies to this backend's own mounts. A package mounted inside a local component still registers through its `<package>/test`, even when that component's declaration sets `testing` on the package. To register it another way, mount the containing component with `testing` naming a kit whose `register` registers that component and everything it mounts.
+
 Codegen writes the matching Convex definition:
 
 ```ts convex/convex.config.ts
