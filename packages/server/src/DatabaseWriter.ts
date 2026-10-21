@@ -207,9 +207,9 @@ export const make = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       const encodedPatch = yield* pipe(
         encodePatch(patchedValues),
         Effect.mapError(({ message }) => message),
-        Effect.tap((encodedPatch) =>
+        Effect.tap((delta) =>
           pipe(
-            { ...storedDoc, ...encodedPatch },
+            { ...storedDoc, ...delta },
             Record.filter(Predicate.isNotUndefined),
             Document.decode(tableDef),
             Effect.mapError(({ parseError }) => parseError),

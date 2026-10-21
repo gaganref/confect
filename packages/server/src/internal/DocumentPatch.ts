@@ -80,9 +80,7 @@ const makePatchEncoder = (table: Table.AnyWithProps): PatchEncoder | null => {
       fieldEncoders,
       Record.filter((_, name) => Object.hasOwn(patch, name)),
       Record.map((encode, name) =>
-        patch[name] === undefined
-          ? Effect.succeed(undefined)
-          : encode(patch[name]),
+        patch[name] === undefined ? Effect.undefined : encode(patch[name]),
       ),
       Effect.all,
     );
