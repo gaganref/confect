@@ -115,6 +115,43 @@ describe("make", () => {
     expectTypeOf<Method>().toEqualTypeOf<"count" | "add" | "flush">();
   });
 
+  it("lifts generic methods with their inferred parameters", () => {
+    type Limits = { messages: number; uploads: number };
+    const official = {
+      limit<Name extends keyof Limits>(
+        _ctx: RunMutationCtx,
+        _name: Name,
+        ..._options: Name extends keyof Limits
+          ? [options?: { count: number }]
+          : [options: { count: number }]
+      ): Promise<boolean> {
+        return Promise.resolve(true);
+      },
+      remaining(_ctx: RunQueryCtx, _name: keyof Limits): Promise<number> {
+        return Promise.resolve(10);
+      },
+    };
+    const limiter = OfficialComponent.make("limiter", official);
+    type Method = Parameters<typeof limiter>[0];
+
+    expectTypeOf<Method>().toEqualTypeOf<"limit" | "remaining">();
+    expectTypeOf(limiter("limit", "messages")).toEqualTypeOf<
+      Effect.Effect<boolean, never, MutationRunner.MutationRunner>
+    >();
+    expectTypeOf(limiter("limit", "uploads", { count: 2 })).toEqualTypeOf<
+      Effect.Effect<boolean, never, MutationRunner.MutationRunner>
+    >();
+    expectTypeOf(limiter("remaining", "messages")).toEqualTypeOf<
+      Effect.Effect<number, never, QueryRunner.QueryRunner>
+    >();
+    // @ts-expect-error Only configured limit names are accepted.
+    const _missingName = limiter("limit", "missing");
+    // @ts-expect-error The generic method's options retain their field types.
+    const _wrongCount = limiter("limit", "messages", { count: "two" });
+    // @ts-expect-error The plain method still requires its name argument.
+    const _missingArgument = limiter("remaining");
+  });
+
   it.effect.each(["query", "mutation", "action"] as const)(
     "passes the native %s ctx and the arguments to the official method",
     (kind) =>
