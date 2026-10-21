@@ -3,6 +3,7 @@ import { beforeEach, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import * as Effect from "effect/Effect";
 import { App } from "@confect/core";
+import { defineSchema } from "convex/server";
 import counter from "../../server/test/local-backend/fixtures/components/counter/convex/convex.config";
 import env from "../../server/test/local-backend/fixtures/confect/env";
 import registry from "../../server/test/local-backend/fixtures/confect/_generated/testing";
@@ -77,7 +78,34 @@ it.effect("names the mount whose test kit exports no register", () =>
     expect(defect).toMatchObject({
       _tag: "InvalidComponentKit",
       componentPath: "right",
-      message: 'The test kit for "right" exports no register(t, name).',
+      message:
+        'The test kit for "right" must export register(t, name), or schema and modules.',
+    });
+  }),
+);
+
+it.effect("names the mount whose test kit exports schema without modules", () =>
+  Effect.gen(function* () {
+    const defect = yield* TestConfect.TestConfect<
+      typeof registry.schema
+    >().pipe(
+      Effect.provide(
+        TestConfect.layer({
+          ...registry,
+          components: {
+            ...registry.components,
+            right: { schema: defineSchema({}) } as never,
+          },
+        }),
+      ),
+      Effect.asVoid,
+      Effect.catchDefect(Effect.succeed),
+    );
+    expect(defect).toMatchObject({
+      _tag: "InvalidComponentKit",
+      componentPath: "right",
+      message:
+        'The test kit for "right" must export register(t, name), or schema and modules.',
     });
   }),
 );

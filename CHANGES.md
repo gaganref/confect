@@ -304,7 +304,8 @@ children, and codegen still writes their HTTP prefixes. Codegen fails, naming th
 mount, on a relative specifier or an unresolved module. It reads the kit's
 exports without running it and fails on a missing `register` when it can list
 them. A CommonJS kit or an `export *` from another package passes, and
-`TestConfect.layer` names the mount if the kit has no `register`. The option is
+`TestConfect.layer` names the mount if the kit has neither `register` nor both
+`schema` and `modules`. The option is
 test-only and stays out of the deployment manifest's mount data. It covers the
 generating backend's own mounts; a package mount inside a local component still
 uses `<package>/test`, and the docs name the workaround, a kit for the containing
