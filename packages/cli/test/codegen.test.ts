@@ -1143,6 +1143,57 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
+      "keeps the HTTP mounts nested under a mount that names a test kit",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const project = yield* kitProject(
+            "pool-kit/testing",
+            "export function register(t, name) { t.registerComponent(name); }\n",
+          );
+          for (const component of ["child", "parent"]) {
+            yield* fs.makeDirectory(
+              path.join(project.root, "components", component, "convex"),
+              { recursive: true },
+            );
+          }
+          yield* project.write(
+            "components/child/convex/convex.config.ts",
+            'import { defineComponent } from "convex/server";\nexport default defineComponent("child");\n',
+          );
+          yield* project.write(
+            "components/child/convex/http.ts",
+            "export default {};\n",
+          );
+          yield* project.write(
+            "components/parent/convex/convex.config.ts",
+            'import { defineComponent } from "convex/server";\nimport child from "../../child/convex/convex.config.js";\nconst parent = defineComponent("parent");\nparent.use(child, { name: "b", httpPrefix: "/b" });\nexport default parent;\n',
+          );
+          yield* project.write(
+            "confect/app.ts",
+            (yield* project.read("confect/app.ts"))
+              .replace(
+                'import env from "./env";',
+                'import env from "./env";\nimport parent from "../components/parent/convex/convex.config.js";',
+              )
+              .replace(
+                "App.mount(workpool, {",
+                'App.mount(parent, { httpPrefix: "/pool",',
+              ),
+          );
+          yield* project.run;
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(/httpMounts: (\[[^\]]*\])/.exec(testing)?.[1]).toBe(
+            '[{ componentPath: "pool/b", httpPrefix: "/pool/b" }]',
+          );
+          expect(testing).toContain('"pool": poolKit,');
+          expect(testing).not.toContain('"pool/b":');
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "rejects a named test kit that does not export register",
       () =>
         Effect.gen(function* () {

@@ -50,6 +50,15 @@ it.effect(
     }).pipe(Effect.provide(TestConfect.layer(registry))),
 );
 
+it.effect("fetches a nested route under a mount that names a test kit", () =>
+  Effect.gen(function* () {
+    const test = yield* TestConfect.TestConfect<typeof registry.schema>();
+    const response = yield* test.fetch("/right/child/members/5");
+    expect(response.status).toBe(200);
+    expect(yield* Effect.promise(() => response.json())).toBe("5");
+  }).pipe(Effect.provide(TestConfect.layer(registry))),
+);
+
 it.effect("takes HTTP prefixes from an App value", () =>
   Effect.gen(function* () {
     const test = yield* TestConfect.TestConfect<typeof registry.schema>();
