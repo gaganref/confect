@@ -24,7 +24,9 @@ import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
 import * as SchemaParser from "effect/SchemaParser";
+import * as SchemaTransformation from "effect/SchemaTransformation";
 import * as SchemaCompiler from "effect/schema/SchemaCompiler";
 import * as Stream from "effect/Stream";
 import * as Option from "effect/Option";
@@ -671,6 +673,98 @@ describe("DatabaseWriter", () => {
     }).pipe(Effect.provide(TestConfect.layer)),
   );
 
+  it.effect("patch does not run the codec of a field it leaves out", () =>
+    Effect.gen(function* () {
+      const RequiredString = Schema.String.pipe(
+        Schema.decodeTo(Schema.String, {
+          decode: SchemaGetter.passthrough<string>(),
+          encode: SchemaGetter.required<string>(),
+        }),
+      );
+      const result = yield* patchStoredNote(
+        Schema.Struct({ text: RequiredString, tag: Schema.String }),
+        { text: "kept", tag: "old" },
+        { tag: "new" },
+      );
+
+      expect(result).toStrictEqual({
+        error: null,
+        stored: { text: "kept", tag: "new" },
+      });
+    }).pipe(Effect.provide(TestConfect.layer)),
+  );
+
+  it.effect(
+    "patch runs struct-level checks on the patched values before encoding them",
+    () =>
+      Effect.gen(function* () {
+        const TrimOnEncode = Schema.String.pipe(
+          Schema.decodeTo(
+            Schema.String,
+            SchemaTransformation.transform({
+              decode: (value) => value,
+              encode: (value) => value.trim(),
+            }),
+          ),
+        );
+        const result = yield* patchStoredNote(
+          Schema.Struct({ text: TrimOnEncode, tag: Schema.String }).check(
+            Schema.makeFilter(
+              ({ text, tag }) =>
+                text === tag || { path: ["text"], issue: "must match tag" },
+            ),
+          ),
+          { text: "ok", tag: "ok" },
+          { text: " ok " },
+        );
+
+        expect(result).toStrictEqual({
+          error: {
+            _tag: "DocumentEncodeError",
+            message: `Document with ID '<id>' in table 'notes' could not be encoded:\n\nmust match tag\n  at ["text"]`,
+          },
+          stored: { text: "ok", tag: "ok" },
+        });
+      }).pipe(Effect.provide(TestConfect.layer)),
+  );
+
+  it.effect(
+    "patch reports a stored document that does not decode before a patched value that does not encode",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* patchStoredNote(
+          NumericNote,
+          { text: "not a number", tag: "draft" },
+          { text: Number.NaN },
+        );
+
+        expect(result).toStrictEqual({
+          error: {
+            _tag: "DocumentDecodeError",
+            message: `Document with ID '<id>' in table 'notes' could not be decoded:\n\nExpected a finite number\n  at ["text"]`,
+          },
+          stored: { text: "not a number", tag: "draft" },
+        });
+      }).pipe(Effect.provide(TestConfect.layer)),
+  );
+
+  it.effect("patch updates a field under the table's index signature", () =>
+    Effect.gen(function* () {
+      const result = yield* patchStoredNote(
+        Schema.StructWithRest(Schema.Struct({ text: Schema.String }), [
+          Schema.Record(Schema.String, Schema.Unknown),
+        ]),
+        { text: "kept", tag: "old" },
+        { tag: "new" },
+      );
+
+      expect(result).toStrictEqual({
+        error: null,
+        stored: { text: "kept", tag: "new" },
+      });
+    }).pipe(Effect.provide(TestConfect.layer)),
+  );
+
   it.effect("patch failures keep their error and write nothing", () =>
     Effect.gen(function* () {
       const CheckedNote = NumericNote.check(
@@ -747,11 +841,7 @@ describe("DatabaseWriter", () => {
             ),
             stored: { text: "001.00", tag: "draft" },
             patch: { author: { role: "user", name: "Ada" } },
-            expected: {
-              text: "001.00",
-              tag: "draft",
-              author: { role: "user", name: "Ada" },
-            },
+            expected: { text: "1", author: { role: "user", name: "Ada" } },
           },
           {
             shape: "branded struct",
