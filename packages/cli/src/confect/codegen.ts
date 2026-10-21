@@ -1068,12 +1068,12 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
       const name = prefix + component.name;
       const mount =
         prefix === ""
-          ? App.mounts(app).find((mount) => mount.name === component.name)
+          ? App.mounts(app).find((declared) => declared.name === component.name)
           : undefined;
       // A bare definition belongs to another package. Its directory is read
-      // here but never written out; tests reach it through `<package>/test`.
+      // here but never written out; tests reach it through `<package>/test`
+      // or the kit its mount names.
       const fromPackage = !path.isAbsolute(component.componentDefinitionPath);
-      // A kit's `register` installs the mount's own children.
       const kitEntry =
         mount?.testing ??
         (fromPackage ? `${component.componentDefinitionPath}/test` : undefined);
@@ -1131,29 +1131,32 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
         identifiers.add(identifier);
         identifiers.add(schemaIdentifier);
         kits.set(kitKey, identifier);
-        if (mount?.testing !== undefined) {
-          yield* checkTestKit(mount.name, mount.testing, config, configDisplay);
-        } else if (
-          kitEntry !== undefined &&
-          Option.isNone(Bundler.resolveModule(kitEntry, config))
-        ) {
-          return yield* new CodegenError.InvalidConvexConfigError({
-            configPath: relative(config),
-            reason: `the component package ${quote(component.componentDefinitionPath)} has no ${quote(kitEntry)} export. Tests register a component from another package through that entry's \`register(t, name)\`.`,
-          });
-        }
-        if (kitEntry !== undefined) {
-          imports.push(`import * as ${identifier} from ${quote(kitEntry)};`);
-        } else {
+        if (kitEntry === undefined) {
           imports.push(
             `import ${schemaIdentifier} from ${quote(relative(path.join(resolved, "schema.js")))};`,
           );
           declarations.push(
             `const ${identifier} = { schema: ${schemaIdentifier}, modules: ${yield* moduleMap(resolved)} };`,
           );
+        } else {
+          if (mount?.testing !== undefined) {
+            yield* checkTestKit(
+              mount.name,
+              mount.testing,
+              config,
+              configDisplay,
+            );
+          } else if (Option.isNone(Bundler.resolveModule(kitEntry, config))) {
+            return yield* new CodegenError.InvalidConvexConfigError({
+              configPath: relative(config),
+              reason: `the component package ${quote(component.componentDefinitionPath)} has no ${quote(kitEntry)} export. Tests register a component from another package through that entry's \`register(t, name)\`.`,
+            });
+          }
+          imports.push(`import * as ${identifier} from ${quote(kitEntry)};`);
         }
       }
       components.push(`${quote(name)}: ${identifier},`);
+      // A kit's `register` installs the mount's own children.
       if (kitEntry === undefined) {
         yield* visit(resolved, `${name}/`, "component", httpPrefix);
       }

@@ -1000,7 +1000,7 @@ const kitProject = (testing: string, source: string) =>
         )
         .replace(
           "  mounts: {",
-          `  mounts: {\n    pool: App.mount(workpool, { testing: ${JSON.stringify(testing)} }),`,
+          `  mounts: {\n    pool: App.mount(workpool, { testing: "${testing}" }),`,
         ),
     );
     return project;
