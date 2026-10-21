@@ -59,6 +59,29 @@ it.effect("fetches a nested route under a mount that names a test kit", () =>
   }).pipe(Effect.provide(TestConfect.layer(registry))),
 );
 
+it.effect("names the mount whose test kit exports no register", () =>
+  Effect.gen(function* () {
+    const defect = yield* TestConfect.TestConfect<
+      typeof registry.schema
+    >().pipe(
+      Effect.provide(
+        TestConfect.layer({
+          ...registry,
+          // A CommonJS kit's exports are only known once it runs.
+          components: { ...registry.components, right: {} as never },
+        }),
+      ),
+      Effect.asVoid,
+      Effect.catchDefect(Effect.succeed),
+    );
+    expect(defect).toMatchObject({
+      _tag: "InvalidComponentKit",
+      componentPath: "right",
+      message: 'The test kit for "right" exports no register(t, name).',
+    });
+  }),
+);
+
 it.effect("takes HTTP prefixes from an App value", () =>
   Effect.gen(function* () {
     const test = yield* TestConfect.TestConfect<typeof registry.schema>();

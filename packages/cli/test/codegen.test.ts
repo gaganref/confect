@@ -976,9 +976,10 @@ export default HttpRouter.forSchema(schema)(http.routes, { api: http.api });
 
 /**
  * The declaration project with workpool mounted as `pool`, its test kit named
- * by `testing`, and a `pool-kit` package exporting `./testing` from `source`.
+ * by `testing`, and a `pool-kit` package of `files`, by default an ES module
+ * package exporting `./testing` from `testing.js`.
  */
-const kitProject = (testing: string, source: string) =>
+const kitProject = (testing: string, files: Readonly<Record<string, string>>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -986,11 +987,13 @@ const kitProject = (testing: string, source: string) =>
     yield* fs.makeDirectory(path.join(project.root, "node_modules/pool-kit"), {
       recursive: true,
     });
-    yield* project.write(
-      "node_modules/pool-kit/package.json",
-      '{ "name": "pool-kit", "type": "module", "exports": { "./testing": "./testing.js" } }\n',
-    );
-    yield* project.write("node_modules/pool-kit/testing.js", source);
+    for (const [file, source] of Object.entries({
+      "package.json":
+        '{ "name": "pool-kit", "type": "module", "exports": { "./testing": "./testing.js" } }\n',
+      ...files,
+    })) {
+      yield* project.write(`node_modules/pool-kit/${file}`, source);
+    }
     yield* project.write(
       "confect/app.ts",
       (yield* project.read("confect/app.ts"))
@@ -1127,10 +1130,10 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       "registers a mount through the test kit it names",
       () =>
         Effect.gen(function* () {
-          const project = yield* kitProject(
-            "pool-kit/testing",
-            "export function register(t, name) { t.registerComponent(name); }\n",
-          );
+          const project = yield* kitProject("pool-kit/testing", {
+            "testing.js":
+              "export function register(t, name) { t.registerComponent(name); }\n",
+          });
           yield* project.run;
           const testing = yield* project.read("confect/_generated/testing.ts");
           expect(testing).toContain(
@@ -1142,16 +1145,56 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       { timeout: 30000 },
     );
 
+    it.effect.each([
+      {
+        shape: "a TypeScript barrel re-exporting another module",
+        files: {
+          "package.json":
+            '{ "name": "pool-kit", "type": "module", "exports": { "./testing": "./testing.ts", "./impl": "./impl.js" } }\n',
+          "testing.ts": 'export * from "pool-kit/impl";\n',
+          "impl.js": "export function register(t, name) {}\n",
+        },
+      },
+      {
+        shape: "a CommonJS module setting exports.register",
+        files: {
+          "package.json":
+            '{ "name": "pool-kit", "exports": { "./testing": "./testing.js" } }\n',
+          "testing.js": "exports.register = function () {};\n",
+        },
+      },
+      {
+        shape: "a CommonJS module assigning module.exports",
+        files: {
+          "package.json":
+            '{ "name": "pool-kit", "exports": { "./testing": "./testing.js" } }\n',
+          "testing.js":
+            "function register() {}\nmodule.exports = { register };\n",
+        },
+      },
+    ])(
+      "registers a mount through a test kit that is $shape",
+      ({ files }) =>
+        Effect.gen(function* () {
+          const project = yield* kitProject("pool-kit/testing", files);
+          yield* project.run;
+          expect(
+            yield* project.read("confect/_generated/testing.ts"),
+          ).toContain('import * as poolKit from "pool-kit/testing";');
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
     it.effect(
       "keeps the HTTP mounts nested under a mount that names a test kit",
       () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const project = yield* kitProject(
-            "pool-kit/testing",
-            "export function register(t, name) { t.registerComponent(name); }\n",
-          );
+          const project = yield* kitProject("pool-kit/testing", {
+            "testing.js":
+              "export function register(t, name) { t.registerComponent(name); }\n",
+          });
           for (const component of ["child", "parent"]) {
             yield* fs.makeDirectory(
               path.join(project.root, "components", component, "convex"),
@@ -1197,10 +1240,9 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       "rejects a named test kit that does not export register",
       () =>
         Effect.gen(function* () {
-          const project = yield* kitProject(
-            "pool-kit/testing",
-            "export default { register() {} };\n",
-          );
+          const project = yield* kitProject("pool-kit/testing", {
+            "testing.js": "export default { register() {} };\n",
+          });
           expect(yield* Effect.flip(project.run)).toEqual(
             new InvalidDeclarationError({
               declarationPath: "confect/app.ts",
@@ -1216,10 +1258,9 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       "rejects a named test kit that does not resolve",
       () =>
         Effect.gen(function* () {
-          const project = yield* kitProject(
-            "missing-kit/testing",
-            "export function register() {}\n",
-          );
+          const project = yield* kitProject("missing-kit/testing", {
+            "testing.js": "export function register() {}\n",
+          });
           expect(yield* Effect.flip(project.run)).toEqual(
             new InvalidDeclarationError({
               declarationPath: "confect/app.ts",
@@ -1237,7 +1278,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
         Effect.gen(function* () {
           const project = yield* kitProject(
             "../node_modules/pool-kit/testing.js",
-            "export function register() {}\n",
+            { "testing.js": "export function register() {}\n" },
           );
           expect(yield* Effect.flip(project.run)).toEqual(
             new InvalidDeclarationError({
