@@ -1,7 +1,6 @@
 import type { ReadonlyValue } from "@confect/core/SchemaToValidator";
 import { pipe } from "effect/Function";
 import * as Effect from "effect/Effect";
-import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
@@ -39,11 +38,10 @@ export const encoder = (
 };
 
 // A struct with no encoding of its own encodes each field through that field's
-// codec alone, so a patch encodes as the same struct with every key optional.
-// A union or a transformation over the whole struct can make one field's
-// encoding depend on another field. A struct-level check must see the decoded
-// fields before they are encoded, and keys under an index signature have no
-// field codec of their own.
+// codec alone, so a patch encodes field by field. A union or a transformation
+// over the whole struct can make one field's encoding depend on another field.
+// A struct-level check must see the decoded fields before they are encoded,
+// and keys under an index signature have no field codec of their own.
 const makePatchEncoder = (table: Table.AnyWithProps): PatchEncoder | null => {
   const ast = table.Fields.ast;
   if (
@@ -54,30 +52,41 @@ const makePatchEncoder = (table: Table.AnyWithProps): PatchEncoder | null => {
   ) {
     return null;
   }
-  const fieldNames = new Set(ast.propertySignatures.map(({ name }) => name));
-  // Each field's codec comes from the table, whose codecs need no services.
-  const encode = Schema.encodeUnknownEffect(
-    Schema.Struct(
-      Object.fromEntries(
-        ast.propertySignatures.map(({ name, type }) => [
-          name,
-          Schema.optionalKey(
+  // A field's codec runs only when the patch gives the field a value, since a
+  // codec can handle a missing key. Each comes from the table, whose codecs
+  // need no services.
+  const fieldEncoders: Record.ReadonlyRecord<
+    string,
+    (
+      value: unknown,
+    ) => Effect.Effect<ReadonlyValue | undefined, Schema.SchemaError>
+  > = Object.fromEntries(
+    ast.propertySignatures.map(({ name, type }) => {
+      const key = String(name);
+      const encode = Schema.encodeUnknownEffect(
+        Schema.Struct({
+          [key]: Schema.optionalKey(
             Schema.make<Schema.Codec<unknown, ReadonlyValue>>(type),
           ),
-        ]),
-      ),
-    ),
+        }),
+      );
+      return [
+        key,
+        (value: unknown) =>
+          Effect.map(encode({ [key]: value }), (encoded) => encoded[key]),
+      ];
+    }),
   );
   return (patch, id) =>
     pipe(
-      Record.filter(patch, Predicate.isNotUndefined),
-      encode,
-      Effect.map((encoded) =>
-        Record.map(
-          Record.filter(patch, (_, key) => fieldNames.has(key)),
-          (_, key) => encoded[key],
-        ),
+      fieldEncoders,
+      Record.filter((_, name) => Object.hasOwn(patch, name)),
+      Record.map((encode, name) =>
+        patch[name] === undefined
+          ? Effect.succeed(undefined)
+          : encode(patch[name]),
       ),
+      Effect.all,
       Effect.catchIf(Schema.isSchemaError, (schemaError) =>
         Effect.fail(
           new Document.DocumentEncodeError({
