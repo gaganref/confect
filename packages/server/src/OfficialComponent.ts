@@ -39,7 +39,7 @@ type Needs<Param> = [GenericActionCtx<GenericDataModel>] extends [Param]
 type Method<Official> = {
   [K in keyof Official & string]: Official[K] extends (
     ctx: infer Ctx,
-    ...args: never[]
+    ...args: infer _Args
   ) => Promise<unknown>
     ? Needs<Ctx> extends Unsupported
       ? never
