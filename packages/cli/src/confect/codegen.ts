@@ -970,7 +970,9 @@ const quote = (value: string) => JSON.stringify(value);
 
 /**
  * A mount's `testing` kit must be a package specifier, so the generated
- * registry holds no machine-specific path, and must export `register`.
+ * registry holds no machine-specific path, and must export `register`. A kit
+ * whose exports cannot be listed without running it passes here, and
+ * `TestConfect.layer` names the mount if it has no `register`.
  */
 const checkTestKit = Effect.fnUntraced(function* (
   mount: string,
@@ -996,7 +998,7 @@ const checkTestKit = Effect.fnUntraced(function* (
   const exports = yield* Bundler.exportNames(resolved.value).pipe(
     Effect.mapError((error) => fromBundlerError(specifier, error)),
   );
-  if (!exports.includes("register")) {
+  if (Option.isSome(exports) && !exports.value.includes("register")) {
     return yield* invalid(", which does not export `register(t, name)`.");
   }
 });

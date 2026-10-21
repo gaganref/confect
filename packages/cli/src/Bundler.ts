@@ -111,11 +111,14 @@ export const resolveModule = (
 
 /**
  * The names `file` exports, read by esbuild without evaluating the module, so a
- * test kit that only runs under Vite (`import.meta.glob`) can be checked. Bare
- * imports stay external, so a name re-exported from another package is not
- * listed.
+ * test kit that only runs under Vite (`import.meta.glob`) can be checked. None
+ * when only running the module would list them: a CommonJS module assigns its
+ * exports at run time, and bare imports stay external, so `export *` from
+ * another package hides its names.
  */
-export const exportNames = (file: string) =>
+export const exportNames = (
+  file: string,
+): Effect.Effect<Option.Option<ReadonlyArray<string>>, BundlerError> =>
   Effect.tryPromise({
     try: () =>
       esbuild.build({
@@ -131,8 +134,13 @@ export const exportNames = (file: string) =>
       }),
     catch: (cause) => new BundlerError({ cause }),
   }).pipe(
-    Effect.map(({ metafile }) =>
-      Object.values(metafile.outputs).flatMap(({ exports }) => exports),
+    Effect.map(({ metafile, outputFiles }) =>
+      Object.values(metafile.inputs).some(({ format }) => format === "cjs") ||
+      outputFiles.some(({ text }) => /^export \* from /m.test(text))
+        ? Option.none()
+        : Option.some(
+            Object.values(metafile.outputs).flatMap(({ exports }) => exports),
+          ),
     ),
   );
 

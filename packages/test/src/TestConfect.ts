@@ -317,6 +317,11 @@ export type ComponentKit =
       ): unknown;
     };
 
+class InvalidComponentKit extends Schema.TaggedError<InvalidComponentKit>()(
+  "InvalidComponentKit",
+  { componentPath: Schema.String, message: Schema.String },
+) {}
+
 const registerKit = (
   registerComponent: RegisterComponent,
   name: string,
@@ -324,8 +329,14 @@ const registerKit = (
 ) => {
   if ("register" in kit) {
     kit.register({ registerComponent }, name);
-  } else {
+  } else if ("schema" in kit) {
     registerComponent(name, kit.schema, kit.modules);
+  } else {
+    // Codegen accepts a kit whose exports it cannot list, such as CommonJS.
+    throw new InvalidComponentKit({
+      componentPath: name,
+      message: `The test kit for ${JSON.stringify(name)} exports no register(t, name).`,
+    });
   }
 };
 
