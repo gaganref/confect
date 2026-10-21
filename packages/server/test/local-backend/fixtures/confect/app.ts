@@ -26,6 +26,9 @@ export default App.make({
       },
     }),
     left: App.mount(parent, { httpPrefix: "/left" }),
-    right: App.mount(parent, { httpPrefix: "/right" }),
+    right: App.mount(parent, {
+      httpPrefix: "/right",
+      testing: "parent-kit/testing",
+    }),
   },
 });

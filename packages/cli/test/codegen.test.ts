@@ -974,6 +974,41 @@ import http from "../confect/http.js";
 export default HttpRouter.forSchema(schema)(http.routes, { api: http.api });
 `;
 
+/**
+ * The declaration project with workpool mounted as `pool`, its test kit named
+ * by `testing`, and a `pool-kit` package of `files`, by default an ES module
+ * package exporting `./testing` from `testing.js`.
+ */
+const kitProject = (testing: string, files: Readonly<Record<string, string>>) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const project = yield* declarationProject;
+    yield* fs.makeDirectory(path.join(project.root, "node_modules/pool-kit"), {
+      recursive: true,
+    });
+    for (const [file, source] of Object.entries({
+      "package.json":
+        '{ "name": "pool-kit", "type": "module", "exports": { "./testing": "./testing.js" } }\n',
+      ...files,
+    })) {
+      yield* project.write(`node_modules/pool-kit/${file}`, source);
+    }
+    yield* project.write(
+      "confect/app.ts",
+      (yield* project.read("confect/app.ts"))
+        .replace(
+          'import env from "./env";',
+          'import env from "./env";\nimport workpool from "@convex-dev/workpool/convex.config";',
+        )
+        .replace(
+          "  mounts: {",
+          `  mounts: {\n    pool: App.mount(workpool, { testing: "${testing}" }),`,
+        ),
+    );
+    return project;
+  });
+
 const digestOf = (manifest: string) =>
   /"digest": "(sha256:[0-9a-f]{64})"/.exec(manifest)?.[1] ?? "missing";
 
@@ -1087,6 +1122,174 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
                 .startsWith(project.root + path.sep),
           );
           expect(escaping).toEqual([]);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "registers a mount through the test kit it names",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* kitProject("pool-kit/testing", {
+            "testing.js":
+              "export function register(t, name) { t.registerComponent(name); }\n",
+          });
+          yield* project.run;
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(testing).toContain(
+            'import * as poolKit from "pool-kit/testing";',
+          );
+          expect(testing).toContain('"pool": poolKit,');
+          expect(testing).not.toContain("@convex-dev/workpool/test");
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect.each<{
+      readonly shape: string;
+      readonly files: Readonly<Record<string, string>>;
+    }>([
+      {
+        shape: "a TypeScript barrel re-exporting another module",
+        files: {
+          "package.json":
+            '{ "name": "pool-kit", "type": "module", "exports": { "./testing": "./testing.ts", "./impl": "./impl.js" } }\n',
+          "testing.ts": 'export * from "pool-kit/impl";\n',
+          "impl.js": "export function register(t, name) {}\n",
+        },
+      },
+      {
+        shape: "a CommonJS module setting exports.register",
+        files: {
+          "package.json":
+            '{ "name": "pool-kit", "exports": { "./testing": "./testing.js" } }\n',
+          "testing.js": "exports.register = function () {};\n",
+        },
+      },
+      {
+        shape: "a CommonJS module assigning module.exports",
+        files: {
+          "package.json":
+            '{ "name": "pool-kit", "exports": { "./testing": "./testing.js" } }\n',
+          "testing.js":
+            "function register() {}\nmodule.exports = { register };\n",
+        },
+      },
+    ])(
+      "registers a mount through a test kit that is $shape",
+      ({ files }) =>
+        Effect.gen(function* () {
+          const project = yield* kitProject("pool-kit/testing", files);
+          yield* project.run;
+          expect(
+            yield* project.read("confect/_generated/testing.ts"),
+          ).toContain('import * as poolKit from "pool-kit/testing";');
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "keeps the HTTP mounts nested under a mount that names a test kit",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const project = yield* kitProject("pool-kit/testing", {
+            "testing.js":
+              "export function register(t, name) { t.registerComponent(name); }\n",
+          });
+          for (const component of ["child", "parent"]) {
+            yield* fs.makeDirectory(
+              path.join(project.root, "components", component, "convex"),
+              { recursive: true },
+            );
+          }
+          yield* project.write(
+            "components/child/convex/convex.config.ts",
+            'import { defineComponent } from "convex/server";\nexport default defineComponent("child");\n',
+          );
+          yield* project.write(
+            "components/child/convex/http.ts",
+            "export default {};\n",
+          );
+          yield* project.write(
+            "components/parent/convex/convex.config.ts",
+            'import { defineComponent } from "convex/server";\nimport child from "../../child/convex/convex.config.js";\nconst parent = defineComponent("parent");\nparent.use(child, { name: "b", httpPrefix: "/b" });\nexport default parent;\n',
+          );
+          yield* project.write(
+            "confect/app.ts",
+            (yield* project.read("confect/app.ts"))
+              .replace(
+                'import env from "./env";',
+                'import env from "./env";\nimport parent from "../components/parent/convex/convex.config.js";',
+              )
+              .replace(
+                "App.mount(workpool, {",
+                'App.mount(parent, { httpPrefix: "/pool",',
+              ),
+          );
+          yield* project.run;
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(/httpMounts: (\[[^\]]*\])/.exec(testing)?.[1]).toBe(
+            '[{ componentPath: "pool/b", httpPrefix: "/pool/b" }]',
+          );
+          expect(testing).toContain('"pool": poolKit,');
+          expect(testing).not.toContain('"pool/b":');
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "rejects a named test kit that does not export register",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* kitProject("pool-kit/testing", {
+            "testing.js": "export default { register() {} };\n",
+          });
+          expect(yield* Effect.flip(project.run)).toEqual(
+            new InvalidDeclarationError({
+              declarationPath: "confect/app.ts",
+              reason:
+                'the mount "pool" names the test kit "pool-kit/testing", which does not export `register(t, name)`.',
+            }),
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "rejects a named test kit that does not resolve",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* kitProject("missing-kit/testing", {
+            "testing.js": "export function register() {}\n",
+          });
+          expect(yield* Effect.flip(project.run)).toEqual(
+            new InvalidDeclarationError({
+              declarationPath: "confect/app.ts",
+              reason:
+                'the mount "pool" names the test kit "missing-kit/testing", which does not resolve from convex/convex.config.ts.',
+            }),
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "rejects a test kit named by a relative path",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* kitProject(
+            "../node_modules/pool-kit/testing.js",
+            { "testing.js": "export function register() {}\n" },
+          );
+          expect(yield* Effect.flip(project.run)).toEqual(
+            new InvalidDeclarationError({
+              declarationPath: "confect/app.ts",
+              reason:
+                'the mount "pool" names the test kit "../node_modules/pool-kit/testing.js"; name it by a package specifier, such as "<package>/testing".',
+            }),
+          );
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

@@ -6,5 +6,6 @@ export default App.make({
   env,
   mounts: {
     counter: App.mount(counter, { httpPrefix: "/counter", api: CounterApi }),
+    kitted: App.mount(counter, { testing: "counter-kit/testing" }),
   },
 });

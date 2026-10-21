@@ -31,12 +31,18 @@ const prepare = Effect.gen(function* () {
       path.join(import.meta.dirname, "fixtures/package.json"),
     ),
   );
-  if (!(yield* fs.exists(path.join(destination, "node_modules")))) {
-    yield* fs.symlink(
-      path.join(import.meta.dirname, "fixtures/node_modules"),
-      path.join(destination, "node_modules"),
-    );
+  // The fixture's installed packages, plus the consumer's linked test kit.
+  const installed = path.join(import.meta.dirname, "fixtures/node_modules");
+  const modules = path.join(destination, "node_modules");
+  yield* fs.remove(modules, { recursive: true, force: true });
+  yield* fs.makeDirectory(modules);
+  for (const entry of yield* fs.readDirectory(installed)) {
+    yield* fs.symlink(path.join(installed, entry), path.join(modules, entry));
   }
+  yield* fs.symlink(
+    path.join(destination, "kits/counter-kit"),
+    path.join(modules, "counter-kit"),
+  );
 });
 
 export const setup = () =>

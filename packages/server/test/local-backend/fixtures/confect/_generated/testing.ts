@@ -5,6 +5,7 @@ import firstSchema from "../../components/counter/convex/schema.js";
 import leftSchema from "../../components/parent/convex/schema.js";
 import left_deepSchema from "../../components/middle/convex/schema.js";
 import left_deep_childSchema from "../../components/inner/convex/schema.js";
+import * as rightKit from "parent-kit/testing";
 const firstKit = { schema: firstSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "authoring.ts": () => import("../../components/counter/convex/authoring.js"),
 "counter.ts": () => import("../../components/counter/convex/counter.js"),
@@ -45,9 +46,5 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "left/deep": left_deepKit,
 "left/deep/child": left_deep_childKit,
 "left/deep/child/child": firstKit,
-"right": leftKit,
-"right/child": firstKit,
-"right/deep": left_deepKit,
-"right/deep/child": left_deep_childKit,
-"right/deep/child/child": firstKit,
+"right": rightKit,
 "second": firstKit,} };

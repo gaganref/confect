@@ -968,12 +968,54 @@ const logGenerated = <E, R>(
  */
 const quote = (value: string) => JSON.stringify(value);
 
+/**
+ * A mount's `testing` kit must be a package specifier, so the generated
+ * registry holds no machine-specific path, and must export `register`. A kit
+ * whose exports cannot be listed without running it passes here, and
+ * `TestConfect.layer` names the mount if it has no `register`.
+ */
+const checkTestKit = Effect.fnUntraced(function* (
+  mount: string,
+  specifier: string,
+  config: string,
+  configDisplay: string,
+) {
+  const path = yield* Path.Path;
+  const invalid = (problem: string) =>
+    new CodegenError.InvalidDeclarationError({
+      declarationPath: "confect/app.ts",
+      reason: `the mount ${quote(mount)} names the test kit ${quote(specifier)}${problem}`,
+    });
+  if (specifier.startsWith(".") || path.isAbsolute(specifier)) {
+    return yield* invalid(
+      '; name it by a package specifier, such as "<package>/testing".',
+    );
+  }
+  const resolved = Bundler.resolveModule(specifier, config);
+  if (Option.isNone(resolved)) {
+    return yield* invalid(`, which does not resolve from ${configDisplay}.`);
+  }
+  const exports = yield* Bundler.exportNames(resolved.value).pipe(
+    Effect.mapError((error) => fromBundlerError(specifier, error)),
+  );
+  if (Option.isSome(exports) && !exports.value.includes("register")) {
+    return yield* invalid(", which does not export `register(t, name)`.");
+  }
+});
+
 const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
   const convexDirectory = yield* ConvexDirectory.get;
   const generated = path.join(confectDirectory, "_generated");
+  const configDisplay = path
+    .relative(
+      yield* ProjectRoot.get,
+      path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
+    )
+    .split(path.sep)
+    .join("/");
   const relative = (file: string) => {
     const value = path.relative(generated, file).split(path.sep).join("/");
     return value.startsWith(".") ? value : `./${value}`;
@@ -1009,11 +1051,13 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
     prefix: string,
     kind: "app" | "component",
     parentHttpPrefix: string | undefined,
+    registeredByKit: boolean,
   ): Effect.fn.Return<
     void,
     | PlatformError.PlatformError
     | BuildError
-    | CodegenError.InvalidConvexConfigError,
+    | CodegenError.InvalidConvexConfigError
+    | CodegenError.InvalidDeclarationError,
     FileSystem.FileSystem | Path.Path
   > {
     const config = path.join(directory, ConvexConfig.CONVEX_CONFIG_FILENAME);
@@ -1025,9 +1069,17 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
     );
     for (const component of installed) {
       const name = prefix + component.name;
+      const mount =
+        prefix === ""
+          ? App.mounts(app).find((declared) => declared.name === component.name)
+          : undefined;
       // A bare definition belongs to another package. Its directory is read
-      // here but never written out; tests reach it through `<package>/test`.
+      // here but never written out; tests reach it through `<package>/test`
+      // or the kit its mount names.
       const fromPackage = !path.isAbsolute(component.componentDefinitionPath);
+      const kitEntry =
+        mount?.testing ??
+        (fromPackage ? `${component.componentDefinitionPath}/test` : undefined);
       const resolved = fromPackage
         ? path.dirname(
             yield* ConvexConfig.resolveDefinition(
@@ -1047,10 +1099,7 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
           )
         : component.componentDefinitionPath;
       const localPrefix =
-        prefix === ""
-          ? App.mounts(app).find((mount) => mount.name === component.name)
-              ?.httpPrefix
-          : component.httpPrefix;
+        prefix === "" ? mount?.httpPrefix : component.httpPrefix;
       const httpPrefix =
         parentHttpPrefix === undefined || localPrefix === undefined
           ? undefined
@@ -1067,49 +1116,72 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
           `{ componentPath: ${quote(name)}, httpPrefix: ${quote(httpPrefix)} }`,
         );
       }
-      let identifier = kits.get(resolved);
-      if (identifier === undefined) {
-        const cleaned = name.replaceAll(/[^A-Za-z0-9_$]/g, "_");
-        const base = /^[A-Za-z_$]/.test(cleaned) ? cleaned : `_${cleaned}`;
-        identifier = `${base}Kit`;
-        let schemaIdentifier = `${base}Schema`;
-        for (
-          let n = 2;
-          identifiers.has(identifier) || identifiers.has(schemaIdentifier);
-          n++
-        ) {
-          identifier = `${base}Kit${n}`;
-          schemaIdentifier = `${base}Schema${n}`;
-        }
-        identifiers.add(identifier);
-        identifiers.add(schemaIdentifier);
-        kits.set(resolved, identifier);
-        if (fromPackage) {
-          const testEntry = `${component.componentDefinitionPath}/test`;
-          if (Option.isNone(Bundler.resolveModule(testEntry, config))) {
-            return yield* new CodegenError.InvalidConvexConfigError({
-              configPath: relative(config),
-              reason: `the component package ${quote(component.componentDefinitionPath)} has no ${quote(testEntry)} export. Tests register a component from another package through that entry's \`register(t, name)\`.`,
-            });
+      // A kit's `register` installs the mount's own children, so below it the
+      // walk only collects HTTP mounts.
+      if (!registeredByKit) {
+        const kitKey = kitEntry ?? resolved;
+        let identifier = kits.get(kitKey);
+        if (identifier === undefined) {
+          const cleaned = name.replaceAll(/[^A-Za-z0-9_$]/g, "_");
+          const base = /^[A-Za-z_$]/.test(cleaned) ? cleaned : `_${cleaned}`;
+          identifier = `${base}Kit`;
+          let schemaIdentifier = `${base}Schema`;
+          for (
+            let n = 2;
+            identifiers.has(identifier) || identifiers.has(schemaIdentifier);
+            n++
+          ) {
+            identifier = `${base}Kit${n}`;
+            schemaIdentifier = `${base}Schema${n}`;
           }
-          imports.push(`import * as ${identifier} from ${quote(testEntry)};`);
-        } else {
-          imports.push(
-            `import ${schemaIdentifier} from ${quote(relative(path.join(resolved, "schema.js")))};`,
-          );
-          declarations.push(
-            `const ${identifier} = { schema: ${schemaIdentifier}, modules: ${yield* moduleMap(resolved)} };`,
-          );
+          identifiers.add(identifier);
+          identifiers.add(schemaIdentifier);
+          kits.set(kitKey, identifier);
+          if (kitEntry === undefined) {
+            imports.push(
+              `import ${schemaIdentifier} from ${quote(relative(path.join(resolved, "schema.js")))};`,
+            );
+            declarations.push(
+              `const ${identifier} = { schema: ${schemaIdentifier}, modules: ${yield* moduleMap(resolved)} };`,
+            );
+          } else {
+            if (mount?.testing !== undefined) {
+              yield* checkTestKit(
+                mount.name,
+                mount.testing,
+                config,
+                configDisplay,
+              );
+            } else if (Option.isNone(Bundler.resolveModule(kitEntry, config))) {
+              return yield* new CodegenError.InvalidConvexConfigError({
+                configPath: relative(config),
+                reason: `the component package ${quote(component.componentDefinitionPath)} has no ${quote(kitEntry)} export. Tests register a component from another package through that entry's \`register(t, name)\`.`,
+              });
+            }
+            imports.push(`import * as ${identifier} from ${quote(kitEntry)};`);
+          }
         }
+        components.push(`${quote(name)}: ${identifier},`);
       }
-      components.push(`${quote(name)}: ${identifier},`);
-      // A package's `register` installs its own children.
+      // A package's own `register` installs its children.
       if (!fromPackage) {
-        yield* visit(resolved, `${name}/`, "component", httpPrefix);
+        yield* visit(
+          resolved,
+          `${name}/`,
+          "component",
+          httpPrefix,
+          registeredByKit || kitEntry !== undefined,
+        );
       }
     }
   });
-  yield* visit(convexDirectory, "", (yield* ConvexDirectory.target).kind, "");
+  yield* visit(
+    convexDirectory,
+    "",
+    (yield* ConvexDirectory.target).kind,
+    "",
+    false,
+  );
   yield* writeFileStringAndLog(
     path.join(generated, "testing.ts"),
     [

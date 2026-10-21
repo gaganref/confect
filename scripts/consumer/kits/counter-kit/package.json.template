@@ -1,0 +1,8 @@
+{
+  "name": "counter-kit",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./testing": "./testing.ts"
+  }
+}
