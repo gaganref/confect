@@ -363,7 +363,7 @@ Lift it once, beside the host's mount:
 ```ts confect/limiter.ts
 import { OfficialComponent } from "@confect/server";
 import { Limiter } from "limiter";
-import { components } from "./_generated/components";
+import { components } from "./_generated/components.js";
 
 export const limiter = OfficialComponent.make(
   "limiter",
@@ -376,10 +376,10 @@ export const limiter = OfficialComponent.make(
 ```ts confect/jobs.impl.ts
 import { FunctionImpl, OfficialComponent } from "@confect/server";
 import * as Effect from "effect/Effect";
-import schema from "./_generated/schema";
-import refs from "./_generated/refs";
-import jobs from "./jobs.spec";
-import { limiter } from "./limiter";
+import schema from "./_generated/schema.js";
+import refs from "./_generated/refs.js";
+import jobs from "./jobs.spec.js";
+import { limiter } from "./limiter.js";
 
 const start = FunctionImpl.make(schema, jobs, "start", ({ key }) =>
   Effect.gen(function* () {
