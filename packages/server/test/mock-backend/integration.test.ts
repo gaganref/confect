@@ -550,6 +550,264 @@ describe("DatabaseWriter", () => {
     }).pipe(Effect.provide(TestConfect.layer)),
   );
 
+  // Patches a `notes` document stored as `stored` through a Confect table
+  // declared with `fields`, which need not match the fixture's table, and
+  // returns the outcome with the stored fields read back raw.
+  const patchStoredNote = (
+    fields: Schema.Codec<any, any>,
+    stored: Record<string, unknown>,
+    patch: Record<string, unknown>,
+  ) =>
+    Effect.gen(function* () {
+      const c = yield* TestConfect.TestConfect;
+
+      return yield* c.run(
+        Effect.gen(function* () {
+          const ctx = yield* MutationCtx;
+          const id = yield* Effect.promise(() =>
+            ctx.db.insert("notes", stored as never),
+          );
+          const schema = DatabaseSchema.make({
+            notes: Table.make(() => fields)("notes"),
+          });
+          const error = yield* DatabaseWriter_.make(schema, ctx.db as never)
+            .table("notes")
+            .patch(id as never, patch as never)
+            .pipe(
+              Effect.as(null),
+              Effect.catch((error) =>
+                Effect.succeed({
+                  _tag: error._tag,
+                  message: error.message.replace(id, "<id>"),
+                }),
+              ),
+            );
+          const { _id, _creationTime, ...storedFields } = (yield* Effect.promise(
+            () => ctx.db.get(id),
+          ))!;
+          return { error, stored: storedFields };
+        }),
+        Schema.Any,
+      );
+    });
+
+  const Author = Schema.Struct({
+    role: Schema.Literals(["admin", "user"]),
+    name: Schema.String,
+  });
+  const NumericNote = Schema.Struct({
+    text: Schema.FiniteFromString,
+    author: Schema.optionalKey(Author),
+  });
+
+  it.effect(
+    "patch writes only the patched fields and leaves the rest of the stored document",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* patchStoredNote(
+          NumericNote,
+          { text: "001.00", tag: "draft" },
+          { author: { role: "user", name: "Ada" } },
+        );
+
+        expect(result).toStrictEqual({
+          error: null,
+          stored: {
+            text: "001.00",
+            tag: "draft",
+            author: { role: "user", name: "Ada" },
+          },
+        });
+      }).pipe(Effect.provide(TestConfect.layer)),
+  );
+
+  it.effect("patch removes an optional field set to undefined", () =>
+    Effect.gen(function* () {
+      const result = yield* patchStoredNote(
+        NumericNote,
+        {
+          text: "001.00",
+          tag: "draft",
+          author: { role: "admin", name: "Grace" },
+        },
+        { author: undefined },
+      );
+
+      expect(result).toStrictEqual({
+        error: null,
+        stored: { text: "001.00", tag: "draft" },
+      });
+    }).pipe(Effect.provide(TestConfect.layer)),
+  );
+
+  it.effect(
+    "patch removes a field whose codec encodes the patched value as an absent key",
+    () =>
+      Effect.gen(function* () {
+        const result = yield* patchStoredNote(
+          Schema.Struct({
+            text: Schema.String,
+            tag: Schema.OptionFromOptionalKey(Schema.String),
+          }),
+          { text: "kept", tag: "draft" },
+          { tag: Option.none() },
+        );
+
+        expect(result).toStrictEqual({
+          error: null,
+          stored: { text: "kept" },
+        });
+      }).pipe(Effect.provide(TestConfect.layer)),
+  );
+
+  it.effect("patch repairs a stored field that no longer decodes", () =>
+    Effect.gen(function* () {
+      const result = yield* patchStoredNote(
+        NumericNote,
+        { text: "not a number", tag: "draft" },
+        { text: 2 },
+      );
+
+      expect(result).toStrictEqual({
+        error: null,
+        stored: { text: "2", tag: "draft" },
+      });
+    }).pipe(Effect.provide(TestConfect.layer)),
+  );
+
+  it.effect("patch failures keep their error and write nothing", () =>
+    Effect.gen(function* () {
+      const CheckedNote = NumericNote.check(
+        Schema.makeFilter(({ text }) => text !== 2 || "text must not be 2"),
+      );
+      const cases = [
+        {
+          fields: NumericNote,
+          stored: { text: "001.00", tag: "draft" },
+          patch: { text: Number.NaN },
+          error: {
+            _tag: "DocumentEncodeError",
+            message: `Document with ID '<id>' in table 'notes' could not be encoded:\n\nExpected a finite number\n  at ["text"]`,
+          },
+        },
+        {
+          fields: NumericNote,
+          stored: { text: "001.00", tag: "draft" },
+          patch: { text: undefined },
+          error: {
+            _tag: "DocumentEncodeError",
+            message: `Document with ID '<id>' in table 'notes' could not be encoded:\n\nMissing key\n  at ["text"]`,
+          },
+        },
+        {
+          fields: CheckedNote,
+          stored: { text: "001.00", tag: "draft" },
+          patch: { text: 2 },
+          error: {
+            _tag: "DocumentEncodeError",
+            message: `Document with ID '<id>' in table 'notes' could not be encoded:\n\ntext must not be 2`,
+          },
+        },
+        {
+          fields: NumericNote,
+          stored: { text: "not a number", tag: "draft" },
+          patch: { author: { role: "user", name: "Ada" } },
+          error: {
+            _tag: "DocumentDecodeError",
+            message: `Document with ID '<id>' in table 'notes' could not be decoded:\n\nExpected a finite number\n  at ["text"]`,
+          },
+        },
+      ];
+
+      for (const { fields, stored, patch, error } of cases) {
+        expect(yield* patchStoredNote(fields, stored, patch)).toStrictEqual({
+          error,
+          stored,
+        });
+      }
+    }).pipe(Effect.provide(TestConfect.layer)),
+  );
+
+  it.effect(
+    "patch writes a delta for struct codecs and replaces the document when the codec spans fields",
+    () =>
+      Effect.gen(function* () {
+        const cases = [
+          {
+            shape: "struct",
+            fields: NumericNote,
+            stored: { text: "001.00", tag: "draft" },
+            patch: { author: { role: "user", name: "Ada" } },
+            expected: {
+              text: "001.00",
+              tag: "draft",
+              author: { role: "user", name: "Ada" },
+            },
+          },
+          {
+            shape: "struct with a struct-level check",
+            fields: NumericNote.check(
+              Schema.makeFilter(({ text }) => text !== 2 || "text is 2"),
+            ),
+            stored: { text: "001.00", tag: "draft" },
+            patch: { author: { role: "user", name: "Ada" } },
+            expected: {
+              text: "001.00",
+              tag: "draft",
+              author: { role: "user", name: "Ada" },
+            },
+          },
+          {
+            shape: "branded struct",
+            fields: NumericNote.pipe(Schema.brand("Note")),
+            stored: { text: "001.00", tag: "draft" },
+            patch: { author: { role: "user", name: "Ada" } },
+            expected: {
+              text: "001.00",
+              tag: "draft",
+              author: { role: "user", name: "Ada" },
+            },
+          },
+          {
+            shape: "union",
+            fields: Schema.Union([
+              Schema.Struct({
+                tag: Schema.Literal("number"),
+                text: Schema.FiniteFromString,
+              }),
+              Schema.Struct({
+                tag: Schema.Literal("string"),
+                text: Schema.String,
+              }),
+            ]),
+            stored: {
+              text: "001.00",
+              tag: "number",
+              author: { role: "user", name: "Ada" },
+            },
+            patch: { tag: "string", text: "hello" },
+            expected: { text: "hello", tag: "string" },
+          },
+          {
+            shape: "struct with renamed keys",
+            fields: Schema.Struct({ body: Schema.String }).pipe(
+              Schema.encodeKeys({ body: "text" }),
+            ),
+            stored: { text: "old", tag: "draft" },
+            patch: { body: "new" },
+            expected: { text: "new" },
+          },
+        ];
+
+        for (const { shape, fields, stored, patch, expected } of cases) {
+          expect({
+            shape,
+            ...(yield* patchStoredNote(fields, stored, patch)),
+          }).toStrictEqual({ shape, error: null, stored: expected });
+        }
+      }).pipe(Effect.provide(TestConfect.layer)),
+  );
+
   it("patch accepts undefined according to field types and compiler optionality", () => {
     const patchNote = (writer: DatabaseWriter) => writer.table("notes").patch;
     type Patch = Parameters<ReturnType<typeof patchNote>>[1];
