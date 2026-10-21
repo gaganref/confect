@@ -69,13 +69,21 @@ Upstream: planned; no proposal submitted.
 ### Patch writes an encoded delta
 
 Encode only the patched fields, each through its own codec, and call native
-`patch`, so a patch leaves the rest of the stored document unchanged. Stored
-fields the table schema does not carry survive, and an untouched `"001.00"` under
-`FiniteFromString` is no longer stored again as `"1"`. The patched document must
-still decode, so a patch can now repair a field that no longer decodes. Other
-failures keep their error classes. A union table, or a transformation over the
-whole struct, keeps the full replace because one field's encoding can depend on
-another.
+`patch`, so a patch leaves the rest of the stored document unchanged. An omitted
+field's codec never runs. Other failures keep their error classes.
+
+What changes for a consumer:
+
+- Untouched fields are no longer re-normalised by their encoders. An untouched
+  `"001.00"` under `FiniteFromString` is no longer stored again as `"1"`.
+- Fields outside the schema are no longer removed by a patch.
+- A patch can repair a stored field that no longer decodes, because the complete
+  result must decode before the write.
+
+A union, a transformation over the whole struct, a check on the struct itself or
+an index signature keeps the full replace. The first two can make one field's
+encoding depend on another, a struct-level check must see the decoded values
+before encoding, and a key under an index signature has no field codec.
 
 Changeset: `patch-encoded-delta.md`.
 Upstream: planned; no proposal submitted.
