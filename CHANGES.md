@@ -140,6 +140,15 @@ Registered query, mutation and action tests exercise the native ctx runners.
 Changeset: `official-component-adapter.md`.
 Upstream: planned; no proposal submitted.
 
+### Lift generic official component methods
+
+Infer the argument tuple when selecting official promise methods so generic
+methods with conditional rest parameters remain callable. Keep the ctx-based
+runner inference unchanged and check generic and plain calls in a type test.
+
+Changeset: `official-component-generic-methods.md`.
+Upstream: planned; no proposal submitted.
+
 ## Backend declarations and HTTP routing
 
 ### Declare a backend in `confect/`
