@@ -41,10 +41,17 @@ export const encoder = (
 // A struct with no encoding of its own encodes each field through that field's
 // codec alone, so a patch encodes as the same struct with every key optional.
 // A union or a transformation over the whole struct can make one field's
-// encoding depend on another field.
+// encoding depend on another field. A struct-level check must see the decoded
+// fields before they are encoded, and keys under an index signature have no
+// field codec of their own.
 const makePatchEncoder = (table: Table.AnyWithProps): PatchEncoder | null => {
   const ast = table.Fields.ast;
-  if (!SchemaAST.isObjects(ast) || ast.encoding !== undefined) {
+  if (
+    !SchemaAST.isObjects(ast) ||
+    ast.encoding !== undefined ||
+    ast.checks !== undefined ||
+    ast.indexSignatures.length > 0
+  ) {
     return null;
   }
   const fieldNames = new Set(ast.propertySignatures.map(({ name }) => name));
