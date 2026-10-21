@@ -64,6 +64,22 @@ NodeNext with `skipLibCheck: false`.
 Changeset: `nodenext-codegen-test-kits.md`.
 Upstream: planned; no proposal submitted.
 
+## Database writes
+
+### Patch writes an encoded delta
+
+Encode only the patched fields, each through its own codec, and call native
+`patch`, so a patch leaves the rest of the stored document unchanged. Stored
+fields the table schema does not carry survive, and an untouched `"001.00"` under
+`FiniteFromString` is no longer stored again as `"1"`. The patched document must
+still decode, so a patch can now repair a field that no longer decodes. Other
+failures keep their error classes. A union table, or a transformation over the
+whole struct, keeps the full replace because one field's encoding can depend on
+another.
+
+Changeset: `patch-encoded-delta.md`.
+Upstream: planned; no proposal submitted.
+
 ## Component authoring and contracts
 
 ### Check component declarations

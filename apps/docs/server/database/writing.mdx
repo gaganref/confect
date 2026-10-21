@@ -44,6 +44,10 @@ writer.table("notes").patch(noteId, {
 });
 ```
 
+`patch` encodes only the fields it is given, each through its own codec, and leaves the rest of the stored document as it is, including fields the table schema does not describe. The stored document with the patch applied must decode under the table schema. Otherwise the patch fails with `DocumentEncodeError`, or with `DocumentDecodeError` when the stored document does not decode either.
+
+When the table schema is a union, or transforms the whole struct (such as `Schema.decodeTo` or `Schema.encodeKeys`), one field's encoding can depend on another. For those tables `patch` decodes the stored document, merges the patch and replaces the whole document, so fields outside the schema are dropped and every field is encoded again.
+
 ### Replace
 
 Replace the entire document.
