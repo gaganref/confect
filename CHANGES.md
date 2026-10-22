@@ -88,6 +88,23 @@ before encoding, and a key under an index signature has no field codec.
 Changeset: `patch-encoded-delta.md`.
 Upstream: planned; no proposal submitted.
 
+## React pagination
+
+### Keep a page while its replacement fails
+
+`StreamPagination.interpret` treated a failed replacement as a result. A failed
+pin then swapped the loaded page out for the failure. A failed split replacement
+stayed hidden while its sibling was still loading. Now a failed replacement fails
+the interpretation at once, the replaced page's items stay in `Failed.items`, and
+the page and its replacements stay subscribed for a retry.
+
+`interpret` also reports `firstPageLoaded`, which holds once the head page has
+its full result. The hook used one page as the sign of a loading first page, so
+recursive splits of the first page reported `LoadingMore` with no items.
+
+Changeset: `stream-pagination-page-swaps.md`.
+Upstream: unrecorded.
+
 ## Component authoring and contracts
 
 ### Check component declarations

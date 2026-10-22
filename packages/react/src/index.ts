@@ -549,10 +549,10 @@ export const useStreamPaginatedQuery = <
       throw error;
     }
 
-    const { lastResult } = interpretation;
-    if (Option.isNone(lastResult) && current.state.pageKeys.length <= 1) {
+    if (!interpretation.firstPageLoaded) {
       return PaginatedQueryResult.loadingFirstPage({ skipped });
     }
+    const { lastResult } = interpretation;
     if (
       Option.isNone(lastResult) ||
       StreamPagination.isLastPageSplitting(current.state)
