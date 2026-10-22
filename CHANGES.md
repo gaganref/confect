@@ -106,7 +106,7 @@ its full result. The hook used one page as the sign of a loading first page, so
 recursive splits of the first page reported `LoadingMore` with no items.
 
 Changeset: `stream-pagination-page-swaps.md`.
-Upstream: planned; no proposal submitted. The maintainer sends the proposal.
+Upstream: deferred; no proposal for now. The maintainer decides when to send one.
 
 ## Component authoring and contracts
 
