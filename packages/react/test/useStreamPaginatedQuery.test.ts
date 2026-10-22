@@ -367,6 +367,48 @@ describe("useStreamPaginatedQuery", () => {
     ]);
   });
 
+  test("stays LoadingFirstPage while recursive splits withhold the first page", () => {
+    respond(
+      { numItems: 2, cursor: null },
+      {
+        page: [{ value: "1" }],
+        isDone: false,
+        continueCursor: "c0",
+        pageStatus: "SplitRequired",
+        splitCursor: "s1",
+      },
+    );
+    respond(
+      { numItems: 2, cursor: null, endCursor: "s1" },
+      {
+        page: [{ value: "1" }],
+        isDone: false,
+        continueCursor: "s1",
+        pageStatus: "SplitRequired",
+        splitCursor: "s0",
+      },
+    );
+    respond(
+      { numItems: 2, cursor: "s1" },
+      { page: [{ value: "3" }], isDone: false, continueCursor: "c0" },
+    );
+
+    const { result, rerender } = renderHook(() =>
+      useStreamPaginatedQuery(list, {}, { initialNumItems: 2 }),
+    );
+    rerender();
+
+    // The first page split into two pages, and its first half split again:
+    // nothing from the start of the stream has loaded yet.
+    expect(subscribedOpts()).toEqual([
+      { numItems: 2, cursor: null, endCursor: "s1" },
+      { numItems: 2, cursor: "s1" },
+      { numItems: 2, cursor: null, endCursor: "s0" },
+      { numItems: 2, cursor: "s0", endCursor: "s1" },
+    ]);
+    expect(current(result)._tag).toBe("LoadingFirstPage");
+  });
+
   test("returns a decoded typed error as Failure with the loaded pages", () => {
     respondFirstPage({
       page: [{ value: "1" }],
@@ -393,6 +435,96 @@ describe("useStreamPaginatedQuery", () => {
     expect(result.current.error).toBeInstanceOf(Boom);
     expect(result.current.error.reason).toBe("nope");
     expect(result.current.results).toEqual([{ value: 1 }]);
+  });
+
+  test("keeps splitting later pages while a replacement fails", () => {
+    const pages = [
+      { cursor: null, endCursor: "c0", items: ["1", "2"] },
+      { cursor: "c0", endCursor: "c1", items: ["3", "4"] },
+      { cursor: "c1", endCursor: "c2", items: ["5", "6"] },
+    ] as const;
+    const encoded = (items: ReadonlyArray<string>) =>
+      items.map((value) => ({ value }));
+    for (const { cursor, endCursor, items } of pages) {
+      const loaded = {
+        page: encoded(items),
+        isDone: false,
+        continueCursor: endCursor,
+      };
+      respond({ numItems: 2, cursor }, loaded);
+      respond({ numItems: 2, cursor, endCursor }, loaded);
+    }
+    const { result, rerender } = renderHook(() =>
+      useStreamPaginatedQuery(listOrFail, {}, { initialNumItems: 2 }),
+    );
+    const loadMore = () => {
+      rerender();
+      act(() => {
+        const canLoadMore = current(result);
+        assert(canLoadMore._tag === "CanLoadMore");
+        canLoadMore.loadMore(2);
+      });
+    };
+    loadMore();
+    loadMore();
+    rerender();
+    assert(current(result)._tag === "CanLoadMore");
+
+    // The middle page's first half fails, and the last page outgrows its
+    // read budget, which withholds its items until its halves load.
+    respond(
+      { numItems: 2, cursor: "c0", endCursor: "c1" },
+      {
+        page: encoded(["3", "4"]),
+        isDone: false,
+        continueCursor: "c1",
+        pageStatus: "SplitRecommended",
+        splitCursor: "m",
+      },
+    );
+    respond(
+      { numItems: 2, cursor: "c0", endCursor: "m" },
+      new ConvexError({ _tag: "Boom", reason: "nope" }),
+    );
+    respond(
+      { numItems: 2, cursor: "c1", endCursor: "c2" },
+      {
+        page: encoded(["5"]),
+        isDone: false,
+        continueCursor: "c2",
+        pageStatus: "SplitRequired",
+        splitCursor: "t",
+      },
+    );
+    respond(
+      { numItems: 2, cursor: "c1", endCursor: "t" },
+      { page: encoded(["5"]), isDone: false, continueCursor: "t" },
+    );
+    respond(
+      { numItems: 2, cursor: "t", endCursor: "c2" },
+      { page: encoded(["6"]), isDone: false, continueCursor: "c2" },
+    );
+    rerender();
+
+    expect(subscribedOpts()).toEqual([
+      { numItems: 2, cursor: null, endCursor: "c0" },
+      { numItems: 2, cursor: "c0", endCursor: "c1" },
+      { numItems: 2, cursor: "c0", endCursor: "m" },
+      { numItems: 2, cursor: "m", endCursor: "c1" },
+      { numItems: 2, cursor: "c1", endCursor: "t" },
+      { numItems: 2, cursor: "t", endCursor: "c2" },
+    ]);
+    const failure = current(result);
+    assert(failure._tag === "Failure");
+    expect(failure.error.reason).toBe("nope");
+    expect(failure.results).toEqual([
+      { value: 1 },
+      { value: 2 },
+      { value: 3 },
+      { value: 4 },
+      { value: 5 },
+      { value: 6 },
+    ]);
   });
 
   test("throws unknown errors", () => {

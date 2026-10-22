@@ -489,10 +489,7 @@ export const useStreamPaginatedQuery = <
       resetKey: previous.resetKey,
       state: freshState(),
     }));
-  } else if (
-    interpretation._tag === "Interpreted" &&
-    interpretation.transitions.length > 0
-  ) {
+  } else if (interpretation.transitions.length > 0) {
     applyTransitions(interpretation.transitions);
   }
 
@@ -549,10 +546,10 @@ export const useStreamPaginatedQuery = <
       throw error;
     }
 
-    const { lastResult } = interpretation;
-    if (Option.isNone(lastResult) && current.state.pageKeys.length <= 1) {
+    if (!interpretation.firstPageLoaded) {
       return PaginatedQueryResult.loadingFirstPage({ skipped });
     }
+    const { lastResult } = interpretation;
     if (
       Option.isNone(lastResult) ||
       StreamPagination.isLastPageSplitting(current.state)
