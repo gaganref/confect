@@ -367,6 +367,48 @@ describe("useStreamPaginatedQuery", () => {
     ]);
   });
 
+  test("stays LoadingFirstPage while recursive splits withhold the first page", () => {
+    respond(
+      { numItems: 2, cursor: null },
+      {
+        page: [{ value: "1" }],
+        isDone: false,
+        continueCursor: "c0",
+        pageStatus: "SplitRequired",
+        splitCursor: "s1",
+      },
+    );
+    respond(
+      { numItems: 2, cursor: null, endCursor: "s1" },
+      {
+        page: [{ value: "1" }],
+        isDone: false,
+        continueCursor: "s1",
+        pageStatus: "SplitRequired",
+        splitCursor: "s0",
+      },
+    );
+    respond(
+      { numItems: 2, cursor: "s1" },
+      { page: [{ value: "3" }], isDone: false, continueCursor: "c0" },
+    );
+
+    const { result, rerender } = renderHook(() =>
+      useStreamPaginatedQuery(list, {}, { initialNumItems: 2 }),
+    );
+    rerender();
+
+    // The first page split into two pages, and its first half split again:
+    // nothing from the start of the stream has loaded yet.
+    expect(subscribedOpts()).toEqual([
+      { numItems: 2, cursor: null, endCursor: "s1" },
+      { numItems: 2, cursor: "s1" },
+      { numItems: 2, cursor: null, endCursor: "s0" },
+      { numItems: 2, cursor: "s0", endCursor: "s1" },
+    ]);
+    expect(current(result)._tag).toBe("LoadingFirstPage");
+  });
+
   test("returns a decoded typed error as Failure with the loaded pages", () => {
     respondFirstPage({
       page: [{ value: "1" }],
