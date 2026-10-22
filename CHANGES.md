@@ -95,15 +95,18 @@ Upstream: planned; no proposal submitted.
 `StreamPagination.interpret` treated a failed replacement as a result. A failed
 pin then swapped the loaded page out for the failure. A failed split replacement
 stayed hidden while its sibling was still loading. Now a failed replacement fails
-the interpretation at once, the replaced page's items stay in `Failed.items`, and
-the page and its replacements stay subscribed for a retry.
+the interpretation at once, the replaced page and every page after it stay in
+`Failed.items`, and the page and its replacements stay subscribed for a retry.
+A page whose own result fails still ends the items, since its range is unknown.
+`Failed` also carries the transitions the pass found, and the hook applies them,
+so the other pages keep splitting and swapping while the failure shows.
 
 `interpret` also reports `firstPageLoaded`, which holds once the head page has
 its full result. The hook used one page as the sign of a loading first page, so
 recursive splits of the first page reported `LoadingMore` with no items.
 
 Changeset: `stream-pagination-page-swaps.md`.
-Upstream: unrecorded.
+Upstream: planned; no proposal submitted. The maintainer sends the proposal.
 
 ## Component authoring and contracts
 

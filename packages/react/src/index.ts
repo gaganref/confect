@@ -489,10 +489,7 @@ export const useStreamPaginatedQuery = <
       resetKey: previous.resetKey,
       state: freshState(),
     }));
-  } else if (
-    interpretation._tag === "Interpreted" &&
-    interpretation.transitions.length > 0
-  ) {
+  } else if (interpretation.transitions.length > 0) {
     applyTransitions(interpretation.transitions);
   }
 

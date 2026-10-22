@@ -14,7 +14,8 @@
  * are the same transition shape: the affected page keeps rendering while its
  * replacement subscriptions ("ongoing split") load, and is swapped out once all
  * of them have results. A failed replacement fails the render at once, still
- * showing the affected page, and the swap waits for a retry.
+ * showing the affected page and the pages after it, and the swap waits for a
+ * retry.
  *
  * This module is framework-free (it imports only `effect/*` and a type from
  * `convex/server`); it lives here for now because the React hook is its only
@@ -284,7 +285,8 @@ export type PageResult = PaginationResult<unknown>;
 /**
  * What one render pass derives from the subscribed pages' results: the items to
  * show, whether the first page has loaded, the trailing complete result (absent
- * while the tail is loading or force-splitting), state transitions to apply,
+ * while the tail is loading or force-splitting), state transitions to apply
+ * (also while a failure shows, so the other pages keep splitting and swapping),
  * and whether a failure or an invalid cursor was hit.
  *
  * `firstPageLoaded` holds once the head page has its full result. Splits can
@@ -297,12 +299,14 @@ export type Interpretation =
       readonly _tag: "Failed";
       readonly error: unknown;
       /**
-       * Encoded items before the failure. When a replacement failed, the page
-       * it replaces is still shown, and stays subscribed with the replacement
-       * so that a retry re-requests only the replacement.
+       * Encoded items across the loaded pages, in order. A page whose
+       * replacement failed is still shown, and stays subscribed with the
+       * replacement so that a retry re-requests only the replacement. A page
+       * whose own result failed ends the items, since its range is unknown.
        */
       readonly items: ReadonlyArray<unknown>;
       readonly firstPageLoaded: boolean;
+      readonly transitions: ReadonlyArray<(state: State) => State>;
     }
   | {
       readonly _tag: "Interpreted";
@@ -350,41 +354,54 @@ export const interpret = (
       result.pageStatus !== "SplitRequired"
     );
   });
-  const interpreted = (
+  // The first error in display order is the one reported.
+  const finish = (
     items: ReadonlyArray<unknown>,
     lastResult: Option.Option<PageResult>,
     transitions: ReadonlyArray<(state: State) => State>,
-  ): Interpretation => ({
-    _tag: "Interpreted",
-    items,
-    firstPageLoaded,
-    lastResult,
-    transitions,
-  });
-  const failed = (
-    error: Error,
-    items: ReadonlyArray<unknown>,
+    errors: ReadonlyArray<Error>,
   ): Interpretation =>
-    options.isInvalidCursorError(error)
+    Array.some(errors, options.isInvalidCursorError)
       ? { _tag: "ResetRequired" }
-      : { _tag: "Failed", error, items, firstPageLoaded };
+      : Option.match(Array.head(errors), {
+          onNone: () => ({
+            _tag: "Interpreted",
+            items,
+            firstPageLoaded,
+            lastResult,
+            transitions,
+          }),
+          onSome: (error) => ({
+            _tag: "Failed",
+            error,
+            items,
+            firstPageLoaded,
+            transitions,
+          }),
+        });
 
   const go = (
     remaining: ReadonlyArray<string>,
     items: ReadonlyArray<unknown>,
     transitions: ReadonlyArray<(s: State) => State>,
     lastResult: Option.Option<PageResult>,
+    errors: ReadonlyArray<Error>,
   ): Interpretation =>
     Option.match(Array.head(remaining), {
-      onNone: () => interpreted(items, lastResult, transitions),
+      onNone: () => finish(items, lastResult, transitions, errors),
       onSome: (pageKey) => {
         const result = resultOf(pageKey);
         if (result === undefined) {
           // The trailing pages are still loading.
-          return interpreted(items, Option.none(), transitions);
+          return finish(items, Option.none(), transitions, errors);
         }
         if (result instanceof Error) {
-          return failed(result, items);
+          return finish(
+            items,
+            Option.none(),
+            transitions,
+            Array.append(errors, result),
+          );
         }
         // A force-split page couldn't be fetched in full: show the items
         // before it and report the tail as still loading.
@@ -394,21 +411,27 @@ export const interpret = (
             : Array.appendAll(items, result.page);
 
         const ongoingSplit = Record.get(state.ongoingSplits, pageKey);
-        const replacementError = Option.flatMap(ongoingSplit, (replacements) =>
-          Array.findFirst(replacements, (key) =>
-            Option.liftPredicate(
-              resultOf(key),
-              (replacement) => replacement instanceof Error,
-            ),
+        // A failed replacement leaves this page shown and its range pinned, so
+        // the pages after it stay contiguous and the walk goes on.
+        const replacementResults = Option.match(ongoingSplit, {
+          onNone: () => [],
+          onSome: Array.map(resultOf),
+        });
+        const nextErrors = Array.appendAll(
+          errors,
+          Array.filter(
+            replacementResults,
+            (replacement) => replacement instanceof Error,
           ),
         );
-        if (Option.isSome(replacementError)) {
-          return failed(replacementError.value, shown);
-        }
         const nextTransitions = Option.match(ongoingSplit, {
-          onSome: (replacements) =>
-            // Swap the replacements in once all of them have results.
-            Array.every(replacements, (key) => resultOf(key) !== undefined)
+          onSome: () =>
+            // Swap the replacements in once all of them have loaded.
+            Array.every(
+              replacementResults,
+              (replacement) =>
+                replacement !== undefined && !(replacement instanceof Error),
+            )
               ? Array.append(transitions, completeSplit(pageKey))
               : transitions,
           onNone: () =>
@@ -429,15 +452,16 @@ export const interpret = (
         });
 
         return result.pageStatus === "SplitRequired"
-          ? interpreted(shown, Option.none(), nextTransitions)
+          ? finish(shown, Option.none(), nextTransitions, nextErrors)
           : go(
               Array.drop(remaining, 1),
               shown,
               nextTransitions,
               Option.some(result),
+              nextErrors,
             );
       },
     });
 
-  return go(state.pageKeys, [], [], Option.none());
+  return go(state.pageKeys, [], [], Option.none(), []);
 };
