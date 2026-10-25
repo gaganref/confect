@@ -110,6 +110,15 @@ Upstream: deferred; no proposal for now. The maintainer decides when to send one
 
 ## Component authoring and contracts
 
+### Describe public functions
+
+The five public function builders accept an optional `description` and keep it
+on the spec through middleware, so contract tools can read it. A call without a
+description keeps its inferred type. Internal builders take none.
+
+Changeset: `function-description.md`.
+Upstream: planned; no proposal submitted.
+
 ### Check component declarations
 
 Carry a literal app or component kind in backend declarations. Default to app,
