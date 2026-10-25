@@ -569,7 +569,9 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
     );
   }
 
-  yield* cbw.writeLine(`import { GroupImpl } from "@confect/server";`);
+  if (required.length > 0) {
+    yield* cbw.writeLine(`import { GroupImpl } from "@confect/server";`);
+  }
   yield* cbw.writeLine(`import databaseSchema from "${schemaImportPath}";`);
   yield* cbw.writeLine(`import groupLayer from "${implImportPath}";`);
   yield* cbw.blankLine();
@@ -578,7 +580,10 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
   // per-function bundle; only `databaseSchema` and the impl are runtime
   // imports. Typing from the leaf spec (not the project-wide assembled spec)
   // keeps the registry's type dependent solely on its own group.
-  const groupLayer = `groupLayer.pipe(GroupImpl.finalize({ required: [${required.map(({ key }) => `{ key: ${JSON.stringify(key)} }`).join(", ")}] }))`;
+  const groupLayer =
+    required.length === 0
+      ? "groupLayer"
+      : `groupLayer.pipe(GroupImpl.finalize({ required: [${required.map(({ key }) => `{ key: ${JSON.stringify(key)} }`).join(", ")}] }))`;
   const specType = `typeof import("${specImportPath}")["default"]`;
   if (useNode) {
     yield* cbw.writeLine(
