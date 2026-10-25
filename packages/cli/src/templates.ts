@@ -523,12 +523,16 @@ export const registeredFunctionsForGroup = ({
   schemaImportPath,
   specImportPath,
   implImportPath,
+  groupPath = "",
+  required = [],
 }: Parameters<typeof registeredFunctionsForGroupEffect>[0]) =>
   registeredFunctionsForGroupEffect({
     spec,
     schemaImportPath,
     specImportPath,
     implImportPath,
+    groupPath,
+    required,
   });
 
 const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
@@ -536,11 +540,15 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
   schemaImportPath,
   specImportPath,
   implImportPath,
+  groupPath = "",
+  required = [],
 }: {
   spec: GroupSpec.AnyWithProps;
   schemaImportPath: string;
   specImportPath: string;
   implImportPath: string;
+  groupPath?: string;
+  required?: ReadonlyArray<{ readonly key: string }>;
 }) {
   const cbw = new CodeBlockWriter({ indentNumberOfSpaces: 2 });
   const useNode = spec.runtime === "Node";
@@ -565,6 +573,9 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
     );
   }
 
+  if (required.length > 0) {
+    yield* cbw.writeLine(`import { GroupImpl } from "@confect/server";`);
+  }
   yield* cbw.writeLine(`import databaseSchema from "${schemaImportPath}";`);
   yield* cbw.writeLine(`import groupLayer from "${implImportPath}";`);
   yield* cbw.blankLine();
@@ -573,14 +584,19 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
   // per-function bundle; only `databaseSchema` and the impl are runtime
   // imports. Typing from the leaf spec (not the project-wide assembled spec)
   // keeps the registry's type dependent solely on its own group.
+  const groupLayer =
+    required.length === 0
+      ? "groupLayer"
+      : // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Emit escaped TypeScript string literals, not JSON payloads.
+        `groupLayer.pipe(GroupImpl.finalize({ required: [${required.map(({ key }) => `{ key: ${JSON.stringify(key)} }`).join(", ")}], groupPath: ${JSON.stringify(groupPath)} }))`;
   const specType = `typeof import("${specImportPath}")["default"]`;
   if (useNode) {
     yield* cbw.writeLine(
-      `export default RegisteredNodeFunction.buildForGroup<${specType}>(databaseSchema, groupLayer);`,
+      `export default RegisteredNodeFunction.buildForGroup<${specType}>(databaseSchema, ${groupLayer});`,
     );
   } else if (!forwarding) {
     yield* cbw.writeLine(
-      `export default RegisteredFunctions.buildForGroup<${specType}>(databaseSchema, groupLayer);`,
+      `export default RegisteredFunctions.buildForGroup<${specType}>(databaseSchema, ${groupLayer});`,
     );
   } else {
     const bindings = (group: GroupSpec.AnyWithProps, path: string): string =>
@@ -603,7 +619,7 @@ ${[
 }`;
     yield* cbw.writeLine(`const forward = <Ctx, Args, Returns>(handler: (ctx: Ctx, args: Args) => Promise<Returns>) => (ctx: Ctx, args: Args) => handler(ctx, args);
 
-const definitions = ConvexFunctionDefinitions.buildForGroup<${specType}>(databaseSchema, groupLayer);
+const definitions = ConvexFunctionDefinitions.buildForGroup<${specType}>(databaseSchema, ${groupLayer});
 
 export default ${bindings(spec, "definitions")} as RegisteredFunctions.RegisteredFunctionsForGroupSpec<${specType}>;`);
   }

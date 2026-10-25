@@ -101,6 +101,18 @@ export class ImplMissingMiddlewareError extends Schema.TaggedError<ImplMissingMi
   },
 ) {}
 
+export class RequiredMiddlewareError extends Schema.TaggedError<RequiredMiddlewareError>()(
+  "RequiredMiddlewareError",
+  {
+    missing: Schema.Array(
+      Schema.Struct({
+        functionName: Schema.String,
+        middlewareKey: Schema.String,
+      }),
+    ),
+  },
+) {}
+
 export class ParentChildNameCollisionError extends Schema.TaggedError<ParentChildNameCollisionError>()(
   "ParentChildNameCollisionError",
   {
@@ -223,6 +235,7 @@ export const CodegenError = Schema.Union([
   ImplNotFinalizedError,
   ImplMissingFunctionsError,
   ImplMissingMiddlewareError,
+  RequiredMiddlewareError,
   ParentChildNameCollisionError,
   InvalidTableDefaultExportError,
   InvalidTableFilenameError,
@@ -436,6 +449,17 @@ export const renderCodegenError = (error: CodegenError): string => {
   if (error._tag === "ComponentNodeGroupError") {
     return singleLine(
       `Group "${error.groupPath}" in ${error.specPath} uses the Node runtime. Convex components do not support Node.js functions.`,
+    );
+  }
+  if (error._tag === "RequiredMiddlewareError") {
+    return singleLine(
+      "Required middleware is missing:\n",
+      error.missing
+        .map(
+          ({ functionName, middlewareKey }) =>
+            `${functionName} requires middleware "${middlewareKey}"`,
+        )
+        .join("\n"),
     );
   }
   if (error._tag === "RemoveBusyError") {

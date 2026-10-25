@@ -15,6 +15,58 @@ layer(NodeServices.layer, { excludeTestServices: true })(
   "built confect dev",
   (it) => {
     it.effect(
+      "preserves required middleware after a spec edit",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          yield* project.write(
+            "confect/policy.ts",
+            `import { MiddlewareSpec } from "@confect/core";
+export class Policy extends MiddlewareSpec.MiddlewareSpec<Policy>()("Policy", { functionTypes: { query: true } }) {}`,
+          );
+          yield* project.write(
+            "confect/app.ts",
+            `import { App, Env } from "@confect/core";
+import { Policy } from "./policy";
+export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy] });`,
+          );
+          const spec =
+            'import { Policy } from "./policy";\n' +
+            Project.spec.replace(
+              "GroupSpec.make()",
+              "GroupSpec.make().middleware(Policy)",
+            );
+          yield* project.write("confect/notes.spec.ts", spec);
+          yield* project.write(
+            "confect/notes.impl.ts",
+            'import { MiddlewareImpl } from "@confect/server";\nimport { Policy } from "./policy";\n' +
+              Project.impl.replace(
+                "GroupImpl.finalize);",
+                "Layer.provide(MiddlewareImpl.make(databaseSchema, Policy, effect => effect)), GroupImpl.finalize);",
+              ),
+          );
+          const watching = yield* project.start("dev");
+          yield* watching.waitFor(success);
+          const registrationPath = `${project.root}/confect/_generated/registeredFunctions/notes.ts`;
+          const required = 'GroupImpl.finalize({ required: [{ key: "Policy" }]';
+          expect(yield* fs.readFileString(registrationPath)).toContain(
+            required,
+          );
+          yield* project.write(
+            "confect/notes.spec.ts",
+            `${spec}\nconsole.log("REQUIRED_SPEC_EDIT");\n`,
+          );
+          yield* watching.waitFor("REQUIRED_SPEC_EDIT");
+          yield* watching.waitFor(success);
+          expect(yield* fs.readFileString(registrationPath)).toContain(
+            required,
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "stops the standby evaluator when its parent is killed",
       () =>
         Effect.gen(function* () {

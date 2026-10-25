@@ -11,10 +11,100 @@ import * as Schema from "effect/Schema";
 import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as Project from "./Project";
+import * as Bundler from "@confect/cli/Bundler";
 
 const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
 layer(NodeServices.layer)("built confect codegen", (it) => {
+  it.effect.each([false, true])(
+    "enforces declared middleware in generated registration (covered=%s)",
+    (covered) =>
+      Effect.gen(function* () {
+        const project = yield* Project.make;
+        yield* project.write(
+          "confect/policy.ts",
+          `import { MiddlewareSpec } from "@confect/core";
+export class Policy extends MiddlewareSpec.MiddlewareSpec<Policy>()("Policy", { functionTypes: { query: true, mutation: true, action: true } }) {}`,
+        );
+        yield* project.write(
+          "confect/app.ts",
+          `import { App, Env } from "@confect/core";
+import { Policy } from "./policy";
+export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy] });`,
+        );
+        if (covered) {
+          yield* project.write(
+            "confect/notes.spec.ts",
+            'import { Policy } from "./policy";\n' +
+              Project.spec.replace(
+                "GroupSpec.make()",
+                "GroupSpec.make().middleware(Policy)",
+              ),
+          );
+          yield* project.write(
+            "confect/notes.impl.ts",
+            'import { MiddlewareImpl } from "@confect/server";\nimport { Policy } from "./policy";\n' +
+              Project.impl.replace(
+                "GroupImpl.finalize);",
+                "Layer.provide(MiddlewareImpl.make(databaseSchema, Policy, effect => effect)), GroupImpl.finalize);",
+              ),
+          );
+        }
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(`${project.root}/confect/admin`);
+        yield* project.write(
+          "confect/admin/tasks.spec.ts",
+          (yield* fs.readFileString(`${project.root}/confect/notes.spec.ts`))
+            .replace('"./policy"', '"../policy"')
+            .replace(
+              '"./_generated/tables/notes"',
+              '"../_generated/tables/notes"',
+            ),
+        );
+        yield* project.write(
+          "confect/admin/tasks.impl.ts",
+          (yield* fs.readFileString(`${project.root}/confect/notes.impl.ts`))
+            .replace('"./policy"', '"../policy"')
+            .replaceAll('"./_generated/', '"../_generated/')
+            .replace('"./notes.spec"', '"./tasks.spec"'),
+        );
+        const generated = yield* project.start("codegen");
+        const exitCode = yield* generated.handle.exitCode;
+        const output = stripVTControlCharacters(
+          yield* Ref.get(generated.output),
+        );
+        if (covered) {
+          expect(exitCode, output).toBe(0);
+          const registrationPath = `${project.root}/confect/_generated/registeredFunctions/admin/tasks.ts`;
+          expect(
+            (yield* Bundler.bundle(registrationPath)).module.default.list
+              .isPublic,
+          ).toBe(true);
+          yield* project.write(
+            "confect/admin/tasks.spec.ts",
+            Project.spec.replace(
+              '"./_generated/tables/notes"',
+              '"../_generated/tables/notes"',
+            ),
+          );
+          expect(
+            String(
+              (yield* Effect.flip(Bundler.bundle(registrationPath))).cause,
+            ),
+          ).toContain('admin.tasks.list requires middleware "Policy"');
+        } else {
+          expect(exitCode, output).not.toBe(0);
+          expect(output).toContain(
+            'Required middleware is missing:\nadmin.tasks.list requires middleware "Policy"\nnotes.list requires middleware "Policy"',
+          );
+          expect(output.match(/Required middleware is missing:/g)).toHaveLength(
+            1,
+          );
+        }
+      }),
+    { timeout: 30000 },
+  );
+
   it.effect.each([
     {
       name: "raw export",
