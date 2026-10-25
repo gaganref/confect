@@ -843,4 +843,11 @@ describe("extend", () => {
     // @ts-expect-error returns is a builder option, not a field.
     Subjected.extend<Returning>()({ middleware: [] });
   });
+
+  it("refuses middleware an earlier layer attached at the extend call", () => {
+    // @ts-expect-error Subjected already attaches Trace.
+    Subjected.extend()({ middleware: [Trace] });
+    // @ts-expect-error Owned inherits Trace from Subjected.
+    Owned.extend()({ middleware: [Trace] });
+  });
 });

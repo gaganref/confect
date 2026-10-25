@@ -688,6 +688,21 @@ type OptionFree<Fields_ extends Profile.Fields> = {
 };
 
 /**
+ * Refuses middleware an earlier layer attached, which would throw once a
+ * function is built.
+ */
+type NotInherited<
+  Middleware_ extends ReadonlyArray<OptionlessMiddlewareSpec>,
+  Inherited extends MiddlewareSpec.AnyMiddlewareSpec,
+> = {
+  readonly [Index in keyof Middleware_]: Middleware_[Index] extends {
+    readonly key: infer Key extends MiddlewareSpec.Key<Inherited>;
+  }
+    ? MiddlewareSpec.AttachmentError<`Middleware "${Key}" is already attached by this profile`>
+    : Middleware_[Index];
+};
+
+/**
  * `never` when a profile middleware does not declare the function type.
  */
 type Declared<
@@ -795,7 +810,8 @@ export type Extended<
     const Middleware_ extends ReadonlyArray<OptionlessMiddlewareSpec>,
   >(
     config: {
-      readonly middleware: Middleware_;
+      readonly middleware: Middleware_ &
+        NotInherited<Middleware_, MiddlewareSpecs_>;
     } & OptionFree<Extension>,
   ) => Extended<
     Profile.Both<Fields_, Extension>,
