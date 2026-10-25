@@ -12,6 +12,7 @@ import * as Predicate from "effect/Predicate";
 import * as FunctionProvenance from "./FunctionProvenance.js";
 import { validateConfectFunctionIdentifier } from "./Identifier.js";
 import type * as MiddlewareSpec from "./MiddlewareSpec.js";
+import type * as Profile from "./Profile.js";
 import * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 
 export const TypeId = "~@confect/core/FunctionSpec";
@@ -102,6 +103,45 @@ export interface DescribedBuilder<
   >;
 }
 
+/**
+ * A spec built through {@link extend}, keeping its fields through middleware.
+ */
+export interface ExtendedBuilder<
+  RuntimeAndFunctionType_ extends RuntimeAndFunctionType.RuntimeAndFunctionType,
+  FunctionVisibility_ extends FunctionVisibility,
+  Name_ extends string,
+  FunctionProvenance_ extends FunctionProvenance.FunctionProvenance,
+  MiddlewareSpecs_ extends MiddlewareSpec.AnyMiddlewareSpec,
+  Fields_,
+> extends Builder<
+  RuntimeAndFunctionType_,
+  FunctionVisibility_,
+  Name_,
+  FunctionProvenance_,
+  MiddlewareSpecs_
+> {
+  readonly description?: string;
+  readonly fields: Fields_;
+
+  middleware<MiddlewareSpec_ extends MiddlewareSpec.AnyMiddlewareSpec>(
+    middlewareSpec: MiddlewareSpec_ &
+      MiddlewareSpec.ValidateFunctionAttach<
+        MiddlewareSpec_,
+        RuntimeAndFunctionType_,
+        FunctionProvenance_,
+        MiddlewareSpecs_
+      >,
+    ...options: MiddlewareAttachment.Args<NoInfer<MiddlewareSpec_>>
+  ): ExtendedBuilder<
+    RuntimeAndFunctionType_,
+    FunctionVisibility_,
+    Name_,
+    FunctionProvenance_,
+    MiddlewareSpecs_ | MiddlewareSpec_,
+    Fields_
+  >;
+}
+
 export interface Any {
   readonly [TypeId]: TypeId;
 }
@@ -114,6 +154,7 @@ export interface AnyWithProps extends FunctionSpec<
   MiddlewareSpec.AnyMiddlewareSpec
 > {
   readonly description?: string;
+  readonly fields?: object;
 }
 
 export interface AnyConfect extends FunctionSpec<
@@ -362,6 +403,7 @@ const Proto = {
       functionVisibility: this.functionVisibility,
       name: this.name,
       ...("description" in this ? { description: this.description } : {}),
+      ...("fields" in this ? { fields: this.fields } : {}),
       functionProvenance: this.functionProvenance,
       middlewareAttachments: [
         ...this.middlewareAttachments,
@@ -624,6 +666,167 @@ export const internalNodeAction = make(
   RuntimeAndFunctionType.NodeAction,
   "internal",
 );
+
+type OptionlessMiddlewareSpec = MiddlewareSpec.AnyMiddlewareSpec & {
+  readonly "~Options": never;
+};
+
+/**
+ * `never` when a profile middleware does not declare the function type.
+ */
+type Declared<
+  MiddlewareSpecs_ extends MiddlewareSpec.AnyMiddlewareSpec,
+  FunctionType_ extends FunctionType,
+  Make,
+> = [
+  MiddlewareSpecs_ extends unknown
+    ? FunctionType_ extends MiddlewareSpec.FunctionTypes<MiddlewareSpecs_>
+      ? never
+      : MiddlewareSpecs_
+    : never,
+] extends [never]
+  ? Make
+  : never;
+
+type ExtendedMake<
+  RuntimeAndFunctionType_ extends RuntimeAndFunctionType.RuntimeAndFunctionType,
+  Fields_ extends Profile.Fields,
+  MiddlewareSpecs_ extends MiddlewareSpec.AnyMiddlewareSpec,
+> = Declared<
+  MiddlewareSpecs_,
+  RuntimeAndFunctionType_["functionType"],
+  <
+    const Name_ extends string,
+    const ArgsFields_ extends FunctionProvenance.ArgsFields = {},
+    Returns_ extends Schema.Codec<any, any> = never,
+    Error_ extends Schema.Codec<any, any> = never,
+  >(
+    options: {
+      readonly name: Name_;
+      readonly description?: string;
+      readonly args?: () => ArgsFields_;
+      readonly returns: () => Returns_;
+      readonly error?: () => Error_;
+    } & NoInfer<Profile.Apply<Fields_, Name_, ArgsFields_>>,
+  ) => ExtendedBuilder<
+    RuntimeAndFunctionType_,
+    "public",
+    Name_,
+    FunctionProvenance.Confect<ArgsFields_, Returns_, Error_>,
+    MiddlewareSpecs_,
+    Profile.Apply<Fields_, Name_, ArgsFields_>
+  >
+>;
+
+type ExtendedMakePaginated<
+  Fields_ extends Profile.Fields,
+  MiddlewareSpecs_ extends MiddlewareSpec.AnyMiddlewareSpec,
+> = Declared<
+  MiddlewareSpecs_,
+  "query",
+  <
+    const Name_ extends string,
+    const UserArgsFields_ extends FunctionProvenance.ArgsFields = {},
+    Item_ extends Schema.Codec<any, any> = never,
+    Error_ extends Schema.Codec<any, any> = never,
+  >(
+    options: {
+      readonly name: Name_;
+      readonly description?: string;
+      readonly args?: () => UserArgsFields_ &
+        ForbidPaginationOpts<UserArgsFields_>;
+      readonly item: () => Item_;
+      readonly error?: () => Error_;
+    } & NoInfer<Profile.Apply<Fields_, Name_, UserArgsFields_>>,
+  ) => ExtendedBuilder<
+    RuntimeAndFunctionType.ConvexQuery,
+    "public",
+    Name_,
+    FunctionProvenance.ConfectPaginated<UserArgsFields_, Item_, Error_>,
+    MiddlewareSpecs_,
+    Profile.Apply<Fields_, Name_, UserArgsFields_>
+  >
+>;
+
+interface ExtendedRuntimes {
+  readonly publicQuery: RuntimeAndFunctionType.ConvexQuery;
+  readonly publicMutation: RuntimeAndFunctionType.ConvexMutation;
+  readonly publicAction: RuntimeAndFunctionType.ConvexAction;
+  readonly publicNodeAction: RuntimeAndFunctionType.NodeAction;
+}
+
+/**
+ * A profile's five public builders and its own `extend`.
+ */
+export type Extended<
+  Fields_ extends Profile.Fields,
+  MiddlewareSpecs_ extends MiddlewareSpec.AnyMiddlewareSpec,
+> = {
+  readonly [Builder_ in keyof ExtendedRuntimes]: ExtendedMake<
+    ExtendedRuntimes[Builder_],
+    Fields_,
+    MiddlewareSpecs_
+  >;
+} & {
+  readonly publicPaginatedQuery: ExtendedMakePaginated<
+    Fields_,
+    MiddlewareSpecs_
+  >;
+  /**
+   * Require more fields and attach more middleware after this profile's.
+   */
+  extend<Extension extends Profile.Fields = Profile.NoFields>(): <
+    const Middleware_ extends ReadonlyArray<OptionlessMiddlewareSpec>,
+  >(config: {
+    readonly middleware: Middleware_;
+  }) => Extended<
+    Profile.Both<Fields_, Extension>,
+    MiddlewareSpecs_ | Middleware_[number]
+  >;
+};
+
+const makeExtended = (
+  middleware: ReadonlyArray<MiddlewareSpec.AnyMiddlewareSpec>,
+): Extended<any, any> => {
+  const extended =
+    (makeSpec: (options: never) => object): any =>
+    ({
+      name,
+      description,
+      args,
+      returns,
+      item,
+      error,
+      ...fields
+    }: Record<string, unknown>) =>
+      middleware.reduce(
+        (spec: any, middlewareSpec) => spec.middleware(middlewareSpec),
+        Object.assign(
+          makeSpec({ name, description, args, returns, item, error } as never),
+          { fields },
+        ),
+      );
+
+  return {
+    publicQuery: extended(publicQuery),
+    publicMutation: extended(publicMutation),
+    publicAction: extended(publicAction),
+    publicNodeAction: extended(publicNodeAction),
+    publicPaginatedQuery: extended(publicPaginatedQuery),
+    extend: () => (config) =>
+      makeExtended([...middleware, ...config.middleware]),
+  };
+};
+
+/**
+ * Public builders whose specs require and keep `Fields_`, with `middleware`.
+ */
+export const extend =
+  <Fields_ extends Profile.Fields = Profile.NoFields>() =>
+  <const Middleware_ extends ReadonlyArray<OptionlessMiddlewareSpec>>(config: {
+    readonly middleware: Middleware_;
+  }) =>
+    makeExtended(config.middleware) as Extended<Fields_, Middleware_[number]>;
 
 type MatchingRegisteredFunction<
   RuntimeAndFunctionType_ extends RuntimeAndFunctionType.RuntimeAndFunctionType,

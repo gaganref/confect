@@ -1,10 +1,12 @@
 import type * as FunctionProvenance from "@confect/core/FunctionProvenance";
 import type * as RuntimeAndFunctionType from "@confect/core/RuntimeAndFunctionType";
 import type * as MiddlewareAttachment from "@confect/core/MiddlewareAttachment";
+import type * as Profile from "@confect/core/Profile";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import * as MutableRef from "effect/MutableRef";
 import * as Schema from "effect/Schema";
 import * as FunctionSpec from "@confect/core/FunctionSpec";
+import * as GenericId from "@confect/core/GenericId";
 import * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
 import * as Ref from "@confect/core/Ref";
 
@@ -690,5 +692,136 @@ describe("public function descriptions", () => {
     const { item: _item, ...withoutItem } = described;
     // @ts-expect-error A described paginated query still declares its item.
     FunctionSpec.publicPaginatedQuery(withoutItem);
+  });
+});
+
+describe("extend", () => {
+  type IdArgs<Args> = {
+    [K in keyof Args]: Args[K] extends typeof NoteId ? K : never;
+  }[keyof Args] &
+    string;
+  type SubjectOf<Args> = { readonly subject: IdArgs<Args> };
+  interface Subject extends Profile.Fields {
+    readonly Type: SubjectOf<this["Args"]>;
+  }
+  interface Owner extends Profile.Fields {
+    readonly Type: { readonly owner: string };
+  }
+
+  const observe = <const Key extends string>(key: Key) => {
+    class Observe extends MiddlewareSpec.MiddlewareSpec<Observe>()(key, {
+      functionTypes: { query: true, mutation: true, action: true },
+    }) {}
+    return Observe;
+  };
+  const Trace = observe("Trace");
+  class Audit extends MiddlewareSpec.MiddlewareSpec<Audit>()("Audit", {
+    functionTypes: { query: false, mutation: true, action: false },
+  }) {}
+
+  const NoteId = GenericId.GenericId("notes");
+  const returns = () => Schema.Null;
+  const Subjected = FunctionSpec.extend<Subject>()({ middleware: [Trace] });
+  const Owned = Subjected.extend<Owner>()({ middleware: [Audit] });
+  let argsEvaluated = 0;
+  const archive = Owned.publicMutation({
+    name: "archive",
+    description: "Archive a note.",
+    args: () => (argsEvaluated++, { noteId: NoteId, text: Schema.String }),
+    subject: "noteId",
+    owner: "team",
+    returns,
+  });
+
+  it("keeps the fields and the description through later middleware", () => {
+    const [a, b] = [observe("a"), observe("b")];
+    const wrapped = archive.middleware(a).middleware(b);
+    const plain = FunctionSpec.publicQuery({ name: "plain", returns });
+
+    expect(argsEvaluated).toBe(0);
+    expect(Object.hasOwn(plain.middleware(Trace), "fields")).toBe(false);
+    expect([wrapped.description, wrapped.fields]).toEqual([
+      "Archive a note.",
+      { subject: "noteId", owner: "team" },
+    ]);
+    expect(wrapped.middlewareSpecs).toEqual([Trace, Audit, a, b]);
+    expectTypeOf(wrapped.fields).toEqualTypeOf<
+      { readonly subject: "noteId" } & { readonly owner: string }
+    >();
+    expectTypeOf(wrapped.description).toEqualTypeOf<string | undefined>();
+    expectTypeOf<FunctionSpec.MiddlewareSpecs<typeof archive>>().toEqualTypeOf<
+      typeof Trace | typeof Audit
+    >();
+    expectTypeOf<FunctionSpec.Args<typeof archive>>().toEqualTypeOf<{
+      readonly noteId: GenericId.GenericId<"notes">;
+      readonly text: string;
+    }>();
+  });
+
+  it("gives all five public builders the profile's fields", () => {
+    const Labelled = FunctionSpec.extend<Owner>()({ middleware: [] });
+    const options = {
+      name: "read",
+      owner: "team",
+      returns: () => Schema.String,
+      item: () => Schema.String,
+    } as const;
+    const built = [
+      Labelled.publicQuery(options),
+      Labelled.publicMutation(options),
+      Labelled.publicAction(options),
+      Labelled.publicNodeAction(options),
+      Labelled.publicPaginatedQuery(options),
+    ];
+
+    expect(
+      built.map(({ runtimeAndFunctionType, functionProvenance, fields }) => [
+        runtimeAndFunctionType.runtime,
+        runtimeAndFunctionType.functionType,
+        functionProvenance.kind._tag,
+        fields,
+      ]),
+    ).toEqual([
+      ["Convex", "query", "Standard", { owner: "team" }],
+      ["Convex", "mutation", "Standard", { owner: "team" }],
+      ["Convex", "action", "Standard", { owner: "team" }],
+      ["Node", "action", "Standard", { owner: "team" }],
+      ["Convex", "query", "Paginated", { owner: "team" }],
+    ]);
+  });
+
+  it("types a builder never when a profile middleware does not declare its function type", () => {
+    expectTypeOf(Subjected.publicNodeAction).not.toBeNever();
+    expectTypeOf(Owned.publicQuery).toBeNever();
+    expectTypeOf(Owned.publicNodeAction).toBeNever();
+    expectTypeOf(Owned.publicPaginatedQuery).toBeNever();
+    expect(() =>
+      // @ts-expect-error Audit does not declare queries, so the builder is never.
+      Owned.publicQuery({ name: "read", returns }),
+    ).toThrow('Middleware "Audit" does not declare function type "query"');
+  });
+
+  it("refuses each mistake at its own line", () => {
+    class Limit extends MiddlewareSpec.MiddlewareSpec<Limit>()("Limit", {
+      options: () => Schema.Struct({ max: Schema.Finite }),
+      functionTypes: { query: true, mutation: true, action: true },
+    }) {}
+    const args = () => ({ noteId: NoteId, text: Schema.String });
+
+    // @ts-expect-error The base layer's subject field is missing.
+    Owned.publicMutation({ name: "noSubject", args, owner: "team", returns });
+    // @ts-expect-error The extension's owner field is missing.
+    Owned.publicMutation({ name: "noOwner", args, subject: "noteId", returns });
+    // @ts-expect-error The subject must name an id argument; text is a string.
+    Subjected.publicQuery({ name: "notAnId", args, subject: "text", returns });
+    Subjected.publicPaginatedQuery({
+      name: "absentArg",
+      args,
+      // @ts-expect-error The subject names an argument the function lacks.
+      subject: "sheetId",
+      item: () => Schema.String,
+    });
+    // @ts-expect-error A middleware with options needs them at attachment.
+    FunctionSpec.extend()({ middleware: [Limit] });
   });
 });

@@ -107,6 +107,21 @@ FunctionImpl.make(
 
 Paginated queries support the optional `error` schema like any other function. On the client, consume them with [`usePaginatedQuery`](/clients/react#usepaginatedquery).
 
+### Extending the builders
+
+`FunctionSpec.extend` makes your own five public builders. Their specs require the fields you declare once and carry the same [middleware](/server/middleware), in order. The fields' `Type` may read the function's args fields as `this["Args"]`; write `this` directly in `Type`, since inside a nested object type it names that object.
+
+```ts confect/profile.ts
+type OwnerOf<Args> = { readonly owner: keyof Args & string };
+interface Owner extends Profile.Fields {
+  readonly Type: OwnerOf<this["Args"]>;
+}
+export const Owned = FunctionSpec.extend<Owner>()({ middleware: [Trace] });
+// Owned.publicMutation({ name: "archive", args, owner: "noteId", returns })
+```
+
+Omitting `owner`, or naming an argument the function lacks, is a type error. The spec keeps the fields as `spec.fields` through later middleware. `Owned.extend<Audited>()({ middleware: [Audit] })` adds fields and middleware after Owned's. A builder is `never` when a profile middleware does not declare its function type. The list takes middleware without options.
+
 ## Implementing functions
 
 Each function impl contains a handler that implements the function's logic. Function impls are composed into group impls using Effect layers.

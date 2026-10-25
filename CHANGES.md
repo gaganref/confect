@@ -119,6 +119,15 @@ description keeps its inferred type. Internal builders take none.
 Changeset: `function-description.md`.
 Upstream: planned; no proposal submitted.
 
+### Extend the public builders
+
+`FunctionSpec.extend<Fields>()({ middleware })` returns the five public
+builders with extra required fields typed from each function's args and the
+middleware on every spec. Specs keep the fields; plain builders are unchanged.
+
+Changeset: `function-extend.md`.
+Upstream: planned; no proposal submitted.
+
 ### Check component declarations
 
 Carry a literal app or component kind in backend declarations. Default to app,
