@@ -446,6 +446,29 @@ if (existsSync(block)) {
       { timeout: 30000 },
     );
 
+    it.effect.each(["http.ts", "crons.ts"])(
+      "preserves authored %s during incremental generation",
+      (output) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const project = yield* Project.make;
+          const watching = yield* project.start("dev");
+          yield* watching.waitFor(success);
+          const contents = "export default {};\n";
+          yield* project.write(`convex/${output}`, contents);
+          yield* project.write(
+            "confect/notes.impl.ts",
+            Project.impl + "\n// An implementation edit.\n",
+          );
+          yield* watching.waitFor(success);
+          expect(
+            yield* fs.readFileString(path.join(project.root, "convex", output)),
+          ).toBe(contents);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
     it.effect.each([
       {
         source: "auth.ts",

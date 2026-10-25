@@ -199,7 +199,7 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
     "CRLF",
     "Node and single quotes",
     "equivalent registry path",
-  ])("accepts Edcell's %s generated status module", (format) =>
+  ])("accepts a %s generated status module", (format) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;

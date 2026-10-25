@@ -264,6 +264,9 @@ Match generated module shapes independently of formatting and accept extensionle
 registry imports from older fork versions. Report all refused paths together,
 and use Convex's path exclusions for ownership checks and stale-file removal.
 If stale generated output fails, delete it and run codegen again.
+Dev checks ownership on full generation only; continuous watcher enforcement is
+deferred. Restore incremental HTTP and cron preservation coverage and use native
+path keys in the repeated-codegen test for Windows.
 
 Changeset: `codegen-owns-convex.md`.
 Upstream: planned; no linked proposal verified.

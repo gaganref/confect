@@ -168,6 +168,7 @@ layer(NodeServices.layer)("built confect codegen", (it) => {
     "accepts a generated tree on repeated codegen",
     () =>
       Effect.gen(function* () {
+        const path = yield* Path.Path;
         const project = yield* Project.make;
         yield* project.write(
           "confect/notes.spec.ts",
@@ -187,7 +188,7 @@ layer(NodeServices.layer)("built confect codegen", (it) => {
           yield* Ref.get(repeated.output),
         ).toBe(0);
         expect(yield* project.generatedFiles).toEqual(expected);
-        expect(expected["convex/notes.ts"]).toContain(
+        expect(expected[path.join("convex", "notes.ts")]).toContain(
           "export const $list = registeredFunctions.$list;",
         );
       }).pipe(Effect.scoped),
