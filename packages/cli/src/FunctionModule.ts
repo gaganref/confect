@@ -5,6 +5,8 @@ import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as HashSet from "effect/HashSet";
 import * as Match from "effect/Match";
+import { UnownedConvexEntrypointError } from "./CodegenError.js";
+import * as templates from "./templates.js";
 import * as GenerationSnapshot from "./GenerationSnapshot.js";
 import * as GroupPath from "./GroupPath.js";
 import * as GroupPaths from "./GroupPaths.js";
@@ -12,7 +14,164 @@ import { CodeBlockWriter } from "./CodeBlockWriter.js";
 import { logFileAdded, logFileModified, logFileRemoved } from "./log.js";
 import { ConfectDirectory } from "./ConfectDirectory.js";
 import { ConvexDirectory } from "./ConvexDirectory.js";
-import { removePathIfExists, toModuleImportPath } from "./utils.js";
+import {
+  removePathIfExists,
+  toModuleImportPath,
+  toPosixPath,
+} from "./utils.js";
+import { ProjectRoot } from "./ProjectRoot.js";
+
+const RESERVED_CONVEX_TS_FILE_NAMES = new Set([
+  "schema.ts",
+  "http.ts",
+  "crons.ts",
+  "auth.config.ts",
+  "convex.config.ts",
+]);
+
+// Keep ownership and removal aligned with Convex's bundler entryPoints filter.
+const getEntrypoints = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const convex = yield* ConvexDirectory.get;
+  const files = yield* fs.readDirectory(convex, { recursive: true });
+  const components = files
+    .filter(
+      (file) =>
+        path.basename(file) === "convex.config.ts" &&
+        path.dirname(file) !== ".",
+    )
+    .map((file) => path.dirname(file) + path.sep);
+  return files.filter((file) => {
+    const base = path.basename(file);
+    return (
+      !file.startsWith("_generated" + path.sep) &&
+      !components.some((component) => file.startsWith(component)) &&
+      /\.(?:js|mjs|cjs|ts|tsx|mts|cts|jsx)$/.test(base) &&
+      !base.startsWith(".") &&
+      !base.startsWith("#") &&
+      (base.match(/\./g)?.length ?? 0) === 1 &&
+      base !== "schema.ts" &&
+      base !== "schema.js" &&
+      !file.includes(" ")
+    );
+  });
+});
+
+const tokenize = (
+  source: string,
+  modulePath: string,
+  path: Path.Path,
+): string[] | undefined => {
+  const token =
+    /\s+|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[$A-Z_a-z][$\w]*|[{}()[\].,:;=]/y;
+  const tokens: string[] = [];
+  while (token.lastIndex < source.length) {
+    const match = token.exec(source);
+    if (match === null) return undefined;
+    const value = match[0];
+    if (/^\s|^\//.test(value)) continue;
+    if (value.startsWith('"') || value.startsWith("'")) {
+      const literal = value.slice(1, -1);
+      tokens.push(
+        JSON.stringify(
+          literal.startsWith(".")
+            ? path.resolve(
+                path.dirname(modulePath),
+                literal.replace(/\.js$/, ""),
+              )
+            : literal,
+        ),
+      );
+    } else tokens.push(value);
+  }
+  return tokens;
+};
+
+const matchesShape = (
+  actual: readonly string[],
+  expected: readonly string[],
+) => {
+  let index = 0;
+  for (const token of expected) {
+    if (token === ";" && actual[index] !== ";") continue;
+    if (actual[index] === "," && (token === "}" || token === ")")) index++;
+    if (actual[index++] !== token) return false;
+  }
+  return index === actual.length;
+};
+
+export const assertOwnedEntrypoints = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const convex = yield* ConvexDirectory.get;
+  const confect = yield* ConfectDirectory.get;
+  const projectRoot = yield* ProjectRoot.get;
+  const importFromConvex = (file: string) =>
+    toModuleImportPath(path.relative(convex, path.join(confect, file)));
+  const optional = new Map([
+    [
+      "http.ts",
+      [
+        yield* templates.http({
+          httpImportPath: yield* importFromConvex("http.ts"),
+        }),
+        yield* templates.declaredHttp({
+          schemaImportPath: yield* importFromConvex("_generated/schema.ts"),
+          httpImportPath: yield* importFromConvex("http.ts"),
+        }),
+      ],
+    ],
+    [
+      "crons.ts",
+      [
+        yield* templates.crons({
+          cronsImportPath: yield* importFromConvex("crons.ts"),
+        }),
+      ],
+    ],
+  ]);
+  const refused: string[] = [];
+  for (const relative of yield* getEntrypoints) {
+    const absolute = path.join(convex, relative);
+    const tokens = tokenize(yield* fs.readFileString(absolute), absolute, path);
+    if (tokens !== undefined) {
+      if (
+        optional
+          .get(relative)
+          ?.some((template) =>
+            matchesShape(tokens, tokenize(template, absolute, path)!),
+          )
+      )
+        continue;
+      if (path.extname(relative) === ".ts") {
+        const names = tokens.flatMap((token, index) =>
+          token === "export" && tokens[index + 1] === "const"
+            ? [tokens[index + 2]!]
+            : [],
+        );
+        const group = yield* GroupPath.fromGroupModulePath(relative);
+        const template = yield* render({
+          functionNames: names,
+          registeredFunctionsImportPath:
+            yield* registeredFunctionsImportPathForGroup(group, absolute),
+          useNode: tokens[0] === '"use node"',
+        });
+        if (
+          names.length > 0 &&
+          new Set(names).size === names.length &&
+          matchesShape(tokens, tokenize(template, absolute, path)!)
+        )
+          continue;
+      }
+    }
+    refused.push(toPosixPath(path, path.relative(projectRoot, absolute)));
+  }
+  if (refused.length > 0)
+    return yield* new UnownedConvexEntrypointError({
+      filePaths: refused.sort(),
+    });
+});
 
 export const render = ({
   functionNames,
@@ -164,28 +323,14 @@ export const applyFunctionPlan = Effect.fnUntraced(function* (
 });
 
 const getGroupPathsFromFs = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const convexDirectory = yield* ConvexDirectory.get;
-
-  const RESERVED_CONVEX_TS_FILE_NAMES = new Set([
-    "schema.ts",
-    "http.ts",
-    "crons.ts",
-    "auth.config.ts",
-    "convex.config.ts",
-  ]);
-
-  const allConvexPaths = yield* fs.readDirectory(convexDirectory, {
-    recursive: true,
-  });
+  const allConvexPaths = yield* getEntrypoints;
   const groupPathArray = yield* pipe(
     allConvexPaths,
     Array.filter(
       (convexPath) =>
         path.extname(convexPath) === ".ts" &&
-        !RESERVED_CONVEX_TS_FILE_NAMES.has(path.basename(convexPath)) &&
-        path.basename(path.dirname(convexPath)) !== "_generated",
+        !RESERVED_CONVEX_TS_FILE_NAMES.has(path.basename(convexPath)),
     ),
     Effect.forEach((groupModulePath) =>
       GroupPath.fromGroupModulePath(groupModulePath),

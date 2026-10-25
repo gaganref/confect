@@ -185,6 +185,11 @@ export class HandWrittenConvexFileError extends Schema.TaggedError<HandWrittenCo
   },
 ) {}
 
+export class UnownedConvexEntrypointError extends Schema.TaggedError<UnownedConvexEntrypointError>()(
+  "UnownedConvexEntrypointError",
+  { filePaths: Schema.Array(Schema.String) },
+) {}
+
 export class DeclarationKindMismatchError extends Schema.TaggedError<DeclarationKindMismatchError>()(
   "DeclarationKindMismatchError",
   {
@@ -227,6 +232,7 @@ export const CodegenError = Schema.Union([
   InvalidConvexConfigError,
   InvalidDeclarationError,
   HandWrittenConvexFileError,
+  UnownedConvexEntrypointError,
   DeclarationKindMismatchError,
   CallbackPrefixError,
 ]);
@@ -468,6 +474,13 @@ export const renderCodegenError = (error: CodegenError): string => {
       ". `confect codegen` writes it from ",
       formatPath(error.declarationPath),
       " now; move its contents there and delete the file.",
+    );
+  }
+  if (error._tag === "UnownedConvexEntrypointError") {
+    return singleLine(
+      error.filePaths.map((file) => formatPath(file)).join(", "),
+      error.filePaths.length === 1 ? " was" : " were",
+      " not written by confect codegen. Generated files only re-export the registry; put authored code outside convex/. If a file is stale generated output, delete it and run codegen again.",
     );
   }
   return Match.value(error).pipe(

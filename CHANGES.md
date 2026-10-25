@@ -254,6 +254,23 @@ Upstream: planned; no linked proposal verified.
 
 ## CLI generation and recovery
 
+### Own generated entrypoints
+
+Reject Convex entrypoints that do not match Confect's generated output before
+codegen overwrites or removes files. This keeps raw exports, aliases, re-exports,
+re-added files and appended exports outside the generated registration from
+escaping a complete function check. Keep hand-written helpers outside `convex/`.
+Match generated module shapes independently of formatting and accept extensionless
+registry imports from older fork versions. Report all refused paths together,
+and use Convex's path exclusions for ownership checks and stale-file removal.
+If stale generated output fails, delete it and run codegen again.
+Dev checks ownership on full generation only; continuous watcher enforcement is
+deferred. Restore incremental HTTP and cron preservation coverage and use native
+path keys in the repeated-codegen test for Windows.
+
+Changeset: `codegen-owns-convex.md`.
+Upstream: planned; no linked proposal verified.
+
 ### Typecheck large generated specs
 
 Dropped in "Move to upstream 10.3.1". Upstream
