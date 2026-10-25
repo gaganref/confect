@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { stripVTControlCharacters } from "node:util";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -14,6 +15,126 @@ import * as Project from "./Project";
 const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
 layer(NodeServices.layer)("built confect codegen", (it) => {
+  it.effect.each([
+    {
+      name: "raw export",
+      file: "raw.ts",
+      source:
+        'import { queryGeneric } from "convex/server";\nexport const raw = queryGeneric({ handler: () => null });\n',
+    },
+    {
+      name: "alias",
+      file: "alias.js",
+      source:
+        'import { queryGeneric as query } from "convex/server";\nconst hidden = query({ handler: () => null });\nexport { hidden as raw };\n',
+    },
+    {
+      name: "re-export",
+      file: "nested/reexport.ts",
+      source: 'export { raw } from "../../raw";\n',
+    },
+    {
+      name: "re-added file",
+      file: "notes.ts",
+      source:
+        'import { queryGeneric } from "convex/server";\nexport const raw = queryGeneric({ handler: () => null });\n',
+    },
+    {
+      name: "appended export",
+      file: "notes.ts",
+      source: "\nexport { list as unchecked };\n",
+    },
+    {
+      name: "hand-written helper without evaluating it",
+      file: "helper.ts",
+      source:
+        'throw new Error("must not evaluate");\nexport const helper = 1;\n',
+    },
+    ...["http.ts", "crons.ts"].map((file) => ({
+      name: "hand-written optional entrypoint",
+      file,
+      source: "export default {};\n",
+    })),
+  ])(
+    "refuses $name in convex/$file",
+    ({ name, file, source }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const project = yield* Project.make;
+        const initial = yield* project.start("codegen");
+        yield* initial.waitFor("Generated files are up-to-date");
+        expect(yield* initial.handle.exitCode).toBe(0);
+        if (name === "re-added file") {
+          yield* fs.remove(`${project.root}/confect/notes.spec.ts`);
+          yield* fs.remove(`${project.root}/confect/notes.impl.ts`);
+          const removed = yield* project.start("codegen");
+          yield* removed.waitFor("Generated files are up-to-date");
+          expect(yield* removed.handle.exitCode).toBe(0);
+          expect(yield* fs.exists(`${project.root}/convex/notes.ts`)).toBe(
+            false,
+          );
+        }
+        if (name === "re-export") {
+          yield* project.write(
+            "raw.ts",
+            'import { queryGeneric } from "convex/server";\nexport const raw = queryGeneric({ handler: () => null });\n',
+          );
+        }
+        const previous =
+          name === "appended export"
+            ? yield* fs.readFileString(`${project.root}/convex/${file}`)
+            : "";
+        yield* fs.makeDirectory(
+          path.dirname(path.join(project.root, "convex", file)),
+          { recursive: true },
+        );
+        yield* project.write(`convex/${file}`, previous + source);
+        const generated = yield* project.start("codegen");
+        const exitCode = yield* generated.handle.exitCode;
+        const output = stripVTControlCharacters(
+          yield* Ref.get(generated.output),
+        );
+        expect(exitCode, output).not.toBe(0);
+        expect(output).toContain(`convex/${file}`);
+        expect(output).toContain("not canonical Confect output");
+        expect(yield* fs.readFileString(`${project.root}/convex/${file}`)).toBe(
+          previous + source,
+        );
+      }).pipe(Effect.scoped),
+    { timeout: 30000 },
+  );
+
+  it.effect(
+    "accepts a generated tree on repeated codegen",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* Project.make;
+        yield* project.write(
+          "confect/notes.spec.ts",
+          Project.spec.replace('name: "list"', 'name: "$list"'),
+        );
+        yield* project.write(
+          "confect/notes.impl.ts",
+          Project.impl.replace('"list"', '"$list"'),
+        );
+        const initial = yield* project.start("codegen");
+        yield* initial.waitFor("Generated files are up-to-date");
+        expect(yield* initial.handle.exitCode).toBe(0);
+        const expected = yield* project.generatedFiles;
+        const repeated = yield* project.start("codegen");
+        expect(
+          yield* repeated.handle.exitCode,
+          yield* Ref.get(repeated.output),
+        ).toBe(0);
+        expect(yield* project.generatedFiles).toEqual(expected);
+        expect(expected["convex/notes.ts"]).toContain(
+          "export const $list = registeredFunctions.$list;",
+        );
+      }).pipe(Effect.scoped),
+    { timeout: 30000 },
+  );
+
   it.effect(
     "rejects a component Node group without generated output but permits it in an application",
     () =>

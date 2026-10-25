@@ -5,6 +5,8 @@ import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as HashSet from "effect/HashSet";
 import * as Match from "effect/Match";
+import { UnownedConvexEntrypointError } from "./CodegenError.js";
+import * as templates from "./templates.js";
 import * as GenerationSnapshot from "./GenerationSnapshot.js";
 import * as GroupPath from "./GroupPath.js";
 import * as GroupPaths from "./GroupPaths.js";
@@ -12,7 +14,87 @@ import { CodeBlockWriter } from "./CodeBlockWriter.js";
 import { logFileAdded, logFileModified, logFileRemoved } from "./log.js";
 import { ConfectDirectory } from "./ConfectDirectory.js";
 import { ConvexDirectory } from "./ConvexDirectory.js";
-import { removePathIfExists, toModuleImportPath } from "./utils.js";
+import {
+  removePathIfExists,
+  toModuleImportPath,
+  toPosixPath,
+} from "./utils.js";
+import { ProjectRoot } from "./ProjectRoot.js";
+
+export const assertOwnedEntrypoints = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const convex = yield* ConvexDirectory.get;
+  const confect = yield* ConfectDirectory.get;
+  const projectRoot = yield* ProjectRoot.get;
+  const importFromConvex = (file: string) =>
+    toModuleImportPath(path.relative(convex, path.join(confect, file)));
+  const optional = new Map([
+    [
+      "http.ts",
+      [
+        yield* templates.http({
+          httpImportPath: yield* importFromConvex("http.ts"),
+        }),
+        yield* templates.declaredHttp({
+          schemaImportPath: yield* importFromConvex("_generated/schema.ts"),
+          httpImportPath: yield* importFromConvex("http.ts"),
+        }),
+      ],
+    ],
+    [
+      "crons.ts",
+      [
+        yield* templates.crons({
+          cronsImportPath: yield* importFromConvex("crons.ts"),
+        }),
+      ],
+    ],
+  ]);
+  for (const relative of yield* fs.readDirectory(convex, { recursive: true })) {
+    const base = path.basename(relative);
+    if (
+      relative.split(path.sep)[0] === "_generated" ||
+      !/\.(?:js|mjs|cjs|ts|tsx|mts|cts|jsx)$/.test(base) ||
+      base.startsWith(".") ||
+      base.startsWith("#") ||
+      (base.match(/\./g)?.length ?? 0) > 1 ||
+      relative === "schema.ts" ||
+      relative === "schema.js"
+    )
+      continue;
+    const absolute = path.join(convex, relative);
+    const source = yield* fs.readFileString(absolute);
+    if (optional.get(relative)?.includes(source)) continue;
+    const registry = path.join(
+      confect,
+      "_generated",
+      "registeredFunctions",
+      relative.replace(/\.[^.]+$/, ".ts"),
+    );
+    const names = [
+      ...source.matchAll(
+        /^export const ([\w$]+) = registeredFunctions\.\1;$/gm,
+      ),
+    ].map((match) => match[1]!);
+    if (
+      path.extname(relative) === ".ts" &&
+      names.length > 0 &&
+      source ===
+        (yield* render({
+          functionNames: names,
+          registeredFunctionsImportPath: yield* toModuleImportPath(
+            path.relative(path.dirname(absolute), registry),
+          ),
+          useNode: source.startsWith('"use node";'),
+        }))
+    )
+      continue;
+    return yield* new UnownedConvexEntrypointError({
+      filePath: toPosixPath(path, path.relative(projectRoot, absolute)),
+    });
+  }
+});
 
 export const render = ({
   functionNames,

@@ -254,6 +254,16 @@ Upstream: planned; no linked proposal verified.
 
 ## CLI generation and recovery
 
+### Own generated entrypoints
+
+Reject Convex entrypoints that do not match Confect's generated output before
+codegen overwrites or removes files. This keeps raw exports, aliases, re-exports,
+re-added files and appended exports outside the generated registration from
+escaping a complete function check. Keep hand-written helpers outside `convex/`.
+
+Changeset: `codegen-owns-convex.md`.
+Upstream: planned; no linked proposal verified.
+
 ### Typecheck large generated specs
 
 Dropped in "Move to upstream 10.3.1". Upstream

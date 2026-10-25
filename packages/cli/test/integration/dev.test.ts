@@ -427,26 +427,21 @@ if (existsSync(block)) {
     );
 
     it.effect(
-      "preserves optional outputs that are not owned by Confect",
+      "preserves authentication configuration without a backend declaration",
       () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const project = yield* Project.make;
-          const outputs = ["auth.config.ts", "http.ts", "crons.ts"];
           const contents = "export default {};\n";
-          yield* Effect.forEach(outputs, (output) =>
-            project.write(`convex/${output}`, contents),
-          );
+          yield* project.write("convex/auth.config.ts", contents);
           const watching = yield* project.start("dev");
           yield* watching.waitFor(success);
-          for (const output of outputs) {
-            expect(
-              yield* fs.readFileString(
-                path.join(project.root, "convex", output),
-              ),
-            ).toBe(contents);
-          }
+          expect(
+            yield* fs.readFileString(
+              path.join(project.root, "convex/auth.config.ts"),
+            ),
+          ).toBe(contents);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

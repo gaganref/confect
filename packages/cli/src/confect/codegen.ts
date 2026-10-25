@@ -121,6 +121,7 @@ export const codegen = Command.make("codegen", DirectoryOptions.flags, () =>
 );
 
 const runCodegen = Effect.gen(function* () {
+  yield* FunctionModule.assertOwnedEntrypoints;
   yield* validateComponentConfiguration;
   yield* generateConfectGeneratedDirectory;
   // A declared backend's `convex.config.ts` and manifest come first: the
