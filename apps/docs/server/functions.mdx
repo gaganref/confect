@@ -33,11 +33,14 @@ import notes from "./_generated/tables/notes";
 
 const list = FunctionSpec.publicQuery({
   name: "list",
+  description: "List all notes.",
   returns: () => Schema.Array(notes.Doc),
 });
 
 export default GroupSpec.make().addFunction(list);
 ```
+
+The five public builders, `publicQuery`, `publicMutation`, `publicAction`, `publicNodeAction`, and `publicPaginatedQuery`, accept an optional `description` string. Read it from the spec as `list.description`. Middleware preserves it. Omitting it leaves the spec unchanged. Descriptions do not affect argument validation, return schemas, or handler behavior.
 
 Run `confect codegen` after adding or changing specs.
 

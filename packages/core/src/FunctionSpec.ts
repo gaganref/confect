@@ -69,6 +69,39 @@ export interface Builder<
   >;
 }
 
+export interface DescribedBuilder<
+  RuntimeAndFunctionType_ extends RuntimeAndFunctionType.RuntimeAndFunctionType,
+  FunctionVisibility_ extends FunctionVisibility,
+  Name_ extends string,
+  FunctionProvenance_ extends FunctionProvenance.FunctionProvenance,
+  MiddlewareSpecs_ extends MiddlewareSpec.AnyMiddlewareSpec = never,
+> extends Builder<
+  RuntimeAndFunctionType_,
+  FunctionVisibility_,
+  Name_,
+  FunctionProvenance_,
+  MiddlewareSpecs_
+> {
+  readonly description?: string;
+
+  middleware<MiddlewareSpec_ extends MiddlewareSpec.AnyMiddlewareSpec>(
+    middlewareSpec: MiddlewareSpec_ &
+      MiddlewareSpec.ValidateFunctionAttach<
+        MiddlewareSpec_,
+        RuntimeAndFunctionType_,
+        FunctionProvenance_,
+        MiddlewareSpecs_
+      >,
+    ...options: MiddlewareAttachment.Args<NoInfer<MiddlewareSpec_>>
+  ): DescribedBuilder<
+    RuntimeAndFunctionType_,
+    FunctionVisibility_,
+    Name_,
+    FunctionProvenance_,
+    MiddlewareSpecs_ | MiddlewareSpec_
+  >;
+}
+
 export interface Any {
   readonly [TypeId]: TypeId;
 }
@@ -79,7 +112,9 @@ export interface AnyWithProps extends FunctionSpec<
   string,
   FunctionProvenance.FunctionProvenance,
   MiddlewareSpec.AnyMiddlewareSpec
-> {}
+> {
+  readonly description?: string;
+}
 
 export interface AnyConfect extends FunctionSpec<
   RuntimeAndFunctionType.RuntimeAndFunctionType,
@@ -326,6 +361,7 @@ const Proto = {
       runtimeAndFunctionType: this.runtimeAndFunctionType,
       functionVisibility: this.functionVisibility,
       name: this.name,
+      ...("description" in this ? { description: this.description } : {}),
       functionProvenance: this.functionProvenance,
       middlewareAttachments: [
         ...this.middlewareAttachments,
@@ -336,6 +372,7 @@ const Proto = {
 } satisfies ThisType<AnyWithProps>;
 
 interface Options {
+  readonly description?: string;
   readonly name: string;
   readonly args?: () => FunctionProvenance.ArgsFields;
   readonly returns: () => Schema.Codec<any, any>;
@@ -356,6 +393,7 @@ const make = <
     Error_ extends Schema.Codec<any, any> = never,
   >(options: {
     name: Name_;
+    description?: never;
     args: () => ArgsFields_;
     returns: () => Returns_;
     error?: () => Error_;
@@ -371,6 +409,7 @@ const make = <
     Error_ extends Schema.Codec<any, any> = never,
   >(options: {
     name: Name_;
+    description?: never;
     args?: never;
     returns: () => Returns_;
     error?: () => Error_;
@@ -380,13 +419,47 @@ const make = <
     Name_,
     FunctionProvenance.Confect<{}, Returns_, Error_>
   >;
-  function makeSpec({ name, args, returns, error }: Options) {
+  function makeSpec<
+    const Name_ extends string,
+    const ArgsFields_ extends FunctionProvenance.ArgsFields,
+    Returns_ extends Schema.Codec<any, any>,
+    Error_ extends Schema.Codec<any, any> = never,
+  >(options: {
+    name: Name_;
+    description?: FunctionVisibility_ extends "public" ? string : never;
+    args: () => ArgsFields_;
+    returns: () => Returns_;
+    error?: () => Error_;
+  }): DescribedBuilder<
+    RuntimeAndFunctionType_,
+    FunctionVisibility_,
+    Name_,
+    FunctionProvenance.Confect<ArgsFields_, Returns_, Error_>
+  >;
+  function makeSpec<
+    const Name_ extends string,
+    Returns_ extends Schema.Codec<any, any>,
+    Error_ extends Schema.Codec<any, any> = never,
+  >(options: {
+    name: Name_;
+    description?: FunctionVisibility_ extends "public" ? string : never;
+    args?: never;
+    returns: () => Returns_;
+    error?: () => Error_;
+  }): DescribedBuilder<
+    RuntimeAndFunctionType_,
+    FunctionVisibility_,
+    Name_,
+    FunctionProvenance.Confect<{}, Returns_, Error_>
+  >;
+  function makeSpec({ name, description, args, returns, error }: Options) {
     validateConfectFunctionIdentifier(name);
 
     return Object.assign(Object.create(Proto), {
       runtimeAndFunctionType,
       functionVisibility,
       name,
+      ...(description === undefined ? {} : { description }),
       functionProvenance:
         args === undefined
           ? FunctionProvenance.Confect(() => ({}), returns, error)
@@ -411,6 +484,7 @@ type ForbidPaginationOpts<
   : unknown;
 
 interface PaginatedOptions {
+  readonly description?: string;
   readonly name: string;
   readonly args?: () => FunctionProvenance.ArgsFields;
   readonly item: () => Schema.Codec<any, any>;
@@ -431,6 +505,7 @@ const makePaginated = <
     Error_ extends Schema.Codec<any, any> = never,
   >(options: {
     name: Name_;
+    description?: never;
     args: () => UserArgsFields_ & ForbidPaginationOpts<UserArgsFields_>;
     item: () => Item_;
     error?: () => Error_;
@@ -446,6 +521,7 @@ const makePaginated = <
     Error_ extends Schema.Codec<any, any> = never,
   >(options: {
     name: Name_;
+    description?: never;
     args?: never;
     item: () => Item_;
     error?: () => Error_;
@@ -455,13 +531,53 @@ const makePaginated = <
     Name_,
     FunctionProvenance.ConfectPaginated<{}, Item_, Error_>
   >;
-  function makeSpec({ name, args, item, error }: PaginatedOptions) {
+  function makeSpec<
+    const Name_ extends string,
+    const UserArgsFields_ extends FunctionProvenance.ArgsFields,
+    Item_ extends Schema.Codec<any, any>,
+    Error_ extends Schema.Codec<any, any> = never,
+  >(options: {
+    name: Name_;
+    description?: FunctionVisibility_ extends "public" ? string : never;
+    args: () => UserArgsFields_ & ForbidPaginationOpts<UserArgsFields_>;
+    item: () => Item_;
+    error?: () => Error_;
+  }): DescribedBuilder<
+    RuntimeAndFunctionType_,
+    FunctionVisibility_,
+    Name_,
+    FunctionProvenance.ConfectPaginated<UserArgsFields_, Item_, Error_>
+  >;
+  function makeSpec<
+    const Name_ extends string,
+    Item_ extends Schema.Codec<any, any>,
+    Error_ extends Schema.Codec<any, any> = never,
+  >(options: {
+    name: Name_;
+    description?: FunctionVisibility_ extends "public" ? string : never;
+    args?: never;
+    item: () => Item_;
+    error?: () => Error_;
+  }): DescribedBuilder<
+    RuntimeAndFunctionType_,
+    FunctionVisibility_,
+    Name_,
+    FunctionProvenance.ConfectPaginated<{}, Item_, Error_>
+  >;
+  function makeSpec({
+    name,
+    description,
+    args,
+    item,
+    error,
+  }: PaginatedOptions) {
     validateConfectFunctionIdentifier(name);
 
     return Object.assign(Object.create(Proto), {
       runtimeAndFunctionType,
       functionVisibility,
       name,
+      ...(description === undefined ? {} : { description }),
       functionProvenance:
         args === undefined
           ? FunctionProvenance.ConfectPaginated(() => ({}), item, error)

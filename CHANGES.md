@@ -110,6 +110,8 @@ Upstream: deferred; no proposal for now. The maintainer decides when to send one
 
 ## Component authoring and contracts
 
+Public function builders accept an optional `description` and retain it through middleware so contract tools can read it. Changeset: `function-description.md`. Upstream: unrecorded; no proposal submitted.
+
 ### Check component declarations
 
 Carry a literal app or component kind in backend declarations. Default to app,

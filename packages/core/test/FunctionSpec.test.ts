@@ -1,3 +1,5 @@
+import type * as FunctionProvenance from "@confect/core/FunctionProvenance";
+import type * as RuntimeAndFunctionType from "@confect/core/RuntimeAndFunctionType";
 import type * as MiddlewareAttachment from "@confect/core/MiddlewareAttachment";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import * as MutableRef from "effect/MutableRef";
@@ -496,5 +498,175 @@ describe("middleware options", () => {
     expect(Object.hasOwn(query, "middlewareSpecs")).toBe(false);
     expect(query.middlewareSpecs).toEqual([]);
     expect(query.middlewareAttachments).toEqual([]);
+  });
+});
+
+describe("public function descriptions", () => {
+  const omitted = {
+    name: "unchanged",
+    returns: () => Schema.String,
+    item: () => Schema.String,
+  } as const;
+  const described = {
+    ...omitted,
+    description: "Read the described value.",
+    error: () => Schema.Finite,
+  };
+  const withArgs = { ...described, args: () => ({ value: Schema.String }) };
+  const specs = [
+    [
+      FunctionSpec.publicQuery(omitted),
+      FunctionSpec.publicQuery(described),
+      FunctionSpec.publicQuery(withArgs),
+    ],
+    [
+      FunctionSpec.publicMutation(omitted),
+      FunctionSpec.publicMutation(described),
+      FunctionSpec.publicMutation(withArgs),
+    ],
+    [
+      FunctionSpec.publicAction(omitted),
+      FunctionSpec.publicAction(described),
+      FunctionSpec.publicAction(withArgs),
+    ],
+    [
+      FunctionSpec.publicNodeAction(omitted),
+      FunctionSpec.publicNodeAction(described),
+      FunctionSpec.publicNodeAction(withArgs),
+    ],
+    [
+      FunctionSpec.publicPaginatedQuery(omitted),
+      FunctionSpec.publicPaginatedQuery(described),
+      FunctionSpec.publicPaginatedQuery(withArgs),
+    ],
+  ] as const;
+
+  const observe = <const Key extends string>(key: Key) => {
+    class Observe extends MiddlewareSpec.MiddlewareSpec<Observe>()(key, {
+      functionTypes: { query: true, mutation: true, action: true },
+    }) {}
+    return Observe;
+  };
+
+  it.each(specs)(
+    "retains a description through ten middleware wrappings",
+    (_, original) => {
+      interface Wrappable {
+        readonly description?: string;
+        readonly middlewareAttachments: ReadonlyArray<unknown>;
+        middleware(spec: ReturnType<typeof observe>): Wrappable;
+      }
+      let wrapped: Wrappable = original;
+      for (let index = 0; index < 10; index++) {
+        wrapped = wrapped.middleware(observe(`observe${index}`));
+      }
+      expect(wrapped.description).toBe("Read the described value.");
+      expect(original.description).toBe("Read the described value.");
+      expect(original.middlewareAttachments).toEqual([]);
+      expect(wrapped.middlewareAttachments).toHaveLength(10);
+    },
+  );
+
+  it.each(specs)("does not add a description key when omitted", (original) => {
+    expect(original).toHaveProperty("name", "unchanged");
+    expect(Object.hasOwn(original, "description")).toBe(false);
+    expect(
+      Object.hasOwn(original.middleware(observe("omitted")), "description"),
+    ).toBe(false);
+  });
+
+  it("keeps the original inferred types when a description is omitted", () => {
+    interface MainBuilder<
+      R extends RuntimeAndFunctionType.RuntimeAndFunctionType,
+      P extends FunctionProvenance.FunctionProvenance,
+      M extends MiddlewareSpec.AnyMiddlewareSpec = never,
+    > extends FunctionSpec.FunctionSpec<R, "public", "unchanged", P, M> {
+      middleware<N extends MiddlewareSpec.AnyMiddlewareSpec>(
+        middleware: N & MiddlewareSpec.ValidateFunctionAttach<N, R, P, M>,
+        ...options: MiddlewareAttachment.Args<NoInfer<N>>
+      ): MainBuilder<R, P, M | N>;
+    }
+    type Standard<R extends RuntimeAndFunctionType.RuntimeAndFunctionType> =
+      MainBuilder<R, FunctionProvenance.Confect<{}, typeof Schema.String>>;
+    expectTypeOf(specs[0][0]).toEqualTypeOf<
+      Standard<RuntimeAndFunctionType.ConvexQuery>
+    >();
+    expectTypeOf(specs[1][0]).toEqualTypeOf<
+      Standard<RuntimeAndFunctionType.ConvexMutation>
+    >();
+    expectTypeOf(specs[2][0]).toEqualTypeOf<
+      Standard<RuntimeAndFunctionType.ConvexAction>
+    >();
+    expectTypeOf(specs[3][0]).toEqualTypeOf<
+      Standard<RuntimeAndFunctionType.NodeAction>
+    >();
+    expectTypeOf(specs[4][0]).toEqualTypeOf<
+      MainBuilder<
+        RuntimeAndFunctionType.ConvexQuery,
+        FunctionProvenance.ConfectPaginated<{}, typeof Schema.String>
+      >
+    >();
+    expectTypeOf<
+      "description" extends keyof (typeof specs)[0][0] ? true : false
+    >().toEqualTypeOf<false>();
+    expectTypeOf<
+      "description" extends keyof (typeof specs)[4][0] ? true : false
+    >().toEqualTypeOf<false>();
+  });
+
+  it.each(specs)(
+    "accepts descriptions on both argument overloads",
+    (_, withoutArgs, specWithArgs) => {
+      expectTypeOf(withoutArgs.description).toEqualTypeOf<string | undefined>();
+      expectTypeOf(specWithArgs.description).toEqualTypeOf<
+        string | undefined
+      >();
+      expectTypeOf(
+        withoutArgs.middleware(observe("typed")).description,
+      ).toEqualTypeOf<string | undefined>();
+      expectTypeOf<
+        FunctionSpec.Error<typeof specWithArgs>
+      >().toEqualTypeOf<number>();
+      expectTypeOf<
+        FunctionSpec.Args<typeof specWithArgs>["value"]
+      >().toEqualTypeOf<string>();
+      expect(specWithArgs.description).toBe("Read the described value.");
+      expect(withoutArgs.description).toBe("Read the described value.");
+    },
+  );
+
+  it("accepts descriptions with explicit type arguments", () => {
+    const options = {
+      name: "explicit",
+      description: "Read a value.",
+      returns: () => Schema.String,
+      item: () => Schema.String,
+    } as const;
+    const explicit = [
+      FunctionSpec.publicQuery<"explicit", typeof Schema.String>(options),
+      FunctionSpec.publicMutation<"explicit", typeof Schema.String>(options),
+      FunctionSpec.publicAction<"explicit", typeof Schema.String>(options),
+      FunctionSpec.publicNodeAction<"explicit", typeof Schema.String>(options),
+      FunctionSpec.publicPaginatedQuery<"explicit", typeof Schema.String>(
+        options,
+      ),
+    ];
+    expect(explicit.map((spec) => spec.description)).toEqual(
+      Array(5).fill("Read a value."),
+    );
+  });
+
+  it("rejects descriptions that are not strings", () => {
+    const invalid = { ...described, description: 42 };
+    // @ts-expect-error A description must be a string.
+    FunctionSpec.publicQuery(invalid);
+    // @ts-expect-error A description must be a string.
+    FunctionSpec.publicMutation(invalid);
+    // @ts-expect-error A description must be a string.
+    FunctionSpec.publicAction(invalid);
+    // @ts-expect-error A description must be a string.
+    FunctionSpec.publicNodeAction(invalid);
+    // @ts-expect-error A description must be a string.
+    FunctionSpec.publicPaginatedQuery(invalid);
   });
 });
