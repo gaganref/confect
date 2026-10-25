@@ -1,10 +1,11 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, layer } from "@effect/vitest";
+import { assert, expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
+import * as Schedule from "effect/Schedule";
 import * as Option from "effect/Option";
 import * as Project from "./Project";
 
@@ -13,6 +14,63 @@ const success = "Generated files are up-to-date";
 layer(NodeServices.layer, { excludeTestServices: true })(
   "built confect dev",
   (it) => {
+    it.effect(
+      "stops the standby evaluator when its parent is killed",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          const watching = yield* project.start("dev", [
+            "--log-level",
+            "debug",
+          ]);
+          yield* watching.waitFor(success);
+          const isAlive = (pid: number) => {
+            try {
+              process.kill(pid, 0);
+              return true;
+            } catch (error) {
+              if (
+                error instanceof Error &&
+                "code" in error &&
+                error.code === "ESRCH"
+              )
+                return false;
+              throw error;
+            }
+          };
+          const standby = yield* Ref.get(watching.output).pipe(
+            Effect.map((output) => {
+              const matches = [
+                ...output.matchAll(/Evaluator ready[^\n]*pid: (\d+)/g),
+              ];
+              const pid = Number(matches.at(-1)?.[1]);
+              return Number.isInteger(pid) && isAlive(pid) ? pid : undefined;
+            }),
+            Effect.repeat({
+              while: (pid) => pid === undefined,
+              schedule: Schedule.spaced("20 millis"),
+            }),
+            Effect.timeout("10 seconds"),
+          );
+          assert(standby !== undefined);
+          yield* Effect.addFinalizer(() =>
+            Effect.sync(() => {
+              if (isAlive(standby)) process.kill(standby, "SIGKILL");
+            }),
+          );
+          expect(isAlive(standby)).toBe(true);
+          process.kill(watching.handle.pid, "SIGKILL");
+          const exited = yield* Effect.sync(() => isAlive(standby)).pipe(
+            Effect.repeat({
+              while: (alive) => alive,
+              schedule: Schedule.spaced("20 millis"),
+            }),
+            Effect.timeoutOption("5 seconds"),
+          );
+          expect(exited).toEqual(Option.some(false));
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
     it.effect.each(["initial sync", "after a successful sync"] as const)(
       "reports a component Node group at %s and recovers when the group is removed",
       (when) =>
