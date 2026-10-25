@@ -51,7 +51,10 @@ import {
 const fixtureConfect = `${import.meta.dirname}/../../server/test/mock-backend/fixtures/confect`;
 
 test("requires a loaded leaf rather than an arbitrary leaf/spec pair", () => {
-  expectTypeOf(validateImpl).parameters.toEqualTypeOf<[LoadedLeafModule]>();
+  expectTypeOf(validateImpl).parameter(0).toEqualTypeOf<LoadedLeafModule>();
+  expectTypeOf(validateImpl)
+    .parameter(1)
+    .toEqualTypeOf<ReadonlyArray<{ readonly key: string }> | undefined>();
   expectTypeOf<LeafModule>().not.toExtend<LoadedLeafModule>();
   expectTypeOf<
     LeafModule & { readonly spec: GroupSpec.AnyWithProps }

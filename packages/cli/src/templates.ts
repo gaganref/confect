@@ -523,6 +523,7 @@ export const registeredFunctionsForGroup = ({
   schemaImportPath,
   specImportPath,
   implImportPath,
+  groupPath = "",
   required = [],
 }: Parameters<typeof registeredFunctionsForGroupEffect>[0]) =>
   registeredFunctionsForGroupEffect({
@@ -530,6 +531,7 @@ export const registeredFunctionsForGroup = ({
     schemaImportPath,
     specImportPath,
     implImportPath,
+    groupPath,
     required,
   });
 
@@ -538,12 +540,14 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
   schemaImportPath,
   specImportPath,
   implImportPath,
+  groupPath = "",
   required = [],
 }: {
   spec: GroupSpec.AnyWithProps;
   schemaImportPath: string;
   specImportPath: string;
   implImportPath: string;
+  groupPath?: string;
   required?: ReadonlyArray<{ readonly key: string }>;
 }) {
   const cbw = new CodeBlockWriter({ indentNumberOfSpaces: 2 });
@@ -583,7 +587,8 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
   const groupLayer =
     required.length === 0
       ? "groupLayer"
-      : `groupLayer.pipe(GroupImpl.finalize({ required: [${required.map(({ key }) => `{ key: ${JSON.stringify(key)} }`).join(", ")}] }))`;
+      : // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Emit escaped TypeScript string literals, not JSON payloads.
+        `groupLayer.pipe(GroupImpl.finalize({ required: [${required.map(({ key }) => `{ key: ${JSON.stringify(key)} }`).join(", ")}], groupPath: ${JSON.stringify(groupPath)} }))`;
   const specType = `typeof import("${specImportPath}")["default"]`;
   if (useNode) {
     yield* cbw.writeLine(

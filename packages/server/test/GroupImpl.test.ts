@@ -30,7 +30,10 @@ const second = FunctionSpec.internalQuery({
   returns: () => Schema.String,
 });
 
-const build = (uncovered: ReadonlyArray<"first" | "second">) => {
+const build = (
+  uncovered: ReadonlyArray<"first" | "second">,
+  groupPath = "",
+) => {
   const group = GroupSpec.make()
     .addFunction(covered)
     .addFunction(
@@ -51,7 +54,7 @@ const build = (uncovered: ReadonlyArray<"first" | "second">) => {
       MiddlewareImpl.make(databaseSchema, Required, (effect) => effect),
     ),
     GroupImpl.finalize,
-    GroupImpl.finalize({ required: [Required] }),
+    GroupImpl.finalize({ required: [Required], groupPath }),
   );
   return RegisteredFunctions.buildForGroup<typeof group>(databaseSchema, layer);
 };
@@ -72,6 +75,12 @@ it.each([
     expect(() => build(uncovered)).toThrowError(message);
   },
 );
+
+it("qualifies every uncovered function with its group path", () => {
+  expect(() => build(["first", "second"], "admin.notes")).toThrowError(
+    'GroupImpl.finalize: admin.notes.first requires middleware "Required"\nadmin.notes.second requires middleware "Required"',
+  );
+});
 
 it("builds when every registered function carries required middleware", () => {
   expect(Object.keys(build([])).toSorted()).toEqual([

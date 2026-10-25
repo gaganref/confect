@@ -141,9 +141,11 @@ type Finalizable = Layer.Layer<AnyUnfinalized> | Layer.Layer<AnyFinalized>;
  * inspect the `Registry` themselves. Pass `{ required }` to check every
  * registered function's middleware at layer build, including internal
  * functions. This form also accepts a finalized layer so generated registration
- * can enforce the backend declaration without changing authored impls.
+ * can enforce the backend declaration without changing authored impls. Pass
+ * `groupPath` to qualify uncovered function names in the diagnostic.
  */
 export function finalize(options: {
+  readonly groupPath?: string;
   readonly required: ReadonlyArray<
     Pick<MiddlewareSpec.AnyMiddlewareSpec, "key">
   >;
@@ -155,6 +157,7 @@ export function finalize(
   input:
     | Finalizable
     | {
+        readonly groupPath?: string;
         readonly required: ReadonlyArray<
           Pick<MiddlewareSpec.AnyMiddlewareSpec, "key">
         >;
@@ -163,13 +166,14 @@ export function finalize(
   | Layer.Layer<GroupImpl<"Finalized">>
   | ((group: Finalizable) => Layer.Layer<GroupImpl<"Finalized">>) {
   return "required" in input
-    ? (group) => finalizeWith(group, input.required)
+    ? (group) => finalizeWith(group, input.required, input.groupPath)
     : finalizeWith(input, []);
 }
 
 const finalizeWith = (
   group: Layer.Layer<never>,
   required: ReadonlyArray<Pick<MiddlewareSpec.AnyMiddlewareSpec, "key">>,
+  groupPath = "",
 ): Layer.Layer<GroupImpl<"Finalized">> =>
   Layer.flatMap(group, (context): Layer.Layer<GroupImpl<"Finalized">> =>
     findGroupImpl(context).pipe(
@@ -189,7 +193,11 @@ const finalizeWith = (
             Effect.gen(function* () {
               const registry = yield* Registry.Registry;
               const items = yield* Ref.get(registry);
-              const missing = RegistryItems.missingRequired(items, required);
+              const missing = RegistryItems.missingRequired(
+                items,
+                required,
+                groupPath,
+              );
               if (missing.length > 0) {
                 return yield* Effect.die(
                   new MissingRequiredMiddlewareError({ missing }),

@@ -47,6 +47,7 @@ export interface MissingMiddleware {
 export const missingRequired = (
   items: RegistryItems,
   required: ReadonlyArray<{ readonly key: string }>,
+  groupPath = "",
 ): ReadonlyArray<MissingMiddleware> =>
   Object.entries(items)
     .sort(([left], [right]) => left.localeCompare(right))
@@ -56,7 +57,15 @@ export const missingRequired = (
             value._tag === "Confect" &&
             value.middlewareAttachments.some(({ spec }) => spec.key === key)
               ? []
-              : [{ functionName, middlewareKey: key }],
+              : [
+                  {
+                    functionName:
+                      groupPath === ""
+                        ? functionName
+                        : `${groupPath}.${functionName}`,
+                    middlewareKey: key,
+                  },
+                ],
           )
         : [],
     );

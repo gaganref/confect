@@ -1,5 +1,5 @@
 import { GroupSpec, MiddlewareAttachment } from "@confect/core";
-import { Registry, type RegistryItems } from "@confect/server";
+import { Registry, RegistryItems } from "@confect/server";
 import * as GroupImpl from "@confect/server/GroupImpl";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -21,6 +21,7 @@ import {
   ImplMissingDefaultLayerError,
   ImplMissingFunctionsError,
   ImplMissingMiddlewareError,
+  RequiredMiddlewareError,
   ImplMissingSpecImportError,
   ImplNotFinalizedError,
   InvalidMiddlewareAttachmentError,
@@ -299,28 +300,28 @@ const findFinalizedGroupImpl = <S>(
 
 /**
  * Build the impl layer with a fresh `Registry` so each validation is isolated
- * from prior validations' `FunctionImpl.make` writes. The CLI no longer reads
- * the registry directly—`GroupImpl.finalize` snapshots the registered function
- * names onto the produced `Finalized` `GroupImpl` service value—but a fresh
- * `Ref` is still required because the default `Context.Reference` is cached
- * globally and would otherwise accumulate items across impls.
+ * from prior validations' `FunctionImpl.make` writes. Retain its items to check
+ * required middleware against actual function attachments.
  */
 const buildImplLayer = Effect.fnUntraced(function* (
   implLayer: Layer.Layer<unknown>,
 ) {
   const registry = Ref.makeUnsafe<RegistryItems.RegistryItems>({});
-  return yield* Layer.build(
+  const context = yield* Layer.build(
     implLayer as Layer.Layer<unknown, never, never>,
   ).pipe(Effect.provideService(Registry.Registry, registry));
+  return { context, items: yield* Ref.get(registry) };
 }, Effect.scoped);
 
 /**
  * Validate that the leaf's sibling impl file imports the spec, default-exports
  * a finalized `GroupImpl` layer, and provides a `FunctionImpl` for every
- * function declared by the spec.
+ * function declared by the spec. Return uncovered middleware requirements for
+ * the caller to report across groups.
  */
 export const validateImpl = Effect.fn("LeafModule.validateImpl")(function* (
   leaf: LoadedLeafModule,
+  required: ReadonlyArray<{ readonly key: string }> = [],
 ) {
   const implRelativePath = yield* implPathForSpec(leaf.relativePath);
   const implAbsolutePath = yield* absoluteModulePath(implRelativePath);
@@ -352,7 +353,7 @@ export const validateImpl = Effect.fn("LeafModule.validateImpl")(function* (
   const groupSpec = leaf.spec;
   const expectedFunctionNames = Object.keys(groupSpec.functions);
 
-  const context = yield* buildImplLayer(
+  const { context, items } = yield* buildImplLayer(
     bundled.module.default as Layer.Layer<unknown>,
   );
   const finalizedGroupImpl = yield* Option.match(
@@ -403,6 +404,8 @@ export const validateImpl = Effect.fn("LeafModule.validateImpl")(function* (
       missingMiddlewareKeys: missingMiddleware,
     });
   }
+
+  return RegistryItems.missingRequired(items, required, leaf.groupPathDot);
 });
 
 export const withImplFiles = Effect.fnUntraced(function* <A, E, R>(
@@ -463,6 +466,7 @@ export const validateImplFiles = Effect.fn("LeafModule.validateImplFiles")(
 
 export const validateAllImpls = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<LoadedLeafModule>,
+  required: ReadonlyArray<{ readonly key: string }> = [],
 ) {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
@@ -473,13 +477,17 @@ export const validateAllImpls = Effect.fnUntraced(function* (
         Effect.map((implPath) => path.resolve(confectDirectory, implPath)),
       ),
   );
-  yield* Bundler.withBatch(
+  const missing = (yield* Bundler.withBatch(
     implementationPaths,
-    Effect.forEach(leaves, validateImpl, {
+    Effect.forEach(leaves, (leaf) => validateImpl(leaf, required), {
       concurrency: VALIDATION_CONCURRENCY,
-      discard: true,
     }),
-  );
+  ))
+    .flat()
+    .sort((left, right) => left.functionName.localeCompare(right.functionName));
+  if (missing.length > 0) {
+    return yield* new RequiredMiddlewareError({ missing });
+  }
 });
 
 export const loadAll = Effect.gen(function* () {
