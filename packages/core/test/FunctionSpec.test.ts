@@ -669,4 +669,26 @@ describe("public function descriptions", () => {
     // @ts-expect-error A description must be a string.
     FunctionSpec.publicPaginatedQuery(invalid);
   });
+
+  it("rejects a description on an internal builder", () => {
+    // @ts-expect-error Internal functions carry no description.
+    FunctionSpec.internalQuery(described);
+    // @ts-expect-error Internal functions carry no description.
+    FunctionSpec.internalMutation(described);
+    // @ts-expect-error Internal functions carry no description.
+    FunctionSpec.internalAction(described);
+    // @ts-expect-error Internal functions carry no description.
+    FunctionSpec.internalNodeAction(described);
+    // @ts-expect-error Internal functions carry no description.
+    FunctionSpec.internalPaginatedQuery(described);
+  });
+
+  it("rejects a described call that omits its result schema", () => {
+    const { returns: _returns, ...withoutReturns } = described;
+    // @ts-expect-error A described function still declares what it returns.
+    FunctionSpec.publicQuery(withoutReturns);
+    const { item: _item, ...withoutItem } = described;
+    // @ts-expect-error A described paginated query still declares its item.
+    FunctionSpec.publicPaginatedQuery(withoutItem);
+  });
 });

@@ -110,7 +110,14 @@ Upstream: deferred; no proposal for now. The maintainer decides when to send one
 
 ## Component authoring and contracts
 
-Public function builders accept an optional `description` and retain it through middleware so contract tools can read it. Changeset: `function-description.md`. Upstream: unrecorded; no proposal submitted.
+### Describe public functions
+
+The five public function builders accept an optional `description` and keep it
+on the spec through middleware, so contract tools can read it. A call without a
+description keeps its inferred type. Internal builders take none.
+
+Changeset: `function-description.md`.
+Upstream: planned; no proposal submitted.
 
 ### Check component declarations
 
