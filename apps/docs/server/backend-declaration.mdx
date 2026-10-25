@@ -233,6 +233,8 @@ const values: Manifest.Values<typeof manifest> = {
 
 Run `confect dev` alongside `convex dev`. Confect watches declaration inputs and their project imports, regenerates the Convex config, auth, HTTP entry point and manifest, and leaves deployment to Convex. Run component watchers separately with `confect dev --component-dir components/counter/convex` when developing a local component.
 
+`confect dev --coalesce-ms <milliseconds>` sets the quiet period after a save, defaults to 50 ms, and accepts integers from 0 to 5000, capped by the 5 s maximum wait.
+
 ## Adopting the declaration
 
 1. Write `confect/env.ts` and `confect/app.ts` from your current `convex/convex.config.ts`.
