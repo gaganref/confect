@@ -1,4 +1,6 @@
 import * as Command from "effect/cli/Command";
+import * as Flag from "effect/cli/Flag";
+import * as Duration from "effect/Duration";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import { pipe } from "effect/Function";
@@ -132,15 +134,39 @@ export const devHandler = Effect.gen(function* () {
   yield* Effect.all([watcher.run, syncLoop(previousFunctionPaths, watcher)], {
     concurrency: "unbounded",
   });
-});
+}).pipe(Effect.provide(Evaluation.prewarmedLayer));
 
 export const dev = Command.make(
   "dev",
-  DirectoryOptions.flags,
-  () => devHandler,
+  {
+    ...DirectoryOptions.flags,
+    coalesceMs: Flag.Int("coalesce-ms").pipe(
+      Flag.filter(
+        (ms) => ms >= 0 && ms <= 5000,
+        () =>
+          "Set --coalesce-ms to an integer between 0 and 5000 milliseconds.",
+      ),
+      Flag.withDefault(
+        Duration.toMillis(Watcher.CoalesceQuiescence.defaultValue()),
+      ),
+      Flag.withDescription(
+        "Quiet period before processing saved files, in milliseconds.",
+      ),
+    ),
+  },
+  ({ coalesceMs }) =>
+    devHandler.pipe(
+      Effect.provideService(
+        Watcher.CoalesceQuiescence,
+        Duration.millis(coalesceMs),
+      ),
+    ),
 ).pipe(
   Command.withDescription("Start the Confect development server"),
-  Command.provide(DirectoryOptions.layer),
+  Command.provide(
+    (options: { componentDir: Option.Option<string>; coalesceMs: number }) =>
+      DirectoryOptions.layer(options),
+  ),
 );
 
 const esbuildMessageKey = (m: esbuild.Message): string =>

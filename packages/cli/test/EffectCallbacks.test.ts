@@ -86,7 +86,7 @@ it("preserves actual workflow inputs and inferred result, error, and service typ
   expectTypeOf(dev).toEqualTypeOf<
     Command.Command<
       "dev",
-      { componentDir: Option.Option<string> },
+      { componentDir: Option.Option<string>; coalesceMs: number },
       {},
       | OperationError
       | EvaluationError

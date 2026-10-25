@@ -245,6 +245,8 @@ Upstream: planned; no linked proposal verified.
 
 ## CLI generation and recovery
 
+Shorten dev save coalescing and prewarm single-use evaluators to reduce update latency while preserving process isolation. Changeset: `faster-dev-saves.md`. Upstream: planned; no linked proposal verified.
+
 ### Typecheck large generated specs
 
 Dropped in "Move to upstream 10.3.1". Upstream

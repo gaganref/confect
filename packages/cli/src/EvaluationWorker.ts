@@ -80,6 +80,7 @@ const evaluate = <A, E, R>(
   );
 
 const handlers = requests.toLayer({
+  Ready: () => Effect.void,
   Previous: (requestContext) =>
     evaluate(requestContext, loadPreviousFunctionPaths),
   Generate: (requestContext) =>
