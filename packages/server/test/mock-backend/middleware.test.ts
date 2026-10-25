@@ -555,5 +555,30 @@ describe("middleware", () => {
           expect(yield* c.query(group.shortName)).toBe("ada");
         }).pipe(Effect.provide(TestConfect.layer)),
     );
+
+    it.effect(
+      "runs the options a profile computes from each function's fields",
+      () =>
+        Effect.gen(function* () {
+          const c = yield* TestConfect.TestConfect;
+          yield* c.run(
+            Effect.gen(function* () {
+              const writer = yield* DatabaseWriter;
+              yield* writer.table("users").insert({ username: "ada" });
+            }),
+          );
+          const group = refs.public.groups.middlewareOptions;
+          expect(group.profiledQuery.middlewareAttachments[2]?.options).toEqual(
+            { minLength: 3 },
+          );
+          expectTypeOf<
+            Ref.Error<typeof group.profiledMutation>
+          >().toEqualTypeOf<NoViewer | NameRejected>();
+          expect(yield* c.query(group.profiledQuery)).toBe("ada");
+          expect(
+            yield* Effect.result(c.mutation(group.profiledMutation)),
+          ).toEqual(Result.fail(new NameRejected({ minLength: 4 })));
+        }).pipe(Effect.provide(TestConfect.layer)),
+    );
   });
 });

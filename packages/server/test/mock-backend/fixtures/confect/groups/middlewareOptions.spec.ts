@@ -1,7 +1,19 @@
-import { FunctionSpec, GroupSpec } from "@confect/core";
+import { FunctionSpec, GroupSpec, Profile } from "@confect/core";
 import * as Schema from "effect/Schema";
 import ProvideViewer from "../middleware/ProvideViewer.spec";
 import RequireName from "../middleware/RequireName.spec";
+
+interface NameRule extends Profile.Fields {
+  readonly Type: { readonly minLength: number };
+}
+
+const Named = FunctionSpec.extend<NameRule>()({
+  middleware: [
+    Profile.attach(RequireName, ({ fields }) => ({
+      minLength: fields.minLength,
+    })),
+  ],
+});
 
 export default GroupSpec.make()
   .middleware(ProvideViewer)
@@ -29,4 +41,18 @@ export default GroupSpec.make()
       name: "action",
       returns: () => Schema.String,
     }).middleware(RequireName, { minLength: 6 }),
+  )
+  .addFunction(
+    Named.publicQuery({
+      name: "profiledQuery",
+      minLength: 3,
+      returns: () => Schema.String,
+    }),
+  )
+  .addFunction(
+    Named.publicMutation({
+      name: "profiledMutation",
+      minLength: 4,
+      returns: () => Schema.String,
+    }),
   );

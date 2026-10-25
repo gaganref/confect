@@ -11,4 +11,6 @@ export default {
 ["longName"]: RegisteredConvexFunction.register({ ...definitions["longName"], handler: forward(definitions["longName"].handler) }),
 ["mutation"]: RegisteredConvexFunction.register({ ...definitions["mutation"], handler: forward(definitions["mutation"].handler) }),
 ["action"]: RegisteredConvexFunction.register({ ...definitions["action"], handler: forward(definitions["action"].handler) }),
+["profiledQuery"]: RegisteredConvexFunction.register({ ...definitions["profiledQuery"], handler: forward(definitions["profiledQuery"].handler) }),
+["profiledMutation"]: RegisteredConvexFunction.register({ ...definitions["profiledMutation"], handler: forward(definitions["profiledMutation"].handler) }),
 } as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/middlewareOptions.spec.js")["default"]>;

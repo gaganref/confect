@@ -157,6 +157,8 @@ export declare const api: {
       action: FunctionReference<"action", "public", {}, string>;
       longName: FunctionReference<"query", "public", {}, string>;
       mutation: FunctionReference<"mutation", "public", {}, string>;
+      profiledMutation: FunctionReference<"mutation", "public", {}, string>;
+      profiledQuery: FunctionReference<"query", "public", {}, string>;
       shortName: FunctionReference<"query", "public", {}, string>;
     };
     middlewareOrder: {

@@ -132,6 +132,15 @@ function's name.
 Changeset: `function-extend.md`.
 Upstream: planned; no proposal submitted.
 
+### Attach middleware through a profile
+
+`Profile.attach(spec, info => options)` puts a middleware with options in a
+profile's list, its options computed from each function's name, fields and args
+thunk, so codegen's registration runs it on every function the profile builds.
+
+Changeset: `profile-attach.md`.
+Upstream: planned; no proposal submitted.
+
 ### Check component declarations
 
 Carry a literal app or component kind in backend declarations. Default to app,

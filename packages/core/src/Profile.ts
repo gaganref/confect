@@ -1,3 +1,6 @@
+import type * as FunctionProvenance from "./FunctionProvenance.js";
+import type * as MiddlewareSpec from "./MiddlewareSpec.js";
+
 /**
  * A type-level function from a function's name and args fields to the fields a
  * profile's builders require. Read `this["Name"]` and `this["Args"]` directly
@@ -32,3 +35,36 @@ export interface Both<
   readonly Type: Apply<Base, this["Name"], this["Args"]> &
     Apply<Extension, this["Name"], this["Args"]>;
 }
+
+/**
+ * What an attachment's options factory sees. `args` stays a thunk.
+ */
+export interface Info<FieldsType> {
+  readonly name: string;
+  readonly args: () => FunctionProvenance.ArgsFields;
+  readonly fields: FieldsType;
+}
+
+export interface Attachment<
+  MiddlewareSpec_ extends MiddlewareSpec.AnyMiddlewareSpec,
+  FieldsType,
+> {
+  readonly spec: MiddlewareSpec_;
+  readonly options: (
+    info: Info<FieldsType>,
+  ) => MiddlewareSpec.Options<MiddlewareSpec_>;
+}
+
+/**
+ * Attach a middleware that takes options to every function a profile builds,
+ * with options computed from each function's fields.
+ */
+export const attach = <
+  MiddlewareSpec_ extends MiddlewareSpec.AnyMiddlewareSpec,
+  FieldsType,
+>(
+  spec: MiddlewareSpec_,
+  options: (
+    info: Info<FieldsType>,
+  ) => MiddlewareSpec.Options<NoInfer<MiddlewareSpec_>>,
+): Attachment<MiddlewareSpec_, FieldsType> => ({ spec, options });
