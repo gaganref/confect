@@ -20,6 +20,7 @@ import * as Path from "effect/Path";
 import * as PlatformError from "effect/PlatformError";
 import * as Stream from "effect/Stream";
 import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
 import * as TestClock from "effect/testing/TestClock";
 import { ConfectDirectory } from "@confect/cli/ConfectDirectory";
 import { ConvexDirectory } from "@confect/cli/ConvexDirectory";
@@ -212,6 +213,50 @@ it.effect("owns independent pending work for each watcher", () =>
 );
 
 layer(NodeServices.layer)("pending work ownership", (test) => {
+  test.effect("consumes a save after a short quiet period", () =>
+    Effect.gen(function* () {
+      const { watcher, coalescedNext } = yield* controlledWatcher();
+      yield* watcher.refresh;
+      const next = yield* coalescedNext.pipe(Effect.forkScoped);
+      yield* TestClock.adjust("50 millis");
+      expect(next.pollUnsafe()).toMatchObject({
+        _tag: "Success",
+        value: { work: { _tag: "Full" } },
+      });
+    }).pipe(Effect.scoped),
+  );
+
+  test.effect("honors a configured quiet period", () =>
+    Effect.gen(function* () {
+      const { watcher, coalescedNext } = yield* controlledWatcher().pipe(
+        Effect.provideService(Watcher.CoalesceQuiescence, Duration.millis(125)),
+      );
+      yield* watcher.refresh;
+      const next = yield* coalescedNext.pipe(Effect.forkScoped);
+      yield* TestClock.adjust("124 millis");
+      expect(next.pollUnsafe()).toBeUndefined();
+      yield* TestClock.adjust("1 millis");
+      expect((yield* Fiber.join(next)).work._tag).toBe("Full");
+    }).pipe(Effect.scoped),
+  );
+
+  test.effect("caps a configured quiet period at the maximum wait", () =>
+    Effect.gen(function* () {
+      const { watcher, coalescedNext } = yield* controlledWatcher().pipe(
+        Effect.provideService(Watcher.CoalesceQuiescence, Duration.seconds(4)),
+      );
+      yield* watcher.refresh;
+      const next = yield* coalescedNext.pipe(Effect.forkScoped);
+      yield* TestClock.adjust("3 seconds");
+      yield* watcher.requestRetry;
+      yield* TestClock.adjust("2 seconds");
+      expect(next.pollUnsafe()).toMatchObject({
+        _tag: "Success",
+        value: { work: { _tag: "Full" } },
+      });
+    }).pipe(Effect.scoped),
+  );
+
   test.effect(
     "requeues work when its consumer is interrupted during coalescing",
     () =>
@@ -223,7 +268,7 @@ layer(NodeServices.layer)("pending work ownership", (test) => {
         expect((yield* Fiber.join(initial)).work._tag).toBe("Full");
         yield* watcher.requestRetry;
         const cancelled = yield* coalescedNext.pipe(Effect.forkScoped);
-        yield* TestClock.adjust("100 millis");
+        yield* TestClock.adjust("20 millis");
         yield* Fiber.interrupt(cancelled);
         expect((yield* watcher.pending).work._tag).toBe("Full");
         const retried = yield* coalescedNext.pipe(Effect.forkScoped);

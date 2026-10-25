@@ -9,6 +9,7 @@ import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
+import * as Schedule from "effect/Schedule";
 import * as RpcServer from "effect/rpc/RpcServer";
 import * as esbuild from "esbuild";
 import * as CodegenError from "./CodegenError.js";
@@ -80,6 +81,7 @@ const evaluate = <A, E, R>(
   );
 
 const handlers = requests.toLayer({
+  Ready: () => Effect.void,
   Previous: (requestContext) =>
     evaluate(requestContext, loadPreviousFunctionPaths),
   Generate: (requestContext) =>
@@ -95,6 +97,18 @@ const handlers = requests.toLayer({
     ),
 });
 
+// Evaluators must not outlive the CLI, even when it is killed without cleanup.
+const parentPid = process.ppid;
+process.once("disconnect", () => process.exit(0));
+const watchParent = Effect.sync(() => {
+  if (!process.connected || process.ppid !== parentPid) process.exit(0);
+  try {
+    process.kill(parentPid, 0);
+  } catch {
+    process.exit(0);
+  }
+}).pipe(Effect.repeat({ schedule: Schedule.spaced("1 second") }));
+
 RpcServer.layer(requests).pipe(
   Layer.provide(handlers),
   Layer.provide(NodeServices.layer),
@@ -104,6 +118,7 @@ RpcServer.layer(requests).pipe(
     ),
   ),
   Layer.launch,
+  Effect.raceFirst(watchParent),
   Effect.ensuring(Effect.promise(() => esbuild.stop())),
   NodeRuntime.runMain,
 );

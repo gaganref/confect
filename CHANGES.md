@@ -295,6 +295,15 @@ controlled Create and Remove regressions.
 Changeset: `observe-existing-entry-saves.md`.
 Upstream: shares the bug on main; submission goes through the maintainer.
 
+### Reduce dev save latency
+
+Shorten dev save coalescing and prewarm single-use evaluators to reduce update
+latency while preserving process isolation. Stop evaluators when their parent CLI
+exits, including when it is killed without cleanup.
+
+Changeset: `faster-dev-saves.md`.
+Upstream: planned; no proposal submitted.
+
 ## Testing and documentation
 
 ### Declared apps drive tests and Backend env

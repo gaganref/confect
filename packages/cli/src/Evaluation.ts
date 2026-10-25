@@ -1,6 +1,8 @@
 import * as NodeWorker from "@effect/platform-node/NodeWorker";
 import { fork } from "node:child_process";
 import * as Console from "effect/Console";
+import * as Context from "effect/Context";
+import * as Pool from "effect/Pool";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as HashSet from "effect/HashSet";
@@ -49,6 +51,7 @@ export class EvaluationError extends Schema.TaggedError<EvaluationError>()(
 const Failure = Schema.Union([EvaluationError, ComponentNodeGroupError]);
 
 export const requests = RpcGroup.make(
+  Rpc.make("Ready", { success: Schema.Void }),
   Rpc.make("Previous", {
     payload: RequestContext,
     success: FunctionPaths,
@@ -79,6 +82,54 @@ export const requests = RpcGroup.make(
   }),
 );
 
+const acquireWorker = Effect.gen(function* () {
+  const child = yield* Effect.acquireRelease(
+    Effect.sync(() =>
+      fork(new URL("../dist/EvaluationWorker.mjs", import.meta.url), {
+        serialization: "advanced",
+      }),
+    ),
+    (evaluator) =>
+      Effect.callback<void>((resume) => {
+        if (evaluator.exitCode !== null || evaluator.signalCode !== null) {
+          resume(Effect.void);
+          return;
+        }
+        evaluator.once("exit", () => resume(Effect.void));
+        evaluator.kill("SIGKILL");
+      }),
+  );
+  const protocol = yield* Layer.build(
+    RpcClient.layerProtocolWorker({ size: 1 }).pipe(
+      Layer.provide(NodeWorker.layer(() => child)),
+    ),
+  );
+  const client = yield* RpcClient.make(requests).pipe(
+    Effect.provideContext(protocol),
+  );
+  yield* client.Ready();
+  yield* Effect.logDebug("Evaluator ready").pipe(
+    Effect.annotateLogs({ pid: child.pid }),
+  );
+  return { child, client };
+});
+
+class Standby extends Context.Service<
+  Standby,
+  Pool.Pool<
+    Effect.Success<typeof acquireWorker>,
+    Effect.Error<typeof acquireWorker>
+  >
+>()("@confect/cli/Evaluation/Standby") {}
+
+// Each evaluator handles one evaluation to isolate globals and module caches.
+// Discarding it bounds memory and recovers from crashes. Dev prepares the next
+// evaluator between saves.
+export const prewarmedLayer = Layer.effect(
+  Standby,
+  Pool.make({ acquire: acquireWorker, size: 1 }),
+);
+
 const withWorker = Effect.fn("Evaluation.withWorker")(function* <A>(
   run: (
     client: RpcClient.RpcClient<RpcGroup.Rpcs<typeof requests>, RpcClientError>,
@@ -104,32 +155,28 @@ const withWorker = Effect.fn("Evaluation.withWorker")(function* <A>(
   };
   return yield* Effect.scoped(
     Effect.gen(function* () {
-      const child = yield* Effect.acquireRelease(
-        Effect.sync(() =>
-          fork(new URL("../dist/EvaluationWorker.mjs", import.meta.url), {
-            serialization: "advanced",
-          }),
-        ),
-        (evaluator) =>
-          Effect.callback<void>((resume) => {
-            if (evaluator.exitCode !== null || evaluator.signalCode !== null) {
-              resume(Effect.void);
-              return;
+      const standby = yield* Effect.serviceOption(Standby);
+      const worker = yield* Option.match(standby, {
+        onNone: () => acquireWorker,
+        onSome: (pool) =>
+          Effect.gen(function* () {
+            while (true) {
+              const candidate = yield* Pool.get(pool);
+              yield* Effect.addFinalizer(() =>
+                Pool.invalidate(pool, candidate),
+              );
+              // An idle exit has no pending RPC to fail.
+              if (
+                candidate.child.connected &&
+                candidate.child.exitCode === null &&
+                candidate.child.signalCode === null
+              )
+                return candidate;
+              yield* Pool.invalidate(pool, candidate);
             }
-            evaluator.once("exit", () => resume(Effect.void));
-            evaluator.kill("SIGKILL");
           }),
-      );
-      return yield* Effect.gen(function* () {
-        const client = yield* RpcClient.make(requests);
-        return yield* run(client, requestContext);
-      }).pipe(
-        Effect.provide(
-          RpcClient.layerProtocolWorker({ size: 1 }).pipe(
-            Layer.provide(NodeWorker.layer(() => child)),
-          ),
-        ),
-      );
+      });
+      return yield* run(worker.client, requestContext);
     }),
   ).pipe(
     Effect.catchTags({

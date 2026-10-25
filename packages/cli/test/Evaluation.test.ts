@@ -8,6 +8,8 @@ import * as Deferred from "effect/Deferred";
 import * as Equal from "effect/Equal";
 import * as Fiber from "effect/Fiber";
 import * as HashSet from "effect/HashSet";
+import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as References from "effect/References";
@@ -196,6 +198,106 @@ layer(NodeServices.layer, { excludeTestServices: true })("Evaluation", (it) => {
         expect(
           [...GenerationSnapshot.functionPaths(repaired)].map((fn) => fn.name),
         ).toEqual(["list"]);
+        expectWorkersExited();
+      }).pipe(Effect.scoped),
+    { timeout: 30000 },
+  );
+
+  it.effect(
+    "prewarms single-use evaluators and replaces them after a crash",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* setup;
+        const started = yield* Deferred.make<void>();
+        const original = vi.mocked(fork).getMockImplementation();
+        assert(original);
+        vi.mocked(fork).mockImplementationOnce((...args) => {
+          const child = original(...args);
+          Deferred.doneUnsafe(started, Effect.void);
+          return child;
+        });
+        yield* Effect.gen(function* () {
+          yield* Deferred.await(started);
+          const standby = vi.mocked(fork).mock.results[0];
+          assert(standby?.type === "return");
+          const first = yield* project.provide(Evaluation.generate);
+          expect([...first].map((fn) => fn.name)).toEqual(["list"]);
+          expect(
+            standby.value.exitCode !== null ||
+              standby.value.signalCode !== null,
+          ).toBe(true);
+          yield* project.write(
+            "confect/notes.impl.ts",
+            `${Project.impl}
+          globalThis.__confectEvaluationCount = (globalThis.__confectEvaluationCount ?? 0) + 1;
+          if (globalThis.__confectEvaluationCount !== 1) throw new Error("Evaluation leaked between passes");
+        `,
+          );
+          const paths = [ImplModulePath.make("notes.impl.ts")];
+          yield* project.provide(Evaluation.validate(paths));
+          yield* project.provide(Evaluation.validate(paths));
+          yield* project.write(
+            "confect/notes.impl.ts",
+            `${Project.impl}\nprocess.exit(23);\n`,
+          );
+          const failed = yield* project
+            .provide(Evaluation.validate(paths))
+            .pipe(Effect.result);
+          assert(Result.isFailure(failed));
+          expect(failed.failure).toMatchObject({
+            _tag: "EvaluationError",
+            diagnostic: expect.stringContaining("23"),
+          });
+          yield* project.write(
+            "confect/notes.spec.ts",
+            Project.spec.replace('name: "list"', 'name: "latest"'),
+          );
+          yield* project.write(
+            "confect/notes.impl.ts",
+            Project.impl.replace('"list"', '"latest"'),
+          );
+          const recovered = yield* project.provide(Evaluation.generate);
+          expect([...recovered].map((fn) => fn.name)).toEqual(["latest"]);
+        }).pipe(Effect.provide(Evaluation.prewarmedLayer));
+        expectWorkersExited();
+      }).pipe(Effect.scoped),
+    { timeout: 30000 },
+  );
+
+  it.effect(
+    "replaces an evaluator that exits while idle",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* setup;
+        const ready = yield* Deferred.make<void>();
+        yield* Effect.gen(function* () {
+          yield* Deferred.await(ready);
+          const standby = vi.mocked(fork).mock.results[0];
+          assert(standby?.type === "return");
+          yield* Effect.callback<void>((resume) => {
+            standby.value.once("exit", () => resume(Effect.void));
+            standby.value.kill("SIGKILL");
+          });
+          const recovered = yield* project.provide(Evaluation.generate);
+          expect([...recovered].map((fn) => fn.name)).toEqual(["list"]);
+        }).pipe(
+          Effect.provide(
+            Evaluation.prewarmedLayer.pipe(
+              Layer.provideMerge(
+                Logger.layer([
+                  Logger.make((event) => {
+                    if (
+                      Array.isArray(event.message) &&
+                      event.message[0] === "Evaluator ready"
+                    )
+                      Deferred.doneUnsafe(ready, Effect.void);
+                  }),
+                ]),
+              ),
+            ),
+          ),
+          Effect.provideService(References.MinimumLogLevel, "Debug"),
+        );
         expectWorkersExited();
       }).pipe(Effect.scoped),
     { timeout: 30000 },
