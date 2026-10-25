@@ -1,7 +1,8 @@
 /**
  * A type-level function from a function's name and args fields to the fields a
  * profile's builders require. Read `this["Name"]` and `this["Args"]` directly
- * in `Type`; inside a nested object type, `this` names that object instead.
+ * in `Type`, passing them to a type alias; a nested object type cannot name
+ * `this`.
  */
 export interface Fields {
   readonly Name: string;

@@ -109,7 +109,7 @@ Paginated queries support the optional `error` schema like any other function. O
 
 ### Extending the builders
 
-`FunctionSpec.extend` makes your own five public builders. Their specs require the fields you declare once and carry the same [middleware](/server/middleware), in order. The fields' `Type` may read the function's args fields as `this["Args"]`; write `this` directly in `Type`, since inside a nested object type it names that object.
+`FunctionSpec.extend` makes your own five public builders. Their specs require the fields you declare once and carry the same [middleware](/server/middleware), in order. The fields' `Type` may read the function's args fields as `this["Args"]`; write `this` directly in `Type` and pass it to a type alias, since a nested object type cannot name `this`.
 
 ```ts confect/profile.ts
 type OwnerOf<Args> = { readonly owner: keyof Args & string };
