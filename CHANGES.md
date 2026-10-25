@@ -207,10 +207,13 @@ Upstream: planned; no proposal submitted.
 ### Require middleware on every registered function
 
 Add `App.make({ requiresMiddleware })` and emit the requirement in each group's
-registration. `GroupImpl.finalize({ required })` rejects layer builds with every
-uncovered function name, including internal and raw Convex functions. Check the
-actual registry attachments so function and group middleware both count without
-loading component definitions into function bundles.
+registration. Codegen fails once with every uncovered function's group path and
+name, including internal and raw Convex functions.
+`GroupImpl.finalize({ required, groupPath })` also rejects uncovered functions
+when registration layers build. Requirements are matched by middleware key
+against actual registry attachments so function and group middleware both count
+without loading component definitions into function bundles. Preserve the
+requirements when dev regenerates registration after a spec edit.
 
 Changeset: `require-function-middleware.md`.
 Upstream: planned; no linked proposal verified.
