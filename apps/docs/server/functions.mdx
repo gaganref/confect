@@ -120,7 +120,7 @@ export const Owned = FunctionSpec.extend<Owner>()({ middleware: [Trace] });
 // Owned.publicMutation({ name: "archive", args, owner: "noteId", returns })
 ```
 
-Omitting `owner`, or naming an argument the function lacks, is a type error. The spec keeps the fields as `spec.fields` through later middleware. `Owned.extend<Audited>()({ middleware: [Audit] })` adds fields and middleware after Owned's. A builder is `never` when a profile middleware does not declare its function type. The list takes middleware without options.
+Omitting `owner`, or naming an argument the function lacks, is a type error. The spec keeps the fields as `spec.fields` through later middleware. `Owned.extend<Audited>()({ middleware: [Audit] })` adds fields and middleware after Owned's. A builder is `never` when a profile middleware does not declare its function type. The list takes middleware without options. The `extend` call refuses a field named after a builder option, such as `description` or `args`.
 
 ## Implementing functions
 

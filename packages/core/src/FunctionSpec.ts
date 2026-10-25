@@ -671,6 +671,22 @@ type OptionlessMiddlewareSpec = MiddlewareSpec.AnyMiddlewareSpec & {
   readonly "~Options": never;
 };
 
+type BuilderOption =
+  | "name"
+  | "description"
+  | "args"
+  | "returns"
+  | "item"
+  | "error";
+
+/**
+ * Refuses fields named after a builder option, which the builder would read as
+ * that option.
+ */
+type OptionFree<Fields_ extends Profile.Fields> = {
+  readonly [Option in keyof Fields_["Type"] & BuilderOption]: never;
+};
+
 /**
  * `never` when a profile middleware does not declare the function type.
  */
@@ -777,9 +793,11 @@ export type Extended<
    */
   extend<Extension extends Profile.Fields = Profile.NoFields>(): <
     const Middleware_ extends ReadonlyArray<OptionlessMiddlewareSpec>,
-  >(config: {
-    readonly middleware: Middleware_;
-  }) => Extended<
+  >(
+    config: {
+      readonly middleware: Middleware_;
+    } & OptionFree<Extension>,
+  ) => Extended<
     Profile.Both<Fields_, Extension>,
     MiddlewareSpecs_ | Middleware_[number]
   >;
@@ -788,6 +806,8 @@ export type Extended<
 const makeExtended = (
   middleware: ReadonlyArray<MiddlewareSpec.AnyMiddlewareSpec>,
 ): Extended<any, any> => {
+  // `OptionFree` keeps option names out of the fields; this split is the
+  // runtime's fallback.
   const extended =
     (makeSpec: (options: never) => object): any =>
     ({
@@ -823,9 +843,9 @@ const makeExtended = (
  */
 export const extend =
   <Fields_ extends Profile.Fields = Profile.NoFields>() =>
-  <const Middleware_ extends ReadonlyArray<OptionlessMiddlewareSpec>>(config: {
-    readonly middleware: Middleware_;
-  }) =>
+  <const Middleware_ extends ReadonlyArray<OptionlessMiddlewareSpec>>(
+    config: { readonly middleware: Middleware_ } & OptionFree<Fields_>,
+  ) =>
     makeExtended(config.middleware) as Extended<Fields_, Middleware_[number]>;
 
 type MatchingRegisteredFunction<

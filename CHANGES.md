@@ -124,6 +124,7 @@ Upstream: planned; no proposal submitted.
 `FunctionSpec.extend<Fields>()({ middleware })` returns the five public
 builders with extra required fields typed from each function's args and the
 middleware on every spec. Specs keep the fields; plain builders are unchanged.
+`extend` refuses fields named after builder options.
 
 Changeset: `function-extend.md`.
 Upstream: planned; no proposal submitted.

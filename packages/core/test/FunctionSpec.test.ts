@@ -824,4 +824,23 @@ describe("extend", () => {
     // @ts-expect-error A middleware with options needs them at attachment.
     FunctionSpec.extend()({ middleware: [Limit] });
   });
+
+  it("refuses a field named after a builder option at the extend call", () => {
+    interface Described extends Profile.Fields {
+      readonly Type: { readonly description: string };
+    }
+    interface Argued extends Profile.Fields {
+      readonly Type: { readonly args: string };
+    }
+    interface Returning extends Profile.Fields {
+      readonly Type: { readonly returns: string };
+    }
+
+    // @ts-expect-error description is a builder option, not a field.
+    FunctionSpec.extend<Described>()({ middleware: [] });
+    // @ts-expect-error args is a builder option, not a field.
+    FunctionSpec.extend<Argued>()({ middleware: [] });
+    // @ts-expect-error returns is a builder option, not a field.
+    Subjected.extend<Returning>()({ middleware: [] });
+  });
 });
