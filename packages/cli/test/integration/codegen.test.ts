@@ -11,10 +11,64 @@ import * as Schema from "effect/Schema";
 import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as Project from "./Project";
+import * as Bundler from "@confect/cli/Bundler";
 
 const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
 layer(NodeServices.layer)("built confect codegen", (it) => {
+  it.effect.each([false, true])(
+    "enforces declared middleware in generated registration (covered=%s)",
+    (covered) =>
+      Effect.gen(function* () {
+        const project = yield* Project.make;
+        yield* project.write(
+          "confect/policy.ts",
+          `import { MiddlewareSpec } from "@confect/core";
+export class Policy extends MiddlewareSpec.MiddlewareSpec<Policy>()("Policy", { functionTypes: { query: true, mutation: true, action: true } }) {}`,
+        );
+        yield* project.write(
+          "confect/app.ts",
+          `import { App, Env } from "@confect/core";
+import { Policy } from "./policy";
+export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy] });`,
+        );
+        if (covered) {
+          yield* project.write(
+            "confect/notes.spec.ts",
+            'import { Policy } from "./policy";\n' +
+              Project.spec.replace(
+                "GroupSpec.make()",
+                "GroupSpec.make().middleware(Policy)",
+              ),
+          );
+          yield* project.write(
+            "confect/notes.impl.ts",
+            'import { MiddlewareImpl } from "@confect/server";\nimport { Policy } from "./policy";\n' +
+              Project.impl.replace(
+                "GroupImpl.finalize);",
+                "Layer.provide(MiddlewareImpl.make(databaseSchema, Policy, effect => effect)), GroupImpl.finalize);",
+              ),
+          );
+        }
+        const generated = yield* project.start("codegen");
+        expect(
+          yield* generated.handle.exitCode,
+          yield* Ref.get(generated.output),
+        ).toBe(0);
+        const registration = Bundler.bundle(
+          `${project.root}/confect/_generated/registeredFunctions/notes.ts`,
+        );
+        if (covered) {
+          expect((yield* registration).module.default.list.isPublic).toBe(true);
+        } else {
+          expect(String((yield* Effect.flip(registration)).cause)).toContain(
+            'list requires middleware "Policy"',
+          );
+        }
+      }),
+    { timeout: 30000 },
+  );
+
   it.effect.each([
     {
       name: "raw export",

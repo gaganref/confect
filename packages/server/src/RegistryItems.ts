@@ -38,3 +38,25 @@ export const middlewareKeys = (items: RegistryItems): ReadonlyArray<string> =>
     Array.filter(MiddlewareRegistryItem.isMiddlewareRegistryItem),
     Array.map((item) => item.middlewareSpec.key),
   );
+
+export interface MissingMiddleware {
+  readonly functionName: string;
+  readonly middlewareKey: string;
+}
+
+export const missingRequired = (
+  items: RegistryItems,
+  required: ReadonlyArray<{ readonly key: string }>,
+): ReadonlyArray<MissingMiddleware> =>
+  Object.entries(items)
+    .sort(([left], [right]) => left.localeCompare(right))
+    .flatMap(([functionName, value]) =>
+      FunctionRegistryItem.isFunctionRegistryItem(value)
+        ? required.flatMap(({ key }) =>
+            value._tag === "Confect" &&
+            value.middlewareAttachments.some(({ spec }) => spec.key === key)
+              ? []
+              : [{ functionName, middlewareKey: key }],
+          )
+        : [],
+    );

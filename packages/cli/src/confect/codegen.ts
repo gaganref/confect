@@ -175,7 +175,10 @@ const runCodegen = Effect.gen(function* () {
     { concurrency: "unbounded" },
   );
   yield* validateAllImpls(leaves);
-  yield* generateGroupRegisteredFunctions(leaves);
+  yield* generateGroupRegisteredFunctions(
+    leaves,
+    Option.isSome(declared) ? declared.value.requiresMiddleware : [],
+  );
   yield* removeObsoleteRegisteredFunctions(leaves);
   const [functionPaths] = yield* Effect.all(
     [
@@ -235,7 +238,11 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           GenerationSnapshot.update(snapshot, leaves),
         );
         yield* validateAllImpls(leaves);
-        yield* generateGroupRegisteredFunctions(leaves);
+        const declared = yield* syncDeclaration;
+        yield* generateGroupRegisteredFunctions(
+          leaves,
+          Option.isSome(declared) ? declared.value.requiresMiddleware : [],
+        );
         yield* FunctionModule.applyFunctionPlan(
           GenerationSnapshot.diff(snapshot, next),
         );
@@ -407,6 +414,7 @@ const generateAssembledSpecs = Effect.fnUntraced(function* (
 
 const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<LoadedLeafModule>,
+  required: ReadonlyArray<{ readonly key: string }> = [],
 ) {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
@@ -450,6 +458,7 @@ const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
 
       const contents = yield* templates.registeredFunctionsForGroup({
         spec: leaf.spec,
+        required,
         schemaImportPath,
         specImportPath,
         implImportPath,

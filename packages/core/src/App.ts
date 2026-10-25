@@ -3,6 +3,7 @@ import type { Infer, Validator } from "convex/values";
 import type * as HttpApi from "effect/http-api/HttpApi";
 import * as Predicate from "effect/Predicate";
 import type * as Env from "./Env.js";
+import type * as MiddlewareSpec from "./MiddlewareSpec.js";
 
 const TypeId = "~@confect/core/App";
 const MountTypeId = "~@confect/core/App/Mount";
@@ -155,6 +156,7 @@ export interface App<
   readonly kind: K;
   readonly env: E;
   readonly mounts: M;
+  readonly requiresMiddleware: ReadonlyArray<MiddlewareSpec.AnyMiddlewareSpec>;
 }
 
 export type Any = App<Env.Any, Readonly<Record<string, AnyMount>>>;
@@ -186,6 +188,7 @@ export const make = <
 >(
   options: {
     readonly env: E;
+    readonly requiresMiddleware?: ReadonlyArray<MiddlewareSpec.AnyMiddlewareSpec>;
     readonly mounts?: M & OwnedBy<NoInfer<Env.Name<E>>, NoInfer<M>>;
   } & ([K] extends ["app"] ? { readonly kind?: K } : { readonly kind: K }),
 ): App<E, M, K> => ({
@@ -193,6 +196,7 @@ export const make = <
   kind: options.kind ?? ("app" as K),
   env: options.env,
   mounts: options.mounts ?? ({} as M),
+  requiresMiddleware: options.requiresMiddleware ?? [],
 });
 
 export const isApp = (u: unknown): u is Any =>

@@ -5,6 +5,7 @@ import * as RegistryItems from "./RegistryItems.js";
 import * as Array from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Data from "effect/Data";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -111,10 +112,20 @@ export const make = <
     FunctionImpl.FromGroupSpec<Group> | MiddlewareImpl.FromGroupSpec<Group>
   >;
 
-const findUnfinalizedGroupImpl = <S>(
-  context: Context.Context<S>,
-): Option.Option<AnyUnfinalized> =>
-  Array.findFirst(context.mapUnsafe.values(), isUnfinalizedGroupImpl);
+const findGroupImpl = <S>(context: Context.Context<S>): Option.Option<Any> =>
+  Array.findFirst(context.mapUnsafe.values(), isGroupImpl);
+
+export class MissingRequiredMiddlewareError extends Data.TaggedError(
+  "MissingRequiredMiddlewareError",
+)<{
+  readonly missing: ReadonlyArray<RegistryItems.MissingMiddleware>;
+}> {
+  override get message(): string {
+    return `GroupImpl.finalize: ${this.missing.map(({ functionName, middlewareKey }) => `${functionName} requires middleware "${middlewareKey}"`).join("\n")}`;
+  }
+}
+
+type Finalizable = Layer.Layer<AnyUnfinalized> | Layer.Layer<AnyFinalized>;
 
 /**
  * Mark a `GroupImpl` layer as fully implemented. The parameter type defaults
@@ -127,20 +138,48 @@ const findUnfinalizedGroupImpl = <S>(
  * registered into this group's scope are snapshotted onto the produced service
  * value's `registeredFunctionNames` field, so consumers can verify impl
  * completeness against a `GroupSpec`'s expected functions without having to
- * inspect the `Registry` themselves.
+ * inspect the `Registry` themselves. Pass `{ required }` to check every
+ * registered function's middleware at layer build, including internal
+ * functions. This form also accepts a finalized layer so generated registration
+ * can enforce the backend declaration without changing authored impls.
  */
-export const finalize = (
+export function finalize(options: {
+  readonly required: ReadonlyArray<
+    Pick<MiddlewareSpec.AnyMiddlewareSpec, "key">
+  >;
+}): (group: Finalizable) => Layer.Layer<GroupImpl<"Finalized">>;
+export function finalize(
   group: Layer.Layer<GroupImpl<"Unfinalized">>,
+): Layer.Layer<GroupImpl<"Finalized">>;
+export function finalize(
+  input:
+    | Finalizable
+    | {
+        readonly required: ReadonlyArray<
+          Pick<MiddlewareSpec.AnyMiddlewareSpec, "key">
+        >;
+      },
+):
+  | Layer.Layer<GroupImpl<"Finalized">>
+  | ((group: Finalizable) => Layer.Layer<GroupImpl<"Finalized">>) {
+  return "required" in input
+    ? (group) => finalizeWith(group, input.required)
+    : finalizeWith(input, []);
+}
+
+const finalizeWith = (
+  group: Layer.Layer<never>,
+  required: ReadonlyArray<Pick<MiddlewareSpec.AnyMiddlewareSpec, "key">>,
 ): Layer.Layer<GroupImpl<"Finalized">> =>
   Layer.flatMap(group, (context): Layer.Layer<GroupImpl<"Finalized">> =>
-    findUnfinalizedGroupImpl(context).pipe(
+    findGroupImpl(context).pipe(
       Option.match({
         onNone: () =>
           Layer.effect(
             GroupImpl<"Finalized">({ finalizationStatus: "Finalized" }),
             Effect.die(
               new Error(
-                "GroupImpl.finalize: no Unfinalized GroupImpl service was found in the layer's context.",
+                "GroupImpl.finalize: no GroupImpl service was found in the layer's context.",
               ),
             ),
           ),
@@ -150,6 +189,12 @@ export const finalize = (
             Effect.gen(function* () {
               const registry = yield* Registry.Registry;
               const items = yield* Ref.get(registry);
+              const missing = RegistryItems.missingRequired(items, required);
+              if (missing.length > 0) {
+                return yield* Effect.die(
+                  new MissingRequiredMiddlewareError({ missing }),
+                );
+              }
               return {
                 [TypeId]: TypeId,
                 finalizationStatus: "Finalized" as const,

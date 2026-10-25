@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { App, Env } from "@confect/core";
+import { App, Env, MiddlewareSpec } from "@confect/core";
 import { defineComponent } from "convex/server";
 import { v } from "convex/values";
 import * as HttpApi from "effect/http-api/HttpApi";
@@ -28,6 +28,21 @@ const emailEnv = {
 } as const;
 
 describe("App", () => {
+  it("keeps required middleware and defaults to no requirements", () => {
+    class Required extends MiddlewareSpec.MiddlewareSpec<Required>()(
+      "Required",
+      {
+        functionTypes: { query: true, mutation: true, action: true },
+      },
+    ) {}
+    expect([
+      App.make({ env, requiresMiddleware: [Required] }).requiresMiddleware.map(
+        ({ key }) => key,
+      ),
+      App.make({ env }).requiresMiddleware.map(({ key }) => key),
+    ]).toEqual([["Required"], []]);
+  });
+
   it("keeps the env, each mount's options and their declaration order", () => {
     const app = App.make({
       env,

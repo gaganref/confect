@@ -62,6 +62,8 @@ Reads resolve through Confect's [Convex-aware `ConfigProvider`](/server/environm
 
 List the components the backend mounts and the env each receives:
 
+Set `requiresMiddleware: [Policy, Trace]` in `App.make` to require those middleware on every registered function, including internal functions. Generated registration applies `GroupImpl.finalize({ required })`; building a layer fails with every uncovered function name. Attach middleware to each function or its own group. Raw Convex functions cannot satisfy this requirement. Mounted backends declare their own requirements; HTTP middleware is separate.
+
 ```ts confect/app.ts
 import { App } from "@confect/core";
 import workpool from "@convex-dev/workpool/convex.config.js";

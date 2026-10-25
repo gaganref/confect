@@ -204,6 +204,17 @@ Upstream: planned; no proposal submitted.
 
 ## Backend declarations and HTTP routing
 
+### Require middleware on every registered function
+
+Add `App.make({ requiresMiddleware })` and emit the requirement in each group's
+registration. `GroupImpl.finalize({ required })` rejects layer builds with every
+uncovered function name, including internal and raw Convex functions. Check the
+actual registry attachments so function and group middleware both count without
+loading component definitions into function bundles.
+
+Changeset: `require-function-middleware.md`.
+Upstream: planned; no linked proposal verified.
+
 ### Declare a backend in `confect/`
 
 Add `Env`, `App`, `Auth`, `Http`, and `Manifest`. Generate Convex configuration,
