@@ -260,6 +260,10 @@ Reject Convex entrypoints that do not match Confect's generated output before
 codegen overwrites or removes files. This keeps raw exports, aliases, re-exports,
 re-added files and appended exports outside the generated registration from
 escaping a complete function check. Keep hand-written helpers outside `convex/`.
+Match generated module shapes independently of formatting and accept extensionless
+registry imports from older fork versions. Report all refused paths together,
+and use Convex's path exclusions for ownership checks and stale-file removal.
+If stale generated output fails, delete it and run codegen again.
 
 Changeset: `codegen-owns-convex.md`.
 Upstream: planned; no linked proposal verified.

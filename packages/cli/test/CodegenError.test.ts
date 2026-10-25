@@ -1,5 +1,10 @@
+import { stripVTControlCharacters } from "node:util";
 import { expect, it } from "@effect/vitest";
-import { isCodegenError, renderCodegenError } from "@confect/cli/CodegenError";
+import {
+  isCodegenError,
+  renderCodegenError,
+  UnownedConvexEntrypointError,
+} from "@confect/cli/CodegenError";
 import { SnapshotError } from "@confect/cli/SnapshotError";
 
 it("recognizes and renders structured snapshot failures without dumping their cause", () => {
@@ -27,4 +32,18 @@ it("renders malformed snapshot input without inventing a source location", () =>
   expect(rendered).toContain("Invalid generation metadata (InvalidShape).");
   expect(rendered).not.toContain(" for ");
   expect(rendered).not.toContain(" at ");
+});
+
+it("renders every refused path with recovery instructions", () => {
+  const rendered = renderCodegenError(
+    new UnownedConvexEntrypointError({
+      filePaths: ["convex/one.ts", "convex/two.ts"],
+    }),
+  );
+  const plain = stripVTControlCharacters(rendered);
+  expect(plain).toContain("convex/one.ts");
+  expect(plain).toContain("convex/two.ts");
+  expect(rendered).toContain("were not written by confect codegen.");
+  expect(rendered).toContain("put authored code outside convex/.");
+  expect(rendered).toContain("delete it and run codegen again.");
 });

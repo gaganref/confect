@@ -6,13 +6,19 @@ import * as NodePath from "@effect/platform-node/NodePath";
 import { assert, expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as HashSet from "effect/HashSet";
+import * as Result from "effect/Result";
+import * as Project from "./integration/Project";
 import * as Layer from "effect/Layer";
 import { ConfectDirectory } from "@confect/cli/ConfectDirectory";
 import { ConvexDirectory } from "@confect/cli/ConvexDirectory";
 import * as GroupPath from "@confect/cli/GroupPath";
 import * as GroupPaths from "@confect/cli/GroupPaths";
 import { ProjectRoot } from "@confect/cli/ProjectRoot";
-import { generateFunctions, removeGroups } from "@confect/cli/FunctionModule";
+import {
+  assertOwnedEntrypoints,
+  generateFunctions,
+  removeGroups,
+} from "@confect/cli/FunctionModule";
 
 const fixtureRoot = `${import.meta.dirname}/../../server/test/mock-backend/fixtures`;
 const fixtureConvex = `${fixtureRoot}/convex`;
@@ -183,5 +189,143 @@ layer(GenerateFunctionsLayer)("generateFunctions", (it) => {
       expect(contents).toContain(`"use node";`);
       expect(resolves).toBe(true);
     }),
+  );
+});
+
+layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
+  it.effect.each([
+    "fork.2",
+    "rewrapped",
+    "CRLF",
+    "Node and single quotes",
+    "equivalent registry path",
+  ])("accepts Edcell's %s generated status module", (format) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const project = yield* Project.make;
+      let source = yield* fs.readFileString(
+        path.join(import.meta.dirname, "fixtures/codegen/status.ts.txt"),
+      );
+      if (format === "rewrapped")
+        source = source
+          .replaceAll("check", "fortyCharacterFunctionNameForCodegenTest")
+          .replace(" = registeredFunctions.", " =\n  registeredFunctions.");
+      if (format === "equivalent registry path")
+        source = source.replace(
+          "registeredFunctions/system/status",
+          "registeredFunctions/system/../system/status.js",
+        );
+      if (format === "CRLF") source = source.replaceAll("\n", "\r\n");
+      if (format === "Node and single quotes")
+        source =
+          "'use node'\n" + source.replaceAll('"', "'").replaceAll(";", "");
+      yield* fs.makeDirectory(path.join(project.root, "convex/system"));
+      yield* project.write("convex/system/status.ts", source);
+      expect(
+        yield* project.provide(assertOwnedEntrypoints).pipe(Effect.as("owned")),
+      ).toBe("owned");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    [
+      "http.ts",
+      "import http from '../confect/http'\r\nexport default http\r\n",
+    ],
+    [
+      "http.ts",
+      "import { HttpRouter } from '@confect/server'\nimport schema from '../confect/_generated/schema'\nimport http from '../confect/http.js'\nexport default HttpRouter.forSchema(schema)(\n http.routes, { api: http.api, },\n)\n",
+    ],
+    [
+      "crons.ts",
+      "import crons from '../confect/crons'\nexport default crons\n .convexCronJobs\n",
+    ],
+  ])("accepts formatted generated %s", ([file, source]) =>
+    Effect.gen(function* () {
+      const project = yield* Project.make;
+      yield* project.write(`convex/${file}`, source);
+      expect(
+        yield* project.provide(assertOwnedEntrypoints).pipe(Effect.as("owned")),
+      ).toBe("owned");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    "export const extra = 1;",
+    'throw new Error("must not evaluate");',
+    "export const extra = registeredFunctions.check;",
+    "export { check as extra };",
+    'import "./sideEffect";',
+    "export const check = registeredFunctions.check;",
+  ])("refuses an extra statement %s", (extra) =>
+    Effect.gen(function* () {
+      const project = yield* Project.make;
+      yield* project.write(
+        "convex/notes.ts",
+        'import registeredFunctions from "../confect/_generated/registeredFunctions/notes.js";\nexport const check = registeredFunctions.check;\n' +
+          extra,
+      );
+      const result = yield* project
+        .provide(assertOwnedEntrypoints)
+        .pipe(Effect.result);
+      assert(Result.isFailure(result));
+      expect(result.failure).toMatchObject({
+        _tag: "UnownedConvexEntrypointError",
+      });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("lists every refused entrypoint in one failure", () =>
+    Effect.gen(function* () {
+      const project = yield* Project.make;
+      yield* project.write("convex/one.ts", "export const one = 1;\n");
+      yield* project.write("convex/two.ts", "export const two = 2;\n");
+      const result = yield* project
+        .provide(assertOwnedEntrypoints)
+        .pipe(Effect.result);
+      assert(Result.isFailure(result));
+      expect(result.failure).toMatchObject({
+        _tag: "UnownedConvexEntrypointError",
+        filePaths: ["convex/one.ts", "convex/two.ts"],
+      });
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "ignores Convex's excluded paths during ownership checks and removal",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const project = yield* Project.make;
+        const files = [
+          "nested/schema.ts",
+          "nested/schema.js",
+          "with spaces.ts",
+          "space dir/helper.ts",
+          "component/convex.config.ts",
+          "component/functions.ts",
+          "component/nested/functions.ts",
+          "_generated/helper.ts",
+        ];
+        for (const file of files) {
+          yield* fs.makeDirectory(
+            path.dirname(path.join(project.root, "convex", file)),
+            { recursive: true },
+          );
+          yield* project.write(
+            `convex/${file}`,
+            "export const authored = 1;\n",
+          );
+        }
+        yield* project.provide(assertOwnedEntrypoints);
+        const snapshot = yield* Effect.fromResult(GenerationSnapshot.parse([]));
+        yield* project.provide(generateFunctions(snapshot));
+        for (const file of files)
+          expect(
+            yield* fs.readFileString(path.join(project.root, "convex", file)),
+          ).toBe("export const authored = 1;\n");
+      }).pipe(Effect.scoped),
   );
 });

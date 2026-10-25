@@ -187,7 +187,7 @@ export class HandWrittenConvexFileError extends Schema.TaggedError<HandWrittenCo
 
 export class UnownedConvexEntrypointError extends Schema.TaggedError<UnownedConvexEntrypointError>()(
   "UnownedConvexEntrypointError",
-  { filePath: Schema.String },
+  { filePaths: Schema.Array(Schema.String) },
 ) {}
 
 export class DeclarationKindMismatchError extends Schema.TaggedError<DeclarationKindMismatchError>()(
@@ -478,8 +478,9 @@ export const renderCodegenError = (error: CodegenError): string => {
   }
   if (error._tag === "UnownedConvexEntrypointError") {
     return singleLine(
-      formatPath(error.filePath),
-      " is not canonical Confect output. Move authored code outside convex/, delete this file and rerun `confect codegen`.",
+      error.filePaths.map((file) => formatPath(file)).join(", "),
+      error.filePaths.length === 1 ? " was" : " were",
+      " not written by confect codegen. Generated files only re-export the registry; put authored code outside convex/. If a file is stale generated output, delete it and run codegen again.",
     );
   }
   return Match.value(error).pipe(

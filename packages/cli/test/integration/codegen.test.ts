@@ -97,10 +97,69 @@ layer(NodeServices.layer)("built confect codegen", (it) => {
         );
         expect(exitCode, output).not.toBe(0);
         expect(output).toContain(`convex/${file}`);
-        expect(output).toContain("not canonical Confect output");
+        expect(output).toContain("not written by confect codegen");
         expect(yield* fs.readFileString(`${project.root}/convex/${file}`)).toBe(
           previous + source,
         );
+      }).pipe(Effect.scoped),
+    { timeout: 30000 },
+  );
+
+  it.effect(
+    "reports all five refusal cases without changing their files",
+    () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const project = yield* Project.make;
+        const initial = yield* project.start("codegen");
+        yield* initial.waitFor("Generated files are up-to-date");
+        expect(yield* initial.handle.exitCode).toBe(0);
+        yield* project.write("confect/removed.spec.ts", Project.spec);
+        yield* project.write(
+          "confect/removed.impl.ts",
+          Project.impl.replace('"./notes.spec"', '"./removed.spec"'),
+        );
+        const added = yield* project.start("codegen");
+        yield* added.waitFor("Generated files are up-to-date");
+        expect(yield* added.handle.exitCode).toBe(0);
+        yield* fs.remove(path.join(project.root, "confect/removed.spec.ts"));
+        yield* fs.remove(path.join(project.root, "confect/removed.impl.ts"));
+        const removed = yield* project.start("codegen");
+        yield* removed.waitFor("Generated files are up-to-date");
+        expect(yield* removed.handle.exitCode).toBe(0);
+        const files = {
+          "raw.ts":
+            'import { queryGeneric } from "convex/server"; export const raw = queryGeneric({ handler: () => null });',
+          "alias.js":
+            'import { queryGeneric as query } from "convex/server"; const hidden = query({ handler: () => null }); export { hidden as raw };',
+          "nested/reexport.ts": 'export { raw } from "../raw";',
+          "removed.ts": "export const raw = 1;",
+          "notes.ts":
+            (yield* fs.readFileString(
+              path.join(project.root, "convex/notes.ts"),
+            )) + "\nexport { list as unchecked };",
+        };
+        for (const [file, source] of Object.entries(files)) {
+          yield* fs.makeDirectory(
+            path.dirname(path.join(project.root, "convex", file)),
+            { recursive: true },
+          );
+          yield* project.write(`convex/${file}`, source);
+        }
+        const generated = yield* project.start("codegen");
+        const exitCode = yield* generated.handle.exitCode;
+        const output = stripVTControlCharacters(
+          yield* Ref.get(generated.output),
+        );
+        expect(exitCode, output).not.toBe(0);
+        for (const [file, source] of Object.entries(files)) {
+          expect(output).toContain(`convex/${file}`);
+          expect(
+            yield* fs.readFileString(path.join(project.root, "convex", file)),
+          ).toBe(source);
+        }
+        expect(output.match(/not written by confect codegen/g)).toHaveLength(1);
       }).pipe(Effect.scoped),
     { timeout: 30000 },
   );
