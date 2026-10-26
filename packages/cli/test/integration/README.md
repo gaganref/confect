@@ -23,3 +23,13 @@ Run these regression tests after `pnpm build`:
 ```sh
 pnpm exec vitest run --project @confect/cli test/codegen.test.ts test/dev.test.ts test/integration/dev.test.ts --testNamePattern 'does not bundle the same spec|does not reevaluate|uses a bounded number|reconciles a startup edit|retries removal|preserves optional outputs'
 ```
+
+## Deployment JWT provider lowering
+
+The deployment JWT provider case starts with no generated files, runs the built
+CLI without deployment env values, then evaluates `auth.config.ts` with explicit
+cloud, site, and trusted-provider values. Run it after `pnpm build`:
+
+```sh
+pnpm exec vitest run --project @confect/cli test/integration/codegen.test.ts --testNamePattern 'lowers deployment JWT'
+```

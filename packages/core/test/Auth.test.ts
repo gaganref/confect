@@ -64,6 +64,48 @@ describe("Auth", () => {
     expect(Auth.siteUrlPath("https://login.example.edu")).toBeUndefined();
   });
 
+  it("describes deployment cloud URLs and required env provider fields", () => {
+    const env = Env.make("tenant", {
+      ISSUER: Env.string(),
+      OPTIONAL: Env.optional(Env.string()),
+      SECRET: Env.secret(),
+    });
+    const auth = Auth.make(App.make({ env }), {
+      providers: [
+        {
+          type: "customJwt",
+          issuer: env.ISSUER,
+          jwks: Auth.cloudUrl("/.well-known/jwks.json"),
+          applicationID: Auth.siteUrl(),
+          algorithm: "ES256",
+        },
+      ],
+    });
+    expect(Auth.cloudUrlPath(Auth.cloudUrl("/components/auth"))).toBe(
+      "/components/auth",
+    );
+    expect(Auth.cloudUrlPath(Auth.cloudUrl())).toBe("");
+    expect(Auth.providers(auth)[0]).toEqual({
+      type: "customJwt",
+      issuer: env.ISSUER,
+      jwks: Auth.cloudUrl("/.well-known/jwks.json"),
+      applicationID: Auth.siteUrl(),
+      algorithm: "ES256",
+    });
+    const invalid: Auth.Provider = {
+      domain: "https://issuer.test",
+      // @ts-expect-error Optional env values cannot configure a required provider field.
+      applicationID: env.OPTIONAL,
+    };
+    const secret: Auth.Provider = {
+      // @ts-expect-error Provider configuration is public, not a secret.
+      domain: env.SECRET,
+      applicationID: "convex",
+    };
+    void invalid;
+    void secret;
+  });
+
   it("accepts only what Convex's AuthProvider accepts", () => {
     Auth.make(app, {
       providers: [
@@ -80,7 +122,6 @@ describe("Auth", () => {
       providers: [
         {
           domain: "https://login.example.edu",
-          // @ts-expect-error Only domain, issuer and jwks take the site URL.
           applicationID: Auth.siteUrl(),
         },
       ],

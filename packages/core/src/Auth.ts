@@ -1,9 +1,11 @@
 import type { AuthProvider } from "convex/server";
 import * as Predicate from "effect/Predicate";
 import type * as App from "./App.js";
+import type * as Env from "./Env.js";
 import type { TypeError } from "./Types.js";
 
 const TypeId = "~@confect/core/Auth";
+const CloudUrlTypeId = "~@confect/core/Auth/CloudUrl";
 const SiteUrlTypeId = "~@confect/core/Auth/SiteUrl";
 
 /**
@@ -15,19 +17,50 @@ export interface SiteUrl {
   readonly path: string;
 }
 
-type Url = string | SiteUrl;
+/**
+ * The deployment's cloud URL (`CONVEX_CLOUD_URL`) plus a path.
+ */
+export interface CloudUrl {
+  readonly [CloudUrlTypeId]: typeof CloudUrlTypeId;
+  readonly path: string;
+}
 
-type WithSiteUrl<P> = P extends unknown
+type Url =
+  | string
+  | SiteUrl
+  | CloudUrl
+  | Env.Entry<string, string, string, false>;
+
+type WithUrls<P> = P extends unknown
   ? {
-      [K in keyof P]: K extends "domain" | "issuer" | "jwks" ? Url : P[K];
+      [K in keyof P]: K extends "domain" | "issuer" | "jwks" | "applicationID"
+        ? Url
+        : P[K];
     }
   : never;
 
 /**
- * Convex's `AuthProvider`, with `domain`, `issuer` and `jwks` also taking a
- * {@link SiteUrl}.
+ * Convex's provider list with deployment URLs and required, public env strings.
  */
-export type Provider = WithSiteUrl<AuthProvider>;
+export type Provider = WithUrls<AuthProvider>;
+
+/**
+ * The cloud URL, or a path under it, resolved when Convex loads auth config.
+ */
+export const cloudUrl = (path: `/${string}` | "" = ""): CloudUrl => ({
+  [CloudUrlTypeId]: CloudUrlTypeId,
+  path,
+});
+
+/**
+ * The path of a cloud URL placeholder, or `undefined` for another value.
+ */
+export const cloudUrlPath = (u: unknown): string | undefined =>
+  Predicate.hasProperty(u, CloudUrlTypeId) &&
+  Predicate.hasProperty(u, "path") &&
+  typeof u.path === "string"
+    ? u.path
+    : undefined;
 
 export interface Auth<A extends App.Any> {
   readonly [TypeId]: typeof TypeId;
