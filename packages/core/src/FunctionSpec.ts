@@ -121,7 +121,7 @@ export interface ExtendedBuilder<
   MiddlewareSpecs_
 > {
   readonly description?: string;
-  readonly fields: Fields_;
+  readonly fields: Profile.Info<Fields_>["fields"];
 
   middleware<MiddlewareSpec_ extends MiddlewareSpec.AnyMiddlewareSpec>(
     middlewareSpec: MiddlewareSpec_ &
@@ -680,14 +680,24 @@ type BuilderOption =
   | "error";
 
 /**
- * Refuses fields named after a builder option, which the builder would read as
- * that option. The conditional keeps the mapped type out of a builder call's
- * inference, which would otherwise widen the function's name to `string` when
- * reporting the error.
+ * Only a required description string may name a builder option. The builder
+ * reads it as that option. The conditional keeps the mapped type out of a
+ * builder call's inference, which would otherwise widen the function's name to
+ * `string` when reporting the error.
  */
 type OptionFree<Type> = [keyof Type & BuilderOption] extends [never]
   ? unknown
-  : { readonly [Option in keyof Type & BuilderOption]: never };
+  : {
+      readonly [
+        Option in keyof Type & BuilderOption as Option extends "description"
+          ? Type[Option] extends string
+            ? string extends Type[Option]
+              ? never
+              : Option
+            : Option
+          : Option
+      ]: never;
+    };
 
 /**
  * A function's fields, checked once applied, since a profile's field type can
@@ -912,8 +922,6 @@ const makeExtended = (
   middleware: ReadonlyArray<ProfileMiddleware<any>>,
   schemas: ReadonlyArray<RuntimeWrappers> = [],
 ): Extended<any, any> => {
-  // `OptionFree` keeps option names out of the fields; this split is the
-  // runtime's fallback.
   const extended =
     (makeSpec: (options: never) => object, paginated = false): any =>
     ({
