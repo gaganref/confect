@@ -1,5 +1,9 @@
-import { Callback } from "@confect/core";
-import { FunctionImpl, GroupImpl } from "@confect/server";
+import { ActionCall, Callback } from "@confect/core";
+import {
+  ActionCall as ActionCallImpl,
+  FunctionImpl,
+  GroupImpl,
+} from "@confect/server";
 import * as Cause from "effect/Cause";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -23,6 +27,19 @@ const Breach = Callback.mutation("counter/breach", {
   args: () => ({ run: Schema.Finite }),
   returns: () => Schema.Null,
 });
+
+const notify = FunctionImpl.make(
+  schema,
+  deliveries,
+  "notify",
+  ({ run, onEvent }) =>
+    Effect.gen(function* () {
+      const call = yield* ActionCall.ActionCall;
+      return yield* call(onEvent, { run, status: "delivered" }).pipe(
+        Effect.catchTag("SchemaError", Effect.die),
+      );
+    }),
+);
 
 const send = FunctionImpl.make(schema, deliveries, "send", ({ run, onEvent }) =>
   Effect.gen(function* () {
@@ -101,6 +118,7 @@ const get = FunctionImpl.make(schema, deliveries, "get", ({ id }) =>
 );
 
 export default GroupImpl.make(schema, deliveries).pipe(
-  Layer.provide([send, deliver, setStatus, breach, get]),
+  Layer.provide([send, deliver, setStatus, breach, get, notify]),
+  Layer.provide(ActionCallImpl.layer(schema)),
   GroupImpl.finalize,
 );

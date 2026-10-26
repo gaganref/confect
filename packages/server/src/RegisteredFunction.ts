@@ -1,3 +1,5 @@
+import * as ActionCallSpec from "@confect/core/ActionCall";
+import * as ActionCall from "./ActionCall.js";
 import type { FunctionSpec, RuntimeAndFunctionType } from "@confect/core";
 import * as IdScope from "@confect/core/IdScope";
 import type * as FunctionProvenance from "@confect/core/FunctionProvenance";
@@ -299,6 +301,12 @@ export const actionFunctionBase = <
         Schema.decodeUnknownEffect(args),
         Effect.catchTag("SchemaError", Effect.die),
       );
+      const restricted = resolvedMiddlewares.some(
+        ({ middlewareSpec }) =>
+          middlewareSpec.key === ActionCallSpec.Middleware.key,
+      )
+        ? restrict(ctx)
+        : undefined;
       // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Middleware errors are intentionally erased here and validated by runHandlerPromise against the combined error schema below.
       const decodedReturns = yield* applyMiddleware(
         handler(decodedArgs),
@@ -309,7 +317,8 @@ export const actionFunctionBase = <
           functionVisibility,
           args: decodedArgs,
         },
-      ).pipe(Effect.provide(createLayer(ctx)));
+      ).pipe(Effect.provide(createLayer(restricted?.ctx ?? ctx)));
+      if (restricted !== undefined) yield* restricted.check;
       return yield* pipe(
         decodedReturns,
         Schema.encodeEffect(returns),
@@ -389,3 +398,47 @@ export const storageLayer = <Scope extends IdScope.IdScope>(
   Storage.layer(reader) as Layer.Layer<
     Storage.Storage | StorageReader.ForScope<Scope>
   >;
+
+/**
+ * Shares one dispatch budget across the entire middleware chain.
+ */
+const restrict = <Model extends GenericDataModel>(
+  ctx: GenericActionCtx<Model>,
+) => {
+  let dispatched = false;
+  const claim = () => {
+    if (dispatched) throw new ActionCall.ActionCallAlreadyUsed();
+    dispatched = true;
+  };
+  const restricted: GenericActionCtx<Model> = {
+    ...ctx,
+    scheduler: {
+      runAfter: () => {
+        throw new ActionCall.SchedulingNotAllowed();
+      },
+      runAt: () => {
+        throw new ActionCall.SchedulingNotAllowed();
+      },
+      cancel: () => {
+        throw new ActionCall.SchedulingNotAllowed();
+      },
+    },
+    runQuery: (...args) => {
+      claim();
+      return ctx.runQuery(...args);
+    },
+    runMutation: (...args) => {
+      claim();
+      return ctx.runMutation(...args);
+    },
+    runAction: () => {
+      throw new ActionCall.NestedActionNotAllowed();
+    },
+  };
+  return {
+    ctx: restricted,
+    check: Effect.suspend(() =>
+      dispatched ? Effect.void : Effect.die(new ActionCall.ActionCallNotUsed()),
+    ),
+  };
+};

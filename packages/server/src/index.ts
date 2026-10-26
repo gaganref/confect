@@ -1,3 +1,4 @@
+export * as ActionCall from "./ActionCall.js";
 export * as AiGatewayDecisionClient from "./AiGatewayDecisionClient.js";
 export * as AiGatewayDecisionModel from "./AiGatewayDecisionModel.js";
 export * as AiGatewayLanguageClient from "./AiGatewayLanguageClient.js";

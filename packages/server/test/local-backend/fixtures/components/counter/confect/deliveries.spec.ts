@@ -1,11 +1,19 @@
-import { Callback, FunctionSpec, GroupSpec } from "@confect/core";
+import { ActionCall, Callback, FunctionSpec, GroupSpec } from "@confect/core";
 import * as Schema from "effect/Schema";
 import { Id } from "./_generated/id";
-import { OnEvent, Status } from "./callbacks";
+import { EventRejected, OnEvent, Status } from "./callbacks";
 
 export const Outcome = Schema.Literals(["success", "failure", "defect"]);
 
 export default GroupSpec.make()
+  .addFunction(
+    ActionCall.profile.publicAction({
+      name: "notify",
+      args: () => ({ run: Schema.String, onEvent: Callback.handle(OnEvent) }),
+      returns: () => Schema.Null,
+      error: () => EventRejected,
+    }),
+  )
   .addFunction(
     FunctionSpec.publicMutation({
       name: "send",

@@ -155,6 +155,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         Name
       >;
+      notify: FunctionReference<
+        "action",
+        "internal",
+        { onEvent: string; run: string },
+        null,
+        Name
+      >;
       send: FunctionReference<
         "mutation",
         "internal",

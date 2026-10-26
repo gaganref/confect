@@ -1,5 +1,6 @@
 import { GroupSpec, Spec } from "@confect/core";
 import databaseReader from "../databaseReader.spec.js";
+import groups_actionCall from "../groups/actionCall.spec.js";
 import groups_aliasImporter from "../groups/aliasImporter.spec.js";
 import groups_cjsImporter from "../groups/cjsImporter.spec.js";
 import groups_middleware from "../groups/middleware.spec.js";
@@ -16,11 +17,12 @@ import typedErrorsNode from "../typedErrorsNode.spec.js";
 
 const spec: Spec.Spec<{
   readonly databaseReader: GroupSpec.NamedAt<typeof databaseReader, "databaseReader">;
-  readonly groups: GroupSpec.NamedAt<GroupSpec.GroupSpec<"Convex", "groups", never, GroupSpec.NamedAt<typeof groups_aliasImporter, "aliasImporter"> | GroupSpec.NamedAt<typeof groups_cjsImporter, "cjsImporter"> | GroupSpec.NamedAt<typeof groups_middleware, "middleware"> | GroupSpec.NamedAt<typeof groups_middlewareHelpers, "middlewareHelpers"> | GroupSpec.NamedAt<typeof groups_middlewareOptions, "middlewareOptions"> | GroupSpec.NamedAt<typeof groups_middlewareOrder, "middlewareOrder"> | GroupSpec.NamedAt<typeof groups_notes, "notes"> | GroupSpec.NamedAt<GroupSpec.AddGroups<typeof groups_random, GroupSpec.NamedAt<typeof groups_random_stats, "stats">>, "random"> | GroupSpec.NamedAt<typeof groups_runners, "runners"> | GroupSpec.NamedAt<typeof groups_scheduling, "scheduling"> | GroupSpec.NamedAt<typeof groups_typedErrors, "typedErrors">>, "groups">;
+  readonly groups: GroupSpec.NamedAt<GroupSpec.GroupSpec<"Convex", "groups", never, GroupSpec.NamedAt<typeof groups_actionCall, "actionCall"> | GroupSpec.NamedAt<typeof groups_aliasImporter, "aliasImporter"> | GroupSpec.NamedAt<typeof groups_cjsImporter, "cjsImporter"> | GroupSpec.NamedAt<typeof groups_middleware, "middleware"> | GroupSpec.NamedAt<typeof groups_middlewareHelpers, "middlewareHelpers"> | GroupSpec.NamedAt<typeof groups_middlewareOptions, "middlewareOptions"> | GroupSpec.NamedAt<typeof groups_middlewareOrder, "middlewareOrder"> | GroupSpec.NamedAt<typeof groups_notes, "notes"> | GroupSpec.NamedAt<GroupSpec.AddGroups<typeof groups_random, GroupSpec.NamedAt<typeof groups_random_stats, "stats">>, "random"> | GroupSpec.NamedAt<typeof groups_runners, "runners"> | GroupSpec.NamedAt<typeof groups_scheduling, "scheduling"> | GroupSpec.NamedAt<typeof groups_typedErrors, "typedErrors">>, "groups">;
   readonly typedErrorsNode: GroupSpec.NamedAt<typeof typedErrorsNode, "typedErrorsNode">;
 }> = Spec.fromGroups({
   ["databaseReader"]: databaseReader,
   ["groups"]: GroupSpec.addGroupsAt(GroupSpec.make(), {
+    ["actionCall"]: groups_actionCall,
     ["aliasImporter"]: groups_aliasImporter,
     ["cjsImporter"]: groups_cjsImporter,
     ["middleware"]: groups_middleware,

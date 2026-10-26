@@ -434,3 +434,26 @@ QueryResult.match(lookup, {
 ```
 
 Middleware on Confect's [HTTP API](/server/http-api) is separate: HTTP endpoints use Effect's own `HttpApi` middleware machinery.
+
+## One-call actions
+
+Use `ActionCall.profile.publicAction` or `publicNodeAction` from `@confect/core`
+for an action that must call exactly one query or mutation. Provide
+`ActionCall.layer(schema)` from `@confect/server` to its group implementation.
+The handler yields the core `ActionCall.ActionCall` service, then calls
+`call(ref, args)`. Arguments, result and declared errors come from the ref.
+Extend the profile to add declaration fields or middleware.
+
+The profile removes raw runners, `Scheduler` and `ActionCtx` from the handler's types and
+runtime context. Its dispatch budget covers the entire middleware chain, so an
+earlier middleware cannot make an extra preflight query. A second or concurrent
+call dies with `ActionCallAlreadyUsed`. A successful invocation with no dispatch
+dies with `ActionCallNotUsed`, including a recovered argument-encoding failure.
+Nested actions and scheduling through the action context are refused. The called
+mutation can schedule work after its authorization check. A failed invocation may finish without a call.
+
+Put authorization checks in the called mutation so they share its transaction.
+Ordinary actions retain their existing services and unrestricted call count.
+For native refs, pass the function type to `Ref.fromFunctionReference(ref,
+"mutation")`. Existing refs without that optional discriminator remain valid for
+the ordinary runners, but the one-call service refuses them.

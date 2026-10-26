@@ -41,6 +41,7 @@ export interface Base<
     : (args: Args_) => void;
   readonly "~Returns": Returns_;
   readonly "~Error": Error_;
+  readonly functionType?: RuntimeAndFunctionType_["functionType"];
   readonly convexFunctionName: string;
   /**
    * Preserved for component references and function handles, which have no
@@ -447,14 +448,18 @@ export const make = <
         ({
           [TypeId]: TypeId,
           _tag: "Convex",
+          functionType: functionSpec.runtimeAndFunctionType.functionType,
           convexFunctionName,
         }) as Any,
     ),
     Match.tag("Confect", (provenance): Any =>
-      fromProvenance(convexFunctionName, provenance, [
-        ...groupMiddlewareAttachments,
-        ...functionSpec.middlewareAttachments,
-      ]),
+      fromProvenance(
+        convexFunctionName,
+        provenance,
+        [...groupMiddlewareAttachments, ...functionSpec.middlewareAttachments],
+        undefined,
+        functionSpec.runtimeAndFunctionType.functionType,
+      ),
     ),
     Match.exhaustive,
   ) as FromFunctionSpec<
@@ -476,10 +481,12 @@ export const fromProvenance = (
   provenance: FunctionProvenance.AnyConfect,
   middlewareAttachments: ReadonlyArray<MiddlewareAttachment.MiddlewareAttachment>,
   functionReference?: ConvexFunctionReference<any, any>,
+  functionType?: "query" | "mutation" | "action",
 ): AnyConfect => {
   const ref = {
     [TypeId]: TypeId as TypeId,
     _tag: "Confect" as const,
+    ...(functionType === undefined ? {} : { functionType }),
     convexFunctionName,
     ...(functionReference === undefined ? {} : { functionReference }),
     kind: provenance.kind,
@@ -532,6 +539,7 @@ export const fromFunctionReference = <
   Returns_,
 >(
   functionReference: ConvexFunctionReference<Type, Visibility, Args_, Returns_>,
+  functionType?: NoInfer<Type>,
 ): ConvexRef<
   Extract<
     RuntimeAndFunctionType.RuntimeAndFunctionType,
@@ -545,6 +553,7 @@ export const fromFunctionReference = <
   return {
     [TypeId]: TypeId,
     _tag: "Convex",
+    ...(functionType === undefined ? {} : { functionType }),
     convexFunctionName:
       address.name ??
       address.reference ??

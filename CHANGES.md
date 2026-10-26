@@ -64,6 +64,17 @@ NodeNext with `skipLibCheck: false`.
 Changeset: `nodenext-codegen-test-kits.md`.
 Upstream: planned; no proposal submitted.
 
+## Action calls
+
+`ActionCall.profile` gives action handlers one typed query or mutation call.
+Its server middleware removes raw runners and the scheduler. Registration
+enforces one dispatch across the whole chain. Repeat, parallel and unused successful calls fail.
+Decoded callback handles retain their dispatch type, including host callbacks
+called from component actions. Ordinary actions retain their existing services.
+
+Changeset: `action-call-profile.md`.
+Upstream: planned; no proposal submitted.
+
 ## Database writes
 
 ### Patch writes an encoded delta
