@@ -249,4 +249,27 @@ describe("attach", () => {
       returns,
     });
   });
+
+  it("requires a description only for the function whose fields declare it", () => {
+    interface ReadDescribed extends Profile.Fields {
+      readonly Type: this["Name"] extends "read"
+        ? { readonly quota: number; readonly description: string }
+        : { readonly quota: number };
+    }
+    const ByName = FunctionSpec.extend<ReadDescribed>()({ middleware: [] });
+
+    expect(
+      ByName.publicMutation({ name: "send", quota: 1, returns }).description,
+    ).toBe(undefined);
+    expect(
+      ByName.publicQuery({
+        name: "read",
+        quota: 1,
+        description: "Reads a note.",
+        returns,
+      }).description,
+    ).toBe("Reads a note.");
+    // @ts-expect-error The read function's fields require a description.
+    ByName.publicQuery({ name: "read", quota: 1, returns });
+  });
 });
