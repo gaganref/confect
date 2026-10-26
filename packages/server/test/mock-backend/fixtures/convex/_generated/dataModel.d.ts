@@ -27,6 +27,16 @@ import type { GenericId } from "convex/values";
  */
 
 export type DataModel = {
+  demands: {
+    document: { amount: number; _id: Id<"demands">; _creationTime: number };
+    fieldPaths: "_creationTime" | "_id" | "amount";
+    indexes: {
+      by_id: ["_id"];
+      by_creation_time: ["_creationTime"];
+    };
+    searchIndexes: {};
+    vectorIndexes: {};
+  };
   events: {
     document:
       | { a: string; kind: "a"; _id: Id<"events">; _creationTime: number }
@@ -82,6 +92,21 @@ export type DataModel = {
   tags: {
     document: any;
     fieldPaths: "";
+    indexes: {
+      by_id: ["_id"];
+      by_creation_time: ["_creationTime"];
+    };
+    searchIndexes: {};
+    vectorIndexes: {};
+  };
+  totals: {
+    document: {
+      count: number;
+      sum: number;
+      _id: Id<"totals">;
+      _creationTime: number;
+    };
+    fieldPaths: "_creationTime" | "_id" | "count" | "sum";
     indexes: {
       by_id: ["_id"];
       by_creation_time: ["_creationTime"];

@@ -66,6 +66,21 @@ Upstream: planned; no proposal submitted.
 
 ## Database writes
 
+### Observe writes in their transaction
+
+`DatabaseWriter.make` and `layer` accept an optional hook with table-discriminated,
+decoded before/after documents. Mutation middleware can install it on internal
+functions to maintain aggregates, schedule work and record writes. A hook defect
+rolls back the mutation. Writers without a hook retain their existing read cost.
+
+The mock-backend fixture installs the hook through profile middleware and an
+explicit internal-mutation attachment. Missing-document patches retain their
+typed failure. Raw and separately installed writers bypass the hook; concurrent
+same-document writes require sequential awaits for exact snapshots.
+
+Changeset: `database-write-hook.md` (minor).
+Upstream: planned; no proposal submitted.
+
 ### Patch writes an encoded delta
 
 Encode only the patched fields, each through its own codec, and call native

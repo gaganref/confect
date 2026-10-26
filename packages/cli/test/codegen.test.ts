@@ -615,9 +615,11 @@ layer(CodegenLayer)("TableModule.discover", (it) => {
       const path = yield* Path.Path;
       const tables = yield* discoverTables;
       expect(tables.map((t) => t.tableName).sort()).toEqual([
+        "demands",
         "events",
         "notes",
         "tags",
+        "totals",
         "users",
       ]);
       for (const table of tables) {

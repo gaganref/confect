@@ -100,11 +100,54 @@ export type DatabaseWriterTag<
   DatabaseWriterService<DatabaseSchema_, Docs>
 >;
 
+/**
+ * Decoded documents surrounding one successful write.
+ */
+export type Change<S extends DatabaseSchema.AnyWithProps> = {
+  [Name in DataModel.TableNames<DataModel.FromSchema<S>>]: {
+    readonly tableName: Name;
+  } & (
+    | {
+        readonly operation: "insert";
+        readonly oldDoc: null;
+        readonly newDoc: DocumentByName_<DataModel.FromSchema<S>, Name>;
+      }
+    | {
+        readonly operation: "update";
+        readonly oldDoc: DocumentByName_<DataModel.FromSchema<S>, Name>;
+        readonly newDoc: DocumentByName_<DataModel.FromSchema<S>, Name>;
+      }
+    | {
+        readonly operation: "delete";
+        readonly oldDoc: DocumentByName_<DataModel.FromSchema<S>, Name>;
+        readonly newDoc: null;
+      }
+  );
+}[DataModel.TableNames<DataModel.FromSchema<S>>];
+
+/**
+ * Runs after the write, in its transaction. A defect aborts the mutation.
+ *
+ * Only writes through this writer are observed. Raw `ctx.db`, `MutationCtx`
+ * writes and a second `DatabaseWriter.make` bypass the hook, so a host that
+ * relies on it keeps raw writers out of its functions. Component writers and
+ * nested `runMutation` calls each need their own hook installation.
+ *
+ * Concurrent writes to one document (for example under `Effect.all`) can
+ * interleave the read-write-read steps. Await them sequentially when the hook
+ * needs exact per-write snapshots. The writer takes no lock, because a hook
+ * that writes through the same writer would deadlock under one.
+ */
+export type Hook<S extends DatabaseSchema.AnyWithProps> = (
+  change: Change<S>,
+) => Effect.Effect<void>;
+
 export const make = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   databaseSchema: DatabaseSchema_,
   convexDatabaseWriter: GenericDatabaseWriter<
     DataModel.ToConvex<DataModel.FromSchema<DatabaseSchema_>>
   >,
+  hook?: Hook<DatabaseSchema_>,
 ): DatabaseWriterService<DatabaseSchema_> => {
   type DataModel_ = DataModel.FromSchema<DatabaseSchema_>;
 
@@ -267,11 +310,52 @@ export const make = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
         convexDatabaseWriter.delete(id as unknown as GenericId<TableName>),
       );
 
+    const accessor = { insert, patch, replace, delete: delete_ };
+    if (hook === undefined) return accessor;
+
+    const read = (id: DataModel.Id<DataModel_, TableName>) =>
+      QueryInitializer.getById<Table.AnyWithProps, TableName>(
+        convexDatabaseWriter as any,
+        tableDef,
+      )(id as unknown as GenericId<TableName>);
+    const notify = (
+      operation: "insert" | "update" | "delete",
+      oldDoc: unknown,
+      newDoc: unknown,
+    ) =>
+      hook({ tableName, operation, oldDoc, newDoc } as Change<DatabaseSchema_>);
+    const update =
+      <A extends ReadonlyArray<unknown>, E, BeforeError>(
+        before: (
+          id: DataModel.Id<DataModel_, TableName>,
+        ) => Effect.Effect<unknown, BeforeError>,
+        write: (
+          id: DataModel.Id<DataModel_, TableName>,
+          ...args: A
+        ) => Effect.Effect<void, E>,
+      ) =>
+      (id: DataModel.Id<DataModel_, TableName>, ...args: A) =>
+        Effect.gen(function* () {
+          const oldDoc = yield* before(id);
+          yield* write(id, ...args);
+          yield* notify("update", oldDoc, yield* read(id).pipe(Effect.orDie));
+        });
+
     return {
-      insert,
-      patch,
-      replace,
-      delete: delete_,
+      insert: (document: Parameters<typeof insert>[0]) =>
+        Effect.gen(function* () {
+          const id = yield* insert(document);
+          yield* notify("insert", null, yield* read(id).pipe(Effect.orDie));
+          return id;
+        }),
+      patch: update(read, patch),
+      replace: update((id) => read(id).pipe(Effect.orDie), replace),
+      delete: (id: DataModel.Id<DataModel_, TableName>) =>
+        Effect.gen(function* () {
+          const oldDoc = yield* read(id).pipe(Effect.orDie);
+          yield* delete_(id);
+          yield* notify("delete", oldDoc, null);
+        }),
     };
   };
 
@@ -298,8 +382,9 @@ export const layer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   convexDatabaseWriter: GenericDatabaseWriter<
     DataModel.ToConvex<DataModel.FromSchema<DatabaseSchema_>>
   >,
+  hook?: Hook<DatabaseSchema_>,
 ) =>
   Layer.succeed(
     DatabaseWriter<DatabaseSchema_>(),
-    make(databaseSchema, convexDatabaseWriter),
+    make(databaseSchema, convexDatabaseWriter, hook),
   );

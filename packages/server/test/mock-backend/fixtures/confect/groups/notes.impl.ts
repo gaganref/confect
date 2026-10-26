@@ -3,6 +3,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import databaseSchema from "../_generated/schema";
 import { DatabaseReader, DatabaseWriter } from "../_generated/services";
+import ObserveWrites from "../middleware/ObserveWrites.impl";
+import { Changes } from "../middleware/ObserveWrites.spec";
 import notes from "./notes.spec";
 
 const insert = FunctionImpl.make(databaseSchema, notes, "insert", ({ text }) =>
@@ -58,8 +60,36 @@ const internalGetFirst = FunctionImpl.make(
     }).pipe(Effect.orDie),
 );
 
+const writeSequence = () =>
+  Effect.gen(function* () {
+    const writer = yield* DatabaseWriter;
+    const changes = yield* Changes;
+    yield* writer.table("totals").insert({ count: 0, sum: 0 });
+    const id = yield* writer.table("demands").insert({ amount: 100 });
+    yield* writer.table("demands").patch(id, { amount: 150 });
+    yield* writer.table("demands").replace(id, { amount: 200 });
+    yield* writer.table("demands").delete(id);
+    return changes;
+  }).pipe(Effect.orDie);
+
+const observeWrites = FunctionImpl.make(
+  databaseSchema,
+  notes,
+  "observeWrites",
+  writeSequence,
+);
+const internalObserveWrites = FunctionImpl.make(
+  databaseSchema,
+  notes,
+  "internalObserveWrites",
+  writeSequence,
+);
+
 export default GroupImpl.make(databaseSchema, notes).pipe(
   Layer.provide(insert),
+  Layer.provide(observeWrites),
+  Layer.provide(internalObserveWrites),
+  Layer.provide(ObserveWrites),
   Layer.provide(list),
   Layer.provide(delete_),
   Layer.provide(getFirst),
