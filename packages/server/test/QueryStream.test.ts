@@ -823,3 +823,195 @@ describe("QueryStream.ReadBudgetExceededError", () => {
     expect(error.message).not.toContain("QueryStream.paginate");
   });
 });
+
+describe("QueryStream.defer", () => {
+  const layout = Result.getOrThrow(QueryStreamKeyLayout.fromIndex([]));
+  const options = { keyLayout: layout, orderDirection: "asc" } as const;
+
+  it.effect(
+    "defers unused template checks when constructing a flatMap join",
+    () =>
+      Effect.gen(function* () {
+        let reads = 0;
+        const rows = (values: ReadonlyArray<number>) =>
+          new QueryStream.QueryStream(
+            "asc",
+            layout,
+            Stream.fromIterable(values).pipe(
+              Stream.map((value) => {
+                reads++;
+                return new QueryStream.Element({
+                  doc: Option.some(value),
+                  keyValues: [value],
+                });
+              }),
+            ),
+          );
+        // Each loaded placement establishes its inner range; the full-range template needs an access check.
+        const all = Effect.sync(() => {
+          reads += 2;
+          return rows([1, 2]);
+        });
+        const eagerTemplate = yield* all;
+        const join = (template: typeof eagerTemplate) =>
+          rows([1, 2]).pipe(
+            QueryStream.flatMap(
+              (placement) =>
+                QueryStream.defer(options, Effect.succeed(rows([placement]))),
+              { innerKeyLayout: template.keyLayout },
+            ),
+            QueryStream.paginate({ cursor: null, numItems: 10 }),
+          );
+        expect((yield* join(eagerTemplate)).page).toEqual([1, 2]);
+        expect(reads).toBe(6);
+        reads = 0;
+        const template = QueryStream.defer(options, all);
+        const page = join(template);
+        expect(reads).toBe(0);
+        expect((yield* page).page).toEqual([1, 2]);
+        expect(reads).toBe(4);
+      }),
+  );
+
+  it.effect(
+    "defers checks through narrowing and reversal and reruns on consumption",
+    () =>
+      Effect.gen(function* () {
+        let checks = 0;
+        let boundsSeen = 0;
+        const inner = new QueryStream.QueryStream(
+          "asc",
+          layout,
+          Stream.empty,
+          undefined,
+          () => {
+            boundsSeen++;
+            return QueryStream.empty<number>()(layout);
+          },
+          () => QueryStream.empty<number>()(layout, "desc"),
+        );
+        const deferred = QueryStream.defer(
+          options,
+          Effect.sync(() => {
+            checks++;
+            return inner;
+          }),
+        );
+        const narrowed = QueryStream.narrow(deferred, {
+          start: { keyValues: [1], inclusive: true },
+        });
+        const reversed = QueryStream.reverse(deferred);
+        expect(checks).toBe(0);
+        yield* Stream.runCollect(narrowed);
+        yield* Stream.runCollect(narrowed);
+        yield* Stream.runCollect(reversed);
+        expect(checks).toBe(3);
+        expect(boundsSeen).toBe(2);
+      }),
+  );
+
+  it.effect.each(["direction", "layout"] as const)(
+    "rejects a deferred %s mismatch before pulling its source",
+    (mismatch) =>
+      Effect.gen(function* () {
+        let reads = 0;
+        const actualLayout: QueryStreamKeyLayout.QueryStreamKeyLayout =
+          mismatch === "layout"
+            ? Result.getOrThrow(
+                QueryStreamKeyLayout.fromIndex(["_creationTime"]),
+              )
+            : layout;
+        const actualDirection: QueryStreamOrderDirection.QueryStreamOrderDirection =
+          mismatch === "direction" ? "desc" : "asc";
+        const source = new QueryStream.QueryStream(
+          actualDirection,
+          actualLayout,
+          Stream.fromEffect(
+            Effect.sync(() => {
+              reads++;
+              return new QueryStream.Element({
+                doc: Option.some(1),
+                keyValues: [1],
+              });
+            }),
+          ),
+        );
+        const declaredDirection: QueryStreamOrderDirection.QueryStreamOrderDirection =
+          "asc";
+        const deferred = QueryStream.defer<
+          number,
+          QueryStreamKeyLabels.QueryStreamKeyLabels,
+          QueryStreamOrderDirection.QueryStreamOrderDirection
+        >(
+          { keyLayout: layout, orderDirection: declaredDirection },
+          Effect.succeed(source),
+        );
+        const defect = yield* Stream.runCollect(deferred).pipe(
+          Effect.catchDefect(Effect.succeed),
+        );
+        expect(defect).toBeInstanceOf(QueryStream.DeferredStreamMismatchError);
+        expect(defect).toMatchObject({
+          _tag: "DeferredStreamMismatchError",
+          expectedOrderDirection: "asc",
+          actualOrderDirection: actualDirection,
+          expectedKeyLayout: layout,
+          actualKeyLayout: actualLayout,
+        });
+        expect(reads).toBe(0);
+      }),
+  );
+
+  it.effect(
+    "runs the deferred check once for each consumed flatMap inner stream",
+    () =>
+      Effect.gen(function* () {
+        const checked: Array<number> = [];
+        const rows = (values: ReadonlyArray<number>) =>
+          new QueryStream.QueryStream(
+            "asc",
+            layout,
+            Stream.fromIterable(values).pipe(
+              Stream.map(
+                (value) =>
+                  new QueryStream.Element({
+                    doc: Option.some(value),
+                    keyValues: [value],
+                  }),
+              ),
+            ),
+          );
+        const joined = rows([1, 2, 3]).pipe(
+          QueryStream.flatMap(
+            (value) =>
+              QueryStream.defer(
+                options,
+                Effect.sync(() => {
+                  checked.push(value);
+                  return rows([value * 10]);
+                }),
+              ),
+            { innerKeyLayout: layout },
+          ),
+        );
+        expect(checked).toEqual([]);
+        expect(yield* joined.pipe(Stream.take(2), Stream.runCollect)).toEqual([
+          10, 20,
+        ]);
+        expect(checked).toEqual([1, 2]);
+        expect(yield* Stream.runCollect(joined)).toEqual([10, 20, 30]);
+        expect(checked).toEqual([1, 2, 1, 2, 3]);
+      }),
+  );
+
+  it.effect("propagates a refused check before opening the source", () =>
+    Effect.gen(function* () {
+      const deferred = QueryStream.defer(
+        options,
+        Effect.fail("refused" as const),
+      );
+      expect(yield* Stream.runCollect(deferred).pipe(Effect.result)).toEqual(
+        Result.fail("refused"),
+      );
+    }),
+  );
+});
