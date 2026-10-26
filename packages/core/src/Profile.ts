@@ -38,10 +38,11 @@ export interface Both<
 }
 
 /**
- * What an attachment's options factory sees. `args` stays a thunk.
+ * What a profile callback sees. `args` stays a thunk.
  */
 export interface Info<FieldsType> {
   readonly name: string;
+  readonly description?: string;
   readonly args: () => FunctionProvenance.ArgsFields;
   readonly fields: FieldsType;
 }

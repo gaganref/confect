@@ -167,6 +167,15 @@ all ten public builder forms, including tagged-error subclasses and extensions.
 Changeset: `profile-error-default.md`.
 Upstream: planned; no proposal submitted.
 
+### Read descriptions in profile callbacks
+
+Expose the optional function description in `Profile.Info` to both middleware
+attachment factories and lazy schema wrappers. A callback can check a declared
+description without forcing a schema; an omitted description stays absent.
+
+Changeset: `profile-info-description.md`.
+Upstream: planned; no proposal submitted.
+
 ### Check component declarations
 
 Carry a literal app or component kind in backend declarations. Default to app,
