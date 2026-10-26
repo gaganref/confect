@@ -32,7 +32,7 @@ import {
  * Bumped when the generated files change shape, so a manifest written by an
  * older generator never matches a current one.
  */
-const GENERATOR_FORMAT = "1";
+const GENERATOR_FORMAT = "2";
 
 const confectPath = Effect.fnUntraced(function* (file: string) {
   const path = yield* Path.Path;
@@ -211,6 +211,19 @@ const removeManifest = Effect.gen(function* () {
   yield* removeGenerated(yield* manifestPath, []);
 });
 
+const authProvidersPath = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  return path.join(
+    yield* ConfectDirectory.get,
+    "_generated",
+    "auth.providers.ts",
+  );
+});
+
+const removeAuthProviders = Effect.gen(function* () {
+  yield* removeGenerated(yield* authProvidersPath, []);
+});
+
 const writeDeclaration = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -283,13 +296,23 @@ const writeDeclaration = Effect.gen(function* () {
   yield* Option.match(declaration.providers, {
     onNone: () =>
       Effect.gen(function* () {
+        yield* removeAuthProviders;
         if (yield* fs.exists(authConfigPath)) {
           yield* removePathIfExists(authConfigPath);
           yield* logFileRemoved(authConfigPath);
         }
       }),
     onSome: (providers) =>
-      writeFileStringAndLog(authConfigPath, Declaration.authConfig(providers)),
+      Effect.gen(function* () {
+        yield* writeFileStringAndLog(
+          authConfigPath,
+          Declaration.authConfig(providers),
+        );
+        yield* writeFileStringAndLog(
+          yield* authProvidersPath,
+          Declaration.authProviders(providers),
+        );
+      }),
   });
   return App.isApp(appValue) ? Option.some(appValue) : Option.none<App.Any>();
 });
@@ -303,9 +326,14 @@ const writeDeclaration = Effect.gen(function* () {
 export const syncDeclaration = Effect.gen(function* () {
   if (!(yield* isDeclared)) {
     yield* removeManifest;
+    yield* removeAuthProviders;
     return Option.none<App.Any>();
   }
-  return yield* writeDeclaration.pipe(Effect.tapError(() => removeManifest));
+  return yield* writeDeclaration.pipe(
+    Effect.tapError(() =>
+      removeManifest.pipe(Effect.andThen(removeAuthProviders)),
+    ),
+  );
 });
 
 /**

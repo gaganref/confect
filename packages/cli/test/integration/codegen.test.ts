@@ -1,7 +1,7 @@
 import { fileURLToPath } from "node:url";
 import { stripVTControlCharacters } from "node:util";
 import * as NodeServices from "@effect/platform-node/NodeServices";
-import { expect, layer } from "@effect/vitest";
+import { afterEach, expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -12,6 +12,12 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as Project from "./Project";
 import * as Bundler from "@confect/cli/Bundler";
+import { DatabaseSchema } from "@confect/server";
+import { TestConfect } from "../../../test/src";
+import { defineSchema } from "convex/server";
+import { vi } from "vitest";
+
+afterEach(() => vi.unstubAllEnvs());
 
 const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
@@ -83,6 +89,181 @@ export default Auth.make(app, { providers: [
             },
           ],
         });
+      }),
+    { timeout: 30000 },
+  );
+
+  it.effect.each([false, true])(
+    "resolves generated provider URLs under the test layer (configured=%s)",
+    (configured) =>
+      Effect.gen(function* () {
+        vi.stubEnv(
+          "CONVEX_CLOUD_URL",
+          configured ? "https://configured.convex.cloud" : undefined,
+        );
+        vi.stubEnv(
+          "CONVEX_SITE_URL",
+          configured ? "https://configured.convex.site" : undefined,
+        );
+        const project = yield* Project.make;
+        yield* project.write(
+          "confect/app.ts",
+          `import { App, Env } from "@confect/core";
+export default App.make({ env: Env.make("host", {}) });`,
+        );
+        yield* project.write(
+          "confect/auth.ts",
+          `import { Auth } from "@confect/core";
+import app from "./app";
+export default Auth.make(app, { providers: [
+  { type: "customJwt", issuer: Auth.cloudUrl(), jwks: Auth.cloudUrl("/.well-known/jwks.json"), applicationID: Auth.siteUrl(), algorithm: "ES256", family: "person" }
+] });`,
+        );
+        const generated = yield* project.start("codegen");
+        expect(
+          yield* generated.handle.exitCode,
+          yield* Ref.get(generated.output),
+        ).toBe(0);
+        yield* Effect.gen(function* () {
+          const runtime = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/auth.providers.ts`,
+          );
+          expect(runtime.module.providers).toEqual([
+            {
+              issuer: configured
+                ? "https://configured.convex.cloud"
+                : "https://some-deployment.convex.cloud",
+              audience: configured
+                ? "https://configured.convex.site"
+                : "https://some.convex.site",
+              family: "person",
+            },
+          ]);
+        }).pipe(
+          Effect.provide(
+            TestConfect.layer(DatabaseSchema.make({}), defineSchema({}), {
+              "_generated/server.ts": () => Promise.resolve({}),
+            }),
+          ),
+        );
+      }),
+    { timeout: 30000 },
+  );
+
+  it.effect(
+    "generates runtime provider families without importing component definitions",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* Project.make;
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(`${project.root}/provider`);
+        yield* project.write(
+          "provider/convex.config.ts",
+          'import { defineComponent } from "convex/server"; export default defineComponent("auth");',
+        );
+        const app = `import { App, Env } from "@confect/core";
+import auth from "../provider/convex.config";
+export const env = Env.make("host", { PLATFORM_ISSUER: Env.string() });
+export default App.make({ env, mounts: { auth: App.mount(auth) } });`;
+        yield* project.write("confect/app.ts", app);
+        yield* project.write(
+          "confect/auth.ts",
+          `import { Auth } from "@confect/core";
+import app, { env } from "./app";
+export default Auth.make(app, { providers: [
+ { type: "customJwt", issuer: Auth.cloudUrl("/components/auth"), jwks: Auth.cloudUrl("/.well-known/jwks.json"), applicationID: "convex", algorithm: "ES256", family: "person" },
+ { type: "customJwt", issuer: env.PLATFORM_ISSUER, jwks: "https://platform.test/.well-known/jwks.json", applicationID: Auth.siteUrl(), algorithm: "ES256", family: "service", name: "platform" },
+ { domain: "https://legacy.test", applicationID: "legacy" }
+] });`,
+        );
+        yield* project.write(
+          "confect/notes.impl.ts",
+          'import { providers } from "./_generated/auth.providers";\n' +
+            Project.impl.replace(
+              "const reader =",
+              'if (providers[0].family !== "person") throw new Error("missing family"); const reader =',
+            ),
+        );
+        const generated = yield* project.start("codegen");
+        expect(
+          yield* generated.handle.exitCode,
+          yield* Ref.get(generated.output),
+        ).toBe(0);
+        const configPath = `${project.root}/convex/auth.config.ts`;
+        const config = yield* fs.readFileString(configPath);
+        expect(config).not.toMatch(/family:|name:/);
+        const definitions = [
+          "confect/auth.ts",
+          "confect/app.ts",
+          "provider/convex.config.ts",
+        ];
+        for (const file of definitions)
+          yield* project.write(
+            file,
+            'throw new Error("definition imported at runtime");',
+          );
+        const runtime = yield* Bundler.bundle(
+          `${project.root}/confect/_generated/auth.providers.ts`,
+          {
+            plugins: [
+              {
+                name: "deployment-env",
+                setup(build) {
+                  build.initialOptions.define = {
+                    "process.env.CONVEX_CLOUD_URL":
+                      '"https://deployment.convex.cloud"',
+                    "process.env.CONVEX_SITE_URL":
+                      '"https://deployment.convex.site"',
+                    "process.env.PLATFORM_ISSUER":
+                      '"https://platform.test/components/auth"',
+                  };
+                },
+              },
+            ],
+          },
+        );
+        expect(runtime.module.providers).toEqual([
+          {
+            issuer: "https://deployment.convex.cloud/components/auth",
+            family: "person",
+            audience: "convex",
+          },
+          {
+            issuer: "https://platform.test/components/auth",
+            family: "service",
+            name: "platform",
+            audience: "https://deployment.convex.site",
+          },
+          { issuer: "https://legacy.test", audience: "legacy" },
+        ]);
+        const registered = yield* Bundler.bundle(
+          `${project.root}/confect/_generated/registeredFunctions/notes.ts`,
+        );
+        expect(registered.module.default.list.isPublic).toBe(true);
+        for (const file of definitions)
+          expect(
+            Object.keys(registered.metafile.inputs).some((input) =>
+              input.endsWith(file),
+            ),
+          ).toBe(false);
+        yield* project.write("confect/app.ts", app);
+        yield* project.write(
+          "provider/convex.config.ts",
+          'import { defineComponent } from "convex/server"; export default defineComponent("auth");',
+        );
+        yield* project.write("confect/notes.impl.ts", Project.impl);
+        yield* fs.remove(`${project.root}/confect/auth.ts`);
+        const removed = yield* project.start("codegen");
+        expect(
+          yield* removed.handle.exitCode,
+          yield* Ref.get(removed.output),
+        ).toBe(0);
+        expect(
+          yield* fs.exists(
+            `${project.root}/confect/_generated/auth.providers.ts`,
+          ),
+        ).toBe(false);
+        expect(yield* fs.exists(configPath)).toBe(false);
       }),
     { timeout: 30000 },
   );

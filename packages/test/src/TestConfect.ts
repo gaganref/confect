@@ -20,6 +20,8 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as MountedHttp from "./internal/MountedHttp.js";
 
+declare const process: { env: Record<string, string | undefined> };
+
 /**
  * Register a component's Convex schema and modules at its installation path.
  */
@@ -445,6 +447,8 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   options: LayerOptions = {},
 ): Layer.Layer<TestConfect<DatabaseSchema_>> =>
   Layer.sync(TestConfect<DatabaseSchema_>(), () => {
+    process.env.CONVEX_CLOUD_URL ??= "https://some-deployment.convex.cloud";
+    process.env.CONVEX_SITE_URL ??= "https://some.convex.site";
     const testConvex = convexTest(convexSchemaDefinition, modules);
     const mountedHttp = MountedHttp.make(options.httpMounts ?? [], (...args) =>
       testConvex.registerComponent(...args),

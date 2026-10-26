@@ -42,7 +42,16 @@ type WithUrls<P> = P extends unknown
 /**
  * Convex's provider list with deployment URLs and required, public env strings.
  */
-export type Provider = WithUrls<AuthProvider>;
+export type Provider = WithUrls<AuthProvider> & {
+  /**
+   * Application-defined token family, copied to the runtime provider data.
+   */
+  readonly family?: string;
+  /**
+   * Application-defined issuer name, for example a trusted service.
+   */
+  readonly name?: string;
+};
 
 /**
  * The cloud URL, or a path under it, resolved when Convex loads auth config.

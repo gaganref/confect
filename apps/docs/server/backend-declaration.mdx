@@ -170,6 +170,23 @@ Codegen writes `convex/auth.config.ts` with deployment URLs as `process.env.CONV
 
 For deployment-signed JWTs, use `Auth.cloudUrl("/components/auth")` as the issuer, `Auth.cloudUrl("/.well-known/jwks.json")` as the JWKS, and `"ES256"` as the algorithm. `Auth.siteUrl()` can supply the receiving deployment's `applicationID`; a session provider can keep `"convex"`. Cloud URL paths are explicit because component issuer paths differ from HTTP mount prefixes.
 
+### Runtime provider data
+
+An optional `family` and `name` on each provider are application-defined strings.
+Codegen omits them from Convex's auth config and writes
+`confect/_generated/auth.providers.ts` for handlers:
+
+```ts
+import { providers } from "./_generated/auth.providers";
+```
+
+Each entry has `issuer` (the provider's `issuer` or `domain`), `audience` when
+`applicationID` is present, and the declared `family` and `name`. URL and env
+expressions resolve in the deployment. The generated module imports nothing, so
+handlers can classify verified identities without importing `auth.ts`, `app.ts`,
+or component definitions. Existing providers need no metadata. Removing `auth.ts`
+removes both generated auth files.
+
 ## `http.ts`
 
 Declare the backend's own `HttpApi` and its handlers. `docs` is optional and serves a Scalar page for the api at that path:

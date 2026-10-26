@@ -735,3 +735,14 @@ loads the config and rejects foreign, optional and secret entries.
 
 Changeset: `auth-provider-env.md`.
 Upstream: planned; no linked proposal verified.
+
+### Generate runtime auth provider data
+
+Add optional provider family and name metadata and generate issuer/audience data
+without imports from declarations or component definitions. Strip metadata from
+Convex's config and remove descriptors when auth declarations disappear.
+The test layer supplies convex-test cloud and site URL defaults before loading
+backend modules, preserving explicit values and keeping generated issuers usable.
+
+Changeset: `auth-provider-descriptors.md`.
+Upstream: planned; no linked proposal verified.
