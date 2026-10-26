@@ -65,3 +65,50 @@ Delete the document with the given ID.
 ```ts
 writer.table("notes").delete(noteId);
 ```
+
+## Write hooks
+
+`DatabaseWriter.make(schema, ctx.db, hook)` and `DatabaseWriter.layer(schema,
+ctx.db, hook)` accept an optional hook. It runs after each successful insert,
+patch, replace or delete, before that operation returns. Patch and replace emit
+`operation: "update"`. Events carry `tableName`, decoded `oldDoc` and `newDoc`,
+including system fields. Insert has `oldDoc: null`; delete has `newDoc: null`.
+Narrow `tableName` to get that table's document type.
+
+Install the writer in mutation middleware to cover internal functions as well as
+public ones. For example, a middleware implementation can replace the generated
+writer service for the rest of the invocation:
+
+```ts
+import * as DatabaseWriterModule from "@confect/server/DatabaseWriter";
+import { MutationCtx } from "@confect/server/MutationCtx";
+import * as Effect from "effect/Effect";
+import schema from "./confect/_generated/schema";
+import { DatabaseWriter } from "./confect/_generated/services";
+
+const withWrites = (effect) =>
+  Effect.gen(function* () {
+    const ctx = yield* MutationCtx();
+    const writer = DatabaseWriterModule.make(schema, ctx.db, (change) =>
+      updateAggregate(ctx, change),
+    );
+    return yield* Effect.provideService(effect, DatabaseWriter, writer);
+  });
+```
+
+The hook returns `Effect<void>` and closes over any transaction services it needs.
+A defect aborts the mutation, rolling back the original write and the hook's
+writes together. Hooks may maintain aggregates, schedule work or record an audit.
+Use the original writer or `ctx.db` for hook-owned writes to avoid recursion.
+
+Only writes through this writer invoke its hook. Attach the middleware to every
+mutation that needs it, including internal mutations. Raw writes through `ctx.db`,
+`MutationCtx` or a second `DatabaseWriter.make` bypass the hook. The consumer's
+authz battery keeps raw writers out (roadmap P2). Component writers and nested
+`runMutation` calls need their own installation. Concurrent writes to one document
+under `Effect.all` can interleave the read-write-read steps. Await them sequentially
+when exact per-write snapshots matter. A per-writer semaphore would not cover
+separate writer instances, so this API does not introduce a shared transaction lock.
+
+With a hook, updates read before and after the write, and inserts and deletes read
+once. Without a hook, write behavior and read cost are unchanged.

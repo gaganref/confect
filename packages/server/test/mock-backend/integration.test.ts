@@ -22,6 +22,8 @@ import type * as CompilerOptions from "confect-test-types/CompilerOptions";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Duration from "effect/Duration";
+import * as Exit from "effect/Exit";
+import * as Cause from "effect/Cause";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
@@ -1438,3 +1440,78 @@ describe("typed errors", () => {
     );
   });
 });
+
+it.effect(
+  "plain and hooked patches fail with GetByIdFailure for a deleted document",
+  () =>
+    Effect.gen(function* () {
+      const c = yield* TestConfect.TestConfect;
+      yield* c.run(
+        Effect.gen(function* () {
+          const ctx = yield* MutationCtx;
+          const plain = DatabaseWriter_.make(confectSchema, ctx.db).table(
+            "notes",
+          );
+          const hooked = DatabaseWriter_.make(confectSchema, ctx.db, () =>
+            Effect.die("hook must not run"),
+          ).table("notes");
+          const id = yield* plain.insert({ text: "deleted" });
+          yield* plain.delete(id);
+          for (const writer of [plain, hooked]) {
+            const result = yield* Effect.result(
+              writer.patch(id, { text: "missing" }),
+            );
+            assert(Result.isFailure(result));
+            expect(result.failure).toMatchObject({
+              _tag: "GetByIdFailure",
+              tableName: "notes",
+              id,
+            });
+          }
+        }),
+      );
+    }).pipe(Effect.provide(TestConfect.layer)),
+);
+
+it.effect.each([
+  refs.public.groups.notes.observeWrites,
+  refs.internal.groups.notes.internalObserveWrites,
+])(
+  "middleware observes writes and rolls back a failed hook in $convexFunctionName",
+  (ref) =>
+    Effect.gen(function* () {
+      const c = yield* TestConfect.TestConfect;
+      const failed = yield* Effect.exit(c.mutation(ref, { fail: true }));
+      assert(Exit.isFailure(failed));
+      expect(Cause.pretty(failed.cause)).toContain("hook refused write");
+      yield* c.run(
+        Effect.gen(function* () {
+          const reader = yield* DatabaseReader;
+          expect(
+            yield* reader.table("demands").index("by_creation_time").collect(),
+          ).toEqual([]);
+          expect(
+            yield* reader.table("totals").index("by_creation_time").collect(),
+          ).toEqual([]);
+        }),
+      );
+      expect(yield* c.mutation(ref, { fail: false })).toEqual([
+        { operation: "insert", count: 1, sum: 100 },
+        { operation: "update", count: 1, sum: 150 },
+        { operation: "update", count: 1, sum: 200 },
+        { operation: "delete", count: 0, sum: 0 },
+      ]);
+      yield* c.run(
+        Effect.gen(function* () {
+          const reader = yield* DatabaseReader;
+          const totals = yield* reader
+            .table("totals")
+            .index("by_creation_time")
+            .collect();
+          expect(totals.map(({ count, sum }) => ({ count, sum }))).toEqual([
+            { count: 0, sum: 0 },
+          ]);
+        }),
+      );
+    }).pipe(Effect.provide(TestConfect.layer)),
+);

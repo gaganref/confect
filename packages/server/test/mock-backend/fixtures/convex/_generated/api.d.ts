@@ -211,6 +211,12 @@ export declare const api: {
           userId?: Id<"users">;
         }>
       >;
+      observeWrites: FunctionReference<
+        "mutation",
+        "public",
+        { fail: boolean },
+        Array<{ count: number; operation: string; sum: number }>
+      >;
     };
     random: {
       getNumber: FunctionReference<"action", "public", {}, number>;
@@ -330,6 +336,12 @@ export declare const internal: {
           text: string;
           userId?: Id<"users">;
         } | null
+      >;
+      internalObserveWrites: FunctionReference<
+        "mutation",
+        "internal",
+        { fail: boolean },
+        Array<{ count: number; operation: string; sum: number }>
       >;
     };
     typedErrors: {

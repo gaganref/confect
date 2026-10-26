@@ -831,7 +831,14 @@ export default GroupImpl.make(databaseSchema, notes).pipe(
         // location, which points at the file that is missing functions.
         expect(result.failure.groupPath).toBe("groups._incomplete");
         expect([...result.failure.missingFunctionNames].sort()).toEqual(
-          ["delete_", "getFirst", "internalGetFirst", "list"].sort(),
+          [
+            "delete_",
+            "getFirst",
+            "internalGetFirst",
+            "internalObserveWrites",
+            "list",
+            "observeWrites",
+          ].sort(),
         );
       }),
   );

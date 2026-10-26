@@ -7,6 +7,8 @@ const forward = <Ctx, Args, Returns>(handler: (ctx: Ctx, args: Args) => Promise<
 const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../../../groups/notes.spec.js")["default"]>(databaseSchema, groupLayer);
 
 export default {
+["internalObserveWrites"]: RegisteredConvexFunction.register({ ...definitions["internalObserveWrites"], handler: forward(definitions["internalObserveWrites"].handler) }),
+["observeWrites"]: RegisteredConvexFunction.register({ ...definitions["observeWrites"], handler: forward(definitions["observeWrites"].handler) }),
 ["insert"]: RegisteredConvexFunction.register({ ...definitions["insert"], handler: forward(definitions["insert"].handler) }),
 ["list"]: RegisteredConvexFunction.register({ ...definitions["list"], handler: forward(definitions["list"].handler) }),
 ["delete_"]: RegisteredConvexFunction.register({ ...definitions["delete_"], handler: forward(definitions["delete_"].handler) }),
