@@ -33,3 +33,11 @@ cloud, site, and trusted-provider values. Run it after `pnpm build`:
 ```sh
 pnpm exec vitest run --project @confect/cli test/integration/codegen.test.ts --testNamePattern 'lowers deployment JWT'
 ```
+
+The runtime-provider case generates family and audience descriptors while a
+handler imports them. It then replaces the declaration modules and component
+definition with throwing modules and bundles the handler and descriptors. Run:
+
+```sh
+pnpm exec vitest run --project @confect/cli test/integration/codegen.test.ts --testNamePattern 'generates runtime provider'
+```

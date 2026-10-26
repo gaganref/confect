@@ -444,14 +444,44 @@ export const authConfig = (providers: ReadonlyArray<Provider>): string =>
       : [
           ...providers.flatMap((provider) => [
             "    {",
-            ...provider.map(
-              ([field, value]) => `      ${field}: ${providerValue(value)},`,
-            ),
+            ...provider
+              .filter(([field]) => field !== "family" && field !== "name")
+              .map(
+                ([field, value]) => `      ${field}: ${providerValue(value)},`,
+              ),
             "    },",
           ]),
           "  ],",
         ]),
     "} satisfies AuthConfig;",
+    "",
+  ].join("\n");
+
+/**
+ * Runtime issuer data with no dependency on declarations or component
+ * definitions.
+ */
+export const authProviders = (providers: ReadonlyArray<Provider>): string =>
+  [
+    header("confect/auth.ts"),
+    "",
+    "export const providers = [",
+    ...providers.flatMap((provider) => [
+      "  {",
+      ...provider.flatMap(([field, value]) => {
+        const key =
+          field === "domain"
+            ? "issuer"
+            : field === "applicationID"
+              ? "audience"
+              : field;
+        return ["issuer", "audience", "family", "name"].includes(key)
+          ? [`    ${key}: ${providerValue(value)},`]
+          : [];
+      }),
+      "  },",
+    ]),
+    "] as const;",
     "",
   ].join("\n");
 
