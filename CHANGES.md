@@ -671,3 +671,14 @@ the policy on frozen installs too. Leave resolved versions unchanged.
 
 Changeset: none; repository identity, tooling, automation, and records only.
 Upstream: fork only.
+
+## Query streams
+
+### Defer stream checks until consumption
+
+Add `QueryStream.defer` with a known layout and direction. An effectful check
+runs when the source is pulled, including inside `flatMap`, and stays lazy
+through narrowing and reversal. Each run checks the resolved stream's metadata.
+
+Changeset: `deferred-query-stream.md`.
+Upstream: planned; no proposal submitted.
