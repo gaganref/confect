@@ -746,3 +746,12 @@ backend modules, preserving explicit values and keeping generated issuers usable
 
 Changeset: `auth-provider-descriptors.md`.
 Upstream: planned; no linked proposal verified.
+
+### Require the deployment JWT SDK
+
+Raise core and server's Convex peer floor to 1.48.0, which exports mutation JWT
+signing. Align development pins, overrides and packed consumer fixtures. Extend the
+existing storage and metrics fixtures for the SDK's new fields.
+
+Changeset: `convex-signing-floor.md`.
+Upstream: planned; no linked proposal verified.

@@ -28,7 +28,7 @@ test("pins all eight public aliases to the requested fork build", () => {
       alchemy: "2.0.0-beta.82",
       foldkit: "0.165.0",
       react: "19.3.0",
-      convex: "1.46.0",
+      convex: "1.48.0",
       "convex-test": "0.0.60",
       effect: "4.0.4",
       "@effect/platform-node": "4.0.4",
@@ -110,7 +110,7 @@ test("writes and refreshes a consumer with aligned peers", () =>
 
 overrides:
   effect: 4.0.4
-  convex: 1.46.0
+  convex: 1.48.0
   "@effect/platform-node": 4.0.4
   "@effect/platform-node-shared": 4.0.4
 allowBuilds:

@@ -68,7 +68,7 @@
   "peerDependencies": {
     "@confect/core": "workspace:^",
     "@effect/platform-node": "^4.0.0",
-    "convex": "^1.45.0",
+    "convex": "^1.48.0",
     "effect": "^4.0.4"
   },
   "peerDependenciesMeta": {

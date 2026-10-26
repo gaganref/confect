@@ -17,6 +17,10 @@ describe("TransactionMetadata", () => {
     "observes fresh transaction metrics on every execution without eager reads",
     () => {
       const before: TransactionMetrics = {
+        filesWritten: { used: 0, remaining: 100 },
+        fileWriteBytes: { used: 0, remaining: 1000 },
+        filesRead: { used: 0, remaining: 100 },
+        fileReadBytes: { used: 0, remaining: 1000 },
         bytesRead: { used: 0, remaining: 1000 },
         bytesWritten: { used: 0, remaining: 1000 },
         databaseQueries: { used: 0, remaining: 100 },
