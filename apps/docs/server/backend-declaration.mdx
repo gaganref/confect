@@ -146,7 +146,7 @@ A Confect-authored component declares itself with `App.make({ kind: "component",
 
 ## `auth.ts`
 
-Declare the identity providers whose tokens the backend accepts. This is Convex's own [provider list](https://docs.convex.dev/auth/advanced/custom-auth). Use `Auth.siteUrl` where `domain`, `issuer` or `jwks` points at the deployment's own site URL:
+Declare the identity providers whose tokens the backend accepts. This is Convex's own [provider list](https://docs.convex.dev/auth/advanced/custom-auth). Use `Auth.siteUrl` for the deployment's site URL and `Auth.cloudUrl` for its cloud URL. `domain`, `issuer`, `jwks` and `applicationID` also accept required `Env.string()` or `Env.literals(...)` entries from this backend:
 
 ```ts confect/auth.ts
 import { Auth } from "@confect/core";
@@ -166,7 +166,9 @@ export default Auth.make(app, {
 });
 ```
 
-Codegen writes `convex/auth.config.ts` with each site URL as a `process.env.CONVEX_SITE_URL` expression, typed with `satisfies AuthConfig`. Components cannot declare `auth.ts`.
+Codegen writes `convex/auth.config.ts` with deployment URLs as `process.env.CONVEX_SITE_URL` or `process.env.CONVEX_CLOUD_URL` expressions and env entries as `process.env["KEY"]!`. It never reads env values during generation. Optional entries and secrets are rejected. The output uses `satisfies AuthConfig`. Components cannot declare `auth.ts`.
+
+For deployment-signed JWTs, use `Auth.cloudUrl("/components/auth")` as the issuer, `Auth.cloudUrl("/.well-known/jwks.json")` as the JWKS, and `"ES256"` as the algorithm. `Auth.siteUrl()` can supply the receiving deployment's `applicationID`; a session provider can keep `"convex"`. Cloud URL paths are explicit because component issuer paths differ from HTTP mount prefixes.
 
 ## `http.ts`
 

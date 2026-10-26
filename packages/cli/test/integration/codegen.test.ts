@@ -16,6 +16,77 @@ import * as Bundler from "@confect/cli/Bundler";
 const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
 layer(NodeServices.layer)("built confect codegen", (it) => {
+  it.effect(
+    "lowers deployment JWT providers from a clean checkout without reading env",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* Project.make;
+        yield* project.write(
+          "confect/app.ts",
+          `import { App, Env } from "@confect/core";
+export const env = Env.make("host", { TRUSTED_ISSUER: Env.string(), TRUSTED_JWKS: Env.string() });
+export default App.make({ env });`,
+        );
+        yield* project.write(
+          "confect/auth.ts",
+          `import { Auth } from "@confect/core";
+import app, { env } from "./app";
+export default Auth.make(app, { providers: [
+  { type: "customJwt", issuer: Auth.cloudUrl("/components/auth"), jwks: Auth.cloudUrl("/.well-known/jwks.json"), applicationID: "convex", algorithm: "ES256" },
+  { type: "customJwt", issuer: env.TRUSTED_ISSUER, jwks: env.TRUSTED_JWKS, applicationID: Auth.siteUrl(), algorithm: "ES256" }
+] });`,
+        );
+        const generated = yield* project.start("codegen");
+        expect(
+          yield* generated.handle.exitCode,
+          yield* Ref.get(generated.output),
+        ).toBe(0);
+        const fs = yield* FileSystem.FileSystem;
+        const configPath = `${project.root}/convex/auth.config.ts`;
+        const config = yield* fs.readFileString(configPath);
+        expect(config).toContain("process.env.CONVEX_CLOUD_URL");
+        expect(config).toContain('process.env["TRUSTED_ISSUER"]!');
+        const lowered = yield* Bundler.bundle(configPath, {
+          plugins: [
+            {
+              name: "deployment-env",
+              setup(build) {
+                build.initialOptions.define = {
+                  "process.env.CONVEX_CLOUD_URL":
+                    '"https://deployment.convex.cloud"',
+                  "process.env.CONVEX_SITE_URL":
+                    '"https://deployment.convex.site"',
+                  "process.env.TRUSTED_ISSUER":
+                    '"https://platform.convex.cloud/components/auth"',
+                  "process.env.TRUSTED_JWKS":
+                    '"https://platform.convex.cloud/.well-known/jwks.json"',
+                };
+              },
+            },
+          ],
+        });
+        expect(lowered.module.default).toEqual({
+          providers: [
+            {
+              type: "customJwt",
+              issuer: "https://deployment.convex.cloud/components/auth",
+              jwks: "https://deployment.convex.cloud/.well-known/jwks.json",
+              applicationID: "convex",
+              algorithm: "ES256",
+            },
+            {
+              type: "customJwt",
+              issuer: "https://platform.convex.cloud/components/auth",
+              jwks: "https://platform.convex.cloud/.well-known/jwks.json",
+              applicationID: "https://deployment.convex.site",
+              algorithm: "ES256",
+            },
+          ],
+        });
+      }),
+    { timeout: 30000 },
+  );
+
   it.effect.each([false, true])(
     "enforces declared middleware in generated registration (covered=%s)",
     (covered) =>

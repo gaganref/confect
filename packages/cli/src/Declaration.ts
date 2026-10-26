@@ -33,7 +33,8 @@ export type Binding =
 
 export type ProviderValue =
   | { readonly kind: "value"; readonly value: string }
-  | { readonly kind: "siteUrl"; readonly path: string };
+  | { readonly kind: "siteUrl" | "cloudUrl"; readonly path: string }
+  | { readonly kind: "env"; readonly key: string };
 
 export type Provider = ReadonlyArray<readonly [string, ProviderValue]>;
 
@@ -99,6 +100,16 @@ export class AuthForAnotherBackend extends Data.TaggedError(
   }
 }
 
+export class InvalidProviderEnv extends Data.TaggedError("InvalidProviderEnv")<{
+  readonly field: string;
+  readonly key: string;
+  readonly backend: string;
+}> {
+  override get message(): string {
+    return `Auth provider field "${this.field}" requires a non-secret, required string entry of the "${this.backend}" env; got "${this.key}".`;
+  }
+}
+
 export type DeclarationError =
   | NotADeclaration
   | InvalidEnvKey
@@ -106,7 +117,8 @@ export type DeclarationError =
   | ForeignEnvBinding
   | InvalidBinding
   | UnknownComponentImport
-  | AuthForAnotherBackend;
+  | AuthForAnotherBackend
+  | InvalidProviderEnv;
 
 const ENV_KEY = /^[A-Za-z][A-Za-z0-9_]*$/;
 const MOUNT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -117,7 +129,8 @@ const MOUNT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
 export const fileOf = (error: DeclarationError): string =>
   error._tag === "NotADeclaration"
     ? error.file
-    : error._tag === "AuthForAnotherBackend"
+    : error._tag === "AuthForAnotherBackend" ||
+        error._tag === "InvalidProviderEnv"
       ? "confect/auth.ts"
       : "confect/app.ts";
 
@@ -241,24 +254,44 @@ const parseProviders = (
       }),
     );
   }
-  return Result.succeed(
-    Auth.providers(auth).map((provider) =>
-      Object.entries(provider).map(([field, value]) => {
+  return Result.gen(function* () {
+    const providers: Provider[] = [];
+    for (const provider of Auth.providers(auth)) {
+      const fields: Array<readonly [string, ProviderValue]> = [];
+      for (const [field, value] of Object.entries(provider)) {
         const sitePath = Auth.siteUrlPath(value);
-        return [
-          field,
-          sitePath === undefined
-            ? {
-                kind: "value",
-                value: Predicate.isString(value)
-                  ? value
-                  : JSON.stringify(value),
-              }
-            : { kind: "siteUrl", path: sitePath },
-        ] as const;
-      }),
-    ),
-  );
+        const cloudPath = Auth.cloudUrlPath(value);
+        let lowered: ProviderValue;
+        if (Env.isEntry(value)) {
+          const { backend: owner, key } = Env.origin(value);
+          const descriptor = value["~@confect/core/Env/Entry"].descriptor;
+          if (
+            owner !== backend ||
+            descriptor.optional ||
+            descriptor.kind === "secret" ||
+            !ENV_KEY.test(key)
+          ) {
+            return yield* Result.fail(
+              new InvalidProviderEnv({ field, key, backend }),
+            );
+          }
+          lowered = { kind: "env", key };
+        } else if (sitePath !== undefined) {
+          lowered = { kind: "siteUrl", path: sitePath };
+        } else if (cloudPath !== undefined) {
+          lowered = { kind: "cloudUrl", path: cloudPath };
+        } else {
+          lowered = {
+            kind: "value",
+            value: Predicate.isString(value) ? value : JSON.stringify(value),
+          };
+        }
+        fields.push([field, lowered]);
+      }
+      providers.push(fields);
+    }
+    return providers;
+  });
 };
 
 const quote = (value: string): string => JSON.stringify(value);
@@ -384,10 +417,16 @@ export const convexConfig = (declaration: Declaration): string => {
   return lines.join("\n");
 };
 
-const providerValue = (value: ProviderValue): string =>
-  value.kind === "value"
-    ? quote(value.value)
-    : `\`\${process.env.CONVEX_SITE_URL}${value.path.replaceAll(/[`$\\]/g, "\\$&")}\``;
+const providerValue = (value: ProviderValue): string => {
+  switch (value.kind) {
+    case "value":
+      return quote(value.value);
+    case "env":
+      return `process.env[${quote(value.key)}]!`;
+    default:
+      return `\`\${process.env.${value.kind === "siteUrl" ? "CONVEX_SITE_URL" : "CONVEX_CLOUD_URL"}}${value.path.replaceAll(/[`$\\]/g, "\\$&")}\``;
+  }
+};
 
 /**
  * `convex/auth.config.ts`: Convex's provider list, with site URLs resolved

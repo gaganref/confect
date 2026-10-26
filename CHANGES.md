@@ -724,3 +724,14 @@ preserves the option through narrowing and reversal. Ordinary merge is unchanged
 
 Changeset: `merge-query-stream-dedupe.md`.
 Upstream: planned; no proposal submitted.
+
+## Deployment auth
+
+### Lower deployment auth provider values
+
+Add `Auth.cloudUrl()` and allow deployment URL placeholders and required public env
+entries in provider URLs and audiences. Codegen preserves expressions until Convex
+loads the config and rejects foreign, optional and secret entries.
+
+Changeset: `auth-provider-env.md`.
+Upstream: planned; no linked proposal verified.

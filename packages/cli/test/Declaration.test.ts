@@ -1,5 +1,5 @@
 import { assert, describe, expect, it } from "@effect/vitest";
-import { App, Env } from "@confect/core";
+import { App, Auth, Env } from "@confect/core";
 import * as Declaration from "@confect/cli/Declaration";
 import { defineComponent } from "convex/server";
 import { v } from "convex/values";
@@ -16,6 +16,37 @@ const componentImport = () =>
   });
 
 describe("Declaration", () => {
+  it("rejects foreign, optional and secret provider env values", () => {
+    const env = Env.make("tenant", {
+      OPTIONAL: Env.optional(Env.string()),
+      SECRET: Env.secret(),
+    });
+    const other = Env.make("platform", { ISSUER: Env.string() });
+    const app = App.make({ env });
+    for (const entry of [env.OPTIONAL, env.SECRET, other.ISSUER]) {
+      const auth: unknown = {
+        ...Auth.make(app, { providers: [] }),
+        providers: [{ domain: entry, applicationID: "convex" }],
+      };
+      expect(
+        Declaration.parse({
+          target: "app",
+          app,
+          auth: Option.some(auth),
+          componentImport,
+        }),
+      ).toEqual(
+        Result.fail(
+          new Declaration.InvalidProviderEnv({
+            field: "domain",
+            key: Env.origin(entry).key,
+            backend: "tenant",
+          }),
+        ),
+      );
+    }
+  });
+
   it("renders a Confect-authored component's own definition", () => {
     const env = Env.make("email", {
       FROM: Env.string(),
