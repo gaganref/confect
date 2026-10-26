@@ -1,3 +1,4 @@
+import type * as Schema from "effect/Schema";
 import type * as FunctionProvenance from "./FunctionProvenance.js";
 import type * as MiddlewareSpec from "./MiddlewareSpec.js";
 
@@ -78,3 +79,48 @@ export const attach = <
     info: Info<FieldsType>,
   ) => MiddlewareSpec.Options<NoInfer<MiddlewareSpec_>>,
 ): Attachment<MiddlewareSpec_, FieldsType> => ({ spec, options });
+
+/**
+ * A type function for a schema wrapper, applied to each declared codec.
+ */
+export interface SchemaTransform {
+  readonly Input: Schema.Codec<unknown, unknown>;
+  readonly Type: Schema.Codec<any, any>;
+}
+
+/**
+ * Args wrappers transform the declared field map, before Struct composition.
+ */
+export interface ArgsTransform {
+  readonly Input: unknown;
+  readonly Type: FunctionProvenance.ArgsFields;
+}
+
+export interface Transforms {
+  readonly args?: ArgsTransform;
+  readonly returns?: SchemaTransform;
+  readonly item?: SchemaTransform;
+  readonly error?: SchemaTransform;
+}
+
+export type Transform<T, Input> = (T & { readonly Input: Input })["Type" &
+  keyof T];
+
+export type Wrappers<T extends Transforms, FieldsType> = {
+  readonly [K in keyof T]-?: K extends keyof Transforms
+    ? <
+        Input extends (K extends "args"
+          ? FunctionProvenance.ArgsFields
+          : Schema.Codec<any, any>),
+      >(
+        thunk: () => Input,
+        info: Info<FieldsType>,
+      ) => () => Transform<T[K], Input>
+    : never;
+} & { readonly [K in Exclude<keyof Transforms, keyof T>]?: never };
+
+export type SchemaConfig<T extends Transforms, FieldsType> = [keyof T] extends [
+  never,
+]
+  ? { readonly schemas?: never }
+  : { readonly schemas: Wrappers<T, FieldsType> };

@@ -749,16 +749,38 @@ type Declared<
   ? Make
   : never;
 
+type Wrapped<
+  Layers extends ReadonlyArray<Profile.Transforms>,
+  Key extends keyof Profile.Transforms,
+  Input,
+> = Layers extends readonly [
+  infer First extends Profile.Transforms,
+  ...infer Rest extends ReadonlyArray<Profile.Transforms>,
+]
+  ? Wrapped<
+      Rest,
+      Key,
+      Key extends keyof First
+        ? [Input] extends [never]
+          ? never
+          : Profile.Transform<First[Key], Input>
+        : Input
+    >
+  : Input;
+
+type UserArgs<A> = [A] extends [never] ? {} : A;
+
 type ExtendedMake<
   RuntimeAndFunctionType_ extends RuntimeAndFunctionType.RuntimeAndFunctionType,
   Fields_ extends Profile.Fields,
   MiddlewareSpecs_ extends MiddlewareSpec.AnyMiddlewareSpec,
+  Layers extends ReadonlyArray<Profile.Transforms>,
 > = Declared<
   MiddlewareSpecs_,
   RuntimeAndFunctionType_["functionType"],
   <
     const Name_ extends string,
-    const ArgsFields_ extends FunctionProvenance.ArgsFields = {},
+    const ArgsFields_ extends FunctionProvenance.ArgsFields = never,
     Returns_ extends Schema.Codec<any, any> = never,
     Error_ extends Schema.Codec<any, any> = never,
   >(
@@ -768,26 +790,33 @@ type ExtendedMake<
       readonly args?: () => ArgsFields_;
       readonly returns: () => Returns_;
       readonly error?: () => Error_;
-    } & NoInfer<CheckedFields<Profile.Apply<Fields_, Name_, ArgsFields_>>>,
+    } & NoInfer<
+      CheckedFields<Profile.Apply<Fields_, Name_, UserArgs<ArgsFields_>>>
+    >,
   ) => ExtendedBuilder<
     RuntimeAndFunctionType_,
     "public",
     Name_,
-    FunctionProvenance.Confect<ArgsFields_, Returns_, Error_>,
+    FunctionProvenance.Confect<
+      UserArgs<Wrapped<Layers, "args", ArgsFields_>>,
+      Wrapped<Layers, "returns", Returns_>,
+      Wrapped<Layers, "error", Error_>
+    >,
     MiddlewareSpecs_,
-    Profile.Apply<Fields_, Name_, ArgsFields_>
+    Profile.Apply<Fields_, Name_, UserArgs<ArgsFields_>>
   >
 >;
 
 type ExtendedMakePaginated<
   Fields_ extends Profile.Fields,
   MiddlewareSpecs_ extends MiddlewareSpec.AnyMiddlewareSpec,
+  Layers extends ReadonlyArray<Profile.Transforms>,
 > = Declared<
   MiddlewareSpecs_,
   "query",
   <
     const Name_ extends string,
-    const UserArgsFields_ extends FunctionProvenance.ArgsFields = {},
+    const UserArgsFields_ extends FunctionProvenance.ArgsFields = never,
     Item_ extends Schema.Codec<any, any> = never,
     Error_ extends Schema.Codec<any, any> = never,
   >(
@@ -798,14 +827,20 @@ type ExtendedMakePaginated<
         ForbidPaginationOpts<UserArgsFields_>;
       readonly item: () => Item_;
       readonly error?: () => Error_;
-    } & NoInfer<CheckedFields<Profile.Apply<Fields_, Name_, UserArgsFields_>>>,
+    } & NoInfer<
+      CheckedFields<Profile.Apply<Fields_, Name_, UserArgs<UserArgsFields_>>>
+    >,
   ) => ExtendedBuilder<
     RuntimeAndFunctionType.ConvexQuery,
     "public",
     Name_,
-    FunctionProvenance.ConfectPaginated<UserArgsFields_, Item_, Error_>,
+    FunctionProvenance.ConfectPaginated<
+      UserArgs<Wrapped<Layers, "args", UserArgsFields_>>,
+      Wrapped<Layers, "item", Item_>,
+      Wrapped<Layers, "error", Error_>
+    >,
     MiddlewareSpecs_,
-    Profile.Apply<Fields_, Name_, UserArgsFields_>
+    Profile.Apply<Fields_, Name_, UserArgs<UserArgsFields_>>
   >
 >;
 
@@ -822,21 +857,27 @@ interface ExtendedRuntimes {
 export type Extended<
   Fields_ extends Profile.Fields,
   MiddlewareSpecs_ extends MiddlewareSpec.AnyMiddlewareSpec,
+  Layers extends ReadonlyArray<Profile.Transforms> = [],
 > = {
   readonly [Builder_ in keyof ExtendedRuntimes]: ExtendedMake<
     ExtendedRuntimes[Builder_],
     Fields_,
-    MiddlewareSpecs_
+    MiddlewareSpecs_,
+    Layers
   >;
 } & {
   readonly publicPaginatedQuery: ExtendedMakePaginated<
     Fields_,
-    MiddlewareSpecs_
+    MiddlewareSpecs_,
+    Layers
   >;
   /**
    * Require more fields and attach more middleware after this profile's.
    */
-  extend<Extension extends Profile.Fields = Profile.NoFields>(): <
+  extend<
+    Extension extends Profile.Fields = Profile.NoFields,
+    Transforms extends Profile.Transforms = {},
+  >(): <
     const Middleware_ extends ReadonlyArray<
       ProfileMiddleware<
         Profile.Apply<Profile.Both<Fields_, Extension>, string, any>
@@ -846,20 +887,33 @@ export type Extended<
     config: {
       readonly middleware: Middleware_ &
         NotInherited<Middleware_, MiddlewareSpecs_>;
-    } & OptionFree<Extension["Type"]>,
+    } & OptionFree<Extension["Type"]> &
+      Profile.SchemaConfig<
+        Transforms,
+        Profile.Apply<Profile.Both<Fields_, Extension>, string, any>
+      >,
   ) => Extended<
     Profile.Both<Fields_, Extension>,
-    MiddlewareSpecs_ | SpecOf<Middleware_[number]>
+    MiddlewareSpecs_ | SpecOf<Middleware_[number]>,
+    [...Layers, Transforms]
   >;
 };
 
+type RuntimeWrappers = Partial<
+  Record<
+    keyof Profile.Transforms,
+    (thunk: () => any, info: Profile.Info<any>) => () => any
+  >
+>;
+
 const makeExtended = (
   middleware: ReadonlyArray<ProfileMiddleware<any>>,
+  schemas: ReadonlyArray<RuntimeWrappers> = [],
 ): Extended<any, any> => {
   // `OptionFree` keeps option names out of the fields; this split is the
   // runtime's fallback.
   const extended =
-    (makeSpec: (options: never) => object): any =>
+    (makeSpec: (options: never) => object, paginated = false): any =>
     ({
       name,
       description,
@@ -868,33 +922,54 @@ const makeExtended = (
       item,
       error,
       ...fields
-    }: Record<string, unknown>) =>
-      middleware.reduce(
+    }: Record<string, unknown>) => {
+      const info = {
+        name,
+        args: args ?? (() => ({})),
+        fields,
+      } as Profile.Info<unknown>;
+      const thunks = {
+        args,
+        returns: paginated ? undefined : returns,
+        item: paginated ? item : undefined,
+        error,
+      } as Partial<Record<keyof Profile.Transforms, () => any>>;
+      for (const wrappers of schemas) {
+        for (const key of ["args", "returns", "item", "error"] as const) {
+          const wrap = wrappers[key];
+          const thunk = thunks[key];
+          if (wrap !== undefined && thunk !== undefined) {
+            thunks[key] = () => wrap(thunk, info)();
+          }
+        }
+      }
+      return middleware.reduce(
         (spec: any, entry) =>
           MiddlewareSpec.isMiddlewareSpec(entry)
             ? spec.middleware(entry)
-            : spec.middleware(
-                entry.spec,
-                entry.options({
-                  name,
-                  args: args ?? (() => ({})),
-                  fields,
-                } as Profile.Info<unknown>),
-              ),
-        Object.assign(
-          makeSpec({ name, description, args, returns, item, error } as never),
-          { fields },
-        ),
+            : spec.middleware(entry.spec, entry.options(info)),
+        Object.assign(makeSpec({ name, description, ...thunks } as never), {
+          fields,
+        }),
       );
+    };
 
   return {
     publicQuery: extended(publicQuery),
     publicMutation: extended(publicMutation),
     publicAction: extended(publicAction),
     publicNodeAction: extended(publicNodeAction),
-    publicPaginatedQuery: extended(publicPaginatedQuery),
-    extend: () => (config) =>
-      makeExtended([...middleware, ...config.middleware]),
+    publicPaginatedQuery: extended(publicPaginatedQuery, true),
+    extend:
+      () =>
+      (config: {
+        middleware: ReadonlyArray<ProfileMiddleware<any>>;
+        schemas?: RuntimeWrappers;
+      }) =>
+        makeExtended(
+          [...middleware, ...config.middleware],
+          [...schemas, config.schemas ?? {}],
+        ),
   };
 };
 
@@ -902,17 +977,24 @@ const makeExtended = (
  * Public builders whose specs require and keep `Fields_`, with `middleware`.
  */
 export const extend =
-  <Fields_ extends Profile.Fields = Profile.NoFields>() =>
+  <
+    Fields_ extends Profile.Fields = Profile.NoFields,
+    Transforms extends Profile.Transforms = {},
+  >() =>
   <
     const Middleware_ extends ReadonlyArray<
       ProfileMiddleware<Profile.Apply<Fields_, string, any>>
     >,
   >(
-    config: { readonly middleware: Middleware_ } & OptionFree<Fields_["Type"]>,
+    config: {
+      readonly middleware: Middleware_;
+    } & OptionFree<Fields_["Type"]> &
+      Profile.SchemaConfig<Transforms, Profile.Apply<Fields_, string, any>>,
   ) =>
-    makeExtended(config.middleware) as Extended<
+    makeExtended(config.middleware, [config.schemas ?? {}]) as Extended<
       Fields_,
-      SpecOf<Middleware_[number]>
+      SpecOf<Middleware_[number]>,
+      [Transforms]
     >;
 
 type MatchingRegisteredFunction<

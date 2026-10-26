@@ -144,6 +144,17 @@ and at most once.
 Changeset: `profile-attach.md`.
 Upstream: planned; no proposal submitted.
 
+### Wrap a profile's schema thunks
+
+Add `schemas` beside a function profile's middleware, with typed wrappers for
+args fields, returns, items and error unions. Wrappers run at first force and
+compose outside earlier layers. Absent thunks stay absent. Profiles can check or
+transform declared schemas without a facade. Core adds no contract or
+authorization policy.
+
+Changeset: `profile-schema-wrappers.md`.
+Upstream: planned; no proposal submitted.
+
 ### Check component declarations
 
 Carry a literal app or component kind in backend declarations. Default to app,
