@@ -120,7 +120,7 @@ export const Owned = FunctionSpec.extend<Owner>()({ middleware: [Trace] });
 // Owned.publicMutation({ name: "archive", args, owner: "noteId", returns })
 ```
 
-Omitting `owner`, or naming an argument the function lacks, is a type error. The spec keeps the fields as `spec.fields` through later middleware. `Owned.extend<Audited>()({ middleware: [Audit] })` adds fields and middleware after Owned's. A builder is `never` when a profile middleware does not declare its function type. The `extend` call refuses a field named after a builder option, such as `description` or `args`, and a middleware an earlier layer attached. When `Type` adds such a field only for some function names, the builder call for that name refuses it.
+Omitting `owner`, or naming an argument the function lacks, is a type error. The spec keeps the fields as `spec.fields` through later middleware. `Owned.extend<Audited>()({ middleware: [Audit] })` adds fields and middleware after Owned's. A builder is `never` when a profile middleware does not declare its function type. The `extend` call refuses a field named after a builder option, such as `description` or `args`, and a middleware without options that an earlier layer attached. When `Type` adds such a field only for some function names, the builder call for that name refuses it.
 
 A middleware with options joins the list through `Profile.attach`, whose factory computes each function's options from its name, its fields and its `args` thunk:
 
@@ -130,7 +130,7 @@ FunctionSpec.extend<Quota>()({
 });
 ```
 
-The factory runs when the spec is built, possibly before the modules its schemas use have loaded, so it should call `args` only lazily.
+The factory runs when the spec is built, possibly before the modules its schemas use have loaded, so it should call `args` only lazily. An extension may attach the same middleware again, since a middleware with options can [repeat](/server/middleware#repeating-a-policy).
 
 ## Implementing functions
 

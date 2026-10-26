@@ -137,6 +137,7 @@ Upstream: planned; no proposal submitted.
 `Profile.attach(spec, info => options)` puts a middleware with options in a
 profile's list, its options computed from each function's name, fields and args
 thunk, so codegen's registration runs it on every function the profile builds.
+An extension may attach it again, as a middleware with options may repeat.
 
 Changeset: `profile-attach.md`.
 Upstream: planned; no proposal submitted.

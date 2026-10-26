@@ -97,4 +97,24 @@ describe("attach", () => {
       ],
     });
   });
+
+  it("repeats an attachment an earlier layer made, as a middleware with options repeats", () => {
+    const Doubled = Limited.extend()({
+      middleware: [
+        Profile.attach(Limit, ({ fields }) => ({
+          max: fields.quota * 2,
+          label: "doubled",
+        })),
+      ],
+    });
+
+    expect(
+      Doubled.publicQuery({ name: "read", quota: 2, returns })
+        .middlewareAttachments,
+    ).toEqual([
+      { spec: Trace, options: undefined },
+      { spec: Limit, options: { max: 2, label: "read" } },
+      { spec: Limit, options: { max: 4, label: "doubled" } },
+    ]);
+  });
 });
