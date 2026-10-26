@@ -705,9 +705,10 @@ type NotRepeated<
   : Middleware_;
 
 /**
- * Refuses middleware an earlier layer attached, which would throw once a
- * function is built. Each member of an element's union is checked, so an array
- * typed `(A | B)[]` is refused when either was attached.
+ * Refuses a middleware without options that an earlier layer attached, as it is
+ * attached at most once; one with options may repeat. Each member of an
+ * element's union is checked, so an array typed `(A | B)[]` is refused when
+ * either was attached.
  */
 type NotInherited<
   Middleware_ extends ReadonlyArray<unknown>,

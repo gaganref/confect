@@ -138,6 +138,8 @@ Upstream: planned; no proposal submitted.
 profile's list, its options computed from each function's name, fields and args
 thunk, so codegen's registration runs it on every function the profile builds.
 An extension may attach it again, as a middleware with options may repeat.
+`attach` refuses a middleware without options, which joins the list directly
+and at most once.
 
 Changeset: `profile-attach.md`.
 Upstream: planned; no proposal submitted.

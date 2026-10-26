@@ -130,7 +130,7 @@ FunctionSpec.extend<Quota>()({
 });
 ```
 
-The factory runs when the spec is built, possibly before the modules its schemas use have loaded, so it should call `args` only lazily. An extension may attach the same middleware again, since a middleware with options can [repeat](/server/middleware#repeating-a-policy).
+The factory runs when the spec is built, possibly before the modules its schemas use have loaded, so it should call `args` only lazily. An extension may attach the same middleware again, since a middleware with options can [repeat](/server/middleware#repeating-a-policy). `Profile.attach` refuses a middleware without options, which joins the list directly and at most once.
 
 ## Implementing functions
 

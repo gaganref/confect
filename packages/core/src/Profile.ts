@@ -56,6 +56,16 @@ export interface Attachment<
 }
 
 /**
+ * A middleware without options has none to compute and is attached at most
+ * once, so it joins a profile's list directly.
+ */
+type TakesOptions<MiddlewareSpec_ extends MiddlewareSpec.AnyMiddlewareSpec> = [
+  MiddlewareSpec.WithoutOptions<MiddlewareSpec_>,
+] extends [never]
+  ? unknown
+  : MiddlewareSpec.AttachmentError<`Middleware "${MiddlewareSpec.Key<MiddlewareSpec_>}" takes no options, so list it without Profile.attach`>;
+
+/**
  * Attach a middleware that takes options to every function a profile builds,
  * with options computed from each function's fields.
  */
@@ -63,7 +73,7 @@ export const attach = <
   MiddlewareSpec_ extends MiddlewareSpec.AnyMiddlewareSpec,
   FieldsType,
 >(
-  spec: MiddlewareSpec_,
+  spec: MiddlewareSpec_ & TakesOptions<MiddlewareSpec_>,
   options: (
     info: Info<FieldsType>,
   ) => MiddlewareSpec.Options<NoInfer<MiddlewareSpec_>>,

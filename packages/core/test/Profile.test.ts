@@ -118,6 +118,24 @@ describe("attach", () => {
     ]);
   });
 
+  it("refuses a middleware without options at the attach call", () => {
+    // The only factory an optionless middleware admits casts or throws.
+    const none = () => undefined as never;
+    const middleware = [
+      Profile.attach(Limit, limit),
+      // @ts-expect-error Trace takes no options, in an array of mixed attachments.
+      Profile.attach(Trace, none),
+    ];
+
+    expect(() =>
+      Limited.extend()({
+        // @ts-expect-error Trace takes no options, and Limited already lists it.
+        middleware: [Profile.attach(Trace, none)],
+      }).publicQuery({ name: "read", quota: 1, returns }),
+    ).toThrow('Middleware "Trace" is already attached to function "read"');
+    Published.extend()({ middleware });
+  });
+
   it("refuses a field named after a builder option for the function it names", () => {
     interface Named extends Profile.Fields {
       readonly Type: this["Name"] extends "read"
