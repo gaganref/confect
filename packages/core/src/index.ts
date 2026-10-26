@@ -18,6 +18,7 @@ export * as MiddlewareSpec from "./MiddlewareSpec.js";
 export * as PaginationError from "./PaginationError.js";
 export * as PaginationOptions from "./PaginationOptions.js";
 export * as PaginationResult from "./PaginationResult.js";
+export * as Profile from "./Profile.js";
 export * as Ref from "./Ref.js";
 export * as Refs from "./Refs.js";
 export * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
