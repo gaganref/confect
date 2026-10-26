@@ -29,7 +29,7 @@ test("pins all eight public aliases to the requested fork build", () => {
       foldkit: "0.165.0",
       react: "19.3.0",
       convex: "1.48.0",
-      "convex-test": "0.0.60",
+      "convex-test": "0.0.65",
       effect: "4.0.4",
       "@effect/platform-node": "4.0.4",
       "counter-kit": "link:./kits/counter-kit",

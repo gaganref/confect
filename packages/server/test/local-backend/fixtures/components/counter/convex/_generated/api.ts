@@ -22,6 +22,12 @@ import { anyApi, componentsGeneric } from "convex/server";
  */
 export const api: {
   authoring: {
+    mint: FunctionReference<
+      "mutation",
+      "public",
+      { expiresInSeconds: number },
+      string
+    >;
     probe: FunctionReference<
       "query",
       "public",

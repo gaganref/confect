@@ -22,6 +22,13 @@ export class ClassProbe extends Schema.Class<ClassProbe>("ClassProbe")({
 export default GroupSpec.make()
   .addFunction(
     FunctionSpec.publicMutation({
+      name: "mint",
+      args: () => ({ expiresInSeconds: Schema.Finite }),
+      returns: () => Schema.String,
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
       name: "save",
       args: () => SystemIds.fields,
       returns: () => Id("systemIds"),

@@ -12,9 +12,10 @@ import { Rejected as CounterRejected } from "../local-backend/fixtures/component
 import localConvexSchema from "../local-backend/fixtures/confect/_generated/convexSchema";
 import localRefs from "../local-backend/fixtures/confect/_generated/refs";
 import localSchema from "../local-backend/fixtures/confect/_generated/schema";
-import type { Ref } from "@confect/core";
+import { Ref } from "@confect/core";
 import { Component } from "@confect/core";
 import {
+  Auth,
   DatabaseSchema,
   MutationRunner,
   QueryRunner,
@@ -36,6 +37,7 @@ import * as Array from "effect/Array";
 import * as Result from "effect/Result";
 import * as Exit from "effect/Exit";
 import * as Cause from "effect/Cause";
+import * as Schema from "effect/Schema";
 import contract from "../../../cli/test/fixtures/authored-component/confect/_generated/component";
 import componentSchema from "../../../cli/test/fixtures/authored-component/convex/schema";
 
@@ -77,6 +79,111 @@ const componentModules = {
   "counter.ts": () =>
     import("../../../cli/test/fixtures/authored-component/convex/counter"),
 };
+
+it.effect(
+  "verifies app and generated component mutation JWTs against deployment JWKS",
+  () =>
+    Effect.gen(function* () {
+      const t = convexTest(hostConvexSchema, hostModules);
+      t.registerComponent("first", counterConvexSchema, counterModules);
+      const appToken = yield* Effect.promise(() =>
+        t.mutation((ctx) =>
+          // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- Convex invokes this callback in its transaction context, which supplies per-call services.
+          Effect.runPromise(
+            Effect.gen(function* () {
+              const auth = yield* Auth.MutationAuth;
+              return yield* auth.signJwt({
+                claims: { sub: "outbox", aud: "https://hive.convex.site" },
+                expiresInSeconds: 3600,
+              });
+            }).pipe(
+              Effect.provide(
+                RegisteredConvexFunction.mutationLayer(hostSchema, ctx),
+              ),
+            ),
+          ),
+        ),
+      );
+      const componentToken = yield* Effect.promise(() =>
+        t.mutation(Ref.getFunctionReference(mounts.first.authoring.mint), {
+          expiresInSeconds: 60,
+        }),
+      );
+      const jwks = yield* Effect.promise(() => t.jwks());
+      const key = yield* Effect.promise(() =>
+        crypto.subtle.importKey(
+          "jwk",
+          jwks.keys[0]!,
+          { name: "ECDSA", namedCurve: "P-256" },
+          false,
+          ["verify"],
+        ),
+      );
+      const decodeHeader = Schema.decodeUnknownEffect(
+        Schema.fromJsonString(Schema.Struct({ alg: Schema.String })),
+      );
+      const decodeClaims = Schema.decodeUnknownEffect(
+        Schema.fromJsonString(
+          Schema.Struct({
+            iss: Schema.String,
+            sub: Schema.String,
+            aud: Schema.String,
+            iat: Schema.Finite,
+            exp: Schema.Finite,
+          }),
+        ),
+      );
+      for (const [token, issuer, subject, audience, lifetime] of [
+        [
+          appToken,
+          "https://some-deployment.convex.cloud",
+          "outbox",
+          "https://hive.convex.site",
+          3600,
+        ],
+        [
+          componentToken,
+          "https://some-deployment.convex.cloud/components/first",
+          "visitor",
+          "https://host.convex.site",
+          60,
+        ],
+      ] as const) {
+        const [header, payload, signature] = token.split(".");
+        expect(
+          yield* Effect.promise(() =>
+            crypto.subtle.verify(
+              { name: "ECDSA", hash: "SHA-256" },
+              key,
+              Buffer.from(signature!, "base64url"),
+              new TextEncoder().encode(`${header}.${payload}`),
+            ),
+          ),
+        ).toBe(true);
+        expect(
+          yield* decodeHeader(Buffer.from(header!, "base64url").toString()),
+        ).toMatchObject({ alg: "ES256" });
+        const claims = yield* decodeClaims(
+          Buffer.from(payload!, "base64url").toString(),
+        );
+        expect(claims).toEqual({
+          iss: issuer,
+          sub: subject,
+          aud: audience,
+          iat: expect.any(Number),
+          exp: expect.any(Number),
+        });
+        expect(claims.exp - claims.iat).toBe(lifetime);
+      }
+      yield* Effect.promise(() =>
+        expect(
+          t.mutation(Ref.getFunctionReference(mounts.first.authoring.mint), {
+            expiresInSeconds: 3601,
+          }),
+        ).rejects.toThrow("3600"),
+      );
+    }),
+);
 
 it.effect(
   "runs a generated component through vanilla Convex and scoped Confect runners",

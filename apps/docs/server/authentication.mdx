@@ -39,6 +39,30 @@ Effect.gen(function* () {
 });
 ```
 
+## Signing deployment JWTs
+
+`MutationAuth` is available in application and component mutations, including
+internal mutations. Queries and actions cannot require this service.
+
+```ts
+import * as Effect from "effect/Effect";
+import { MutationAuth } from "./confect/_generated/services";
+
+const mint = Effect.gen(function* () {
+  const auth = yield* MutationAuth;
+  return yield* auth.signJwt({
+    claims: { sub: "service", aud: "https://receiver.convex.site" },
+    expiresInSeconds: 60,
+  });
+});
+```
+
+The options are Convex's `SignJwtOptions`. Convex sets `iss`, `iat` and `exp`,
+requires a lifetime of 1 to 3600 seconds, and signs with ES256. The issuer is the
+app's cloud URL or that URL plus `/components/<installation path>` in a component.
+Verify against the deployment's `/.well-known/jwks.json`. SDK rejections remain
+Effect defects. Components receive signing without application identity access.
+
 ## Configuration
 
 Auth provider configuration goes in `confect/auth.ts`, which is passed through to Convex as-is. See the [Convex auth documentation](https://docs.convex.dev/auth) for setup details.

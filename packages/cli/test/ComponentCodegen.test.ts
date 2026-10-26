@@ -55,7 +55,11 @@ it.effect(
       const services = yield* fs.readFileString(
         `${directory}/confect/_generated/services.ts`,
       );
-      expect(services).not.toContain("Auth");
+      expect(services).not.toContain("export const Auth =");
+      expect(services).not.toContain("export type Auth =");
+      expect(services).toContain(
+        "export const MutationAuth = Auth_.MutationAuth;",
+      );
       expect(services).not.toContain("export const Storage =");
       expect(services).toContain(
         "StorageReader_.StorageReader.forScope<typeof scope>()",

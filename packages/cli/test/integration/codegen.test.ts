@@ -12,7 +12,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as Project from "./Project";
 import * as Bundler from "@confect/cli/Bundler";
-import { DatabaseSchema } from "@confect/server";
+import { Auth, DatabaseSchema } from "@confect/server";
 import { TestConfect } from "../../../test/src";
 import { defineSchema } from "convex/server";
 import { vi } from "vitest";
@@ -94,7 +94,7 @@ export default Auth.make(app, { providers: [
   );
 
   it.effect.each([false, true])(
-    "resolves generated provider URLs under the test layer (configured=%s)",
+    "matches minted JWTs to generated providers under the test layer (configured=%s)",
     (configured) =>
       Effect.gen(function* () {
         vi.stubEnv(
@@ -124,10 +124,32 @@ export default Auth.make(app, { providers: [
           yield* generated.handle.exitCode,
           yield* Ref.get(generated.output),
         ).toBe(0);
+        const databaseSchema = DatabaseSchema.make({});
         yield* Effect.gen(function* () {
           const runtime = yield* Bundler.bundle(
             `${project.root}/confect/_generated/auth.providers.ts`,
           );
+          const test = yield* TestConfect.TestConfect<typeof databaseSchema>();
+          const provider = runtime.module.providers[0];
+          const token = yield* test.run(
+            Effect.gen(function* () {
+              const auth = yield* Auth.MutationAuth;
+              return yield* auth.signJwt({
+                claims: { sub: "person", aud: provider.audience },
+                expiresInSeconds: 60,
+              });
+            }),
+            Schema.String,
+          );
+          const claims = yield* Schema.decodeEffect(
+            Schema.fromJsonString(
+              Schema.Struct({ iss: Schema.String, aud: Schema.String }),
+            ),
+          )(Buffer.from(token.split(".")[1]!, "base64url").toString());
+          expect(claims).toEqual({
+            iss: provider.issuer,
+            aud: provider.audience,
+          });
           expect(runtime.module.providers).toEqual([
             {
               issuer: configured
@@ -141,7 +163,7 @@ export default Auth.make(app, { providers: [
           ]);
         }).pipe(
           Effect.provide(
-            TestConfect.layer(DatabaseSchema.make({}), defineSchema({}), {
+            TestConfect.layer(databaseSchema, defineSchema({}), {
               "_generated/server.ts": () => Promise.resolve({}),
             }),
           ),

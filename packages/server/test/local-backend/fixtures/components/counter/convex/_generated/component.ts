@@ -24,6 +24,13 @@ import type { FunctionReference } from "convex/server";
 export type ComponentApi<Name extends string | undefined = string | undefined> =
   {
     authoring: {
+      mint: FunctionReference<
+        "mutation",
+        "internal",
+        { expiresInSeconds: number },
+        string,
+        Name
+      >;
       probe: FunctionReference<
         "query",
         "internal",

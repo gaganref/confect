@@ -22,6 +22,7 @@ ignoreWorkspaceCycles: true
 minimumReleaseAge: 10080
 
 minimumReleaseAgeExclude:
+  - "convex-test@0.0.65"
   - "convex@1.48.0"
   - "@cloudflare/workers-types@5.20261016.1"
   - "@effect/platform-bun@4.0.4"

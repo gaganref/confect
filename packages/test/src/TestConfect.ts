@@ -25,8 +25,11 @@ declare const process: { env: Record<string, string | undefined> };
 /**
  * Register a component's Convex schema and modules at its installation path.
  */
-export type RegisterComponent =
-  TestConvexForDataModelAndIdentity<GenericDataModel>["registerComponent"];
+export type RegisterComponent = (
+  ...args: Parameters<
+    TestConvexForDataModelAndIdentity<GenericDataModel>["registerComponent"]
+  >
+) => void;
 
 /**
  * An installed component path and the HTTP prefix exposed by its host.

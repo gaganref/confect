@@ -755,3 +755,17 @@ existing storage and metrics fixtures for the SDK's new fields.
 
 Changeset: `convex-signing-floor.md`.
 Upstream: planned; no linked proposal verified.
+
+### Sign deployment JWTs from mutations
+
+Add mutation-only `Auth.MutationAuth.signJwt` in applications and components,
+with a generated service alias. Keep application identity out of components and
+signing out of query/action handlers. Verify generated component mutations and
+app mutations against convex-test 0.0.65 deployment JWKS in the component suite.
+Require convex-test 0.0.65 or later in `@confect/test` so signing support is available.
+Keep Confect's component registration callbacks void across the test-peer update.
+Generated provider descriptors match minted token issuers and audiences under
+test defaults and explicit deployment URL overrides.
+
+Changeset: `mutation-auth-sign-jwt.md`.
+Upstream: planned; no linked proposal verified.

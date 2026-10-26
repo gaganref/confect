@@ -26,6 +26,8 @@ import type { Docs } from "./docs.js";
 
 export const Auth = Auth_.Auth;
 export type Auth = typeof Auth.Identifier;
+export const MutationAuth = Auth_.MutationAuth;
+export type MutationAuth = typeof MutationAuth.Identifier;
 
 export const ExecutionMetadata = ExecutionMetadata_.ExecutionMetadata;
 export type ExecutionMetadata = typeof ExecutionMetadata.Identifier;
