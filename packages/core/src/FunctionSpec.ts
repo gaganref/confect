@@ -11,7 +11,7 @@ import type * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
 import * as FunctionProvenance from "./FunctionProvenance.js";
 import { validateConfectFunctionIdentifier } from "./Identifier.js";
-import type * as MiddlewareSpec from "./MiddlewareSpec.js";
+import * as MiddlewareSpec from "./MiddlewareSpec.js";
 import type * as Profile from "./Profile.js";
 import * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 
@@ -696,7 +696,7 @@ type OptionFree<Type> = [keyof Type & BuilderOption] extends [never]
 type CheckedFields<Type> = Type & OptionFree<Type>;
 
 type NotRepeated<
-  Middleware_ extends MiddlewareSpec.AnyMiddlewareSpec,
+  Middleware_,
   Inherited extends MiddlewareSpec.AnyMiddlewareSpec,
 > = Middleware_ extends {
   readonly key: infer Key extends MiddlewareSpec.Key<Inherited>;
@@ -705,12 +705,13 @@ type NotRepeated<
   : Middleware_;
 
 /**
- * Refuses middleware an earlier layer attached, which would throw once a
- * function is built. Each member of an element's union is checked, so an array
- * typed `(A | B)[]` is refused when either was attached.
+ * Refuses a middleware without options that an earlier layer attached, as it is
+ * attached at most once; one with options may repeat. Each member of an
+ * element's union is checked, so an array typed `(A | B)[]` is refused when
+ * either was attached.
  */
 type NotInherited<
-  Middleware_ extends ReadonlyArray<OptionlessMiddlewareSpec>,
+  Middleware_ extends ReadonlyArray<unknown>,
   Inherited extends MiddlewareSpec.AnyMiddlewareSpec,
 > = {
   readonly [Index in keyof Middleware_]: NotRepeated<
@@ -718,6 +719,18 @@ type NotInherited<
     Inherited
   >;
 };
+
+/**
+ * A profile's middleware: a spec without options, or an attachment.
+ */
+type ProfileMiddleware<FieldsType> =
+  | OptionlessMiddlewareSpec
+  | Profile.Attachment<MiddlewareSpec.AnyMiddlewareSpec, FieldsType>;
+
+type SpecOf<Middleware_> =
+  Middleware_ extends Profile.Attachment<infer MiddlewareSpec_, any>
+    ? MiddlewareSpec_
+    : Extract<Middleware_, MiddlewareSpec.AnyMiddlewareSpec>;
 
 /**
  * `never` when a profile middleware does not declare the function type.
@@ -824,7 +837,11 @@ export type Extended<
    * Require more fields and attach more middleware after this profile's.
    */
   extend<Extension extends Profile.Fields = Profile.NoFields>(): <
-    const Middleware_ extends ReadonlyArray<OptionlessMiddlewareSpec>,
+    const Middleware_ extends ReadonlyArray<
+      ProfileMiddleware<
+        Profile.Apply<Profile.Both<Fields_, Extension>, string, any>
+      >
+    >,
   >(
     config: {
       readonly middleware: Middleware_ &
@@ -832,12 +849,12 @@ export type Extended<
     } & OptionFree<Extension["Type"]>,
   ) => Extended<
     Profile.Both<Fields_, Extension>,
-    MiddlewareSpecs_ | Middleware_[number]
+    MiddlewareSpecs_ | SpecOf<Middleware_[number]>
   >;
 };
 
 const makeExtended = (
-  middleware: ReadonlyArray<MiddlewareSpec.AnyMiddlewareSpec>,
+  middleware: ReadonlyArray<ProfileMiddleware<any>>,
 ): Extended<any, any> => {
   // `OptionFree` keeps option names out of the fields; this split is the
   // runtime's fallback.
@@ -853,7 +870,17 @@ const makeExtended = (
       ...fields
     }: Record<string, unknown>) =>
       middleware.reduce(
-        (spec: any, middlewareSpec) => spec.middleware(middlewareSpec),
+        (spec: any, entry) =>
+          MiddlewareSpec.isMiddlewareSpec(entry)
+            ? spec.middleware(entry)
+            : spec.middleware(
+                entry.spec,
+                entry.options({
+                  name,
+                  args: args ?? (() => ({})),
+                  fields,
+                } as Profile.Info<unknown>),
+              ),
         Object.assign(
           makeSpec({ name, description, args, returns, item, error } as never),
           { fields },
@@ -876,10 +903,17 @@ const makeExtended = (
  */
 export const extend =
   <Fields_ extends Profile.Fields = Profile.NoFields>() =>
-  <const Middleware_ extends ReadonlyArray<OptionlessMiddlewareSpec>>(
+  <
+    const Middleware_ extends ReadonlyArray<
+      ProfileMiddleware<Profile.Apply<Fields_, string, any>>
+    >,
+  >(
     config: { readonly middleware: Middleware_ } & OptionFree<Fields_["Type"]>,
   ) =>
-    makeExtended(config.middleware) as Extended<Fields_, Middleware_[number]>;
+    makeExtended(config.middleware) as Extended<
+      Fields_,
+      SpecOf<Middleware_[number]>
+    >;
 
 type MatchingRegisteredFunction<
   RuntimeAndFunctionType_ extends RuntimeAndFunctionType.RuntimeAndFunctionType,

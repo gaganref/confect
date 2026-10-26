@@ -14,6 +14,12 @@ export default GroupImpl.make(databaseSchema, group).pipe(
   Layer.provide(FunctionImpl.make(databaseSchema, group, "longName", handler)),
   Layer.provide(FunctionImpl.make(databaseSchema, group, "mutation", handler)),
   Layer.provide(FunctionImpl.make(databaseSchema, group, "action", handler)),
+  Layer.provide(
+    FunctionImpl.make(databaseSchema, group, "profiledQuery", handler),
+  ),
+  Layer.provide(
+    FunctionImpl.make(databaseSchema, group, "profiledMutation", handler),
+  ),
   Layer.provide(ProvideViewer),
   Layer.provide(RequireName),
   GroupImpl.finalize,
