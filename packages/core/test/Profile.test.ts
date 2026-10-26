@@ -40,6 +40,20 @@ const Published = Limited.extend<Topic>()({
 const returns = () => Schema.Null;
 
 describe("attach", () => {
+  it("tells a plain middleware from an attachment by its brand, not a spec member", () => {
+    class Tagged extends MiddlewareSpec.MiddlewareSpec<Tagged>()("Tagged", {
+      functionTypes: { query: true, mutation: true, action: true },
+    }) {
+      static readonly spec = "trace metadata";
+    }
+    const Plain = FunctionSpec.extend<Quota>()({ middleware: [Tagged] });
+
+    expect(
+      Plain.publicQuery({ name: "read", quota: 1, returns })
+        .middlewareAttachments,
+    ).toEqual([{ spec: Tagged, options: undefined }]);
+  });
+
   it("computes each function's options from its fields and name", () => {
     const send = Published.publicMutation({
       name: "send",

@@ -11,7 +11,7 @@ import type * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
 import * as FunctionProvenance from "./FunctionProvenance.js";
 import { validateConfectFunctionIdentifier } from "./Identifier.js";
-import type * as MiddlewareSpec from "./MiddlewareSpec.js";
+import * as MiddlewareSpec from "./MiddlewareSpec.js";
 import type * as Profile from "./Profile.js";
 import * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 
@@ -871,16 +871,16 @@ const makeExtended = (
     }: Record<string, unknown>) =>
       middleware.reduce(
         (spec: any, entry) =>
-          "spec" in entry
-            ? spec.middleware(
+          MiddlewareSpec.isMiddlewareSpec(entry)
+            ? spec.middleware(entry)
+            : spec.middleware(
                 entry.spec,
                 entry.options({
                   name,
                   args: args ?? (() => ({})),
                   fields,
                 } as Profile.Info<unknown>),
-              )
-            : spec.middleware(entry),
+              ),
         Object.assign(
           makeSpec({ name, description, args, returns, item, error } as never),
           { fields },
