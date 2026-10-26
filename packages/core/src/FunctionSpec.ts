@@ -681,11 +681,19 @@ type BuilderOption =
 
 /**
  * Refuses fields named after a builder option, which the builder would read as
- * that option.
+ * that option. The conditional keeps the mapped type out of a builder call's
+ * inference, which would otherwise widen the function's name to `string` when
+ * reporting the error.
  */
-type OptionFree<Fields_ extends Profile.Fields> = {
-  readonly [Option in keyof Fields_["Type"] & BuilderOption]: never;
-};
+type OptionFree<Type> = [keyof Type & BuilderOption] extends [never]
+  ? unknown
+  : { readonly [Option in keyof Type & BuilderOption]: never };
+
+/**
+ * A function's fields, checked once applied, since a profile's field type can
+ * branch on the function's name.
+ */
+type CheckedFields<Type> = Type & OptionFree<Type>;
 
 /**
  * Refuses middleware an earlier layer attached, which would throw once a
@@ -738,7 +746,7 @@ type ExtendedMake<
       readonly args?: () => ArgsFields_;
       readonly returns: () => Returns_;
       readonly error?: () => Error_;
-    } & NoInfer<Profile.Apply<Fields_, Name_, ArgsFields_>>,
+    } & NoInfer<CheckedFields<Profile.Apply<Fields_, Name_, ArgsFields_>>>,
   ) => ExtendedBuilder<
     RuntimeAndFunctionType_,
     "public",
@@ -768,7 +776,7 @@ type ExtendedMakePaginated<
         ForbidPaginationOpts<UserArgsFields_>;
       readonly item: () => Item_;
       readonly error?: () => Error_;
-    } & NoInfer<Profile.Apply<Fields_, Name_, UserArgsFields_>>,
+    } & NoInfer<CheckedFields<Profile.Apply<Fields_, Name_, UserArgsFields_>>>,
   ) => ExtendedBuilder<
     RuntimeAndFunctionType.ConvexQuery,
     "public",
@@ -812,7 +820,7 @@ export type Extended<
     config: {
       readonly middleware: Middleware_ &
         NotInherited<Middleware_, MiddlewareSpecs_>;
-    } & OptionFree<Extension>,
+    } & OptionFree<Extension["Type"]>,
   ) => Extended<
     Profile.Both<Fields_, Extension>,
     MiddlewareSpecs_ | Middleware_[number]
@@ -860,7 +868,7 @@ const makeExtended = (
 export const extend =
   <Fields_ extends Profile.Fields = Profile.NoFields>() =>
   <const Middleware_ extends ReadonlyArray<OptionlessMiddlewareSpec>>(
-    config: { readonly middleware: Middleware_ } & OptionFree<Fields_>,
+    config: { readonly middleware: Middleware_ } & OptionFree<Fields_["Type"]>,
   ) =>
     makeExtended(config.middleware) as Extended<Fields_, Middleware_[number]>;
 

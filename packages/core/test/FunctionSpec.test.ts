@@ -844,6 +844,25 @@ describe("extend", () => {
     Subjected.extend<Returning>()({ middleware: [] });
   });
 
+  it("refuses a field named after a builder option for the function it names", () => {
+    interface Named extends Profile.Fields {
+      readonly Type: this["Name"] extends "read"
+        ? { readonly description: string }
+        : { readonly owner: string };
+    }
+    const ByName = FunctionSpec.extend<Named>()({ middleware: [] });
+
+    expect(
+      ByName.publicQuery({ name: "list", owner: "team", returns }).fields,
+    ).toEqual({ owner: "team" });
+    ByName.publicQuery({
+      name: "read",
+      // @ts-expect-error The read function's description field is a builder option.
+      description: "Expected field",
+      returns,
+    });
+  });
+
   it("refuses middleware an earlier layer attached at the extend call", () => {
     // @ts-expect-error Subjected already attaches Trace.
     Subjected.extend()({ middleware: [Trace] });

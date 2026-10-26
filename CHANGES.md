@@ -125,7 +125,8 @@ Upstream: planned; no proposal submitted.
 builders with extra required fields typed from each function's args and the
 middleware on every spec. Specs keep the fields; plain builders are unchanged.
 `extend` refuses fields named after builder options and middleware an earlier
-layer attached.
+layer attached. A builder refuses a field named after an option that the fields
+add only for its function's name.
 
 Changeset: `function-extend.md`.
 Upstream: planned; no proposal submitted.
