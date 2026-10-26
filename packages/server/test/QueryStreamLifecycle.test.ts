@@ -50,7 +50,11 @@ interface PendingRead {
   readonly settled: Deferred.Deferred<void>;
 }
 
-const makeReader = (pending?: PendingRead) => {
+const makeReader = (
+  pending?: PendingRead,
+  rows: ReadonlyArray<Document> = documents,
+) => {
+  let documentsRead = 0;
   const runs: Array<ReaderRun> = [];
   const events: Array<string> = [];
   const reader: QueryStream.ReflectionReader = {
@@ -83,7 +87,7 @@ const makeReader = (pending?: PendingRead) => {
               };
               runs.push(run);
               events.push(`${id}:open:${order}`);
-              const matching = documents.filter((document) =>
+              const matching = rows.filter((document) =>
                 operations.every(({ _tag, field, value }) => {
                   if (
                     field !== "group" &&
@@ -112,6 +116,7 @@ const makeReader = (pending?: PendingRead) => {
               const result = (): IteratorResult<Document> => {
                 run.settled++;
                 const value = matching[position++];
+                if (value !== undefined) documentsRead++;
                 return value === undefined
                   ? { done: true, value: undefined }
                   : { done: false, value };
@@ -158,7 +163,14 @@ const makeReader = (pending?: PendingRead) => {
     >(),
     orderDirection: "asc",
   });
-  return { stream, runs, events };
+  return {
+    stream,
+    runs,
+    events,
+    get documentsRead() {
+      return documentsRead;
+    },
+  };
 };
 
 describe("QueryStream iterator lifecycle", () => {
@@ -610,3 +622,85 @@ describe("QueryStream iterator lifecycle", () => {
       }).pipe(Effect.scoped),
   );
 });
+
+describe("QueryStream.collect", () => {
+  it.effect(
+    "spike-d case 19: 40 holidays cost 40 reads; demands fail at 2,000",
+    () =>
+      Effect.gen(function* () {
+        const rows = (count: number) =>
+          Array.from({ length: count }, (_, i) => ({
+            _id: `row${i}`,
+            _creationTime: i,
+            group: "a",
+          }));
+        const holidays = makeReader(undefined, rows(40));
+        expect(
+          yield* QueryStream.collect(holidays.stream, {
+            maximumRowsRead: 2_000,
+          }),
+        ).toHaveLength(40);
+        expect(holidays.documentsRead).toBe(40);
+        const demands = makeReader(undefined, rows(2_001));
+        let returned = false;
+        const error = yield* QueryStream.collect(demands.stream, {
+          maximumRowsRead: 2_000,
+        }).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              returned = true;
+            }),
+          ),
+          Effect.flip,
+        );
+        expect(error).toMatchObject({
+          _tag: "ReadBudgetExceededError",
+          rowsRead: 2_000,
+        });
+        expect(returned).toBe(false);
+        expect(demands.documentsRead).toBe(2_000);
+        expect(demands.runs.every((run) => run.returned === 1)).toBe(true);
+      }),
+  );
+
+  it.effect(
+    "counts filtered rows and never turns a budget stop into an empty success",
+    () =>
+      Effect.gen(function* () {
+        const reader = makeReader();
+        const error = yield* reader.stream.pipe(
+          QueryStream.filter(() => false),
+          QueryStream.collect({ maximumRowsRead: 2 }),
+          Effect.flip,
+        );
+        expect(error).toMatchObject({
+          _tag: "ReadBudgetExceededError",
+          rowsRead: 2,
+        });
+      }),
+  );
+});
+
+it.effect("QueryStream.collect respects an enclosing read budget", () =>
+  Effect.gen(function* () {
+    const reader = makeReader();
+    const budget = yield* QueryStreamReadBudget.make(
+      yield* Schema.decodeEffect(QueryStreamReadBudget.Limits)({
+        maximumRowsRead: 2,
+      }),
+    );
+    const error = yield* QueryStream.collect(reader.stream).pipe(
+      Effect.provideService(
+        QueryStreamReadBudget.QueryStreamReadBudget,
+        budget,
+      ),
+      Effect.flip,
+    );
+    expect(error).toMatchObject({
+      _tag: "ReadBudgetExceededError",
+      rowsRead: 2,
+    });
+    expect(reader.documentsRead).toBe(2);
+    expect(yield* budget.isStopped).toBe(true);
+  }),
+);

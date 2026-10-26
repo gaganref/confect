@@ -656,3 +656,11 @@ through narrowing and reversal. Each run checks the resolved stream's metadata.
 
 Changeset: `deferred-query-stream.md`.
 Upstream: planned; no proposal submitted.
+
+### Collect a whole stream or fail
+
+Add `QueryStream.collect` with row and byte budgets. It returns an array only
+after the source completes; a budget stop fails with `ReadBudgetExceededError`.
+
+Changeset: `collect-query-stream.md`.
+Upstream: planned; no proposal submitted.
