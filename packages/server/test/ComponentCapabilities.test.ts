@@ -55,6 +55,51 @@ const group = GroupSpec.make().addFunction(
 );
 
 describe("component capabilities", () => {
+  it("allows signing only in app and component mutations", () => {
+    const mint = Effect.gen(function* () {
+      const auth = yield* Auth.MutationAuth;
+      // @ts-expect-error Signing doesn't expose application identity in a component.
+      void auth.getUserIdentity;
+      return yield* auth.signJwt({
+        claims: { sub: "visitor", aud: "tenant" },
+        expiresInSeconds: 60,
+      });
+    });
+    const functions = GroupSpec.make()
+      .addFunction(
+        FunctionSpec.publicMutation({
+          name: "mint",
+          returns: () => Schema.String,
+        }),
+      )
+      .addFunction(
+        FunctionSpec.publicQuery({
+          name: "query",
+          returns: () => Schema.String,
+        }),
+      )
+      .addFunction(
+        FunctionSpec.publicAction({
+          name: "action",
+          returns: () => Schema.String,
+        }),
+      );
+    for (const schema of [databaseSchema, DatabaseSchema.make({})] as const) {
+      FunctionImpl.make(schema, functions, "mint", () => mint);
+      // @ts-expect-error Queries cannot sign deployment JWTs.
+      FunctionImpl.make(schema, functions, "query", () => mint);
+      // @ts-expect-error Actions cannot sign deployment JWTs.
+      FunctionImpl.make(schema, functions, "action", () => mint);
+    }
+    const reserved = (
+      auth: Context.Service.Shape<typeof Auth.MutationAuth>,
+    ) => {
+      // @ts-expect-error Convex owns the issuer claim.
+      return auth.signJwt({ claims: { iss: "other" }, expiresInSeconds: 60 });
+    };
+    void reserved;
+  });
+
   it("keeps the implementation builder while rejecting app authentication", () => {
     const auth = Effect.gen(function* () {
       yield* Auth.Auth;

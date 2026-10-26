@@ -34,6 +34,8 @@ import type schemaDefinition from "./schema.js";
 import type { Docs } from "./docs.js";
 export declare const Auth: typeof Auth_.Auth;
 export type Auth = typeof Auth.Identifier;
+export declare const MutationAuth: typeof Auth_.MutationAuth;
+export type MutationAuth = typeof MutationAuth.Identifier;
 export declare const ExecutionMetadata: typeof ExecutionMetadata_.ExecutionMetadata;
 export type ExecutionMetadata = typeof ExecutionMetadata.Identifier;
 export declare const RequestMetadata: typeof RequestMetadata_.RequestMetadata;

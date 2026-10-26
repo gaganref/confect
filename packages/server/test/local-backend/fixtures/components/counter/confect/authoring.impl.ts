@@ -2,7 +2,11 @@ import { FunctionImpl, GroupImpl } from "@confect/server";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import schema from "./_generated/schema";
-import { DatabaseReader, DatabaseWriter } from "./_generated/services";
+import {
+  DatabaseReader,
+  DatabaseWriter,
+  MutationAuth,
+} from "./_generated/services";
 import spec, { ClassProbe } from "./authoring.spec";
 
 const save = FunctionImpl.make(schema, spec, "save", (ids) =>
@@ -23,7 +27,17 @@ const probe = FunctionImpl.make(schema, spec, "probe", ({ value }) =>
   Effect.succeed(new ClassProbe({ value })),
 );
 
+const mint = FunctionImpl.make(schema, spec, "mint", ({ expiresInSeconds }) =>
+  Effect.gen(function* () {
+    const auth = yield* MutationAuth;
+    return yield* auth.signJwt({
+      claims: { sub: "visitor", aud: "https://host.convex.site" },
+      expiresInSeconds,
+    });
+  }),
+);
+
 export default GroupImpl.make(schema, spec).pipe(
-  Layer.provide([save, read, probe]),
+  Layer.provide([save, read, probe, mint]),
   GroupImpl.finalize,
 );

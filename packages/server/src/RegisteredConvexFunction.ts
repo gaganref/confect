@@ -274,6 +274,7 @@ export const mutationLayer = <Schema extends DatabaseSchema.AnyWithProps>(
     RequestMetadata.layer(ctx.meta),
     TransactionMetadata.layer(ctx.meta),
     Auth.layerForTarget<Schema["target"]>(schema.target, ctx.auth),
+    Auth.mutationLayer(ctx.auth),
     Scheduler.layer<DatabaseSchema.Scope<Schema>>(
       ctx.scheduler,
       schema.target.scope,

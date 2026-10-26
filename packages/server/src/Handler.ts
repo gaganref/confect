@@ -95,6 +95,7 @@ export type MutationServices<
 > =
   | DatabaseReader.DatabaseReader<DatabaseSchema_>
   | DatabaseWriter.DatabaseWriter<DatabaseSchema_>
+  | Auth.MutationAuth
   | (DatabaseSchema_["target"]["kind"] extends "component" ? never : Auth.Auth)
   | Scheduler.ForScope<DatabaseSchema.Scope<DatabaseSchema_>>
   | StorageReader.ForScope<DatabaseSchema.Scope<DatabaseSchema_>>

@@ -40,7 +40,7 @@ export const consumerManifest = (version: string, tarballs?: string) => {
       foldkit: "0.165.0",
       react: "19.3.0",
       convex: "1.48.0",
-      "convex-test": "0.0.60",
+      "convex-test": "0.0.65",
       effect: "4.0.4",
       "@effect/platform-node": "4.0.4",
       // A wrapper package's test kit, named by a mount in confect/app.ts.
