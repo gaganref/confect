@@ -176,6 +176,16 @@ description without forcing a schema; an omitted description stays absent.
 Changeset: `profile-info-description.md`.
 Upstream: planned; no proposal submitted.
 
+### Require descriptions through a profile
+
+A profile may declare `description: string` to require that builder option on
+all five public builders. The description stays on the spec and in callback
+info, outside custom fields. Other description types and all other builder
+option names remain refused at `extend` or the name-specific builder call.
+
+Changeset: `profile-requires-description.md`.
+Upstream: planned; no proposal submitted.
+
 ### Check component declarations
 
 Carry a literal app or component kind in backend declarations. Default to app,

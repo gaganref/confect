@@ -40,6 +40,37 @@ const Published = Limited.extend<Topic>()({
 const returns = () => Schema.Null;
 
 describe("attach", () => {
+  it("reads a required description as metadata outside custom fields", () => {
+    interface Described extends Profile.Fields {
+      readonly Type: { readonly description: string; readonly quota: number };
+    }
+    const Required = FunctionSpec.extend<Described>()({
+      middleware: [
+        Profile.attach(Limit, (info) => {
+          expectTypeOf(info.fields).toEqualTypeOf<{ readonly quota: number }>();
+          return {
+            max: info.fields.quota,
+            label: info.description ?? info.name,
+          };
+        }),
+      ],
+    });
+    const spec = Required.publicMutation({
+      name: "send",
+      description: "Send notes.",
+      quota: 2,
+      returns,
+    });
+    expectTypeOf(spec.fields).toEqualTypeOf<{ readonly quota: number }>();
+    expect([spec.description, spec.fields, spec.middlewareAttachments]).toEqual(
+      [
+        "Send notes.",
+        { quota: 2 },
+        [{ spec: Limit, options: { max: 2, label: "Send notes." } }],
+      ],
+    );
+  });
+
   it("passes the optional description to attachments and lazy schema wrappers", () => {
     interface Identity extends Profile.SchemaTransform {
       readonly Type: this["Input"];
@@ -199,7 +230,7 @@ describe("attach", () => {
   it("refuses a field named after a builder option for the function it names", () => {
     interface Named extends Profile.Fields {
       readonly Type: this["Name"] extends "read"
-        ? { readonly quota: number; readonly description: string }
+        ? { readonly quota: number; readonly description: number }
         : { readonly quota: number };
     }
     const ByName = FunctionSpec.extend<Named>()({
@@ -213,9 +244,32 @@ describe("attach", () => {
     ByName.publicQuery({
       name: "read",
       quota: 1,
-      // @ts-expect-error The read function's description field is a builder option.
+      // @ts-expect-error A numeric description field conflicts with the builder option.
       description: "Expected field",
       returns,
     });
+  });
+
+  it("requires a description only for the function whose fields declare it", () => {
+    interface ReadDescribed extends Profile.Fields {
+      readonly Type: this["Name"] extends "read"
+        ? { readonly quota: number; readonly description: string }
+        : { readonly quota: number };
+    }
+    const ByName = FunctionSpec.extend<ReadDescribed>()({ middleware: [] });
+
+    expect(
+      ByName.publicMutation({ name: "send", quota: 1, returns }).description,
+    ).toBe(undefined);
+    expect(
+      ByName.publicQuery({
+        name: "read",
+        quota: 1,
+        description: "Reads a note.",
+        returns,
+      }).description,
+    ).toBe("Reads a note.");
+    // @ts-expect-error The read function's fields require a description.
+    ByName.publicQuery({ name: "read", quota: 1, returns });
   });
 });

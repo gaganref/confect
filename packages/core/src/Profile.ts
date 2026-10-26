@@ -44,7 +44,9 @@ export interface Info<FieldsType> {
   readonly name: string;
   readonly description?: string;
   readonly args: () => FunctionProvenance.ArgsFields;
-  readonly fields: FieldsType;
+  readonly fields: "description" extends keyof FieldsType
+    ? Omit<FieldsType, "description">
+    : FieldsType;
 }
 
 export interface Attachment<

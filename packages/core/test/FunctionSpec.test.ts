@@ -826,9 +826,58 @@ describe("extend", () => {
     FunctionSpec.extend()({ middleware: [Limit] });
   });
 
-  it("refuses a field named after a builder option at the extend call", () => {
+  it("lets a profile require the description option on every public builder", () => {
     interface Described extends Profile.Fields {
       readonly Type: { readonly description: string };
+    }
+    const Required = FunctionSpec.extend<Described>()({ middleware: [] });
+    const options = {
+      name: "read",
+      description: "Read notes.",
+      returns,
+      item: returns,
+    };
+    const specs = [
+      Required.publicQuery(options),
+      Required.publicMutation(options),
+      Required.publicAction(options),
+      Required.publicNodeAction(options),
+      Required.publicPaginatedQuery(options),
+    ] as const;
+    expect(specs.map((spec) => [spec.description, spec.fields])).toEqual(
+      Array.from({ length: 5 }, () => ["Read notes.", {}]),
+    );
+    expectTypeOf(specs[0].fields).toEqualTypeOf<{}>();
+    expect(specs[0].middleware(observe("described")).description).toBe(
+      "Read notes.",
+    );
+    // @ts-expect-error The profile requires description at the query call.
+    Required.publicQuery({ name: "query", returns });
+    // @ts-expect-error The profile requires description at the mutation call.
+    Required.publicMutation({ name: "mutation", returns });
+    // @ts-expect-error The profile requires description at the action call.
+    Required.publicAction({ name: "action", returns });
+    // @ts-expect-error The profile requires description at the Node action call.
+    Required.publicNodeAction({ name: "nodeAction", returns });
+    // @ts-expect-error The profile requires description at the paginated query call.
+    Required.publicPaginatedQuery({ name: "paged", item: returns });
+    Required.publicQuery({
+      name: "wrongDescription",
+      // @ts-expect-error The required description option must be a string.
+      description: 1,
+      returns,
+    });
+    const Extended = FunctionSpec.extend()({
+      middleware: [],
+    }).extend<Described>()({ middleware: [] });
+    expect(Extended.publicQuery(options).description).toBe("Read notes.");
+    // @ts-expect-error The extension requires the description option too.
+    Extended.publicQuery({ name: "extended", returns });
+  });
+
+  it("refuses a field named after a builder option at the extend call", () => {
+    interface Described extends Profile.Fields {
+      readonly Type: { readonly description: number };
     }
     interface Argued extends Profile.Fields {
       readonly Type: { readonly args: string };
@@ -836,19 +885,39 @@ describe("extend", () => {
     interface Returning extends Profile.Fields {
       readonly Type: { readonly returns: string };
     }
+    interface Itemized extends Profile.Fields {
+      readonly Type: { readonly item: string };
+    }
+    interface Errored extends Profile.Fields {
+      readonly Type: { readonly error: string };
+    }
+    interface Named extends Profile.Fields {
+      readonly Type: { readonly name: string };
+    }
+    interface LiteralDescription extends Profile.Fields {
+      readonly Type: { readonly description: "fixed" };
+    }
 
-    // @ts-expect-error description is a builder option, not a field.
+    // @ts-expect-error A description field must have type string.
     FunctionSpec.extend<Described>()({ middleware: [] });
     // @ts-expect-error args is a builder option, not a field.
     FunctionSpec.extend<Argued>()({ middleware: [] });
     // @ts-expect-error returns is a builder option, not a field.
     Subjected.extend<Returning>()({ middleware: [] });
+    // @ts-expect-error item is a builder option, not a field.
+    FunctionSpec.extend<Itemized>()({ middleware: [] });
+    // @ts-expect-error error is a builder option, not a field.
+    FunctionSpec.extend<Errored>()({ middleware: [] });
+    // @ts-expect-error name is a builder option, not a field.
+    FunctionSpec.extend<Named>()({ middleware: [] });
+    // @ts-expect-error Only string can require description, not a literal type.
+    FunctionSpec.extend<LiteralDescription>()({ middleware: [] });
   });
 
   it("refuses a field named after a builder option for the function it names", () => {
     interface Named extends Profile.Fields {
       readonly Type: this["Name"] extends "read"
-        ? { readonly description: string }
+        ? { readonly description: number }
         : { readonly owner: string };
     }
     const ByName = FunctionSpec.extend<Named>()({ middleware: [] });
@@ -858,7 +927,7 @@ describe("extend", () => {
     ).toEqual({ owner: "team" });
     ByName.publicQuery({
       name: "read",
-      // @ts-expect-error The read function's description field is a builder option.
+      // @ts-expect-error A numeric description field conflicts with the builder option.
       description: "Expected field",
       returns,
     });
