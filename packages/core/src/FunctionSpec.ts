@@ -927,6 +927,7 @@ const makeExtended = (
     }: Record<string, unknown>) => {
       const info = {
         name,
+        ...(description === undefined ? {} : { description }),
         args: args ?? (() => ({})),
         fields,
       } as Profile.Info<unknown>;
