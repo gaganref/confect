@@ -8,6 +8,8 @@ const uploadUrl =
 
 const fakeConvexStorageWriter = {
   delete: () => Promise.resolve(),
+  get: () => Promise.resolve(null),
+  store: () => Promise.reject(new Error("Unused storage fixture operation")),
   generateUploadUrl: () => Promise.resolve(uploadUrl),
   getMetadata: () => Promise.resolve(null),
   getUrl: () => Promise.resolve(null),
