@@ -140,6 +140,26 @@ export declare const api: {
     >;
   };
   groups: {
+    actionCall: {
+      execute: FunctionReference<
+        "action",
+        "public",
+        {
+          mode:
+            | "write"
+            | "read"
+            | "twice"
+            | "parallel"
+            | "unused"
+            | "inspect"
+            | "failedEncoding"
+            | "preflight"
+            | "scheduleAfter"
+            | "scheduleAt";
+        },
+        string | number | boolean
+      >;
+    };
     aliasImporter: {
       echo: FunctionReference<"query", "public", {}, string>;
     };

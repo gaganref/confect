@@ -719,3 +719,27 @@ it.effect(
       });
     }).pipe(Effect.provide(localHostLayer)),
 );
+
+it.effect("a profiled component action calls a decoded host callback", () =>
+  Effect.gen(function* () {
+    const t = yield* LocalHost;
+    yield* t.registerComponent("first", counterConvexSchema, counterModules);
+    vi.useFakeTimers();
+    const id = yield* t.mutation(callbacks.send, { run: "action-call" });
+    yield* t.finishAllScheduledFunctions(() => vi.runAllTimers());
+    const { onEvent } = yield* t.query(mounts.first.deliveries.get, { id });
+    expect(
+      yield* t.action(mounts.first.deliveries.notify, {
+        run: "action-call",
+        onEvent,
+      }),
+    ).toBeNull();
+    expect(yield* t.query(callbacks.events, { run: "action-call" })).toEqual([
+      "sent",
+      "delivered",
+    ]);
+  }).pipe(
+    Effect.ensuring(Effect.sync(() => vi.useRealTimers())),
+    Effect.provide(localHostLayer),
+  ),
+);

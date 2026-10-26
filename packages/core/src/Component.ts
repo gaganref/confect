@@ -358,6 +358,7 @@ export const bind = <
                 spec: rebaseMiddleware(attachment.spec),
               })),
               nativeRef,
+              ref.functionType,
             );
           }),
           Match.exhaustive,

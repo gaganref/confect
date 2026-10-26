@@ -133,6 +133,12 @@ export const api: {
         status: "queued" | "sent" | "delivered" | "bounced";
       }
     >;
+    notify: FunctionReference<
+      "action",
+      "public",
+      { onEvent: string; run: string },
+      null
+    >;
     send: FunctionReference<
       "mutation",
       "public",

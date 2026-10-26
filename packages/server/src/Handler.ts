@@ -1,3 +1,4 @@
+import type { ActionCall } from "@confect/core/ActionCall";
 import type { FunctionSpec, RuntimeAndFunctionType } from "@confect/core";
 import type * as FunctionProvenance from "@confect/core/FunctionProvenance";
 import type * as NodeServices from "@effect/platform-node/NodeServices";
@@ -114,9 +115,7 @@ export type MutationServices<
 /**
  * Shared by both action runtimes.
  */
-export type ActionServices<
-  DatabaseSchema_ extends DatabaseSchema.AnyWithProps,
-> =
+type RawActionServices<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> =
   | Scheduler.ForScope<DatabaseSchema.Scope<DatabaseSchema_>>
   | (DatabaseSchema_["target"]["kind"] extends "component" ? never : Auth.Auth)
   | StorageReader.ForScope<DatabaseSchema.Scope<DatabaseSchema_>>
@@ -132,6 +131,22 @@ export type ActionServices<
   | ActionCtx.ActionCtx<
       DataModel.ToConvex<DataModel.FromSchema<DatabaseSchema_>>,
       DatabaseSchema.Scope<DatabaseSchema_>
+    >;
+
+export type ActionServices<S extends DatabaseSchema.AnyWithProps, R = never> = [
+  Extract<R, ActionCall>,
+] extends [never]
+  ? RawActionServices<S>
+  : Exclude<
+      RawActionServices<S>,
+      | Scheduler.ForScope<DatabaseSchema.Scope<S>>
+      | QueryRunner.QueryRunner
+      | MutationRunner.MutationRunner
+      | ActionRunner.ActionRunner
+      | ActionCtx.ActionCtx<
+          DataModel.ToConvex<DataModel.FromSchema<S>>,
+          DatabaseSchema.Scope<S>
+        >
     >;
 
 export type ConfectProvenanceQuery<
@@ -153,7 +168,7 @@ export type ConvexRuntimeAction<
   FunctionSpec_ extends
     FunctionSpec.AnyWithPropsWithFunctionType<RuntimeAndFunctionType.AnyAction>,
   R = never,
-> = Base<FunctionSpec_, ActionServices<DatabaseSchema_> | R>;
+> = Base<FunctionSpec_, ActionServices<DatabaseSchema_, R> | R>;
 
 export type NodeRuntimeAction<
   DatabaseSchema_ extends DatabaseSchema.AnyWithProps,
@@ -162,7 +177,7 @@ export type NodeRuntimeAction<
   R = never,
 > = Base<
   FunctionSpec_,
-  ActionServices<DatabaseSchema_> | NodeServices.NodeServices | R
+  ActionServices<DatabaseSchema_, R> | NodeServices.NodeServices | R
 >;
 
 type Base<FunctionSpec_ extends FunctionSpec.AnyWithProps, R> = (

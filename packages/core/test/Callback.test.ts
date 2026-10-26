@@ -78,6 +78,13 @@ describe("contract", () => {
 });
 
 describe("handle", () => {
+  test("decoded handles preserve their dispatch type", () => {
+    for (const make of [Callback.query, Callback.mutation, Callback.action]) {
+      const contract = make("test/dispatch", { returns: () => Schema.Null });
+      const handle = Schema.decodeSync(Callback.handle(contract))(handleText);
+      expect(handle.functionType).toBe(contract.functionType);
+    }
+  });
   it.effect(
     "decodes a handle string to a ref that runs it through the contract's codecs",
     () =>

@@ -145,6 +145,7 @@ const fromText = <Contract_ extends Any>(
       [],
       // Convex types a handle as a string that is also a function reference.
       text as unknown as FunctionReference<any, any>,
+      contract.functionType,
     ),
     { [HandleTypeId]: contract.id },
   ) as unknown as Handle<Contract_>;
