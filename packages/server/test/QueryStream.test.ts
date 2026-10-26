@@ -823,3 +823,102 @@ describe("QueryStream.ReadBudgetExceededError", () => {
     expect(error.message).not.toContain("QueryStream.paginate");
   });
 });
+
+describe("QueryStream.defer", () => {
+  const layout = Result.getOrThrow(QueryStreamKeyLayout.fromIndex([]));
+  const options = { keyLayout: layout, orderDirection: "asc" } as const;
+
+  it.effect(
+    "spike-d case 21: the timetable join reads 4 documents against 6",
+    () =>
+      Effect.gen(function* () {
+        let reads = 0;
+        const rows = (values: ReadonlyArray<number>) =>
+          new QueryStream.QueryStream(
+            "asc",
+            layout,
+            Stream.fromIterable(values).pipe(
+              Stream.map((value) => {
+                reads++;
+                return new QueryStream.Element({
+                  doc: Option.some(value),
+                  keyValues: [value],
+                });
+              }),
+            ),
+          );
+        // The two loaded placements prove the inner range. Only all() needs an extra check.
+        const all = Effect.sync(() => {
+          reads += 2;
+          return rows([1, 2]);
+        });
+        const eagerTemplate = yield* all;
+        const join = (template: typeof eagerTemplate) =>
+          rows([1, 2]).pipe(
+            QueryStream.flatMap(
+              (placement) =>
+                QueryStream.defer(options, Effect.succeed(rows([placement]))),
+              { innerKeyLayout: template.keyLayout },
+            ),
+            QueryStream.paginate({ cursor: null, numItems: 10 }),
+          );
+        expect((yield* join(eagerTemplate)).page).toEqual([1, 2]);
+        expect(reads).toBe(6);
+        reads = 0;
+        const template = QueryStream.defer(options, all);
+        const page = join(template);
+        expect(reads).toBe(0);
+        expect((yield* page).page).toEqual([1, 2]);
+        expect(reads).toBe(4);
+      }),
+  );
+
+  it.effect(
+    "defers checks through narrowing and reversal and reruns on consumption",
+    () =>
+      Effect.gen(function* () {
+        let checks = 0;
+        let boundsSeen = 0;
+        const inner = new QueryStream.QueryStream(
+          "asc",
+          layout,
+          Stream.empty,
+          undefined,
+          () => {
+            boundsSeen++;
+            return QueryStream.empty<number>()(layout);
+          },
+          () => QueryStream.empty<number>()(layout, "desc"),
+        );
+        const deferred = QueryStream.defer(
+          options,
+          Effect.sync(() => {
+            checks++;
+            return inner;
+          }),
+        );
+        const narrowed = QueryStream.narrow(deferred, {
+          start: { keyValues: [1], inclusive: true },
+        });
+        const reversed = QueryStream.reverse(deferred);
+        expect(checks).toBe(0);
+        yield* Stream.runCollect(narrowed);
+        yield* Stream.runCollect(narrowed);
+        yield* Stream.runCollect(reversed);
+        expect(checks).toBe(3);
+        expect(boundsSeen).toBe(2);
+      }),
+  );
+
+  it.effect("propagates a refused check before opening the source", () =>
+    Effect.gen(function* () {
+      const deferred = QueryStream.defer(
+        options,
+        Effect.fail("refused" as const),
+      );
+      expect(yield* Stream.runCollect(deferred).pipe(Effect.result)).toEqual(
+        Result.fail("refused"),
+      );
+    }),
+  );
+});

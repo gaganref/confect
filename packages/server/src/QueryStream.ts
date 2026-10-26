@@ -441,6 +441,89 @@ export const empty =
     return make(orderDirection);
   };
 
+/**
+ * A deferred stream's resolved direction or layout differs from its
+ * declaration. The check runs on consumption, before the resolved source is
+ * pulled.
+ *
+ * @experimental
+ */
+export class DeferredStreamMismatchError extends Data.TaggedError(
+  "DeferredStreamMismatchError",
+)<{
+  readonly expectedOrderDirection: QueryStreamOrderDirection.QueryStreamOrderDirection;
+  readonly actualOrderDirection: QueryStreamOrderDirection.QueryStreamOrderDirection;
+  readonly expectedKeyLayout: QueryStreamKeyLayout.QueryStreamKeyLayout;
+  readonly actualKeyLayout: QueryStreamKeyLayout.QueryStreamKeyLayout;
+}> {}
+
+/**
+ * Defer an effect that checks access or constructs a query stream until it is
+ * pulled. Supply its layout and direction without reading documents. This lets
+ * `flatMap` build and narrow an inner stream before running its checks.
+ *
+ * The effect runs afresh on each consumption, seek, or reversal. Failures and
+ * service requirements are preserved. Its stream must match the declared layout
+ * and direction, or consumption dies with `DeferredStreamMismatchError`.
+ *
+ * @experimental
+ */
+export const defer = <
+  Doc,
+  KeyLabels extends QueryStreamKeyLabels.QueryStreamKeyLabels,
+  OrderDirection extends QueryStreamOrderDirection.QueryStreamOrderDirection,
+  E = never,
+  R = never,
+  E2 = never,
+  R2 = never,
+>(
+  options: {
+    readonly keyLayout: QueryStreamKeyLayout.QueryStreamKeyLayout<KeyLabels>;
+    readonly orderDirection: OrderDirection;
+  },
+  make: Effect.Effect<
+    QueryStream<Doc, KeyLabels, NoInfer<OrderDirection>, E, R>,
+    E2,
+    R2
+  >,
+): QueryStream<Doc, KeyLabels, OrderDirection, E | E2, R | R2> => {
+  const checked = Effect.map(make, (stream) => {
+    if (
+      stream.orderDirection !== options.orderDirection ||
+      !QueryStreamKeyLayout.Equivalence(stream.keyLayout, options.keyLayout)
+    ) {
+      throw new DeferredStreamMismatchError({
+        expectedOrderDirection: options.orderDirection,
+        actualOrderDirection: stream.orderDirection,
+        expectedKeyLayout: options.keyLayout,
+        actualKeyLayout: stream.keyLayout,
+      });
+    }
+    return stream;
+  });
+  return new QueryStream(
+    options.orderDirection,
+    options.keyLayout,
+    Stream.unwrap(Effect.map(checked, (stream) => stream.annotated)),
+    undefined,
+    (bounds) =>
+      defer(
+        options,
+        Effect.map(checked, (stream) => narrowByParsedBounds(stream, bounds)),
+      ),
+    () =>
+      defer(
+        {
+          ...options,
+          orderDirection: QueryStreamOrderDirection.flip(
+            options.orderDirection,
+          ),
+        },
+        Effect.map(checked, reverse),
+      ),
+  );
+};
+
 // -----------------------------------------------------------------------------
 // Constructors
 // -----------------------------------------------------------------------------
