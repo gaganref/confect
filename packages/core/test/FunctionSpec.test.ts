@@ -3,6 +3,7 @@ import type * as RuntimeAndFunctionType from "@confect/core/RuntimeAndFunctionTy
 import type * as MiddlewareAttachment from "@confect/core/MiddlewareAttachment";
 import type * as Profile from "@confect/core/Profile";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
 import * as MutableRef from "effect/MutableRef";
 import * as Schema from "effect/Schema";
 import * as FunctionSpec from "@confect/core/FunctionSpec";
@@ -891,6 +892,16 @@ describe("profile schema wrappers", () => {
   class StructExtended extends Declared.extend<StructExtended>(
     "StructExtended",
   )(Schema.Struct({ note: Schema.String })) {}
+  class Parent extends Schema.TaggedError<Parent>()("Parent", {
+    flag: Schema.Boolean,
+  }) {}
+  class Plain extends Parent {}
+  class ExtendedParent extends Parent.extend<ExtendedParent>("ExtendedParent")({
+    count: Schema.Finite,
+  }) {}
+  class StructParent extends Parent.extend<StructParent>("StructParent")(
+    Schema.Struct({ note: Schema.String }),
+  ) {}
   interface AddFailure extends Profile.SchemaTransform {
     readonly Type: Schema.Union<
       readonly [this["Input"], typeof ProfileFailure]
@@ -905,39 +916,73 @@ describe("profile schema wrappers", () => {
     },
   );
 
+  it.each([
+    ["E1 declared error", Declared, { _tag: "Declared", flag: true }],
+    ["E2 plain subclass", Plain, { _tag: "Parent", flag: false }],
+    [
+      "E3 field extension",
+      ExtendedParent,
+      { _tag: "Parent", flag: true, count: 2 },
+    ],
+    [
+      "E4 Struct extension",
+      StructParent,
+      { _tag: "Parent", flag: false, note: "note" },
+    ],
+  ] as const)("%s survives the wrapped union", (_, error, wire) => {
+    const spec = Errors.publicMutation({
+      name: "errorProbe",
+      returns: () => Schema.Null,
+      error: () => error,
+    });
+    const schema = spec.functionProvenance.error!;
+    const decoded = Schema.decodeSync(schema)(wire);
+    expect(decoded).toBeInstanceOf(error);
+    expect(decoded).toBeInstanceOf(Error);
+    expect(
+      Effect.runSync(Effect.flip<never, typeof decoded, never>(decoded))._tag,
+    ).toBe(wire._tag);
+    expect(Schema.encodeSync(schema)(decoded)).toEqual(wire);
+    expect(
+      Schema.decodeSync(schema)({ _tag: "ProfileFailure" }),
+    ).toBeInstanceOf(ProfileFailure);
+  });
+
+  const events: string[] = [];
+  const layer = (marker: string) => ({
+    middleware: [],
+    schemas: {
+      returns: <S extends Schema.Codec<any, any>>(
+        thunk: () => S,
+        info: Profile.Info<{}>,
+      ) => {
+        events.push(`${marker}:${info.name}`);
+        return () => Schema.Union([thunk(), Schema.Literal(marker)]);
+      },
+    },
+  });
+  interface Marked extends Profile.SchemaTransform {
+    readonly Type: Schema.Union<
+      readonly [this["Input"], Schema.Literal<string>]
+    >;
+  }
+  const Base = FunctionSpec.extend<Profile.NoFields, { returns: Marked }>()(
+    layer("base"),
+  );
+  const Outer = Base.extend<Profile.NoFields, { returns: Marked }>()(
+    layer("outer"),
+  );
+  const early = Outer.publicQuery({
+    name: "early",
+    description: "Read early.",
+    returns: () => {
+      events.push("declared");
+      return Later;
+    },
+  });
+  const Later = Schema.Literal("later");
+
   it("F1 defers two wrapper layers until the first force", () => {
-    const events: string[] = [];
-    const layer = (marker: string) => ({
-      middleware: [],
-      schemas: {
-        returns: <S extends Schema.Codec<any, any>>(
-          thunk: () => S,
-          info: Profile.Info<{}>,
-        ) => {
-          events.push(`${marker}:${info.name}`);
-          return () => Schema.Union([thunk(), Schema.Literal(marker)]);
-        },
-      },
-    });
-    interface Marked extends Profile.SchemaTransform {
-      readonly Type: Schema.Union<
-        readonly [this["Input"], Schema.Literal<string>]
-      >;
-    }
-    const Base = FunctionSpec.extend<Profile.NoFields, { returns: Marked }>()(
-      layer("base"),
-    );
-    const Outer = Base.extend<Profile.NoFields, { returns: Marked }>()(
-      layer("outer"),
-    );
-    const early = Outer.publicQuery({
-      name: "early",
-      returns: () => {
-        events.push("declared");
-        return Later;
-      },
-    });
-    const Later = Schema.Literal("later");
     expect(events).toEqual([]);
     const first = early.functionProvenance.returns;
     expect(early.functionProvenance.returns).toBe(first);
@@ -947,6 +992,156 @@ describe("profile schema wrappers", () => {
       ),
     ).toEqual(["later", "base", "outer"]);
     expect(events).toEqual(["outer:early", "base:early", "declared"]);
+  });
+
+  it("M1 keeps ten builder forms and the pagination refusal", () => {
+    class Trace extends MiddlewareSpec.MiddlewareSpec<Trace>()("ProfileTrace", {
+      functionTypes: { query: true, mutation: true, action: true },
+    }) {}
+    const Traced = Errors.extend()({ middleware: [Trace] });
+    const options = {
+      name: "read",
+      returns: () => Schema.Finite,
+      item: () => Schema.Finite,
+    } as const;
+    const args = () => ({ id: Schema.String });
+    const withArgs = { ...options, args, error: () => Declared };
+    const pairs = [
+      [Traced.publicQuery(withArgs), Traced.publicQuery(options)],
+      [Traced.publicMutation(withArgs), Traced.publicMutation(options)],
+      [Traced.publicAction(withArgs), Traced.publicAction(options)],
+      [Traced.publicNodeAction(withArgs), Traced.publicNodeAction(options)],
+      [
+        Traced.publicPaginatedQuery(withArgs),
+        Traced.publicPaginatedQuery(options),
+      ],
+    ] as const;
+    type Pair<R extends RuntimeAndFunctionType.RuntimeAndFunctionType> =
+      readonly [
+        {
+          readonly runtimeAndFunctionType: R;
+          readonly name: "read";
+          readonly functionVisibility: "public";
+        },
+        {
+          readonly runtimeAndFunctionType: R;
+          readonly name: "read";
+          readonly functionVisibility: "public";
+        },
+      ];
+    expectTypeOf(pairs).toExtend<
+      readonly [
+        Pair<RuntimeAndFunctionType.ConvexQuery>,
+        Pair<RuntimeAndFunctionType.ConvexMutation>,
+        Pair<RuntimeAndFunctionType.ConvexAction>,
+        Pair<RuntimeAndFunctionType.NodeAction>,
+        Pair<RuntimeAndFunctionType.ConvexQuery>,
+      ]
+    >();
+    type Details<F extends FunctionSpec.AnyConfect> = readonly [
+      F["functionProvenance"]["kind"] extends FunctionProvenance.Paginated<
+        infer A
+      >
+        ? Schema.Struct<A>["Type"]
+        : FunctionSpec.Args<F>,
+      F["functionProvenance"]["kind"] extends FunctionProvenance.Paginated<
+        any,
+        infer I
+      >
+        ? I["Type"]
+        : FunctionSpec.Returns<F>,
+      FunctionSpec.Error<F>,
+      FunctionSpec.MiddlewareSpecs<F>,
+    ];
+    type Equal<A, B> =
+      (<T>() => T extends A ? 1 : 2) extends <T>() => T extends B ? 1 : 2
+        ? true
+        : false;
+    type Checks<
+      P extends readonly [FunctionSpec.AnyConfect, FunctionSpec.AnyConfect],
+    > = readonly [
+      Equal<Details<P[0]>[0], { readonly id: string }>,
+      Equal<Details<P[0]>[1], number>,
+      Equal<Details<P[0]>[2], Declared | ProfileFailure>,
+      Equal<Details<P[0]>[3], typeof Trace>,
+      Equal<Details<P[1]>[0], {}>,
+      Equal<Details<P[1]>[1], number>,
+      Equal<Details<P[1]>[2], ProfileFailure>,
+      Equal<Details<P[1]>[3], typeof Trace>,
+    ];
+    type Pass = readonly [true, true, true, true, true, true, true, true];
+    expectTypeOf<Checks<(typeof pairs)[0]>>().toEqualTypeOf<Pass>();
+    expectTypeOf<Checks<(typeof pairs)[1]>>().toEqualTypeOf<Pass>();
+    expectTypeOf<Checks<(typeof pairs)[2]>>().toEqualTypeOf<Pass>();
+    expectTypeOf<Checks<(typeof pairs)[3]>>().toEqualTypeOf<Pass>();
+    expectTypeOf<Checks<(typeof pairs)[4]>>().toEqualTypeOf<Pass>();
+    expectTypeOf<
+      FunctionSpec.Args<(typeof pairs)[4][0]>["paginationOpts"]["numItems"]
+    >().toEqualTypeOf<number>();
+    expect(
+      pairs.flat().map(
+        (spec) =>
+          Schema.decodeSync(spec.functionProvenance.error!)({
+            _tag: "ProfileFailure",
+          })._tag,
+      ),
+    ).toEqual(Array(10).fill("ProfileFailure"));
+    const refused = Traced.publicPaginatedQuery({
+      ...options,
+      // @ts-expect-error A wrapper must keep ForbidPaginationOpts.
+      args: () => ({ paginationOpts: Schema.String }),
+    });
+    expect(() => refused.functionProvenance.args).toThrow(
+      "must not declare `paginationOpts`",
+    );
+  });
+
+  it("refuses an error wrapper that leaves the absent error empty", () => {
+    interface Identity extends Profile.SchemaTransform {
+      readonly Type: this["Input"];
+    }
+    // @ts-expect-error An error wrapper must add an error to Schema.Never.
+    FunctionSpec.extend<Profile.NoFields, { error: Identity }>()({
+      middleware: [],
+      schemas: { error: (thunk) => thunk },
+    });
+  });
+
+  it("applies the extension's return type outside its base", () => {
+    interface Narrow extends Profile.SchemaTransform {
+      readonly Type: Schema.Literal<"wrapped">;
+    }
+    interface Mark extends Profile.SchemaTransform {
+      readonly Type: Schema.Union<
+        readonly [this["Input"], Schema.Literal<"marked">]
+      >;
+    }
+    const Narrowed = FunctionSpec.extend<
+      Profile.NoFields,
+      { returns: Narrow }
+    >()({
+      middleware: [],
+      schemas: { returns: () => () => Schema.Literal("wrapped") },
+    });
+    const Marked = Narrowed.extend<Profile.NoFields, { returns: Mark }>()({
+      middleware: [],
+      schemas: {
+        returns: (thunk) => () =>
+          Schema.Union([thunk(), Schema.Literal("marked")]),
+      },
+    });
+    const spec = Marked.publicQuery({
+      name: "ordered",
+      returns: () => Schema.String,
+    });
+    expectTypeOf<FunctionSpec.Returns<typeof spec>>().toEqualTypeOf<
+      "wrapped" | "marked"
+    >();
+    expect(
+      (["wrapped", "marked"] as const).map((value) =>
+        Schema.decodeSync(spec.functionProvenance.returns)(value),
+      ),
+    ).toEqual(["wrapped", "marked"]);
   });
 
   it("types transformed args, results, items and complete error unions", () => {

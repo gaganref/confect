@@ -106,6 +106,9 @@ export interface Transforms {
 export type Transform<T, Input> = (T & { readonly Input: Input })["Type" &
   keyof T];
 
+/**
+ * Error wrappers opt into Schema.Never when no error thunk was declared.
+ */
 export type Wrappers<T extends Transforms, FieldsType> = {
   readonly [K in keyof T]-?: K extends keyof Transforms
     ? <
@@ -119,8 +122,17 @@ export type Wrappers<T extends Transforms, FieldsType> = {
     : never;
 } & { readonly [K in Exclude<keyof Transforms, keyof T>]?: never };
 
-export type SchemaConfig<T extends Transforms, FieldsType> = [keyof T] extends [
-  never,
-]
+type NonemptyError<T extends Transforms> = T extends {
+  readonly error: infer E extends SchemaTransform;
+}
+  ? [Transform<E, typeof Schema.Never>["Type"]] extends [never]
+    ? MiddlewareSpec.AttachmentError<"Profile error wrapper must add an error to Schema.Never">
+    : unknown
+  : unknown;
+
+export type SchemaConfig<T extends Transforms, FieldsType> = ([
+  keyof T,
+] extends [never]
   ? { readonly schemas?: never }
-  : { readonly schemas: Wrappers<T, FieldsType> };
+  : { readonly schemas: Wrappers<T, FieldsType> }) &
+  NonemptyError<T>;

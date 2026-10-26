@@ -132,7 +132,7 @@ FunctionSpec.extend<Quota>()({
 
 The factory runs when the spec is built, possibly before the modules its schemas use have loaded, so it should call `args` only lazily. An extension may attach the same middleware again, since a middleware with options can [repeat](/server/middleware#repeating-a-policy). `Profile.attach` refuses a middleware without options, which joins the list directly and at most once.
 
-The optional `schemas` record wraps `args`, `returns`, `item` and `error` thunks with the function's `Profile.Info`. Its second type argument declares each wrapper's output, using `this["Input"]` for the original schema. Args use `Profile.ArgsTransform` and return field maps; the other slots use `Profile.SchemaTransform` and return codecs. Wrappers run only at first force, and an extension wraps outside its base. Absent thunks stay absent. This profile adds one error to every function's declared error union:
+The optional `schemas` record wraps `args`, `returns`, `item` and `error` thunks with the function's `Profile.Info`. Its second type argument declares each wrapper's output, using `this["Input"]` for the original schema. Args use `Profile.ArgsTransform` and return field maps; the other slots use `Profile.SchemaTransform` and return codecs. Wrappers run only at first force, and an extension wraps outside its base. Absent thunks stay absent, except that choosing an `error` wrapper opts into `Schema.Never` as the default. An error wrapper must add a member to the empty union; `extend` refuses one that leaves its decoded type as `never`. This profile adds one error to every function's declared error union:
 
 ```ts
 import { FunctionSpec, Profile } from "@confect/core";
