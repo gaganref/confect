@@ -1,3 +1,4 @@
+import type { Profile } from "@confect/core";
 import { FunctionSpec, Ref } from "@confect/core";
 import { it } from "@effect/vitest";
 import { renderHook } from "@testing-library/react";
@@ -794,4 +795,72 @@ describe("usePaginatedQuery", () => {
       expect(check).toBeDefined();
     });
   });
+});
+
+describe("profile error wrappers", () => {
+  interface AddNotFound extends Profile.SchemaTransform {
+    readonly Type: Schema.Union<readonly [this["Input"], typeof NotFound]>;
+  }
+  const Profiled = FunctionSpec.extend<
+    Profile.NoFields,
+    { error: AddNotFound }
+  >()({
+    middleware: [],
+    schemas: { error: (thunk) => () => Schema.Union([thunk(), NotFound]) },
+  });
+
+  it.effect("mutation hooks return a Result only with the profile", () =>
+    Effect.gen(function* () {
+      const options = {
+        name: "profiledMutation",
+        returns: () => Schema.String,
+      };
+      const profiled = Ref.make("notes", Profiled.publicMutation(options));
+      const plain = Ref.make("notes", FunctionSpec.publicMutation(options));
+      useConvexMutationMock.mockReturnValue(() => Promise.resolve("saved"));
+      const wrapped = renderHook(() => useMutation(profiled));
+      const unwrapped = renderHook(() => useMutation(plain));
+      expectTypeOf<InvokeReturn<typeof profiled>>().toEqualTypeOf<
+        Promise<Result.Result<string, NotFound>>
+      >();
+      expectTypeOf<InvokeReturn<typeof plain>>().toEqualTypeOf<
+        Promise<string>
+      >();
+      expect([Ref.hasErrorSchema(profiled), Ref.hasErrorSchema(plain)]).toEqual(
+        [true, false],
+      );
+      expect(yield* Effect.promise(() => wrapped.result.current())).toEqual(
+        Result.succeed("saved"),
+      );
+      expect(yield* Effect.promise(() => unwrapped.result.current())).toBe(
+        "saved",
+      );
+    }),
+  );
+
+  it.effect("action hooks return a Result only with the profile", () =>
+    Effect.gen(function* () {
+      const options = { name: "profiledAction", returns: () => Schema.String };
+      const profiled = Ref.make("notes", Profiled.publicAction(options));
+      const plain = Ref.make("notes", FunctionSpec.publicAction(options));
+      useConvexActionMock.mockReturnValue(() => Promise.resolve("sent"));
+      const wrapped = renderHook(() => useAction(profiled));
+      const unwrapped = renderHook(() => useAction(plain));
+      expectTypeOf<InvokeReturn<typeof profiled>>().toEqualTypeOf<
+        Promise<Result.Result<string, NotFound>>
+      >();
+      expectTypeOf<InvokeReturn<typeof plain>>().toEqualTypeOf<
+        Promise<string>
+      >();
+      expect([Ref.hasErrorSchema(profiled), Ref.hasErrorSchema(plain)]).toEqual(
+        [true, false],
+      );
+      expect(yield* Effect.promise(() => wrapped.result.current())).toEqual(
+        Result.succeed("sent"),
+      );
+      expect(yield* Effect.promise(() => unwrapped.result.current())).toBe(
+        "sent",
+      );
+    }),
+  );
 });

@@ -159,7 +159,8 @@ Upstream: planned; no proposal submitted.
 
 An error wrapper opts into `Schema.Never` when a function declares no error.
 A profile can add its own error to every union, including the empty one.
-Expose the optional description in `Profile.Info` for first-force policy checks.
+Refuse a wrapper whose output for the empty union still has type `never`, so
+client return types agree with the presence of an error schema.
 Preserve lazy construction, middleware types and the pagination guard across
 all ten public builder forms, including tagged-error subclasses and extensions.
 

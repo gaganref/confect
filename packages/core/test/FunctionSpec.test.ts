@@ -956,7 +956,7 @@ describe("profile schema wrappers", () => {
         thunk: () => S,
         info: Profile.Info<{}>,
       ) => {
-        events.push(`${marker}:${info.name}:${info.description}`);
+        events.push(`${marker}:${info.name}`);
         return () => Schema.Union([thunk(), Schema.Literal(marker)]);
       },
     },
@@ -991,11 +991,7 @@ describe("profile schema wrappers", () => {
         Schema.decodeSync(first)(value),
       ),
     ).toEqual(["later", "base", "outer"]);
-    expect(events).toEqual([
-      "outer:early:Read early.",
-      "base:early:Read early.",
-      "declared",
-    ]);
+    expect(events).toEqual(["outer:early", "base:early", "declared"]);
   });
 
   it("M1 keeps ten builder forms and the pagination refusal", () => {
@@ -1098,6 +1094,54 @@ describe("profile schema wrappers", () => {
     expect(() => refused.functionProvenance.args).toThrow(
       "must not declare `paginationOpts`",
     );
+  });
+
+  it("refuses an error wrapper that leaves the absent error empty", () => {
+    interface Identity extends Profile.SchemaTransform {
+      readonly Type: this["Input"];
+    }
+    // @ts-expect-error An error wrapper must add an error to Schema.Never.
+    FunctionSpec.extend<Profile.NoFields, { error: Identity }>()({
+      middleware: [],
+      schemas: { error: (thunk) => thunk },
+    });
+  });
+
+  it("applies the extension's return type outside its base", () => {
+    interface Narrow extends Profile.SchemaTransform {
+      readonly Type: Schema.Literal<"wrapped">;
+    }
+    interface Mark extends Profile.SchemaTransform {
+      readonly Type: Schema.Union<
+        readonly [this["Input"], Schema.Literal<"marked">]
+      >;
+    }
+    const Narrowed = FunctionSpec.extend<
+      Profile.NoFields,
+      { returns: Narrow }
+    >()({
+      middleware: [],
+      schemas: { returns: () => () => Schema.Literal("wrapped") },
+    });
+    const Marked = Narrowed.extend<Profile.NoFields, { returns: Mark }>()({
+      middleware: [],
+      schemas: {
+        returns: (thunk) => () =>
+          Schema.Union([thunk(), Schema.Literal("marked")]),
+      },
+    });
+    const spec = Marked.publicQuery({
+      name: "ordered",
+      returns: () => Schema.String,
+    });
+    expectTypeOf<FunctionSpec.Returns<typeof spec>>().toEqualTypeOf<
+      "wrapped" | "marked"
+    >();
+    expect(
+      (["wrapped", "marked"] as const).map((value) =>
+        Schema.decodeSync(spec.functionProvenance.returns)(value),
+      ),
+    ).toEqual(["wrapped", "marked"]);
   });
 
   it("types transformed args, results, items and complete error unions", () => {

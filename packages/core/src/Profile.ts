@@ -38,11 +38,10 @@ export interface Both<
 }
 
 /**
- * What a profile callback sees. `args` stays a thunk.
+ * What an attachment's options factory sees. `args` stays a thunk.
  */
 export interface Info<FieldsType> {
   readonly name: string;
-  readonly description?: string;
   readonly args: () => FunctionProvenance.ArgsFields;
   readonly fields: FieldsType;
 }
@@ -123,8 +122,17 @@ export type Wrappers<T extends Transforms, FieldsType> = {
     : never;
 } & { readonly [K in Exclude<keyof Transforms, keyof T>]?: never };
 
-export type SchemaConfig<T extends Transforms, FieldsType> = [keyof T] extends [
-  never,
-]
+type NonemptyError<T extends Transforms> = T extends {
+  readonly error: infer E extends SchemaTransform;
+}
+  ? [Transform<E, typeof Schema.Never>["Type"]] extends [never]
+    ? MiddlewareSpec.AttachmentError<"Profile error wrapper must add an error to Schema.Never">
+    : unknown
+  : unknown;
+
+export type SchemaConfig<T extends Transforms, FieldsType> = ([
+  keyof T,
+] extends [never]
   ? { readonly schemas?: never }
-  : { readonly schemas: Wrappers<T, FieldsType> };
+  : { readonly schemas: Wrappers<T, FieldsType> }) &
+  NonemptyError<T>;
