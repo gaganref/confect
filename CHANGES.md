@@ -664,3 +664,13 @@ after the source completes; a budget stop fails with `ReadBudgetExceededError`.
 
 Changeset: `collect-query-stream.md`.
 Upstream: planned; no proposal submitted.
+
+### Explain whole-table collections
+
+The `confect/require-collect-reason` lint requires an adjacent `COLLECT:` reason
+when `QueryStream.collect` consumes an unranged `all()`, directly or through a
+pipe or local binding. Import aliases are recognized and shadowed names ignored.
+Ranged calls need no comment. The runtime read budget remains the backstop.
+
+Changeset: none; repository lint only.
+Upstream: planned; no proposal submitted.

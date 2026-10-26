@@ -148,3 +148,9 @@ npx opensrc <owner>/<repo>      # GitHub repo (e.g., npx opensrc vercel/ai)
 ```
 
 <!-- opensrc:end -->
+
+## Rules and enforcement
+
+| Rule                                                                      | Enforced by                                                      |
+| ------------------------------------------------------------------------- | ---------------------------------------------------------------- |
+| Explain an unranged `all()` collection with an adjacent `COLLECT:` reason | `confect/require-collect-reason` in `pnpm lint` and `pnpm check` |

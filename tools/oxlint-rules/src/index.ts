@@ -12,7 +12,14 @@ import { preferEffectVitest } from "./preferEffectVitest.ts";
 import { preferTestEach } from "./preferTestEach.ts";
 import { requireQueryStreamExperimental } from "./requireQueryStreamExperimental.ts";
 
-export { preferEffectVitest, preferTestEach, requireQueryStreamExperimental };
+import { requireCollectReason } from "./requireCollectReason.ts";
+
+export {
+  preferEffectVitest,
+  preferTestEach,
+  requireQueryStreamExperimental,
+  requireCollectReason,
+};
 
 export default Plugin.define({
   name: "confect",
@@ -21,5 +28,6 @@ export default Plugin.define({
     "prefer-effect-vitest": preferEffectVitest,
     "prefer-test-each": preferTestEach,
     "require-query-stream-experimental": requireQueryStreamExperimental,
+    "require-collect-reason": requireCollectReason,
   },
 });

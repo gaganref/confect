@@ -96,6 +96,7 @@ describe("plugin", () => {
       "prefer-effect-vitest",
       "prefer-test-each",
       "require-query-stream-experimental",
+      "require-collect-reason",
     ]);
   });
 });

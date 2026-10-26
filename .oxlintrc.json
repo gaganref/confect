@@ -43,6 +43,7 @@
   ],
   "rules": {
     "confect/require-query-stream-experimental": "error",
+    "confect/require-collect-reason": "error",
     "jsdoc-style/check-alignment": "error",
     "jsdoc-style/check-line-alignment": [
       "error",
