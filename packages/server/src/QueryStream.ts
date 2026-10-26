@@ -834,6 +834,21 @@ const fillMergeSource = <Doc, E>(
     BudgetLimited: () => Effect.succeed(source),
   });
 
+const consumeMergeHead = <Doc, E>(
+  source: MergeSource<Doc, E>,
+): MergeSource<Doc, E> =>
+  source._tag === "Buffered"
+    ? Option.match(Chunk.head(source.tail), {
+        onNone: () => MergeSource.NeedsPull({ pull: source.pull }),
+        onSome: (head) =>
+          MergeSource.Buffered({
+            pull: source.pull,
+            head,
+            tail: Chunk.drop(source.tail, 1),
+          }),
+      })
+    : source;
+
 /**
  * One step of the k-way merge as a pure unfold: fill every source, emit the
  * earliest head (ties go to the earliest source, keeping the merge stable), and
@@ -841,7 +856,10 @@ const fillMergeSource = <Doc, E>(
  * exhausted or an input stopped before its next key was known.
  */
 const mergeStep =
-  <Doc, E>(keyOrder: Order.Order<QueryStreamKeyValues.QueryStreamKeyValues>) =>
+  <Doc, E>(
+    keyOrder: Order.Order<QueryStreamKeyValues.QueryStreamKeyValues>,
+    dedupe: boolean,
+  ) =>
   (
     sources: ReadonlyArray<MergeSource<Doc, E>>,
   ): Effect.Effect<
@@ -883,36 +901,73 @@ const mergeStep =
           ),
       );
 
-      return Option.getOrUndefined(
-        Option.map(earliest, ({ index, element }) =>
-          Tuple.make(
-            element,
-            Array.map(filled, (source, sourceIndex) =>
-              sourceIndex === index && source._tag === "Buffered"
-                ? Option.match(Chunk.head(source.tail), {
-                    onNone: () => MergeSource.NeedsPull({ pull: source.pull }),
-                    onSome: (head) =>
-                      MergeSource.Buffered({
-                        pull: source.pull,
-                        head,
-                        tail: Chunk.drop(source.tail, 1),
-                      }),
-                  })
-                : source,
-            ),
+      if (Option.isNone(earliest)) return undefined;
+      if (!dedupe) {
+        const { index, element } = earliest.value;
+        return Tuple.make(
+          element,
+          Array.map(filled, (source, sourceIndex) =>
+            sourceIndex === index ? consumeMergeHead(source) : source,
           ),
-        ),
-      );
+        );
+      }
+      const keyValues = earliest.value.element.keyValues;
+      const matches = (source: MergeSource<Doc, E>) =>
+        source._tag === "Buffered" &&
+        keyOrder(source.head.keyValues, keyValues) === 0;
+      let representative = earliest.value;
+      let remaining = filled;
+      // Resolve the entire equal-key group before publishing its boundary.
+      // A budget stop leaves it for the next page, including any visible copy.
+      for (;;) {
+        representative = Array.reduce(
+          remaining,
+          representative,
+          (best, source, index) =>
+            source._tag === "Buffered" &&
+            matches(source) &&
+            Option.isSome(source.head.doc) &&
+            (Option.isNone(best.element.doc) || index < best.index)
+              ? new MergeCandidate({ index, element: source.head })
+              : best,
+        );
+        remaining = yield* Effect.forEach(
+          Array.map(remaining, (source) =>
+            matches(source) ? consumeMergeHead(source) : source,
+          ),
+          fillMergeSource,
+          { concurrency: (yield* readBudget.isUnlimited) ? "unbounded" : 1 },
+        );
+        if (
+          remaining.some((source) => MergeSource.$is("BudgetLimited")(source))
+        )
+          return undefined;
+        if (!remaining.some(matches))
+          return Tuple.make(representative.element, remaining);
+      }
     });
+
+/**
+ * Optional merge behavior. With `dedupe`, equal complete stored keys, including
+ * ID tiebreakers, emit once. The first visible copy in source order wins; a
+ * filtered copy cannot suppress a visible one. Different keys remain distinct.
+ *
+ * @experimental
+ */
+export interface MergeOptions {
+  readonly dedupe?: boolean;
+}
 
 /**
  * Combine streams sharing a key layout into one stream in key order. Use this
  * to query several index ranges at once, such as notes by multiple roles.
  *
  * The merge emits the smallest next key when ascending and the largest when
- * descending. Unlike `Stream.merge`, it does not interleave by arrival time.
- * Overlapping inputs are not deduplicated: a document matched twice appears
- * twice. Supply at least one input; use `empty` for an empty dynamic list.
+ * descending. Unlike `Stream.merge`, it does not interleave by arrival time. By
+ * default, a document matched twice appears twice. Pass `{ dedupe: true }` to
+ * coalesce equal complete keys, including ID tiebreakers. Resolving a group can
+ * prefetch the next key from each input; all such reads count against the
+ * shared budget. Supply at least one input; use `empty` for an empty list.
  *
  * Inputs need compatible document types and identical key layouts and
  * directions. TypeScript rejects known mismatches; runtime mismatches throw
@@ -934,6 +989,7 @@ export const merge = <
       QueryStream<Doc, KeyLabels, NoInfer<OrderDirection>, E, R>
     >,
   ],
+  options?: MergeOptions,
 ): QueryStream<Doc, KeyLabels, OrderDirection, E, R> => {
   const head = Array.headNonEmpty(streams);
   const incompatible = Array.findFirst(
@@ -950,7 +1006,7 @@ export const merge = <
       actualKeyLayout: incompatible.value.keyLayout,
     });
   }
-  return mergeUnchecked(streams);
+  return mergeUnchecked(streams, options);
 };
 
 /**
@@ -969,6 +1025,7 @@ const mergeUnchecked = <
     QueryStream<Doc, KeyLabels, OrderDirection, E, R>,
     ...ReadonlyArray<QueryStream<Doc, KeyLabels, OrderDirection, E, R>>,
   ],
+  options?: MergeOptions,
 ): QueryStream<Doc, KeyLabels, OrderDirection, E, R> => {
   const head = Array.headNonEmpty(streams);
   const annotated: Stream.Stream<
@@ -981,7 +1038,10 @@ const mergeUnchecked = <
       (pulls) =>
         Stream.unfold(
           Array.map(pulls, (pull) => MergeSource.NeedsPull({ pull })),
-          mergeStep<Doc, E>(QueryStreamKeyValues.Order(head.orderDirection)),
+          mergeStep<Doc, E>(
+            QueryStreamKeyValues.Order(head.orderDirection),
+            options?.dedupe === true,
+          ),
         ),
     ),
   );
@@ -995,17 +1055,25 @@ const mergeUnchecked = <
     // key space, so each branch converts them to its own index-key
     // space itself.
     (parsedBounds) =>
-      mergeUnchecked([
-        narrowByParsedBounds(head, parsedBounds),
-        ...Array.map(Array.tailNonEmpty(streams), (stream) =>
-          narrowByParsedBounds(stream, parsedBounds),
-        ),
-      ]),
+      mergeUnchecked(
+        [
+          narrowByParsedBounds(head, parsedBounds),
+          ...Array.map(Array.tailNonEmpty(streams), (stream) =>
+            narrowByParsedBounds(stream, parsedBounds),
+          ),
+        ],
+        options,
+      ),
     () =>
-      mergeUnchecked([
-        reverse(head),
-        ...Array.map(Array.tailNonEmpty(streams), (stream) => reverse(stream)),
-      ]),
+      mergeUnchecked(
+        [
+          reverse(head),
+          ...Array.map(Array.tailNonEmpty(streams), (stream) =>
+            reverse(stream),
+          ),
+        ],
+        options,
+      ),
   );
 };
 
