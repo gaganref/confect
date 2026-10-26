@@ -811,7 +811,7 @@ describe("QueryStream.ReadBudgetExceededError", () => {
     ).toMatchObject({ rowsRead: 0, bytesRead: 0 });
   });
 
-  it("preserves the pagination error tag and details", () => {
+  it("preserves the budget error tag and details", () => {
     const error = new QueryStream.ReadBudgetExceededError({
       rowsRead: 2,
       bytesRead: 20,
@@ -819,7 +819,9 @@ describe("QueryStream.ReadBudgetExceededError", () => {
     expect(error._tag).toBe("ReadBudgetExceededError");
     expect(error.rowsRead).toBe(2);
     expect(error.bytesRead).toBe(20);
-    expect(error.message).toContain("before a safe page boundary");
+    expect(error.message).toBe(
+      "The read budget was exhausted before the query stream completed; increase the budget or simplify the query",
+    );
     expect(error.message).not.toContain("QueryStream.paginate");
   });
 });

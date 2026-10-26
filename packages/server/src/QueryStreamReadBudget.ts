@@ -22,8 +22,9 @@ export interface QueryStreamReadBudget {
   readonly getReadCounts: Effect.Effect<ReadCounts>;
   /**
    * Returns a stream that records reads against this budget and stops
-   * requesting further batches once exhausted. Apply directly to the document
-   * source before buffering, filtering, or combining its output.
+   * requesting further batches once exhausted, except for one limit-boundary
+   * lookahead to detect completion. Apply directly to the document source
+   * before buffering, filtering, or combining its output.
    */
   readonly accountFor: (
     encodedDocuments: Stream.Stream<unknown>,
@@ -133,10 +134,22 @@ export const make = Effect.fnUntraced(function* (
         SynchronizedRef.modifyEffect(stateRef, (state) =>
           Effect.gen(function* () {
             if (isExhausted(state, limits)) {
-              return Tuple.make(
-                Option.none(),
-                State.Stopped(readCounts(state)),
-              );
+              const canProbeEnd =
+                State.$is("Active")(state) &&
+                !Option.exists(
+                  limits.maximumRowsRead,
+                  (limit) => state.rowsRead > limit,
+                ) &&
+                !Option.exists(
+                  limits.maximumBytesRead,
+                  (limit) => state.bytesRead > limit,
+                );
+              // Iterators expose completion only through a pull. Count a
+              // lookahead row, but never publish it beyond either limit.
+              const counts = canProbeEnd
+                ? record(state, yield* pull)
+                : readCounts(state);
+              return Tuple.make(Option.none(), State.Stopped(counts));
             }
             const documents = yield* pull;
             return Tuple.make(

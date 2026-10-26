@@ -5,7 +5,7 @@ import type * as QueryStreamOrderDirection from "@confect/server/QueryStreamOrde
 import * as QueryStreamReadBudget from "@confect/server/QueryStreamReadBudget";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as QueryStream from "@confect/server/QueryStream";
-import { compareValues } from "convex/values";
+import { compareValues, getDocumentSize } from "convex/values";
 import * as Deferred from "effect/Deferred";
 import * as Cause from "effect/Cause";
 import * as Result from "effect/Result";
@@ -50,7 +50,11 @@ interface PendingRead {
   readonly settled: Deferred.Deferred<void>;
 }
 
-const makeReader = (pending?: PendingRead) => {
+const makeReader = (
+  pending?: PendingRead,
+  rows: ReadonlyArray<Document> = documents,
+) => {
+  let documentsRead = 0;
   const runs: Array<ReaderRun> = [];
   const events: Array<string> = [];
   const reader: QueryStream.ReflectionReader = {
@@ -83,7 +87,7 @@ const makeReader = (pending?: PendingRead) => {
               };
               runs.push(run);
               events.push(`${id}:open:${order}`);
-              const matching = documents.filter((document) =>
+              const matching = rows.filter((document) =>
                 operations.every(({ _tag, field, value }) => {
                   if (
                     field !== "group" &&
@@ -112,6 +116,7 @@ const makeReader = (pending?: PendingRead) => {
               const result = (): IteratorResult<Document> => {
                 run.settled++;
                 const value = matching[position++];
+                if (value !== undefined) documentsRead++;
                 return value === undefined
                   ? { done: true, value: undefined }
                   : { done: false, value };
@@ -158,7 +163,14 @@ const makeReader = (pending?: PendingRead) => {
     >(),
     orderDirection: "asc",
   });
-  return { stream, runs, events };
+  return {
+    stream,
+    runs,
+    events,
+    get documentsRead() {
+      return documentsRead;
+    },
+  };
 };
 
 describe("QueryStream iterator lifecycle", () => {
@@ -212,7 +224,7 @@ describe("QueryStream iterator lifecycle", () => {
           { order: "asc", next: 1, returned: 1, settled: 1 },
         ]);
         expect(inner.runs).toEqual([
-          { order: "asc", next: 1, returned: 1, settled: 1 },
+          { order: "asc", next: 2, returned: 1, settled: 2 },
         ]);
         expect(
           Option.isNone(
@@ -274,7 +286,7 @@ describe("QueryStream iterator lifecycle", () => {
   );
 
   it.effect.each(["maximumRowsRead", "maximumBytesRead"] as const)(
-    "reports zero reads when %s is zero",
+    "reports the counted lookahead when %s is zero",
     (limit) =>
       Effect.gen(function* () {
         const reader = makeReader();
@@ -284,8 +296,10 @@ describe("QueryStream iterator lifecycle", () => {
           [limit]: 0,
         }).pipe(Effect.flip);
         expect(error).toBeInstanceOf(QueryStream.ReadBudgetExceededError);
-        expect(error).toMatchObject({ rowsRead: 0, bytesRead: 0 });
-        expect(reader.runs.every((run) => run.next === 0)).toBe(true);
+        expect(error).toMatchObject({ rowsRead: 1, bytesRead: 42 });
+        expect(reader.runs).toEqual([
+          { order: "asc", next: 1, returned: 1, settled: 1 },
+        ]);
       }),
   );
 
@@ -318,9 +332,9 @@ describe("QueryStream iterator lifecycle", () => {
       const repeated = yield* budgeted;
       expect(repeated).toEqual(first);
       expect(reader.runs).toEqual([
-        { order: "asc", next: 1, returned: 1, settled: 1 },
+        { order: "asc", next: 2, returned: 1, settled: 2 },
         { order: "asc", next: 3, returned: 1, settled: 3 },
-        { order: "asc", next: 1, returned: 1, settled: 1 },
+        { order: "asc", next: 2, returned: 1, settled: 2 },
       ]);
     }).pipe(Effect.scoped),
   );
@@ -484,7 +498,7 @@ describe("QueryStream iterator lifecycle", () => {
         expect(page.page).toEqual(documents.slice(0, 2));
         expect(page.isDone).toBe(false);
         expect(reader.runs).toEqual([
-          { order: "asc", next: 2, returned: 1, settled: 2 },
+          { order: "asc", next: 3, returned: 1, settled: 3 },
         ]);
       }),
   );
@@ -506,8 +520,15 @@ describe("QueryStream iterator lifecycle", () => {
         );
 
         expect(error).toBeInstanceOf(QueryStream.ReadBudgetExceededError);
-        expect(error).toMatchObject({ rowsRead: 1 });
-        expect(reader.events).toEqual(["0:open:desc", "0:next", "0:return"]);
+        expect(error).toMatchObject({ rowsRead: 2 });
+        expect(reader.events).toEqual([
+          "0:open:desc",
+          "0:next",
+          "0:return",
+          "1:open:asc",
+          "1:next",
+          "1:return",
+        ]);
       }),
   );
 
@@ -529,12 +550,13 @@ describe("QueryStream iterator lifecycle", () => {
         );
 
         expect(error).toBeInstanceOf(QueryStream.ReadBudgetExceededError);
-        expect(error).toMatchObject({ rowsRead: 2 });
+        expect(error).toMatchObject({ rowsRead: 3 });
         expect(reader.events).toEqual([
           "0:open:desc",
           "0:next",
           "0:return",
           "1:open:asc",
+          "1:next",
           "1:next",
           "1:return",
         ]);
@@ -610,3 +632,224 @@ describe("QueryStream iterator lifecycle", () => {
       }).pipe(Effect.scoped),
   );
 });
+
+describe("QueryStream.collect", () => {
+  it.effect("collects every row when the row count equals the budget", () =>
+    Effect.gen(function* () {
+      const reader = makeReader();
+      expect(
+        yield* QueryStream.collect(reader.stream, { maximumRowsRead: 4 }),
+      ).toEqual(documents);
+      expect(reader.documentsRead).toBe(4);
+      expect(reader.runs).toEqual([
+        { order: "asc", next: 5, returned: 1, settled: 5 },
+      ]);
+    }),
+  );
+
+  it.effect("finishes pagination when the row count equals the budget", () =>
+    Effect.gen(function* () {
+      const reader = makeReader();
+      const page = yield* QueryStream.paginate(reader.stream, {
+        cursor: null,
+        numItems: 10,
+        maximumRowsRead: 4,
+      });
+      expect(page.page).toEqual(documents);
+      expect(page.isDone).toBe(true);
+      expect(page.pageStatus).toBeUndefined();
+      expect(reader.documentsRead).toBe(4);
+      expect(reader.runs).toEqual([
+        { order: "asc", next: 5, returned: 1, settled: 5 },
+      ]);
+    }),
+  );
+
+  it.effect("collects every row when the byte count equals the budget", () =>
+    Effect.gen(function* () {
+      const rows = documents.slice(0, 3);
+      expect(rows.reduce((sum, row) => sum + getDocumentSize(row), 0)).toBe(
+        126,
+      );
+      const reader = makeReader(undefined, rows);
+      expect(
+        yield* QueryStream.collect(reader.stream, { maximumBytesRead: 126 }),
+      ).toEqual(rows);
+      expect(reader.documentsRead).toBe(3);
+      expect(reader.runs).toEqual([
+        { order: "asc", next: 4, returned: 1, settled: 4 },
+      ]);
+    }),
+  );
+
+  it.effect("finishes pagination when the byte count equals the budget", () =>
+    Effect.gen(function* () {
+      const reader = makeReader(undefined, documents.slice(0, 3));
+      const page = yield* QueryStream.paginate(reader.stream, {
+        cursor: null,
+        numItems: 10,
+        maximumBytesRead: 126,
+      });
+      expect(page.page).toEqual(documents.slice(0, 3));
+      expect(page.isDone).toBe(true);
+      expect(page.pageStatus).toBeUndefined();
+      expect(reader.documentsRead).toBe(3);
+      expect(reader.runs).toEqual([
+        { order: "asc", next: 4, returned: 1, settled: 4 },
+      ]);
+    }),
+  );
+
+  it.effect(
+    "counts a byte-limit lookahead without returning a partial collection",
+    () =>
+      Effect.gen(function* () {
+        const reader = makeReader();
+        const error = yield* QueryStream.collect(reader.stream, {
+          maximumBytesRead: 126,
+        }).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ReadBudgetExceededError",
+          rowsRead: 4,
+          bytesRead: 168,
+        });
+        expect(reader.documentsRead).toBe(4);
+      }),
+  );
+
+  it.effect("counts a byte-limit lookahead without emitting it in a page", () =>
+    Effect.gen(function* () {
+      const reader = makeReader();
+      const page = yield* QueryStream.paginate(reader.stream, {
+        cursor: null,
+        numItems: 10,
+        maximumBytesRead: 126,
+      });
+      expect(page.page).toEqual(documents.slice(0, 3));
+      expect(page.isDone).toBe(false);
+      expect(page.pageStatus).toBe("SplitRequired");
+      expect(reader.documentsRead).toBe(4);
+    }),
+  );
+
+  it.effect.each(["maximumRowsRead", "maximumBytesRead"] as const)(
+    "completes an empty stream but refuses one row under zero %s",
+    (limit) =>
+      Effect.gen(function* () {
+        const empty = makeReader(undefined, []);
+        expect(
+          yield* QueryStream.collect(empty.stream, { [limit]: 0 }),
+        ).toEqual([]);
+        expect(empty.documentsRead).toBe(0);
+        const emptyPage = yield* QueryStream.paginate(empty.stream, {
+          cursor: null,
+          numItems: 10,
+          [limit]: 0,
+        });
+        expect(emptyPage.page).toEqual([]);
+        expect(emptyPage.isDone).toBe(true);
+        expect(empty.documentsRead).toBe(0);
+        const one = makeReader(undefined, documents.slice(0, 1));
+        const error = yield* QueryStream.collect(one.stream, {
+          [limit]: 0,
+        }).pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ReadBudgetExceededError",
+          rowsRead: 1,
+          bytesRead: 42,
+        });
+        expect(one.documentsRead).toBe(1);
+        const pageError = yield* QueryStream.paginate(one.stream, {
+          cursor: null,
+          numItems: 10,
+          [limit]: 0,
+        }).pipe(Effect.flip);
+        expect(pageError).toMatchObject({
+          _tag: "ReadBudgetExceededError",
+          rowsRead: 1,
+          bytesRead: 42,
+        });
+        expect(one.documentsRead).toBe(2);
+      }),
+  );
+
+  it.effect(
+    "collects a complete small stream and refuses an over-budget stream",
+    () =>
+      Effect.gen(function* () {
+        const rows = (count: number) =>
+          Array.from({ length: count }, (_, i) => ({
+            _id: `row${i}`,
+            _creationTime: i,
+            group: "a",
+          }));
+        const holidays = makeReader(undefined, rows(40));
+        expect(
+          yield* QueryStream.collect(holidays.stream, {
+            maximumRowsRead: 2_000,
+          }),
+        ).toHaveLength(40);
+        expect(holidays.documentsRead).toBe(40);
+        const demands = makeReader(undefined, rows(2_001));
+        let returned = false;
+        const error = yield* QueryStream.collect(demands.stream, {
+          maximumRowsRead: 2_000,
+        }).pipe(
+          Effect.tap(() =>
+            Effect.sync(() => {
+              returned = true;
+            }),
+          ),
+          Effect.flip,
+        );
+        expect(error).toMatchObject({
+          _tag: "ReadBudgetExceededError",
+          rowsRead: 2_001,
+        });
+        expect(returned).toBe(false);
+        expect(demands.documentsRead).toBe(2_001);
+        expect(demands.runs.every((run) => run.returned === 1)).toBe(true);
+      }),
+  );
+
+  it.effect(
+    "counts filtered rows and never turns a budget stop into an empty success",
+    () =>
+      Effect.gen(function* () {
+        const reader = makeReader();
+        const error = yield* reader.stream.pipe(
+          QueryStream.filter(() => false),
+          QueryStream.collect({ maximumRowsRead: 2 }),
+          Effect.flip,
+        );
+        expect(error).toMatchObject({
+          _tag: "ReadBudgetExceededError",
+          rowsRead: 3,
+        });
+      }),
+  );
+});
+
+it.effect("QueryStream.collect respects an enclosing read budget", () =>
+  Effect.gen(function* () {
+    const reader = makeReader();
+    const budget = yield* QueryStreamReadBudget.make(
+      yield* Schema.decodeEffect(QueryStreamReadBudget.Limits)({
+        maximumRowsRead: 2,
+      }),
+    );
+    const error = yield* QueryStream.collect(reader.stream).pipe(
+      Effect.provideService(
+        QueryStreamReadBudget.QueryStreamReadBudget,
+        budget,
+      ),
+      Effect.flip,
+    );
+    expect(error).toMatchObject({
+      _tag: "ReadBudgetExceededError",
+      rowsRead: 3,
+    });
+    expect(reader.documentsRead).toBe(3);
+    expect(yield* budget.isStopped).toBe(true);
+  }),
+);

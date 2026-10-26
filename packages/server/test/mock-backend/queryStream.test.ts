@@ -487,7 +487,7 @@ describe("QueryStream", () => {
               cursor: null,
               endCursor: ` \n${first.continueCursor}\n `,
               numItems: 1,
-              maximumRowsRead: 1,
+              maximumBytesRead: 1,
             }).pipe(Effect.result);
 
             assert(Result.isFailure(result));

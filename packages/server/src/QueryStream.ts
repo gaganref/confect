@@ -70,7 +70,7 @@ import * as QueryStreamPagination from "./QueryStreamPagination.js";
 import * as QueryStreamReadBudget from "./QueryStreamReadBudget.js";
 
 /**
- * A page exhausted its read budget without a safe logical continuation.
+ * A query stream exhausted its read budget before its consumer could finish.
  *
  * @experimental
  */
@@ -79,7 +79,7 @@ export class ReadBudgetExceededError extends Schema.TaggedError<ReadBudgetExceed
   { rowsRead: Schema.Natural, bytesRead: Schema.Natural },
 ) {
   override get message() {
-    return "The read budget was exhausted before a safe page boundary; increase the budget or simplify the query";
+    return "The read budget was exhausted before the query stream completed; increase the budget or simplify the query";
   }
 }
 
@@ -2224,6 +2224,97 @@ const narrowInMemory = <
 // -----------------------------------------------------------------------------
 
 /**
+ * Read limits for `collect`. These count underlying index reads, including
+ * filtered rows and join inputs, rather than just emitted values. At either
+ * limit, one extra row may be read to distinguish completion from an overrun;
+ * it counts toward reported reads but is never emitted. This also applies at
+ * zero, so an empty stream completes under a zero budget.
+ *
+ * @experimental
+ */
+export interface CollectOptions {
+  readonly maximumRowsRead?: number;
+  readonly maximumBytesRead?: number;
+}
+
+/**
+ * Collect the whole query stream or fail with `ReadBudgetExceededError` when a
+ * read budget stops it. No partial array reaches the caller. Arbitrary I/O in
+ * callbacks is not counted. Use `paginate` for data that can grow without
+ * bound.
+ *
+ * With explicit options, each run gets a fresh budget. Without options, use the
+ * enclosing budget if present, or an unlimited budget.
+ *
+ * @experimental
+ */
+export const collect: {
+  (
+    options?: CollectOptions,
+  ): <Doc, KeyLabels extends QueryStreamKeyLabels.QueryStreamKeyLabels, E, R>(
+    self: QueryStream<
+      Doc,
+      KeyLabels,
+      QueryStreamOrderDirection.QueryStreamOrderDirection,
+      E,
+      R
+    >,
+  ) => Effect.Effect<Array<Doc>, E | ReadBudgetExceededError, R>;
+  <Doc, KeyLabels extends QueryStreamKeyLabels.QueryStreamKeyLabels, E, R>(
+    self: QueryStream<
+      Doc,
+      KeyLabels,
+      QueryStreamOrderDirection.QueryStreamOrderDirection,
+      E,
+      R
+    >,
+    options?: CollectOptions,
+  ): Effect.Effect<Array<Doc>, E | ReadBudgetExceededError, R>;
+} = dual(
+  (args) => isQueryStream(args[0]),
+  Effect.fn("QueryStream.collect")(function* <
+    Doc,
+    KeyLabels extends QueryStreamKeyLabels.QueryStreamKeyLabels,
+    E,
+    R,
+  >(
+    self: QueryStream<
+      Doc,
+      KeyLabels,
+      QueryStreamOrderDirection.QueryStreamOrderDirection,
+      E,
+      R
+    >,
+    options?: CollectOptions,
+  ) {
+    const makeBudget = Schema.decodeEffect(QueryStreamReadBudget.Limits)(
+      options ?? {},
+    ).pipe(
+      Effect.catchTag("SchemaError", (cause) =>
+        Effect.die(new QueryStreamReadBudget.InvalidReadLimitError({ cause })),
+      ),
+      Effect.flatMap(QueryStreamReadBudget.make),
+    );
+    const budget = yield* options === undefined
+      ? Effect.serviceOption(QueryStreamReadBudget.QueryStreamReadBudget).pipe(
+          Effect.flatMap(
+            Option.match({ onNone: () => makeBudget, onSome: Effect.succeed }),
+          ),
+        )
+      : makeBudget;
+    const rows = yield* Stream.runCollect(self.toStream()).pipe(
+      Effect.provideService(
+        QueryStreamReadBudget.QueryStreamReadBudget,
+        budget,
+      ),
+    );
+    if (yield* budget.isStopped)
+      return yield* new ReadBudgetExceededError(yield* budget.getReadCounts);
+    return rows;
+  }),
+);
+
+/**
  * `unique` found at least two emitted values. Narrow the query if at most one
  * value was expected, or use another consumer to handle multiple results.
  *
@@ -2287,6 +2378,10 @@ export const unique = Effect.fn("QueryStream.unique")(
  * - `maximumBytesRead`: optional budget charging estimated document size on every
  *   read, not Convex's exact billed bytes. The final document can take the
  *   total over the limit because its size is known only after reading it.
+ *
+ * At either read limit, including zero, one extra row may be read to
+ * distinguish completion from an overrun. It is counted but never emitted. An
+ * empty stream completes under a zero budget.
  *
  * With `numItems: 0`, an existing cursor is returned unchanged with an empty
  * page and `isDone: false`; a null cursor dies with `EmptyInitialPageError`.
@@ -2479,7 +2574,7 @@ export const paginate: {
           () => QueryStreamPagination.initial<Doc>(),
           (state) => state._tag === "Reading",
           (state, { doc, keyValues }: Element<Doc>) =>
-            Effect.map(readBudget.isExhausted, (hitLimit) =>
+            Effect.map(readBudget.isStopped, (hitLimit) =>
               QueryStreamPagination.record(
                 request,
                 state,

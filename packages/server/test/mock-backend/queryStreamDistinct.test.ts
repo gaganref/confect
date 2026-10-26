@@ -637,47 +637,33 @@ describe("QueryStream distinct representatives", () => {
 });
 
 describe("QueryStream distinct read budgets", () => {
-  it.effect(
-    "rejects a pinned budget stop when its only split boundary equals the endpoint",
-    () =>
-      run(
-        Effect.gen(function* () {
-          const { source } = yield* fixture;
-          const distinct = source.pipe(
-            QueryStream.distinct(["text"]),
-            QueryStream.reverse,
-          );
-          const first = yield* QueryStream.paginate(distinct, {
-            numItems: 1,
-            cursor: null,
-          });
-          expect(first.page.map((row) => row.tag)).toEqual(["c1"]);
+  it.effect("completes a pinned range at its exact physical row limit", () =>
+    run(
+      Effect.gen(function* () {
+        const { source } = yield* fixture;
+        const distinct = source.pipe(
+          QueryStream.distinct(["text"]),
+          QueryStream.reverse,
+        );
+        const first = yield* QueryStream.paginate(distinct, {
+          numItems: 1,
+          cursor: null,
+        });
+        expect(first.page.map((row) => row.tag)).toEqual(["c1"]);
 
-          const exhausted = yield* QueryStream.paginate(distinct, {
-            numItems: 1,
-            cursor: null,
-            endCursor: first.continueCursor,
-            maximumRowsRead: 2,
-          }).pipe(Effect.result);
-          assert(Result.isFailure(exhausted));
-          assert(
-            Schema.is(QueryStream.ReadBudgetExceededError)(exhausted.failure),
-          );
-          expect(exhausted.failure.rowsRead).toBe(2);
-
-          const enough = yield* QueryStream.paginate(distinct, {
-            numItems: 1,
-            cursor: null,
-            endCursor: first.continueCursor,
-            maximumRowsRead: 3,
-          });
-          expect(enough.page.map((row) => row.tag)).toEqual(["c1"]);
-          expect(enough.continueCursor).toBe(first.continueCursor);
-          expect(enough.isDone).toBe(false);
-          expect(enough.pageStatus).not.toBe("SplitRequired");
-          expect(enough.splitCursor).toBeUndefined();
-        }),
-      ),
+        const enough = yield* QueryStream.paginate(distinct, {
+          numItems: 1,
+          cursor: null,
+          endCursor: first.continueCursor,
+          maximumRowsRead: 2,
+        });
+        expect(enough.page.map((row) => row.tag)).toEqual(["c1"]);
+        expect(enough.continueCursor).toBe(first.continueCursor);
+        expect(enough.isDone).toBe(false);
+        expect(enough.pageStatus).not.toBe("SplitRequired");
+        expect(enough.splitCursor).toBeUndefined();
+      }),
+    ),
   );
 
   describe.each([2, "unbounded"] as const)(
@@ -836,7 +822,7 @@ describe("QueryStream distinct read budgets", () => {
           assert(
             Schema.is(QueryStream.ReadBudgetExceededError)(result.failure),
           );
-          expect(result.failure.rowsRead).toBe(1);
+          expect(result.failure.rowsRead).toBe(2);
         }),
       ),
   );
@@ -893,7 +879,7 @@ describe("QueryStream distinct read budgets", () => {
           assert(
             Schema.is(QueryStream.ReadBudgetExceededError)(result.failure),
           );
-          expect(result.failure.rowsRead).toBe(3);
+          expect(result.failure.rowsRead).toBe(4);
 
           const enough = yield* QueryStream.paginate(distinct, {
             numItems: 1,
@@ -956,7 +942,7 @@ describe("QueryStream distinct read budgets", () => {
         ).pipe(Effect.result);
         assert(Result.isFailure(result));
         assert(Schema.is(QueryStream.ReadBudgetExceededError)(result.failure));
-        expect(result.failure.rowsRead).toBe(1);
+        expect(result.failure.rowsRead).toBe(2);
       }),
     ),
   );
@@ -999,7 +985,7 @@ describe("QueryStream distinct read budgets", () => {
           assert(
             Schema.is(QueryStream.ReadBudgetExceededError)(result.failure),
           );
-          expect(result.failure.rowsRead).toBe(1);
+          expect(result.failure.rowsRead).toBe(2);
 
           const enough = yield* QueryStream.paginate(joined, {
             numItems: 1,
