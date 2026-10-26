@@ -714,3 +714,13 @@ sealing equal inputs must produce the same string for stable cursor equality.
 
 Changeset: `query-stream-cursor-envelope.md`.
 Upstream: planned; no proposal submitted.
+
+### Deduplicate overlapping stream ranges
+
+`QueryStream.merge(streams, { dedupe: true })` emits equal complete keys once,
+including their ID tiebreakers. It retains the first visible copy in source
+order, resolves a whole key group before publishing its cursor boundary, and
+preserves the option through narrowing and reversal. Ordinary merge is unchanged.
+
+Changeset: `merge-query-stream-dedupe.md`.
+Upstream: planned; no proposal submitted.

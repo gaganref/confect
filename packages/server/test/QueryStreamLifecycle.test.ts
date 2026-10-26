@@ -978,3 +978,131 @@ it.effect.each(["SplitRequired", "SplitRecommended"] as const)(
       expect([...left.page, ...right.page]).toEqual(page.page);
     }),
 );
+
+it.effect.each(["asc", "desc"] as const)(
+  "paginates overlapping deduplicated ranges without gaps in %s order",
+  (direction) =>
+    Effect.gen(function* () {
+      const rows = Array.from({ length: 118 }, (_, i) => ({
+        _id: `session${i}`,
+        _creationTime: i,
+        group: "a",
+      }));
+      const source = (values: ReadonlyArray<Document>) => {
+        const stream = makeReader(undefined, values).stream;
+        return direction === "asc" ? stream : QueryStream.reverse(stream);
+      };
+      const sections = [
+        source(rows.slice(0, 30)),
+        source(rows.slice(30, 60)),
+      ] as const;
+      const campus = source(rows);
+      const overlapping = [campus, ...sections] as const;
+      expect(
+        yield* Stream.runCollect(QueryStream.merge(overlapping)),
+      ).toHaveLength(178);
+      for (const [streams, count] of [
+        [sections, 60],
+        [overlapping, 118],
+      ] as const) {
+        const merged = QueryStream.merge(streams, { dedupe: true });
+        const collected: Array<Document> = [];
+        let cursor: string | null = null;
+        for (let pageNumber = 0; pageNumber < 10; pageNumber++) {
+          const page: QueryStream.PaginationResult<Document> =
+            yield* QueryStream.paginate(merged, {
+              cursor,
+              numItems: 20,
+            });
+          collected.push(...page.page);
+          if (page.isDone) break;
+          expect(page.continueCursor).not.toBe(cursor);
+          cursor = page.continueCursor;
+        }
+        const expected =
+          direction === "desc"
+            ? rows.slice(0, count).toReversed()
+            : rows.slice(0, count);
+        expect(collected).toEqual(expected);
+        expect(new Set(collected.map((doc) => doc._id)).size).toBe(count);
+        expect(yield* Stream.runCollect(QueryStream.reverse(merged))).toEqual(
+          expected.toReversed(),
+        );
+      }
+    }),
+);
+
+it.effect(
+  "merge dedupe keeps a visible copy when equal keys include filtered rows and nested duplicates",
+  () =>
+    Effect.gen(function* () {
+      const source = makeReader().stream;
+      const nested = QueryStream.merge([
+        source.pipe(QueryStream.filter(() => false)),
+        source,
+      ]);
+      const merged = QueryStream.merge([nested, source], { dedupe: true });
+      expect(yield* Stream.runCollect(merged)).toEqual(documents);
+      const left = source.pipe(
+        QueryStream.map((doc) => ({ ...doc, group: "left" })),
+      );
+      const right = source.pipe(
+        QueryStream.map((doc) => ({ ...doc, group: "right" })),
+      );
+      const first = QueryStream.merge([
+        source.pipe(QueryStream.filter(() => false)),
+        left,
+      ]);
+      expect(
+        yield* Stream.runCollect(
+          QueryStream.merge([first, right], { dedupe: true }),
+        ),
+      ).toEqual(documents.map((doc) => ({ ...doc, group: "left" })));
+      const ties = [
+        { ...documents[0]!, _id: "x" },
+        { ...documents[0]!, _id: "y" },
+      ];
+      const tied = makeReader(undefined, ties).stream;
+      expect(
+        yield* Stream.runCollect(
+          QueryStream.merge([tied, tied], { dedupe: true }),
+        ),
+      ).toEqual(ties);
+
+      expect(
+        yield* Stream.runCollect(
+          QueryStream.narrow(merged, {
+            start: { keyValues: ["b"], inclusive: true },
+          }),
+        ),
+      ).toEqual(documents.slice(2));
+    }),
+);
+
+it.effect(
+  "merge dedupe stops only at a complete key group under a shared read budget",
+  () =>
+    Effect.gen(function* () {
+      const source = makeReader().stream;
+      const merged = QueryStream.merge([source, source], { dedupe: true });
+      const first = yield* QueryStream.paginate(merged, {
+        cursor: null,
+        numItems: 10,
+        maximumRowsRead: 6,
+      });
+      expect(first.pageStatus).toBe("SplitRequired");
+      const second = yield* QueryStream.paginate(merged, {
+        cursor: first.continueCursor,
+        numItems: 10,
+        maximumRowsRead: 6,
+      });
+      expect([...first.page, ...second.page]).toEqual(documents);
+      expect(second.isDone).toBe(true);
+      const error = yield* QueryStream.paginate(merged, {
+        cursor: null,
+        numItems: 10,
+        maximumRowsRead: 2,
+      }).pipe(Effect.flip);
+      expect(error._tag).toBe("ReadBudgetExceededError");
+    }),
+);
