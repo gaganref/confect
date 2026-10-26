@@ -853,3 +853,85 @@ it.effect("QueryStream.collect respects an enclosing read budget", () =>
     expect(yield* budget.isStopped).toBe(true);
   }),
 );
+
+it.effect(
+  "splits rare-filter pages at the default read budget and honors explicit larger limits",
+  () =>
+    Effect.gen(function* () {
+      const rows = Array.from({ length: 24_000 }, (_, i) => ({
+        _id: `mark${i}`,
+        _creationTime: i + 1,
+        group: "a",
+      }));
+      const rare = (reader: ReturnType<typeof makeReader>) =>
+        reader.stream.pipe(
+          QueryStream.filter(
+            (doc) =>
+              doc._creationTime >= 3 && (doc._creationTime - 3) % 1_200 === 0,
+          ),
+        );
+      const unbudgeted = makeReader(undefined, rows);
+      expect(
+        yield* rare(unbudgeted).pipe(Stream.take(20), Stream.runCollect),
+      ).toHaveLength(20);
+      expect(unbudgeted.documentsRead).toBe(22_803);
+      const reader = makeReader(undefined, rows);
+      const first = yield* QueryStream.paginate(rare(reader), {
+        cursor: null,
+        numItems: 20,
+      });
+      expect(first.page).toHaveLength(2);
+      expect(first.pageStatus).toBe("SplitRequired");
+      expect(reader.documentsRead).toBe(2_001);
+      const second = yield* QueryStream.paginate(rare(reader), {
+        cursor: first.continueCursor,
+        numItems: 20,
+      });
+      expect(second.pageStatus).toBe("SplitRequired");
+      expect(reader.documentsRead).toBe(4_002);
+      expect(second.continueCursor).not.toBe(first.continueCursor);
+      const override = makeReader(undefined, rows);
+      expect(
+        (yield* QueryStream.paginate(rare(override), {
+          cursor: null,
+          numItems: 20,
+          maximumRowsRead: 30_000,
+        })).page,
+      ).toHaveLength(20);
+      expect(override.documentsRead).toBe(22_803);
+      const collector = makeReader(undefined, rows);
+      const error = yield* QueryStream.collect(collector.stream).pipe(
+        Effect.flip,
+      );
+      expect(error).toMatchObject({
+        _tag: "ReadBudgetExceededError",
+        rowsRead: 2_001,
+      });
+      expect(collector.documentsRead).toBe(2_001);
+    }),
+);
+
+it.effect.each(["collect", "paginate"] as const)(
+  "completes %s at exactly the default 2,000 row budget",
+  (sink) =>
+    Effect.gen(function* () {
+      const rows = Array.from({ length: 2_000 }, (_, i) => ({
+        _id: `row${i}`,
+        _creationTime: i,
+        group: "a",
+      }));
+      const reader = makeReader(undefined, rows);
+      if (sink === "collect") {
+        expect(yield* QueryStream.collect(reader.stream)).toEqual(rows);
+      } else {
+        const result = yield* QueryStream.paginate(reader.stream, {
+          cursor: null,
+          numItems: 2_001,
+        });
+        expect(result.page).toEqual(rows);
+        expect(result.isDone).toBe(true);
+        expect(result.pageStatus).toBeUndefined();
+      }
+      expect(reader.documentsRead).toBe(2_000);
+    }),
+);
