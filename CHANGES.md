@@ -148,11 +148,22 @@ Upstream: planned; no proposal submitted.
 
 Add `schemas` beside a function profile's middleware, with typed wrappers for
 args fields, returns, items and error unions. Wrappers run at first force and
-compose outside earlier layers. Absent thunks stay absent. Profiles can check or
-transform declared schemas without a facade. Core adds no contract or
-authorization policy.
+compose outside earlier layers. Absent args, returns and item thunks stay absent.
+Profiles can check or transform declared schemas without a facade. Core adds no
+contract or authorization policy.
 
 Changeset: `profile-schema-wrappers.md`.
+Upstream: planned; no proposal submitted.
+
+### Supply a profile error default
+
+An error wrapper opts into `Schema.Never` when a function declares no error.
+A profile can add its own error to every union, including the empty one.
+Expose the optional description in `Profile.Info` for first-force policy checks.
+Preserve lazy construction, middleware types and the pagination guard across
+all ten public builder forms, including tagged-error subclasses and extensions.
+
+Changeset: `profile-error-default.md`.
 Upstream: planned; no proposal submitted.
 
 ### Check component declarations

@@ -38,10 +38,11 @@ export interface Both<
 }
 
 /**
- * What an attachment's options factory sees. `args` stays a thunk.
+ * What a profile callback sees. `args` stays a thunk.
  */
 export interface Info<FieldsType> {
   readonly name: string;
+  readonly description?: string;
   readonly args: () => FunctionProvenance.ArgsFields;
   readonly fields: FieldsType;
 }
@@ -106,6 +107,9 @@ export interface Transforms {
 export type Transform<T, Input> = (T & { readonly Input: Input })["Type" &
   keyof T];
 
+/**
+ * Error wrappers opt into Schema.Never when no error thunk was declared.
+ */
 export type Wrappers<T extends Transforms, FieldsType> = {
   readonly [K in keyof T]-?: K extends keyof Transforms
     ? <

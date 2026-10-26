@@ -7,7 +7,7 @@ import type {
   RegisteredMutation,
   RegisteredQuery,
 } from "convex/server";
-import type * as Schema from "effect/Schema";
+import * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
 import * as FunctionProvenance from "./FunctionProvenance.js";
 import { validateConfectFunctionIdentifier } from "./Identifier.js";
@@ -762,7 +762,9 @@ type Wrapped<
       Key,
       Key extends keyof First
         ? [Input] extends [never]
-          ? never
+          ? Key extends "error"
+            ? Profile.Transform<First[Key], typeof Schema.Never>
+            : never
           : Profile.Transform<First[Key], Input>
         : Input
     >
@@ -925,6 +927,7 @@ const makeExtended = (
     }: Record<string, unknown>) => {
       const info = {
         name,
+        ...(description === undefined ? {} : { description }),
         args: args ?? (() => ({})),
         fields,
       } as Profile.Info<unknown>;
@@ -937,7 +940,8 @@ const makeExtended = (
       for (const wrappers of schemas) {
         for (const key of ["args", "returns", "item", "error"] as const) {
           const wrap = wrappers[key];
-          const thunk = thunks[key];
+          const thunk =
+            thunks[key] ?? (key === "error" ? () => Schema.Never : undefined);
           if (wrap !== undefined && thunk !== undefined) {
             thunks[key] = () => wrap(thunk, info)();
           }
