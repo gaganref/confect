@@ -864,9 +864,18 @@ describe("extend", () => {
   });
 
   it("refuses middleware an earlier layer attached at the extend call", () => {
+    const Logged = Owned.extend()({ middleware: [observe("Log")] });
+    const middleware = [Trace, Audit];
+
     // @ts-expect-error Subjected already attaches Trace.
     Subjected.extend()({ middleware: [Trace] });
     // @ts-expect-error Owned inherits Trace from Subjected.
     Owned.extend()({ middleware: [Trace] });
+    // @ts-expect-error Logged inherits Trace from Subjected, two layers up.
+    Logged.extend()({ middleware: [Trace] });
+    // @ts-expect-error The array's element type allows Trace.
+    Subjected.extend()({ middleware });
+    // @ts-expect-error The tuple's second member repeats Trace.
+    Subjected.extend()({ middleware: [Audit, Trace] });
   });
 });

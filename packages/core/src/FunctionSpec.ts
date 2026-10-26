@@ -695,19 +695,28 @@ type OptionFree<Type> = [keyof Type & BuilderOption] extends [never]
  */
 type CheckedFields<Type> = Type & OptionFree<Type>;
 
+type NotRepeated<
+  Middleware_ extends MiddlewareSpec.AnyMiddlewareSpec,
+  Inherited extends MiddlewareSpec.AnyMiddlewareSpec,
+> = Middleware_ extends {
+  readonly key: infer Key extends MiddlewareSpec.Key<Inherited>;
+}
+  ? MiddlewareSpec.AttachmentError<`Middleware "${Key}" is already attached by this profile`>
+  : Middleware_;
+
 /**
  * Refuses middleware an earlier layer attached, which would throw once a
- * function is built.
+ * function is built. Each member of an element's union is checked, so an array
+ * typed `(A | B)[]` is refused when either was attached.
  */
 type NotInherited<
   Middleware_ extends ReadonlyArray<OptionlessMiddlewareSpec>,
   Inherited extends MiddlewareSpec.AnyMiddlewareSpec,
 > = {
-  readonly [Index in keyof Middleware_]: Middleware_[Index] extends {
-    readonly key: infer Key extends MiddlewareSpec.Key<Inherited>;
-  }
-    ? MiddlewareSpec.AttachmentError<`Middleware "${Key}" is already attached by this profile`>
-    : Middleware_[Index];
+  readonly [Index in keyof Middleware_]: NotRepeated<
+    Middleware_[Index],
+    Inherited
+  >;
 };
 
 /**
