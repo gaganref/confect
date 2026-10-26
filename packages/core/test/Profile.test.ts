@@ -117,4 +117,27 @@ describe("attach", () => {
       { spec: Limit, options: { max: 4, label: "doubled" } },
     ]);
   });
+
+  it("refuses a field named after a builder option for the function it names", () => {
+    interface Named extends Profile.Fields {
+      readonly Type: this["Name"] extends "read"
+        ? { readonly quota: number; readonly description: string }
+        : { readonly quota: number };
+    }
+    const ByName = FunctionSpec.extend<Named>()({
+      middleware: [Profile.attach(Limit, limit)],
+    });
+
+    expect(
+      ByName.publicMutation({ name: "send", quota: 1, returns })
+        .middlewareAttachments,
+    ).toEqual([{ spec: Limit, options: { max: 1, label: "send" } }]);
+    ByName.publicQuery({
+      name: "read",
+      quota: 1,
+      // @ts-expect-error The read function's description field is a builder option.
+      description: "Expected field",
+      returns,
+    });
+  });
 });
