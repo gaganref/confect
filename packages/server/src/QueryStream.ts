@@ -2374,6 +2374,27 @@ export const unique = Effect.fn("QueryStream.unique")(
 // -----------------------------------------------------------------------------
 
 /**
+ * Caller-owned envelope for every pagination cursor, including end sentinels.
+ * `open` validates a received cursor and returns `None` on a mismatch; paginate
+ * then dies with `ConvexError({ paginationError: "InvalidCursor" })` before
+ * decoding or reading. `seal` wraps every outgoing continuation and split.
+ * `seal` must return the same string for equal inputs so cursor equality stays
+ * stable.
+ *
+ * Use this to bind cursors to query semantics or sign them. Both callbacks may
+ * use Effect services. Confect owns no keys, fingerprints, or encryption
+ * policy.
+ *
+ * @experimental
+ */
+export interface CursorEnvelope<R = never> {
+  readonly open: (
+    cursor: string,
+  ) => Effect.Effect<Option.Option<string>, never, R>;
+  readonly seal: (cursor: string) => Effect.Effect<string, never, R>;
+}
+
+/**
  * Convex pagination options interpreted over a query stream's stored keys. Pass
  * a paginated query handler's `paginationOpts` directly to `paginate`.
  *
@@ -2389,6 +2410,9 @@ export const unique = Effect.fn("QueryStream.unique")(
  * - `maximumBytesRead`: optional budget charging estimated document size on every
  *   read, not Convex's exact billed bytes. The final document can take the
  *   total over the limit because its size is known only after reading it.
+ * - `cursorEnvelope`: optional caller-owned validation and sealing. Both input
+ *   cursors are opened before decoding, including an end sentinel. Every output
+ *   cursor is sealed. A refused envelope ends in `InvalidCursor`.
  *
  * At either read limit, including zero, one extra row may be read to
  * distinguish completion from an overrun. It is counted but never emitted. An
@@ -2399,7 +2423,9 @@ export const unique = Effect.fn("QueryStream.unique")(
  *
  * @experimental
  */
-export type PaginateOptions = ConvexPaginationOptions;
+export type PaginateOptions<R = never> = ConvexPaginationOptions & {
+  readonly cursorEnvelope?: CursorEnvelope<R>;
+};
 
 /**
  * One page in Convex's pagination result shape. Return the whole result to
@@ -2453,9 +2479,9 @@ export type PaginationResult<Doc> = ConvexPaginationResult<Doc>;
  * query semantics change, even if an old cursor is still accepted.
  *
  * Cursors expose boundary field names and key values, including document IDs.
- * They are neither opaque nor signed: clients can read or craft them. Do not
- * publicly paginate over sensitive indexed fields unless pinned with `eq`.
- * Never construct cursors from documents or decode them into `narrow` bounds.
+ * Without a `cursorEnvelope`, clients can read or craft them. Do not publicly
+ * paginate over sensitive indexed fields unless pinned with `eq`. Never
+ * construct cursors from documents or decode them into `narrow` bounds.
  *
  * Return the whole result to reactive clients. React's
  * `useStreamPaginatedQuery` handles pinning, splitting, and invalid-cursor
@@ -2465,8 +2491,8 @@ export type PaginationResult<Doc> = ConvexPaginationResult<Doc>;
  * @experimental
  */
 export const paginate: {
-  (
-    options: PaginateOptions,
+  <R2 = never>(
+    options: PaginateOptions<R2>,
   ): <Doc, KeyLabels extends QueryStreamKeyLabels.QueryStreamKeyLabels, E, R>(
     self: QueryStream<
       Doc,
@@ -2475,8 +2501,18 @@ export const paginate: {
       E,
       R
     >,
-  ) => Effect.Effect<PaginationResult<Doc>, E | ReadBudgetExceededError, R>;
-  <Doc, KeyLabels extends QueryStreamKeyLabels.QueryStreamKeyLabels, E, R>(
+  ) => Effect.Effect<
+    PaginationResult<Doc>,
+    E | ReadBudgetExceededError,
+    R | R2
+  >;
+  <
+    Doc,
+    KeyLabels extends QueryStreamKeyLabels.QueryStreamKeyLabels,
+    E,
+    R,
+    R2 = never,
+  >(
     self: QueryStream<
       Doc,
       KeyLabels,
@@ -2484,8 +2520,8 @@ export const paginate: {
       E,
       R
     >,
-    options: PaginateOptions,
-  ): Effect.Effect<PaginationResult<Doc>, E | ReadBudgetExceededError, R>;
+    options: PaginateOptions<R2>,
+  ): Effect.Effect<PaginationResult<Doc>, E | ReadBudgetExceededError, R | R2>;
 } = dual(
   2,
   Effect.fn("QueryStream.paginate")(
@@ -2496,10 +2532,37 @@ export const paginate: {
       R,
       OrderDirection extends
         QueryStreamOrderDirection.QueryStreamOrderDirection,
+      R2 = never,
     >(
       self: QueryStream<Doc, KeyLabels, OrderDirection, E, R>,
-      options: PaginateOptions,
+      options: PaginateOptions<R2>,
     ) {
+      const seal = (cursor: string): Effect.Effect<string, never, R2> =>
+        options.cursorEnvelope === undefined
+          ? Effect.succeed(cursor)
+          : options.cursorEnvelope.seal(cursor);
+      const open = (cursor: string): Effect.Effect<string, never, R2> =>
+        options.cursorEnvelope === undefined
+          ? Effect.succeed(cursor)
+          : options.cursorEnvelope.open(cursor).pipe(
+              Effect.flatMap(
+                Option.match({
+                  onNone: () =>
+                    Effect.die(
+                      new ConvexError({ paginationError: "InvalidCursor" }),
+                    ),
+                  onSome: Effect.succeed,
+                }),
+              ),
+            );
+      const opened = yield* Effect.all({
+        start:
+          options.cursor === null ? Effect.succeed(null) : open(options.cursor),
+        end:
+          options.endCursor == null
+            ? Effect.succeed(null)
+            : open(options.endCursor),
+      });
       const cursorSchema = QueryStreamCursor.fromKeyLayout(self.keyLayout);
       const encodeCursor = Schema.encodeEffect(cursorSchema);
       const decodeCursor = Schema.decodeEffect(cursorSchema);
@@ -2509,7 +2572,7 @@ export const paginate: {
           identity,
         );
       const decoded = yield* Effect.all({
-        start: Option.match(Option.fromNullOr(options.cursor), {
+        start: Option.match(Option.fromNullOr(opened.start), {
           onNone: () => Effect.succeed(QueryStreamPagination.Start.Beginning()),
           onSome: (cursor) =>
             Effect.map(decodeCursor(cursor), (key) =>
@@ -2519,7 +2582,7 @@ export const paginate: {
               }),
             ),
         }),
-        range: Option.match(Option.fromNullishOr(options.endCursor), {
+        range: Option.match(Option.fromNullishOr(opened.end), {
           onNone: () => Effect.succeed(QueryStreamPagination.Range.Unpinned()),
           onSome: (cursor) =>
             cursor === QueryStreamCursor.END_CURSOR
@@ -2550,7 +2613,7 @@ export const paginate: {
         return {
           page: [],
           isDone: false,
-          continueCursor: request.cursor,
+          continueCursor: yield* seal(request.cursor),
         } satisfies PaginationResult<Doc>;
       }
       const start = Option.map(request.after, (key) => ({
@@ -2603,7 +2666,10 @@ export const paginate: {
         return yield* new ReadBudgetExceededError(counts);
       }
       const encode = (key: QueryStreamKey.Complete) =>
-        encodeCursor(key).pipe(Effect.catchTag("SchemaError", Effect.die));
+        encodeCursor(key).pipe(
+          Effect.catchTag("SchemaError", Effect.die),
+          Effect.flatMap(seal),
+        );
       const encodeSplit = (
         result: Extract<
           QueryStreamPagination.Outcome<Doc>,
@@ -2613,7 +2679,7 @@ export const paginate: {
         Effect.gen(function* () {
           const continueCursor = yield* Match.value(result.continuation).pipe(
             Match.tagsExhaustive({
-              End: () => Effect.succeed(QueryStreamCursor.END_CURSOR),
+              End: () => seal(QueryStreamCursor.END_CURSOR),
               Key: ({ key }) => encode(key),
             }),
           );
@@ -2628,11 +2694,15 @@ export const paginate: {
       return yield* Match.value(outcome.success).pipe(
         Match.tagsExhaustive({
           Done: ({ page }) =>
-            Effect.succeed({
-              page: Array.fromIterable(page),
-              isDone: true,
-              continueCursor: QueryStreamCursor.END_CURSOR,
-            } satisfies PaginationResult<Doc>),
+            Effect.map(
+              seal(QueryStreamCursor.END_CURSOR),
+              (continueCursor) =>
+                ({
+                  page: Array.fromIterable(page),
+                  isDone: true,
+                  continueCursor,
+                }) satisfies PaginationResult<Doc>,
+            ),
           Continue: ({ page, key }) =>
             Effect.map(
               encode(key),

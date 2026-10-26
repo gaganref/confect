@@ -677,3 +677,14 @@ budget, or remains unlimited when none is supplied.
 
 Changeset: `default-query-stream-budget.md`.
 Upstream: planned; no proposal submitted.
+
+### Bind and seal pagination cursors
+
+`paginate` accepts an effectful `cursorEnvelope`. It opens both input cursors
+before decoding or reading and seals every outgoing continuation and split,
+including unchanged cursors and end sentinels. A refused envelope produces
+`InvalidCursor`. The caller owns the envelope's policy and cryptography, and
+sealing equal inputs must produce the same string for stable cursor equality.
+
+Changeset: `query-stream-cursor-envelope.md`.
+Upstream: planned; no proposal submitted.

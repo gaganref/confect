@@ -1017,3 +1017,148 @@ describe("QueryStream.defer", () => {
     }),
   );
 });
+
+describe("QueryStream cursor envelope", () => {
+  it.effect(
+    "rejects tampered and mismatched cursor envelopes before source reads and seals stable boundaries",
+    () =>
+      Effect.gen(function* () {
+        const key = yield* Effect.promise(() =>
+          crypto.subtle.importKey(
+            "raw",
+            new Uint8Array(32).fill(7),
+            { name: "HMAC", hash: "SHA-256" },
+            false,
+            ["sign"],
+          ),
+        );
+        const tag = (print: string, raw: string) =>
+          Effect.promise(() =>
+            crypto.subtle.sign(
+              "HMAC",
+              key,
+              new TextEncoder().encode(`${print}.${raw}`),
+            ),
+          ).pipe(
+            Effect.map((bytes) =>
+              Buffer.from(bytes).toString("base64url").slice(0, 22),
+            ),
+          );
+        const envelope = (print: string): QueryStream.CursorEnvelope => ({
+          seal: (raw) =>
+            tag(print, raw).pipe(Effect.map((mac) => `${print}.${mac}.${raw}`)),
+          open: (sealed) =>
+            Effect.gen(function* () {
+              const first = sealed.indexOf(".");
+              const second = sealed.indexOf(".", first + 1);
+              if (first < 0 || second < 0) return Option.none();
+              const claimed = sealed.slice(0, first);
+              const given = sealed.slice(first + 1, second);
+              const raw = sealed.slice(second + 1);
+              return claimed === print && given === (yield* tag(claimed, raw))
+                ? Option.some(raw)
+                : Option.none();
+            }),
+        });
+        const cursorEnvelope = envelope("f".repeat(22));
+        const layout = Result.getOrThrow(
+          QueryStreamKeyLayout.fromIndex(["_creationTime"]),
+        );
+        let reads = 0;
+        const source = () =>
+          new QueryStream.QueryStream(
+            "desc",
+            layout,
+            Stream.fromIterable([1201, 1200]).pipe(
+              Stream.map((time) => {
+                reads++;
+                return new QueryStream.Element({
+                  doc: Option.some(time),
+                  keyValues: [time, "session:campusA-d3-p1-b1-s1:2026-10-01"],
+                });
+              }),
+            ),
+          );
+        const options = { cursor: null, numItems: 1 } as const;
+        const raw = yield* QueryStream.paginate(source(), options);
+        const sealed = yield* QueryStream.paginate(source(), {
+          ...options,
+          cursorEnvelope,
+        });
+        expect(Buffer.byteLength(raw.continueCursor)).toBe(101);
+        expect(Buffer.byteLength(sealed.continueCursor)).toBe(147);
+        const firstSeal = yield* cursorEnvelope.seal(raw.continueCursor);
+        const secondSeal = yield* cursorEnvelope.seal(raw.continueCursor);
+        expect(secondSeal).toBe(firstSeal);
+        expect(firstSeal).toBe(sealed.continueCursor);
+        const tampered =
+          sealed.continueCursor.slice(0, 23) +
+          "!" +
+          sealed.continueCursor.slice(24);
+        const stale = yield* envelope("s".repeat(22)).seal(raw.continueCursor);
+        const farAhead =
+          '{"runtimeLabels":["_creationTime","_id"],"keyValues":[1000000000000,"zzzz"]}';
+        for (const crafted of [
+          { cursor: tampered },
+          { cursor: stale },
+          { endCursor: farAhead },
+          { endCursor: `${"f".repeat(22)}.${"A".repeat(22)}.${farAhead}` },
+        ]) {
+          reads = 0;
+          const error = yield* QueryStream.paginate(source(), {
+            ...options,
+            ...crafted,
+            cursorEnvelope,
+          }).pipe(Effect.catchDefect(Effect.succeed));
+          expect(error).toBeInstanceOf(ConvexError);
+          expect(error).toMatchObject({
+            data: { paginationError: "InvalidCursor" },
+          });
+          expect(reads).toBe(0);
+        }
+        const unchanged = yield* QueryStream.paginate(source(), {
+          cursor: sealed.continueCursor,
+          numItems: 0,
+          cursorEnvelope,
+        });
+        expect(unchanged.continueCursor).toBe(sealed.continueCursor);
+        const done = yield* QueryStream.paginate(source(), {
+          cursor: sealed.continueCursor,
+          numItems: 10,
+          cursorEnvelope,
+        });
+        expect(done.isDone).toBe(true);
+        expect(yield* cursorEnvelope.open(done.continueCursor)).toEqual(
+          Option.some(QueryStreamCursor.END_CURSOR),
+        );
+        const pinned = yield* QueryStream.paginate(source(), {
+          ...options,
+          endCursor: done.continueCursor,
+          cursorEnvelope,
+        });
+        expect(pinned.page).toEqual([1201, 1200]);
+      }),
+  );
+});
+
+it("QueryStream.paginate preserves envelope service requirements in both call forms", () => {
+  type SealService = { readonly service: "seal" };
+  const cursorEnvelope: QueryStream.CursorEnvelope<SealService> = {
+    open: Effect.succeedSome,
+    seal: Effect.succeed,
+  };
+  const source = QueryStream.empty<number>()(
+    Result.getOrThrow(QueryStreamKeyLayout.fromIndex([])),
+  );
+  const options = { cursor: null, numItems: 1, cursorEnvelope } as const;
+  const direct = QueryStream.paginate(source, options);
+  const piped = source.pipe(QueryStream.paginate(options));
+  expectTypeOf(direct).toEqualTypeOf<
+    Effect.Effect<
+      QueryStream.PaginationResult<number>,
+      QueryStream.ReadBudgetExceededError,
+      SealService
+    >
+  >();
+  expectTypeOf(piped).toEqualTypeOf<typeof direct>();
+});

@@ -5,6 +5,7 @@ import type * as QueryStreamOrderDirection from "@confect/server/QueryStreamOrde
 import * as QueryStreamReadBudget from "@confect/server/QueryStreamReadBudget";
 import { assert, describe, expect, it } from "@effect/vitest";
 import * as QueryStream from "@confect/server/QueryStream";
+import * as QueryStreamCursor from "@confect/server/QueryStreamCursor";
 import { compareValues, getDocumentSize } from "convex/values";
 import * as Deferred from "effect/Deferred";
 import * as Cause from "effect/Cause";
@@ -933,5 +934,47 @@ it.effect.each(["collect", "paginate"] as const)(
         expect(result.pageStatus).toBeUndefined();
       }
       expect(reader.documentsRead).toBe(2_000);
+    }),
+);
+
+it.effect.each(["SplitRequired", "SplitRecommended"] as const)(
+  "seals continuation and split boundaries for %s and opens pinned subpages",
+  (status) =>
+    Effect.gen(function* () {
+      const reader = makeReader();
+      const cursorEnvelope: QueryStream.CursorEnvelope = {
+        seal: (cursor) => Effect.succeed(`sealed:${cursor}`),
+        open: (cursor) =>
+          Effect.succeed(
+            cursor.startsWith("sealed:")
+              ? Option.some(cursor.slice(7))
+              : Option.none(),
+          ),
+      };
+      const end = yield* cursorEnvelope.seal(QueryStreamCursor.END_CURSOR);
+      const page = yield* QueryStream.paginate(reader.stream, {
+        cursor: null,
+        cursorEnvelope,
+        ...(status === "SplitRequired"
+          ? { numItems: 10, maximumRowsRead: 2 }
+          : { numItems: 1, endCursor: end }),
+      });
+      expect(page.pageStatus).toBe(status);
+      const split = Option.getOrThrow(Option.fromNullishOr(page.splitCursor));
+      expect(page.continueCursor.startsWith("sealed:")).toBe(true);
+      expect(split.startsWith("sealed:")).toBe(true);
+      const left = yield* QueryStream.paginate(reader.stream, {
+        cursor: null,
+        endCursor: split,
+        numItems: 10,
+        cursorEnvelope,
+      });
+      const right = yield* QueryStream.paginate(reader.stream, {
+        cursor: split,
+        endCursor: page.continueCursor,
+        numItems: 10,
+        cursorEnvelope,
+      });
+      expect([...left.page, ...right.page]).toEqual(page.page);
     }),
 );
