@@ -667,3 +667,13 @@ unreturned lookahead row to detect an overrun.
 
 Changeset: `collect-query-stream.md`.
 Upstream: planned; no proposal submitted.
+
+### Default stream sinks to 2,000 row reads
+
+`paginate` and `collect` use a 2,000-row budget unless the caller supplies a
+limit. Pagination can return `SplitRequired`; collection fails rather than
+returning partial data. Plain Effect Stream consumption keeps its enclosing
+budget, or remains unlimited when none is supplied.
+
+Changeset: `default-query-stream-budget.md`.
+Upstream: planned; no proposal submitted.

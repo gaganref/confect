@@ -70,6 +70,15 @@ import * as QueryStreamPagination from "./QueryStreamPagination.js";
 import * as QueryStreamReadBudget from "./QueryStreamReadBudget.js";
 
 /**
+ * Default physical row budget for `paginate` and `collect`. Supply an explicit
+ * `maximumRowsRead` to override it. Plain Effect Stream consumers use their
+ * enclosing budget and remain unlimited when none is provided.
+ *
+ * @experimental
+ */
+export const DEFAULT_MAXIMUM_ROWS_READ = 2_000;
+
+/**
  * A query stream exhausted its read budget before its consumer could finish.
  *
  * @experimental
@@ -2244,7 +2253,7 @@ export interface CollectOptions {
  * bound.
  *
  * With explicit options, each run gets a fresh budget. Without options, use the
- * enclosing budget if present, or an unlimited budget.
+ * enclosing budget if present, or the default row budget.
  *
  * @experimental
  */
@@ -2287,9 +2296,10 @@ export const collect: {
     >,
     options?: CollectOptions,
   ) {
-    const makeBudget = Schema.decodeEffect(QueryStreamReadBudget.Limits)(
-      options ?? {},
-    ).pipe(
+    const makeBudget = Schema.decodeEffect(QueryStreamReadBudget.Limits)({
+      maximumRowsRead: DEFAULT_MAXIMUM_ROWS_READ,
+      ...options,
+    }).pipe(
       Effect.catchTag("SchemaError", (cause) =>
         Effect.die(new QueryStreamReadBudget.InvalidReadLimitError({ cause })),
       ),
@@ -2374,7 +2384,8 @@ export const unique = Effect.fn("QueryStream.unique")(
  * - `endCursor`: optional inclusive boundary returned by a previous page. Pins
  *   the page to a key range regardless of how many values it holds.
  * - `maximumRowsRead`: optional budget for physical document reads from
- *   underlying query-stream indexes, including filtered documents.
+ *   underlying query-stream indexes, including filtered documents. Defaults to
+ *   2,000; an explicit limit overrides the default.
  * - `maximumBytesRead`: optional budget charging estimated document size on every
  *   read, not Convex's exact billed bytes. The final document can take the
  *   total over the limit because its size is known only after reading it.
@@ -2641,7 +2652,10 @@ export const paginate: {
       Effect.provideServiceEffect(
         effect,
         QueryStreamReadBudget.QueryStreamReadBudget,
-        Schema.decodeEffect(QueryStreamReadBudget.Limits)(options).pipe(
+        Schema.decodeEffect(QueryStreamReadBudget.Limits)({
+          maximumRowsRead: DEFAULT_MAXIMUM_ROWS_READ,
+          ...options,
+        }).pipe(
           Effect.catchTag("SchemaError", (cause) =>
             Effect.die(
               new QueryStreamReadBudget.InvalidReadLimitError({ cause }),
