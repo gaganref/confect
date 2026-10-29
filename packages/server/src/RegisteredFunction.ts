@@ -187,18 +187,21 @@ export const combineErrorSchemas = (
 };
 
 /**
- * Run the `Effect` as a `Promise`. Exactly one typed failure with a declared
- * error schema is schema-encoded and thrown as a `ConvexError` outside the
- * Effect runtime so Convex surfaces its data to the client.
+ * Run the `Effect` as a `Promise`. Inspect the complete `Exit` before encoding
+ * a declared error so a typed failure cannot hide a defect.
  *
- * Any other failure is a defect. The complete `Exit` is inspected before any
- * typed failure can hide another cause reason. Multiple failures, mixed causes,
- * interruptions and error-encoding failures take the defect path. A lone typed
- * failure without an error schema is treated as a defect.
+ * Any `Die` reason takes the defect path. Without a `Die`, the first `Fail` in
+ * cause order is schema-encoded and thrown as a `ConvexError` outside the
+ * Effect runtime so Convex surfaces its data to the client. Other failures and
+ * interruptions alongside that `Fail` are ignored. Without an error schema, the
+ * selected failure is treated as a defect.
  *
- * A lone `ConvexError` defect is rethrown bare so it keeps Convex's meaning.
- * Pagination and Workpool rely on its data for their control signals. Every
- * other defect is a plain rejection that Convex redacts in production.
+ * A lone `ConvexError` defect or a selected undeclared `ConvexError` failure is
+ * rethrown bare so it keeps Convex's meaning. Pagination and Workpool rely on
+ * its data for their control signals. Other causes with a `Die`, interrupt-only
+ * or empty causes, and error-encoding failures reject with a plain `Error`
+ * whose message renders the complete cause and whose `cause` holds it for
+ * server diagnostics.
  *
  * A `scheduler` in `runOptions` must be passed here as a run option rather than
  * provided via `Effect.provideService` inside `effect`: the run option lands in
@@ -223,24 +226,24 @@ export const runHandlerPromise =
         }
 
         const { cause } = exit;
-        const [reason] = cause.reasons;
+        const reason =
+          cause.reasons.find(Cause.isDieReason) ??
+          cause.reasons.find(Cause.isFailReason);
         if (
+          reason?._tag === "Die" &&
           cause.reasons.length === 1 &&
-          (reason?._tag === "Die" ||
-            (reason?._tag === "Fail" && errorSchema === undefined))
+          reason.defect instanceof ConvexError
         ) {
-          const defect = reason._tag === "Die" ? reason.defect : reason.error;
-          if (defect instanceof ConvexError) {
-            return Result.fail(defect);
-          }
-          return yield* Effect.die(defect);
+          return Result.fail(reason.defect);
         }
 
-        if (
-          cause.reasons.length === 1 &&
-          reason?._tag === "Fail" &&
-          errorSchema !== undefined
-        ) {
+        if (reason?._tag === "Fail") {
+          if (errorSchema === undefined) {
+            if (reason.error instanceof ConvexError) {
+              return Result.fail(reason.error);
+            }
+            return yield* Effect.die(reason.error);
+          }
           const encoded = yield* Effect.exit(
             Schema.encodeEffect(errorSchema)(reason.error),
           );
