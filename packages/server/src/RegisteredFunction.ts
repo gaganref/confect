@@ -4,7 +4,6 @@ import type { FunctionSpec, RuntimeAndFunctionType } from "@confect/core";
 import * as IdScope from "@confect/core/IdScope";
 import type * as FunctionProvenance from "@confect/core/FunctionProvenance";
 import * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
-import * as PaginationError from "@confect/core/PaginationError";
 import {
   compileArgsSchema,
   compileReturnsSchema,
@@ -186,20 +185,16 @@ export const combineErrorSchemas = (
 };
 
 /**
- * Run the `Effect` as a `Promise`. The error schema acts as an allowlist of
- * failures that may be surfaced to the client as a `ConvexError`:
+ * Run the `Effect` as a `Promise`. A declared error is schema-encoded and
+ * thrown as a `ConvexError` so Convex surfaces its data to the client. Any
+ * other failure is a defect. Without an error schema, `Effect.orDie` converts
+ * every failure to a defect.
  *
- * - With a schema: typed errors are schema-encoded and wrapped in a
- *   `ConvexError`, then thrown so Convex surfaces the data to the client.
- *   `Effect.result` escapes the failure channel before `runPromise` so the
- *   encoded `ConvexError` is thrown outside the Effect runtime.
- * - Without a schema: every failure is converted to a defect via `Effect.orDie`,
- *   then follows the defect policy below.
- *
- * Only a `ConvexError` defect with exact invalid-cursor control data from
- * `QueryStream.paginate` or Convex's native pagination passes through bare.
- * Every other `ConvexError` defect is wrapped in a plain `Error` so Convex
- * redacts its data in production.
+ * A `ConvexError` defect is rethrown bare so it keeps Convex's meaning.
+ * Pagination and Workpool rely on its data for their control signals. Every
+ * other defect is a plain rejection that Convex redacts in production.
+ * `Effect.result` escapes the failure channel before `runPromise` so the
+ * `ConvexError` is thrown outside the Effect runtime.
  *
  * A `scheduler` in `runOptions` must be passed here as a run option rather than
  * provided via `Effect.provideService` inside `effect`: the run option lands in
@@ -216,16 +211,13 @@ export const runHandlerPromise =
     },
   ) =>
   <A, E>(effect: Effect.Effect<A, E>): Promise<A> => {
+    // A `ConvexError` defect escapes into the (escaped) failure channel so
+    // the `throw` below rethrows it with its identity intact.
     const rethrowConvexErrorDefects = Effect.catchDefect(
-      (defect: unknown): Effect.Effect<never, ConvexError<any>> => {
-        if (!(defect instanceof ConvexError)) {
-          return Effect.die(defect);
-        }
-        if (PaginationError.isInvalidCursorData(defect.data)) {
-          return Effect.fail(defect);
-        }
-        return Effect.die(new Error(defect.message, { cause: defect }));
-      },
+      (defect: unknown): Effect.Effect<never, ConvexError<any>> =>
+        defect instanceof ConvexError
+          ? Effect.fail(defect)
+          : Effect.die(defect),
     );
 
     const withConvexError =

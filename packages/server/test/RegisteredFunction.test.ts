@@ -34,7 +34,7 @@ describe("runHandlerPromise", () => {
           data: { paginationError: "InvalidCursor" },
         },
         { signal: "arbitrary ConvexError", data: { code: "X" } },
-      ])("rethrows a $signal defect bare with its data", ({ data }) =>
+      ])("rethrows the $signal defect bare with its data", ({ data }) =>
         Effect.promise(() => {
           const defect = new ConvexError(data);
           const result = RegisteredFunction.runHandlerPromise(errorSchema)(

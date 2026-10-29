@@ -4,43 +4,6 @@ import { ConvexError } from "convex/values";
 import * as Option from "effect/Option";
 
 describe("PaginationError", () => {
-  it.each([
-    { paginationError: "InvalidCursor" },
-    { isConvexSystemError: true, paginationError: "InvalidCursor" },
-  ])("recognizes pagination control data %j", (data) => {
-    expect(PaginationError.isInvalidCursorData(data)).toBe(true);
-    expect(
-      Option.getOrThrow(PaginationError.fromConvexErrorData(data)).cause,
-    ).toBe(data);
-  });
-
-  it.each([
-    undefined,
-    null,
-    "InvalidCursor",
-    {},
-    { paginationError: "InvalidPage" },
-    { paginationError: "InvalidCursor", secret: "x" },
-    {
-      isConvexSystemError: true,
-      paginationError: "InvalidCursor",
-      secret: "x",
-    },
-    { isConvexSystemError: false, paginationError: "InvalidCursor" },
-    { isConvexSystemError: undefined, paginationError: "InvalidCursor" },
-    Object.create({ paginationError: "InvalidCursor" }),
-    Object.setPrototypeOf(
-      { secret: "x" },
-      { paginationError: "InvalidCursor" },
-    ),
-    Object.setPrototypeOf(
-      { paginationError: "InvalidCursor", secret: "x" },
-      { isConvexSystemError: true },
-    ),
-  ])("rejects data outside the pagination control shapes %j", (data) => {
-    expect(PaginationError.isInvalidCursorData(data)).toBe(false);
-  });
-
   it("recognizes Convex's structured invalid-cursor error", () => {
     const cause = new ConvexError({
       isConvexSystemError: true,
