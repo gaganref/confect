@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import cliPackage from "../packages/cli/package.json" with { type: "json" };
 
 export const Manifest = Schema.Struct({
   name: Schema.String,
@@ -39,10 +40,16 @@ export type Lane = "baseline" | "fresh";
 export type Manager = "npm" | "pnpm";
 
 export const consumerDependencies = (profile: Profile, lane: Lane) => ({
-  effect: lane === "baseline" ? "4.0.4" : "^4.0.4",
+  effect: lane === "baseline" ? "4.0.4" : cliPackage.peerDependencies.effect,
   convex: lane === "baseline" ? "1.48.0" : "^1.48.0",
-  "@effect/platform-node": lane === "baseline" ? "4.0.4" : "^4.0.4",
-  ...(lane === "baseline" ? { "@effect/platform-node-shared": "4.0.4" } : {}),
+  "@effect/platform-node":
+    lane === "baseline"
+      ? "4.0.4"
+      : cliPackage.dependencies["@effect/platform-node"],
+  "@effect/platform-node-shared":
+    lane === "baseline"
+      ? "4.0.4"
+      : cliPackage.peerDependencies["@effect/platform-node-shared"],
   ...(lane === "baseline"
     ? profiles[profile].baseline
     : profiles[profile].hosts),
