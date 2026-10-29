@@ -10,7 +10,7 @@
     "url": "https://github.com/rjdellecese/confect/issues"
   },
   "dependencies": {
-    "@effect/platform-node": "^4.0.4",
+    "@effect/platform-node": ">=4.0.4 <4.1.0",
     "bundle-require": "^5.1.0",
     "code-block-writer": "^13.0.3",
     "esbuild": "0.27.0 - 0.27.3 || ^0.27.5 || ^0.28.0",
@@ -55,7 +55,8 @@
   "peerDependencies": {
     "@confect/core": "workspace:^",
     "@confect/server": "workspace:^",
-    "effect": "^4.0.4"
+    "@effect/platform-node-shared": ">=4.0.4 <4.1.0",
+    "effect": ">=4.0.4 <4.1.0"
   },
   "repository": {
     "type": "git",
