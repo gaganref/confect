@@ -46,8 +46,11 @@ Upstream: fork only.
 
 Cap the package set's Effect peers below 4.1, and cap the Node platform
 companions to the same minor. Effect 4.1 removes `effect/Crypto`, which the CLI,
-Alchemy providers and Alchemy's stack types still use. Remove the caps when the
-complete CLI and Alchemy dependency graph migrates to the replacement services.
+Alchemy providers and Alchemy's stack types still use. Remove the caps when
+Alchemy ships a release without `effect/Crypto` and the fork's CLI and Alchemy
+call sites move. An application that installs the CLI lists
+`@effect/platform-node-shared` directly, or pnpm resolves a 4.1 copy for
+`@effect/platform-node`.
 Fresh consumer checks request the CLI's published ranges and resolve their
 newest compatible releases without a lockfile or version override.
 
