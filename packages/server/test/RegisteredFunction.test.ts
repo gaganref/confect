@@ -1,6 +1,7 @@
 import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import { describe, expect, it } from "@effect/vitest";
 import { ConvexError } from "convex/values";
+import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -8,6 +9,7 @@ import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
+import * as SchemaGetter from "effect/SchemaGetter";
 import * as TestConsole from "effect/testing/TestConsole";
 import { vi } from "vitest";
 
@@ -100,6 +102,129 @@ describe("runHandlerPromise", () => {
         expect(result).rejects.toBeInstanceOf(ConvexError),
         expect(result).rejects.toMatchObject({ data: "42" }),
       ]);
+    }),
+  );
+
+  it.effect("keeps a defect alongside a declared failure", () =>
+    Effect.promise(() => {
+      const result = RegisteredFunction.runHandlerPromise(Schema.String)(
+        Effect.failCause(
+          Cause.combine(Cause.fail("rejected"), Cause.die(new Error("bug"))),
+        ),
+      );
+      return Promise.all([
+        expect(result).rejects.toBeInstanceOf(Error),
+        expect(result).rejects.not.toBeInstanceOf(ConvexError),
+        expect(result).rejects.toThrow("bug"),
+      ]);
+    }),
+  );
+
+  it.effect.each([
+    {
+      label: "a defect before a declared failure",
+      cause: Cause.combine(Cause.die(new Error("bug")), Cause.fail("rejected")),
+      message: "bug",
+      reasons: [{ _tag: "Die" }, { _tag: "Fail" }],
+    },
+    {
+      label: "multiple declared failures",
+      cause: Cause.combine(Cause.fail("first"), Cause.fail("second")),
+      message: "second",
+      reasons: [{ _tag: "Fail" }, { _tag: "Fail" }],
+    },
+    {
+      label: "a declared failure and interruption",
+      cause: Cause.combine(Cause.fail("rejected"), Cause.interrupt()),
+      message: "rejected",
+      reasons: [{ _tag: "Fail" }, { _tag: "Interrupt" }],
+    },
+    {
+      label: "a pagination signal and a defect",
+      cause: Cause.combine(
+        Cause.die(new ConvexError({ paginationError: "InvalidCursor" })),
+        Cause.die(new Error("bug")),
+      ),
+      message: "bug",
+      reasons: [{ _tag: "Die" }, { _tag: "Die" }],
+    },
+    {
+      label: "a pagination signal and interruption",
+      cause: Cause.combine(
+        Cause.die(new ConvexError({ paginationError: "InvalidCursor" })),
+        Cause.interrupt(),
+      ),
+      message: "InvalidCursor",
+      reasons: [{ _tag: "Die" }, { _tag: "Interrupt" }],
+    },
+    {
+      label: "interruption alone",
+      cause: Cause.interrupt(),
+      message: "interrupted",
+      reasons: [{ _tag: "Interrupt" }],
+    },
+  ])("treats $label as a defect", ({ cause, message, reasons }) =>
+    Effect.promise(() => {
+      const result = RegisteredFunction.runHandlerPromise(Schema.String)(
+        Effect.failCause(cause),
+      );
+      return Promise.all([
+        expect(result).rejects.toBeInstanceOf(Error),
+        expect(result).rejects.not.toBeInstanceOf(ConvexError),
+        expect(result).rejects.toThrow(message),
+        expect(result).rejects.toMatchObject({ cause: { reasons } }),
+      ]);
+    }),
+  );
+
+  it.effect("treats an invalid declared error as a defect", () =>
+    Effect.promise(() => {
+      const result = RegisteredFunction.runHandlerPromise(Schema.String)(
+        Effect.fail(42),
+      );
+      return Promise.all([
+        expect(result).rejects.toBeInstanceOf(Error),
+        expect(result).rejects.not.toBeInstanceOf(ConvexError),
+      ]);
+    }),
+  );
+
+  it.effect("treats a pagination signal from error encoding as a defect", () =>
+    Effect.promise(() => {
+      const errorSchema = Schema.String.pipe(
+        Schema.decodeTo(Schema.String, {
+          decode: SchemaGetter.passthrough(),
+          encode: SchemaGetter.transformEffect(() =>
+            Effect.die(new ConvexError({ paginationError: "InvalidCursor" })),
+          ),
+        }),
+      );
+      const result = RegisteredFunction.runHandlerPromise(errorSchema)(
+        Effect.fail("rejected"),
+      );
+      return Promise.all([
+        expect(result).rejects.toBeInstanceOf(Error),
+        expect(result).rejects.not.toBeInstanceOf(ConvexError),
+      ]);
+    }),
+  );
+
+  it.effect("preserves a successful handler value", () =>
+    Effect.promise(() =>
+      expect(
+        RegisteredFunction.runHandlerPromise(Schema.String)(
+          Effect.succeed({ answer: 42 }),
+        ),
+      ).resolves.toEqual({ answer: 42 }),
+    ),
+  );
+
+  it.effect("preserves a plain handler defect", () =>
+    Effect.promise(() => {
+      const bug = new Error("bug");
+      return expect(
+        RegisteredFunction.runHandlerPromise(Schema.String)(Effect.die(bug)),
+      ).rejects.toBe(bug);
     }),
   );
 
