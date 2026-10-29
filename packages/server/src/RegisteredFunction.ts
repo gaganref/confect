@@ -187,20 +187,18 @@ export const combineErrorSchemas = (
 };
 
 /**
- * Run the `Effect` as a `Promise`. The error schema acts as an allowlist of
- * failures that may be surfaced to the client as a `ConvexError`:
+ * Run the `Effect` as a `Promise`. Exactly one typed failure with a declared
+ * error schema is schema-encoded and thrown as a `ConvexError` outside the
+ * Effect runtime so Convex surfaces its data to the client.
  *
- * - Exactly one typed failure with a schema is encoded and wrapped in a
- *   `ConvexError`, then thrown outside the Effect runtime so Convex surfaces
- *   the data to the client.
- * - Multiple failures, mixed causes, interruptions, undeclared failures and
- *   error-encoding failures take the defect path. The complete `Exit` is
- *   inspected before any typed failure can hide another cause reason.
+ * Any other failure is a defect. The complete `Exit` is inspected before any
+ * typed failure can hide another cause reason. Multiple failures, mixed causes,
+ * interruptions and error-encoding failures take the defect path. A lone typed
+ * failure without an error schema is treated as a defect.
  *
- * Only a `ConvexError` defect with exactly the pagination protocol's `{
- * paginationError: "InvalidCursor" }` data from `QueryStream.paginate` passes
- * through bare. Every other `ConvexError` defect is wrapped in a plain `Error`
- * so Convex redacts its data in production.
+ * A lone `ConvexError` defect is rethrown bare so it keeps Convex's meaning.
+ * Pagination and Workpool rely on its data for their control signals. Every
+ * other defect is a plain rejection that Convex redacts in production.
  *
  * A `scheduler` in `runOptions` must be passed here as a run option rather than
  * provided via `Effect.provideService` inside `effect`: the run option lands in
@@ -226,23 +224,14 @@ export const runHandlerPromise =
 
         const { cause } = exit;
         const [reason] = cause.reasons;
-        if (cause.reasons.length === 1 && reason?._tag === "Die") {
-          const defect = reason.defect;
+        if (
+          cause.reasons.length === 1 &&
+          (reason?._tag === "Die" ||
+            (reason?._tag === "Fail" && errorSchema === undefined))
+        ) {
+          const defect = reason._tag === "Die" ? reason.defect : reason.error;
           if (defect instanceof ConvexError) {
-            const data: unknown = defect.data;
-            if (
-              typeof data === "object" &&
-              data !== null &&
-              "paginationError" in data &&
-              Object.hasOwn(data, "paginationError") &&
-              data.paginationError === "InvalidCursor" &&
-              Object.keys(data).length === 1
-            ) {
-              return Result.fail(defect);
-            }
-            return yield* Effect.die(
-              new Error(defect.message, { cause: defect }),
-            );
+            return Result.fail(defect);
           }
           return yield* Effect.die(defect);
         }
