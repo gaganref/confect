@@ -225,6 +225,7 @@ export const runHandlerPromise =
           typeof data === "object" &&
           data !== null &&
           "paginationError" in data &&
+          Object.hasOwn(data, "paginationError") &&
           data.paginationError === "InvalidCursor" &&
           Object.keys(data).length === 1
         ) {
