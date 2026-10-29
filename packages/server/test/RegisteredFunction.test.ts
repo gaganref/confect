@@ -75,6 +75,22 @@ describe("runHandlerPromise", () => {
     }),
   );
 
+  it.effect("rejects an inherited pagination marker as a defect", () =>
+    Effect.promise(() => {
+      const data = Object.setPrototypeOf(
+        { secret: "x" },
+        { paginationError: "InvalidCursor" },
+      );
+      const result = RegisteredFunction.runHandlerPromise(undefined)(
+        Effect.die(new ConvexError(data)),
+      );
+      return Promise.all([
+        expect(result).rejects.toBeInstanceOf(Error),
+        expect(result).rejects.not.toBeInstanceOf(ConvexError),
+      ]);
+    }),
+  );
+
   it.effect("encodes declared errors as ConvexError data", () =>
     Effect.promise(() => {
       const result = RegisteredFunction.runHandlerPromise(
