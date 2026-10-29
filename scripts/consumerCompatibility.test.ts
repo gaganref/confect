@@ -88,19 +88,17 @@ test("both advertised profiles include the whole backend and CLI graph", () => {
   expect(profiles.foldkit.blocker).toContain("Restore compatibility");
 });
 
-test("the coherent baseline selects both moving Node companions; fresh resolution does not", () => {
+test("fresh resolution follows the CLI compatibility ranges without exact pins", () => {
   expect(consumerDependencies("react", "baseline")).toMatchObject({
     effect: "4.0.4",
     "@effect/platform-node": "4.0.4",
     "@effect/platform-node-shared": "4.0.4",
   });
   expect(consumerDependencies("react", "fresh")).toMatchObject({
-    effect: "^4.0.4",
-    "@effect/platform-node": "^4.0.4",
+    effect: ">=4.0.4 <4.1.0",
+    "@effect/platform-node": ">=4.0.4 <4.1.0",
+    "@effect/platform-node-shared": ">=4.0.4 <4.1.0",
   });
-  expect(consumerDependencies("react", "fresh")).not.toHaveProperty(
-    "@effect/platform-node-shared",
-  );
 });
 
 test.each(["4.0.0", "4.0.1", "4.0.3"])(

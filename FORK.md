@@ -20,6 +20,11 @@ Choose a green [Packages run](https://github.com/gaganref/confect/actions/workfl
 pnpm add --strict-peer-dependencies '@confect/core@npm:@gaganref/confect-core@<version>' '@confect/server@npm:@gaganref/confect-server@<version>' '@confect/test@npm:@gaganref/confect-test@<version>' '@confect/cli@npm:@gaganref/confect-cli@<version>'
 ```
 
+The package set currently requires Effect below 4.1 because the CLI and Alchemy
+still use the removed Crypto API. Use `effect@">=4.0.4 <4.1.0"` and
+`@effect/platform-node@">=4.0.4 <4.1.0"` with
+`@effect/platform-node-shared@">=4.0.4 <4.1.0"` for an application that installs the CLI.
+
 PRs exercise all eight staged tarballs in a fresh strict-peer consumer before publication.
 Every public declaration entry typechecks with NodeNext and `skipLibCheck: false`.
 The probe uses TypeScript 6.0.3, within Alchemy's transitive compiler peer range.
