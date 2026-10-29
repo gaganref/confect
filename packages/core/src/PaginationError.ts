@@ -15,7 +15,7 @@ export class InvalidCursor extends Schema.TaggedError<InvalidCursor>()(
 ) {}
 
 interface InvalidCursorData {
-  readonly isConvexSystemError: true;
+  readonly isConvexSystemError?: true;
   readonly paginationError: "InvalidCursor";
 }
 
@@ -27,13 +27,23 @@ const isConvexError = (error: unknown): error is ConvexError<Value> =>
     error !== null &&
     ConvexErrorIdentifier in error);
 
-const isInvalidCursorData = (value: unknown): value is InvalidCursorData =>
+/**
+ * Recognizes the exact invalid-cursor control data from QueryStream or Convex.
+ * Extra fields are rejected so arbitrary defect data stays private.
+ */
+export const isInvalidCursorData = (
+  value: unknown,
+): value is InvalidCursorData =>
   typeof value === "object" &&
   value !== null &&
-  "isConvexSystemError" in value &&
-  value.isConvexSystemError === true &&
   "paginationError" in value &&
-  value.paginationError === "InvalidCursor";
+  Object.hasOwn(value, "paginationError") &&
+  value.paginationError === "InvalidCursor" &&
+  (Object.keys(value).length === 1 ||
+    (Object.keys(value).length === 2 &&
+      "isConvexSystemError" in value &&
+      Object.hasOwn(value, "isConvexSystemError") &&
+      value.isConvexSystemError === true));
 
 const fromErrorMessage = (
   error: globalThis.Error,

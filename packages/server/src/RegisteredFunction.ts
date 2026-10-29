@@ -4,6 +4,7 @@ import type { FunctionSpec, RuntimeAndFunctionType } from "@confect/core";
 import * as IdScope from "@confect/core/IdScope";
 import type * as FunctionProvenance from "@confect/core/FunctionProvenance";
 import * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
+import * as PaginationError from "@confect/core/PaginationError";
 import {
   compileArgsSchema,
   compileReturnsSchema,
@@ -195,10 +196,10 @@ export const combineErrorSchemas = (
  * - Without a schema: every failure is converted to a defect via `Effect.orDie`,
  *   then follows the defect policy below.
  *
- * Only a `ConvexError` defect with exactly the pagination protocol's `{
- * paginationError: "InvalidCursor" }` data from `QueryStream.paginate` passes
- * through bare. Every other `ConvexError` defect is wrapped in a plain `Error`
- * so Convex redacts its data in production.
+ * Only a `ConvexError` defect with exact invalid-cursor control data from
+ * `QueryStream.paginate` or Convex's native pagination passes through bare.
+ * Every other `ConvexError` defect is wrapped in a plain `Error` so Convex
+ * redacts its data in production.
  *
  * A `scheduler` in `runOptions` must be passed here as a run option rather than
  * provided via `Effect.provideService` inside `effect`: the run option lands in
@@ -220,15 +221,7 @@ export const runHandlerPromise =
         if (!(defect instanceof ConvexError)) {
           return Effect.die(defect);
         }
-        const data: unknown = defect.data;
-        if (
-          typeof data === "object" &&
-          data !== null &&
-          "paginationError" in data &&
-          Object.hasOwn(data, "paginationError") &&
-          data.paginationError === "InvalidCursor" &&
-          Object.keys(data).length === 1
-        ) {
+        if (PaginationError.isInvalidCursorData(defect.data)) {
           return Effect.fail(defect);
         }
         return Effect.die(new Error(defect.message, { cause: defect }));
