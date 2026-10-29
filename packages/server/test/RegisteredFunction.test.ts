@@ -48,6 +48,29 @@ describe("runHandlerPromise", () => {
   );
 
   it.effect.each(errorSchemas)(
+    "preserves Convex's native InvalidCursor signal $schemaLabel an error schema",
+    ({ errorSchema }) =>
+      Effect.promise(() => {
+        const defect = new ConvexError({
+          isConvexSystemError: true,
+          paginationError: "InvalidCursor",
+        });
+        const result = RegisteredFunction.runHandlerPromise(errorSchema)(
+          Effect.die(defect),
+        );
+        return Promise.all([
+          expect(result).rejects.toBe(defect),
+          expect(result).rejects.toMatchObject({
+            data: {
+              isConvexSystemError: true,
+              paginationError: "InvalidCursor",
+            },
+          }),
+        ]);
+      }),
+  );
+
+  it.effect.each(errorSchemas)(
     "rejects InvalidCursor data with extra fields as a defect $schemaLabel an error schema",
     ({ errorSchema }) =>
       Effect.promise(() => {
