@@ -278,12 +278,17 @@ describe("runHandlerPromise", () => {
     ),
   );
 
-  it.effect("preserves a plain handler defect", () =>
+  it.effect("preserves the complete cause of a plain handler defect", () =>
     Effect.promise(() => {
       const bug = new Error("bug");
-      return expect(
-        RegisteredFunction.runHandlerPromise(Schema.String)(Effect.die(bug)),
-      ).rejects.toBe(bug);
+      const cause = Cause.die(bug);
+      const result = RegisteredFunction.runHandlerPromise(Schema.String)(
+        Effect.failCause(cause),
+      );
+      return Promise.all([
+        expect(result).rejects.toThrow("bug"),
+        expect(result).rejects.toHaveProperty("cause", cause),
+      ]);
     }),
   );
 
