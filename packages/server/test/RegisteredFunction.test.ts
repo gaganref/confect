@@ -19,76 +19,59 @@ describe("runHandlerPromise", () => {
     { schemaLabel: "with", errorSchema: Schema.String },
   ];
 
-  it.effect.each(errorSchemas)(
-    "rejects raw ConvexError defects as plain errors $schemaLabel an error schema",
-    ({ errorSchema }) =>
-      Effect.promise(() => {
-        const result = RegisteredFunction.runHandlerPromise(errorSchema)(
-          Effect.die(new ConvexError({ secret: "x" })),
-        );
-        return Promise.all([
-          expect(result).rejects.toBeInstanceOf(Error),
-          expect(result).rejects.not.toBeInstanceOf(ConvexError),
-        ]);
-      }),
+  describe.each(errorSchemas)(
+    "$schemaLabel an error schema",
+    ({ errorSchema }) => {
+      it.effect.each([
+        {
+          signal: "Workpool NonRetryableError",
+          data: { __convexWorkpoolNonRetryable: true, message: "stop" },
+        },
+        {
+          signal: "Convex native InvalidCursor",
+          data: { isConvexSystemError: true, paginationError: "InvalidCursor" },
+        },
+        {
+          signal: "Confect InvalidCursor",
+          data: { paginationError: "InvalidCursor" },
+        },
+        { signal: "arbitrary ConvexError", data: { code: "X" } },
+      ])("rethrows the $signal defect bare with its data", ({ data }) =>
+        Effect.promise(() => {
+          const defect = new ConvexError(data);
+          const result = RegisteredFunction.runHandlerPromise(errorSchema)(
+            Effect.die(defect),
+          );
+          return Promise.all([
+            expect(result).rejects.toBe(defect),
+            expect(result).rejects.toHaveProperty("data", data),
+          ]);
+        }),
+      );
+
+      it.effect("rejects other defects as plain errors", () =>
+        Effect.promise(() => {
+          const result = RegisteredFunction.runHandlerPromise(errorSchema)(
+            Effect.die(new Error("bug")),
+          );
+          return Promise.all([
+            expect(result).rejects.toThrow("bug"),
+            expect(result).rejects.not.toBeInstanceOf(ConvexError),
+          ]);
+        }),
+      );
+    },
   );
 
-  it.effect.each(errorSchemas)(
-    "preserves the InvalidCursor signal $schemaLabel an error schema",
-    ({ errorSchema }) =>
-      Effect.promise(() => {
-        const result = RegisteredFunction.runHandlerPromise(errorSchema)(
-          Effect.die(new ConvexError({ paginationError: "InvalidCursor" })),
-        );
-        return Promise.all([
-          expect(result).rejects.toBeInstanceOf(ConvexError),
-          expect(result).rejects.toMatchObject({
-            data: { paginationError: "InvalidCursor" },
-          }),
-        ]);
-      }),
-  );
-
-  it.effect.each(errorSchemas)(
-    "rejects InvalidCursor data with extra fields as a defect $schemaLabel an error schema",
-    ({ errorSchema }) =>
-      Effect.promise(() => {
-        const result = RegisteredFunction.runHandlerPromise(errorSchema)(
-          Effect.die(
-            new ConvexError({ paginationError: "InvalidCursor", secret: "x" }),
-          ),
-        );
-        return Promise.all([
-          expect(result).rejects.toBeInstanceOf(Error),
-          expect(result).rejects.not.toBeInstanceOf(ConvexError),
-        ]);
-      }),
-  );
-
-  it.effect("rejects an undeclared ConvexError failure as a plain error", () =>
+  it.effect("rethrows an undeclared ConvexError failure bare", () =>
     Effect.promise(() => {
+      const failure = new ConvexError({ code: "X" });
       const result = RegisteredFunction.runHandlerPromise(undefined)(
-        Effect.fail(new ConvexError({ secret: "x" })),
+        Effect.fail(failure),
       );
       return Promise.all([
-        expect(result).rejects.toBeInstanceOf(Error),
-        expect(result).rejects.not.toBeInstanceOf(ConvexError),
-      ]);
-    }),
-  );
-
-  it.effect("rejects an inherited pagination marker as a defect", () =>
-    Effect.promise(() => {
-      const data = Object.setPrototypeOf(
-        { secret: "x" },
-        { paginationError: "InvalidCursor" },
-      );
-      const result = RegisteredFunction.runHandlerPromise(undefined)(
-        Effect.die(new ConvexError(data)),
-      );
-      return Promise.all([
-        expect(result).rejects.toBeInstanceOf(Error),
-        expect(result).rejects.not.toBeInstanceOf(ConvexError),
+        expect(result).rejects.toBe(failure),
+        expect(result).rejects.toHaveProperty("data", { code: "X" }),
       ]);
     }),
   );
@@ -105,19 +88,26 @@ describe("runHandlerPromise", () => {
     }),
   );
 
-  it.effect("keeps a defect alongside a declared failure", () =>
-    Effect.promise(() => {
-      const result = RegisteredFunction.runHandlerPromise(Schema.String)(
-        Effect.failCause(
-          Cause.combine(Cause.fail("rejected"), Cause.die(new Error("bug"))),
-        ),
-      );
-      return Promise.all([
-        expect(result).rejects.toBeInstanceOf(Error),
-        expect(result).rejects.not.toBeInstanceOf(ConvexError),
-        expect(result).rejects.toThrow("bug"),
-      ]);
-    }),
+  it.effect.each(errorSchemas)(
+    "keeps a defect alongside a typed failure $schemaLabel an error schema",
+    ({ errorSchema }) =>
+      Effect.promise(() => {
+        const result = RegisteredFunction.runHandlerPromise(errorSchema)(
+          Effect.failCause(
+            Cause.combine(Cause.fail("rejected"), Cause.die(new Error("bug"))),
+          ),
+        );
+        return Promise.all([
+          expect(result).rejects.toBeInstanceOf(Error),
+          expect(result).rejects.not.toBeInstanceOf(ConvexError),
+          expect(result).rejects.toThrow("bug"),
+          expect(result).rejects.toMatchObject({
+            cause: {
+              reasons: [{ _tag: "Fail", error: "rejected" }, { _tag: "Die" }],
+            },
+          }),
+        ]);
+      }),
   );
 
   it.effect.each([
@@ -138,6 +128,20 @@ describe("runHandlerPromise", () => {
       cause: Cause.combine(Cause.fail("rejected"), Cause.interrupt()),
       message: "rejected",
       reasons: [{ _tag: "Fail" }, { _tag: "Interrupt" }],
+    },
+    {
+      label: "a declared failure and a Workpool non-retryable defect",
+      cause: Cause.combine(
+        Cause.fail("rejected"),
+        Cause.die(
+          new ConvexError({
+            __convexWorkpoolNonRetryable: true,
+            message: "stop",
+          }),
+        ),
+      ),
+      message: "stop",
+      reasons: [{ _tag: "Fail" }, { _tag: "Die" }],
     },
     {
       label: "a pagination signal and a defect",
