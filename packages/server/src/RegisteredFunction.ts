@@ -190,19 +190,15 @@ export const combineErrorSchemas = (
  *
  * - With a schema: typed errors are schema-encoded and wrapped in a
  *   `ConvexError`, then thrown so Convex surfaces the data to the client.
- *   `Effect.either` escapes the failure channel before `runPromise` so the
- *   thrown `ConvexError` retains its `Symbol.for("ConvexError")` identity
- *   instead of being wrapped in Effect's `FiberFailure`.
+ *   `Effect.result` escapes the failure channel before `runPromise` so the
+ *   encoded `ConvexError` is thrown outside the Effect runtime.
  * - Without a schema: every failure is converted to a defect via `Effect.orDie`,
- *   so nothing—not even a `ConvexError` the handler placed in its error
- *   channel—reaches the client as a `ConvexError`. The fiber dies and
- *   `runPromise` rejects with a generic failure.
+ *   then follows the defect policy below.
  *
- * Either way, a `ConvexError` _defect_—thrown imperatively rather than placed
- * in the error channel, e.g. the pagination protocol's `InvalidCursor` signal
- * from `QueryStream.paginate`—is rethrown bare so it retains its identity and
- * Convex serializes its `data` to the client, matching how a thrown
- * `ConvexError` behaves in a plain Convex handler.
+ * Only a `ConvexError` defect with exactly the pagination protocol's `{
+ * paginationError: "InvalidCursor" }` data from `QueryStream.paginate` passes
+ * through bare. Every other `ConvexError` defect is wrapped in a plain `Error`
+ * so Convex redacts its data in production.
  *
  * A `scheduler` in `runOptions` must be passed here as a run option rather than
  * provided via `Effect.provideService` inside `effect`: the run option lands in
@@ -219,13 +215,23 @@ export const runHandlerPromise =
     },
   ) =>
   <A, E>(effect: Effect.Effect<A, E>): Promise<A> => {
-    // A `ConvexError` defect escapes into the (escaped) failure channel so
-    // the `throw` below rethrows it with its identity intact.
     const rethrowConvexErrorDefects = Effect.catchDefect(
-      (defect: unknown): Effect.Effect<never, ConvexError<any>> =>
-        defect instanceof ConvexError
-          ? Effect.fail(defect)
-          : Effect.die(defect),
+      (defect: unknown): Effect.Effect<never, ConvexError<any>> => {
+        if (!(defect instanceof ConvexError)) {
+          return Effect.die(defect);
+        }
+        const data: unknown = defect.data;
+        if (
+          typeof data === "object" &&
+          data !== null &&
+          "paginationError" in data &&
+          data.paginationError === "InvalidCursor" &&
+          Object.keys(data).length === 1
+        ) {
+          return Effect.fail(defect);
+        }
+        return Effect.die(new Error(defect.message, { cause: defect }));
+      },
     );
 
     const withConvexError =
