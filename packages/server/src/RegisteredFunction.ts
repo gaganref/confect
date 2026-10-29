@@ -21,8 +21,10 @@ import {
 import type { Value } from "convex/values";
 import { ConvexError } from "convex/values";
 import { pipe } from "effect/Function";
+import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Result from "effect/Result";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -188,12 +190,12 @@ export const combineErrorSchemas = (
  * Run the `Effect` as a `Promise`. The error schema acts as an allowlist of
  * failures that may be surfaced to the client as a `ConvexError`:
  *
- * - With a schema: typed errors are schema-encoded and wrapped in a
- *   `ConvexError`, then thrown so Convex surfaces the data to the client.
- *   `Effect.result` escapes the failure channel before `runPromise` so the
- *   encoded `ConvexError` is thrown outside the Effect runtime.
- * - Without a schema: every failure is converted to a defect via `Effect.orDie`,
- *   then follows the defect policy below.
+ * - Exactly one typed failure with a schema is encoded and wrapped in a
+ *   `ConvexError`, then thrown outside the Effect runtime so Convex surfaces
+ *   the data to the client.
+ * - Multiple failures, mixed causes, interruptions, undeclared failures and
+ *   error-encoding failures take the defect path. The complete `Exit` is
+ *   inspected before any typed failure can hide another cause reason.
  *
  * Only a `ConvexError` defect with exactly the pagination protocol's `{
  * paginationError: "InvalidCursor" }` data from `QueryStream.paginate` passes
@@ -203,9 +205,9 @@ export const combineErrorSchemas = (
  * A `scheduler` in `runOptions` must be passed here as a run option rather than
  * provided via `Effect.provideService` inside `effect`: the run option lands in
  * the fiber's root context, while a service provided within `effect` pops
- * before the `orDie`/`catch`/`result` wrappers this function adds. The fiber's
- * op counter survives context pops, so a cooperative yield can fire inside
- * those wrappers—only a root-context scheduler covers them.
+ * before the exit/encoding wrappers this function adds. The fiber's op counter
+ * survives context pops, so a cooperative yield can fire inside those wrappers.
+ * Only a root-context scheduler covers them.
  */
 export const runHandlerPromise =
   (
@@ -215,42 +217,55 @@ export const runHandlerPromise =
     },
   ) =>
   <A, E>(effect: Effect.Effect<A, E>): Promise<A> => {
-    const rethrowConvexErrorDefects = Effect.catchDefect(
-      (defect: unknown): Effect.Effect<never, ConvexError<any>> => {
-        if (!(defect instanceof ConvexError)) {
-          return Effect.die(defect);
+    const withConvexError: Effect.Effect<Result.Result<A, ConvexError<any>>> =
+      Effect.gen(function* () {
+        const exit = yield* Effect.exit(effect);
+        if (Exit.isSuccess(exit)) {
+          return Result.succeed(exit.value);
         }
-        const data: unknown = defect.data;
-        if (
-          typeof data === "object" &&
-          data !== null &&
-          "paginationError" in data &&
-          Object.hasOwn(data, "paginationError") &&
-          data.paginationError === "InvalidCursor" &&
-          Object.keys(data).length === 1
-        ) {
-          return Effect.fail(defect);
-        }
-        return Effect.die(new Error(defect.message, { cause: defect }));
-      },
-    );
 
-    const withConvexError =
-      errorSchema === undefined
-        ? Effect.orDie(effect)
-        : effect.pipe(
-            Effect.catch((typedError) =>
-              pipe(
-                Schema.encodeEffect(errorSchema)(typedError),
-                Effect.catchTag("SchemaError", Effect.die),
-                Effect.andThen((encodedError) =>
-                  Effect.fail(new ConvexError(encodedError)),
-                ),
-              ),
-            ),
+        const { cause } = exit;
+        const [reason] = cause.reasons;
+        if (cause.reasons.length === 1 && reason?._tag === "Die") {
+          const defect = reason.defect;
+          if (defect instanceof ConvexError) {
+            const data: unknown = defect.data;
+            if (
+              typeof data === "object" &&
+              data !== null &&
+              "paginationError" in data &&
+              Object.hasOwn(data, "paginationError") &&
+              data.paginationError === "InvalidCursor" &&
+              Object.keys(data).length === 1
+            ) {
+              return Result.fail(defect);
+            }
+            return yield* Effect.die(
+              new Error(defect.message, { cause: defect }),
+            );
+          }
+          return yield* Effect.die(defect);
+        }
+
+        if (
+          cause.reasons.length === 1 &&
+          reason?._tag === "Fail" &&
+          errorSchema !== undefined
+        ) {
+          const encoded = yield* Effect.exit(
+            Schema.encodeEffect(errorSchema)(reason.error),
           );
+          if (Exit.isSuccess(encoded)) {
+            return Result.fail(new ConvexError(encoded.value));
+          }
+          return yield* Effect.die(
+            new Error(Cause.pretty(encoded.cause), { cause: encoded.cause }),
+          );
+        }
+        return yield* Effect.die(new Error(Cause.pretty(cause), { cause }));
+      });
     return Effect.runPromise(
-      Effect.result(rethrowConvexErrorDefects(withConvexError)).pipe(
+      withConvexError.pipe(
         Effect.provide(ConvexLogger.layer),
         Effect.provideService(Console.Console, globalThis.console),
       ),
