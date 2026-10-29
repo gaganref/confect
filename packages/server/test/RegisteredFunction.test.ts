@@ -110,24 +110,54 @@ describe("runHandlerPromise", () => {
       }),
   );
 
+  it.effect("encodes the first of two concurrent declared failures", () =>
+    Effect.promise(() => {
+      const errorSchema = Schema.TaggedStruct("PaymentDeclined", {
+        invoice: Schema.String,
+      });
+      const branch = (invoice: string) =>
+        Effect.promise(() => Promise.resolve()).pipe(
+          Effect.andThen(Effect.fail({ _tag: "PaymentDeclined", invoice })),
+          Effect.uninterruptible,
+        );
+      const result = RegisteredFunction.runHandlerPromise(errorSchema)(
+        Effect.all([branch("invoice-1"), branch("invoice-2")], {
+          concurrency: 2,
+        }),
+      );
+      return Promise.all([
+        expect(result).rejects.toBeInstanceOf(ConvexError),
+        expect(result).rejects.toMatchObject({
+          data: { _tag: "PaymentDeclined", invoice: "invoice-1" },
+        }),
+      ]);
+    }),
+  );
+
+  it.effect(
+    "encodes a declared failure alongside a concurrent interruption",
+    () =>
+      Effect.promise(() => {
+        const failure = Effect.promise(() => Promise.resolve()).pipe(
+          Effect.andThen(Effect.fail("rejected")),
+          Effect.uninterruptible,
+        );
+        const result = RegisteredFunction.runHandlerPromise(Schema.String)(
+          Effect.all([failure, Effect.interrupt], { concurrency: 2 }),
+        );
+        return Promise.all([
+          expect(result).rejects.toBeInstanceOf(ConvexError),
+          expect(result).rejects.toMatchObject({ data: "rejected" }),
+        ]);
+      }),
+  );
+
   it.effect.each([
     {
       label: "a defect before a declared failure",
       cause: Cause.combine(Cause.die(new Error("bug")), Cause.fail("rejected")),
       message: "bug",
       reasons: [{ _tag: "Die" }, { _tag: "Fail" }],
-    },
-    {
-      label: "multiple declared failures",
-      cause: Cause.combine(Cause.fail("first"), Cause.fail("second")),
-      message: "second",
-      reasons: [{ _tag: "Fail" }, { _tag: "Fail" }],
-    },
-    {
-      label: "a declared failure and interruption",
-      cause: Cause.combine(Cause.fail("rejected"), Cause.interrupt()),
-      message: "rejected",
-      reasons: [{ _tag: "Fail" }, { _tag: "Interrupt" }],
     },
     {
       label: "a declared failure and a Workpool non-retryable defect",
@@ -189,6 +219,20 @@ describe("runHandlerPromise", () => {
       return Promise.all([
         expect(result).rejects.toBeInstanceOf(Error),
         expect(result).rejects.not.toBeInstanceOf(ConvexError),
+        expect(result).rejects.toThrow("Expected string"),
+        expect(result).rejects.toMatchObject({
+          cause: {
+            reasons: [
+              {
+                _tag: "Fail",
+                error: {
+                  _tag: "SchemaError",
+                  issue: { _tag: "InvalidType" },
+                },
+              },
+            ],
+          },
+        }),
       ]);
     }),
   );
@@ -209,6 +253,17 @@ describe("runHandlerPromise", () => {
       return Promise.all([
         expect(result).rejects.toBeInstanceOf(Error),
         expect(result).rejects.not.toBeInstanceOf(ConvexError),
+        expect(result).rejects.toThrow("InvalidCursor"),
+        expect(result).rejects.toMatchObject({
+          cause: {
+            reasons: [
+              {
+                _tag: "Die",
+                defect: { data: { paginationError: "InvalidCursor" } },
+              },
+            ],
+          },
+        }),
       ]);
     }),
   );
