@@ -51,7 +51,7 @@
   "module": "./dist/index.js",
   "peerDependencies": {
     "convex": "^1.48.0",
-    "effect": "^4.0.0"
+    "effect": ">=4.0.0 <4.1.0"
   },
   "repository": {
     "type": "git",

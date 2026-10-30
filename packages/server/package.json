@@ -67,9 +67,9 @@
   "module": "./dist/index.js",
   "peerDependencies": {
     "@confect/core": "workspace:^",
-    "@effect/platform-node": "^4.0.0",
+    "@effect/platform-node": ">=4.0.0 <4.1.0",
     "convex": "^1.48.0",
-    "effect": "^4.0.4"
+    "effect": ">=4.0.4 <4.1.0"
   },
   "peerDependenciesMeta": {
     "@effect/platform-node": {

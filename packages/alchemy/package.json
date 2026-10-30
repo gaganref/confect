@@ -60,7 +60,7 @@
     "@confect/core": "workspace:^",
     "alchemy": "2.0.0-beta.82",
     "convex": "^1.32.0",
-    "effect": "^4.0.0"
+    "effect": ">=4.0.0 <4.1.0"
   },
   "peerDependenciesMeta": {
     "@confect/cli": {
