@@ -21,8 +21,10 @@ import {
 import type { Value } from "convex/values";
 import { ConvexError } from "convex/values";
 import { pipe } from "effect/Function";
+import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Result from "effect/Result";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -185,23 +187,28 @@ export const combineErrorSchemas = (
 };
 
 /**
- * Run the `Effect` as a `Promise`. A declared error is schema-encoded and
- * thrown as a `ConvexError` so Convex surfaces its data to the client. Any
- * other failure is a defect. Without an error schema, `Effect.orDie` converts
- * every failure to a defect.
+ * Run the `Effect` as a `Promise`. Inspect the complete `Exit` before encoding
+ * a declared error so a typed failure cannot hide a defect.
  *
- * A `ConvexError` defect is rethrown bare so it keeps Convex's meaning.
- * Pagination and Workpool rely on its data for their control signals. Every
- * other defect is a plain rejection that Convex redacts in production.
- * `Effect.result` escapes the failure channel before `runPromise` so the
- * `ConvexError` is thrown outside the Effect runtime.
+ * Any `Die` reason takes the defect path. Without a `Die`, the first `Fail` in
+ * cause order is schema-encoded and thrown as a `ConvexError` outside the
+ * Effect runtime so Convex surfaces its data to the client. Other failures and
+ * interruptions alongside that `Fail` are ignored. Without an error schema, the
+ * selected failure is treated as a defect.
+ *
+ * A lone `ConvexError` defect or a selected undeclared `ConvexError` failure is
+ * rethrown bare so it keeps Convex's meaning. Pagination and Workpool rely on
+ * its data for their control signals. Other causes with a `Die`, interrupt-only
+ * or empty causes, and error-encoding failures reject with a plain `Error`
+ * whose message renders the complete cause and whose `cause` holds it for
+ * server diagnostics.
  *
  * A `scheduler` in `runOptions` must be passed here as a run option rather than
  * provided via `Effect.provideService` inside `effect`: the run option lands in
  * the fiber's root context, while a service provided within `effect` pops
- * before the `orDie`/`catch`/`result` wrappers this function adds. The fiber's
- * op counter survives context pops, so a cooperative yield can fire inside
- * those wrappers—only a root-context scheduler covers them.
+ * before the exit/encoding wrappers this function adds. The fiber's op counter
+ * survives context pops, so a cooperative yield can fire inside those wrappers.
+ * Only a root-context scheduler covers them.
  */
 export const runHandlerPromise =
   (
@@ -211,31 +218,46 @@ export const runHandlerPromise =
     },
   ) =>
   <A, E>(effect: Effect.Effect<A, E>): Promise<A> => {
-    // A `ConvexError` defect escapes into the (escaped) failure channel so
-    // the `throw` below rethrows it with its identity intact.
-    const rethrowConvexErrorDefects = Effect.catchDefect(
-      (defect: unknown): Effect.Effect<never, ConvexError<any>> =>
-        defect instanceof ConvexError
-          ? Effect.fail(defect)
-          : Effect.die(defect),
-    );
+    const withConvexError: Effect.Effect<Result.Result<A, ConvexError<any>>> =
+      Effect.gen(function* () {
+        const exit = yield* Effect.exit(effect);
+        if (Exit.isSuccess(exit)) {
+          return Result.succeed(exit.value);
+        }
 
-    const withConvexError =
-      errorSchema === undefined
-        ? Effect.orDie(effect)
-        : effect.pipe(
-            Effect.catch((typedError) =>
-              pipe(
-                Schema.encodeEffect(errorSchema)(typedError),
-                Effect.catchTag("SchemaError", Effect.die),
-                Effect.andThen((encodedError) =>
-                  Effect.fail(new ConvexError(encodedError)),
-                ),
-              ),
-            ),
+        const { cause } = exit;
+        const reason =
+          cause.reasons.find(Cause.isDieReason) ??
+          cause.reasons.find(Cause.isFailReason);
+        if (
+          reason?._tag === "Die" &&
+          cause.reasons.length === 1 &&
+          reason.defect instanceof ConvexError
+        ) {
+          return Result.fail(reason.defect);
+        }
+
+        if (reason?._tag === "Fail") {
+          if (errorSchema === undefined) {
+            if (reason.error instanceof ConvexError) {
+              return Result.fail(reason.error);
+            }
+            return yield* Effect.die(reason.error);
+          }
+          const encoded = yield* Effect.exit(
+            Schema.encodeEffect(errorSchema)(reason.error),
           );
+          if (Exit.isSuccess(encoded)) {
+            return Result.fail(new ConvexError(encoded.value));
+          }
+          return yield* Effect.die(
+            new Error(Cause.pretty(encoded.cause), { cause: encoded.cause }),
+          );
+        }
+        return yield* Effect.die(new Error(Cause.pretty(cause), { cause }));
+      });
     return Effect.runPromise(
-      Effect.result(rethrowConvexErrorDefects(withConvexError)).pipe(
+      withConvexError.pipe(
         Effect.provide(ConvexLogger.layer),
         Effect.provideService(Console.Console, globalThis.console),
       ),
