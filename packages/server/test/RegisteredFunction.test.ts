@@ -1,15 +1,91 @@
 import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import { describe, expect, it } from "@effect/vitest";
+import { ConvexError } from "convex/values";
 import * as Console from "effect/Console";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
+import * as Schema from "effect/Schema";
 import * as TestConsole from "effect/testing/TestConsole";
 import { vi } from "vitest";
 
 describe("runHandlerPromise", () => {
+  const errorSchemas = [
+    { schemaLabel: "without", errorSchema: undefined },
+    { schemaLabel: "with", errorSchema: Schema.String },
+  ];
+
+  describe.each(errorSchemas)(
+    "$schemaLabel an error schema",
+    ({ errorSchema }) => {
+      it.effect.each([
+        {
+          signal: "Workpool NonRetryableError",
+          data: { __convexWorkpoolNonRetryable: true, message: "stop" },
+        },
+        {
+          signal: "Convex native InvalidCursor",
+          data: { isConvexSystemError: true, paginationError: "InvalidCursor" },
+        },
+        {
+          signal: "Confect InvalidCursor",
+          data: { paginationError: "InvalidCursor" },
+        },
+        { signal: "arbitrary ConvexError", data: { code: "X" } },
+      ])("rethrows the $signal defect bare with its data", ({ data }) =>
+        Effect.promise(() => {
+          const defect = new ConvexError(data);
+          const result = RegisteredFunction.runHandlerPromise(errorSchema)(
+            Effect.die(defect),
+          );
+          return Promise.all([
+            expect(result).rejects.toBe(defect),
+            expect(result).rejects.toHaveProperty("data", data),
+          ]);
+        }),
+      );
+
+      it.effect("rejects other defects as plain errors", () =>
+        Effect.promise(() => {
+          const result = RegisteredFunction.runHandlerPromise(errorSchema)(
+            Effect.die(new Error("bug")),
+          );
+          return Promise.all([
+            expect(result).rejects.toThrow("bug"),
+            expect(result).rejects.not.toBeInstanceOf(ConvexError),
+          ]);
+        }),
+      );
+    },
+  );
+
+  it.effect("rethrows an undeclared ConvexError failure bare", () =>
+    Effect.promise(() => {
+      const failure = new ConvexError({ code: "X" });
+      const result = RegisteredFunction.runHandlerPromise(undefined)(
+        Effect.fail(failure),
+      );
+      return Promise.all([
+        expect(result).rejects.toBe(failure),
+        expect(result).rejects.toHaveProperty("data", { code: "X" }),
+      ]);
+    }),
+  );
+
+  it.effect("encodes declared errors as ConvexError data", () =>
+    Effect.promise(() => {
+      const result = RegisteredFunction.runHandlerPromise(
+        Schema.FiniteFromString,
+      )(Effect.fail(42));
+      return Promise.all([
+        expect(result).rejects.toBeInstanceOf(ConvexError),
+        expect(result).rejects.toMatchObject({ data: "42" }),
+      ]);
+    }),
+  );
+
   it.effect("keeps the captured console across overlapping invocations", () =>
     Effect.gen(function* () {
       const original = globalThis.console;
