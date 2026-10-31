@@ -266,3 +266,18 @@ const reporter: ErrorReporter.ErrorReporter = {
 The raw `report` callback receives the whole cause, including ignored errors and original error instances, while the request span is active. A cause can be reported more than once, including defects and request decode failures, and a repeat report can arrive with no active span. Retain causes per request span and deduplicate repeated reports, then emit once when that span ends. The span's `http.response.status_code` records the final response status. This uses Effect's reporting service without another root or a fork-specific error channel.
 
 A declared 4xx response ends the request span successfully after its cause has been reported. Defects report their original cause and end with a failed span. Owners that need declared HTTP failures must consume the reporter as well as the tracer. With no runtime layer, HTTP retains its default logger and creates no request span.
+
+## Reserved arguments
+
+A profile can reserve one mutation and action argument for context that travels beside the domain arguments.
+
+```ts
+const Contextual = FunctionSpec.extend()({
+  middleware: [],
+  reservedArgument: "context",
+});
+```
+
+The name survives profile extension, middleware and component refs as `spec.reservedArgument` and `ref.reservedArgument`. Queries and paginated queries ignore it so their cache keys stay unchanged. Schemas remain lazy.
+
+Registration adds an optional `any` validator under that name and removes the value before domain argument decoding. Middleware and handlers receive only domain arguments. A domain argument with the reserved name fails registration and names the function and argument. The domain args schema and optimistic updates do not gain the field.

@@ -86,6 +86,7 @@ export const prepare = (
       const definition = mutationFunction({
         databaseSchema,
         name: item.name,
+        reservedArgument: item.reservedArgument,
         observability,
         functionVisibility: item.functionVisibility,
         args: item.args,
@@ -103,6 +104,7 @@ export const prepare = (
     Match.when("action", () => {
       const definition = convexActionFunction(databaseSchema, {
         name: item.name,
+        reservedArgument: item.reservedArgument,
         observability,
         functionVisibility: item.functionVisibility,
         args: item.args,
@@ -324,9 +326,11 @@ const mutationFunction = <
   handler,
   resolvedMiddlewares,
   observability,
+  reservedArgument,
 }: {
   databaseSchema: DatabaseSchema_;
   name: string;
+  reservedArgument?: string | undefined;
   functionVisibility: FunctionVisibility;
   args: Schema.Codec<Args, ConvexArgs>;
   returns: Schema.Codec<Returns, ConvexReturns>;
@@ -337,7 +341,12 @@ const mutationFunction = <
   resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware>;
   observability?: Layer.Layer<never> | undefined;
 }) => ({
-  args: compileArgsSchema(args, databaseSchema.target.scope),
+  args: compileArgsSchema(
+    args,
+    databaseSchema.target.scope,
+    reservedArgument,
+    name,
+  ),
   returns: compileReturnsSchema(returns, databaseSchema.target.scope),
   handler: (
     ctx: GenericMutationCtx<
@@ -347,7 +356,7 @@ const mutationFunction = <
   ): Promise<ConvexReturns> =>
     Effect.gen(function* () {
       const decodedArgs = yield* pipe(
-        actualArgs,
+        RegisteredFunction.domainArgs(actualArgs, reservedArgument),
         Schema.decodeUnknownEffect(args),
         Effect.catchTag("SchemaError", Effect.die),
       );
@@ -397,8 +406,10 @@ const convexActionFunction = <
     handler,
     resolvedMiddlewares,
     observability,
+    reservedArgument,
   }: {
     name: string;
+    reservedArgument?: string | undefined;
     functionVisibility: FunctionVisibility;
     args: Schema.Codec<Args, ConvexArgs>;
     returns: Schema.Codec<Returns, ConvexReturns>;
@@ -424,6 +435,7 @@ const convexActionFunction = <
     handler,
     resolvedMiddlewares,
     observability,
+    reservedArgument,
     createLayer: (ctx) =>
       Layer.mergeAll(
         RegisteredFunction.actionLayer(schema, ctx),

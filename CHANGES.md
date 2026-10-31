@@ -12,6 +12,10 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Reserved arguments
+
+Profiles can reserve one mutation or action argument without changing domain schemas. Refs, including component refs, retain the name. Registration accepts any optional value, strips it before decoding and refuses domain collisions. Queries ignore the option to preserve cache keys. Changeset: `reserved-argument.md`. Upstream: planned; no proposal submitted.
+
 ## Invocation instrumentation
 
 Add invocation root spans and an optional `confect/runtime.ts` layer so applications can install Effect tracers and loggers without duplicate console logging. Preserve original declared failures for tracers, encoded client errors and query caching. Cache each layer context once per isolate so permanent scope ownership stays bounded. Changeset: `invocation-observability.md`. The root span ends with the outcome the client gets: a failure in a function with no error schema, other than a raw `ConvexError`, ends it as a defect, and so does an error encoding that dies with a `ConvexError`. Changeset: `undeclared-failure-span-defect.md`. Upstream: planned; no proposal submitted.

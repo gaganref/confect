@@ -29,6 +29,7 @@ export interface ConfectFunctionRegistryItem {
   readonly [TypeId]: TypeId;
   readonly _tag: "Confect";
   readonly name: string;
+  readonly reservedArgument?: string;
   readonly functionVisibility: FunctionVisibility;
   readonly functionType: FunctionType;
   readonly args: Schema.Codec<any, any>;
@@ -64,6 +65,9 @@ export const make = ({
       const item = Object.assign(Object.create(FunctionRegistryItemProto), {
         _tag: "Confect" as const,
         name: functionSpec.name,
+        ...(functionSpec.reservedArgument === undefined
+          ? {}
+          : { reservedArgument: functionSpec.reservedArgument }),
         functionVisibility: functionSpec.functionVisibility,
         functionType: functionSpec.runtimeAndFunctionType.functionType,
         middlewareAttachments: [

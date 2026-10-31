@@ -61,6 +61,7 @@ export const make = (
   return genericFunction(
     nodeActionFunction(databaseSchema, {
       name: item.name,
+      reservedArgument: item.reservedArgument,
       observability,
       functionVisibility: item.functionVisibility,
       args: item.args,
@@ -90,8 +91,10 @@ const nodeActionFunction = <
     handler,
     resolvedMiddlewares,
     observability,
+    reservedArgument,
   }: {
     name: string;
+    reservedArgument?: string | undefined;
     functionVisibility: FunctionVisibility;
     args: Schema.Codec<Args, ConvexArgs>;
     returns: Schema.Codec<Returns, ConvexReturns>;
@@ -118,6 +121,7 @@ const nodeActionFunction = <
     handler,
     resolvedMiddlewares,
     observability,
+    reservedArgument,
     createLayer: (ctx) =>
       Layer.mergeAll(
         RegisteredFunction.actionLayer(databaseSchema, ctx),

@@ -347,6 +347,16 @@ export const runHandlerPromise =
     );
   };
 
+export const domainArgs = (
+  args: DefaultFunctionArgs,
+  reservedArgument?: string,
+): DefaultFunctionArgs =>
+  reservedArgument === undefined
+    ? args
+    : Object.fromEntries(
+        Object.entries(args).filter(([key]) => key !== reservedArgument),
+      );
+
 export const actionFunctionBase = <
   Schema extends DatabaseSchema.AnyWithProps,
   Args,
@@ -366,8 +376,10 @@ export const actionFunctionBase = <
   createLayer,
   scope = IdScope.app,
   observability,
+  reservedArgument,
 }: {
   name: string;
+  reservedArgument?: string | undefined;
   functionVisibility: FunctionVisibility;
   args: Schema.Codec<Args, ConvexArgs>;
   returns: Schema.Codec<Returns, ConvexReturns>;
@@ -380,7 +392,7 @@ export const actionFunctionBase = <
   scope?: IdScope.IdScope;
   observability?: Layer.Layer<never> | undefined;
 }) => ({
-  args: compileArgsSchema(args, scope),
+  args: compileArgsSchema(args, scope, reservedArgument, name),
   returns: compileReturnsSchema(returns, scope),
   handler: (
     ctx: GenericActionCtx<DataModel.ToConvex<DataModel.FromSchema<Schema>>>,
@@ -388,7 +400,7 @@ export const actionFunctionBase = <
   ): Promise<ConvexReturns> =>
     Effect.gen(function* () {
       const decodedArgs = yield* pipe(
-        actualArgs,
+        domainArgs(actualArgs, reservedArgument),
         Schema.decodeUnknownEffect(args),
         Effect.catchTag("SchemaError", Effect.die),
       );
