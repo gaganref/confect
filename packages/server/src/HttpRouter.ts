@@ -233,13 +233,15 @@ const makeWithLayer = <
   const { handler } = HttpRouter.toWebHandler(AppLayer, {
     disableLogger: true,
     /* oxlint-disable effecttsgo/any-unknown-in-error-context -- Keep Effect's erased HTTP boundary errors intact. */
-    middleware: (effect) =>
-      observability === undefined
-        ? effect
-        : Effect.andThen(
-            Effect.annotateCurrentSpan("kind", "httpAction"),
-            effect,
-          ),
+    ...(observability === undefined
+      ? {}
+      : {
+          middleware: (effect) =>
+            Effect.andThen(
+              Effect.annotateCurrentSpan("kind", "httpAction"),
+              effect,
+            ),
+        }),
     /* oxlint-enable effecttsgo/any-unknown-in-error-context */
   });
 

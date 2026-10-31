@@ -250,6 +250,19 @@ Generated declared HTTP entries pass `confect/runtime.ts` to `HttpRouter.forSche
 
 HTTP reuses Effect's request span, named by the reflected route label, with `kind: "httpAction"`. A `traceparent` header continues the caller's trace. Identify the HTTP invocation span by its `kind`, even when it has an external parent.
 
-Effect 4.0.4 reports original endpoint causes through `ErrorReporter` before converting declared failures to responses. Include `ErrorReporter.layer([reporter])` from `effect/ErrorReporter` in your runtime layer to retain those failures. In `ErrorReporter.make`'s callback, `cause` retains the original error instance; `Context.getUnsafe(fiber.context, Tracer.ParentSpan)` identifies its active request span. Record the cause there, then emit when that span ends. This uses Effect's reporting service without another root or a fork-specific error channel.
+Effect 4.0.4 reports original endpoint causes through `ErrorReporter` before converting declared failures to responses. Include `ErrorReporter.layer([reporter])` from `effect/ErrorReporter` in your runtime layer to retain those failures. `ErrorReporter.make` skips errors marked `ErrorReporter.ignore`, including Effect's built-in `HttpApiError` classes and request decode failures. An owner needing every declared failure must implement the `ErrorReporter` interface directly, rather than use `make`:
 
-A declared 4xx response ends the request span successfully after its cause has been reported. Defects report their original cause and end with a failed span. Owners that need declared HTTP failures must consume the reporter as well as the tracer. With no runtime layer, HTTP retains its default logger and request instrumentation.
+```ts
+const failures = new WeakMap<Tracer.AnySpan, Cause.Cause<unknown>>();
+const reporter: ErrorReporter.ErrorReporter = {
+  [ErrorReporter.TypeId]: ErrorReporter.TypeId,
+  report({ cause, fiber }) {
+    const span = Context.getUnsafe(fiber.context, Tracer.ParentSpan);
+    failures.set(span, cause);
+  },
+};
+```
+
+The raw `report` callback receives the whole cause, including ignored errors and original error instances, while the request span is active. A cause can be reported more than once, including defects and request decode failures. Retain causes per request span and deduplicate repeated reports, then emit once when that span ends. The span's `http.response.status_code` records the final response status. This uses Effect's reporting service without another root or a fork-specific error channel.
+
+A declared 4xx response ends the request span successfully after its cause has been reported. Defects report their original cause and end with a failed span. Owners that need declared HTTP failures must consume the reporter as well as the tracer. With no runtime layer, HTTP retains its default logger and creates no request span.

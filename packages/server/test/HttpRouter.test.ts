@@ -310,15 +310,20 @@ it.effect.each([
         cause: Cause.Cause<unknown>;
         span: Tracer.AnySpan;
       }> = [];
+      const filtered: Array<unknown> = [];
       const observability = Layer.merge(
         recorder.observability,
         ErrorReporter.layer([
-          ErrorReporter.make(({ cause, fiber }) => {
-            const span = Context.getUnsafe(fiber.context, Tracer.ParentSpan);
-            assert(span._tag === "Span");
-            expect(span.status._tag).toBe("Started");
-            reports.push({ cause, span });
-          }),
+          ErrorReporter.make(({ cause }) => filtered.push(Cause.squash(cause))),
+          {
+            [ErrorReporter.TypeId]: ErrorReporter.TypeId,
+            report({ cause, fiber }) {
+              const span = Context.getUnsafe(fiber.context, Tracer.ParentSpan);
+              assert(span._tag === "Span");
+              expect(span.status._tag).toBe("Started");
+              reports.push({ cause, span });
+            },
+          },
         ]),
       );
       const outcomeApi = HttpApi.make("outcomes").add(
@@ -370,7 +375,7 @@ it.effect.each([
           Effect.void,
         ),
       );
-      const headers =
+      const headers: HeadersInit =
         scenario === "remote"
           ? {
               traceparent:
@@ -380,6 +385,22 @@ it.effect.each([
       const response = yield* Effect.promise(() =>
         t.fetch(`/outcomes/${scenario}`, { headers }),
       );
+      const body = yield* Effect.promise(() => response.text());
+      const baseline = convexTest(undefined, {
+        ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
+        "./mock-backend/fixtures/convex/http.ts": () =>
+          Promise.resolve({
+            default: ConfectHttpRouter.make(outcomeRoutes, { api: outcomeApi }),
+          }),
+      });
+      const unobserved = yield* Effect.promise(() =>
+        baseline.fetch(`/outcomes/${scenario}`, { headers }),
+      );
+      expect([response.status, body]).toEqual([
+        unobserved.status,
+        yield* Effect.promise(() => unobserved.text()),
+      ]);
+
       expect(response.status).toBe(
         scenario === "decode"
           ? 400
@@ -389,7 +410,7 @@ it.effect.each([
               ? 500
               : 200,
       );
-      expect(yield* Effect.promise(() => response.text())).toBe(
+      expect(body).toBe(
         scenario === "denied"
           ? '{"_tag":"Denied"}'
           : scenario === "forbidden"
@@ -406,6 +427,13 @@ it.effect.each([
         "/outcomes/:id",
         "httpAction",
       ]);
+      expect(filtered).toEqual(
+        scenario === "denied"
+          ? [denied]
+          : scenario === "defect"
+            ? [defect]
+            : [],
+      );
       if (scenario === "decode") {
         expect(reports.map(({ cause }) => Cause.squash(cause))).toEqual(
           expect.arrayContaining([
@@ -421,15 +449,17 @@ it.effect.each([
         scenario === "defect" ||
         scenario === "forbidden"
       ) {
-        expect(reports).toHaveLength(1);
-        expect(Cause.squash(reports[0]!.cause)).toBe(
+        const original =
           scenario === "denied"
             ? denied
             : scenario === "forbidden"
               ? forbidden
-              : defect,
-        );
+              : defect;
         expect(reports[0]!.span).toBe(spans[0]);
+        for (const { cause, span } of reports) {
+          expect(Cause.squash(cause)).toBe(original);
+          expect(span).toBe(spans[0]);
+        }
       } else expect(reports).toEqual([]);
       expect(spans[0]!.parent._tag).toBe(
         scenario === "remote" ? "Some" : "None",
