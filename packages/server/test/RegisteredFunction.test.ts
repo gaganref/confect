@@ -474,3 +474,87 @@ it.each([false, true])(
     expect(Cause.squash(status.exit.cause)).toBe(broken ? defect : original);
   },
 );
+
+it.each([false, true])(
+  "ends an undeclared failure as a defect (instrumented %s)",
+  // oxlint-disable-next-line effecttsgo/async-function -- Exercise the public Promise boundary.
+  async (instrumented) => {
+    const { spans, observability, invocation } = recording();
+    const undeclared = new Error("undeclared");
+    const signal = new ConvexError({ paginationError: "InvalidCursor" });
+    const run = (effect: Effect.Effect<never, Error>) =>
+      RegisteredFunction.runHandlerPromise(undefined, {
+        invocation: instrumented ? invocation : Effect.die("unused"),
+        observability: instrumented ? observability : undefined,
+      })(effect).catch((error: unknown) => error);
+    expect(await run(Effect.fail(undeclared))).toBe(undeclared);
+    expect(await run(Effect.fail(signal))).toBe(signal);
+    expect(
+      await run(
+        Effect.failCause(
+          Cause.combine(Cause.fail(signal), Cause.fail(undeclared)),
+        ),
+      ),
+    ).toBe(signal);
+    if (!instrumented) return;
+    const [failed, passed] = spans.map(({ status }) => {
+      assert(status._tag === "Ended" && Exit.isFailure(status.exit));
+      return status.exit.cause.reasons;
+    });
+    expect(failed).toEqual([
+      expect.objectContaining({ _tag: "Die", defect: undeclared }),
+    ]);
+    expect(passed).toEqual([
+      expect.objectContaining({ _tag: "Fail", error: signal }),
+    ]);
+  },
+);
+
+it(
+  "ends a declared error whose encoding dies with a ConvexError as the client's defect",
+  // oxlint-disable-next-line effecttsgo/async-function -- Exercise the public Promise boundary.
+  async () => {
+    const { spans, observability, invocation } = recording();
+    const signal = new ConvexError({ paginationError: "InvalidCursor" });
+    const error = Schema.String.pipe(
+      Schema.decodeTo(Schema.instanceOf(Error), {
+        decode: SchemaGetter.transform(() => new Error("denied")),
+        encode: SchemaGetter.transformEffect(() => Effect.die(signal)),
+      }),
+    );
+    const rejected = await RegisteredFunction.runHandlerPromise(error, {
+      invocation,
+      observability,
+      // oxlint-disable-next-line effecttsgo/global-error-in-effect-failure -- The handler's declared error is a plain Error, as in the encoding test above.
+    })(Effect.fail(new Error("denied"))).catch((thrown: unknown) => thrown);
+    assert(rejected instanceof Error && !(rejected instanceof ConvexError));
+    const status = spans[0]!.status;
+    assert(status._tag === "Ended" && Exit.isFailure(status.exit));
+    const defect = Cause.squash(status.exit.cause);
+    assert(defect instanceof Error && !(defect instanceof ConvexError));
+    expect(defect.message).toBe(rejected.message);
+  },
+);
+
+it.each([
+  ["a defect", Cause.die(new Error("broken"))],
+  ["an interrupt", Cause.interrupt()],
+] as const)(
+  "ends an undeclared failure mixed with %s by the client's rule",
+  // oxlint-disable-next-line effecttsgo/async-function -- Exercise the public Promise boundary.
+  async (_, other) => {
+    const { spans, observability, invocation } = recording();
+    const undeclared = new Error("undeclared");
+    const cause = Cause.combine(Cause.fail(undeclared), other);
+    const run = (instrumented: boolean) =>
+      RegisteredFunction.runHandlerPromise(undefined, {
+        invocation: instrumented ? invocation : Effect.die("unused"),
+        observability: instrumented ? observability : undefined,
+      })(Effect.failCause(cause)).catch((error: unknown) => error);
+    const [plain, instrumented] = [await run(false), await run(true)];
+    expect(instrumented).toEqual(plain);
+    const status = spans[0]!.status;
+    assert(status._tag === "Ended" && Exit.isFailure(status.exit));
+    expect(status.exit.cause.reasons.some(Cause.isDieReason)).toBe(true);
+  },
+);

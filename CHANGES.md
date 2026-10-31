@@ -14,7 +14,7 @@ until the fork adopts a release containing it.
 
 ## Invocation instrumentation
 
-Add invocation root spans and an optional `confect/runtime.ts` layer so applications can install Effect tracers and loggers without duplicate console logging. Preserve original failures for tracers, encoded client errors and query caching. Cache each layer context once per isolate so permanent scope ownership stays bounded. Changeset: `invocation-observability.md`. Upstream: planned; no proposal submitted.
+Add invocation root spans and an optional `confect/runtime.ts` layer so applications can install Effect tracers and loggers without duplicate console logging. Preserve original declared failures for tracers, encoded client errors and query caching. Cache each layer context once per isolate so permanent scope ownership stays bounded. Changeset: `invocation-observability.md`. The root span ends with the outcome the client gets: a failure in a function with no error schema, other than a raw `ConvexError`, ends it as a defect, and so does an error encoding that dies with a `ConvexError`. Changeset: `undeclared-failure-span-defect.md`. Upstream: planned; no proposal submitted.
 
 HTTP accepts the same layer explicitly on hand-built routers and receives `runtime.ts` through generated declared entries. Reuse Effect's request span, continue remote traces, and expose original endpoint failures through Effect 4.0.4's `ErrorReporter` before response conversion. Function and HTTP invocations share one layer build per isolate. Changeset: `http-invocation-observability.md`. Upstream: planned; no proposal submitted. Omit request middleware without a runtime layer. Owners needing ignored HTTP failures implement the raw ErrorReporter interface, with per-span deduplication.
 
