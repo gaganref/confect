@@ -489,6 +489,13 @@ it.each([false, true])(
       })(effect).catch((error: unknown) => error);
     expect(await run(Effect.fail(undeclared))).toBe(undeclared);
     expect(await run(Effect.fail(signal))).toBe(signal);
+    expect(
+      await run(
+        Effect.failCause(
+          Cause.combine(Cause.fail(signal), Cause.fail(undeclared)),
+        ),
+      ),
+    ).toBe(signal);
     if (!instrumented) return;
     const [failed, passed] = spans.map(({ status }) => {
       assert(status._tag === "Ended" && Exit.isFailure(status.exit));
