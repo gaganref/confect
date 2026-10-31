@@ -257,12 +257,12 @@ const failures = new WeakMap<Tracer.AnySpan, Cause.Cause<unknown>>();
 const reporter: ErrorReporter.ErrorReporter = {
   [ErrorReporter.TypeId]: ErrorReporter.TypeId,
   report({ cause, fiber }) {
-    const span = Context.getUnsafe(fiber.context, Tracer.ParentSpan);
-    failures.set(span, cause);
+    const span = Context.getOrUndefined(fiber.context, Tracer.ParentSpan);
+    if (span !== undefined) failures.set(span, cause);
   },
 };
 ```
 
-The raw `report` callback receives the whole cause, including ignored errors and original error instances, while the request span is active. A cause can be reported more than once, including defects and request decode failures. Retain causes per request span and deduplicate repeated reports, then emit once when that span ends. The span's `http.response.status_code` records the final response status. This uses Effect's reporting service without another root or a fork-specific error channel.
+The raw `report` callback receives the whole cause, including ignored errors and original error instances, while the request span is active. A cause can be reported more than once, including defects and request decode failures, and a repeat report can arrive with no active span. Retain causes per request span and deduplicate repeated reports, then emit once when that span ends. The span's `http.response.status_code` records the final response status. This uses Effect's reporting service without another root or a fork-specific error channel.
 
 A declared 4xx response ends the request span successfully after its cause has been reported. Defects report their original cause and end with a failed span. Owners that need declared HTTP failures must consume the reporter as well as the tracer. With no runtime layer, HTTP retains its default logger and creates no request span.
