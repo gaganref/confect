@@ -21,6 +21,7 @@ import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
+import * as HttpApiError from "effect/http-api/HttpApiError";
 
 const api = HttpApi.make("users").add(
   HttpApiGroup.make("users").add(
@@ -288,12 +289,20 @@ it.effect("uses one labeled request span and the supplied logger", () =>
   }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs()))),
 );
 
-it.effect.each(["success", "denied", "defect", "remote"] as const)(
+it.effect.each([
+  "success",
+  "denied",
+  "defect",
+  "remote",
+  "forbidden",
+  "decode",
+] as const)(
   "reports the original HTTP %s outcome on one request span",
   (scenario) =>
     Effect.gen(function* () {
       class Denied extends Schema.TaggedError<Denied>()("Denied", {}) {}
       const denied = new Denied();
+      const forbidden = new HttpApiError.Forbidden();
       const defect = new Error("broken");
       const recorder = recording();
       const { spans } = recorder;
@@ -315,9 +324,20 @@ it.effect.each(["success", "denied", "defect", "remote"] as const)(
       const outcomeApi = HttpApi.make("outcomes").add(
         HttpApiGroup.make("outcomes").add(
           HttpApiEndpoint.get("run", "/outcomes/:id", {
-            params: Schema.Struct({ id: Schema.String }),
+            params: Schema.Struct({
+              id: Schema.Literals([
+                "success",
+                "denied",
+                "defect",
+                "remote",
+                "forbidden",
+              ]),
+            }),
             success: Schema.String,
-            error: Denied.pipe(HttpApiSchema.status(403)),
+            error: [
+              Denied.pipe(HttpApiSchema.status(403)),
+              HttpApiError.Forbidden,
+            ],
           }),
         ),
       );
@@ -329,7 +349,9 @@ it.effect.each(["success", "denied", "defect", "remote"] as const)(
                 ? Effect.fail(denied)
                 : params.id === "defect"
                   ? Effect.die(defect)
-                  : Effect.succeed("ok"),
+                  : params.id === "forbidden"
+                    ? Effect.fail(forbidden)
+                    : Effect.succeed("ok"),
             ),
           ),
         ),
@@ -359,14 +381,22 @@ it.effect.each(["success", "denied", "defect", "remote"] as const)(
         t.fetch(`/outcomes/${scenario}`, { headers }),
       );
       expect(response.status).toBe(
-        scenario === "denied" ? 403 : scenario === "defect" ? 500 : 200,
+        scenario === "decode"
+          ? 400
+          : scenario === "denied" || scenario === "forbidden"
+            ? 403
+            : scenario === "defect"
+              ? 500
+              : 200,
       );
       expect(yield* Effect.promise(() => response.text())).toBe(
         scenario === "denied"
           ? '{"_tag":"Denied"}'
-          : scenario === "defect"
-            ? ""
-            : '"ok"',
+          : scenario === "forbidden"
+            ? '{"_tag":"Forbidden"}'
+            : scenario === "defect" || scenario === "decode"
+              ? ""
+              : '"ok"',
       );
       expect(spans).toHaveLength(1);
       expect(spans[0]!.status).toMatchObject({
@@ -376,10 +406,28 @@ it.effect.each(["success", "denied", "defect", "remote"] as const)(
         "/outcomes/:id",
         "httpAction",
       ]);
-      if (scenario === "denied" || scenario === "defect") {
+      if (scenario === "decode") {
+        expect(reports.map(({ cause }) => Cause.squash(cause))).toEqual(
+          expect.arrayContaining([
+            expect.objectContaining({
+              _tag: "HttpApiSchemaError",
+              kind: "Params",
+            }),
+          ]),
+        );
+        for (const report of reports) expect(report.span).toBe(spans[0]);
+      } else if (
+        scenario === "denied" ||
+        scenario === "defect" ||
+        scenario === "forbidden"
+      ) {
         expect(reports).toHaveLength(1);
         expect(Cause.squash(reports[0]!.cause)).toBe(
-          scenario === "denied" ? denied : defect,
+          scenario === "denied"
+            ? denied
+            : scenario === "forbidden"
+              ? forbidden
+              : defect,
         );
         expect(reports[0]!.span).toBe(spans[0]);
       } else expect(reports).toEqual([]);
@@ -408,9 +456,12 @@ it.effect("keeps ConvexLogger for HTTP without a runtime layer", () =>
         HttpRouter.add(
           "GET",
           "/log",
-          Effect.as(
+          Effect.andThen(
             Effect.logInfo("default http"),
-            HttpServerResponse.text("ok"),
+            Effect.match(Effect.currentSpan, {
+              onFailure: () => HttpServerResponse.text("no span"),
+              onSuccess: () => HttpServerResponse.text("unexpected span"),
+            }),
           ),
         ),
       );
@@ -423,7 +474,7 @@ it.effect("keeps ConvexLogger for HTTP without a runtime layer", () =>
         yield* Effect.promise(() =>
           t.fetch("/log").then((response) => response.text()),
         ),
-      ).toBe("ok");
+      ).toBe("no span");
       expect(info).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ message: "default http" }),
       );
