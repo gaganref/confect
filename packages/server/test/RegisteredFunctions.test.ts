@@ -1,4 +1,5 @@
 import { recording } from "./internal/recording";
+import { scope } from "../src/internal/observability";
 import { FunctionSpec, GroupSpec, MiddlewareSpec } from "@confect/core";
 import {
   FunctionImpl,
@@ -201,8 +202,19 @@ it.each(["query", "mutation", "action", "node"] as const)(
         : kind === "mutation"
           ? t.mutation(reference<"mutation">("test:run"), { value })
           : t.action(reference<"action">("test:run"), { value });
-    expect(await Promise.all([invoke(2), invoke(3)])).toEqual([3, 4]);
-    expect(spans).toHaveLength(2);
+    const finalizers = [];
+    for (const count of [1, 9, 90]) {
+      expect(
+        // oxlint-disable-next-line no-await-in-loop -- Observe ownership at successive invocation counts.
+        await Promise.all(Array.from({ length: count }, () => invoke(2))),
+      ).toEqual(Array(count).fill(3));
+      finalizers.push(
+        scope.state._tag === "Open" ? (scope.state.finalizers?.size ?? 1) : 0,
+      );
+      expect(recorder.lifecycle).toEqual({ builds: 1, releases: 0 });
+    }
+    expect(finalizers).toEqual([finalizers[0], finalizers[0], finalizers[0]]);
+    expect(spans).toHaveLength(100);
     for (const span of spans) {
       expect(span.name).toBe("test:run");
       expect(span.attributes.get("kind")).toBe(
@@ -210,7 +222,7 @@ it.each(["query", "mutation", "action", "node"] as const)(
       );
       expect(span.parent._tag).toBe("None");
     }
-    expect(messages).toEqual([["checking"], ["checking"]]);
+    expect(messages).toEqual(Array.from({ length: 100 }, () => ["checking"]));
     expect(console.info).not.toHaveBeenCalled();
     expect(recorder.lifecycle).toEqual({ builds: 1, releases: 0 });
   },

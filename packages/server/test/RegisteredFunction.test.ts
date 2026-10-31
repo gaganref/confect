@@ -3,6 +3,7 @@ import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import { assert, describe, expect, it } from "@effect/vitest";
 import { ConvexError } from "convex/values";
 import * as Cause from "effect/Cause";
+import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -372,6 +373,11 @@ describe("runHandlerPromise", () => {
               yield* Effect.logDebug("hidden debug");
               yield* Effect.logInfo("visible");
               expect(yield* References.MinimumLogLevel).toBe("Info");
+              expect(
+                yield* Effect.withFiber((fiber) =>
+                  Effect.succeed(fiber.context.mapUnsafe.has(Clock.Clock.key)),
+                ),
+              ).toBe(false);
               return yield* Logger.CurrentLoggers;
             }).pipe(Effect.provideService(Console.Console, console)),
           ),
