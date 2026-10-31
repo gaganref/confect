@@ -233,6 +233,7 @@ export const runHandlerPromise =
   <A, E>(effect: Effect.Effect<A, E>): Promise<A> => {
     const { observability, invocation, clock } = runOptions ?? {};
     let encodedError: Exit.Exit<any, any> | undefined;
+    let undeclared: { readonly error: unknown } | undefined;
     const observed = Effect.tapCause(effect, (cause) =>
       Effect.gen(function* () {
         const reason =
@@ -244,6 +245,15 @@ export const runHandlerPromise =
           );
           if (Exit.isFailure(encodedError))
             return yield* Effect.orDie(encodedError);
+        }
+        // With no error schema a failure is a defect, so the root span ends as one.
+        if (
+          reason?._tag === "Fail" &&
+          errorSchema === undefined &&
+          !(reason.error instanceof ConvexError)
+        ) {
+          undeclared = { error: reason.error };
+          return yield* Effect.die(reason.error);
         }
       }),
     );
@@ -267,6 +277,8 @@ export const runHandlerPromise =
         if (Exit.isSuccess(exit)) {
           return Result.succeed(exit.value);
         }
+        if (undeclared !== undefined)
+          return yield* Effect.die(undeclared.error);
 
         const cause =
           encodedError !== undefined && Exit.isFailure(encodedError)
