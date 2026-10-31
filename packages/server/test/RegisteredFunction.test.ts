@@ -1,11 +1,16 @@
+import { recording } from "./internal/recording";
 import * as RegisteredFunction from "@confect/server/RegisteredFunction";
-import { describe, expect, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
 import { ConvexError } from "convex/values";
 import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Exit from "effect/Exit";
+import * as ConvexLogger from "@confect/server/ConvexLogger";
+import * as Config from "effect/Config";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
@@ -374,6 +379,7 @@ describe("runHandlerPromise", () => {
           ),
         );
         expect(loggers.has(Logger.tracerLogger)).toBe(true);
+        expect(loggers.has(ConvexLogger.logger)).toBe(true);
         expect(console.debug).not.toHaveBeenCalled();
         expect(console.info).toHaveBeenCalledExactlyOnceWith(
           expect.objectContaining({ message: "visible" }),
@@ -395,4 +401,109 @@ describe("runHandlerPromise", () => {
         expect(console.info).toHaveBeenCalledOnce();
       }),
   );
+});
+
+it("keeps origin/main client messages without instrumentation", async () => {
+  const defect = new Error("broken");
+  defect.stack = "Error: broken\n    at handler (app.ts:1:1)";
+  const decode = Schema.decodeEffect(Schema.FiniteFromString)(
+    "bad",
+  ).pipe(Effect.orDie);
+  const encode = Schema.encodeEffect(Schema.FiniteFromString)(NaN).pipe(
+    Effect.orDie,
+  );
+  const scenarios: Array<Effect.Effect<unknown, string>> = [
+    Effect.die(defect),
+    Effect.failCause(Cause.interrupt()),
+    Effect.failCause(Cause.combine(Cause.fail("denied"), Cause.die(defect))),
+    decode,
+    encode,
+  ];
+  let metadataCalls = 0;
+  const messages = await Promise.all(scenarios.map((effect) =>
+    RegisteredFunction.runHandlerPromise(Schema.String, {
+      invocation: Effect.sync(() => { metadataCalls++; return { name: "test:run", type: "query" as const }; }),
+    })(effect).catch((error: Error) => error.message),
+  ));
+  expect(messages).toEqual([
+    "Error: broken\n    at handler (app.ts:1:1)",
+    "InterruptError: All fibers interrupted without error {\n  [cause]: InterruptCause: The fiber was interrupted by:\n      at fiber (unknown)\n}",
+    "Error: denied\nError: broken\n    at handler (app.ts:1:1)",
+    "SchemaError: Expected a finite number",
+    "SchemaError: Expected a finite number",
+  ]);
+  expect(metadataCalls).toBe(0);
+});
+
+it.each([false, true])(
+  "ends after error encoding with its final outcome (%s)",
+  async (broken) => {
+    const { spans, messages, observability } = recording();
+    const original = new Error("denied");
+    const defect = new Error("encoding failed");
+    const error = Schema.String.pipe(
+      Schema.decodeTo(Schema.instanceOf(Error), {
+        decode: SchemaGetter.transform(() => original),
+        encode: SchemaGetter.transformEffect(() =>
+          Effect.gen(function* () {
+            yield* Effect.logWarning("encoding");
+            expect(spans[0]!.status._tag).toBe("Started");
+            return broken ? yield* Effect.die(defect) : "denied";
+          }),
+        ),
+      }),
+    );
+    const result = RegisteredFunction.runHandlerPromise(error, {
+      invocation: Effect.succeed({
+        name: "test:run",
+        type: "mutation",
+        componentPath: "counter",
+      }),
+      observability,
+    })(Effect.fail(original));
+    if (broken)
+      await expect(result).rejects.toHaveProperty("message", defect.stack);
+    else await expect(result).rejects.toHaveProperty("data", "denied");
+    expect(messages).toEqual([["encoding"]]);
+    const status = spans[0]!.status;
+    expect(spans[0]!.attributes.get("componentPath")).toBe("counter");
+    assert(status._tag === "Ended" && Exit.isFailure(status.exit));
+    expect(status.exit.cause.reasons).toEqual([
+      broken
+        ? expect.objectContaining({ _tag: "Die", defect })
+        : expect.objectContaining({ _tag: "Fail", error: original }),
+    ]);
+  },
+);
+
+it("builds the configured instrumentation once without releasing it", async () => {
+  const { observability } = recording();
+  let builds = 0;
+  let releases = 0;
+  vi.stubEnv("CONFECT_OBSERVER_TEST", "configured");
+  try {
+    const layer = Layer.unwrap(
+      Effect.gen(function* () {
+        expect(yield* Config.String("CONFECT_OBSERVER_TEST").pipe(Effect.orDie)).toBe(
+          "configured",
+        );
+        builds++;
+        yield* Effect.addFinalizer(() =>
+          Effect.sync(() => {
+            releases++;
+          }),
+        );
+        return observability;
+      }),
+    );
+    const run = RegisteredFunction.runHandlerPromise(undefined, {
+      observability: layer,
+    });
+    expect(
+      await Promise.all([run(Effect.succeed(1)), run(Effect.succeed(2))]),
+    ).toEqual([1, 2]);
+    expect([builds, releases]).toEqual([1, 0]);
+  } finally {
+    vi.unstubAllEnvs();
+  }
 });
