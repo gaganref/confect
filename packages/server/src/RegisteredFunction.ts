@@ -48,6 +48,8 @@ import * as Storage from "./Storage.js";
 import * as StorageActionWriter from "./StorageActionWriter.js";
 import type * as StorageReader from "./StorageReader.js";
 import * as StorageWriter from "./StorageWriter.js";
+import * as Tracer from "effect/Tracer";
+import * as ObservabilityRuntime from "./internal/observability.js";
 import * as VectorSearch from "./VectorSearch.js";
 import type * as Handler from "./Handler.js";
 
@@ -223,26 +225,60 @@ export const runHandlerPromise =
     errorSchema: Schema.Codec<any, any> | undefined,
     runOptions?: {
       readonly scheduler?: EffectScheduler.Scheduler | undefined;
-      readonly clock?: Clock.Clock;
-      readonly invocation?: Effect.Effect<
-        Pick<FunctionMetadata, "name" | "type">
-      >;
+      readonly clock?: Clock.Clock | undefined;
+      readonly invocation?: Effect.Effect<FunctionMetadata>;
       readonly observability?: Layer.Layer<never> | undefined;
     },
   ) =>
   <A, E>(effect: Effect.Effect<A, E>): Promise<A> => {
+    const invocation =
+      runOptions?.observability === undefined
+        ? undefined
+        : runOptions.invocation;
+    let encodedError: Exit.Exit<any, any> | undefined;
+    const instrumented = Effect.tapCause(effect, (cause) =>
+      Effect.gen(function* () {
+        const reason =
+          cause.reasons.find(Cause.isDieReason) ??
+          cause.reasons.find(Cause.isFailReason);
+        if (reason?._tag === "Fail" && errorSchema !== undefined) {
+          encodedError = yield* Effect.exit(
+            Schema.encodeEffect(errorSchema)(reason.error),
+          );
+          if (Exit.isFailure(encodedError))
+            return yield* Effect.orDie(encodedError);
+        }
+      }),
+    );
     const withConvexError: Effect.Effect<Result.Result<A, ConvexError<any>>> =
       Effect.gen(function* () {
         const exit = yield* Effect.exit(
-          runOptions?.invocation === undefined
+          invocation === undefined
             ? effect
-            : Effect.flatMap(runOptions.invocation, ({ name, type }) =>
-                Effect.withSpan(effect, name, {
-                  root: true,
-                  attributes: { kind: type },
-                }),
-              ),
+            : Effect.gen(function* () {
+                const { name, type, componentPath } = yield* invocation;
+                return yield* Effect.useSpan(
+                  name,
+                  {
+                    root: true,
+                    attributes: { kind: type, componentPath },
+                  },
+                  (span) =>
+                    Effect.provideService(
+                      instrumented,
+                      Tracer.ParentSpan,
+                      span,
+                    ),
+                );
+              }),
         );
+        if (encodedError !== undefined && Exit.isFailure(encodedError)) {
+          return yield* Effect.die(
+            new Error(Cause.pretty(encodedError.cause), {
+              cause: encodedError.cause,
+            }),
+          );
+        }
         if (Exit.isSuccess(exit)) {
           return Result.succeed(exit.value);
         }
@@ -266,9 +302,11 @@ export const runHandlerPromise =
             }
             return yield* Effect.die(reason.error);
           }
-          const encoded = yield* Effect.exit(
-            Schema.encodeEffect(errorSchema)(reason.error),
-          );
+          const encoded =
+            encodedError ??
+            (yield* Effect.exit(
+              Schema.encodeEffect(errorSchema)(reason.error),
+            ));
           if (Exit.isSuccess(encoded)) {
             return Result.fail(new ConvexError(encoded.value));
           }
@@ -280,7 +318,11 @@ export const runHandlerPromise =
       });
     return Effect.runPromise(
       withConvexError.pipe(
-        Effect.provide(runOptions?.observability ?? ConvexLogger.layer),
+        Effect.provide(
+          runOptions?.observability === undefined
+            ? ConvexLogger.layer
+            : ObservabilityRuntime.memoized(runOptions.observability),
+        ),
         Effect.provideService(Console.Console, globalThis.console),
         Effect.provideService(
           Clock.Clock,

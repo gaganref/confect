@@ -380,16 +380,6 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (app: App.Any) {
   );
 
   const contents = yield* templates.declaredHttp({
-    runtimeImportPath: (yield* fs.exists(
-      path.join(confectDirectory, "runtime.ts"),
-    ))
-      ? yield* toModuleImportPath(
-          path.relative(
-            convexDirectory,
-            path.join(confectDirectory, "runtime.ts"),
-          ),
-        )
-      : undefined,
     schemaImportPath: yield* toModuleImportPath(
       path.relative(
         convexDirectory,

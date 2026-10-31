@@ -68,9 +68,7 @@ export const prepare = (
       const definition = queryFunction({
         databaseSchema,
         name: item.name,
-        observability: observability?.pipe(
-          Layer.provide(ConvexConfigProvider.layer),
-        ),
+        observability,
         functionVisibility: item.functionVisibility,
         args: item.args,
         returns: item.returns,
@@ -88,9 +86,7 @@ export const prepare = (
       const definition = mutationFunction({
         databaseSchema,
         name: item.name,
-        observability: observability?.pipe(
-          Layer.provide(ConvexConfigProvider.layer),
-        ),
+        observability,
         functionVisibility: item.functionVisibility,
         args: item.args,
         returns: item.returns,
@@ -107,9 +103,7 @@ export const prepare = (
     Match.when("action", () => {
       const definition = convexActionFunction(databaseSchema, {
         name: item.name,
-        observability: observability?.pipe(
-          Layer.provide(ConvexConfigProvider.layer),
-        ),
+        observability,
         functionVisibility: item.functionVisibility,
         args: item.args,
         returns: item.returns,

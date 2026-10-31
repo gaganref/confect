@@ -1,3 +1,4 @@
+import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as Tracer from "effect/Tracer";
@@ -5,7 +6,14 @@ import * as Tracer from "effect/Tracer";
 export const recording = () => {
   const spans: Array<Tracer.Span> = [];
   const messages: Array<unknown> = [];
+  const lifecycle = { builds: 0, releases: 0 };
   const observability = Layer.mergeAll(
+    Layer.effectDiscard(
+      Effect.acquireRelease(
+        Effect.sync(() => lifecycle.builds++),
+        () => Effect.sync(() => lifecycle.releases++),
+      ),
+    ),
     Layer.succeed(
       Tracer.Tracer,
       Tracer.make({
@@ -18,5 +26,5 @@ export const recording = () => {
     ),
     Logger.layer([Logger.make(({ message }) => messages.push(message))]),
   );
-  return { spans, messages, observability };
+  return { spans, messages, observability, lifecycle };
 };

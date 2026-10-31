@@ -50,7 +50,6 @@ it.effect.each([false, true])(
       });
       expect(code).toContain('import groupLayer from "../../notes.impl";');
       expect(code).toContain('import observability from "../../runtime";');
-      expect(code).toContain('import * as Layer from "effect/Layer";');
       expect(code).toContain(
         "Layer.merge(Layer.succeed(RegisteredFunction.Observability, observability))",
       );

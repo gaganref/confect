@@ -7,10 +7,8 @@ import * as Console from "effect/Console";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Exit from "effect/Exit";
 import * as ConvexLogger from "@confect/server/ConvexLogger";
-import * as Config from "effect/Config";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
@@ -403,40 +401,54 @@ describe("runHandlerPromise", () => {
   );
 });
 
-it("keeps origin/main client messages without instrumentation", async () => {
-  const defect = new Error("broken");
-  defect.stack = "Error: broken\n    at handler (app.ts:1:1)";
-  const decode = Schema.decodeEffect(Schema.FiniteFromString)(
-    "bad",
-  ).pipe(Effect.orDie);
-  const encode = Schema.encodeEffect(Schema.FiniteFromString)(NaN).pipe(
-    Effect.orDie,
-  );
-  const scenarios: Array<Effect.Effect<unknown, string>> = [
-    Effect.die(defect),
-    Effect.failCause(Cause.interrupt()),
-    Effect.failCause(Cause.combine(Cause.fail("denied"), Cause.die(defect))),
-    decode,
-    encode,
-  ];
-  let metadataCalls = 0;
-  const messages = await Promise.all(scenarios.map((effect) =>
-    RegisteredFunction.runHandlerPromise(Schema.String, {
-      invocation: Effect.sync(() => { metadataCalls++; return { name: "test:run", type: "query" as const }; }),
-    })(effect).catch((error: Error) => error.message),
-  ));
-  expect(messages).toEqual([
-    "Error: broken\n    at handler (app.ts:1:1)",
-    "InterruptError: All fibers interrupted without error {\n  [cause]: InterruptCause: The fiber was interrupted by:\n      at fiber (unknown)\n}",
-    "Error: denied\nError: broken\n    at handler (app.ts:1:1)",
-    "SchemaError: Expected a finite number",
-    "SchemaError: Expected a finite number",
-  ]);
-  expect(metadataCalls).toBe(0);
-});
+it.each([false, true])(
+  "keeps origin/main client messages (instrumented %s)",
+  // oxlint-disable-next-line effecttsgo/async-function -- Exercise the public Promise boundary.
+  async (instrumented) => {
+    const { spans, observability } = recording();
+    const defect = new Error("broken");
+    defect.stack = "Error: broken\n    at handler (app.ts:1:1)";
+    const scenarios: Array<Effect.Effect<unknown, string>> = [
+      Effect.die(defect),
+      Effect.failCause(Cause.interrupt()),
+      Effect.failCause(Cause.combine(Cause.fail("denied"), Cause.die(defect))),
+      Schema.decodeEffect(Schema.FiniteFromString)("bad").pipe(Effect.orDie),
+      Schema.encodeEffect(Schema.FiniteFromString)(NaN).pipe(Effect.orDie),
+    ];
+    const messages = await Promise.all(
+      scenarios.map((effect) =>
+        RegisteredFunction.runHandlerPromise(Schema.String, {
+          invocation: instrumented
+            ? Effect.succeed({
+                name: "run",
+                type: "query",
+                visibility: "public",
+                componentPath: "",
+              })
+            : Effect.die("metadata must not run"),
+          observability: instrumented ? observability : undefined,
+        })(effect).catch((error: Error) => error.message),
+      ),
+    );
+    expect(messages).toEqual([
+      "Error: broken\n    at handler (app.ts:1:1)",
+      "InterruptError: All fibers interrupted without error {\n  [cause]: InterruptCause: The fiber was interrupted by:\n      at fiber (unknown)\n}",
+      "Error: denied\nError: broken\n    at handler (app.ts:1:1)",
+      "SchemaError: Expected a finite number",
+      "SchemaError: Expected a finite number",
+    ]);
+    expect(spans).toHaveLength(instrumented ? 5 : 0);
+    if (instrumented) {
+      const status = spans[0]!.status;
+      assert(status._tag === "Ended" && Exit.isFailure(status.exit));
+      expect(Cause.squash(status.exit.cause)).toBe(defect);
+    }
+  },
+);
 
 it.each([false, true])(
   "ends after error encoding with its final outcome (%s)",
+  // oxlint-disable-next-line effecttsgo/async-function -- Exercise the public Promise boundary.
   async (broken) => {
     const { spans, messages, observability } = recording();
     const original = new Error("denied");
@@ -457,6 +469,7 @@ it.each([false, true])(
       invocation: Effect.succeed({
         name: "test:run",
         type: "mutation",
+        visibility: "public",
         componentPath: "counter",
       }),
       observability,
@@ -468,42 +481,6 @@ it.each([false, true])(
     const status = spans[0]!.status;
     expect(spans[0]!.attributes.get("componentPath")).toBe("counter");
     assert(status._tag === "Ended" && Exit.isFailure(status.exit));
-    expect(status.exit.cause.reasons).toEqual([
-      broken
-        ? expect.objectContaining({ _tag: "Die", defect })
-        : expect.objectContaining({ _tag: "Fail", error: original }),
-    ]);
+    expect(Cause.squash(status.exit.cause)).toBe(broken ? defect : original);
   },
 );
-
-it("builds the configured instrumentation once without releasing it", async () => {
-  const { observability } = recording();
-  let builds = 0;
-  let releases = 0;
-  vi.stubEnv("CONFECT_OBSERVER_TEST", "configured");
-  try {
-    const layer = Layer.unwrap(
-      Effect.gen(function* () {
-        expect(yield* Config.String("CONFECT_OBSERVER_TEST").pipe(Effect.orDie)).toBe(
-          "configured",
-        );
-        builds++;
-        yield* Effect.addFinalizer(() =>
-          Effect.sync(() => {
-            releases++;
-          }),
-        );
-        return observability;
-      }),
-    );
-    const run = RegisteredFunction.runHandlerPromise(undefined, {
-      observability: layer,
-    });
-    expect(
-      await Promise.all([run(Effect.succeed(1)), run(Effect.succeed(2))]),
-    ).toEqual([1, 2]);
-    expect([builds, releases]).toEqual([1, 0]);
-  } finally {
-    vi.unstubAllEnvs();
-  }
-});

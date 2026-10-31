@@ -120,11 +120,6 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
           schemaImportPath: yield* importFromConvex("_generated/schema.ts"),
           httpImportPath: yield* importFromConvex("http.ts"),
         }),
-        yield* templates.declaredHttp({
-          schemaImportPath: yield* importFromConvex("_generated/schema.ts"),
-          httpImportPath: yield* importFromConvex("http.ts"),
-          runtimeImportPath: yield* importFromConvex("runtime.ts"),
-        }),
       ],
     ],
     [

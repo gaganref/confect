@@ -238,10 +238,8 @@ also available as `ConvexLogger.logger` from `@confect/server/ConvexLogger`;
 `ConvexLogger.layer` replaces only Effect's default console logger, leaving custom
 loggers and the minimum level unchanged.
 
-## Invocation instrumentation
+To instrument registered functions, default-export an Effect layer with `satisfies Layer.Layer<never>` from `confect/runtime.ts` and run `confect codegen`. Compose `Layer.succeed(Tracer.Tracer, tracer)` with `Logger.layer([logger])`. The layer cannot fail or require services. Keep it independent of function implementations. Codegen supplies it to isolate and Node registrations. Owned components use their own `runtime.ts`, which can re-export the same layer.
 
-Every Confect invocation opens a root span named by its Convex function path, with a `kind` attribute. It covers argument decoding, middleware, the handler and return encoding. Its exit retains the original declared failure or defect before client error encoding. HTTP roots use the reflected route label and `kind: "httpAction"`. Query span timestamps remain zero to preserve caching.
+With a layer, each invocation opens one root named by its Convex function path, with `kind` and `componentPath` attributes. It covers argument decoding, middleware, the handler, return encoding and declared-error encoding. Its exit retains the original failure when encoding succeeds; an encoding failure replaces that outcome. Logs during encoding arrive before span end. Query timestamps remain zero. Without a layer, no span or metadata call is added.
 
-To replace the default instrumentation, default-export a `Layer.Layer<never>` from `confect/runtime.ts` and run `confect codegen`. Compose `Layer.succeed(Tracer.Tracer, tracer)` with `Logger.layer([logger])` from Effect. The layer cannot fail or require services. Keep it independent of function implementations. Codegen supplies it to isolate and Node functions and declared HTTP routes. Owned components use their own `confect/runtime.ts`, which can re-export the same layer.
-
-For a manually built HTTP router, pass the layer as `{ observability }` to `HttpRouter.make` or `HttpRouter.forSchema(schema)`. For manual group registration, merge `Layer.succeed(RegisteredFunction.Observability, observability)` into the finalized group layer. The supplied layer replaces `ConvexLogger.layer`; without it, logging keeps its existing defaults.
+The layer builds once per isolate through the Convex-aware config provider and is never released. An owner must emit at span end, not in a finalizer. The layer replaces `ConvexLogger.layer`; include that layer explicitly to keep Convex logging. Manual group registrations merge `Layer.succeed(RegisteredFunction.Observability, observability)` into the finalized group layer.

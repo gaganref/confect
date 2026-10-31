@@ -24,7 +24,6 @@ import type * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import type * as Etag from "effect/http/Etag";
 import type * as HttpPlatform from "effect/http/HttpPlatform";
 import * as HttpRouter from "effect/http/HttpRouter";
-import * as HttpMiddleware from "effect/http/HttpMiddleware";
 import * as HttpServer from "effect/http/HttpServer";
 import type * as ActionRunner from "./ActionRunner.js";
 import type * as Auth from "./Auth.js";
@@ -117,17 +116,9 @@ export type Routes<Services_ = Services> = Layer.Layer<
  */
 export const make = <Id extends string, Groups extends HttpApiGroup.Constraint>(
   routes: Routes,
-  options?: {
-    readonly observability?: Layer.Layer<never> | undefined;
-    readonly api?: HttpApi.HttpApi<Id, Groups> | undefined;
-  },
+  options?: { readonly api?: HttpApi.HttpApi<Id, Groups> | undefined },
 ): ConvexHttpRouter =>
-  makeWithLayer(
-    routes,
-    RegisteredFunction.baseActionLayer,
-    options?.api,
-    options?.observability,
-  );
+  makeWithLayer(routes, RegisteredFunction.baseActionLayer, options?.api);
 
 /**
  * Derive HTTP capabilities and ID scopes from the generated database schema.
@@ -140,10 +131,7 @@ export const forSchema =
   ) =>
   <Id extends string, Groups extends HttpApiGroup.Constraint>(
     routes: Routes<Handler.ActionServices<DatabaseSchema_>>,
-    options?: {
-      readonly observability?: Layer.Layer<never> | undefined;
-      readonly api?: HttpApi.HttpApi<Id, Groups> | undefined;
-    },
+    options?: { readonly api?: HttpApi.HttpApi<Id, Groups> | undefined },
   ): ConvexHttpRouter =>
     makeWithLayer<
       Handler.ActionServices<DatabaseSchema_>,
@@ -160,8 +148,6 @@ export const forSchema =
       ),
       (ctx) => RegisteredFunction.actionLayer(schema, ctx),
       options?.api,
-      options?.observability,
-      schema.target.kind === "component",
     );
 
 // Convex uses a component-relative path to select its HTTP action but passes
@@ -189,8 +175,6 @@ const makeWithLayer = <
   routes: Routes<Services_>,
   layer: (ctx: GenericActionCtx<DataModel_>) => Layer.Layer<Services_>,
   api: HttpApi.HttpApi<Id, Groups> | undefined,
-  observability?: Layer.Layer<never>,
-  siteRelative = false,
 ): ConvexHttpRouter => {
   applyMonkeyPatches();
 
@@ -199,7 +183,7 @@ const makeWithLayer = <
   // Convex-aware provider; merged so that request fibers—endpoint handlers
   // and middleware—do too.
   const AppLayer = routes.pipe(
-    Layer.provideMerge(observability ?? ConvexLogger.layer),
+    Layer.provideMerge(ConvexLogger.layer),
     Layer.provideMerge(ConvexConfigProvider.layer),
     Layer.provide(HttpServer.layerServices),
   );
@@ -209,10 +193,6 @@ const makeWithLayer = <
   // exposes as a per-request context argument.
   const { handler } = HttpRouter.toWebHandler(AppLayer, {
     disableLogger: true,
-    // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Preserve the router's erased errors while annotating its existing request span.
-    middleware: (effect) =>
-      // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- The HTTP boundary already owns these errors.
-      Effect.andThen(Effect.annotateCurrentSpan("kind", "httpAction"), effect),
   });
 
   const httpAction = httpActionGeneric((ctx, request): Promise<Response> => {
@@ -225,27 +205,9 @@ const makeWithLayer = <
         Layer.build(layer(ctx as unknown as GenericActionCtx<DataModel_>)),
       ),
     );
-    const prefix = siteRelative
-      ? new URL(
-          Effect.runSync(
-            Config.String("CONVEX_SITE_URL").pipe(
-              Effect.provide(ConvexConfigProvider.layer),
-              Effect.orDie,
-            ),
-          ),
-        ).pathname.replace(/\/$/, "")
-      : "";
     return handler(
       request,
-      Context.add(
-        Context.add(services, Console.Console, globalThis.console),
-        HttpMiddleware.SpanNameGenerator,
-        () =>
-          convexHttpRouter.lookup(
-            new URL(request.url).pathname.slice(prefix.length) || "/",
-            request.method as (typeof ROUTABLE_HTTP_METHODS)[number],
-          )?.[2] ?? "/*",
-      ),
+      Context.add(services, Console.Console, globalThis.console),
     );
   });
 
