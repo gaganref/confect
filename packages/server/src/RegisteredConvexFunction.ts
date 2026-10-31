@@ -16,7 +16,7 @@ import {
 } from "convex/server";
 import type { Value } from "convex/values";
 import { pipe } from "effect/Function";
-import type * as Clock from "effect/Clock";
+import * as Clock from "effect/Clock";
 import * as Data from "effect/Data";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -259,12 +259,13 @@ const queryFunction = <
         Effect.catchTag("SchemaError", Effect.die),
       );
     }).pipe(
+      Effect.provideService(Clock.Clock, queryClock),
       RegisteredFunction.runHandlerPromise(
         RegisteredFunction.combineErrorSchemas(error, resolvedMiddlewares),
         {
           scheduler: new EffectScheduler.MixedScheduler("sync"),
           invocation: Effect.promise(() => ctx.meta.getFunctionMetadata()),
-          clock: queryClock,
+          clock: observability === undefined ? undefined : queryClock,
           observability,
         },
       ),
