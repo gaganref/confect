@@ -1,3 +1,5 @@
+import * as Forwarding from "./internal/forwarding";
+import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import { FunctionSpec, Ref } from "@confect/core";
 import * as MutationRunner from "@confect/server/MutationRunner";
 import * as MutationTransactionContext from "@confect/server/MutationTransactionContext";
@@ -212,5 +214,39 @@ describe("MutationRunner", () => {
         };
         expectTypeOf(check).toBeFunction();
       }).pipe(Effect.provide(MutationRunner.layer(vi.fn()))),
+  );
+});
+
+describe("MutationRunner reserved context", () => {
+  it.effect.each(Forwarding.cases)(
+    "forwards with $label only to a reserving target",
+    ({ forward, enabled }) =>
+      Effect.gen(function* () {
+        const runner = yield* MutationRunner.MutationRunner;
+        const reserved = Ref.make(
+          "items",
+          Forwarding.profile.publicMutation(Forwarding.options),
+        );
+        const plain = Ref.make(
+          "items",
+          FunctionSpec.publicMutation(Forwarding.options),
+        );
+        for (const target of [reserved, plain]) {
+          expect(yield* runner.runMutation(target, { count: 1 })).toEqual({
+            count: "1",
+            ...(enabled && target === reserved
+              ? { context: { boundary: "MutationRunner.runMutation" } }
+              : {}),
+          });
+        }
+      }).pipe(
+        Effect.provide(
+          MutationRunner.layer(
+            (_ref: unknown, args?: unknown, _options?: unknown) =>
+              Promise.resolve(args),
+          ),
+        ),
+        Effect.provideService(RegisteredFunction.Forward, forward),
+      ),
   );
 });

@@ -18,6 +18,8 @@ Profiles and internal mutation, action and Node action constructors can reserve 
 
 Reserving invocations expose `{ value, requestId, deployment }` through `RegisteredFunction.Received` at root creation. The runner reads the cloud URL and passes only the request ID from private request metadata. Queries and unreserved functions have no received value; calls without a runtime layer add no metadata reads. Changeset: `received-argument.md`. Upstream: planned; no proposal submitted.
 
+`RegisteredFunction.Forward` supplies context from the active call boundary for reserving refs. Mutation/action runners, mutation transaction calls and scheduling add it after encoding. An absent, undefined or throwing provider leaves the call unchanged. Queries and ordinary component calls receive nothing. Scheduling opens named spans whose successful exit is the job ID. Changeset: `forward-argument.md`. Upstream: planned; no proposal submitted.
+
 ## Invocation instrumentation
 
 Add invocation root spans and an optional `confect/runtime.ts` layer so applications can install Effect tracers and loggers without duplicate console logging. Preserve original declared failures for tracers, encoded client errors and query caching. Cache each layer context once per isolate so permanent scope ownership stays bounded. Changeset: `invocation-observability.md`. The root span ends with the outcome the client gets: a failure in a function with no error schema, other than a raw `ConvexError`, ends it as a defect, and so does an error encoding that dies with a `ConvexError`. Changeset: `undeclared-failure-span-defect.md`. Upstream: planned; no proposal submitted.

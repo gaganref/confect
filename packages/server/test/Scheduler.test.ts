@@ -1,3 +1,8 @@
+import * as Cause from "effect/Cause";
+import { recording } from "./internal/recording";
+import * as Forwarding from "./internal/forwarding";
+import * as RegisteredFunction from "@confect/server/RegisteredFunction";
+import * as Tracer from "effect/Tracer";
 import { GenericId as ScopedId, IdScope, Ref } from "@confect/core";
 import * as DateTime from "effect/DateTime";
 import * as Duration from "effect/Duration";
@@ -108,4 +113,97 @@ describe("Scheduler", () => {
       }).pipe(Effect.provide(Scheduler.layer(convexScheduler, scope)));
     },
   );
+});
+
+describe("Scheduler reserved context", () => {
+  it.effect.each(Forwarding.cases)(
+    "forwards with $label and ends both spans with the job ID",
+    ({ forward, enabled }) => {
+      const sent: Array<unknown> = [];
+      const ended: Array<unknown> = [];
+      const native = {
+        runAfter: (_delay: unknown, _ref: unknown, args?: unknown) => {
+          sent.push(args);
+          return Promise.resolve(scheduledFunctionId);
+        },
+        runAt: (_date: unknown, _ref: unknown, args?: unknown) => {
+          sent.push(args);
+          return Promise.resolve(scheduledFunctionId);
+        },
+        cancel: () => Promise.resolve(),
+      };
+      const tracer = Tracer.make({
+        span(options) {
+          const span = new Tracer.NativeSpan(options);
+          const end = span.end.bind(span);
+          span.end = (time, exit) => {
+            ended.push([
+              span.name,
+              Exit.isSuccess(exit) ? exit.value : "failed",
+            ]);
+            end(time, exit);
+          };
+          return span;
+        },
+      });
+      return Effect.gen(function* () {
+        const scheduler = yield* Scheduler.Scheduler;
+        const reserved = Ref.make(
+          "items",
+          Forwarding.profile.publicMutation(Forwarding.options),
+        );
+        const plain = Ref.fromFunctionReference(
+          makeFunctionReference<"mutation", { count: number }>("items:plain"),
+        );
+        yield* scheduler.runAfter(Duration.zero, reserved, { count: 1 });
+        yield* scheduler.runAt(DateTime.makeUnsafe(0), reserved, { count: 1 });
+        yield* scheduler.runAfter(Duration.zero, plain, { count: 1 });
+        expect(sent).toEqual([
+          {
+            count: "1",
+            ...(enabled ? { context: { boundary: "Scheduler.runAfter" } } : {}),
+          },
+          {
+            count: "1",
+            ...(enabled ? { context: { boundary: "Scheduler.runAt" } } : {}),
+          },
+          { count: 1 },
+        ]);
+        expect(ended).toEqual([
+          ["Scheduler.runAfter", "scheduled-function-id"],
+          ["Scheduler.runAt", "scheduled-function-id"],
+          ["Scheduler.runAfter", "scheduled-function-id"],
+        ]);
+      }).pipe(
+        Effect.provide(Scheduler.layer(native)),
+        Effect.provideService(RegisteredFunction.Forward, forward),
+        Effect.withTracer(tracer),
+      );
+    },
+  );
+});
+
+it.effect("ends a rejected scheduling span with the scheduling failure", () => {
+  const failure = new Error("fixture schedule failure");
+  const { spans, observability } = recording();
+  const native = {
+    runAfter: () => Promise.reject(failure),
+    runAt: () => Promise.reject(failure),
+    cancel: () => Promise.resolve(),
+  };
+  const target = Ref.fromFunctionReference(
+    makeFunctionReference<"mutation", {}>("items:plain"),
+  );
+  return Effect.gen(function* () {
+    const scheduler = yield* Scheduler.Scheduler;
+    yield* Effect.exit(scheduler.runAt(DateTime.makeUnsafe(0), target));
+    expect(
+      spans.map(({ name, status }) => [
+        name,
+        status._tag === "Ended" && Exit.isFailure(status.exit)
+          ? Cause.squash(status.exit.cause)
+          : "no failure",
+      ]),
+    ).toEqual([["Scheduler.runAt", failure]]);
+  }).pipe(Effect.provide([Scheduler.layer(native), observability]));
 });

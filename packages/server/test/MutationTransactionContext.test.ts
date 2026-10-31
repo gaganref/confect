@@ -1,3 +1,5 @@
+import * as Forwarding from "./internal/forwarding";
+import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import { FunctionSpec, Ref } from "@confect/core";
 import { MutationTransactionContext as BarrelControls } from "@confect/server";
 import * as MutationTransactionContext from "@confect/server/MutationTransactionContext";
@@ -136,5 +138,52 @@ describe("MutationTransactionContext", () => {
         ),
       );
     },
+  );
+});
+
+describe("MutationTransactionContext reserved context", () => {
+  it.effect.each(Forwarding.cases)(
+    "forwards with $label only to a reserving target",
+    ({ forward, enabled }) =>
+      Effect.gen(function* () {
+        const runner =
+          yield* MutationTransactionContext.MutationTransactionContext;
+        const reserved = Ref.make(
+          "items",
+          Forwarding.profile.publicMutation(Forwarding.options),
+        );
+        const plain = Ref.make(
+          "items",
+          FunctionSpec.publicMutation(Forwarding.options),
+        );
+        for (const target of [reserved, plain]) {
+          expect(
+            yield* runner.runMutation(
+              target,
+              { count: 1 },
+              { transactionLimits: {} },
+            ),
+          ).toEqual({
+            count: "1",
+            ...(enabled && target === reserved
+              ? {
+                  context: {
+                    boundary: "MutationTransactionContext.runMutation",
+                  },
+                }
+              : {}),
+          });
+        }
+      }).pipe(
+        Effect.provide(
+          MutationTransactionContext.layer({
+            runQuery: (_ref: unknown, args?: unknown, _options?: unknown) =>
+              Promise.resolve(args),
+            runMutation: (_ref: unknown, args?: unknown, _options?: unknown) =>
+              Promise.resolve(args),
+          }),
+        ),
+        Effect.provideService(RegisteredFunction.Forward, forward),
+      ),
   );
 });
