@@ -243,8 +243,15 @@ export const runHandlerPromise =
           encodedError = yield* Effect.exit(
             Schema.encodeEffect(errorSchema)(reason.error),
           );
-          if (Exit.isFailure(encodedError))
-            return yield* Effect.orDie(encodedError);
+          // An encoding failure is a defect, even when it dies with a ConvexError.
+          if (Exit.isFailure(encodedError)) {
+            const encoding = encodedError.cause;
+            return yield* Cause.squash(encoding) instanceof ConvexError
+              ? Effect.die(
+                  new Error(Cause.pretty(encoding), { cause: encoding }),
+                )
+              : Effect.orDie(encodedError);
+          }
         }
         // With no error schema a failure is a defect, so the root span ends as one.
         if (
