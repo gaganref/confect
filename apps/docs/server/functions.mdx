@@ -237,3 +237,11 @@ effect. Use `Logger.layer([])` to disable logging there. The default logger is
 also available as `ConvexLogger.logger` from `@confect/server/ConvexLogger`;
 `ConvexLogger.layer` replaces only Effect's default console logger, leaving custom
 loggers and the minimum level unchanged.
+
+## Invocation instrumentation
+
+Every Confect invocation opens a root span named by its Convex function path, with a `kind` attribute. It covers argument decoding, middleware, the handler and return encoding. Its exit retains the original declared failure or defect before client error encoding. HTTP roots use the reflected route label and `kind: "httpAction"`. Query span timestamps remain zero to preserve caching.
+
+To replace the default instrumentation, default-export a `Layer.Layer<never>` from `confect/runtime.ts` and run `confect codegen`. Compose `Layer.succeed(Tracer.Tracer, tracer)` with `Logger.layer([logger])` from Effect. The layer cannot fail or require services. Keep it independent of function implementations. Codegen supplies it to isolate and Node functions and declared HTTP routes. Owned components use their own `confect/runtime.ts`, which can re-export the same layer.
+
+For a manually built HTTP router, pass the layer as `{ observability }` to `HttpRouter.make` or `HttpRouter.forSchema(schema)`. For manual group registration, merge `Layer.succeed(RegisteredFunction.Observability, observability)` into the finalized group layer. The supplied layer replaces `ConvexLogger.layer`; without it, logging keeps its existing defaults.

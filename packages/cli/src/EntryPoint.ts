@@ -20,6 +20,7 @@ import { discoverTableFiles, type TableModule } from "./TableModule.js";
 export type Kind = Data.TaggedEnum<{
   Env: { readonly relativePath: "env.ts" };
   App: { readonly relativePath: "app.ts" };
+  Runtime: { readonly relativePath: "runtime.ts" };
   Callbacks: { readonly relativePath: "callbacks.ts" };
   Spec: { readonly relativePath: SpecModulePath.SpecModulePath };
   Impl: { readonly relativePath: ImplModulePath };
@@ -86,6 +87,8 @@ export const isOptional = Predicate.or(
 export const parse = (
   relativePath: string,
 ): Option.Option<Exclude<Kind, { readonly _tag: "Config" }>> => {
+  if (relativePath === "runtime.ts")
+    return Option.some(Kind.Runtime({ relativePath }));
   if (relativePath === "env.ts") return Option.some(Kind.Env({ relativePath }));
   if (relativePath === "app.ts") return Option.some(Kind.App({ relativePath }));
   if (relativePath === "callbacks.ts")
@@ -133,6 +136,7 @@ export const discover = Effect.gen(function* () {
   const declaration = yield* tryEntry(Kind.App({ relativePath: "app.ts" }));
   const fixedEntryOptions = yield* Effect.all([
     tryEntry(Kind.Env({ relativePath: "env.ts" })),
+    tryEntry(Kind.Runtime({ relativePath: "runtime.ts" })),
     Effect.succeed(declaration),
     (yield* ConvexDirectory.target).kind === "component"
       ? tryEntry(Kind.Callbacks({ relativePath: "callbacks.ts" }))

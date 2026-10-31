@@ -86,7 +86,7 @@ export const add = (
             declaration,
           ),
         })),
-        Match.tag("Config", "Env", "App", "Callbacks", () => ({
+        Match.tag("Config", "Env", "App", "Callbacks", "Runtime", () => ({
           ...state,
           needsFull: true,
         })),

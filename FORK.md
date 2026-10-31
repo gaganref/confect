@@ -1,6 +1,6 @@
 # Fork guide
 
-This fork of [Confect](https://github.com/rjdellecese/confect) adds Convex component authoring, typed callbacks, declarative backend configuration, HTTP route labels, Alchemy cloud and local providers, component testing support, and CLI fixes. [CHANGES.md](CHANGES.md) records the patches and their upstream status. The additions are documented in [apps/docs](apps/docs).
+This fork of [Confect](https://github.com/rjdellecese/confect) adds Convex component authoring, invocation instrumentation, typed callbacks, declarative backend configuration, HTTP route labels, Alchemy cloud and local providers, component testing support, and CLI fixes. [CHANGES.md](CHANGES.md) records the patches and their upstream status. The additions are documented in [apps/docs](apps/docs).
 
 This fork takes no issues and no pull requests. Send changes to upstream Confect. Upstream submissions of the patches carried here go through the maintainer.
 

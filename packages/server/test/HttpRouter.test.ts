@@ -1,7 +1,10 @@
+import { recording } from "./internal/recording";
 import * as IdScope from "@confect/core/IdScope";
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as ConfectHttpRouter from "@confect/server/HttpRouter";
 import { describe, expect, it } from "@effect/vitest";
+import { vi } from "vitest";
+import { convexTest } from "convex-test";
 import { httpActionGeneric } from "convex/server";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -26,7 +29,9 @@ const routes = HttpApiBuilder.layer(api).pipe(
   Layer.provide(
     HttpApiBuilder.group(api, "users", (handlers) =>
       handlers
-        .handle("get", ({ params }) => Effect.succeed(params.id))
+        .handle("get", ({ params }) =>
+          Effect.as(Effect.logInfo("request"), params.id),
+        )
         .handle("create", () => Effect.succeed("created")),
     ),
   ),
@@ -246,3 +251,33 @@ it("keeps a component mountable when its label API has no routable endpoints", (
   ]);
   expect(matchLabel(router, "/health")).toEqual(["GET", "/*"]);
 });
+
+it.effect("uses one labeled request span and the supplied logger", () =>
+  Effect.gen(function* () {
+    const { spans, messages, observability } = recording();
+    vi.stubEnv("CONVEX_SITE_URL", "https://some.convex.site/mounted");
+    const schema = DatabaseSchema.make(
+      {},
+      { kind: "component", scope: IdScope.component("users") },
+    );
+    const router = ConfectHttpRouter.forSchema(schema)(routes, {
+      api,
+      observability,
+    });
+    const t = convexTest(undefined, {
+      ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
+      "./mock-backend/fixtures/convex/http.ts": () =>
+        Promise.resolve({ default: router }),
+    });
+    const response = yield* Effect.promise(() => t.fetch("/mounted/users/42"));
+    expect(yield* Effect.promise(() => response.json())).toBe("42");
+    expect(messages).toEqual([["request"]]);
+    expect(
+      spans.map((span) => [
+        span.name,
+        span.attributes.get("kind"),
+        span.parent._tag,
+      ]),
+    ).toEqual([["/users/:id", "httpAction", "None"]]);
+  }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllEnvs()))),
+);

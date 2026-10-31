@@ -304,9 +304,11 @@ const httpEffect = Effect.fnUntraced(function* ({
 export const declaredHttp = Effect.fnUntraced(function* ({
   schemaImportPath,
   httpImportPath,
+  runtimeImportPath,
 }: {
   schemaImportPath: string;
   httpImportPath: string;
+  runtimeImportPath?: string | undefined;
 }) {
   const cbw = new CodeBlockWriter({ indentNumberOfSpaces: 2 });
 
@@ -316,9 +318,11 @@ export const declaredHttp = Effect.fnUntraced(function* ({
   yield* cbw.writeLine(`import { HttpRouter } from "@confect/server";`);
   yield* cbw.writeLine(`import schema from "${schemaImportPath}";`);
   yield* cbw.writeLine(`import http from "${httpImportPath}";`);
+  if (runtimeImportPath !== undefined)
+    yield* cbw.writeLine(`import observability from "${runtimeImportPath}";`);
   yield* cbw.newLine();
   yield* cbw.writeLine(
-    `export default HttpRouter.forSchema(schema)(http.routes, { api: http.api });`,
+    `export default HttpRouter.forSchema(schema)(http.routes, { api: http.api${runtimeImportPath === undefined ? "" : ", observability"} });`,
   );
 
   return yield* cbw.toString();
@@ -525,6 +529,7 @@ export const registeredFunctionsForGroup = ({
   implImportPath,
   groupPath = "",
   required = [],
+  runtimeImportPath,
 }: Parameters<typeof registeredFunctionsForGroupEffect>[0]) =>
   registeredFunctionsForGroupEffect({
     spec,
@@ -533,6 +538,7 @@ export const registeredFunctionsForGroup = ({
     implImportPath,
     groupPath,
     required,
+    runtimeImportPath,
   });
 
 const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
@@ -542,15 +548,24 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
   implImportPath,
   groupPath = "",
   required = [],
+  runtimeImportPath,
 }: {
   spec: GroupSpec.AnyWithProps;
   schemaImportPath: string;
   specImportPath: string;
   implImportPath: string;
   groupPath?: string;
+  runtimeImportPath?: string | undefined;
   required?: ReadonlyArray<{ readonly key: string }>;
 }) {
   const cbw = new CodeBlockWriter({ indentNumberOfSpaces: 2 });
+  if (runtimeImportPath !== undefined) {
+    yield* cbw.writeLine(
+      'import { RegisteredFunction } from "@confect/server";',
+    );
+    yield* cbw.writeLine('import * as Layer from "effect/Layer";');
+    yield* cbw.writeLine(`import observability from "${runtimeImportPath}";`);
+  }
   const useNode = spec.runtime === "Node";
 
   const hasConfectFunctions = (group: GroupSpec.AnyWithProps): boolean =>
@@ -584,11 +599,15 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
   // per-function bundle; only `databaseSchema` and the impl are runtime
   // imports. Typing from the leaf spec (not the project-wide assembled spec)
   // keeps the registry's type dependent solely on its own group.
-  const groupLayer =
+  const finalizedLayer =
     required.length === 0
       ? "groupLayer"
       : // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Emit escaped TypeScript string literals, not JSON payloads.
         `groupLayer.pipe(GroupImpl.finalize({ required: [${required.map(({ key }) => `{ key: ${JSON.stringify(key)} }`).join(", ")}], groupPath: ${JSON.stringify(groupPath)} }))`;
+  const groupLayer =
+    runtimeImportPath === undefined
+      ? finalizedLayer
+      : `${finalizedLayer}.pipe(Layer.merge(Layer.succeed(RegisteredFunction.Observability, observability)))`;
   const specType = `typeof import("${specImportPath}")["default"]`;
   if (useNode) {
     yield* cbw.writeLine(

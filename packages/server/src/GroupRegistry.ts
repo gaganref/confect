@@ -1,3 +1,4 @@
+import * as RegisteredFunction from "./RegisteredFunction.js";
 import * as Effect from "effect/Effect";
 import type * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
@@ -9,9 +10,12 @@ import * as MiddlewareRegistryItem from "./MiddlewareRegistryItem.js";
 export const make = (
   groupLayer: Layer.Layer<GroupImpl.GroupImpl<"Finalized">>,
 ) => {
-  const registryItems = Effect.gen(function* () {
+  const { registryItems, observability } = Effect.gen(function* () {
     const registry = yield* Registry.Registry;
-    return yield* Ref.get(registry);
+    return {
+      registryItems: yield* Ref.get(registry),
+      observability: yield* RegisteredFunction.Observability,
+    };
   }).pipe(
     Effect.provide(groupLayer),
     Effect.provideService(
@@ -21,7 +25,7 @@ export const make = (
     Effect.runSync,
   );
 
-  return partitionRegistryItems(registryItems);
+  return { ...partitionRegistryItems(registryItems), observability };
 };
 
 const partitionRegistryItems = (registryItems: RegistryItems.RegistryItems) => {
