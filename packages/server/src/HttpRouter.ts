@@ -24,6 +24,8 @@ import type * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import type * as Etag from "effect/http/Etag";
 import type * as HttpPlatform from "effect/http/HttpPlatform";
 import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpMiddleware from "effect/http/HttpMiddleware";
+import type * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServer from "effect/http/HttpServer";
 import type * as ActionRunner from "./ActionRunner.js";
 import type * as Auth from "./Auth.js";
@@ -33,6 +35,7 @@ import type * as DatabaseSchema from "./DatabaseSchema.js";
 import type * as DataModel from "./DataModel.js";
 import type * as Handler from "./Handler.js";
 import * as ConvexConfigProvider from "./ConvexConfigProvider.js";
+import * as ObservabilityRuntime from "./internal/observability.js";
 import * as ConvexLogger from "./ConvexLogger.js";
 import type * as MutationRunner from "./MutationRunner.js";
 import type * as QueryRunner from "./QueryRunner.js";
@@ -116,9 +119,17 @@ export type Routes<Services_ = Services> = Layer.Layer<
  */
 export const make = <Id extends string, Groups extends HttpApiGroup.Constraint>(
   routes: Routes,
-  options?: { readonly api?: HttpApi.HttpApi<Id, Groups> | undefined },
+  options?: {
+    readonly observability?: Layer.Layer<never> | undefined;
+    readonly api?: HttpApi.HttpApi<Id, Groups> | undefined;
+  },
 ): ConvexHttpRouter =>
-  makeWithLayer(routes, RegisteredFunction.baseActionLayer, options?.api);
+  makeWithLayer(
+    routes,
+    RegisteredFunction.baseActionLayer,
+    options?.api,
+    options?.observability,
+  );
 
 /**
  * Derive HTTP capabilities and ID scopes from the generated database schema.
@@ -131,7 +142,10 @@ export const forSchema =
   ) =>
   <Id extends string, Groups extends HttpApiGroup.Constraint>(
     routes: Routes<Handler.ActionServices<DatabaseSchema_>>,
-    options?: { readonly api?: HttpApi.HttpApi<Id, Groups> | undefined },
+    options?: {
+      readonly observability?: Layer.Layer<never> | undefined;
+      readonly api?: HttpApi.HttpApi<Id, Groups> | undefined;
+    },
   ): ConvexHttpRouter =>
     makeWithLayer<
       Handler.ActionServices<DatabaseSchema_>,
@@ -148,6 +162,8 @@ export const forSchema =
       ),
       (ctx) => RegisteredFunction.actionLayer(schema, ctx),
       options?.api,
+      options?.observability,
+      schema.target.kind === "component",
     );
 
 // Convex uses a component-relative path to select its HTTP action but passes
@@ -175,15 +191,38 @@ const makeWithLayer = <
   routes: Routes<Services_>,
   layer: (ctx: GenericActionCtx<DataModel_>) => Layer.Layer<Services_>,
   api: HttpApi.HttpApi<Id, Groups> | undefined,
+  observability?: Layer.Layer<never>,
+  siteRelative = false,
 ): ConvexHttpRouter => {
   applyMonkeyPatches();
+
+  const spanName = Layer.effect(
+    HttpMiddleware.SpanNameGenerator,
+    Effect.gen(function* () {
+      const prefix = siteRelative
+        ? (yield* Config.schema(
+            Schema.URLFromString,
+            "CONVEX_SITE_URL",
+          )).pathname.replace(/\/$/, "")
+        : "";
+      return (request: HttpServerRequest.HttpServerRequest) =>
+        convexHttpRouter.lookup(
+          new URL(request.originalUrl).pathname.slice(prefix.length) || "/",
+          request.method as (typeof ROUTABLE_HTTP_METHODS)[number],
+        )?.[2] ?? "/*";
+    }).pipe(Effect.orDie),
+  );
 
   // Provided (not just merged) so that route layers' own construction—e.g.
   // a `Layer.unwrap` reading `Config`—resolves configuration through the
   // Convex-aware provider; merged so that request fibers—endpoint handlers
   // and middleware—do too.
   const AppLayer = routes.pipe(
-    Layer.provideMerge(ConvexLogger.layer),
+    Layer.provideMerge(
+      observability === undefined
+        ? ConvexLogger.layer
+        : Layer.merge(ObservabilityRuntime.memoized(observability), spanName),
+    ),
     Layer.provideMerge(ConvexConfigProvider.layer),
     Layer.provide(HttpServer.layerServices),
   );
@@ -193,6 +232,15 @@ const makeWithLayer = <
   // exposes as a per-request context argument.
   const { handler } = HttpRouter.toWebHandler(AppLayer, {
     disableLogger: true,
+    /* oxlint-disable effecttsgo/any-unknown-in-error-context -- Keep Effect's erased HTTP boundary errors intact. */
+    middleware: (effect) =>
+      observability === undefined
+        ? effect
+        : Effect.andThen(
+            Effect.annotateCurrentSpan("kind", "httpAction"),
+            effect,
+          ),
+    /* oxlint-enable effecttsgo/any-unknown-in-error-context */
   });
 
   const httpAction = httpActionGeneric((ctx, request): Promise<Response> => {

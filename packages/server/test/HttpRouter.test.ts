@@ -305,14 +305,14 @@ it.effect.each(["success", "denied", "defect", "remote"] as const)(
         recorder.observability,
         ErrorReporter.layer([
           ErrorReporter.make(({ cause, fiber }) => {
-            const span = Context.get(fiber.context, Tracer.ParentSpan);
+            const span = Context.getUnsafe(fiber.context, Tracer.ParentSpan);
             assert(span._tag === "Span");
             expect(span.status._tag).toBe("Started");
             reports.push({ cause, span });
           }),
         ]),
       );
-      const api = HttpApi.make("outcomes").add(
+      const outcomeApi = HttpApi.make("outcomes").add(
         HttpApiGroup.make("outcomes").add(
           HttpApiEndpoint.get("run", "/outcomes/:id", {
             params: Schema.Struct({ id: Schema.String }),
@@ -321,9 +321,9 @@ it.effect.each(["success", "denied", "defect", "remote"] as const)(
           }),
         ),
       );
-      const routes = HttpApiBuilder.layer(api).pipe(
+      const outcomeRoutes = HttpApiBuilder.layer(outcomeApi).pipe(
         Layer.provide(
-          HttpApiBuilder.group(api, "outcomes", (handlers) =>
+          HttpApiBuilder.group(outcomeApi, "outcomes", (handlers) =>
             handlers.handle("run", ({ params }) =>
               params.id === "denied"
                 ? Effect.fail(denied)
@@ -334,7 +334,10 @@ it.effect.each(["success", "denied", "defect", "remote"] as const)(
           ),
         ),
       );
-      const router = ConfectHttpRouter.make(routes, { api, observability });
+      const router = ConfectHttpRouter.make(outcomeRoutes, {
+        api: outcomeApi,
+        observability,
+      });
       const t = convexTest(undefined, {
         ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
         "./mock-backend/fixtures/convex/http.ts": () =>
@@ -351,7 +354,7 @@ it.effect.each(["success", "denied", "defect", "remote"] as const)(
               traceparent:
                 "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
             }
-          : undefined;
+          : {};
       const response = yield* Effect.promise(() =>
         t.fetch(`/outcomes/${scenario}`, { headers }),
       );
@@ -366,6 +369,9 @@ it.effect.each(["success", "denied", "defect", "remote"] as const)(
             : '"ok"',
       );
       expect(spans).toHaveLength(1);
+      expect(spans[0]!.status).toMatchObject({
+        exit: { _tag: scenario === "defect" ? "Failure" : "Success" },
+      });
       expect([spans[0]!.name, spans[0]!.attributes.get("kind")]).toEqual([
         "/outcomes/:id",
         "httpAction",
@@ -414,7 +420,9 @@ it.effect("keeps ConvexLogger for HTTP without a runtime layer", () =>
           Promise.resolve({ default: router }),
       });
       expect(
-        yield* Effect.promise(async () => (await t.fetch("/log")).text()),
+        yield* Effect.promise(() =>
+          t.fetch("/log").then((response) => response.text()),
+        ),
       ).toBe("ok");
       expect(info).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ message: "default http" }),

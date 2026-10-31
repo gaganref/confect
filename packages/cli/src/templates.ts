@@ -304,9 +304,11 @@ const httpEffect = Effect.fnUntraced(function* ({
 export const declaredHttp = Effect.fnUntraced(function* ({
   schemaImportPath,
   httpImportPath,
+  runtimeImportPath,
 }: {
   schemaImportPath: string;
   httpImportPath: string;
+  runtimeImportPath?: string | undefined;
 }) {
   const cbw = new CodeBlockWriter({ indentNumberOfSpaces: 2 });
 
@@ -316,9 +318,11 @@ export const declaredHttp = Effect.fnUntraced(function* ({
   yield* cbw.writeLine(`import { HttpRouter } from "@confect/server";`);
   yield* cbw.writeLine(`import schema from "${schemaImportPath}";`);
   yield* cbw.writeLine(`import http from "${httpImportPath}";`);
+  if (runtimeImportPath !== undefined)
+    yield* cbw.writeLine(`import observability from "${runtimeImportPath}";`);
   yield* cbw.newLine();
   yield* cbw.writeLine(
-    `export default HttpRouter.forSchema(schema)(http.routes, { api: http.api });`,
+    `export default HttpRouter.forSchema(schema)(http.routes, { api: http.api${runtimeImportPath === undefined ? "" : ", observability"} });`,
   );
 
   return yield* cbw.toString();
