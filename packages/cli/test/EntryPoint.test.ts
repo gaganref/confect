@@ -139,6 +139,9 @@ it.effect(
 );
 
 it("parses declaration files as entries", () => {
+  expect(EntryPoint.parse("runtime.ts")).toEqual(
+    Option.some(EntryPoint.Kind.Runtime({ relativePath: "runtime.ts" })),
+  );
   expect(EntryPoint.parse("env.ts")).toEqual(
     Option.some(EntryPoint.Kind.Env({ relativePath: "env.ts" })),
   );

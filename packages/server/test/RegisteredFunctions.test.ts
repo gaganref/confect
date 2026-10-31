@@ -1,13 +1,24 @@
+import { recording } from "./internal/recording";
+import { scope } from "../src/internal/observability";
 import { FunctionSpec, GroupSpec, MiddlewareSpec } from "@confect/core";
 import {
   FunctionImpl,
   GroupImpl,
   MiddlewareImpl,
   RegisteredFunctions,
+  RegisteredFunction,
 } from "@confect/server";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
-import type { RegisteredQuery } from "convex/server";
+import {
+  makeFunctionReference as reference,
+  type RegisteredQuery,
+} from "convex/server";
+import { convexTest } from "convex-test";
+import { RegisteredNodeFunction } from "@confect/server/node";
+import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
+import * as Console from "effect/Console";
+import { vi } from "vitest";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import databaseSchema from "./mock-backend/fixtures/confect/_generated/schema";
@@ -132,3 +143,81 @@ describe("buildForGroup", () => {
     expect(registered.insert).toBeDefined();
   });
 });
+
+it.each(["query", "mutation", "action", "node"] as const)(
+  "traces the whole %s registration",
+  // oxlint-disable-next-line effecttsgo/async-function -- convex-test exposes Promise boundaries for registered invocations.
+  async (kind) => {
+    const console = { ...globalThis.console, info: vi.fn() };
+    const recorder = recording();
+    const { spans, messages, observability } = recorder;
+    const options = {
+      name: "run" as const,
+      args: () => ({ value: Schema.Finite }),
+      returns: () => Schema.Finite,
+    };
+    const { publicQuery, publicMutation, publicAction, publicNodeAction } =
+      FunctionSpec;
+    const group = {
+      query: GroupSpec.make().addFunction(publicQuery(options)),
+      mutation: GroupSpec.make().addFunction(publicMutation(options)),
+      action: GroupSpec.make().addFunction(publicAction(options)),
+      node: GroupSpec.makeNode().addFunction(publicNodeAction(options)),
+    }[kind];
+    const schema = databaseSchema;
+    const layer = GroupImpl.make(schema, group).pipe(
+      Layer.provide(
+        FunctionImpl.make(schema, group, "run", ({ value }) =>
+          Effect.as(Effect.logInfo("checking"), value + 1).pipe(
+            Effect.provideService(Console.Console, console),
+          ),
+        ),
+      ),
+      GroupImpl.finalize,
+      Layer.merge(
+        Layer.succeed(
+          RegisteredFunction.Observability,
+          Layer.unwrap(
+            Config.String("PATH").pipe(Effect.orDie, Effect.as(observability)),
+          ),
+        ),
+      ),
+    );
+    const registered =
+      kind === "node"
+        ? RegisteredNodeFunction.buildForGroup<typeof group>(schema, layer)
+        : RegisteredFunctions.buildForGroup<typeof group>(schema, layer);
+    const t = convexTest(undefined, {
+      ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
+      "./mock-backend/fixtures/convex/test.ts": () =>
+        Promise.resolve(registered),
+    });
+    const invoke = (value: number) =>
+      kind === "query"
+        ? t.query(reference<"query">("test:run"), { value })
+        : kind === "mutation"
+          ? t.mutation(reference<"mutation">("test:run"), { value })
+          : t.action(reference<"action">("test:run"), { value });
+    const finalizers = [];
+    for (const count of [1, 9, 90]) {
+      expect(
+        // oxlint-disable-next-line no-await-in-loop -- Observe ownership at successive invocation counts.
+        await Promise.all(Array.from({ length: count }, () => invoke(2))),
+      ).toEqual(Array(count).fill(3));
+      if (scope.state._tag === "Open")
+        finalizers.push(scope.state.finalizers?.size ?? 1);
+      expect(recorder.lifecycle).toEqual({ builds: 1, releases: 0 });
+    }
+    expect(finalizers).toEqual([finalizers[0], finalizers[0], finalizers[0]]);
+    expect(spans).toHaveLength(100);
+    for (const { name, attributes, parent } of spans) {
+      expect([name, attributes.get("kind"), parent._tag]).toEqual([
+        "test:run",
+        kind === "node" ? "action" : kind,
+        "None",
+      ]);
+    }
+    expect(messages).toEqual(Array.from({ length: 100 }, () => ["checking"]));
+    expect(console.info).not.toHaveBeenCalled();
+  },
+);

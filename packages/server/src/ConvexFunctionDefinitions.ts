@@ -63,7 +63,7 @@ export const buildForGroup = <Group extends GroupSpec.AnyWithProps>(
   databaseSchema: DatabaseSchema.AnyWithProps,
   groupLayer: Layer.Layer<GroupImpl.GroupImpl<"Finalized">>,
 ): ForGroup<Group> => {
-  const { functionRegistryItems, middlewareRegistryItems } =
+  const { functionRegistryItems, middlewareRegistryItems, observability } =
     GroupRegistry.make(groupLayer);
   return mapLeaves<
     FunctionRegistryItem.AnyWithProps,
@@ -83,6 +83,7 @@ export const buildForGroup = <Group extends GroupSpec.AnyWithProps>(
             databaseSchema,
             confect,
             ResolvedMiddleware.resolve(confect, middlewareRegistryItems),
+            observability,
           ),
         ),
         Match.exhaustive,

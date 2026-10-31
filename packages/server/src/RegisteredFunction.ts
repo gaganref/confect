@@ -11,6 +11,7 @@ import {
 import {
   type DefaultFunctionArgs,
   type FunctionVisibility,
+  type FunctionMetadata,
   type GenericActionCtx,
   type GenericDataModel,
   type StorageReader as ConvexStorageReader,
@@ -21,8 +22,10 @@ import {
 import type { Value } from "convex/values";
 import { ConvexError } from "convex/values";
 import { pipe } from "effect/Function";
+import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Result from "effect/Result";
@@ -45,8 +48,15 @@ import * as Storage from "./Storage.js";
 import * as StorageActionWriter from "./StorageActionWriter.js";
 import type * as StorageReader from "./StorageReader.js";
 import * as StorageWriter from "./StorageWriter.js";
+import * as Tracer from "effect/Tracer";
+import * as ObservabilityRuntime from "./internal/observability.js";
 import * as VectorSearch from "./VectorSearch.js";
 import type * as Handler from "./Handler.js";
+
+export const Observability = Context.Reference<Layer.Layer<never> | undefined>(
+  "@confect/server/Observability",
+  { defaultValue: () => undefined },
+);
 
 export type Any =
   | RegisteredQuery<FunctionVisibility, DefaultFunctionArgs, any>
@@ -215,21 +225,58 @@ export const runHandlerPromise =
     errorSchema: Schema.Codec<any, any> | undefined,
     runOptions?: {
       readonly scheduler?: EffectScheduler.Scheduler | undefined;
+      readonly clock?: Clock.Clock | undefined;
+      readonly invocation?: Effect.Effect<FunctionMetadata> | undefined;
+      readonly observability?: Layer.Layer<never> | undefined;
     },
   ) =>
   <A, E>(effect: Effect.Effect<A, E>): Promise<A> => {
+    const { observability, invocation, clock } = runOptions ?? {};
+    let encodedError: Exit.Exit<any, any> | undefined;
+    const observed = Effect.tapCause(effect, (cause) =>
+      Effect.gen(function* () {
+        const reason =
+          cause.reasons.find(Cause.isDieReason) ??
+          cause.reasons.find(Cause.isFailReason);
+        if (reason?._tag === "Fail" && errorSchema !== undefined) {
+          encodedError = yield* Effect.exit(
+            Schema.encodeEffect(errorSchema)(reason.error),
+          );
+          if (Exit.isFailure(encodedError))
+            return yield* Effect.orDie(encodedError);
+        }
+      }),
+    );
     const withConvexError: Effect.Effect<Result.Result<A, ConvexError<any>>> =
       Effect.gen(function* () {
-        const exit = yield* Effect.exit(effect);
+        const exit = yield* Effect.exit(
+          observability === undefined || invocation === undefined
+            ? effect
+            : Effect.flatMap(invocation, ({ name, type, componentPath }) =>
+                Effect.useSpan(
+                  name,
+                  {
+                    root: true,
+                    attributes: { kind: type, componentPath },
+                  },
+                  (span) =>
+                    Effect.provideService(observed, Tracer.ParentSpan, span),
+                ),
+              ),
+        );
         if (Exit.isSuccess(exit)) {
           return Result.succeed(exit.value);
         }
 
-        const { cause } = exit;
+        const cause =
+          encodedError !== undefined && Exit.isFailure(encodedError)
+            ? encodedError.cause
+            : exit.cause;
         const reason =
           cause.reasons.find(Cause.isDieReason) ??
           cause.reasons.find(Cause.isFailReason);
         if (
+          encodedError === undefined &&
           reason?._tag === "Die" &&
           cause.reasons.length === 1 &&
           reason.defect instanceof ConvexError
@@ -244,9 +291,11 @@ export const runHandlerPromise =
             }
             return yield* Effect.die(reason.error);
           }
-          const encoded = yield* Effect.exit(
-            Schema.encodeEffect(errorSchema)(reason.error),
-          );
+          const encoded =
+            encodedError ??
+            (yield* Effect.exit(
+              Schema.encodeEffect(errorSchema)(reason.error),
+            ));
           if (Exit.isSuccess(encoded)) {
             return Result.fail(new ConvexError(encoded.value));
           }
@@ -258,8 +307,15 @@ export const runHandlerPromise =
       });
     return Effect.runPromise(
       withConvexError.pipe(
-        Effect.provide(ConvexLogger.layer),
+        Effect.provide(
+          observability === undefined
+            ? ConvexLogger.layer
+            : ObservabilityRuntime.memoized(observability),
+        ),
         Effect.provideService(Console.Console, globalThis.console),
+        clock === undefined
+          ? (self) => self
+          : Effect.provideService(Clock.Clock, clock),
       ),
       runOptions,
     ).then(
@@ -290,6 +346,7 @@ export const actionFunctionBase = <
   resolvedMiddlewares = [],
   createLayer,
   scope = IdScope.app,
+  observability,
 }: {
   name: string;
   functionVisibility: FunctionVisibility;
@@ -302,6 +359,7 @@ export const actionFunctionBase = <
     ctx: GenericActionCtx<DataModel.ToConvex<DataModel.FromSchema<Schema>>>,
   ) => Layer.Layer<R>;
   scope?: IdScope.IdScope;
+  observability?: Layer.Layer<never> | undefined;
 }) => ({
   args: compileArgsSchema(args, scope),
   returns: compileReturnsSchema(returns, scope),
@@ -338,7 +396,12 @@ export const actionFunctionBase = <
         Schema.encodeEffect(returns),
         Effect.catchTag("SchemaError", Effect.die),
       );
-    }).pipe(runHandlerPromise(combineErrorSchemas(error, resolvedMiddlewares))),
+    }).pipe(
+      runHandlerPromise(combineErrorSchemas(error, resolvedMiddlewares), {
+        invocation: Effect.promise(() => ctx.meta.getFunctionMetadata()),
+        observability,
+      }),
+    ),
 });
 
 export type ActionServices<

@@ -417,7 +417,10 @@ const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
   required: ReadonlyArray<{ readonly key: string }> = [],
 ) {
   const path = yield* Path.Path;
+  const fs = yield* FileSystem.FileSystem;
   const confectDirectory = yield* ConfectDirectory.get;
+  const runtimePath = path.join(confectDirectory, "runtime.ts");
+  const hasRuntime = yield* fs.exists(runtimePath);
 
   yield* Effect.forEach(
     leaves,
@@ -429,7 +432,6 @@ const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
         registryRelativePath,
       );
       const registryDir = path.dirname(registryPath);
-      const fs = yield* FileSystem.FileSystem;
       if (!(yield* fs.exists(registryDir))) {
         yield* fs.makeDirectory(registryDir, { recursive: true });
       }
@@ -463,6 +465,9 @@ const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
         schemaImportPath,
         specImportPath,
         implImportPath,
+        runtimeImportPath: hasRuntime
+          ? yield* toModuleImportPath(path.relative(registryDir, runtimePath))
+          : undefined,
       });
 
       yield* writeFileStringAndLog(registryPath, contents);

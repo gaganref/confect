@@ -23,7 +23,7 @@ export const buildForGroup = <Group extends GroupSpec.AnyWithProps>(
   databaseSchema: DatabaseSchema.AnyWithProps,
   groupLayer: Layer.Layer<GroupImpl.GroupImpl<"Finalized">>,
 ): RegisteredFunctions.RegisteredFunctionsForGroupSpec<Group> => {
-  const { functionRegistryItems, middlewareRegistryItems } =
+  const { functionRegistryItems, middlewareRegistryItems, observability } =
     GroupRegistry.make(groupLayer);
   return mapLeaves<FunctionRegistryItem.AnyWithProps, RegisteredFunction.Any>(
     functionRegistryItems as {
@@ -38,6 +38,7 @@ export const buildForGroup = <Group extends GroupSpec.AnyWithProps>(
             databaseSchema,
             confect,
             ResolvedMiddleware.resolve(confect, middlewareRegistryItems),
+            observability,
           ),
         ),
         Match.exhaustive,
@@ -49,6 +50,7 @@ export const make = (
   databaseSchema: DatabaseSchema.AnyWithProps,
   item: FunctionRegistryItem.ConfectFunctionRegistryItem,
   resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware> = [],
+  observability?: Layer.Layer<never>,
 ): RegisteredFunction.Any => {
   const genericFunction = Match.value(item.functionVisibility).pipe(
     Match.when("public", () => actionGeneric),
@@ -59,6 +61,7 @@ export const make = (
   return genericFunction(
     nodeActionFunction(databaseSchema, {
       name: item.name,
+      observability,
       functionVisibility: item.functionVisibility,
       args: item.args,
       returns: item.returns,
@@ -86,6 +89,7 @@ const nodeActionFunction = <
     error,
     handler,
     resolvedMiddlewares,
+    observability,
   }: {
     name: string;
     functionVisibility: FunctionVisibility;
@@ -101,6 +105,7 @@ const nodeActionFunction = <
       | NodeServices.NodeServices
     >;
     resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware>;
+    observability?: Layer.Layer<never> | undefined;
   },
 ) =>
   RegisteredFunction.actionFunctionBase({
@@ -112,6 +117,7 @@ const nodeActionFunction = <
     error,
     handler,
     resolvedMiddlewares,
+    observability,
     createLayer: (ctx) =>
       Layer.mergeAll(
         RegisteredFunction.actionLayer(databaseSchema, ctx),

@@ -92,6 +92,7 @@ it("automatically retries only failed bootstrap generation", () => {
 
 it.each([
   EntryPoint.Kind.Config(),
+  EntryPoint.Kind.Runtime({ relativePath: "runtime.ts" }),
   EntryPoint.Kind.Env({ relativePath: "env.ts" }),
   EntryPoint.Kind.App({ relativePath: "app.ts" }),
 ])("requests full generation for $_tag entries", (entry) => {

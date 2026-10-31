@@ -61,12 +61,14 @@ export const prepare = (
   databaseSchema: DatabaseSchema.AnyWithProps,
   item: FunctionRegistryItem.ConfectFunctionRegistryItem,
   resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware> = [],
+  observability?: Layer.Layer<never>,
 ) =>
   Match.value(item.functionType).pipe(
     Match.when("query", () => {
       const definition = queryFunction({
         databaseSchema,
         name: item.name,
+        observability,
         functionVisibility: item.functionVisibility,
         args: item.args,
         returns: item.returns,
@@ -84,6 +86,7 @@ export const prepare = (
       const definition = mutationFunction({
         databaseSchema,
         name: item.name,
+        observability,
         functionVisibility: item.functionVisibility,
         args: item.args,
         returns: item.returns,
@@ -100,6 +103,7 @@ export const prepare = (
     Match.when("action", () => {
       const definition = convexActionFunction(databaseSchema, {
         name: item.name,
+        observability,
         functionVisibility: item.functionVisibility,
         args: item.args,
         returns: item.returns,
@@ -188,6 +192,7 @@ const queryFunction = <
   error,
   handler,
   resolvedMiddlewares,
+  observability,
 }: {
   databaseSchema: DatabaseSchema_;
   name: string;
@@ -199,6 +204,7 @@ const queryFunction = <
     a: Args,
   ) => Effect.Effect<Returns, E, Handler.QueryServices<DatabaseSchema_>>;
   resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware>;
+  observability?: Layer.Layer<never> | undefined;
 }) => ({
   args: compileArgsSchema(args, databaseSchema.target.scope),
   returns: compileReturnsSchema(returns, databaseSchema.target.scope),
@@ -258,6 +264,9 @@ const queryFunction = <
         RegisteredFunction.combineErrorSchemas(error, resolvedMiddlewares),
         {
           scheduler: new EffectScheduler.MixedScheduler("sync"),
+          invocation: Effect.promise(() => ctx.meta.getFunctionMetadata()),
+          clock: observability === undefined ? undefined : queryClock,
+          observability,
         },
       ),
     ),
@@ -314,6 +323,7 @@ const mutationFunction = <
   error,
   handler,
   resolvedMiddlewares,
+  observability,
 }: {
   databaseSchema: DatabaseSchema_;
   name: string;
@@ -325,6 +335,7 @@ const mutationFunction = <
     a: Args,
   ) => Effect.Effect<Returns, E, MutationServices<DatabaseSchema_>>;
   resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware>;
+  observability?: Layer.Layer<never> | undefined;
 }) => ({
   args: compileArgsSchema(args, databaseSchema.target.scope),
   returns: compileReturnsSchema(returns, databaseSchema.target.scope),
@@ -361,6 +372,8 @@ const mutationFunction = <
         RegisteredFunction.combineErrorSchemas(error, resolvedMiddlewares),
         {
           scheduler: new EffectScheduler.MixedScheduler("sync"),
+          invocation: Effect.promise(() => ctx.meta.getFunctionMetadata()),
+          observability,
         },
       ),
     ),
@@ -383,6 +396,7 @@ const convexActionFunction = <
     error,
     handler,
     resolvedMiddlewares,
+    observability,
   }: {
     name: string;
     functionVisibility: FunctionVisibility;
@@ -397,6 +411,7 @@ const convexActionFunction = <
       RegisteredFunction.ActionServices<DatabaseSchema_>
     >;
     resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware>;
+    observability?: Layer.Layer<never> | undefined;
   },
 ) =>
   RegisteredFunction.actionFunctionBase({
@@ -408,6 +423,7 @@ const convexActionFunction = <
     error,
     handler,
     resolvedMiddlewares,
+    observability,
     createLayer: (ctx) =>
       Layer.mergeAll(
         RegisteredFunction.actionLayer(schema, ctx),
