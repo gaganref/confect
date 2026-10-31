@@ -243,3 +243,26 @@ To instrument registered functions, default-export an Effect layer with `satisfi
 With a layer, each invocation opens one root named by its Convex function path, with `kind` and `componentPath` attributes. It covers argument decoding, middleware, the handler, return encoding and declared-error encoding. Its exit retains the original failure when encoding succeeds; an encoding failure replaces that outcome. Logs during encoding arrive before span end. Query timestamps remain zero. Without a layer, no span or metadata call is added.
 
 The layer context builds once per layer identity, including concurrent first use, through the Convex-aware config provider in each isolate and is never released. Later invocations reuse the completed context without acquiring more ownership in the permanent scope. An owner must emit at span end, not in a finalizer. The layer replaces `ConvexLogger.layer`; include that layer explicitly to keep Convex logging. Manual group registrations merge `Layer.succeed(RegisteredFunction.Observability, observability)` into the finalized group layer.
+
+## HTTP invocation instrumentation
+
+Generated declared HTTP entries pass `confect/runtime.ts` to `HttpRouter.forSchema(schema)` for you. A hand-built router must pass `{ observability }` explicitly to `HttpRouter.make` or `HttpRouter.forSchema(schema)`; codegen does not wire its runtime layer. The same layer instance shares one build across registered functions and HTTP, and is never released.
+
+HTTP reuses Effect's request span, named by the reflected route label, with `kind: "httpAction"`. A `traceparent` header continues the caller's trace. Identify the HTTP invocation span by its `kind`, even when it has an external parent.
+
+Effect 4.0.4 reports original endpoint causes through `ErrorReporter` before converting declared failures to responses. Include `ErrorReporter.layer([reporter])` from `effect/ErrorReporter` in your runtime layer to retain those failures. `ErrorReporter.make` skips errors marked `ErrorReporter.ignore`, including Effect's built-in `HttpApiError` classes and request decode failures. An owner needing every declared failure must implement the `ErrorReporter` interface directly, rather than use `make`:
+
+```ts
+const failures = new WeakMap<Tracer.AnySpan, Cause.Cause<unknown>>();
+const reporter: ErrorReporter.ErrorReporter = {
+  [ErrorReporter.TypeId]: ErrorReporter.TypeId,
+  report({ cause, fiber }) {
+    const span = Context.getOrUndefined(fiber.context, Tracer.ParentSpan);
+    if (span !== undefined) failures.set(span, cause);
+  },
+};
+```
+
+The raw `report` callback receives the whole cause, including ignored errors and original error instances, while the request span is active. A cause can be reported more than once, including defects and request decode failures, and a repeat report can arrive with no active span. Retain causes per request span and deduplicate repeated reports, then emit once when that span ends. The span's `http.response.status_code` records the final response status. This uses Effect's reporting service without another root or a fork-specific error channel.
+
+A declared 4xx response ends the request span successfully after its cause has been reported. Defects report their original cause and end with a failed span. Owners that need declared HTTP failures must consume the reporter as well as the tracer. With no runtime layer, HTTP retains its default logger and creates no request span.
