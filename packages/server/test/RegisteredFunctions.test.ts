@@ -156,18 +156,14 @@ it.each(["query", "mutation", "action", "node"] as const)(
       args: () => ({ value: Schema.Finite }),
       returns: () => Schema.Finite,
     };
-    const group =
-      kind === "node"
-        ? GroupSpec.makeNode().addFunction(
-            FunctionSpec.publicNodeAction(options),
-          )
-        : GroupSpec.make().addFunction(
-            {
-              query: FunctionSpec.publicQuery(options),
-              mutation: FunctionSpec.publicMutation(options),
-              action: FunctionSpec.publicAction(options),
-            }[kind],
-          );
+    const { publicQuery, publicMutation, publicAction, publicNodeAction } =
+      FunctionSpec;
+    const group = {
+      query: GroupSpec.make().addFunction(publicQuery(options)),
+      mutation: GroupSpec.make().addFunction(publicMutation(options)),
+      action: GroupSpec.make().addFunction(publicAction(options)),
+      node: GroupSpec.makeNode().addFunction(publicNodeAction(options)),
+    }[kind];
     const schema = databaseSchema;
     const layer = GroupImpl.make(schema, group).pipe(
       Layer.provide(
@@ -208,22 +204,20 @@ it.each(["query", "mutation", "action", "node"] as const)(
         // oxlint-disable-next-line no-await-in-loop -- Observe ownership at successive invocation counts.
         await Promise.all(Array.from({ length: count }, () => invoke(2))),
       ).toEqual(Array(count).fill(3));
-      finalizers.push(
-        scope.state._tag === "Open" ? (scope.state.finalizers?.size ?? 1) : 0,
-      );
+      if (scope.state._tag === "Open")
+        finalizers.push(scope.state.finalizers?.size ?? 1);
       expect(recorder.lifecycle).toEqual({ builds: 1, releases: 0 });
     }
     expect(finalizers).toEqual([finalizers[0], finalizers[0], finalizers[0]]);
     expect(spans).toHaveLength(100);
-    for (const span of spans) {
-      expect(span.name).toBe("test:run");
-      expect(span.attributes.get("kind")).toBe(
+    for (const { name, attributes, parent } of spans) {
+      expect([name, attributes.get("kind"), parent._tag]).toEqual([
+        "test:run",
         kind === "node" ? "action" : kind,
-      );
-      expect(span.parent._tag).toBe("None");
+        "None",
+      ]);
     }
     expect(messages).toEqual(Array.from({ length: 100 }, () => ["checking"]));
     expect(console.info).not.toHaveBeenCalled();
-    expect(recorder.lifecycle).toEqual({ builds: 1, releases: 0 });
   },
 );

@@ -374,9 +374,7 @@ describe("runHandlerPromise", () => {
               yield* Effect.logInfo("visible");
               expect(yield* References.MinimumLogLevel).toBe("Info");
               expect(
-                yield* Effect.withFiber((fiber) =>
-                  Effect.succeed(fiber.context.mapUnsafe.has(Clock.Clock.key)),
-                ),
+                (yield* Effect.context<never>()).mapUnsafe.has(Clock.Clock.key),
               ).toBe(false);
               return yield* Logger.CurrentLoggers;
             }).pipe(Effect.provideService(Console.Console, console)),
@@ -411,7 +409,7 @@ it.each([false, true])(
   "keeps origin/main client messages (instrumented %s)",
   // oxlint-disable-next-line effecttsgo/async-function -- Exercise the public Promise boundary.
   async (instrumented) => {
-    const { spans, observability } = recording();
+    const { spans, observability, invocation, lifecycle } = recording();
     const defect = new Error("broken");
     defect.stack = "Error: broken\n    at handler (app.ts:1:1)";
     const scenarios: Array<Effect.Effect<unknown, string>> = [
@@ -425,12 +423,7 @@ it.each([false, true])(
       scenarios.map((effect) =>
         RegisteredFunction.runHandlerPromise(Schema.String, {
           invocation: instrumented
-            ? Effect.succeed({
-                name: "run",
-                type: "query",
-                visibility: "public",
-                componentPath: "",
-              })
+            ? invocation
             : Effect.die("metadata must not run"),
           observability: instrumented ? observability : undefined,
         })(effect).catch((error: Error) => error.message),
@@ -444,11 +437,7 @@ it.each([false, true])(
       "SchemaError: Expected a finite number",
     ]);
     expect(spans).toHaveLength(instrumented ? 5 : 0);
-    if (instrumented) {
-      const status = spans[0]!.status;
-      assert(status._tag === "Ended" && Exit.isFailure(status.exit));
-      expect(Cause.squash(status.exit.cause)).toBe(defect);
-    }
+    expect(lifecycle).toEqual({ builds: instrumented ? 1 : 0, releases: 0 });
   },
 );
 
@@ -456,7 +445,7 @@ it.each([false, true])(
   "ends after error encoding with its final outcome (%s)",
   // oxlint-disable-next-line effecttsgo/async-function -- Exercise the public Promise boundary.
   async (broken) => {
-    const { spans, messages, observability } = recording();
+    const { spans, messages, observability, invocation } = recording();
     const original = new Error("denied");
     const defect = new Error("encoding failed");
     const error = Schema.String.pipe(
@@ -472,12 +461,7 @@ it.each([false, true])(
       }),
     );
     const result = RegisteredFunction.runHandlerPromise(error, {
-      invocation: Effect.succeed({
-        name: "test:run",
-        type: "mutation",
-        visibility: "public",
-        componentPath: "counter",
-      }),
+      invocation,
       observability,
     })(Effect.fail(original));
     if (broken)

@@ -8,6 +8,7 @@ export const recording = () => {
   const messages: Array<unknown> = [];
   const lifecycle = { builds: 0, releases: 0 };
   const observability = Layer.mergeAll(
+    Layer.effectDiscard(Effect.yieldNow),
     Layer.effectDiscard(
       Effect.acquireRelease(
         Effect.sync(() => lifecycle.builds++),
@@ -26,5 +27,11 @@ export const recording = () => {
     ),
     Logger.layer([Logger.make(({ message }) => messages.push(message))]),
   );
-  return { spans, messages, observability, lifecycle };
+  const invocation = Effect.succeed({
+    name: "test:run",
+    type: "mutation" as const,
+    visibility: "public" as const,
+    componentPath: "counter",
+  });
+  return { spans, messages, observability, lifecycle, invocation };
 };

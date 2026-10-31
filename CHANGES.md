@@ -14,7 +14,7 @@ until the fork adopts a release containing it.
 
 ## Invocation instrumentation
 
-Add invocation root spans and an optional `confect/runtime.ts` layer so applications can install Effect tracers and loggers without duplicate console logging. Preserve original failures for tracers, encoded client errors and query caching. Changeset: `invocation-observability.md`. Upstream: planned; no proposal submitted.
+Add invocation root spans and an optional `confect/runtime.ts` layer so applications can install Effect tracers and loggers without duplicate console logging. Preserve original failures for tracers, encoded client errors and query caching. Cache each layer context once per isolate so permanent scope ownership stays bounded. Changeset: `invocation-observability.md`. Upstream: planned; no proposal submitted.
 
 ## Base
 

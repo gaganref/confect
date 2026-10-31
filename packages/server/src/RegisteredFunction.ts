@@ -226,17 +226,14 @@ export const runHandlerPromise =
     runOptions?: {
       readonly scheduler?: EffectScheduler.Scheduler | undefined;
       readonly clock?: Clock.Clock | undefined;
-      readonly invocation?: Effect.Effect<FunctionMetadata>;
+      readonly invocation?: Effect.Effect<FunctionMetadata> | undefined;
       readonly observability?: Layer.Layer<never> | undefined;
     },
   ) =>
   <A, E>(effect: Effect.Effect<A, E>): Promise<A> => {
-    const invocation =
-      runOptions?.observability === undefined
-        ? undefined
-        : runOptions.invocation;
+    const { observability, invocation, clock } = runOptions ?? {};
     let encodedError: Exit.Exit<any, any> | undefined;
-    const instrumented = Effect.tapCause(effect, (cause) =>
+    const observed = Effect.tapCause(effect, (cause) =>
       Effect.gen(function* () {
         const reason =
           cause.reasons.find(Cause.isDieReason) ??
@@ -253,41 +250,33 @@ export const runHandlerPromise =
     const withConvexError: Effect.Effect<Result.Result<A, ConvexError<any>>> =
       Effect.gen(function* () {
         const exit = yield* Effect.exit(
-          invocation === undefined
+          observability === undefined || invocation === undefined
             ? effect
-            : Effect.gen(function* () {
-                const { name, type, componentPath } = yield* invocation;
-                return yield* Effect.useSpan(
+            : Effect.flatMap(invocation, ({ name, type, componentPath }) =>
+                Effect.useSpan(
                   name,
                   {
                     root: true,
                     attributes: { kind: type, componentPath },
                   },
                   (span) =>
-                    Effect.provideService(
-                      instrumented,
-                      Tracer.ParentSpan,
-                      span,
-                    ),
-                );
-              }),
+                    Effect.provideService(observed, Tracer.ParentSpan, span),
+                ),
+              ),
         );
-        if (encodedError !== undefined && Exit.isFailure(encodedError)) {
-          return yield* Effect.die(
-            new Error(Cause.pretty(encodedError.cause), {
-              cause: encodedError.cause,
-            }),
-          );
-        }
         if (Exit.isSuccess(exit)) {
           return Result.succeed(exit.value);
         }
 
-        const { cause } = exit;
+        const cause =
+          encodedError !== undefined && Exit.isFailure(encodedError)
+            ? encodedError.cause
+            : exit.cause;
         const reason =
           cause.reasons.find(Cause.isDieReason) ??
           cause.reasons.find(Cause.isFailReason);
         if (
+          encodedError === undefined &&
           reason?._tag === "Die" &&
           cause.reasons.length === 1 &&
           reason.defect instanceof ConvexError
@@ -319,15 +308,14 @@ export const runHandlerPromise =
     return Effect.runPromise(
       withConvexError.pipe(
         Effect.provide(
-          runOptions?.observability === undefined
+          observability === undefined
             ? ConvexLogger.layer
-            : ObservabilityRuntime.memoized(runOptions.observability),
+            : ObservabilityRuntime.memoized(observability),
         ),
         Effect.provideService(Console.Console, globalThis.console),
-        Effect.provideService(
-          Clock.Clock,
-          runOptions?.clock ?? Context.get(Context.empty(), Clock.Clock),
-        ),
+        clock === undefined
+          ? (self) => self
+          : Effect.provideService(Clock.Clock, clock),
       ),
       runOptions,
     ).then(
