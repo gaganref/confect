@@ -189,6 +189,9 @@ jobs:
         run: |
           pnpm confect codegen --component-dir components/counter/convex
           pnpm confect codegen
+      - name: Bundle the generated schema with Convex options
+        working-directory: ${{ runner.temp }}/confect-consumer
+        run: node checkSchemaBundle.mjs
       - name: Typecheck every public entry under NodeNext
         working-directory: ${{ runner.temp }}/confect-consumer
         run: node checkNodeNext.mjs
