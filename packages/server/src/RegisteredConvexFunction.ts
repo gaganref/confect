@@ -381,7 +381,11 @@ const mutationFunction = <
         RegisteredFunction.combineErrorSchemas(error, resolvedMiddlewares),
         {
           scheduler: new EffectScheduler.MixedScheduler("sync"),
-          invocation: Effect.promise(() => ctx.meta.getFunctionMetadata()),
+          invocation: RegisteredFunction.invocationMetadata(
+            ctx.meta,
+            actualArgs,
+            reservedArgument,
+          ),
           observability,
         },
       ),

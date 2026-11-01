@@ -12,6 +12,7 @@ import {
   type DefaultFunctionArgs,
   type FunctionVisibility,
   type FunctionMetadata,
+  type MutationMeta,
   type GenericActionCtx,
   type GenericDataModel,
   type StorageReader as ConvexStorageReader,
@@ -22,6 +23,9 @@ import {
 import type { Value } from "convex/values";
 import { ConvexError } from "convex/values";
 import { pipe } from "effect/Function";
+import * as Config from "effect/Config";
+import * as Option from "effect/Option";
+import * as ConvexConfigProvider from "./ConvexConfigProvider.js";
 import * as Clock from "effect/Clock";
 import * as Cause from "effect/Cause";
 import * as Console from "effect/Console";
@@ -52,6 +56,40 @@ import * as Tracer from "effect/Tracer";
 import * as ObservabilityRuntime from "./internal/observability.js";
 import * as VectorSearch from "./VectorSearch.js";
 import type * as Handler from "./Handler.js";
+
+export interface ReceivedValue {
+  readonly value: unknown;
+  readonly requestId: string;
+  readonly deployment: string | undefined;
+}
+
+export const Received = Context.Reference<ReceivedValue | undefined>(
+  "@confect/server/RegisteredFunction/Received",
+  { defaultValue: () => undefined },
+);
+
+export const invocationMetadata = (
+  meta: Pick<MutationMeta, "getFunctionMetadata" | "getRequestMetadata">,
+  args: DefaultFunctionArgs,
+  reservedArgument?: string,
+): Effect.Effect<FunctionMetadata & { readonly received?: ReceivedValue }> =>
+  Effect.gen(function* () {
+    const metadata = yield* Effect.promise(() => meta.getFunctionMetadata());
+    if (reservedArgument === undefined) return metadata;
+    const { requestId } = yield* Effect.promise(() =>
+      meta.getRequestMetadata(),
+    );
+    const deployment = yield* Config.String("CONVEX_CLOUD_URL").pipe(
+      Config.option,
+      Effect.map(Option.getOrUndefined),
+      Effect.provide(ConvexConfigProvider.layer),
+      Effect.orDie,
+    );
+    return {
+      ...metadata,
+      received: { value: args[reservedArgument], requestId, deployment },
+    };
+  });
 
 export const Observability = Context.Reference<Layer.Layer<never> | undefined>(
   "@confect/server/Observability",
@@ -226,7 +264,11 @@ export const runHandlerPromise =
     runOptions?: {
       readonly scheduler?: EffectScheduler.Scheduler | undefined;
       readonly clock?: Clock.Clock | undefined;
-      readonly invocation?: Effect.Effect<FunctionMetadata> | undefined;
+      readonly invocation?:
+        | Effect.Effect<
+            FunctionMetadata & { readonly received?: ReceivedValue }
+          >
+        | undefined;
       readonly observability?: Layer.Layer<never> | undefined;
     },
   ) =>
@@ -269,16 +311,18 @@ export const runHandlerPromise =
         const exit = yield* Effect.exit(
           observability === undefined || invocation === undefined
             ? effect
-            : Effect.flatMap(invocation, ({ name, type, componentPath }) =>
-                Effect.useSpan(
-                  name,
-                  {
-                    root: true,
-                    attributes: { kind: type, componentPath },
-                  },
-                  (span) =>
-                    Effect.provideService(observed, Tracer.ParentSpan, span),
-                ),
+            : Effect.flatMap(
+                invocation,
+                ({ name, type, componentPath, received }) =>
+                  Effect.useSpan(
+                    name,
+                    {
+                      root: true,
+                      attributes: { kind: type, componentPath },
+                    },
+                    (span) =>
+                      Effect.provideService(observed, Tracer.ParentSpan, span),
+                  ).pipe(Effect.provideService(Received, received)),
               ),
         );
         if (Exit.isSuccess(exit)) {
@@ -429,7 +473,7 @@ export const actionFunctionBase = <
       );
     }).pipe(
       runHandlerPromise(combineErrorSchemas(error, resolvedMiddlewares), {
-        invocation: Effect.promise(() => ctx.meta.getFunctionMetadata()),
+        invocation: invocationMetadata(ctx.meta, actualArgs, reservedArgument),
         observability,
       }),
     ),

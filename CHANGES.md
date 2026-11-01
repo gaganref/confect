@@ -16,6 +16,8 @@ until the fork adopts a release containing it.
 
 Profiles and internal mutation, action and Node action constructors can reserve one argument without changing domain schemas or visibility. Refs, including component refs, retain the name. Registration accepts any optional value, strips it before decoding and refuses domain collisions. Queries ignore the option to preserve cache keys. Changeset: `reserved-argument.md`. Upstream: planned; no proposal submitted.
 
+Reserving invocations expose `{ value, requestId, deployment }` through `RegisteredFunction.Received` at root creation. The runner reads the cloud URL and passes only the request ID from private request metadata. Queries and unreserved functions have no received value; calls without a runtime layer add no metadata reads. Changeset: `received-argument.md`. Upstream: planned; no proposal submitted.
+
 ## Invocation instrumentation
 
 Add invocation root spans and an optional `confect/runtime.ts` layer so applications can install Effect tracers and loggers without duplicate console logging. Preserve original declared failures for tracers, encoded client errors and query caching. Cache each layer context once per isolate so permanent scope ownership stays bounded. Changeset: `invocation-observability.md`. The root span ends with the outcome the client gets: a failure in a function with no error schema, other than a raw `ConvexError`, ends it as a defect, and so does an error encoding that dies with a `ConvexError`. Changeset: `undeclared-failure-span-defect.md`. Upstream: planned; no proposal submitted.

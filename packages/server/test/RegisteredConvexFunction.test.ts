@@ -1,3 +1,7 @@
+import * as RegisteredFunction from "@confect/server/RegisteredFunction";
+import type * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as Tracer from "effect/Tracer";
 import * as FunctionSpec from "@confect/core/FunctionSpec";
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as FunctionRegistryItem from "@confect/server/FunctionRegistryItem";
@@ -105,6 +109,143 @@ describe("make", () => {
       expect(definition.args).toEqual(prepared.args);
       expect(definition.returns).toEqual(prepared.returns);
       expect(item.handler).toBe(handler);
+    },
+  );
+});
+
+describe("invocation context", () => {
+  it.each([
+    { type: "mutation", reserves: true },
+    { type: "action", reserves: true },
+    { type: "query", reserves: true },
+    { type: "mutation", reserves: false },
+    { type: "action", reserves: false },
+  ] as const)(
+    "projects private metadata at root creation for $type, reserved $reserves",
+    ({ type, reserves }) => {
+      const profile = FunctionSpec.extend()({
+        middleware: [],
+        reservedArgument: "context",
+      });
+      const roots: Array<unknown> = [];
+      let current: Fiber.Fiber<any, any> | undefined;
+      const runtime = Layer.succeed(
+        Tracer.Tracer,
+        Tracer.make({
+          context(effect, fiber) {
+            const previous = current;
+            current = fiber;
+            try {
+              return effect["~effect/Effect/evaluate"](fiber);
+            } finally {
+              current = previous;
+            }
+          },
+          span(options) {
+            roots.push(current?.getRef(RegisteredFunction.Received));
+            return new Tracer.NativeSpan(options);
+          },
+        }),
+      );
+      const options = {
+        name: "echo",
+        args: () => ({ value: Schema.String }),
+        returns: () => Schema.String,
+      };
+      const spec = reserves
+        ? profile[
+            type === "mutation"
+              ? "publicMutation"
+              : type === "action"
+                ? "publicAction"
+                : "publicQuery"
+          ](options)
+        : type === "mutation"
+          ? FunctionSpec.publicMutation(options)
+          : FunctionSpec.publicAction(options);
+      const item = FunctionRegistryItem.make({
+        functionSpec: spec,
+        groupMiddlewareAttachments: [],
+        handler: ({ value }) => Effect.succeed(value),
+      });
+      assert(item._tag === "Confect");
+      const prepared = RegisteredConvexFunction.prepare(
+        DatabaseSchema.make({}),
+        item,
+        [],
+        runtime,
+      );
+      const meta = {
+        getFunctionMetadata: () =>
+          Promise.resolve({
+            name: "items:echo",
+            type,
+            visibility: "public",
+            componentPath: "",
+          }),
+        getRequestMetadata: () =>
+          Promise.resolve({
+            requestId: "request-1",
+            authToken: "fixture-private-token",
+          }),
+      };
+      const ctx = {
+        meta,
+        db: { system: {} },
+        auth: {},
+        storage: {},
+        scheduler: {},
+        runQuery: () => Promise.resolve(null),
+        runMutation: () => Promise.resolve(null),
+        runAction: () => Promise.resolve(null),
+        vectorSearch: () => Promise.resolve([]),
+      };
+      vi.stubEnv("CONVEX_CLOUD_URL", "https://fixture.convex.cloud");
+      return prepared
+        .handler(ctx as never, { value: "ok", context: null })
+        .then((result) => {
+          expect(result).toBe("ok");
+          return prepared.handler(ctx as never, { value: "again" });
+        })
+        .then((result) => {
+          expect(result).toBe("again");
+          expect(roots).toEqual(
+            type === "query" || !reserves
+              ? [undefined, undefined]
+              : [
+                  {
+                    value: null,
+                    requestId: "request-1",
+                    deployment: "https://fixture.convex.cloud",
+                  },
+                  {
+                    value: undefined,
+                    requestId: "request-1",
+                    deployment: "https://fixture.convex.cloud",
+                  },
+                ],
+          );
+          expect(JSON.stringify(roots)).not.toContain("fixture-private-token");
+          const plain = RegisteredConvexFunction.prepare(
+            DatabaseSchema.make({}),
+            item,
+          );
+          const unreadable = {
+            ...ctx,
+            meta: {
+              getFunctionMetadata: () =>
+                Promise.reject(new Error("No metadata read without a runtime")),
+              getRequestMetadata: () =>
+                Promise.reject(
+                  new Error("No private metadata read without a runtime"),
+                ),
+            },
+          };
+          return plain
+            .handler(unreadable as never, { value: "plain" })
+            .then((value) => expect(value).toBe("plain"));
+        })
+        .finally(() => vi.unstubAllEnvs());
     },
   );
 });
