@@ -6,19 +6,6 @@ import { InvalidDeclarationError } from "./CodegenError.js";
 const reserved = new Set(
   "name env http digest __proto__ constructor prototype".split(" "),
 );
-const json = () => {
-  const paths = new WeakMap<object, string>();
-  return function (this: object, key: string, value: unknown) {
-    const path = `${paths.get(this) ?? "$"}${key === "" ? "" : `[${JSON.stringify(key)}]`}`;
-    if (
-      !["string", "number", "boolean", "object"].includes(typeof value) ||
-      (typeof value === "number" && !Number.isFinite(value))
-    )
-      throw new TypeError(`Expected JSON data at ${path}`);
-    if (typeof value === "object" && value !== null) paths.set(value, path);
-    return value;
-  };
-};
 export type Registry = Map<
   string,
   {
@@ -71,23 +58,10 @@ export const collect = (
               },
             };
             registry.set(key, entry);
-            entry.data.functions[functionPath] = yield* Result.try({
-              try: () =>
-                JSON.parse(
-                  JSON.stringify(
-                    section.describe({
-                      path: functionPath,
-                      spec,
-                      middleware: [
-                        ...group.middlewareSpecs,
-                        ...spec.middlewareSpecs,
-                      ],
-                    }),
-                    json(),
-                  ),
-                ),
-              catch: (cause) =>
-                invalid(`could not describe as JSON: ${String(cause)}`),
+            entry.data.functions[functionPath] = section.describe({
+              path: functionPath,
+              spec,
+              middleware: [...group.middlewareSpecs, ...spec.middlewareSpecs],
             });
           }
         }

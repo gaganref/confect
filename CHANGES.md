@@ -14,7 +14,7 @@ until the fork adopts a release containing it.
 
 ## Profile manifest sections
 
-Profiles describe app functions in import-free manifest sections, including their middleware. Codegen identifies definitions by key, owner and format, rejects reserved keys and conflicts, and includes sections in the digest. Incremental spec edits update and remove sections without a full rebuild. Non-JSON diagnostics name the property path. Changeset: `profile-manifest-sections.md`. Upstream: planned; no proposal submitted.
+Profiles describe app functions in import-free manifest sections, including their middleware. Codegen identifies definitions by key, owner and format, rejects reserved keys and conflicts, and includes sections in the digest. Incremental spec edits update and remove sections without a full rebuild. Changeset: `profile-manifest-sections.md`. Upstream: planned; no proposal submitted.
 
 ## Reserved arguments
 
