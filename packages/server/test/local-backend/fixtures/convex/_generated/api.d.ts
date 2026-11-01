@@ -241,6 +241,123 @@ export declare const api: {
     nativeComponents: {
       roundTrip: FunctionReference<"mutation", "public", { run: string }, any>;
     };
+    reserved: {
+      chain: FunctionReference<
+        "action",
+        "public",
+        { context?: any; run: string },
+        {
+          action: {
+            args: { run: string };
+            received: {
+              deployment: string | null;
+              requestId: string;
+              value: any;
+            };
+          };
+          hops: Record<string, string>;
+          inline: {
+            child: {
+              args: { run: string };
+              received: {
+                deployment: string | null;
+                requestId: string;
+                value: any;
+              };
+            };
+            hops: Record<string, string>;
+            parent: {
+              args: { run: string };
+              received: {
+                deployment: string | null;
+                requestId: string;
+                value: any;
+              };
+            };
+            plain: string;
+          };
+          jobId: string;
+          mutation: {
+            args: { run: string };
+            received: {
+              deployment: string | null;
+              requestId: string;
+              value: any;
+            };
+          };
+        }
+      >;
+      echo: FunctionReference<
+        "mutation",
+        "public",
+        { context?: any; run: string },
+        {
+          args: { run: string };
+          received: {
+            deployment: string | null;
+            requestId: string;
+            value: any;
+          };
+        }
+      >;
+      echoAction: FunctionReference<
+        "action",
+        "public",
+        { context?: any; run: string },
+        {
+          args: { run: string };
+          received: {
+            deployment: string | null;
+            requestId: string;
+            value: any;
+          };
+        }
+      >;
+      inline: FunctionReference<
+        "mutation",
+        "public",
+        { context?: any; run: string },
+        {
+          child: {
+            args: { run: string };
+            received: {
+              deployment: string | null;
+              requestId: string;
+              value: any;
+            };
+          };
+          hops: Record<string, string>;
+          parent: {
+            args: { run: string };
+            received: {
+              deployment: string | null;
+              requestId: string;
+              value: any;
+            };
+          };
+          plain: string;
+        }
+      >;
+      read: FunctionReference<
+        "query",
+        "public",
+        { run: string },
+        {
+          args: { run: string };
+          received: {
+            deployment: string | null;
+            requestId: string;
+            value: any;
+          };
+        } | null
+      >;
+      write: FunctionReference<
+        "mutation",
+        "public",
+        { context?: any; run: string },
+        null
+      >;
+    };
     scheduling: {
       manyOpsMutation: FunctionReference<"mutation", "public", {}, number>;
       manyOpsQuery: FunctionReference<"query", "public", {}, number>;

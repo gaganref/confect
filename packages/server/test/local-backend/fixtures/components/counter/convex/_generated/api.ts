@@ -161,6 +161,17 @@ export const api: {
       string | null
     >;
   };
+  reserved: {
+    echo: FunctionReference<
+      "mutation",
+      "public",
+      { context?: any; run: string },
+      {
+        args: { run: string };
+        received: { deployment: string | null; requestId: string; value: any };
+      }
+    >;
+  };
 } = anyApi as any;
 
 /**
