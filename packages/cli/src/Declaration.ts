@@ -488,7 +488,11 @@ export const authProviders = (providers: ReadonlyArray<Provider>): string =>
 /**
  * `confect/_generated/manifest.ts`: plain data, no imports, for infra.
  */
-export const manifest = (declaration: Declaration, digest: string): string => {
+export const manifest = (
+  declaration: Declaration,
+  digest: string,
+  sections: Readonly<Record<string, unknown>> = {},
+): string => {
   const data = {
     name: declaration.name,
     env: Object.fromEntries(declaration.env),
@@ -500,9 +504,15 @@ export const manifest = (declaration: Declaration, digest: string): string => {
       ),
     },
     digest,
+    ...sections,
   };
-  return `${header("confect/env.ts and confect/app.ts")}\n\nexport default ${JSON.stringify(data, null, 2)} as const;\n`;
+  return renderManifest(data);
 };
+
+export const renderManifest = (
+  data: Readonly<Record<string, unknown>>,
+): string =>
+  `${header("confect/env.ts and confect/app.ts")}\n\nexport default ${JSON.stringify(data, null, 2)} as const;\n`;
 
 /**
  * A digest of the declaration's inputs: every first-party file its modules
@@ -512,6 +522,7 @@ export const manifest = (declaration: Declaration, digest: string): string => {
 export const digest = (input: {
   readonly files: ReadonlyArray<readonly [string, string]>;
   readonly versions: ReadonlyArray<readonly [string, string]>;
+  readonly sections?: Readonly<Record<string, unknown>>;
 }): string => {
   const hash = createHash("sha256");
   const byFirst = (
@@ -522,6 +533,7 @@ export const digest = (input: {
     JSON.stringify({
       files: [...input.files].sort(byFirst),
       versions: [...input.versions].sort(byFirst),
+      ...(input.sections === undefined ? {} : { sections: input.sections }),
     }),
   );
   return `sha256:${hash.digest("hex")}`;

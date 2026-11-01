@@ -48,9 +48,248 @@ vi.mock("esbuild", (importOriginal) =>
   })),
 );
 
+const manifestProject = Effect.gen(function* () {
+  const project = yield* Project.make;
+  yield* project.write(
+    "confect/app.ts",
+    `import { App, Env } from "@confect/core";
+export default App.make({ env: Env.make("host", {}) });`,
+  );
+  yield* project.write(
+    "confect/profile.ts",
+    `import { FunctionSpec } from "@confect/core";
+const tags = { owner: "test/tags", format: 1, describe: ({ spec }) => spec.description,
+check: (next, previous) => {
+if (next.functions["notes:list"] === "throw") throw new Error("check threw");
+return { errors: next.functions["notes:list"] === "second" && previous === undefined ? ["missing previous tags"] : Object.values(next.functions).includes("bad") ? ["bad tags"] : [], notes: [] }; } };
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags } });`,
+  );
+  const spec = (label: string) =>
+    Project.spec
+      .replace(
+        "export default",
+        'import { profile } from "./profile";\nexport default',
+      )
+      .replace("FunctionSpec.publicQuery", "profile.publicQuery")
+      .replace('name: "list"', `name: "list", description: "${label}"`);
+  const read = Bundler.bundle(
+    `${project.root}/confect/_generated/manifest.ts`,
+  ).pipe(Effect.map(({ module }) => module.default));
+  yield* project.write("confect/notes.spec.ts", spec("first"));
+  return { ...project, sectionSpec: spec, manifest: read };
+});
+
 layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
   "codegenHandler",
   (it) => {
+    it.effect(
+      "updates and drops sections on incremental spec edits",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* manifestProject;
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          const before = yield* project.manifest;
+          expect(before.tags).toEqual({
+            format: 1,
+            functions: { "notes:list": "first" },
+          });
+          yield* project.provide(generateWithSnapshot);
+          expect((yield* project.manifest).digest).toBe(before.digest);
+          const path = yield* Path.Path;
+          const manifest = path.join(
+            project.root,
+            "confect",
+            "_generated",
+            "manifest.ts",
+          );
+          const manifestWrites = (files: ReadonlyArray<string>) =>
+            files.filter((file) => file === manifest);
+          expect(
+            manifestWrites(
+              yield* Project.writtenFiles(
+                project.provide(generateWithSnapshot),
+              ),
+            ),
+          ).toEqual([]);
+          yield* project.write(
+            "confect/notes.spec.ts",
+            project.sectionSpec("second"),
+          );
+          const changes = [
+            {
+              _tag: "Spec",
+              relativePath: SpecModulePath.make("notes.spec.ts"),
+            },
+          ] as const;
+          const writes = yield* Project.writtenFiles(
+            project.provide(updateDeclarations(snapshot, changes, [])),
+          );
+          expect(manifestWrites(writes)).toEqual([manifest]);
+          const after = yield* project.manifest;
+          expect(after.tags).toEqual({
+            format: 1,
+            functions: { "notes:list": "second" },
+          });
+          expect(after.digest).not.toBe(before.digest);
+          yield* project.write("confect/notes.spec.ts", Project.spec);
+          yield* project.provide(updateDeclarations(snapshot, changes, []));
+          expect((yield* project.manifest).tags).toBeUndefined();
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect.each(
+      [
+        ["confect/notes.spec.ts", 'throw new Error("spec broke");'],
+        ["confect/notes.impl.ts", "export default 1;"],
+        ["confect/notes.spec.ts", "bad"],
+        ["confect/notes.spec.ts", "throw"],
+      ].flatMap(([file, contents]) =>
+        [false, true].map((incremental) => ({
+          file: file!,
+          contents: contents!,
+          incremental,
+        })),
+      ),
+    )(
+      "retains history only for unrelated failures in $file ($contents, incremental=$incremental)",
+      ({ file, contents, incremental }) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* manifestProject;
+          const sectionFailure = contents === "bad" || contents === "throw";
+          if (!sectionFailure)
+            yield* project.write("confect/notes.spec.ts", Project.spec);
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          yield* project.write(
+            file,
+            sectionFailure ? project.sectionSpec(contents) : contents,
+          );
+          const run = incremental
+            ? updateDeclarations(
+                snapshot,
+                [
+                  {
+                    _tag: "Spec",
+                    relativePath: SpecModulePath.make("notes.spec.ts"),
+                  },
+                ],
+                [],
+              ).pipe(Effect.asVoid)
+            : generateWithSnapshot.pipe(Effect.asVoid);
+          const result = yield* Effect.result(project.provide(run));
+          expect(result._tag).toBe("Failure");
+          if (contents === "throw")
+            expect(result).toMatchObject({
+              failure: {
+                _tag: "InvalidDeclarationError",
+                reason:
+                  'Manifest section "tags" check failed: Error: check threw',
+              },
+            });
+          expect(
+            yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
+          ).toBe(!sectionFailure);
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect("updates the declaration name while preserving sections", () =>
+      Effect.gen(function* () {
+        const project = yield* manifestProject;
+        yield* project.provide(generateWithSnapshot);
+        yield* project.write(
+          "confect/app.ts",
+          `import { App, Env } from "@confect/core";
+export default App.make({ env: Env.make("other", {}) });`,
+        );
+        yield* project.provide(generateWithSnapshot);
+        expect((yield* project.manifest).name).toBe("other");
+        expect((yield* project.manifest).tags).toEqual({
+          format: 1,
+          functions: { "notes:list": "first" },
+        });
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect.each(
+      [true, false].flatMap((sectioned) =>
+        [
+          "<<<<<<< HEAD\nexport default {};\n",
+          "",
+          "export const other = 1;",
+          "export default null;",
+        ].map((contents) => ({ sectioned, contents })),
+      ),
+    )(
+      "overwrites unusable history $contents (sectioned=$sectioned)",
+      ({ sectioned, contents }) =>
+        Effect.gen(function* () {
+          const project = yield* manifestProject;
+          if (!sectioned)
+            yield* project.write("confect/notes.spec.ts", Project.spec);
+          yield* project.provide(generateWithSnapshot);
+          yield* project.write("confect/_generated/manifest.ts", contents);
+          yield* project.provide(generateWithSnapshot);
+          expect((yield* project.manifest).name).toBe("host");
+          expect((yield* project.manifest).tags).toEqual(
+            sectioned
+              ? {
+                  format: 1,
+                  functions: { "notes:list": "first" },
+                }
+              : undefined,
+          );
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect.each([
+      { value: "1n", path: "$" },
+      { value: "() => 1", path: "$" },
+      {
+        value:
+          "(() => { const cycle = []; cycle.push(cycle); return cycle; })()",
+        path: '$["0"]',
+      },
+      {
+        value: "({ nested: { missing: undefined } })",
+        path: '$["nested"]["missing"]',
+      },
+      { value: "({ n: Infinity })", path: '$["n"]' },
+      {
+        value: "(() => { const a = {}; a.b = { a }; return { a }; })()",
+        path: '$["a"]["b"]["a"]',
+      },
+      { value: "({ m: new Map([[1, 2]]) })", path: '$["m"]' },
+      { value: '({ "": undefined })', path: '$[""]' },
+      { value: '({ "": { missing: undefined } })', path: '$[""]["missing"]' },
+      {
+        value: `JSON.parse('{"nested":{"__proto__":{"value":1}}}')`,
+        path: '$["nested"]["__proto__"]',
+      },
+    ])(
+      "reports non-JSON description $value at $path through codegen",
+      ({ value, path }) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* manifestProject;
+          yield* project.write(
+            "confect/profile.ts",
+            `import { FunctionSpec } from "@confect/core";
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: { owner: "test/tags", format: 1, describe: () => ${value} } } });`,
+          );
+          expect(
+            yield* Effect.flip(project.provide(generateWithSnapshot)),
+          ).toMatchObject({
+            _tag: "InvalidDeclarationError",
+            declarationPath: "confect/notes.spec.ts",
+            reason: `Manifest section "tags" (notes:list): could not describe as JSON: TypeError: Expected JSON data at ${path}`,
+          });
+          expect(
+            yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
+          ).toBe(false);
+        }).pipe(Effect.scoped),
+    );
+
     it.effect.each([
       { builder: "publicMutation", nested: false },
       { builder: "publicAction", nested: false },

@@ -1,3 +1,5 @@
+import type { GroupSpec } from "@confect/core";
+import { collect } from "@confect/cli/ManifestSections";
 import { pathToFileURL } from "node:url";
 import * as FileSystem from "effect/FileSystem";
 import * as Console from "effect/Console";
@@ -312,7 +314,9 @@ const fixture = Effect.fn("Bundler.test.fixture")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const directory = yield* fs.makeTempDirectoryScoped();
+  const directory = yield* fs.makeTempDirectoryScoped({
+    directory: import.meta.dirname,
+  });
   for (const [name, contents] of Object.entries(files)) {
     const file = path.join(directory, name);
     yield* fs.makeDirectory(path.dirname(file), { recursive: true });
@@ -363,7 +367,11 @@ layer(BundlerLayer)("withBatch", (it) => {
       Effect.gen(function* () {
         const { file } = yield* fixture({
           "tsconfig.json": "{}",
-          "shared.ts": "export const shared = {};",
+          "shared.ts": `import { FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+const tags = { owner: "test/tags", format: 1, describe: () => "shared" };
+const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags } });
+export const shared = GroupSpec.make().addFunction(profile.publicMutation({ name: "save", returns: () => Schema.Void }));`,
           "first.ts": 'export { shared } from "./shared";',
           "nested/second.ts": 'export { shared } from "../shared";',
           ...files,
@@ -386,6 +394,19 @@ layer(BundlerLayer)("withBatch", (it) => {
         yield* Effect.gen(function* () {
           const results = yield* run;
           expect(results[0]?.module.shared).not.toBe(results[1]?.module.shared);
+          const collected = Result.getOrThrow(
+            collect(
+              results.map(({ module }, i) => ({
+                spec: module.shared as GroupSpec.AnyWithProps,
+                pathSegments: [String(i)],
+                relativePath: `${i}.spec.ts`,
+              })),
+            ),
+          );
+          expect(collected.get("tags")?.data).toEqual({
+            format: 1,
+            functions: { "0:save": "shared", "1:save": "shared" },
+          });
           expect(events).toHaveLength(1);
           expect(events[0]).toMatchObject({
             logLevel: "Debug",

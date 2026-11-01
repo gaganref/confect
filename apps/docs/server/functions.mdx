@@ -293,3 +293,32 @@ A runtime layer can provide `RegisteredFunction.Forward`, a synchronous `(span: 
 `Scheduler.runAfter` and `Scheduler.runAt` open spans of those names, and each call through an action-call profile opens an `ActionCall.call` span. A successful scheduling span ends with the scheduled job ID; a rejected scheduling call ends with its failure.
 
 The generic transport fixture lives in `packages/server/test/local-backend/reservedArgument.test.ts`. The existing local-backend CI job checks arbitrary incoming values, root metadata, runner boundary hops, an inline owned component, an ordinary strict component call and a scheduled mutation whose received context is read back through a query. The local-backend fixture app always runs with a runtime layer and uses generated registrations and refs. Its scheduled polling uses live time. Unit and mock-backend suites cover the no-layer path, both scheduling methods and a throwing forward provider without starting a backend.
+
+## Profile manifest sections
+
+A profile can supply data it derives from its functions for tools that read the manifest.
+
+```ts
+import { FunctionSpec, type ManifestSection } from "@confect/core";
+
+const tags: ManifestSection.ManifestSection<string> = {
+  owner: "example/tags",
+  format: 1,
+  describe: ({ path }) => path,
+};
+const Tagged = FunctionSpec.extend()({ middleware: [], manifest: { tags } });
+```
+
+Declared app codegen writes `tags: { format: 1, functions: { "notes:list": "notes:list" } }` in `confect/_generated/manifest.ts`. `describe` receives the registered `path`, the `spec` and its group and function `middleware`. Callbacks run after specs load, including in `confect dev`, where spec edits update section data and the digest and remove sections without participants; importing a profile never runs them. Components do not emit sections.
+
+Section data contributes to the digest. Sections survive profile extension and middleware. Each section declares a stable `owner` string. Definitions under one key agree when their owner and format agree, including when the bundler evaluates a shared profile separately. Conflicts name both owners and formats. Keys `name`, `env`, `http`, `digest`, `__proto__`, `constructor` and `prototype` are refused. Callbacks must preserve their inputs.
+
+### Description values must be JSON
+
+Descriptions must contain only JSON data: plain objects, arrays, strings, finite numbers, booleans and `null`. BigInt, functions, undefined properties, non-finite numbers, cycles, and objects such as `Map`, `Set` or class instances fail codegen with `InvalidDeclarationError`. The diagnostic names the section, function, declaring spec and JSON path, such as `$["nested"]["missing"]`. Empty property names remain in the path, for example `$[""]["missing"]`. Own `__proto__` properties are refused at their path because generated object literals cannot preserve them as data. A failing description removes the manifest through section failure cleanup.
+
+### Check sections against previous output
+
+An optional `check(next, previous)` returns `{ errors: string[], notes: string[] }`. `next` contains `format` and `functions`; `previous` is the old section as `unknown`, or `undefined` when no usable previous section exists. Validate its format before comparing. An unreadable, empty, missing-default or null previous manifest supplies no sections. Every note prints and any error fails codegen. A thrown check becomes a typed diagnostic; errors from every failing section are reported. Only a failing section step removes the manifest; unrelated spec or implementation failures retain the manifest and its previous sections. The early declaration write carries previous sections forward while applying declaration edits. Files whose content is unchanged are not written or logged as modified.
+
+When the last participant leaves a previous section, codegen prints one generic note naming the section and its previous function paths. No callback remains to run, so per-key removal notes are not promised then. While participants remain, the section's `check` owns those notes. This applies to full generation and spec edits in `confect dev`.
