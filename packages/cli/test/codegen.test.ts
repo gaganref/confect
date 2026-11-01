@@ -79,31 +79,43 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags 
 layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
   "codegenHandler",
   (it) => {
-    it.effect("updates and drops sections on incremental spec edits", () =>
-      Effect.gen(function* () {
-        const project = yield* manifestProject;
-        const { snapshot } = yield* project.provide(generateWithSnapshot);
-        const before = yield* project.manifest;
-        yield* project.write(
-          "confect/notes.spec.ts",
-          project.sectionSpec("second"),
-        );
-        const changes = [
-          { _tag: "Spec", relativePath: SpecModulePath.make("notes.spec.ts") },
-        ] as const;
-        const next = yield* project.provide(
-          updateDeclarations(snapshot, changes, []),
-        );
-        const after = yield* project.manifest;
-        expect(after.tags).toEqual({
-          format: 1,
-          functions: { "notes:list": "second" },
-        });
-        expect(after.digest).not.toBe(before.digest);
-        yield* project.write("confect/notes.spec.ts", Project.spec);
-        yield* project.provide(updateDeclarations(next, changes, []));
-        expect((yield* project.manifest).tags).toBeUndefined();
-      }).pipe(Effect.scoped),
+    it.effect(
+      "updates and drops sections on incremental spec edits",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* manifestProject;
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          const before = yield* project.manifest;
+          expect(before.tags).toEqual({
+            format: 1,
+            functions: { "notes:list": "first" },
+          });
+          yield* project.provide(generateWithSnapshot);
+          expect((yield* project.manifest).digest).toBe(before.digest);
+          yield* project.write(
+            "confect/notes.spec.ts",
+            project.sectionSpec("second"),
+          );
+          const changes = [
+            {
+              _tag: "Spec",
+              relativePath: SpecModulePath.make("notes.spec.ts"),
+            },
+          ] as const;
+          const next = yield* project.provide(
+            updateDeclarations(snapshot, changes, []),
+          );
+          const after = yield* project.manifest;
+          expect(after.tags).toEqual({
+            format: 1,
+            functions: { "notes:list": "second" },
+          });
+          expect(after.digest).not.toBe(before.digest);
+          yield* project.write("confect/notes.spec.ts", Project.spec);
+          yield* project.provide(updateDeclarations(next, changes, []));
+          expect((yield* project.manifest).tags).toBeUndefined();
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
     );
 
     it.effect.each([
