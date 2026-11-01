@@ -85,8 +85,15 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
         const project = yield* manifestProject;
         const { snapshot } = yield* project.provide(generateWithSnapshot);
         const before = yield* project.manifest;
+        const path = yield* Path.Path;
+        const manifest = path.join(
+          project.root,
+          "confect",
+          "_generated",
+          "manifest.ts",
+        );
         const manifestWrites = (files: ReadonlyArray<string>) =>
-          files.filter((file) => file.endsWith("/_generated/manifest.ts"));
+          files.filter((file) => file === manifest);
         expect(
           manifestWrites(
             yield* Project.writtenFiles(project.provide(generateWithSnapshot)),
@@ -102,9 +109,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
         const writes = yield* Project.writtenFiles(
           project.provide(updateDeclarations(snapshot, changes, [])),
         );
-        expect(manifestWrites(writes)).toEqual([
-          `${project.root}/confect/_generated/manifest.ts`,
-        ]);
+        expect(manifestWrites(writes)).toEqual([manifest]);
         const after = yield* project.manifest;
         expect(after.tags).toEqual({
           format: 1,
