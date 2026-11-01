@@ -152,8 +152,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
                   },
                 ],
                 [],
-              )
-            : generateWithSnapshot;
+              ).pipe(Effect.asVoid)
+            : generateWithSnapshot.pipe(Effect.asVoid);
           expect((yield* Effect.result(project.provide(run)))._tag).toBe(
             "Failure",
           );

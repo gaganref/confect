@@ -110,6 +110,7 @@ export const check = (
       !reserved.has(key) &&
       !registry.has(key) &&
       Predicate.isObjectOrArray(value) &&
+      "functions" in value &&
       Predicate.isObjectOrArray(value.functions)
     )
       notes.push(
