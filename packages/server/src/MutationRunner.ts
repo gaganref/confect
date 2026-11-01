@@ -1,4 +1,5 @@
-import * as Ref from "@confect/core/Ref";
+import * as ReservedArgument from "./internal/reservedArgument.js";
+import type * as Ref from "@confect/core/Ref";
 import type { GenericActionCtx } from "convex/server";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -46,7 +47,7 @@ const make = (nativeRunMutation: GenericActionCtx<any>["runMutation"]) => {
             yield* MutationTransactionContext.MutationTransactionContext;
           return yield* controls.runMutation(mutation, actualArgs, options);
         }
-        return yield* Ref.runWithCodec(
+        return yield* ReservedArgument.runWithCodec(
           mutation,
           actualArgs,
           (ref, encodedArgs) => nativeRunMutation(ref, encodedArgs),

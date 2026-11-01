@@ -1,3 +1,5 @@
+import * as Forwarding from "./internal/forwarding";
+import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import { FunctionSpec, Ref } from "@confect/core";
 import * as ActionRunner from "@confect/server/ActionRunner";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
@@ -109,3 +111,19 @@ describe("ActionRunner", () => {
     },
   );
 });
+
+it.effect.each(Forwarding.cases)(
+  "ActionRunner forwards $label only to a reserving target",
+  ({ forward, enabled }) =>
+    Effect.flatMap(ActionRunner.ActionRunner, (runner) =>
+      Forwarding.check(
+        Forwarding.actions,
+        runner.runAction,
+        "ActionRunner.runAction",
+        enabled,
+      ),
+    ).pipe(
+      Effect.provide(ActionRunner.layer(Forwarding.echo)),
+      Effect.provideService(RegisteredFunction.Forward, forward),
+    ),
+);

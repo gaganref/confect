@@ -1,3 +1,4 @@
+import * as ReservedArgument from "./internal/reservedArgument.js";
 import * as Ref from "@confect/core/Ref";
 import type {
   AdvancedRunQueryOptions,
@@ -32,7 +33,7 @@ const make = (
       args: Ref.Args<Mutation>,
       options: MutationOptions,
     ) =>
-      Ref.runWithCodec(mutation, args, (ref, encodedArgs) =>
+      ReservedArgument.runWithCodec(mutation, args, (ref, encodedArgs) =>
         ctx.runMutation(ref, encodedArgs, options),
       ),
   ),

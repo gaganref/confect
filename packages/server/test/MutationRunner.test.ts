@@ -1,3 +1,5 @@
+import * as Forwarding from "./internal/forwarding";
+import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import { FunctionSpec, Ref } from "@confect/core";
 import * as MutationRunner from "@confect/server/MutationRunner";
 import * as MutationTransactionContext from "@confect/server/MutationTransactionContext";
@@ -214,3 +216,19 @@ describe("MutationRunner", () => {
       }).pipe(Effect.provide(MutationRunner.layer(vi.fn()))),
   );
 });
+
+it.effect.each(Forwarding.cases)(
+  "MutationRunner forwards $label only to a reserving target",
+  ({ forward, enabled }) =>
+    Effect.flatMap(MutationRunner.MutationRunner, (runner) =>
+      Forwarding.check(
+        Forwarding.mutations,
+        (target, args) => runner.runMutation(target, args),
+        "MutationRunner.runMutation",
+        enabled,
+      ),
+    ).pipe(
+      Effect.provide(MutationRunner.layer(Forwarding.echo)),
+      Effect.provideService(RegisteredFunction.Forward, forward),
+    ),
+);

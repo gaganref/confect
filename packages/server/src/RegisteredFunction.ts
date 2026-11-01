@@ -1,3 +1,4 @@
+export { Forward } from "./internal/reservedArgument.js";
 import * as ActionCallSpec from "@confect/core/ActionCall";
 import * as ActionCall from "./ActionCall.js";
 import type { FunctionSpec, RuntimeAndFunctionType } from "@confect/core";

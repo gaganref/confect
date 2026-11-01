@@ -1,4 +1,5 @@
-import * as Ref from "@confect/core/Ref";
+import * as ReservedArgument from "./internal/reservedArgument.js";
+import type * as Ref from "@confect/core/Ref";
 import { type GenericActionCtx } from "convex/server";
 import * as Effect from "effect/Effect";
 import * as Context from "effect/Context";
@@ -18,7 +19,7 @@ const make = (runAction: GenericActionCtx<any>["runAction"]) => ({
     Ref.Error<Action> | Schema.SchemaError
   > =>
     run(
-      Ref.runWithCodec(
+      ReservedArgument.runWithCodec(
         action,
         (args[0] ?? {}) as Ref.Args<Action>,
         (functionReference, encodedArgs) =>

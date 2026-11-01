@@ -1,3 +1,5 @@
+import * as Forwarding from "./internal/forwarding";
+import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import { FunctionSpec, Ref } from "@confect/core";
 import { MutationTransactionContext as BarrelControls } from "@confect/server";
 import * as MutationTransactionContext from "@confect/server/MutationTransactionContext";
@@ -138,3 +140,27 @@ describe("MutationTransactionContext", () => {
     },
   );
 });
+
+it.effect.each(Forwarding.cases)(
+  "MutationTransactionContext forwards $label only to a reserving target",
+  ({ forward, enabled }) =>
+    Forwarding.check(
+      Forwarding.mutations,
+      (target) =>
+        Effect.flatMap(
+          MutationTransactionContext.MutationTransactionContext,
+          (runner) =>
+            runner.runMutation(target, { count: 1 }, { transactionLimits: {} }),
+        ),
+      "MutationTransactionContext.runMutation",
+      enabled,
+    ).pipe(
+      Effect.provide(
+        MutationTransactionContext.layer({
+          runQuery: Forwarding.echo,
+          runMutation: Forwarding.echo,
+        }),
+      ),
+      Effect.provideService(RegisteredFunction.Forward, forward),
+    ),
+);

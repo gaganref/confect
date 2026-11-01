@@ -1,3 +1,4 @@
+import * as ReservedArgument from "./internal/reservedArgument.js";
 import type * as IdScope from "@confect/core/IdScope";
 import { Ref } from "@confect/core";
 import type { GenericId } from "@confect/core/GenericId";
@@ -12,38 +13,34 @@ import * as Layer from "effect/Layer";
 const make = (scheduler: ConvexScheduler) => ({
   cancel: (id: ConvexGenericId<"_scheduled_functions">) =>
     Effect.promise(() => scheduler.cancel(id)),
-  runAfter: <Ref_ extends Ref.AnyMutation | Ref.AnyAction>(
-    delay: Duration.Duration,
-    ref: Ref_,
-    ...args: Ref.OptionalArgs<Ref_>
-  ) => {
+  runAfter: Effect.fn("Scheduler.runAfter")(function* <
+    Ref_ extends Ref.AnyMutation | Ref.AnyAction,
+  >(delay: Duration.Duration, ref: Ref_, ...args: Ref.OptionalArgs<Ref_>) {
     const delayMs = Duration.toMillis(delay);
     const functionReference = Ref.getFunctionReference(ref);
-    const encodedArgs = Ref.encodeArgsSync(
+    const encodedArgs = yield* ReservedArgument.encodeArgs(
       ref,
       (args[0] ?? {}) as Ref.Args<Ref_>,
     );
 
-    return Effect.promise(() =>
+    return yield* Effect.promise(() =>
       scheduler.runAfter(delayMs, functionReference, encodedArgs),
     );
-  },
-  runAt: <Ref_ extends Ref.AnyMutation | Ref.AnyAction>(
-    dateTime: DateTime.DateTime,
-    ref: Ref_,
-    ...args: Ref.OptionalArgs<Ref_>
-  ) => {
+  }),
+  runAt: Effect.fn("Scheduler.runAt")(function* <
+    Ref_ extends Ref.AnyMutation | Ref.AnyAction,
+  >(dateTime: DateTime.DateTime, ref: Ref_, ...args: Ref.OptionalArgs<Ref_>) {
     const timestamp = DateTime.toEpochMillis(dateTime);
     const functionReference = Ref.getFunctionReference(ref);
-    const encodedArgs = Ref.encodeArgsSync(
+    const encodedArgs = yield* ReservedArgument.encodeArgs(
       ref,
       (args[0] ?? {}) as Ref.Args<Ref_>,
     );
 
-    return Effect.promise(() =>
+    return yield* Effect.promise(() =>
       scheduler.runAt(timestamp, functionReference, encodedArgs),
     );
-  },
+  }),
 });
 
 export const Scheduler = Context.Service<ReturnType<typeof make>>(
