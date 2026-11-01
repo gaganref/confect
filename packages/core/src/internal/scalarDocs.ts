@@ -20,9 +20,11 @@ const escapeJson = (value: unknown) =>
     .replaceAll("\u2028", "\\u2028")
     .replaceAll("\u2029", "\\u2029");
 
-// WORKAROUND: Effect's Scalar module also imports the inline script dynamically.
-// Convex splits even that unused import with keepNames. Remove this CDN-only
-// renderer when Convex's bundler drops unused dynamic imports without chunks.
+// WORKAROUND: Effect 4.0.6's HttpApiScalar module imports its inline Scalar
+// script dynamically, and Convex's bundler then splits a schema that reaches it
+// into an imported chunk, which Convex refuses. This copies `layerCdn`'s page
+// byte for byte. Remove when `checkSchemaBundle.mjs` passes with
+// `HttpApiScalar.layerCdn` restored.
 export const scalarDocs = <
   Id extends string,
   Groups extends HttpApiGroup.Constraint,
@@ -38,23 +40,27 @@ export const scalarDocs = <
       Effect.sync(() => {
         if (response !== undefined) return response;
         const spec = OpenApi.fromApi(api);
-        const description = spec.info.description
-          ? `<meta name="description" content="${escapeAttribute(spec.info.description)}"/><meta name="og:description" content="${escapeAttribute(spec.info.description)}"/>`
-          : "";
+        const description = (tag: string) =>
+          !spec.info.description
+            ? ""
+            : `<meta name="${tag}" content="${escapeAttribute(spec.info.description)}"/>`;
         response = HttpServerResponse.html(`<!doctype html>
 <html>
   <head>
     <meta charset="utf-8" />
     <title>${escape(spec.info.title)}</title>
-    ${description}
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    ${description("description")}
+    ${description("og:description")}
+    <meta
+      name="viewport"
+      content="width=device-width, initial-scale=1" />
   </head>
   <body>
     <div id="api-reference-container"></div>
-    <script src="https://cdn.jsdelivr.net/npm/@scalar/api-reference@latest/dist/browser/standalone.min.js" crossorigin></script>
+    <script src="${escapeAttribute("https://cdn.jsdelivr.net/npm/@scalar/api-reference@latest/dist/browser/standalone.min.js")}" crossorigin></script>
     <script>
       window.Scalar.createApiReference(document.getElementById('api-reference-container'), {
-        _integration: "html",
+        ...${escapeJson({ _integration: "html" })},
         content: ${escapeJson(spec)}
       })
     </script>

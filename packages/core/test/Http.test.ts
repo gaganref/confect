@@ -12,6 +12,7 @@ import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
+import * as HttpApiScalar from "effect/http-api/HttpApiScalar";
 
 const counter = defineComponent("counter");
 const workpool = defineComponent("workpool");
@@ -76,16 +77,23 @@ describe("Http", () => {
             expect(response.status).toBe(200);
             expect(response.headers.get("content-type")).toContain("text/html");
             const body = yield* Effect.promise(() => response.text());
-            expect(body).toContain("<title>A &lt; B &amp; C</title>");
+            const effect = HttpRouter.toWebHandler(
+              HttpApiScalar.layerCdn(api).pipe(
+                Layer.provide(HttpServer.layerServices),
+              ),
+              { disableLogger: true },
+            );
+            const expected = yield* Effect.promise(() =>
+              effect.handler(new Request("https://example.com/docs")),
+            );
+            expect(body).toBe(yield* Effect.promise(() => expected.text()));
+            expect(Object.fromEntries(response.headers)).toEqual(
+              Object.fromEntries(expected.headers),
+            );
+            yield* Effect.promise(effect.dispose);
             expect(body).toContain(
               'content="&quot;quoted&quot; &lt;/script&gt;"',
             );
-            expect(body).toContain("\\u003c/script>");
-            expect(body).toContain(
-              "https://cdn.jsdelivr.net/npm/@scalar/api-reference@latest/dist/browser/standalone.min.js",
-            );
-            expect(body).toContain('"/meta"');
-            expect(body).toContain("window.Scalar.createApiReference");
             const endpoint = yield* Effect.promise(() =>
               web.handler(new Request("https://example.com/meta")),
             );
