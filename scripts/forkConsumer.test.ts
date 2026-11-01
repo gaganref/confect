@@ -30,7 +30,7 @@ test("pins all eight public aliases to the requested fork build", () => {
       react: "19.3.0",
       convex: "1.48.0",
       "convex-test": "0.0.65",
-      effect: "4.0.4",
+      effect: "4.0.6",
       "@effect/platform-node": "4.0.4",
       "counter-kit": "link:./kits/counter-kit",
     },
@@ -109,7 +109,7 @@ test("writes and refreshes a consumer with aligned peers", () =>
   - "@gaganref/confect-cli@10.2.0-fork.0"
 
 overrides:
-  effect: 4.0.4
+  effect: 4.0.6
   convex: 1.48.0
   "@effect/platform-node": 4.0.4
   "@effect/platform-node-shared": 4.0.4

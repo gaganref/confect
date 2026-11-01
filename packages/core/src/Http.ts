@@ -7,7 +7,7 @@ import * as SchemaAST from "effect/SchemaAST";
 import type * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import type * as HttpApiGroup from "effect/http-api/HttpApiGroup";
-import * as HttpApiScalar from "effect/http-api/HttpApiScalar";
+import { scalarDocs } from "./internal/scalarDocs.js";
 import * as App from "./App.js";
 
 const TypeId = "~@confect/core/Http";
@@ -57,10 +57,7 @@ export const make = <
   const routes =
     options.docs === undefined
       ? api
-      : Layer.merge(
-          api,
-          HttpApiScalar.layerCdn(options.api, { path: options.docs }),
-        );
+      : Layer.merge(api, scalarDocs(options.api, options.docs));
   const http: Http<HttpApi.HttpApi<Id, Groups>, typeof routes> = {
     [TypeId]: TypeId,
     api: options.api,
