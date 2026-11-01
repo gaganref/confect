@@ -43,7 +43,8 @@ export default App.make({ env: Env.make("host", {}) });`,
           `import { FunctionSpec } from "@confect/core";
 const tags = { owner: "test/tags", format: 1, describe: ({ spec }) => spec.description,
 check: (next, previous) => ({ errors: Object.values(next.functions).includes("bad") ? ["bad tags", "bad tags", "invalid entry"] : [], notes: [String(Object.keys(previous?.functions ?? {}).length) + " previous entries", "tags checked"] }) };
-export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags } });`,
+const other = { ...tags, check: (next) => ({ errors: Object.values(next.functions).includes("bad") ? ["other failed"] : [], notes: [] }) };
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags, other } });`,
         );
         const spec = (label: string) =>
           Project.spec
@@ -83,6 +84,7 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags 
         for (const message of [
           "bad tags",
           "invalid entry",
+          "other failed",
           "1 previous entries",
           "tags checked",
         ])
