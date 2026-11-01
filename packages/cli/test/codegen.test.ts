@@ -119,6 +119,47 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect.each([
+      ["confect/notes.spec.ts", 'throw new Error("spec broke");'],
+      ["confect/notes.impl.ts", "export default 1;"],
+    ])(
+      "keeps the manifest after an unrelated failure in %s",
+      ([file, contents]) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          yield* project.write(
+            "confect/app.ts",
+            `import { App, Env } from "@confect/core";
+export default App.make({ env: Env.make("host", {}) });`,
+          );
+          yield* project.provide(generateWithSnapshot);
+          yield* project.write(file!, contents!);
+          expect(
+            (yield* Effect.result(project.provide(generateWithSnapshot)))._tag,
+          ).toBe("Failure");
+          expect(
+            yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
+          ).toBe(true);
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect("overwrites an unreadable previous manifest", () =>
+      Effect.gen(function* () {
+        const project = yield* manifestProject;
+        yield* project.provide(generateWithSnapshot);
+        yield* project.write(
+          "confect/_generated/manifest.ts",
+          "<<<<<<< HEAD\nexport default {};\n",
+        );
+        yield* project.provide(generateWithSnapshot);
+        expect((yield* project.manifest).tags).toEqual({
+          format: 1,
+          functions: { "notes:list": "first" },
+        });
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect.each([
       { builder: "publicMutation", nested: false },
       { builder: "publicAction", nested: false },
       { builder: "publicNodeAction", nested: false },

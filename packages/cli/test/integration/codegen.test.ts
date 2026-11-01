@@ -23,6 +23,112 @@ const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
 layer(NodeServices.layer)("built confect codegen", (it) => {
   it.effect(
+    "checks previous sections, removes only a failed section manifest and notes vanished sections",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* Project.make;
+        const fs = yield* FileSystem.FileSystem;
+        yield* project.write(
+          "confect/app.ts",
+          `import { App, Env } from "@confect/core";
+export default App.make({ env: Env.make("host", {}) });`,
+        );
+        yield* project.write(
+          "confect/profile.ts",
+          `import { FunctionSpec } from "@confect/core";
+const tags = { owner: "test/tags", format: 1, describe: ({ spec }) => spec.description,
+check: (next, previous) => ({ errors: Object.values(next.functions).includes("bad") ? ["bad tags", "bad tags", "invalid entry"] : [], notes: [String(Object.keys(previous?.functions ?? {}).length) + " previous entries", "tags checked"] }) };
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags } });`,
+        );
+        const spec = (label: string) =>
+          Project.spec
+            .replace(
+              "export default",
+              'import { profile } from "./profile";\nexport default',
+            )
+            .replace("FunctionSpec.publicQuery", "profile.publicQuery")
+            .replace('name: "list"', `name: "list", description: "${label}"`);
+        const run = Effect.gen(function* () {
+          const process = yield* project.start("codegen");
+          return {
+            exit: yield* process.handle.exitCode,
+            output: yield* Ref.get(process.output),
+          };
+        });
+        yield* project.write("confect/notes.spec.ts", spec("first"));
+        const first = yield* run;
+        expect(first.exit, first.output).toBe(0);
+        expect(first.output).toContain("0 previous entries");
+        yield* project.write("confect/notes.spec.ts", spec("bad"));
+        const failed = yield* run;
+        expect(failed.exit).not.toBe(0);
+        for (const message of [
+          "bad tags",
+          "invalid entry",
+          "1 previous entries",
+          "tags checked",
+        ])
+          expect(failed.output.split(message)).toHaveLength(2);
+        expect(failed.output).toContain("confect/notes.spec.ts is invalid");
+        expect(
+          yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
+        ).toBe(false);
+        yield* project.write("confect/notes.spec.ts", spec("restored"));
+        expect((yield* run).exit).toBe(0);
+        yield* project.write("confect/notes.spec.ts", Project.spec);
+        const vanished = yield* run;
+        expect(vanished.exit, vanished.output).toBe(0);
+        expect(vanished.output).toContain(
+          'Manifest section "tags" no longer has participants. Previous functions: notes:list.',
+        );
+        expect(vanished.output).not.toContain("tags checked");
+      }),
+    { timeout: 30000 },
+  );
+
+  it.effect(
+    "writes sections and a stable content digest",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* Project.make;
+        yield* project.write(
+          "confect/app.ts",
+          `import { App, Env } from "@confect/core";
+export default App.make({ env: Env.make("host", {}) });`,
+        );
+        const spec = (label: string) =>
+          Project.spec
+            .replace(
+              "export default",
+              `const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: { owner: "test/tags", format: 1, describe: () => "${label}" } } });\nexport default`,
+            )
+            .replace("FunctionSpec.publicQuery", "profile.publicQuery");
+        const run = Effect.gen(function* () {
+          const process = yield* project.start("codegen");
+          expect(yield* process.handle.exitCode).toBe(0);
+        });
+        const read = Bundler.bundle(
+          `${project.root}/confect/_generated/manifest.ts`,
+        ).pipe(Effect.map(({ module }) => module.default));
+        yield* project.write("confect/notes.spec.ts", spec("first"));
+        yield* run;
+        const before = yield* read;
+        expect(before.tags).toEqual({
+          format: 1,
+          functions: { "notes:list": "first" },
+        });
+        yield* project.write("confect/notes.spec.ts", spec("second"));
+        yield* run;
+        const after = yield* read;
+        expect(after.tags.functions).toEqual({ "notes:list": "second" });
+        expect(after.digest).not.toBe(before.digest);
+        yield* run;
+        expect((yield* read).digest).toBe(after.digest);
+      }),
+    { timeout: 30000 },
+  );
+
+  it.effect(
     "lowers deployment JWT providers from a clean checkout without reading env",
     () =>
       Effect.gen(function* () {
