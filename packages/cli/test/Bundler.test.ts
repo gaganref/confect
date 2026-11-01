@@ -368,9 +368,10 @@ layer(BundlerLayer)("withBatch", (it) => {
         const { file } = yield* fixture({
           "tsconfig.json": "{}",
           "shared.ts": `import { FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
 const tags = { owner: "test/tags", format: 1, describe: () => "shared" };
 const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags } });
-export const shared = GroupSpec.make().addFunction(profile.publicMutation({ name: "save" }));`,
+export const shared = GroupSpec.make().addFunction(profile.publicMutation({ name: "save", returns: () => Schema.Void }));`,
           "first.ts": 'export { shared } from "./shared";',
           "nested/second.ts": 'export { shared } from "../shared";',
           ...files,
