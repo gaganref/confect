@@ -51,6 +51,98 @@ vi.mock("esbuild", (importOriginal) =>
 layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
   "codegenHandler",
   (it) => {
+    it.effect.each(["publicMutation", "publicAction", "publicNodeAction"])(
+      "rejects a reserved domain argument in %s before loading its implementation",
+      (builder) =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          yield* project.write(
+            "confect/notes.spec.ts",
+            `
+import { FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+const profile = FunctionSpec.extend()({ middleware: [], reservedArgument: "context" });
+export default GroupSpec.make().addFunction(profile.${builder}({
+  name: "list", args: () => ({ context: Schema.String })
+}));`,
+          );
+          yield* project.write(
+            "confect/notes.impl.ts",
+            'throw new Error("impl must not load");',
+          );
+          expect(yield* Effect.flip(project.provide(codegenHandler))).toEqual(
+            new InvalidDeclarationError({
+              declarationPath: "confect/notes.spec.ts",
+              reason:
+                'notes:list declares the argument "context", which its profile reserves. Rename the argument.',
+            }),
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect.each(["publicQuery", "publicMutation"])(
+      "accepts a profile %s with ordinary domain arguments",
+      (builder) =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          yield* project.write(
+            "confect/notes.spec.ts",
+            Project.spec
+              .replace(
+                "export default",
+                'const profile = FunctionSpec.extend()({ middleware: [], reservedArgument: "context" });\nexport default',
+              )
+              .replace("FunctionSpec.publicQuery", `profile.${builder}`),
+          );
+          const result = yield* project.provide(codegenHandler);
+          expect([...result.functionPaths].map((fn) => fn.name)).toEqual([
+            "list",
+          ]);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "rejects a reserved domain argument during incremental codegen",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          yield* project.write(
+            "confect/notes.spec.ts",
+            `
+import { FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+const profile = FunctionSpec.extend()({ middleware: [], reservedArgument: "context" });
+export default GroupSpec.make().addFunction(profile.publicMutation({ name: "list", args: () => ({ context: Schema.String }) }));`,
+          );
+          expect(
+            yield* Effect.flip(
+              project.provide(
+                updateDeclarations(
+                  snapshot,
+                  [
+                    {
+                      _tag: "Spec",
+                      relativePath: SpecModulePath.make("notes.spec.ts"),
+                    },
+                  ],
+                  [],
+                ),
+              ),
+            ),
+          ).toEqual(
+            new InvalidDeclarationError({
+              declarationPath: "confect/notes.spec.ts",
+              reason:
+                'notes:list declares the argument "context", which its profile reserves. Rename the argument.',
+            }),
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
     it.effect.each([
       "schema.spec.ts",
       "http.spec.ts",

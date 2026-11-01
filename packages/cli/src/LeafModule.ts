@@ -16,6 +16,7 @@ import * as String from "effect/String";
 import { fromBundlerError } from "./BuildError.js";
 import * as Bundler from "./Bundler.js";
 import {
+  InvalidDeclarationError,
   MissingImplFileError,
   MissingSpecFileError,
   ImplMissingDefaultLayerError,
@@ -247,6 +248,30 @@ const validateClientSafety = Effect.fnUntraced(function* (
   }
 });
 
+const validateReservedArguments = Effect.fnUntraced(function* (
+  group: GroupSpec.AnyWithProps,
+  specPath: string,
+  groupPath: string,
+): Effect.fn.Return<void, InvalidDeclarationError> {
+  for (const spec of Object.values(group.functions)) {
+    const name = spec.reservedArgument;
+    const provenance = spec.functionProvenance;
+    if (
+      name !== undefined &&
+      provenance._tag === "Confect" &&
+      Object.hasOwn(provenance.args.fields, name)
+    ) {
+      return yield* new InvalidDeclarationError({
+        declarationPath: `confect/${specPath}`,
+        reason: `${groupPath}:${spec.name} declares the argument "${name}", which its profile reserves. Rename the argument.`,
+      });
+    }
+  }
+  for (const [name, child] of Object.entries(group.groups)) {
+    yield* validateReservedArguments(child, specPath, `${groupPath}/${name}`);
+  }
+});
+
 /**
  * Validate that the leaf's spec file default-exports a `GroupSpec`, and that
  * nothing it reaches drags server code into the client (see
@@ -271,6 +296,11 @@ export const loadSpec = Effect.fn("LeafModule.loadSpec")(function* (
   }
 
   yield* validateClientSafety(leaf, bundled);
+  yield* validateReservedArguments(
+    groupSpec,
+    leaf.relativePath,
+    leaf.pathSegments.join("/"),
+  );
 
   yield* Effect.fromResult(GroupSpec.validateMiddleware(groupSpec)).pipe(
     Effect.mapError(

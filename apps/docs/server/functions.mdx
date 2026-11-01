@@ -282,7 +282,7 @@ Internal mutation, action and Node action builders accept the same `reservedArgu
 
 The name survives profile extension, middleware and component refs as `spec.reservedArgument` and `ref.reservedArgument`. Queries and paginated queries ignore it so their cache keys stay unchanged. Schemas remain lazy.
 
-Registration adds an optional `any` validator under that name and removes the value before domain argument decoding. Middleware and handlers receive only domain arguments. A domain argument with the reserved name fails registration and names the function and argument. The domain args schema and optimistic updates do not gain the field.
+Registration adds an optional `any` validator under that name and removes the value before domain argument decoding. Middleware and handlers receive only domain arguments. Codegen refuses a domain argument with the reserved name before loading its implementation, naming the spec file, function and argument. Registration checks it too, including hand-written registrations outside codegen. The domain args schema and optimistic updates do not gain the field.
 
 With `runtime.ts` installed, a reserving invocation provides `RegisteredFunction.Received` while its root span opens. Its value is `{ value, requestId, deployment }`. `value` is the raw reserved value, including `undefined` when omitted. `requestId` comes from Convex request metadata. `deployment` is the deployment's `CONVEX_CLOUD_URL`, or `undefined` when unavailable, read by the runner through its Convex config provider. Raw request metadata, including authentication tokens, never enters this reference.
 
