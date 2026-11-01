@@ -418,6 +418,7 @@ const Proto = {
 } satisfies ThisType<AnyWithProps>;
 
 interface Options {
+  readonly reservedArgument?: string;
   readonly description?: string;
   readonly name: string;
   readonly args?: () => FunctionProvenance.ArgsFields;
@@ -438,6 +439,9 @@ const make = <
     Returns_ extends Schema.Codec<any, any>,
     Error_ extends Schema.Codec<any, any> = never,
   >(options: {
+    reservedArgument?: RuntimeAndFunctionType_["functionType"] extends "query"
+      ? never
+      : string;
     name: Name_;
     description?: never;
     args: () => ArgsFields_;
@@ -454,6 +458,9 @@ const make = <
     Returns_ extends Schema.Codec<any, any>,
     Error_ extends Schema.Codec<any, any> = never,
   >(options: {
+    reservedArgument?: RuntimeAndFunctionType_["functionType"] extends "query"
+      ? never
+      : string;
     name: Name_;
     description?: never;
     args?: never;
@@ -471,6 +478,9 @@ const make = <
     Returns_ extends Schema.Codec<any, any>,
     Error_ extends Schema.Codec<any, any> = never,
   >(options: {
+    reservedArgument?: RuntimeAndFunctionType_["functionType"] extends "query"
+      ? never
+      : string;
     name: Name_;
     description?: FunctionVisibility_ extends "public" ? string : never;
     args: () => ArgsFields_;
@@ -487,6 +497,9 @@ const make = <
     Returns_ extends Schema.Codec<any, any>,
     Error_ extends Schema.Codec<any, any> = never,
   >(options: {
+    reservedArgument?: RuntimeAndFunctionType_["functionType"] extends "query"
+      ? never
+      : string;
     name: Name_;
     description?: FunctionVisibility_ extends "public" ? string : never;
     args?: never;
@@ -498,13 +511,24 @@ const make = <
     Name_,
     FunctionProvenance.Confect<{}, Returns_, Error_>
   >;
-  function makeSpec({ name, description, args, returns, error }: Options) {
+  function makeSpec({
+    name,
+    description,
+    args,
+    returns,
+    error,
+    reservedArgument,
+  }: Options) {
     validateConfectFunctionIdentifier(name);
 
     return Object.assign(Object.create(Proto), {
       runtimeAndFunctionType,
       functionVisibility,
       name,
+      ...(runtimeAndFunctionType.functionType !== "query" &&
+      reservedArgument !== undefined
+        ? { reservedArgument }
+        : {}),
       ...(description === undefined ? {} : { description }),
       functionProvenance:
         args === undefined

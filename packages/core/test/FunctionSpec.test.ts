@@ -1312,6 +1312,8 @@ describe("reserved arguments", () => {
         return Schema.String;
       },
     };
+    // @ts-expect-error Queries cannot reserve transport context.
+    FunctionSpec.internalQuery({ ...options, reservedArgument: "context" });
     for (const spec of [
       FunctionSpec.internalMutation(options),
       FunctionSpec.internalAction(options),
