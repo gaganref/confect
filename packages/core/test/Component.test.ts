@@ -31,7 +31,10 @@ const ChildId = GenericId.GenericId("items", IdScope.instance(scope, "child"));
 const spec = TestSpec.fromGroups({
   items: GroupSpec.make()
     .addFunction(
-      FunctionSpec.publicMutation({
+      FunctionSpec.extend()({
+        middleware: [],
+        reservedArgument: "context",
+      }).publicMutation({
         name: "create",
         args: () => ({ count: Schema.FiniteFromString }),
         returns: () =>
@@ -65,6 +68,13 @@ const first = Component.bind(contract, native.first);
 const second = Component.bind(contract, native.second);
 
 describe("published component contracts", () => {
+  it("keeps the reserved argument on each installed ref", () => {
+    expect([
+      first.items.create.reservedArgument,
+      second.items.create.reservedArgument,
+      first.items.get.reservedArgument,
+    ]).toEqual(["context", "context", undefined]);
+  });
   it("keeps bound function schemas lazy and memoized across installations", () => {
     const args = vi.fn(() => ({ id: GenericId.GenericId("items", scope) }));
     const returns = vi.fn(() => GenericId.GenericId("items", scope));

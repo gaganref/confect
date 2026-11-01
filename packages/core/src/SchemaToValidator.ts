@@ -46,10 +46,12 @@ import type {
 export const compileArgsSchema = <ConfectValue, ConvexValue>(
   argsSchema: Schema.Codec<ConfectValue, ConvexValue>,
   scope: IdScope.IdScope = IdScope.app,
+  reservedArgument?: string,
+  functionName?: string,
 ): PropertyValidators => {
   const ast = Schema.toEncoded(argsSchema).ast;
 
-  return pipe(
+  const validators = pipe(
     ast,
     Match.value,
     Match.tag("Objects", (objectsAst) =>
@@ -60,7 +62,26 @@ export const compileArgsSchema = <ConfectValue, ConvexValue>(
     Match.orElse(() => Effect.fail(new TopLevelMustBeObjectError())),
     Effect.runSync,
   );
+  if (reservedArgument === undefined) return validators;
+  if (Object.hasOwn(validators, reservedArgument)) {
+    throw new ReservedArgumentCollision({
+      functionName,
+      argument: reservedArgument,
+    });
+  }
+  return { ...validators, [reservedArgument]: v.optional(v.any()) };
 };
+
+export class ReservedArgumentCollision extends Data.TaggedError(
+  "ReservedArgumentCollision",
+)<{
+  readonly functionName: string | undefined;
+  readonly argument: string;
+}> {
+  override get message() {
+    return `${this.functionName} declares the argument "${this.argument}", which its profile reserves. Rename the argument.`;
+  }
+}
 
 // Returns
 

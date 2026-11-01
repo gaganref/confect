@@ -1300,3 +1300,67 @@ describe("profile schema wrappers", () => {
     Errors.extend<Profile.NoFields, { returns: Narrow }>()({ middleware: [] });
   });
 });
+
+describe("reserved arguments", () => {
+  it("reserves internal builders and refs without forcing schemas", () => {
+    let builds = 0;
+    const options = {
+      name: "echo",
+      reservedArgument: "context",
+      returns: () => {
+        builds++;
+        return Schema.String;
+      },
+    };
+    // @ts-expect-error Queries cannot reserve transport context.
+    FunctionSpec.internalQuery({ ...options, reservedArgument: "context" });
+    for (const spec of [
+      FunctionSpec.internalMutation(options),
+      FunctionSpec.internalAction(options),
+      FunctionSpec.internalNodeAction(options),
+    ]) {
+      const ref: Ref.AnyInternal = Ref.make("items", spec);
+      expect([
+        spec.reservedArgument,
+        ref.reservedArgument,
+        spec.functionVisibility,
+        builds,
+      ]).toEqual(["context", "context", "internal", 0]);
+    }
+  });
+
+  it("keeps the name through profile extension, middleware and refs without forcing schemas", () => {
+    let builds = 0;
+    const profile = FunctionSpec.extend()({
+      middleware: [],
+      reservedArgument: "context",
+    }).extend()({ middleware: [] });
+    const options = {
+      name: "write",
+      args: () => {
+        builds++;
+        return { value: Schema.String };
+      },
+      returns: () => Schema.String,
+    };
+    class AuditContext extends MiddlewareSpec.MiddlewareSpec<AuditContext>()(
+      "AuditContext",
+      { functionTypes: { query: false, mutation: true, action: false } },
+    ) {}
+    const mutation = profile.publicMutation(options).middleware(AuditContext);
+    const action = profile.publicAction(options);
+    const node = profile.publicNodeAction(options);
+    expect([
+      mutation.reservedArgument,
+      action.reservedArgument,
+      node.reservedArgument,
+      Ref.make("items", mutation).reservedArgument,
+      builds,
+    ]).toEqual(["context", "context", "context", "context", 0]);
+    expect([
+      profile.publicQuery(options).reservedArgument,
+      profile.publicPaginatedQuery({ name: "list", item: () => Schema.String })
+        .reservedArgument,
+    ]).toEqual([undefined, undefined]);
+  });
+});

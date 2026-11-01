@@ -43,6 +43,7 @@ export interface Base<
   readonly "~Error": Error_;
   readonly functionType?: RuntimeAndFunctionType_["functionType"];
   readonly convexFunctionName: string;
+  readonly reservedArgument?: string;
   /**
    * Preserved for component references and function handles, which have no
    * local name.
@@ -459,6 +460,7 @@ export const make = <
         [...groupMiddlewareAttachments, ...functionSpec.middlewareAttachments],
         undefined,
         functionSpec.runtimeAndFunctionType.functionType,
+        functionSpec.reservedArgument,
       ),
     ),
     Match.exhaustive,
@@ -482,12 +484,14 @@ export const fromProvenance = (
   middlewareAttachments: ReadonlyArray<MiddlewareAttachment.MiddlewareAttachment>,
   functionReference?: ConvexFunctionReference<any, any>,
   functionType?: "query" | "mutation" | "action",
+  reservedArgument?: string,
 ): AnyConfect => {
   const ref = {
     [TypeId]: TypeId as TypeId,
     _tag: "Confect" as const,
     ...(functionType === undefined ? {} : { functionType }),
     convexFunctionName,
+    ...(reservedArgument === undefined ? {} : { reservedArgument }),
     ...(functionReference === undefined ? {} : { functionReference }),
     kind: provenance.kind,
     middlewareAttachments,

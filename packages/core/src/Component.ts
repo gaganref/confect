@@ -359,6 +359,7 @@ export const bind = <
               })),
               nativeRef,
               ref.functionType,
+              ref.reservedArgument,
             );
           }),
           Match.exhaustive,

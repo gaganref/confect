@@ -558,3 +558,11 @@ it.each([
     expect(status.exit.cause.reasons.some(Cause.isDieReason)).toBe(true);
   },
 );
+
+describe("domainArgs", () => {
+  it("strips reserved context before domain decoding", () => {
+    expect(
+      RegisteredFunction.domainArgs({ value: "ok", context: 1 }, "context"),
+    ).toEqual({ value: "ok" });
+  });
+});
