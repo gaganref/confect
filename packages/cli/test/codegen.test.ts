@@ -51,9 +51,14 @@ vi.mock("esbuild", (importOriginal) =>
 layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
   "codegenHandler",
   (it) => {
-    it.effect.each(["publicMutation", "publicAction", "publicNodeAction"])(
-      "rejects a reserved domain argument in %s before loading its implementation",
-      (builder) =>
+    it.effect.each([
+      { builder: "publicMutation", nested: false },
+      { builder: "publicAction", nested: false },
+      { builder: "publicNodeAction", nested: false },
+      { builder: "publicMutation", nested: true },
+    ])(
+      "rejects a reserved domain argument in $builder (nested=$nested) before loading its implementation",
+      ({ builder, nested }) =>
         Effect.gen(function* () {
           const project = yield* Project.make;
           yield* project.write(
@@ -62,9 +67,10 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
 import { FunctionSpec, GroupSpec } from "@confect/core";
 import * as Schema from "effect/Schema";
 const profile = FunctionSpec.extend()({ middleware: [], reservedArgument: "context" });
-export default GroupSpec.make().addFunction(profile.${builder}({
-  name: "list", args: () => ({ context: Schema.String })
-}));`,
+const group = GroupSpec.make().addFunction(profile.${builder}({
+  name: "${nested ? "save" : "list"}", args: () => ({ context: Schema.String })
+}));
+export default ${nested ? "GroupSpec.addGroupsAt(GroupSpec.make(), { child: group })" : "group"};`,
           );
           yield* project.write(
             "confect/notes.impl.ts",
@@ -73,8 +79,7 @@ export default GroupSpec.make().addFunction(profile.${builder}({
           expect(yield* Effect.flip(project.provide(codegenHandler))).toEqual(
             new InvalidDeclarationError({
               declarationPath: "confect/notes.spec.ts",
-              reason:
-                'notes:list declares the argument "context", which its profile reserves. Rename the argument.',
+              reason: `${nested ? "notes/child:save" : "notes:list"} declares the argument "context", which its profile reserves. Rename the argument.`,
             }),
           );
         }).pipe(Effect.scoped),
