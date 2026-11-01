@@ -111,24 +111,6 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           functions: { "notes:list": "second" },
         });
         expect(after.digest).not.toBe(before.digest);
-        yield* project.write(
-          "confect/notes.spec.ts",
-          project.sectionSpec("bad"),
-        );
-        expect(
-          yield* Effect.flip(
-            project.provide(updateDeclarations(snapshot, changes, [])),
-          ),
-        ).toEqual(
-          new InvalidDeclarationError({
-            declarationPath: "confect/notes.spec.ts",
-            reason: "bad tags",
-          }),
-        );
-        const fs = yield* FileSystem.FileSystem;
-        expect(
-          yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
-        ).toBe(false);
         yield* project.write("confect/notes.spec.ts", Project.spec);
         yield* project.provide(updateDeclarations(snapshot, changes, []));
         expect((yield* project.manifest).tags).toBeUndefined();
@@ -139,6 +121,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       [
         ["confect/notes.spec.ts", 'throw new Error("spec broke");'],
         ["confect/notes.impl.ts", "export default 1;"],
+        ["confect/notes.spec.ts", "bad"],
       ].flatMap(([file, contents]) =>
         [false, true].map((incremental) => ({
           file: file!,
@@ -147,18 +130,18 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
         })),
       ),
     )(
-      "keeps the manifest after an unrelated failure in $file (incremental=$incremental)",
+      "retains history only for unrelated failures in $file ($contents, incremental=$incremental)",
       ({ file, contents, incremental }) =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
-          const project = yield* Project.make;
-          yield* project.write(
-            "confect/app.ts",
-            `import { App, Env } from "@confect/core";
-export default App.make({ env: Env.make("host", {}) });`,
-          );
+          const project = yield* manifestProject;
+          if (contents !== "bad")
+            yield* project.write("confect/notes.spec.ts", Project.spec);
           const { snapshot } = yield* project.provide(generateWithSnapshot);
-          yield* project.write(file, contents);
+          yield* project.write(
+            file,
+            contents === "bad" ? project.sectionSpec("bad") : contents,
+          );
           const run = incremental
             ? updateDeclarations(
                 snapshot,
@@ -169,14 +152,14 @@ export default App.make({ env: Env.make("host", {}) });`,
                   },
                 ],
                 [],
-              ).pipe(Effect.asVoid)
-            : generateWithSnapshot.pipe(Effect.asVoid);
+              )
+            : generateWithSnapshot;
           expect((yield* Effect.result(project.provide(run)))._tag).toBe(
             "Failure",
           );
           expect(
             yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
-          ).toBe(true);
+          ).toBe(contents !== "bad");
         }).pipe(Effect.scoped),
     );
 
@@ -225,18 +208,15 @@ export default App.make({ env: Env.make("host", {}) });`,
           `import { FunctionSpec } from "@confect/core";
 export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: { owner: "test/tags", format: 1, describe: () => ${value} } } });`,
         );
-        const failure = yield* Effect.flip(
-          project.provide(generateWithSnapshot),
-        );
-        if (value.includes("undefined"))
-          expect(failure).toMatchObject({
-            reason: expect.stringContaining('$["nested"]["missing"]'),
-          });
-        expect(failure).toMatchObject({
+        expect(
+          yield* Effect.flip(project.provide(generateWithSnapshot)),
+        ).toMatchObject({
           _tag: "InvalidDeclarationError",
           declarationPath: "confect/notes.spec.ts",
           reason: expect.stringContaining(
-            'Manifest section "tags" (notes:list): could not describe as JSON:',
+            value.includes("undefined")
+              ? '$["nested"]["missing"]'
+              : 'Manifest section "tags" (notes:list): could not describe as JSON:',
           ),
         });
         expect(

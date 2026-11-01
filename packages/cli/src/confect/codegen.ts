@@ -133,7 +133,7 @@ const runCodegen = Effect.gen(function* () {
   // components registry below reads the config, and nothing may validate
   // against a manifest the current declaration did not produce.
   const previousManifest = yield* readPrevious;
-  const declared = yield* syncDeclaration;
+  const { app: declared, digest } = yield* syncDeclaration(previousManifest);
   // Reject a legacy `confect/schema.ts` up front so the user-facing
   // migration message surfaces before any bundler error from impl
   // validation (each impl imports `_generated/schema.ts`).
@@ -159,7 +159,7 @@ const runCodegen = Effect.gen(function* () {
   yield* generateRuntimeSchema(tableModules);
   const leaves = yield* loadAll;
   yield* rejectComponentNodeGroups(leaves);
-  yield* syncManifestSections(leaves, previousManifest);
+  yield* syncManifestSections(leaves, previousManifest, digest);
   yield* removeLegacyFiles;
   const snapshot = yield* Effect.fromResult(
     GenerationSnapshot.fromLoadedLeaves(leaves),
@@ -245,9 +245,10 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
         const next = yield* Effect.fromResult(
           GenerationSnapshot.update(snapshot, leaves),
         );
-        const declared = yield* syncDeclaration;
+        const { app: declared, digest } =
+          yield* syncDeclaration(previousManifest);
         if (Option.isSome(declared))
-          yield* syncManifestSections(yield* loadAll, previousManifest);
+          yield* syncManifestSections(yield* loadAll, previousManifest, digest);
         const required = Option.isSome(declared)
           ? declared.value.requiresMiddleware
           : [];

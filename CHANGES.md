@@ -18,7 +18,7 @@ Profiles describe app functions in import-free manifest sections, including thei
 
 ### Validate sections against previous output
 
-Codegen checks previous section data, prints notes and removes the manifest only when the section step fails. Unreadable previous manifests act as empty history. A section that loses its last participant gets one generic note naming its former functions, without running a callback. Full and incremental generation share this behavior. Changeset: `profile-manifest-checks.md`. Upstream: planned; no proposal submitted.
+Codegen checks previous section data, prints notes and removes the manifest only when the section step fails. Unreadable, empty, missing-default and null previous manifests act as empty history. The early declaration write preserves previous sections, so unrelated failures retain history. Unchanged runs write nothing; a spec-only section edit writes the manifest once. A section that loses its last participant gets one generic note naming its former functions, without running a callback. Full and incremental generation share this behavior. Changeset: `profile-manifest-checks.md`. Upstream: planned; no proposal submitted.
 
 ## Reserved arguments
 

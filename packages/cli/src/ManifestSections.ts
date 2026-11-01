@@ -1,4 +1,5 @@
 import type { GroupSpec, ManifestSection } from "@confect/core";
+import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import type { LoadedLeafModule } from "./LeafModule.js";
 import { InvalidDeclarationError } from "./CodegenError.js";
@@ -6,6 +7,10 @@ import { InvalidDeclarationError } from "./CodegenError.js";
 const reserved = new Set(
   "name env http digest __proto__ constructor prototype".split(" "),
 );
+export const sections = (manifest: Readonly<Record<string, unknown>>) =>
+  Object.fromEntries(
+    Object.entries(manifest).filter(([key]) => !reserved.has(key)),
+  );
 export type Registry = Map<
   string,
   {
@@ -104,11 +109,8 @@ export const check = (
     if (
       !reserved.has(key) &&
       !registry.has(key) &&
-      typeof value === "object" &&
-      value !== null &&
-      "functions" in value &&
-      typeof value.functions === "object" &&
-      value.functions !== null
+      Predicate.isObjectOrArray(value) &&
+      Predicate.isObjectOrArray(value.functions)
     )
       notes.push(
         `Manifest section "${key}" no longer has participants. Previous functions: ${Object.keys(value.functions).join(", ")}.`,
