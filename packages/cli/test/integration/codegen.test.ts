@@ -28,6 +28,11 @@ layer(NodeServices.layer)("built confect codegen", (it) => {
       Effect.gen(function* () {
         const project = yield* Project.make;
         const fs = yield* FileSystem.FileSystem;
+        const manifest = (yield* Path.Path).join(
+          "confect",
+          "_generated",
+          "manifest.ts",
+        );
         yield* project.write(
           "confect/app.ts",
           `import { App, Env } from "@confect/core";
@@ -68,14 +73,10 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags 
         const recovered = yield* run;
         expect(recovered.exit, recovered.output).toBe(0);
         expect(recovered.output).toContain("1 previous entries");
-        expect(
-          recovered.output.split("confect/_generated/manifest.ts"),
-        ).toHaveLength(2);
+        expect(recovered.output.split(manifest)).toHaveLength(2);
         const unchanged = yield* run;
         expect(unchanged.exit, unchanged.output).toBe(0);
-        expect(unchanged.output).not.toContain(
-          "confect/_generated/manifest.ts",
-        );
+        expect(unchanged.output).not.toContain(manifest);
         yield* project.write("confect/notes.spec.ts", spec("bad"));
         const failed = yield* run;
         expect(failed.exit).not.toBe(0);
