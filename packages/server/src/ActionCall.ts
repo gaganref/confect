@@ -65,7 +65,7 @@ export const layer = <S extends DatabaseSchema.AnyWithProps>(schema: S) =>
                     encoded as never,
                   ),
           );
-        }).pipe(Effect.withSpan("ActionCall"));
+        }).pipe(Effect.withSpan("ActionCall.call"));
       return yield* effect.pipe(
         Effect.provideService(ActionCall.ActionCall, call),
         Effect.updateContext(

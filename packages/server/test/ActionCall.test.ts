@@ -97,7 +97,7 @@ it.effect.each(Forwarding.cases)(
         expect(result).toEqual({
           count: "1",
           ...(enabled && index === 0
-            ? { context: { boundary: "ActionCall" } }
+            ? { context: { boundary: "ActionCall.call" } }
             : {}),
         });
       }

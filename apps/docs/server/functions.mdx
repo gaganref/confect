@@ -290,4 +290,4 @@ Queries and functions without a reservation see `undefined`. Without a runtime l
 
 A runtime layer can provide `RegisteredFunction.Forward`, a synchronous `(span: Tracer.Span) => unknown` callback. Mutation runners, action-call profiles, the mutation transaction context, action runners and the scheduler call it with their active boundary span and add its value after encoding domain arguments. Only a target ref that reserves an argument receives it. Returning `undefined` or a value Convex cannot serialise, an absent provider or a thrown callback sends the call without extra context. Query calls and ordinary component refs receive no extra argument.
 
-`Scheduler.runAfter` and `Scheduler.runAt` open spans of those names. A successful span ends with the scheduled job ID; a rejected scheduling call ends with its failure.
+`Scheduler.runAfter` and `Scheduler.runAt` open spans of those names, and each call through an action-call profile opens an `ActionCall.call` span. A successful scheduling span ends with the scheduled job ID; a rejected scheduling call ends with its failure.
