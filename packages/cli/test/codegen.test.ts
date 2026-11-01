@@ -254,6 +254,12 @@ export default App.make({ env: Env.make("other", {}) });`,
         value: "({ nested: { missing: undefined } })",
         path: '$["nested"]["missing"]',
       },
+      { value: "({ n: Infinity })", path: '$["n"]' },
+      {
+        value: "(() => { const a = {}; a.b = { a }; return { a }; })()",
+        path: '$["a"]["b"]["a"]',
+      },
+      { value: "({ m: new Map([[1, 2]]) })", path: '$["m"]' },
       { value: '({ "": undefined })', path: '$[""]' },
       { value: '({ "": { missing: undefined } })', path: '$[""]["missing"]' },
       {

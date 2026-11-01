@@ -23,6 +23,10 @@ const json = () => {
       key === "__proto__" ||
       !["string", "number", "boolean", "object"].includes(typeof value) ||
       (typeof value === "number" && !Number.isFinite(value)) ||
+      (typeof value === "object" &&
+        value !== null &&
+        !Array.isArray(value) &&
+        ![Object.prototype, null].includes(Object.getPrototypeOf(value))) ||
       ancestors.some((ancestor) => ancestor.value === value)
     )
       throw new TypeError(`Expected JSON data at ${path}`);
