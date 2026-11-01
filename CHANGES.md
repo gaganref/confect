@@ -18,7 +18,7 @@ Profiles and internal mutation, action and Node action constructors can reserve 
 
 Reserving invocations expose `{ value, requestId, deployment }` through `RegisteredFunction.Received` at root creation. The runner reads the cloud URL and passes only the request ID from private request metadata. Queries and unreserved functions have no received value; calls without a runtime layer add no metadata reads. Changeset: `received-argument.md`. Upstream: planned; no proposal submitted.
 
-`RegisteredFunction.Forward` supplies context from the active call boundary for reserving refs. Mutation/action runners, mutation transaction calls and scheduling add it after encoding. An absent, undefined or throwing provider leaves the call unchanged. Queries and ordinary component calls receive nothing. Scheduling opens named spans whose successful exit is the job ID. Changeset: `forward-argument.md`. Upstream: planned; no proposal submitted.
+`RegisteredFunction.Forward` supplies context from the active call boundary for reserving refs. Mutation/action runners, action-call profiles, mutation transaction calls and scheduling add it after encoding. An absent, undefined, throwing or unserialisable provider leaves the call unchanged. Queries and ordinary component calls receive nothing. Scheduling opens named spans whose successful exit is the job ID; argument encoding now runs when the scheduling effect executes. Changeset: `forward-argument.md`. Upstream: planned; no proposal submitted.
 
 ## Invocation instrumentation
 

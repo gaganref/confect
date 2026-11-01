@@ -1,3 +1,4 @@
+import { convexToJson, type Value } from "convex/values";
 import * as Ref from "@confect/core/Ref";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -21,12 +22,12 @@ const inject = (
   if (forward === undefined || span?._tag !== "Span") return encoded;
   try {
     const value = forward(span);
-    return value === undefined
-      ? encoded
-      : {
-          ...(encoded as Record<string, unknown>),
-          [ref.reservedArgument]: value,
-        };
+    if (value === undefined) return encoded;
+    convexToJson(value as Value);
+    return {
+      ...(encoded as Record<string, unknown>),
+      [ref.reservedArgument]: value,
+    };
   } catch {
     return encoded;
   }

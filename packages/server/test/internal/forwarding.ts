@@ -1,7 +1,7 @@
 import { convexToJson, jsonToConvex, type Value } from "convex/values";
 import { expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import { FunctionSpec, Ref } from "@confect/core";
+import { FunctionSpec, Ref, type RuntimeAndFunctionType } from "@confect/core";
 import * as Schema from "effect/Schema";
 import type * as Tracer from "effect/Tracer";
 
@@ -35,17 +35,20 @@ export const cases = [
   },
 ];
 
-type Target<T extends "mutation" | "action"> = Ref.Ref<
-  { runtime: "Convex"; functionType: T },
+type FixtureRef<T extends "mutation" | "action"> = Ref.Ref<
+  Extract<RuntimeAndFunctionType.RuntimeAndFunctionType, { functionType: T }>,
   "public",
   { count: number },
   unknown
 >;
-export const mutations: readonly [Target<"mutation">, Target<"mutation">] = [
+export const mutations: readonly [
+  FixtureRef<"mutation">,
+  FixtureRef<"mutation">,
+] = [
   Ref.make("items", profile.publicMutation(options)),
   Ref.make("items", FunctionSpec.publicMutation(options)),
 ] as const;
-export const actions: readonly [Target<"action">, Target<"action">] = [
+export const actions: readonly [FixtureRef<"action">, FixtureRef<"action">] = [
   Ref.make("items", profile.publicAction(options)),
   Ref.make("items", FunctionSpec.publicAction(options)),
 ] as const;

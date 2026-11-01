@@ -1,5 +1,6 @@
+import * as ReservedArgument from "./internal/reservedArgument.js";
 import * as ActionCall from "@confect/core/ActionCall";
-import * as Ref from "@confect/core/Ref";
+import type * as Ref from "@confect/core/Ref";
 import type { FunctionReference } from "convex/server";
 import * as Context from "effect/Context";
 import * as Data from "effect/Data";
@@ -50,7 +51,7 @@ export const layer = <S extends DatabaseSchema.AnyWithProps>(schema: S) =>
           claimed = true;
           if (ref.functionType !== "query" && ref.functionType !== "mutation")
             return Effect.die(new MissingFunctionType());
-          return Ref.runWithCodec(
+          return ReservedArgument.runWithCodec(
             ref,
             (args[0] ?? {}) as Ref.Args<Target>,
             (native, encoded) =>
@@ -64,7 +65,7 @@ export const layer = <S extends DatabaseSchema.AnyWithProps>(schema: S) =>
                     encoded as never,
                   ),
           );
-        });
+        }).pipe(Effect.withSpan("ActionCall"));
       return yield* effect.pipe(
         Effect.provideService(ActionCall.ActionCall, call),
         Effect.updateContext(
