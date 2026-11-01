@@ -17,6 +17,8 @@ import { ConfectDirectory } from "../ConfectDirectory.js";
 import * as ConvexConfig from "../ConvexConfig.js";
 import { ConvexDirectory } from "../ConvexDirectory.js";
 import * as Declaration from "../Declaration.js";
+import * as ManifestSections from "../ManifestSections.js";
+import type { LoadedLeafModule } from "../LeafModule.js";
 import { logFileRemoved } from "../log.js";
 import { ProjectRoot } from "../ProjectRoot.js";
 import * as templates from "../templates.js";
@@ -209,6 +211,39 @@ const removeGenerated = Effect.fnUntraced(function* (
 
 const removeManifest = Effect.gen(function* () {
   yield* removeGenerated(yield* manifestPath, []);
+});
+
+const readManifest = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const file = yield* manifestPath;
+  if (!(yield* fs.exists(file))) return {} as Record<string, unknown>;
+  return (yield* Bundler.bundle(file).pipe(
+    Effect.mapError((error) =>
+      fromBundlerError("confect/_generated/manifest.ts", error),
+    ),
+  )).module.default as Record<string, unknown>;
+});
+
+export const syncManifestSections = Effect.fnUntraced(function* (
+  leaves: ReadonlyArray<LoadedLeafModule>,
+) {
+  if ((yield* ConvexDirectory.target).kind !== "app") return;
+  const current = yield* readManifest;
+  if (typeof current.digest !== "string") return;
+  const registry = yield* Effect.fromResult(ManifestSections.collect(leaves));
+  const sections = Object.fromEntries(
+    [...registry].map(([key, { data }]) => [key, data]),
+  );
+  if (registry.size === 0) return;
+  const digest = Declaration.digest({
+    files: [["declaration", current.digest]],
+    versions: [],
+    sections,
+  });
+  yield* writeFileStringAndLog(
+    yield* manifestPath,
+    Declaration.renderManifest({ ...current, ...sections, digest }),
+  );
 });
 
 const authProvidersPath = Effect.gen(function* () {

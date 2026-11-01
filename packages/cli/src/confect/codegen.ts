@@ -58,7 +58,11 @@ import {
   touchConvexSchema,
   writeFileStringAndLog,
 } from "../utils.js";
-import { syncDeclaration, syncDeclaredHttp } from "./declaration.js";
+import {
+  syncManifestSections,
+  syncDeclaration,
+  syncDeclaredHttp,
+} from "./declaration.js";
 
 const GENERATED_DIRNAME = "_generated";
 
@@ -153,6 +157,7 @@ const runCodegen = Effect.gen(function* () {
   yield* generateRuntimeSchema(tableModules);
   const leaves = yield* loadAll;
   yield* rejectComponentNodeGroups(leaves);
+  yield* syncManifestSections(leaves);
   yield* removeLegacyFiles;
   const snapshot = yield* Effect.fromResult(
     GenerationSnapshot.fromLoadedLeaves(leaves),
@@ -238,6 +243,8 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           GenerationSnapshot.update(snapshot, leaves),
         );
         const declared = yield* syncDeclaration;
+        if (Option.isSome(declared))
+          yield* syncManifestSections(yield* loadAll);
         const required = Option.isSome(declared)
           ? declared.value.requiresMiddleware
           : [];

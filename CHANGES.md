@@ -12,6 +12,10 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Profile manifest sections
+
+Profiles describe app functions in import-free manifest sections, including their middleware. Codegen identifies definitions by key, owner and format, rejects reserved keys and conflicts, and includes sections in the digest. Changeset: `profile-manifest-sections.md`. Upstream: planned; no proposal submitted.
+
 ## Reserved arguments
 
 Profiles and internal mutation, action and Node action constructors can reserve one argument without changing domain schemas or visibility. Refs, including component refs, retain the name. Registration accepts any optional value, strips it before decoding and refuses domain collisions. Queries ignore the option to preserve cache keys. Changeset: `reserved-argument.md`. Upstream: planned; no proposal submitted.

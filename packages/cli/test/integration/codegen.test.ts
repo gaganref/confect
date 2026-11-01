@@ -23,6 +23,48 @@ const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
 layer(NodeServices.layer)("built confect codegen", (it) => {
   it.effect(
+    "writes sections and a stable content digest",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* Project.make;
+        yield* project.write(
+          "confect/app.ts",
+          `import { App, Env } from "@confect/core";
+export default App.make({ env: Env.make("host", {}) });`,
+        );
+        const spec = (label: string) =>
+          Project.spec
+            .replace(
+              "export default",
+              `const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: { owner: "test/tags", format: 1, describe: () => "${label}" } } });\nexport default`,
+            )
+            .replace("FunctionSpec.publicQuery", "profile.publicQuery");
+        const run = Effect.gen(function* () {
+          const process = yield* project.start("codegen");
+          expect(yield* process.handle.exitCode).toBe(0);
+        });
+        const read = Bundler.bundle(
+          `${project.root}/confect/_generated/manifest.ts`,
+        ).pipe(Effect.map(({ module }) => module.default));
+        yield* project.write("confect/notes.spec.ts", spec("first"));
+        yield* run;
+        const before = yield* read;
+        expect(before.tags).toEqual({
+          format: 1,
+          functions: { "notes:list": "first" },
+        });
+        yield* project.write("confect/notes.spec.ts", spec("second"));
+        yield* run;
+        const after = yield* read;
+        expect(after.tags.functions).toEqual({ "notes:list": "second" });
+        expect(after.digest).not.toBe(before.digest);
+        yield* run;
+        expect((yield* read).digest).toBe(after.digest);
+      }),
+    { timeout: 30000 },
+  );
+
+  it.effect(
     "lowers deployment JWT providers from a clean checkout without reading env",
     () =>
       Effect.gen(function* () {
