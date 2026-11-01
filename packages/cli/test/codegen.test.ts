@@ -196,6 +196,34 @@ export default App.make({ env: Env.make("host", {}) });`,
     );
 
     it.effect.each([
+      "1n",
+      "() => 1",
+      "(() => { const cycle = []; cycle.push(cycle); return cycle; })()",
+    ])("reports non-JSON description %s through codegen", (value) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const project = yield* manifestProject;
+        yield* project.write(
+          "confect/profile.ts",
+          `import { FunctionSpec } from "@confect/core";
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: { owner: "test/tags", format: 1, describe: () => ${value} } } });`,
+        );
+        expect(
+          yield* Effect.flip(project.provide(generateWithSnapshot)),
+        ).toMatchObject({
+          _tag: "InvalidDeclarationError",
+          declarationPath: "confect/notes.spec.ts",
+          reason: expect.stringContaining(
+            'Manifest section "tags" (notes:list): could not describe as JSON:',
+          ),
+        });
+        expect(
+          yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
+        ).toBe(false);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect.each([
       { builder: "publicMutation", nested: false },
       { builder: "publicAction", nested: false },
       { builder: "publicNodeAction", nested: false },
