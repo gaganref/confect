@@ -20,6 +20,10 @@ Profiles describe app functions in import-free manifest sections, including thei
 
 Codegen checks previous section data, prints notes and removes the manifest only when the section step fails. Unreadable, empty, missing-default and null previous manifests act as empty history. The early declaration write preserves previous sections, so unrelated failures retain history. Unchanged runs write nothing; a spec-only section edit writes the manifest once. A section that loses its last participant gets one generic note naming its former functions, without running a callback. Full and incremental generation share this behavior. Declaration edits replace reserved fields rather than restoring them from history. Thrown checks become typed diagnostics and every failing section is reported. Changeset: `profile-manifest-checks.md`. Upstream: planned; no proposal submitted.
 
+### Require JSON description values
+
+Descriptions must be JSON data. Non-JSON values and own `__proto__` properties fail with a typed diagnostic naming the section, function, declaring spec and exact JSON path. Empty property names retain `[""]` in the path and cycle refusals identify the cyclic reference. Refusing `__proto__` prevents object-literal prototype semantics from changing the manifest on readback and making unchanged runs write repeatedly. Section failure cleanup removes the manifest. Changeset: `profile-manifest-json.md`. Upstream: planned; no proposal submitted.
+
 ## Reserved arguments
 
 Profiles and internal mutation, action and Node action constructors can reserve one argument without changing domain schemas or visibility. Refs, including component refs, retain the name. Registration accepts any optional value, strips it before decoding and refuses domain collisions. Queries ignore the option to preserve cache keys. Changeset: `reserved-argument.md`. Upstream: planned; no proposal submitted.

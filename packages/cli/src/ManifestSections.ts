@@ -11,6 +11,26 @@ export const sections = (manifest: Readonly<Record<string, unknown>>) =>
   Object.fromEntries(
     Object.entries(manifest).filter(([key]) => !reserved.has(key)),
   );
+const json = () => {
+  const ancestors: { value: object; path: string }[] = [];
+  return function (this: object, key: string, value: unknown) {
+    while (ancestors.length > 0 && ancestors.at(-1)?.value !== this)
+      ancestors.pop();
+    const parent = ancestors.at(-1);
+    const path =
+      parent === undefined ? "$" : `${parent.path}[${JSON.stringify(key)}]`;
+    if (
+      key === "__proto__" ||
+      !["string", "number", "boolean", "object"].includes(typeof value) ||
+      (typeof value === "number" && !Number.isFinite(value)) ||
+      ancestors.some((ancestor) => ancestor.value === value)
+    )
+      throw new TypeError(`Expected JSON data at ${path}`);
+    if (typeof value === "object" && value !== null)
+      ancestors.push({ value, path });
+    return value;
+  };
+};
 export type Registry = Map<
   string,
   {
@@ -63,10 +83,23 @@ export const collect = (
               },
             };
             registry.set(key, entry);
-            entry.data.functions[functionPath] = section.describe({
-              path: functionPath,
-              spec,
-              middleware: [...group.middlewareSpecs, ...spec.middlewareSpecs],
+            entry.data.functions[functionPath] = yield* Result.try({
+              try: () =>
+                JSON.parse(
+                  JSON.stringify(
+                    section.describe({
+                      path: functionPath,
+                      spec,
+                      middleware: [
+                        ...group.middlewareSpecs,
+                        ...spec.middlewareSpecs,
+                      ],
+                    }),
+                    json(),
+                  ),
+                ),
+              catch: (cause) =>
+                invalid(`could not describe as JSON: ${String(cause)}`),
             });
           }
         }
