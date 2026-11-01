@@ -22,6 +22,10 @@ Reserving invocations expose `{ value, requestId, deployment }` through `Registe
 
 The existing local-backend CI job exercises generated registrations with arbitrary incoming context, runner hops, an inline owned counter component, an ordinary strict component call and persisted scheduled context. The local-backend fixture app always runs with a runtime layer; unit and mock-backend suites cover the no-layer path. Scheduled polling uses live time. Native API additions come from the registered validators without starting a backend. Changeset: `reserved-argument-backend.md`. Upstream: planned; no proposal submitted.
 
+### Refuse domain collisions in codegen
+
+Full and incremental codegen reject a domain argument reserved by its profile before loading its implementation. The diagnostic names the spec file, function and argument. Registration retains its load-time backstop. Changeset: `reserved-argument-fence.md`. Upstream: planned; no proposal submitted.
+
 ## Invocation instrumentation
 
 Add invocation root spans and an optional `confect/runtime.ts` layer so applications can install Effect tracers and loggers without duplicate console logging. Preserve original declared failures for tracers, encoded client errors and query caching. Cache each layer context once per isolate so permanent scope ownership stays bounded. Changeset: `invocation-observability.md`. The root span ends with the outcome the client gets: a failure in a function with no error schema, other than a raw `ConvexError`, ends it as a defect, and so does an error encoding that dies with a `ConvexError`. Changeset: `undeclared-failure-span-defect.md`. Upstream: planned; no proposal submitted.
