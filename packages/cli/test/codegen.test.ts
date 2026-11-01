@@ -82,10 +82,16 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
   (it) => {
     it.effect("updates and drops sections on incremental spec edits", () =>
       Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
         const project = yield* manifestProject;
         const { snapshot } = yield* project.provide(generateWithSnapshot);
         const before = yield* project.manifest;
+        const manifestWrites = (files: ReadonlyArray<string>) =>
+          files.filter((file) => file.endsWith("/_generated/manifest.ts"));
+        expect(
+          manifestWrites(
+            yield* Project.writtenFiles(project.provide(generateWithSnapshot)),
+          ),
+        ).toEqual([]);
         yield* project.write(
           "confect/notes.spec.ts",
           project.sectionSpec("second"),
@@ -93,9 +99,12 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
         const changes = [
           { _tag: "Spec", relativePath: SpecModulePath.make("notes.spec.ts") },
         ] as const;
-        const next = yield* project.provide(
-          updateDeclarations(snapshot, changes, []),
+        const writes = yield* Project.writtenFiles(
+          project.provide(updateDeclarations(snapshot, changes, [])),
         );
+        expect(manifestWrites(writes)).toEqual([
+          `${project.root}/confect/_generated/manifest.ts`,
+        ]);
         const after = yield* project.manifest;
         expect(after.tags).toEqual({
           format: 1,
@@ -108,7 +117,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
         );
         expect(
           yield* Effect.flip(
-            project.provide(updateDeclarations(next, changes, [])),
+            project.provide(updateDeclarations(snapshot, changes, [])),
           ),
         ).toEqual(
           new InvalidDeclarationError({
@@ -116,11 +125,12 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             reason: "bad tags",
           }),
         );
+        const fs = yield* FileSystem.FileSystem;
         expect(
           yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
         ).toBe(false);
         yield* project.write("confect/notes.spec.ts", Project.spec);
-        yield* project.provide(updateDeclarations(next, changes, []));
+        yield* project.provide(updateDeclarations(snapshot, changes, []));
         expect((yield* project.manifest).tags).toBeUndefined();
       }).pipe(Effect.scoped),
     );
@@ -170,18 +180,24 @@ export default App.make({ env: Env.make("host", {}) });`,
         }).pipe(Effect.scoped),
     );
 
-    it.effect.each([true, false])(
-      "overwrites an unreadable previous manifest (sectioned=%s)",
-      (sectioned) =>
+    it.effect.each(
+      [true, false].flatMap((sectioned) =>
+        [
+          "<<<<<<< HEAD\nexport default {};\n",
+          "",
+          "export const other = 1;",
+          "export default null;",
+        ].map((contents) => ({ sectioned, contents })),
+      ),
+    )(
+      "overwrites unusable history $contents (sectioned=$sectioned)",
+      ({ sectioned, contents }) =>
         Effect.gen(function* () {
           const project = yield* manifestProject;
           if (!sectioned)
             yield* project.write("confect/notes.spec.ts", Project.spec);
           yield* project.provide(generateWithSnapshot);
-          yield* project.write(
-            "confect/_generated/manifest.ts",
-            "<<<<<<< HEAD\nexport default {};\n",
-          );
+          yield* project.write("confect/_generated/manifest.ts", contents);
           yield* project.provide(generateWithSnapshot);
           expect((yield* project.manifest).name).toBe("host");
           expect((yield* project.manifest).tags).toEqual(
@@ -196,6 +212,7 @@ export default App.make({ env: Env.make("host", {}) });`,
     );
 
     it.effect.each([
+      "({ nested: { missing: undefined } })",
       "1n",
       "() => 1",
       "(() => { const cycle = []; cycle.push(cycle); return cycle; })()",
@@ -208,9 +225,14 @@ export default App.make({ env: Env.make("host", {}) });`,
           `import { FunctionSpec } from "@confect/core";
 export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: { owner: "test/tags", format: 1, describe: () => ${value} } } });`,
         );
-        expect(
-          yield* Effect.flip(project.provide(generateWithSnapshot)),
-        ).toMatchObject({
+        const failure = yield* Effect.flip(
+          project.provide(generateWithSnapshot),
+        );
+        if (value.includes("undefined"))
+          expect(failure).toMatchObject({
+            reason: expect.stringContaining('$["nested"]["missing"]'),
+          });
+        expect(failure).toMatchObject({
           _tag: "InvalidDeclarationError",
           declarationPath: "confect/notes.spec.ts",
           reason: expect.stringContaining(
