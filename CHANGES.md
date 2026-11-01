@@ -12,6 +12,17 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Schema bundle imports
+
+Serve Scalar CDN docs without importing Effect's inline Scalar module. Effect
+4.0.6 introduces a dynamic import there, and Convex's name-preserving schema
+bundler emits a shared chunk even when the inline renderer is unused. Both
+barrel and subpath table imports remain supported. The packed consumer now has
+a table, uses Effect 4.0.6, and bundles its generated schema with Convex's options
+before checking the exported table. The local-backend consumer shares that table
+fixture. Changeset: `schema-bundle-imports.md`. Upstream: planned; no proposal
+submitted.
+
 ## Profile manifest sections
 
 Profiles describe app functions in import-free manifest sections, including their middleware. Codegen identifies definitions by key, owner and format, rejects reserved keys and conflicts, and includes sections in the digest. Incremental spec edits update and remove sections without a full rebuild. Changeset: `profile-manifest-sections.md`. Upstream: planned; no proposal submitted.

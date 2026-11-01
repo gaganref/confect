@@ -33,7 +33,16 @@ The probe uses TypeScript 6.0.3, within Alchemy's transitive compiler peer range
 It keeps implicit-any checks but disables strict null checks because Alchemy
 beta.82 and Effect require incompatible optional-property settings. A second declaration pass checks all application libraries with strict null
 checks and exact optional properties. Alchemy alone stays in the resolution pass.
-The generated application retains its separate strict typecheck. The check generates a declared backend and a component mounted at `/counter`, calls the component through the host, checks callback arguments and results, and fetches the declared HTTP routes. Each successful install check uploads its pinned manifest, lockfile, and install command. `bun scripts/forkConsumer.ts <dir> <version>` regenerates the consumer. Dispatch "Packages" on `main` with a higher unused `n` to recover from a build number collision after all checks pass. Dispatch "Publish fork builds" with an existing version to check an installed build without publishing again.
+The generated application retains its separate strict typecheck.
+The consumer uses Effect 4.0.6 to cover Scalar's dynamic inline-script import.
+After codegen, `node checkSchemaBundle.mjs` bundles its table schema with
+Convex 1.48's schema options, including splitting and name preservation. It
+requires one JavaScript output with no static or dynamic imports and evaluates
+that output to check the table export. Run this against installed tarballs,
+without workspace source aliases. Confect's optional Scalar docs use a CDN-only
+renderer so table imports through either package barrel remain deployable.
+
+The check generates a declared backend and a component mounted at `/counter`, calls the component through the host, checks callback arguments and results, and fetches the declared HTTP routes. Each successful install check uploads its pinned manifest, lockfile, and install command. `bun scripts/forkConsumer.ts <dir> <version>` regenerates the consumer. Dispatch "Packages" on `main` with a higher unused `n` to recover from a build number collision after all checks pass. Dispatch "Publish fork builds" with an existing version to check an installed build without publishing again.
 
 ## Initial publication
 
