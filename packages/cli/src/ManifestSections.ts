@@ -6,13 +6,18 @@ import { InvalidDeclarationError } from "./CodegenError.js";
 const reserved = new Set(
   "name env http digest __proto__ constructor prototype".split(" "),
 );
-const json = (_key: string, value: unknown) => {
-  if (
-    !["string", "number", "boolean", "object"].includes(typeof value) ||
-    (typeof value === "number" && !Number.isFinite(value))
-  )
-    throw new TypeError("Expected JSON data");
-  return value;
+const json = () => {
+  const paths = new WeakMap<object, string>();
+  return function (this: object, key: string, value: unknown) {
+    const path = `${paths.get(this) ?? "$"}${key === "" ? "" : `[${JSON.stringify(key)}]`}`;
+    if (
+      !["string", "number", "boolean", "object"].includes(typeof value) ||
+      (typeof value === "number" && !Number.isFinite(value))
+    )
+      throw new TypeError(`Expected JSON data at ${path}`);
+    if (typeof value === "object" && value !== null) paths.set(value, path);
+    return value;
+  };
 };
 export type Registry = Map<
   string,
