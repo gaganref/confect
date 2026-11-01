@@ -114,9 +114,15 @@ describe("make", () => {
 });
 
 describe("invocation context", () => {
-  it.each(["mutation", "action", "query"] as const)(
-    "makes only reserved %s context visible at root creation",
-    (type) => {
+  it.each([
+    { type: "mutation", reserves: true },
+    { type: "action", reserves: true },
+    { type: "query", reserves: true },
+    { type: "mutation", reserves: false },
+    { type: "action", reserves: false },
+  ] as const)(
+    "projects private metadata at root creation for $type, reserved $reserves",
+    ({ type, reserves }) => {
       const profile = FunctionSpec.extend()({
         middleware: [],
         reservedArgument: "context",
@@ -141,17 +147,22 @@ describe("invocation context", () => {
           },
         }),
       );
-      const spec = profile[
-        type === "mutation"
-          ? "publicMutation"
-          : type === "action"
-            ? "publicAction"
-            : "publicQuery"
-      ]({
+      const options = {
         name: "echo",
         args: () => ({ value: Schema.String }),
         returns: () => Schema.String,
-      });
+      };
+      const spec = reserves
+        ? profile[
+            type === "mutation"
+              ? "publicMutation"
+              : type === "action"
+                ? "publicAction"
+                : "publicQuery"
+          ](options)
+        : type === "mutation"
+          ? FunctionSpec.publicMutation(options)
+          : FunctionSpec.publicAction(options);
       const item = FunctionRegistryItem.make({
         functionSpec: spec,
         groupMiddlewareAttachments: [],
@@ -199,7 +210,7 @@ describe("invocation context", () => {
         .then((result) => {
           expect(result).toBe("again");
           expect(roots).toEqual(
-            type === "query"
+            type === "query" || !reserves
               ? [undefined, undefined]
               : [
                   {
@@ -214,6 +225,7 @@ describe("invocation context", () => {
                   },
                 ],
           );
+          expect(JSON.stringify(roots)).not.toContain("fixture-private-token");
           const plain = RegisteredConvexFunction.prepare(
             DatabaseSchema.make({}),
             item,
