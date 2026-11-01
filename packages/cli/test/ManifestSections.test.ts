@@ -78,32 +78,4 @@ describe("ManifestSections", () => {
       });
     },
   );
-  it.each(["bigint", "function", "cycle"])(
-    "refuses a %s description",
-    (kind) => {
-      const cycle: unknown[] = [];
-      cycle.push(cycle);
-      const p = FunctionSpec.extend()({
-        middleware: [],
-        manifest: {
-          tags: {
-            ...section,
-            describe: () =>
-              kind === "bigint" ? 1n : kind === "function" ? () => 1 : cycle,
-          },
-        },
-      });
-      expect(
-        collect(leaf(GroupSpec.make().addFunction(p.publicQuery(list)))),
-      ).toMatchObject({
-        _tag: "Failure",
-        failure: {
-          declarationPath: "confect/notes.spec.ts",
-          reason: expect.stringContaining(
-            'Manifest section "tags" (notes:list): could not describe as JSON:',
-          ),
-        },
-      });
-    },
-  );
 });

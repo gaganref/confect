@@ -48,9 +48,64 @@ vi.mock("esbuild", (importOriginal) =>
   })),
 );
 
+const manifestProject = Effect.gen(function* () {
+  const project = yield* Project.make;
+  yield* project.write(
+    "confect/app.ts",
+    `import { App, Env } from "@confect/core";
+export default App.make({ env: Env.make("host", {}) });`,
+  );
+  yield* project.write(
+    "confect/profile.ts",
+    `import { FunctionSpec } from "@confect/core";
+const tags = { owner: "test/tags", format: 1, describe: ({ spec }) => spec.description };
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags } });`,
+  );
+  const spec = (label: string) =>
+    Project.spec
+      .replace(
+        "export default",
+        'import { profile } from "./profile";\nexport default',
+      )
+      .replace("FunctionSpec.publicQuery", "profile.publicQuery")
+      .replace('name: "list"', `name: "list", description: "${label}"`);
+  const read = Bundler.bundle(
+    `${project.root}/confect/_generated/manifest.ts`,
+  ).pipe(Effect.map(({ module }) => module.default));
+  yield* project.write("confect/notes.spec.ts", spec("first"));
+  return { ...project, sectionSpec: spec, manifest: read };
+});
+
 layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
   "codegenHandler",
   (it) => {
+    it.effect("updates and drops sections on incremental spec edits", () =>
+      Effect.gen(function* () {
+        const project = yield* manifestProject;
+        const { snapshot } = yield* project.provide(generateWithSnapshot);
+        const before = yield* project.manifest;
+        yield* project.write(
+          "confect/notes.spec.ts",
+          project.sectionSpec("second"),
+        );
+        const changes = [
+          { _tag: "Spec", relativePath: SpecModulePath.make("notes.spec.ts") },
+        ] as const;
+        const next = yield* project.provide(
+          updateDeclarations(snapshot, changes, []),
+        );
+        const after = yield* project.manifest;
+        expect(after.tags).toEqual({
+          format: 1,
+          functions: { "notes:list": "second" },
+        });
+        expect(after.digest).not.toBe(before.digest);
+        yield* project.write("confect/notes.spec.ts", Project.spec);
+        yield* project.provide(updateDeclarations(next, changes, []));
+        expect((yield* project.manifest).tags).toBeUndefined();
+      }).pipe(Effect.scoped),
+    );
+
     it.effect.each([
       { builder: "publicMutation", nested: false },
       { builder: "publicAction", nested: false },
