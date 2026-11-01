@@ -313,6 +313,10 @@ Declared app codegen writes `tags: { format: 1, functions: { "notes:list": "note
 
 Section data contributes to the digest. Sections survive profile extension and middleware. Each section declares a stable `owner` string. Definitions under one key agree when their owner and format agree, including when the bundler evaluates a shared profile separately. Conflicts name both owners and formats. Keys `name`, `env`, `http`, `digest`, `__proto__`, `constructor` and `prototype` are refused. Callbacks must preserve their inputs.
 
+### Description values must be JSON
+
+Descriptions must contain only JSON data: plain objects, arrays, strings, finite numbers, booleans and `null`. BigInt, functions, undefined properties, non-finite numbers, cycles, and objects such as `Map`, `Set` or class instances fail codegen with `InvalidDeclarationError`. The diagnostic names the section, function, declaring spec and JSON path, such as `$["nested"]["missing"]`. Empty property names remain in the path, for example `$[""]["missing"]`. Own `__proto__` properties are refused at their path because generated object literals cannot preserve them as data. A failing description removes the manifest through section failure cleanup.
+
 ### Check sections against previous output
 
 An optional `check(next, previous)` returns `{ errors: string[], notes: string[] }`. `next` contains `format` and `functions`; `previous` is the old section as `unknown`, or `undefined` when no usable previous section exists. Validate its format before comparing. An unreadable, empty, missing-default or null previous manifest supplies no sections. Every note prints and any error fails codegen. A thrown check becomes a typed diagnostic; errors from every failing section are reported. Only a failing section step removes the manifest; unrelated spec or implementation failures retain the manifest and its previous sections. The early declaration write carries previous sections forward while applying declaration edits. Files whose content is unchanged are not written or logged as modified.

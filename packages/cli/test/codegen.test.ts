@@ -243,6 +243,54 @@ export default App.make({ env: Env.make("other", {}) });`,
     );
 
     it.effect.each([
+      { value: "1n", path: "$" },
+      { value: "() => 1", path: "$" },
+      {
+        value:
+          "(() => { const cycle = []; cycle.push(cycle); return cycle; })()",
+        path: '$["0"]',
+      },
+      {
+        value: "({ nested: { missing: undefined } })",
+        path: '$["nested"]["missing"]',
+      },
+      { value: "({ n: Infinity })", path: '$["n"]' },
+      {
+        value: "(() => { const a = {}; a.b = { a }; return { a }; })()",
+        path: '$["a"]["b"]["a"]',
+      },
+      { value: "({ m: new Map([[1, 2]]) })", path: '$["m"]' },
+      { value: '({ "": undefined })', path: '$[""]' },
+      { value: '({ "": { missing: undefined } })', path: '$[""]["missing"]' },
+      {
+        value: `JSON.parse('{"nested":{"__proto__":{"value":1}}}')`,
+        path: '$["nested"]["__proto__"]',
+      },
+    ])(
+      "reports non-JSON description $value at $path through codegen",
+      ({ value, path }) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* manifestProject;
+          yield* project.write(
+            "confect/profile.ts",
+            `import { FunctionSpec } from "@confect/core";
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: { owner: "test/tags", format: 1, describe: () => ${value} } } });`,
+          );
+          expect(
+            yield* Effect.flip(project.provide(generateWithSnapshot)),
+          ).toMatchObject({
+            _tag: "InvalidDeclarationError",
+            declarationPath: "confect/notes.spec.ts",
+            reason: `Manifest section "tags" (notes:list): could not describe as JSON: TypeError: Expected JSON data at ${path}`,
+          });
+          expect(
+            yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
+          ).toBe(false);
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect.each([
       { builder: "publicMutation", nested: false },
       { builder: "publicAction", nested: false },
       { builder: "publicNodeAction", nested: false },
