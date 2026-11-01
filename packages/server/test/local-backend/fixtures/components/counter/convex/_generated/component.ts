@@ -184,4 +184,20 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         Name
       >;
     };
+    reserved: {
+      echo: FunctionReference<
+        "mutation",
+        "internal",
+        { context?: any; run: string },
+        {
+          args: { run: string };
+          received: {
+            deployment: string | null;
+            requestId: string;
+            value: any;
+          };
+        },
+        Name
+      >;
+    };
   };

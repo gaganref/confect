@@ -2,5 +2,6 @@
 import { HttpRouter } from "@confect/server";
 import schema from "../confect/_generated/schema.js";
 import http from "../confect/http.js";
+import observability from "../confect/runtime.js";
 
-export default HttpRouter.forSchema(schema)(http.routes, { api: http.api });
+export default HttpRouter.forSchema(schema)(http.routes, { api: http.api, observability });
