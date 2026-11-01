@@ -112,36 +112,18 @@ describe("ActionRunner", () => {
   );
 });
 
-describe("ActionRunner reserved context", () => {
-  it.effect.each(Forwarding.cases)(
-    "forwards with $label only to a reserving target",
-    ({ forward, enabled }) =>
-      Effect.gen(function* () {
-        const runner = yield* ActionRunner.ActionRunner;
-        const reserved = Ref.make(
-          "items",
-          Forwarding.profile.publicAction(Forwarding.options),
-        );
-        const plain = Ref.make(
-          "items",
-          FunctionSpec.publicAction(Forwarding.options),
-        );
-        for (const target of [reserved, plain]) {
-          expect(yield* runner.runAction(target, { count: 1 })).toEqual({
-            count: "1",
-            ...(enabled && target === reserved
-              ? { context: { boundary: "ActionRunner.runAction" } }
-              : {}),
-          });
-        }
-      }).pipe(
-        Effect.provide(
-          ActionRunner.layer(
-            (_ref: unknown, args?: unknown, _options?: unknown) =>
-              Promise.resolve(args),
-          ),
-        ),
-        Effect.provideService(RegisteredFunction.Forward, forward),
+it.effect.each(Forwarding.cases)(
+  "ActionRunner forwards $label only to a reserving target",
+  ({ forward, enabled }) =>
+    Effect.flatMap(ActionRunner.ActionRunner, (runner) =>
+      Forwarding.check(
+        Forwarding.actions,
+        runner.runAction,
+        "ActionRunner.runAction",
+        enabled,
       ),
-  );
-});
+    ).pipe(
+      Effect.provide(ActionRunner.layer(Forwarding.echo)),
+      Effect.provideService(RegisteredFunction.Forward, forward),
+    ),
+);

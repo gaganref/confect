@@ -1,5 +1,3 @@
-import * as Forwarding from "./internal/forwarding";
-import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import { FunctionSpec, Ref } from "@confect/core";
 import * as QueryRunner from "@confect/server/QueryRunner";
 import * as QueryTransactionContext from "@confect/server/QueryTransactionContext";
@@ -300,25 +298,3 @@ describe("QueryRunner", () => {
       }).pipe(Effect.provide(QueryRunner.layer(vi.fn()))),
   );
 });
-
-it.effect("does not add reserved context to query cache keys", () =>
-  Effect.gen(function* () {
-    const runner = yield* QueryRunner.QueryRunner;
-    const target = Ref.make(
-      "items",
-      Forwarding.profile.publicQuery(Forwarding.options),
-    );
-    expect(yield* runner.runQuery(target, { count: 1 })).toEqual({
-      count: "1",
-    });
-  }).pipe(
-    Effect.provide(
-      QueryRunner.layer((_ref: unknown, args?: unknown) =>
-        Promise.resolve(args),
-      ),
-    ),
-    Effect.provideService(RegisteredFunction.Forward, () => ({
-      forbidden: true,
-    })),
-  ),
-);

@@ -141,49 +141,26 @@ describe("MutationTransactionContext", () => {
   );
 });
 
-describe("MutationTransactionContext reserved context", () => {
-  it.effect.each(Forwarding.cases)(
-    "forwards with $label only to a reserving target",
-    ({ forward, enabled }) =>
-      Effect.gen(function* () {
-        const runner =
-          yield* MutationTransactionContext.MutationTransactionContext;
-        const reserved = Ref.make(
-          "items",
-          Forwarding.profile.publicMutation(Forwarding.options),
-        );
-        const plain = Ref.make(
-          "items",
-          FunctionSpec.publicMutation(Forwarding.options),
-        );
-        for (const target of [reserved, plain]) {
-          expect(
-            yield* runner.runMutation(
-              target,
-              { count: 1 },
-              { transactionLimits: {} },
-            ),
-          ).toEqual({
-            count: "1",
-            ...(enabled && target === reserved
-              ? {
-                  context: {
-                    boundary: "MutationTransactionContext.runMutation",
-                  },
-                }
-              : {}),
-          });
-        }
-      }).pipe(
-        Effect.provide(
-          MutationTransactionContext.layer({
-            runQuery: (_ref: unknown, args?: unknown, _options?: unknown) =>
-              Promise.resolve(args),
-            runMutation: (_ref: unknown, args?: unknown, _options?: unknown) =>
-              Promise.resolve(args),
-          }),
+it.effect.each(Forwarding.cases)(
+  "MutationTransactionContext forwards $label only to a reserving target",
+  ({ forward, enabled }) =>
+    Forwarding.check(
+      Forwarding.mutations,
+      (target) =>
+        Effect.flatMap(
+          MutationTransactionContext.MutationTransactionContext,
+          (runner) =>
+            runner.runMutation(target, { count: 1 }, { transactionLimits: {} }),
         ),
-        Effect.provideService(RegisteredFunction.Forward, forward),
+      "MutationTransactionContext.runMutation",
+      enabled,
+    ).pipe(
+      Effect.provide(
+        MutationTransactionContext.layer({
+          runQuery: Forwarding.echo,
+          runMutation: Forwarding.echo,
+        }),
       ),
-  );
-});
+      Effect.provideService(RegisteredFunction.Forward, forward),
+    ),
+);

@@ -217,36 +217,18 @@ describe("MutationRunner", () => {
   );
 });
 
-describe("MutationRunner reserved context", () => {
-  it.effect.each(Forwarding.cases)(
-    "forwards with $label only to a reserving target",
-    ({ forward, enabled }) =>
-      Effect.gen(function* () {
-        const runner = yield* MutationRunner.MutationRunner;
-        const reserved = Ref.make(
-          "items",
-          Forwarding.profile.publicMutation(Forwarding.options),
-        );
-        const plain = Ref.make(
-          "items",
-          FunctionSpec.publicMutation(Forwarding.options),
-        );
-        for (const target of [reserved, plain]) {
-          expect(yield* runner.runMutation(target, { count: 1 })).toEqual({
-            count: "1",
-            ...(enabled && target === reserved
-              ? { context: { boundary: "MutationRunner.runMutation" } }
-              : {}),
-          });
-        }
-      }).pipe(
-        Effect.provide(
-          MutationRunner.layer(
-            (_ref: unknown, args?: unknown, _options?: unknown) =>
-              Promise.resolve(args),
-          ),
-        ),
-        Effect.provideService(RegisteredFunction.Forward, forward),
+it.effect.each(Forwarding.cases)(
+  "MutationRunner forwards $label only to a reserving target",
+  ({ forward, enabled }) =>
+    Effect.flatMap(MutationRunner.MutationRunner, (runner) =>
+      Forwarding.check(
+        Forwarding.mutations,
+        (target, args) => runner.runMutation(target, args),
+        "MutationRunner.runMutation",
+        enabled,
       ),
-  );
-});
+    ).pipe(
+      Effect.provide(MutationRunner.layer(Forwarding.echo)),
+      Effect.provideService(RegisteredFunction.Forward, forward),
+    ),
+);
