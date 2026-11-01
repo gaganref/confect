@@ -58,7 +58,8 @@ export default App.make({ env: Env.make("host", {}) });`,
   yield* project.write(
     "confect/profile.ts",
     `import { FunctionSpec } from "@confect/core";
-const tags = { owner: "test/tags", format: 1, describe: ({ spec }) => spec.description };
+const tags = { owner: "test/tags", format: 1, describe: ({ spec }) => spec.description,
+check: (next) => ({ errors: Object.values(next.functions).includes("bad") ? ["bad tags"] : [], notes: [] }) };
 export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags } });`,
   );
   const spec = (label: string) =>
@@ -79,51 +80,65 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags 
 layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
   "codegenHandler",
   (it) => {
-    it.effect(
-      "updates and drops sections on incremental spec edits",
-      () =>
-        Effect.gen(function* () {
-          const project = yield* manifestProject;
-          const { snapshot } = yield* project.provide(generateWithSnapshot);
-          const before = yield* project.manifest;
-          expect(before.tags).toEqual({
-            format: 1,
-            functions: { "notes:list": "first" },
-          });
-          yield* project.provide(generateWithSnapshot);
-          expect((yield* project.manifest).digest).toBe(before.digest);
-          yield* project.write(
-            "confect/notes.spec.ts",
-            project.sectionSpec("second"),
-          );
-          const changes = [
-            {
-              _tag: "Spec",
-              relativePath: SpecModulePath.make("notes.spec.ts"),
-            },
-          ] as const;
-          const next = yield* project.provide(
-            updateDeclarations(snapshot, changes, []),
-          );
-          const after = yield* project.manifest;
-          expect(after.tags).toEqual({
-            format: 1,
-            functions: { "notes:list": "second" },
-          });
-          expect(after.digest).not.toBe(before.digest);
-          yield* project.write("confect/notes.spec.ts", Project.spec);
-          yield* project.provide(updateDeclarations(next, changes, []));
-          expect((yield* project.manifest).tags).toBeUndefined();
-        }).pipe(Effect.scoped),
-      { timeout: 30000 },
+    it.effect("updates and drops sections on incremental spec edits", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const project = yield* manifestProject;
+        const { snapshot } = yield* project.provide(generateWithSnapshot);
+        const before = yield* project.manifest;
+        yield* project.write(
+          "confect/notes.spec.ts",
+          project.sectionSpec("second"),
+        );
+        const changes = [
+          { _tag: "Spec", relativePath: SpecModulePath.make("notes.spec.ts") },
+        ] as const;
+        const next = yield* project.provide(
+          updateDeclarations(snapshot, changes, []),
+        );
+        const after = yield* project.manifest;
+        expect(after.tags).toEqual({
+          format: 1,
+          functions: { "notes:list": "second" },
+        });
+        expect(after.digest).not.toBe(before.digest);
+        yield* project.write(
+          "confect/notes.spec.ts",
+          project.sectionSpec("bad"),
+        );
+        expect(
+          yield* Effect.flip(
+            project.provide(updateDeclarations(next, changes, [])),
+          ),
+        ).toEqual(
+          new InvalidDeclarationError({
+            declarationPath: "confect/notes.spec.ts",
+            reason: "bad tags",
+          }),
+        );
+        expect(
+          yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
+        ).toBe(false);
+        yield* project.write("confect/notes.spec.ts", Project.spec);
+        yield* project.provide(updateDeclarations(next, changes, []));
+        expect((yield* project.manifest).tags).toBeUndefined();
+      }).pipe(Effect.scoped),
     );
 
-    it.effect.each([
-      ["confect/notes.spec.ts", 'throw new Error("spec broke");'],
-      ["confect/notes.impl.ts", "export default 1;"],
-    ])(
-      "keeps the manifest after an unrelated failure in %s",
-      ([file, contents]) =>
+    it.effect.each(
+      [
+        ["confect/notes.spec.ts", 'throw new Error("spec broke");'],
+        ["confect/notes.impl.ts", "export default 1;"],
+      ].flatMap(([file, contents]) =>
+        [false, true].map((incremental) => ({
+          file: file!,
+          contents: contents!,
+          incremental,
+        })),
+      ),
+    )(
+      "keeps the manifest after an unrelated failure in $file (incremental=$incremental)",
+      ({ file, contents, incremental }) =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const project = yield* Project.make;
@@ -132,31 +147,52 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             `import { App, Env } from "@confect/core";
 export default App.make({ env: Env.make("host", {}) });`,
           );
-          yield* project.provide(generateWithSnapshot);
-          yield* project.write(file!, contents!);
-          expect(
-            (yield* Effect.result(project.provide(generateWithSnapshot)))._tag,
-          ).toBe("Failure");
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          yield* project.write(file, contents);
+          const run = incremental
+            ? updateDeclarations(
+                snapshot,
+                [
+                  {
+                    _tag: "Spec",
+                    relativePath: SpecModulePath.make("notes.spec.ts"),
+                  },
+                ],
+                [],
+              ).pipe(Effect.asVoid)
+            : generateWithSnapshot.pipe(Effect.asVoid);
+          expect((yield* Effect.result(project.provide(run)))._tag).toBe(
+            "Failure",
+          );
           expect(
             yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
           ).toBe(true);
         }).pipe(Effect.scoped),
     );
 
-    it.effect("overwrites an unreadable previous manifest", () =>
-      Effect.gen(function* () {
-        const project = yield* manifestProject;
-        yield* project.provide(generateWithSnapshot);
-        yield* project.write(
-          "confect/_generated/manifest.ts",
-          "<<<<<<< HEAD\nexport default {};\n",
-        );
-        yield* project.provide(generateWithSnapshot);
-        expect((yield* project.manifest).tags).toEqual({
-          format: 1,
-          functions: { "notes:list": "first" },
-        });
-      }).pipe(Effect.scoped),
+    it.effect.each([true, false])(
+      "overwrites an unreadable previous manifest (sectioned=%s)",
+      (sectioned) =>
+        Effect.gen(function* () {
+          const project = yield* manifestProject;
+          if (!sectioned)
+            yield* project.write("confect/notes.spec.ts", Project.spec);
+          yield* project.provide(generateWithSnapshot);
+          yield* project.write(
+            "confect/_generated/manifest.ts",
+            "<<<<<<< HEAD\nexport default {};\n",
+          );
+          yield* project.provide(generateWithSnapshot);
+          expect((yield* project.manifest).name).toBe("host");
+          expect((yield* project.manifest).tags).toEqual(
+            sectioned
+              ? {
+                  format: 1,
+                  functions: { "notes:list": "first" },
+                }
+              : undefined,
+          );
+        }).pipe(Effect.scoped),
     );
 
     it.effect.each([

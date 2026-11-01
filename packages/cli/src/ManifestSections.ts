@@ -72,3 +72,47 @@ export const collect = (
       yield* visit(leaf.spec, leaf.pathSegments.join("/"), leaf.relativePath);
     return registry;
   });
+
+export const check = (
+  registry: Registry,
+  previous: Readonly<Record<string, unknown>>,
+) => {
+  const errors: InvalidDeclarationError[] = [];
+  const notes: string[] = [];
+  for (const [key, { section, source, data }] of registry) {
+    try {
+      const checked = section.check?.(data, previous[key]);
+      if (checked === undefined) continue;
+      notes.push(...checked.notes);
+      if (checked.errors.length > 0)
+        errors.push(
+          new InvalidDeclarationError({
+            declarationPath: `confect/${source}`,
+            reason: [...new Set(checked.errors)].join("\n"),
+          }),
+        );
+    } catch (cause) {
+      errors.push(
+        new InvalidDeclarationError({
+          declarationPath: `confect/${source}`,
+          reason: `Manifest section "${key}" check failed: ${String(cause)}`,
+        }),
+      );
+    }
+  }
+  for (const [key, value] of Object.entries(previous)) {
+    if (
+      !reserved.has(key) &&
+      !registry.has(key) &&
+      typeof value === "object" &&
+      value !== null &&
+      "functions" in value &&
+      typeof value.functions === "object" &&
+      value.functions !== null
+    )
+      notes.push(
+        `Manifest section "${key}" no longer has participants. Previous functions: ${Object.keys(value.functions).join(", ")}.`,
+      );
+  }
+  return { errors, notes };
+};

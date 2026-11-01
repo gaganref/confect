@@ -12,6 +12,7 @@ import {
   HandWrittenConvexFileError,
   DeclarationKindMismatchError,
   InvalidDeclarationError,
+  logCodegenError,
 } from "../CodegenError.js";
 import { ConfectDirectory } from "../ConfectDirectory.js";
 import * as ConvexConfig from "../ConvexConfig.js";
@@ -19,7 +20,7 @@ import { ConvexDirectory } from "../ConvexDirectory.js";
 import * as Declaration from "../Declaration.js";
 import * as ManifestSections from "../ManifestSections.js";
 import type { LoadedLeafModule } from "../LeafModule.js";
-import { logFileRemoved } from "../log.js";
+import { logWarn, logFileRemoved } from "../log.js";
 import { ProjectRoot } from "../ProjectRoot.js";
 import * as templates from "../templates.js";
 import {
@@ -224,6 +225,10 @@ const readManifest = Effect.gen(function* () {
   )).module.default as Record<string, unknown>;
 });
 
+export const readPrevious = readManifest.pipe(
+  Effect.orElseSucceed(() => ({}) as Record<string, unknown>),
+);
+
 const sectionDigest = (
   base: string,
   sections: Readonly<Record<string, unknown>>,
@@ -236,23 +241,32 @@ const sectionDigest = (
         sections,
       });
 
-export const syncManifestSections = Effect.fnUntraced(function* (
-  leaves: ReadonlyArray<LoadedLeafModule>,
-) {
-  if ((yield* ConvexDirectory.target).kind !== "app") return;
-  const current = yield* readManifest;
-  if (typeof current.digest !== "string") return;
-  const registry = yield* Effect.fromResult(ManifestSections.collect(leaves));
-  const sections = Object.fromEntries(
-    [...registry].map(([key, { data }]) => [key, data]),
-  );
-  if (registry.size === 0) return;
-  const digest = sectionDigest(current.digest, sections);
-  yield* writeFileStringAndLog(
-    yield* manifestPath,
-    Declaration.renderManifest({ ...current, ...sections, digest }),
-  );
-});
+export const syncManifestSections = Effect.fnUntraced(
+  function* (
+    leaves: ReadonlyArray<LoadedLeafModule>,
+    previous: Readonly<Record<string, unknown>>,
+  ) {
+    if ((yield* ConvexDirectory.target).kind !== "app") return;
+    const current = yield* readManifest;
+    if (typeof current.digest !== "string") return;
+    const registry = yield* Effect.fromResult(ManifestSections.collect(leaves));
+    const checked = ManifestSections.check(registry, previous);
+    for (const note of checked.notes) yield* logWarn(note);
+    const [error, ...more] = checked.errors;
+    for (const other of more) yield* logCodegenError(other);
+    if (error !== undefined) return yield* error;
+    const sections = Object.fromEntries(
+      [...registry].map(([key, { data }]) => [key, data]),
+    );
+    if (registry.size === 0) return;
+    const digest = sectionDigest(current.digest, sections);
+    yield* writeFileStringAndLog(
+      yield* manifestPath,
+      Declaration.renderManifest({ ...current, ...sections, digest }),
+    );
+  },
+  Effect.tapError(() => removeManifest),
+);
 
 const authProvidersPath = Effect.gen(function* () {
   const path = yield* Path.Path;

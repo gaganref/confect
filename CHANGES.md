@@ -16,6 +16,10 @@ until the fork adopts a release containing it.
 
 Profiles describe app functions in import-free manifest sections, including their middleware. Codegen identifies definitions by key, owner and format, rejects reserved keys and conflicts, and includes sections in the digest. Incremental spec edits update and remove sections without a full rebuild. Changeset: `profile-manifest-sections.md`. Upstream: planned; no proposal submitted.
 
+### Validate sections against previous output
+
+Codegen checks previous section data, prints notes and removes the manifest only when the section step fails. Unreadable previous manifests act as empty history. A section that loses its last participant gets one generic note naming its former functions, without running a callback. Full and incremental generation share this behavior. Changeset: `profile-manifest-checks.md`. Upstream: planned; no proposal submitted.
+
 ## Reserved arguments
 
 Profiles and internal mutation, action and Node action constructors can reserve one argument without changing domain schemas or visibility. Refs, including component refs, retain the name. Registration accepts any optional value, strips it before decoding and refuses domain collisions. Queries ignore the option to preserve cache keys. Changeset: `reserved-argument.md`. Upstream: planned; no proposal submitted.

@@ -52,7 +52,7 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags 
           const process = yield* project.start("codegen");
           return {
             exit: yield* process.handle.exitCode,
-            output: yield* Ref.get(process.output),
+            output: stripVTControlCharacters(yield* Ref.get(process.output)),
           };
         });
         yield* project.write("confect/notes.spec.ts", spec("first"));
