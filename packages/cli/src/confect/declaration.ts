@@ -224,6 +224,18 @@ const readManifest = Effect.gen(function* () {
   )).module.default as Record<string, unknown>;
 });
 
+const sectionDigest = (
+  base: string,
+  sections: Readonly<Record<string, unknown>>,
+) =>
+  Object.keys(sections).length === 0
+    ? base
+    : Declaration.digest({
+        files: [["declaration", base]],
+        versions: [],
+        sections,
+      });
+
 export const syncManifestSections = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<LoadedLeafModule>,
 ) {
@@ -235,11 +247,7 @@ export const syncManifestSections = Effect.fnUntraced(function* (
     [...registry].map(([key, { data }]) => [key, data]),
   );
   if (registry.size === 0) return;
-  const digest = Declaration.digest({
-    files: [["declaration", current.digest]],
-    versions: [],
-    sections,
-  });
+  const digest = sectionDigest(current.digest, sections);
   yield* writeFileStringAndLog(
     yield* manifestPath,
     Declaration.renderManifest({ ...current, ...sections, digest }),
