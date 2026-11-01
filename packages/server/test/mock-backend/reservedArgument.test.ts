@@ -30,45 +30,73 @@ const options = {
 };
 
 describe("reserved arguments", () => {
-  it.each([null, "text", 42, { nested: [1, { value: false }] }])(
-    "accepts %j beside the domain arguments",
-    (context) => {
-      const mutation = RegisteredConvexFunction.make(
-        database,
-        item(profile.publicMutation(options)),
-      );
-      const action = RegisteredConvexFunction.make(
-        database,
-        item(profile.publicAction(options)),
-      );
-      const node = RegisteredNodeFunction.make(
-        database,
-        item(profile.publicNodeAction(options)),
-      );
-      const t = convexTest(defineSchema({}), {
-        "./_generated/server.ts": () => Promise.resolve({}),
-        "./reserved.ts": () => Promise.resolve({ mutation, action, node }),
-      });
-      const args = { value: "ok", context };
-      return Promise.all([
-        t.mutation(
-          makeFunctionReference<"mutation", typeof args>("reserved:mutation"),
-          args,
-        ),
-        t.action(
-          makeFunctionReference<"action", typeof args>("reserved:action"),
-          args,
-        ),
-        t.action(
-          makeFunctionReference<"action", typeof args>("reserved:node"),
-          args,
-        ),
-      ]).then((results) =>
-        expect(results).toEqual([
-          { value: "ok" },
-          { value: "ok" },
-          { value: "ok" },
-        ]),
+  describe.each(["public", "internal"] as const)(
+    "%s registrations",
+    (visibility) => {
+      it.each([null, "text", 42, { nested: [1, { value: false }] }])(
+        "accepts %j beside the domain arguments",
+        (context) => {
+          const mutation = RegisteredConvexFunction.make(
+            database,
+            item(
+              visibility === "public"
+                ? profile.publicMutation(options)
+                : FunctionSpec.internalMutation({
+                    ...options,
+                    reservedArgument: "context",
+                  }),
+            ),
+          );
+          const action = RegisteredConvexFunction.make(
+            database,
+            item(
+              visibility === "public"
+                ? profile.publicAction(options)
+                : FunctionSpec.internalAction({
+                    ...options,
+                    reservedArgument: "context",
+                  }),
+            ),
+          );
+          const node = RegisteredNodeFunction.make(
+            database,
+            item(
+              visibility === "public"
+                ? profile.publicNodeAction(options)
+                : FunctionSpec.internalNodeAction({
+                    ...options,
+                    reservedArgument: "context",
+                  }),
+            ),
+          );
+          const t = convexTest(defineSchema({}), {
+            "./_generated/server.ts": () => Promise.resolve({}),
+            "./reserved.ts": () => Promise.resolve({ mutation, action, node }),
+          });
+          const args = { value: "ok", context };
+          return Promise.all([
+            t.mutation(
+              makeFunctionReference<"mutation", typeof args>(
+                "reserved:mutation",
+              ),
+              args,
+            ),
+            t.action(
+              makeFunctionReference<"action", typeof args>("reserved:action"),
+              args,
+            ),
+            t.action(
+              makeFunctionReference<"action", typeof args>("reserved:node"),
+              args,
+            ),
+          ]).then((results) =>
+            expect(results).toEqual([
+              { value: "ok" },
+              { value: "ok" },
+              { value: "ok" },
+            ]),
+          );
+        },
       );
     },
   );

@@ -1302,6 +1302,31 @@ describe("profile schema wrappers", () => {
 });
 
 describe("reserved arguments", () => {
+  it("reserves internal builders and refs without forcing schemas", () => {
+    let builds = 0;
+    const options = {
+      name: "echo",
+      reservedArgument: "context",
+      returns: () => {
+        builds++;
+        return Schema.String;
+      },
+    };
+    for (const spec of [
+      FunctionSpec.internalMutation(options),
+      FunctionSpec.internalAction(options),
+      FunctionSpec.internalNodeAction(options),
+    ]) {
+      const ref: Ref.AnyInternal = Ref.make("items", spec);
+      expect([
+        spec.reservedArgument,
+        ref.reservedArgument,
+        spec.functionVisibility,
+        builds,
+      ]).toEqual(["context", "context", "internal", 0]);
+    }
+  });
+
   it("keeps the name through profile extension, middleware and refs without forcing schemas", () => {
     let builds = 0;
     const profile = FunctionSpec.extend()({
