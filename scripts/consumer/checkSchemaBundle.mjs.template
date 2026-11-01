@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import { resolve } from "node:path";
+import ts from "typescript";
 
 const require = createRequire(import.meta.url);
 const convexRequire = createRequire(require.resolve("convex/package.json"));
@@ -59,6 +60,28 @@ assert.deepEqual(
 const source = result.outputFiles.find((file) =>
   file.path.endsWith("/schema.js"),
 ).text;
+const imports = [];
+const inspectImports = (node) => {
+  if (
+    ts.isImportDeclaration(node) ||
+    (ts.isExportDeclaration(node) && node.moduleSpecifier) ||
+    (ts.isCallExpression(node) &&
+      node.expression.kind === ts.SyntaxKind.ImportKeyword)
+  ) {
+    imports.push(node.getText());
+  }
+  ts.forEachChild(node, inspectImports);
+};
+inspectImports(
+  ts.createSourceFile(
+    "schema.js",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.JS,
+  ),
+);
+assert.deepEqual(imports, []);
 const { default: schema } = await import(
   `data:text/javascript;base64,${Buffer.from(source).toString("base64")}`
 );
