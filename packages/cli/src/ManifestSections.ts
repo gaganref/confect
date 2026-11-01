@@ -83,7 +83,7 @@ export const collect = (
                         ...spec.middlewareSpecs,
                       ],
                     }),
-                    json,
+                    json(),
                   ),
                 ),
               catch: (cause) =>
