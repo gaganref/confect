@@ -41,6 +41,25 @@ describe("ManifestSections", () => {
       functions: { "notes/child:save": ["group", "function"] },
     });
   });
+  it("serializes shared objects without treating them as a cycle", () => {
+    const shared = { label: "shared" };
+    const p = FunctionSpec.extend()({
+      middleware: [],
+      manifest: {
+        tags: { ...section, describe: () => ({ left: shared, right: shared }) },
+      },
+    });
+    expect(
+      Result.getOrThrow(
+        collect(leaf(GroupSpec.make().addFunction(p.publicQuery(list)))),
+      ).get("tags")?.data,
+    ).toEqual({
+      format: 1,
+      functions: {
+        "notes:list": { left: { label: "shared" }, right: { label: "shared" } },
+      },
+    });
+  });
   it.each("name env http digest __proto__ constructor prototype".split(" "))(
     "refuses %s once",
     (key) => {

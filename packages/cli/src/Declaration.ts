@@ -488,7 +488,11 @@ export const authProviders = (providers: ReadonlyArray<Provider>): string =>
 /**
  * `confect/_generated/manifest.ts`: plain data, no imports, for infra.
  */
-export const manifest = (declaration: Declaration, digest: string): string => {
+export const manifest = (
+  declaration: Declaration,
+  digest: string,
+  sections: Readonly<Record<string, unknown>> = {},
+): string => {
   const data = {
     name: declaration.name,
     env: Object.fromEntries(declaration.env),
@@ -500,6 +504,7 @@ export const manifest = (declaration: Declaration, digest: string): string => {
       ),
     },
     digest,
+    ...sections,
   };
   return renderManifest(data);
 };

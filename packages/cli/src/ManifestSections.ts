@@ -1,4 +1,5 @@
 import type { GroupSpec, ManifestSection } from "@confect/core";
+import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import type { LoadedLeafModule } from "./LeafModule.js";
 import { InvalidDeclarationError } from "./CodegenError.js";
@@ -6,6 +7,34 @@ import { InvalidDeclarationError } from "./CodegenError.js";
 const reserved = new Set(
   "name env http digest __proto__ constructor prototype".split(" "),
 );
+export const sections = (manifest: Readonly<Record<string, unknown>>) =>
+  Object.fromEntries(
+    Object.entries(manifest).filter(([key]) => !reserved.has(key)),
+  );
+const json = () => {
+  const ancestors: { value: object; path: string }[] = [];
+  return function (this: object, key: string, value: unknown) {
+    while (ancestors.length > 0 && ancestors.at(-1)?.value !== this)
+      ancestors.pop();
+    const parent = ancestors.at(-1);
+    const path =
+      parent === undefined ? "$" : `${parent.path}[${JSON.stringify(key)}]`;
+    if (
+      key === "__proto__" ||
+      !["string", "number", "boolean", "object"].includes(typeof value) ||
+      (typeof value === "number" && !Number.isFinite(value)) ||
+      (typeof value === "object" &&
+        value !== null &&
+        !Array.isArray(value) &&
+        ![Object.prototype, null].includes(Object.getPrototypeOf(value))) ||
+      ancestors.some((ancestor) => ancestor.value === value)
+    )
+      throw new TypeError(`Expected JSON data at ${path}`);
+    if (typeof value === "object" && value !== null)
+      ancestors.push({ value, path });
+    return value;
+  };
+};
 export type Registry = Map<
   string,
   {
@@ -58,10 +87,23 @@ export const collect = (
               },
             };
             registry.set(key, entry);
-            entry.data.functions[functionPath] = section.describe({
-              path: functionPath,
-              spec,
-              middleware: [...group.middlewareSpecs, ...spec.middlewareSpecs],
+            entry.data.functions[functionPath] = yield* Result.try({
+              try: () =>
+                JSON.parse(
+                  JSON.stringify(
+                    section.describe({
+                      path: functionPath,
+                      spec,
+                      middleware: [
+                        ...group.middlewareSpecs,
+                        ...spec.middlewareSpecs,
+                      ],
+                    }),
+                    json(),
+                  ),
+                ),
+              catch: (cause) =>
+                invalid(`could not describe as JSON: ${String(cause)}`),
             });
           }
         }
@@ -72,3 +114,45 @@ export const collect = (
       yield* visit(leaf.spec, leaf.pathSegments.join("/"), leaf.relativePath);
     return registry;
   });
+
+export const check = (
+  registry: Registry,
+  previous: Readonly<Record<string, unknown>>,
+) => {
+  const errors: InvalidDeclarationError[] = [];
+  const notes: string[] = [];
+  for (const [key, { section, source, data }] of registry) {
+    try {
+      const checked = section.check?.(data, previous[key]);
+      if (checked === undefined) continue;
+      notes.push(...checked.notes);
+      if (checked.errors.length > 0)
+        errors.push(
+          new InvalidDeclarationError({
+            declarationPath: `confect/${source}`,
+            reason: [...new Set(checked.errors)].join("\n"),
+          }),
+        );
+    } catch (cause) {
+      errors.push(
+        new InvalidDeclarationError({
+          declarationPath: `confect/${source}`,
+          reason: `Manifest section "${key}" check failed: ${String(cause)}`,
+        }),
+      );
+    }
+  }
+  for (const [key, value] of Object.entries(previous)) {
+    if (
+      !reserved.has(key) &&
+      !registry.has(key) &&
+      Predicate.isObjectOrArray(value) &&
+      "functions" in value &&
+      Predicate.isObjectOrArray(value.functions)
+    )
+      notes.push(
+        `Manifest section "${key}" no longer has participants. Previous functions: ${Object.keys(value.functions).join(", ")}.`,
+      );
+  }
+  return { errors, notes };
+};

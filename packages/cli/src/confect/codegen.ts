@@ -60,6 +60,7 @@ import {
 } from "../utils.js";
 import {
   syncManifestSections,
+  readPrevious,
   syncDeclaration,
   syncDeclaredHttp,
 } from "./declaration.js";
@@ -131,7 +132,8 @@ const runCodegen = Effect.gen(function* () {
   // A declared backend's `convex.config.ts` and manifest come first: the
   // components registry below reads the config, and nothing may validate
   // against a manifest the current declaration did not produce.
-  const declared = yield* syncDeclaration;
+  const previousManifest = yield* readPrevious;
+  const { app: declared, digest } = yield* syncDeclaration(previousManifest);
   // Reject a legacy `confect/schema.ts` up front so the user-facing
   // migration message surfaces before any bundler error from impl
   // validation (each impl imports `_generated/schema.ts`).
@@ -157,7 +159,7 @@ const runCodegen = Effect.gen(function* () {
   yield* generateRuntimeSchema(tableModules);
   const leaves = yield* loadAll;
   yield* rejectComponentNodeGroups(leaves);
-  yield* syncManifestSections(leaves);
+  yield* syncManifestSections(leaves, previousManifest, digest);
   yield* removeLegacyFiles;
   const snapshot = yield* Effect.fromResult(
     GenerationSnapshot.fromLoadedLeaves(leaves),
@@ -229,6 +231,7 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
     declarations: Array.NonEmptyReadonlyArray<EntryPoint.Declaration>,
     affectedImpls: ReadonlyArray<ImplModulePath>,
   ) {
+    const previousManifest = yield* readPrevious;
     const path = yield* Path.Path;
     const { paths, tables } = EntryPoint.planDeclarations(
       declarations,
@@ -242,9 +245,10 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
         const next = yield* Effect.fromResult(
           GenerationSnapshot.update(snapshot, leaves),
         );
-        const declared = yield* syncDeclaration;
+        const { app: declared, digest } =
+          yield* syncDeclaration(previousManifest);
         if (Option.isSome(declared))
-          yield* syncManifestSections(yield* loadAll);
+          yield* syncManifestSections(yield* loadAll, previousManifest, digest);
         const required = Option.isSome(declared)
           ? declared.value.requiresMiddleware
           : [];
