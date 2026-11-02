@@ -133,6 +133,24 @@ test("starts at one and advances past the highest published build for this base"
   ).toBe("10.2.0-fork.30");
 });
 
+test("plans from fresh registry state after the previous publish finishes", () => {
+  const versions = ["10.2.0-fork.6"];
+  const first = Result.getOrThrow(chooseBuildVersion("10.2.0", versions));
+  const stale = Result.getOrThrow(chooseBuildVersion("10.2.0", versions));
+  expect([first, stale]).toEqual(["10.2.0-fork.7", "10.2.0-fork.7"]);
+
+  const published = [...versions, first];
+  expect(Result.getOrThrow(chooseBuildVersion("10.2.0", published))).toBe(
+    "10.2.0-fork.8",
+  );
+  const override = chooseBuildVersion("10.2.0", published, "7");
+  expect(Result.isFailure(override) && override.failure).toMatchObject({
+    _tag: "BuildNumberUnavailable",
+    version: "10.2.0-fork.7",
+    highestBuild: 7,
+  });
+});
+
 test.each(["0", "-1", "1.5", "1e2", "01", "abc", "9007199254740992"])(
   "rejects invalid explicit build number %s",
   (value) => {
