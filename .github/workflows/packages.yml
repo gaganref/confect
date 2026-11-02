@@ -13,6 +13,13 @@ on:
         type: string
 
 jobs:
+  lint-workflows:
+    name: Lint workflows
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.12 -shellcheck= -pyflakes= .github/workflows/packages.yml .github/workflows/publish.yml
+
   test-scripts:
     name: Test (scripts)
     runs-on: ubuntu-latest
@@ -187,6 +194,7 @@ jobs:
   publish:
     name: Publish checked fork build
     needs:
+      - lint-workflows
       - test-scripts
       - format
       - typecheck

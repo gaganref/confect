@@ -22,6 +22,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: ${{ inputs.publish == true && 'fork-npm-publish' || format('fork-npm-check-{0}', github.run_id) }}
+  cancel-in-progress: false
+
 jobs:
   stage:
     name: Rename and pack
@@ -87,9 +91,6 @@ jobs:
     environment: npm
     outputs:
       version: ${{ needs.stage.outputs.version }}
-    concurrency:
-      group: fork-npm-publish
-      cancel-in-progress: false
     permissions:
       contents: read
       id-token: write
