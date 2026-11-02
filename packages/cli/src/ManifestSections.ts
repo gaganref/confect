@@ -87,21 +87,20 @@ export const collect = (
               },
             };
             registry.set(key, entry);
-            entry.data.functions[functionPath] = yield* Result.try({
+            const description = yield* Result.try({
               try: () =>
-                JSON.parse(
-                  JSON.stringify(
-                    section.describe({
-                      path: functionPath,
-                      spec,
-                      middleware: [
-                        ...group.middlewareSpecs,
-                        ...spec.middlewareSpecs,
-                      ],
-                    }),
-                    json(),
-                  ),
-                ),
+                section.describe({
+                  path: functionPath,
+                  spec,
+                  middleware: [
+                    ...group.middlewareSpecs,
+                    ...spec.middlewareSpecs,
+                  ],
+                }),
+              catch: (cause) => invalid(String(cause)),
+            });
+            entry.data.functions[functionPath] = yield* Result.try({
+              try: () => JSON.parse(JSON.stringify(description, json())),
               catch: (cause) =>
                 invalid(`could not describe as JSON: ${String(cause)}`),
             });

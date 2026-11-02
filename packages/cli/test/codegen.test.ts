@@ -38,6 +38,7 @@ import {
   HandWrittenConvexFileError,
   InvalidConvexConfigError,
   InvalidDeclarationError,
+  renderCodegenError,
 } from "@confect/cli/CodegenError";
 import * as Project from "./integration/Project";
 
@@ -242,6 +243,35 @@ export default App.make({ env: Env.make("other", {}) });`,
         }).pipe(Effect.scoped),
     );
 
+    it.effect("reports a describe refusal without a JSON error", () =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const project = yield* manifestProject;
+        yield* project.write(
+          "confect/profile.ts",
+          `import { FunctionSpec } from "@confect/core";
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: { owner: "test/tags", format: 1, describe: () => { throw new Error("tags: declaration refused"); } } } });`,
+        );
+        const error = yield* Effect.flip(project.provide(generateWithSnapshot));
+        expect(error).toMatchObject({
+          _tag: "InvalidDeclarationError",
+          declarationPath: "confect/notes.spec.ts",
+          reason:
+            'Manifest section "tags" (notes:list): Error: tags: declaration refused',
+        });
+        assert(error._tag === "InvalidDeclarationError");
+        expect(renderCodegenError(error)).toContain(
+          'Manifest section "tags" (notes:list): Error: tags: declaration refused',
+        );
+        expect(renderCodegenError(error)).not.toContain(
+          "could not describe as JSON",
+        );
+        expect(
+          yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
+        ).toBe(false);
+      }).pipe(Effect.scoped),
+    );
+
     it.effect.each([
       { value: "1n", path: "$" },
       { value: "() => 1", path: "$" },
@@ -277,13 +307,18 @@ export default App.make({ env: Env.make("other", {}) });`,
             `import { FunctionSpec } from "@confect/core";
 export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: { owner: "test/tags", format: 1, describe: () => ${value} } } });`,
           );
-          expect(
-            yield* Effect.flip(project.provide(generateWithSnapshot)),
-          ).toMatchObject({
+          const error = yield* Effect.flip(
+            project.provide(generateWithSnapshot),
+          );
+          expect(error).toMatchObject({
             _tag: "InvalidDeclarationError",
             declarationPath: "confect/notes.spec.ts",
             reason: `Manifest section "tags" (notes:list): could not describe as JSON: TypeError: Expected JSON data at ${path}`,
           });
+          assert(error._tag === "InvalidDeclarationError");
+          expect(renderCodegenError(error)).toContain(
+            `could not describe as JSON: TypeError: Expected JSON data at ${path}`,
+          );
           expect(
             yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
           ).toBe(false);
