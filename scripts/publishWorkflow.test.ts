@@ -27,10 +27,12 @@ test("holds one publish lock across version selection and publication", () =>
         Bun.YAML.parse(source),
       );
 
-      expect(workflow.concurrency).toMatchObject({
+      // Pinned whole: a publish holds the shared lock, and every other run gets its own group.
+      expect(workflow.concurrency).toEqual({
+        group:
+          "${{ inputs.publish == true && 'fork-npm-publish' || format('fork-npm-check-{0}', github.run_id) }}",
         "cancel-in-progress": false,
       });
-      expect(workflow.concurrency?.group).toContain("fork-npm-publish");
       for (const job of Object.values(workflow.jobs)) {
         expect(job.concurrency).toBeUndefined();
       }
