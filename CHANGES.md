@@ -651,6 +651,17 @@ deployment in this repository while retaining documentation checks.
 Changeset: none; CI triggers only.
 Upstream: fork only.
 
+### Choose build versions under the publish lock
+
+Hold the publishing workflow's concurrency lock across staging and publishing so
+nearby main pushes cannot choose the same build number before either publishes.
+Keep running publishes uncancelled and PR and existing-build checks independent.
+The consumer check remains inside the publishing run's lock. Lint the release
+workflows with actionlint before allowing publication.
+
+Changeset: none; fork release infrastructure only.
+Upstream: fork only.
+
 ### Publish aliased GitHub Packages builds
 
 Stage renamed `@gaganref/confect-*` tarballs at a shared
