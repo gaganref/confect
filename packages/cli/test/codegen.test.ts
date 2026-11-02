@@ -303,33 +303,45 @@ check: (next) => ({ errors: "stock:list" in next.functions ? ["notes:list and st
         }).pipe(Effect.scoped),
     );
 
-    it.effect("reports a describe refusal without a JSON error", () =>
-      Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const project = yield* manifestProject;
-        yield* project.write(
-          "confect/profile.ts",
-          `import { FunctionSpec } from "@confect/core";
-export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: { owner: "test/tags", format: 1, describe: () => { throw new Error("tags: declaration refused"); } } } });`,
-        );
-        const error = yield* Effect.flip(project.provide(generateWithSnapshot));
-        expect(error).toMatchObject({
-          _tag: "InvalidDeclarationError",
-          declarationPath: "confect/notes.spec.ts",
-          reason:
-            'Manifest section "tags" (notes:list): Error: tags: declaration refused',
-        });
-        assert(error._tag === "InvalidDeclarationError");
-        expect(renderCodegenError(error)).toContain(
-          'Manifest section "tags" (notes:list): Error: tags: declaration refused',
-        );
-        expect(renderCodegenError(error)).not.toContain(
-          "could not describe as JSON",
-        );
-        expect(
-          yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
-        ).toBe(false);
-      }).pipe(Effect.scoped),
+    it.effect.each([
+      {
+        thrown: 'new Error("tags: declaration refused")',
+        shown: "Error: tags: declaration refused",
+      },
+      {
+        thrown: '"tags: declaration refused"',
+        shown: "tags: declaration refused",
+      },
+    ])(
+      "reports a describe refusal without a JSON error ($shown)",
+      ({ thrown, shown }) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* manifestProject;
+          yield* project.write(
+            "confect/profile.ts",
+            `import { FunctionSpec } from "@confect/core";
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: { owner: "test/tags", format: 1, describe: () => { throw ${thrown}; } } } });`,
+          );
+          const error = yield* Effect.flip(
+            project.provide(generateWithSnapshot),
+          );
+          expect(error).toMatchObject({
+            _tag: "InvalidDeclarationError",
+            declarationPath: "confect/notes.spec.ts",
+            reason: `Manifest section "tags" (notes:list): ${shown}`,
+          });
+          assert(error._tag === "InvalidDeclarationError");
+          expect(renderCodegenError(error)).toContain(
+            `Manifest section "tags" (notes:list): ${shown}`,
+          );
+          expect(renderCodegenError(error)).not.toContain(
+            "could not describe as JSON",
+          );
+          expect(
+            yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
+          ).toBe(false);
+        }).pipe(Effect.scoped),
     );
 
     it.effect.each([
