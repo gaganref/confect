@@ -89,7 +89,8 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags,
           "tags checked",
         ])
           expect(failed.output.split(message)).toHaveLength(2);
-        expect(failed.output).toContain("confect/notes.spec.ts is invalid");
+        expect(failed.output).toContain('Manifest section "tags" is invalid:');
+        expect(failed.output).toContain('Manifest section "other" is invalid:');
         expect(
           yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
         ).toBe(false);

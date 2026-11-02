@@ -38,6 +38,8 @@ import {
   HandWrittenConvexFileError,
   InvalidConvexConfigError,
   InvalidDeclarationError,
+  isCodegenError,
+  renderCodegenError,
 } from "@confect/cli/CodegenError";
 import * as Project from "./integration/Project";
 
@@ -182,9 +184,9 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           if (contents === "throw")
             expect(result).toMatchObject({
               failure: {
-                _tag: "InvalidDeclarationError",
-                reason:
-                  'Manifest section "tags" check failed: Error: check threw',
+                _tag: "InvalidManifestSectionError",
+                sectionKey: "tags",
+                reason: "check failed: Error: check threw",
               },
             });
           expect(
@@ -242,6 +244,106 @@ export default App.make({ env: Env.make("other", {}) });`,
         }).pipe(Effect.scoped),
     );
 
+    it.effect.each([false, true])(
+      "attributes cross-file check conflicts to the section (incremental=%s)",
+      (incremental) =>
+        Effect.gen(function* () {
+          const project = yield* manifestProject;
+          yield* project.write(
+            "confect/profile.ts",
+            `import { FunctionSpec } from "@confect/core";
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: {
+owner: "test/tags", format: 1, describe: ({ spec }) => spec.description,
+check: (next) => ({ errors: "stock:list" in next.functions ? ["notes:list and stock:list declare conflicting tags"] : [], notes: [] })
+} } });`,
+          );
+          yield* project.write(
+            "confect/alpha.spec.ts",
+            project.sectionSpec("first"),
+          );
+          yield* project.write(
+            "confect/alpha.impl.ts",
+            Project.impl.replace("./notes.spec", "./alpha.spec"),
+          );
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          yield* project.write(
+            "confect/stock.spec.ts",
+            project.sectionSpec("conflict"),
+          );
+          yield* project.write(
+            "confect/stock.impl.ts",
+            Project.impl.replace("./notes.spec", "./stock.spec"),
+          );
+          const error = yield* Effect.flip(
+            project.provide(
+              incremental
+                ? updateDeclarations(
+                    snapshot,
+                    [
+                      {
+                        _tag: "Spec",
+                        relativePath: SpecModulePath.make("stock.spec.ts"),
+                      },
+                    ],
+                    [],
+                  ).pipe(Effect.asVoid)
+                : generateWithSnapshot.pipe(Effect.asVoid),
+            ),
+          );
+          assert(isCodegenError(error));
+          expect(renderCodegenError(error)).toContain(
+            'Manifest section "tags" is invalid: notes:list and stock:list declare conflicting tags',
+          );
+          expect(renderCodegenError(error)).not.toContain("Declaration ");
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "tags",
+            reason: "notes:list and stock:list declare conflicting tags",
+          });
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect.each([
+      {
+        thrown: 'new Error("tags: declaration refused")',
+        shown: "Error: tags: declaration refused",
+      },
+      {
+        thrown: '"tags: declaration refused"',
+        shown: "tags: declaration refused",
+      },
+    ])(
+      "reports a describe refusal without a JSON error ($shown)",
+      ({ thrown, shown }) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* manifestProject;
+          yield* project.write(
+            "confect/profile.ts",
+            `import { FunctionSpec } from "@confect/core";
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: { owner: "test/tags", format: 1, describe: () => { throw ${thrown}; } } } });`,
+          );
+          const error = yield* Effect.flip(
+            project.provide(generateWithSnapshot),
+          );
+          expect(error).toMatchObject({
+            _tag: "InvalidDeclarationError",
+            declarationPath: "confect/notes.spec.ts",
+            reason: `Manifest section "tags" (notes:list): ${shown}`,
+          });
+          assert(error._tag === "InvalidDeclarationError");
+          expect(renderCodegenError(error)).toContain(
+            `Manifest section "tags" (notes:list): ${shown}`,
+          );
+          expect(renderCodegenError(error)).not.toContain(
+            "could not describe as JSON",
+          );
+          expect(
+            yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
+          ).toBe(false);
+        }).pipe(Effect.scoped),
+    );
+
     it.effect.each([
       { value: "1n", path: "$" },
       { value: "() => 1", path: "$" },
@@ -277,13 +379,18 @@ export default App.make({ env: Env.make("other", {}) });`,
             `import { FunctionSpec } from "@confect/core";
 export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: { owner: "test/tags", format: 1, describe: () => ${value} } } });`,
           );
-          expect(
-            yield* Effect.flip(project.provide(generateWithSnapshot)),
-          ).toMatchObject({
+          const error = yield* Effect.flip(
+            project.provide(generateWithSnapshot),
+          );
+          expect(error).toMatchObject({
             _tag: "InvalidDeclarationError",
             declarationPath: "confect/notes.spec.ts",
             reason: `Manifest section "tags" (notes:list): could not describe as JSON: TypeError: Expected JSON data at ${path}`,
           });
+          assert(error._tag === "InvalidDeclarationError");
+          expect(renderCodegenError(error)).toContain(
+            `could not describe as JSON: TypeError: Expected JSON data at ${path}`,
+          );
           expect(
             yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
           ).toBe(false);

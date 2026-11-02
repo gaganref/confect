@@ -35,6 +35,20 @@ Codegen checks previous section data, prints notes and removes the manifest only
 
 Descriptions must be JSON data. Non-JSON values, including `Map`, `Set` and class instances, and own `__proto__` properties fail with a typed diagnostic naming the section, function, declaring spec and exact JSON path. Empty property names retain `[""]` in the path and cycle refusals identify the cyclic reference. Refusing `__proto__` prevents object-literal prototype semantics from changing the manifest on readback and making unchanged runs write repeatedly. Section failure cleanup removes the manifest. Changeset: `profile-manifest-json.md`. Upstream: planned; no proposal submitted.
 
+### Report description refusals accurately
+
+A manifest section's deliberate description refusal names the section and
+function without claiming its value was not JSON. Non-JSON values still name
+their exact JSON path. Changeset: `manifest-description-errors.md`. Upstream:
+planned; no proposal submitted.
+
+### Attribute section checks to the section
+
+A failed manifest section check names the section key instead of the first
+participating declaration. Its conflict detail keeps both function paths.
+Thrown checks use the same section attribution. Changeset:
+`manifest-section-check-errors.md`. Upstream: planned; no proposal submitted.
+
 ## Reserved arguments
 
 Profiles and internal mutation, action and Node action constructors can reserve one argument without changing domain schemas or visibility. Refs, including component refs, retain the name. Registration accepts any optional value, strips it before decoding and refuses domain collisions. Queries ignore the option to preserve cache keys. Changeset: `reserved-argument.md`. Upstream: planned; no proposal submitted.
