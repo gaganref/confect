@@ -189,6 +189,14 @@ export class InvalidDeclarationError extends Schema.TaggedError<InvalidDeclarati
   },
 ) {}
 
+export class InvalidManifestSectionError extends Schema.TaggedError<InvalidManifestSectionError>()(
+  "InvalidManifestSectionError",
+  {
+    sectionKey: Schema.String,
+    reason: Schema.String,
+  },
+) {}
+
 export class HandWrittenConvexFileError extends Schema.TaggedError<HandWrittenConvexFileError>()(
   "HandWrittenConvexFileError",
   {
@@ -244,6 +252,7 @@ export const CodegenError = Schema.Union([
   ConflictingDocNameError,
   InvalidConvexConfigError,
   InvalidDeclarationError,
+  InvalidManifestSectionError,
   HandWrittenConvexFileError,
   UnownedConvexEntrypointError,
   DeclarationKindMismatchError,
@@ -474,6 +483,11 @@ export const renderCodegenError = (error: CodegenError): string => {
       "Declaration ",
       formatPath(error.declarationPath),
       ` is invalid: ${error.reason}`,
+    );
+  }
+  if (error._tag === "InvalidManifestSectionError") {
+    return singleLine(
+      `Manifest section "${error.sectionKey}" is invalid: ${error.reason}`,
     );
   }
   if (error._tag === "DeclarationKindMismatchError") {

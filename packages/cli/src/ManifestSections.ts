@@ -2,7 +2,10 @@ import type { GroupSpec, ManifestSection } from "@confect/core";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import type { LoadedLeafModule } from "./LeafModule.js";
-import { InvalidDeclarationError } from "./CodegenError.js";
+import {
+  InvalidDeclarationError,
+  InvalidManifestSectionError,
+} from "./CodegenError.js";
 
 const reserved = new Set(
   "name env http digest __proto__ constructor prototype".split(" "),
@@ -39,7 +42,6 @@ export type Registry = Map<
   string,
   {
     section: ManifestSection.ManifestSection;
-    source: string;
     data: { format: number; functions: Record<string, unknown> };
   }
 >;
@@ -80,7 +82,6 @@ export const collect = (
               );
             const entry = existing ?? {
               section,
-              source,
               data: {
                 format: section.format,
                 functions: Object.create(null) as Record<string, unknown>,
@@ -118,25 +119,25 @@ export const check = (
   registry: Registry,
   previous: Readonly<Record<string, unknown>>,
 ) => {
-  const errors: InvalidDeclarationError[] = [];
+  const errors: InvalidManifestSectionError[] = [];
   const notes: string[] = [];
-  for (const [key, { section, source, data }] of registry) {
+  for (const [key, { section, data }] of registry) {
     try {
       const checked = section.check?.(data, previous[key]);
       if (checked === undefined) continue;
       notes.push(...checked.notes);
       if (checked.errors.length > 0)
         errors.push(
-          new InvalidDeclarationError({
-            declarationPath: `confect/${source}`,
+          new InvalidManifestSectionError({
+            sectionKey: key,
             reason: [...new Set(checked.errors)].join("\n"),
           }),
         );
     } catch (cause) {
       errors.push(
-        new InvalidDeclarationError({
-          declarationPath: `confect/${source}`,
-          reason: `Manifest section "${key}" check failed: ${String(cause)}`,
+        new InvalidManifestSectionError({
+          sectionKey: key,
+          reason: `check failed: ${String(cause)}`,
         }),
       );
     }

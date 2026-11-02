@@ -38,6 +38,7 @@ import {
   HandWrittenConvexFileError,
   InvalidConvexConfigError,
   InvalidDeclarationError,
+  isCodegenError,
   renderCodegenError,
 } from "@confect/cli/CodegenError";
 import * as Project from "./integration/Project";
@@ -183,9 +184,9 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           if (contents === "throw")
             expect(result).toMatchObject({
               failure: {
-                _tag: "InvalidDeclarationError",
-                reason:
-                  'Manifest section "tags" check failed: Error: check threw',
+                _tag: "InvalidManifestSectionError",
+                sectionKey: "tags",
+                reason: "check failed: Error: check threw",
               },
             });
           expect(
@@ -240,6 +241,65 @@ export default App.make({ env: Env.make("other", {}) });`,
                 }
               : undefined,
           );
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect.each([false, true])(
+      "attributes cross-file check conflicts to the section (incremental=%s)",
+      (incremental) =>
+        Effect.gen(function* () {
+          const project = yield* manifestProject;
+          yield* project.write(
+            "confect/profile.ts",
+            `import { FunctionSpec } from "@confect/core";
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: {
+owner: "test/tags", format: 1, describe: ({ spec }) => spec.description,
+check: (next) => ({ errors: "stock:list" in next.functions ? ["notes:list and stock:list declare conflicting tags"] : [], notes: [] })
+} } });`,
+          );
+          yield* project.write(
+            "confect/alpha.spec.ts",
+            project.sectionSpec("first"),
+          );
+          yield* project.write(
+            "confect/alpha.impl.ts",
+            Project.impl.replace("./notes.spec", "./alpha.spec"),
+          );
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          yield* project.write(
+            "confect/stock.spec.ts",
+            project.sectionSpec("conflict"),
+          );
+          yield* project.write(
+            "confect/stock.impl.ts",
+            Project.impl.replace("./notes.spec", "./stock.spec"),
+          );
+          const error = yield* Effect.flip(
+            project.provide(
+              incremental
+                ? updateDeclarations(
+                    snapshot,
+                    [
+                      {
+                        _tag: "Spec",
+                        relativePath: SpecModulePath.make("stock.spec.ts"),
+                      },
+                    ],
+                    [],
+                  ).pipe(Effect.asVoid)
+                : generateWithSnapshot.pipe(Effect.asVoid),
+            ),
+          );
+          assert(isCodegenError(error));
+          expect(renderCodegenError(error)).toContain(
+            'Manifest section "tags" is invalid: notes:list and stock:list declare conflicting tags',
+          );
+          expect(renderCodegenError(error)).not.toContain("Declaration ");
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "tags",
+            reason: "notes:list and stock:list declare conflicting tags",
+          });
         }).pipe(Effect.scoped),
     );
 

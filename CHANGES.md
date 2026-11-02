@@ -42,6 +42,13 @@ function without claiming its value was not JSON. Non-JSON values still name
 their exact JSON path. Changeset: `manifest-description-errors.md`. Upstream:
 planned; no proposal submitted.
 
+### Attribute section checks to the section
+
+A failed manifest section check names the section key instead of the first
+participating declaration. Its conflict detail keeps both function paths.
+Thrown checks use the same section attribution. Changeset:
+`manifest-section-check-errors.md`. Upstream: planned; no proposal submitted.
+
 ## Reserved arguments
 
 Profiles and internal mutation, action and Node action constructors can reserve one argument without changing domain schemas or visibility. Refs, including component refs, retain the name. Registration accepts any optional value, strips it before decoding and refuses domain collisions. Queries ignore the option to preserve cache keys. Changeset: `reserved-argument.md`. Upstream: planned; no proposal submitted.
