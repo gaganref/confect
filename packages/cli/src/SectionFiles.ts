@@ -39,7 +39,7 @@ const header = (key: string) => `${PREFIX}${JSON.stringify(key)}. Do not edit.`;
 const Sources = Schema.fromJsonString(Schema.Array(Schema.String));
 const encodeSources = Schema.encodeSync(Sources);
 const decodeSources = Schema.decodeUnknownOption(Sources);
-const SOURCES = "// Sources: ";
+const INPUTS = "sectionInputs.json";
 
 interface Claim {
   readonly key: string;
@@ -117,6 +117,7 @@ const render = Effect.fnUntraced(function* (
   { key, generate }: Claim,
   input: Omit<ManifestSection.GenerateInput, "modules">,
   files: ReadonlyArray<string>,
+  watched: Set<string>,
 ) {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
@@ -129,9 +130,22 @@ const render = Effect.fnUntraced(function* (
     try: () => files.filter((file) => generate.match(file)),
     catch: failed,
   });
+  for (const file of matched) watched.add(file);
   const modules = yield* Effect.forEach(matched, (relativePath) =>
     Bundler.bundle(path.join(confectDirectory, relativePath)).pipe(
-      Effect.map(({ module }) => ({ relativePath, exports: module })),
+      Effect.map(({ module, metafile }) => {
+        // `confect dev` sees changes only under `confect/`, and every run
+        // rewrites `_generated`, so watching it would loop.
+        for (const loaded of Object.keys(metafile.inputs)) {
+          const file = toPosixPath(
+            path,
+            path.relative(confectDirectory, loaded),
+          );
+          if (!file.startsWith("../") && !file.startsWith("_generated/"))
+            watched.add(file);
+        }
+        return { relativePath, exports: module };
+      }),
       Effect.mapError((error) =>
         fromBundlerError(`confect/${relativePath}`, error),
       ),
@@ -146,50 +160,51 @@ const render = Effect.fnUntraced(function* (
   );
   for (const other of more) yield* logCodegenError(other);
   if (error !== undefined) return yield* error;
-  return [header(key), `${SOURCES}${encodeSources(matched)}`, contents].join(
+  return [header(key), `// Sources: ${encodeSources(matched)}`, contents].join(
     "\n",
   );
 });
 
 /**
- * Each file a section wrote in `confect/_generated`, with the `confect/` files
- * its header says it was rendered from.
+ * The files in `confect/_generated` a section wrote, which carry its header.
  */
 export const written = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const generated = path.join(yield* ConfectDirectory.get, "_generated");
   if (!(yield* fs.exists(generated))) return [];
-  const files = (yield* fs.readDirectory(generated)).filter((file) =>
-    file.endsWith(".ts"),
+  return yield* Effect.filter(
+    (yield* fs.readDirectory(generated)).filter((file) => file.endsWith(".ts")),
+    (file) =>
+      fs
+        .readFileString(path.join(generated, file))
+        .pipe(Effect.map((contents) => contents.startsWith(PREFIX))),
   );
-  return (yield* Effect.forEach(files, (file) =>
-    fs.readFileString(path.join(generated, file)).pipe(
-      Effect.map((contents) => {
-        const [first = "", second = ""] = contents.split("\n", 2);
-        return first.startsWith(PREFIX)
-          ? [
-              {
-                file,
-                sources: second.startsWith(SOURCES)
-                  ? Option.getOrElse(
-                      decodeSources(second.slice(SOURCES.length)),
-                      () => [],
-                    )
-                  : [],
-              },
-            ]
-          : [];
-      }),
-    ),
-  )).flat();
+});
+
+/**
+ * The `confect/` files the generating sections matched and the `confect/` files
+ * those import, as recorded by the last codegen run that loaded them.
+ */
+export const inputs = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const record = path.join(yield* ConfectDirectory.get, "_generated", INPUTS);
+  const none: ReadonlyArray<string> = [];
+  if (!(yield* fs.exists(record))) return none;
+  return Option.getOrElse(
+    decodeSources(yield* fs.readFileString(record)),
+    () => none,
+  );
 });
 
 /**
  * Write each claimed file into `confect/_generated` once every section has
  * rendered. Every section renders before codegen fails with the first error
- * after logging the rest. Returns the claimed file names and whether they
- * differ from the section files that existed before.
+ * after logging the rest. The record of section inputs is written either way,
+ * keeping the previous inputs after a failure, so `confect dev` sees the fix.
+ * Returns the claimed file names and whether they differ from the section files
+ * that existed before.
  */
 export const sync = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<Leaf>,
@@ -203,15 +218,23 @@ export const sync = Effect.fnUntraced(function* (
     functions.push({ path: functionPath, source }),
   );
   const files = claimed.length === 0 ? [] : yield* sourceFiles;
+  const watched = new Set<string>();
   const [rendered, failures] = yield* Effect.partition(claimed, (claim) =>
-    render(claim, { functions, mounts }, files).pipe(
+    render(claim, { functions, mounts }, files, watched).pipe(
       Effect.map((contents) => ({ file: claim.generate.file, contents })),
     ),
   );
+  if (failures.length > 0) for (const file of yield* inputs) watched.add(file);
+  yield* claimed.length === 0
+    ? removePathIfExists(path.join(generated, INPUTS))
+    : writeFileStringAndLog(
+        path.join(generated, INPUTS),
+        encodeSources([...watched].sort()),
+      );
   const [error, ...more] = failures;
   for (const other of more) yield* logCodegenError(other);
   if (error !== undefined) return yield* error;
-  const existing = (yield* written).map(({ file }) => file);
+  const existing = yield* written;
   for (const { file, contents } of rendered)
     yield* writeFileStringAndLog(path.join(generated, file), contents);
   const names = rendered.map(({ file }) => file);
@@ -233,7 +256,7 @@ export const removeUnclaimed = Effect.fnUntraced(function* (
 ) {
   const path = yield* Path.Path;
   const generated = path.join(yield* ConfectDirectory.get, "_generated");
-  for (const { file } of yield* written)
+  for (const file of yield* written)
     if (!files.includes(file)) {
       yield* removePathIfExists(path.join(generated, file));
       yield* logFileRemoved(path.join(generated, file));

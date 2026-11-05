@@ -1030,3 +1030,83 @@ if (existsSync(block)) {
     );
   },
 );
+
+layer(NodeServices.layer, { excludeTestServices: true })(
+  "built confect dev with a generating manifest section",
+  (it) => {
+    const refusal = 'Manifest section "observe" is invalid: refused';
+    const sectionProject = (log: string, helper: string) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const project = yield* Project.make;
+        yield* fs.makeDirectory(`${project.root}/confect/billing`);
+        yield* project.write(
+          "confect/app.ts",
+          'import { App, Env } from "@confect/core";\nexport default App.make({ env: Env.make("host", {}) });\n',
+        );
+        yield* project.write(
+          "confect/profile.ts",
+          `import { FunctionSpec } from "@confect/core";
+const render = ({ modules }) => ({ contents: "export {};\\n", errors: modules[0].exports.valid ? [] : ["refused"] });
+const observe = { owner: "test/observe", format: 1, describe: () => null, generate: { file: "observe.ts", match: (path) => path.endsWith("/log.ts"), render } };
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { observe } });`,
+        );
+        yield* project.write(
+          "confect/notes.spec.ts",
+          Project.spec
+            .replace(
+              "export default",
+              'import { profile } from "./profile";\nexport default',
+            )
+            .replace("FunctionSpec.publicQuery", "profile.publicQuery"),
+        );
+        yield* project.write("confect/billing/log.ts", log);
+        yield* project.write("confect/billing/helper.ts", helper);
+        return project;
+      });
+
+    it.effect(
+      "regenerates once a refused matched file is fixed",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            "export const valid = false;\n",
+            "export {};\n",
+          );
+          const watching = yield* project.start("dev");
+          // Bootstrap retries a failed generation once.
+          yield* watching.waitFor(refusal);
+          yield* watching.waitFor(refusal);
+          yield* project.write(
+            "confect/billing/log.ts",
+            "export const valid = true;\n",
+          );
+          yield* watching.waitFor(success);
+          const fs = yield* FileSystem.FileSystem;
+          expect(
+            yield* fs.exists(`${project.root}/confect/_generated/observe.ts`),
+          ).toBe(true);
+        }).pipe(Effect.scoped),
+      { timeout: 45000 },
+    );
+
+    it.effect(
+      "renders again when a module a matched file imports changes",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            'export { valid } from "./helper";\n',
+            "export const valid = true;\n",
+          );
+          const watching = yield* project.start("dev");
+          yield* watching.waitFor(success);
+          yield* project.write(
+            "confect/billing/helper.ts",
+            "export const valid = false;\n",
+          );
+          yield* watching.waitFor(refusal);
+        }).pipe(Effect.scoped),
+      { timeout: 45000 },
+    );
+  },
+);
