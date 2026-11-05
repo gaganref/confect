@@ -344,7 +344,7 @@ const observe: ManifestSection.ManifestSection<null> = {
 - `functions`: each registered function's `path`, such as `notes:list`, and the `source` spec file that declares it, such as `notes.spec.ts`.
 - `mounts`: each mounted component's `name` and `definition`, the specifier of its definition directory. That is a package specifier such as `@convex-dev/workpool`, or a path relative to `confect/_generated` for a component in the same repository.
 
-`render` returns `{ contents, errors }`. Codegen writes `contents` under a two-line header that names the section and lists the accepted files. Each string in `errors` becomes an `InvalidManifestSectionError` under the section key. Codegen fails with the first, prints the rest and writes no section file. A `match` or `render` that throws fails the same way, with the reason `generate failed: <message>`.
+`render` returns `{ contents, errors }`. Codegen writes `contents` under a two-line header that names the section and lists the accepted files. Each string in `errors` becomes an `InvalidManifestSectionError` under the section key. Every generating section renders before codegen fails with the first error, prints the rest from every section and writes no section file. A `match` or `render` that throws fails the same way, with the reason `generate failed: <message>`.
 
 Sections under one key render once. Like the rest of the section, `generate` runs only for a declared app. Without a section that generates, codegen output is unchanged.
 

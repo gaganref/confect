@@ -2048,9 +2048,9 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
 
 /**
  * The declaration project whose `notes:list` carries an `observe` section that
- * generates `observe.ts` from every `*\/log.ts`, rendered by `render`.
+ * generates `observe.ts` from every `*\/log.ts` by `render`, then `sections`.
  */
-const sectionProject = (render: string) =>
+const sectionProject = (render: string, sections = "") =>
   Effect.gen(function* () {
     const project = yield* declarationProject;
     const profile = (generate: string) =>
@@ -2058,7 +2058,7 @@ const sectionProject = (render: string) =>
         "confect/profile.ts",
         `import { FunctionSpec } from "@confect/core";
 const observe = { owner: "test/observe", format: 1, describe: () => null${generate} };
-export const profile = FunctionSpec.extend()({ middleware: [], manifest: { observe } });`,
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { observe${sections} } });`,
       );
     yield* profile(
       `, generate: { file: "observe.ts", match: (path) => path.endsWith("/log.ts"), render: ${render} }`,
@@ -2136,25 +2136,21 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
-      "reports each render error as a typed error and writes no file",
+      "reports every section's render errors and writes no file",
       () =>
         Effect.gen(function* () {
           const project = yield* sectionProject(
             '() => ({ contents: "", errors: ["first refusal", "second refusal"] })',
+            ', trace: { owner: "test/trace", format: 1, describe: () => null, generate: { file: "trace.ts", match: () => false, render: () => ({ contents: "", errors: ["third refusal", "fourth refusal"] }) } }',
           );
           const messages: unknown[] = [];
-          const console = yield* Console.Console;
           const error = yield* Effect.flip(
             project.run.pipe(
               Effect.provideService(
                 Console.Console,
-                new Proxy(console, {
-                  get: (target, key, receiver) =>
-                    key === "error"
-                      ? (...args: readonly unknown[]) => {
-                          messages.push(...args);
-                        }
-                      : Reflect.get(target, key, receiver),
+                Object.assign(Object.create(console), {
+                  error: (...args: readonly unknown[]) =>
+                    messages.push(...args),
                 }),
               ),
             ),
@@ -2167,6 +2163,10 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           expect(messages.join("\n")).toContain(
             'Manifest section "observe" is invalid: second refusal',
           );
+          for (const reason of ["third refusal", "fourth refusal"])
+            expect(messages.join("\n")).toContain(
+              `Manifest section "trace" is invalid: ${reason}`,
+            );
           expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
             false,
           );

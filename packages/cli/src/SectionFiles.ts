@@ -114,8 +114,8 @@ const render = Effect.fnUntraced(function* (
 
 /**
  * Write each claimed file into `confect/_generated` once every section has
- * rendered. A failing section fails with its first error after logging the
- * rest. Returns the claimed file names.
+ * rendered. Every section renders before codegen fails with the first error
+ * after logging the rest. Returns the claimed file names.
  */
 export const sync = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<Leaf>,
@@ -124,17 +124,19 @@ export const sync = Effect.fnUntraced(function* (
   const path = yield* Path.Path;
   const generated = path.join(yield* ConfectDirectory.get, "_generated");
   const claimed = claims(leaves);
-  if (claimed.length === 0) return [];
   const functions: Array<{ path: string; source: string }> = [];
   visit(leaves, (_, functionPath, source) =>
     functions.push({ path: functionPath, source }),
   );
-  const files = yield* sourceFiles;
-  const rendered = yield* Effect.forEach(claimed, (claim) =>
+  const files = claimed.length === 0 ? [] : yield* sourceFiles;
+  const [rendered, failures] = yield* Effect.partition(claimed, (claim) =>
     render(claim, { functions, mounts }, files).pipe(
       Effect.map((contents) => ({ file: claim.generate.file, contents })),
     ),
   );
+  const [error, ...more] = failures;
+  for (const other of more) yield* logCodegenError(other);
+  if (error !== undefined) return yield* error;
   for (const { file, contents } of rendered)
     yield* writeFileStringAndLog(path.join(generated, file), contents);
   return rendered.map(({ file }) => file);
