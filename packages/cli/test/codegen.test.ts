@@ -7,6 +7,7 @@ import { assert, expect, layer } from "@effect/vitest";
 import { vi } from "vitest";
 import * as esbuild from "esbuild";
 import * as Bundler from "@confect/cli/Bundler";
+import * as SectionFiles from "@confect/cli/SectionFiles";
 import * as Console from "effect/Console";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
@@ -2170,6 +2171,49 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
             false,
           );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "refuses a section file named like one codegen writes",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            '() => ({ contents: "export {};\\n", errors: [] })',
+          );
+          yield* project.write(
+            "confect/profile.ts",
+            (yield* project.read("confect/profile.ts")).replace(
+              '"observe.ts"',
+              '"spec.ts"',
+            ),
+          );
+          expect(yield* Effect.flip(project.run)).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "observe",
+            reason:
+              "claims confect/_generated/spec.ts, which codegen writes itself.",
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "names every file it writes directly in _generated as built in",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* declarationProject;
+          yield* project.run;
+          const written = yield* fs.readDirectory(
+            `${project.root}/confect/_generated`,
+          );
+          expect(
+            written.filter(
+              (file) => file.endsWith(".ts") && !SectionFiles.builtIn.has(file),
+            ),
+          ).toEqual([]);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
