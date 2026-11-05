@@ -142,7 +142,7 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
   ]);
   // The declared HTTP router first imports each file a manifest section wrote.
   const sectionImports = new Set(
-    (yield* SectionFiles.written).map((file) =>
+    (yield* SectionFiles.written).map(({ file }) =>
       encodeString(
         path.join(confect, "_generated", path.basename(file, ".ts")),
       ),

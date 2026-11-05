@@ -43,6 +43,7 @@ import { CONVEX_CONFIG_FILENAME } from "./ConvexConfig.js";
 import { ConvexDirectory } from "./ConvexDirectory.js";
 import { ProjectRoot } from "./ProjectRoot.js";
 import * as RestoreWatcher from "./RestoreWatcher.js";
+import * as SectionFiles from "./SectionFiles.js";
 
 export const CoalesceQuiescence = Context.Reference<Duration.Duration>(
   "@confect/cli/Watcher/CoalesceQuiescence",
@@ -748,12 +749,23 @@ const handleConfectChange = ({
   // entry point imports them—its onEnd flips the right dirty flag.
   // Creates are our safety net: when a previously-missing import is added,
   // esbuild may not have its parent directory on a poll path, so we
-  // re-run codegen on Create here.
+  // re-run codegen on Create here. A file a manifest section rendered its
+  // file from may have no entry point importing it, so it re-runs codegen too.
+  const source = relativePath.split(/[/\\]/).join("/");
   return Match.value(eventTag).pipe(
     Match.when("Create", () =>
       flipDirtyAndSignal(pendingRef, signal, restart, false),
     ),
-    Match.whenOr("Update", "Remove", () => Effect.void),
+    Match.whenOr("Update", "Remove", () =>
+      SectionFiles.written.pipe(
+        Effect.orElseSucceed(() => []),
+        Effect.flatMap((written) =>
+          written.some(({ sources }) => sources.includes(source))
+            ? flipDirtyAndSignal(pendingRef, signal, restart, false)
+            : Effect.void,
+        ),
+      ),
+    ),
     Match.exhaustive,
   );
 };
