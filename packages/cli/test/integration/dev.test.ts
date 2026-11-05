@@ -1091,6 +1091,26 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { obser
     );
 
     it.effect(
+      "regenerates once a module that threw on first load is fixed",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            'export { valid } from "./helper";\n',
+            'throw new Error("helper failed to load");\n',
+          );
+          const watching = yield* project.start("dev");
+          yield* watching.waitFor("helper failed to load");
+          yield* watching.waitFor("helper failed to load");
+          yield* project.write(
+            "confect/billing/helper.ts",
+            "export const valid = true;\n",
+          );
+          yield* watching.waitFor(success);
+        }).pipe(Effect.scoped),
+      { timeout: 45000 },
+    );
+
+    it.effect(
       "renders again when a module a matched file imports changes",
       () =>
         Effect.gen(function* () {
