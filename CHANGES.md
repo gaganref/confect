@@ -49,6 +49,10 @@ participating declaration. Its conflict detail keeps both function paths.
 Thrown checks use the same section attribution. Changeset:
 `manifest-section-check-errors.md`. Upstream: planned; no proposal submitted.
 
+### Generate files from sections
+
+A section's optional `generate` writes one file into `confect/_generated`. Codegen bundles each `confect/` module the section matches and passes `render` their exports, every registered function with its spec file, and each mount with its definition specifier. Each returned error string is a typed error under the section key. Frame's observe door needs this to load module declarations before any handler runs. Changeset: `manifest-section-generate.md`. Upstream: planned; no proposal submitted.
+
 ## Reserved arguments
 
 Profiles and internal mutation, action and Node action constructors can reserve one argument without changing domain schemas or visibility. Refs, including component refs, retain the name. Registration accepts any optional value, strips it before decoding and refuses domain collisions. Queries ignore the option to preserve cache keys. Changeset: `reserved-argument.md`. Upstream: planned; no proposal submitted.
