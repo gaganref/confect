@@ -209,6 +209,7 @@ const runCodegen = Effect.gen(function* () {
     ],
     { concurrency: "unbounded" },
   );
+  yield* SectionFiles.removeUnclaimed(sections.files);
   if (Option.isSome(declared)) yield* generateTesting(declared.value);
   return {
     functionPaths,
@@ -272,6 +273,7 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
         );
         if (sections.changed && Option.isSome(declared))
           yield* logGenerated(syncDeclaredHttp(declared.value, sections.files));
+        yield* SectionFiles.removeUnclaimed(sections.files);
         yield* FunctionModule.applyFunctionPlan(
           GenerationSnapshot.diff(snapshot, next),
         );
