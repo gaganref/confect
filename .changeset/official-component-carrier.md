@@ -1,5 +1,5 @@
 ---
-"@confect/server": major
+"@confect/server": minor
 ---
 
 Require an explicit carrier policy in `OfficialComponent.encodeCall`.

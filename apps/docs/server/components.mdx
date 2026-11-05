@@ -397,7 +397,9 @@ const start = FunctionImpl.make(schema, jobs, "start", ({ key }) =>
 );
 ```
 
-`encodeCall` encodes a ref's arguments through its codecs and returns `{ reference, args }`, the function reference and wire record an official method expects. Its third argument is required. `{ carrier: "forward" }` includes the caller's carrier when the target reserves an argument and is a mutation or action. `{ carrier: "none" }` preserves the encoded arguments without a carrier, for components that replay or compare stored arguments. Queries never receive a carrier.
+`encodeCall` encodes a ref's arguments through its codecs and returns `{ reference, args }`, the function reference and wire record an official method expects. Its third argument is required.
+
+A carrier is the value returned by [`RegisteredFunction.Forward`](/server/functions#reserved-arguments). `{ carrier: "forward" }` adds that value when the target reserves an argument and is a mutation or action. With no `Forward` provider or no active span, nothing is added. `{ carrier: "none" }` preserves the encoded arguments without a carrier, for components that replay or compare stored arguments. Queries never receive a carrier.
 
 `encodeField(ref, key, value)` encodes one declared argument field, for a method that takes a single field rather than a whole argument record.
 

@@ -114,6 +114,9 @@ export interface Fn<R extends Ref.Any> {
   readonly args: DefaultFunctionArgs;
 }
 
+/**
+ * Choose whether an official component call forwards the caller's carrier.
+ */
 export interface EncodeCallOptions {
   /**
    * Forward the caller's carrier to reserving mutations and actions. Use `none`

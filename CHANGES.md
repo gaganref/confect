@@ -62,7 +62,7 @@ third argument. `forward` uses the existing reserved-argument encoder to include
 the caller's carrier for reserving mutations and actions. Queries and
 non-reserving targets receive no carrier. `none` preserves the previous wire
 arguments for components that replay or compare stored arguments. Changeset:
-`official-component-carrier.md` (major, required call-site migration).
+`official-component-carrier.md` (required call-site migration).
 Upstream: planned; no proposal submitted.
 
 The existing local-backend CI job exercises generated registrations with arbitrary incoming context, runner hops, an inline owned counter component, an ordinary strict component call and persisted scheduled context. The local-backend fixture app always runs with a runtime layer; unit and mock-backend suites cover the no-layer path. Scheduled polling uses live time. Native API additions come from the registered validators without starting a backend. Changeset: `reserved-argument-backend.md`. Upstream: planned; no proposal submitted.

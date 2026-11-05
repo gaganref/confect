@@ -232,13 +232,10 @@ describe("encodeCall", () => {
   );
 
   it("requires an explicit carrier option", () => {
-    const missingOptions = () => {
+    void (() => {
       // @ts-expect-error TS2554: A component's carrier policy must be explicit.
       return OfficialComponent.encodeCall(record, { value: 42, note: "n" });
-    };
-    expectTypeOf(missingOptions).returns.toEqualTypeOf<
-      Effect.Effect<OfficialComponent.Fn<typeof record>>
-    >();
+    });
   });
 
   const options = {
@@ -285,7 +282,7 @@ describe("encodeCall", () => {
   ];
 
   it.effect.each(targets)(
-    "forwards only to a reserving write target ($label)",
+    "forwards only to a reserving mutation or action ($label)",
     ({ ref, forwards }) =>
       Effect.gen(function* () {
         const args = { value: 42 };
