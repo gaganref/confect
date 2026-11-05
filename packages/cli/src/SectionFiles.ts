@@ -1,4 +1,5 @@
 import type { FunctionSpec, GroupSpec, ManifestSection } from "@confect/core";
+import type * as esbuild from "esbuild";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -131,26 +132,36 @@ const render = Effect.fnUntraced(function* (
     catch: failed,
   });
   for (const file of matched) watched.add(file);
-  const modules = yield* Effect.forEach(matched, (relativePath) =>
-    Bundler.bundle(path.join(confectDirectory, relativePath)).pipe(
-      Effect.map(({ module, metafile }) => {
-        // `confect dev` sees changes only under `confect/`, and every run
-        // rewrites `_generated`, so watching it would loop.
-        for (const loaded of Object.keys(metafile.inputs)) {
-          const file = toPosixPath(
-            path,
-            path.relative(confectDirectory, loaded),
-          );
-          if (!file.startsWith("../") && !file.startsWith("_generated/"))
-            watched.add(file);
-        }
-        return { relativePath, exports: module };
-      }),
+  const modules = yield* Effect.forEach(matched, (relativePath) => {
+    const entry = path.join(confectDirectory, relativePath);
+    // Inputs are recorded once esbuild finishes, before the module runs, so a
+    // module that throws on load still has its imports watched. `confect dev`
+    // sees changes only under `confect/`, and every run rewrites `_generated`,
+    // so watching it would loop.
+    const recordInputs: esbuild.Plugin = {
+      name: "confect:section-inputs",
+      setup: (build) =>
+        build.onEnd(({ metafile }) => {
+          for (const loaded of Object.keys(metafile?.inputs ?? {})) {
+            const file = toPosixPath(
+              path,
+              path.relative(
+                confectDirectory,
+                path.resolve(path.dirname(entry), loaded),
+              ),
+            );
+            if (!file.startsWith("../") && !file.startsWith("_generated/"))
+              watched.add(file);
+          }
+        }),
+    };
+    return Bundler.bundle(entry, { plugins: [recordInputs] }).pipe(
+      Effect.map(({ module }) => ({ relativePath, exports: module })),
       Effect.mapError((error) =>
         fromBundlerError(`confect/${relativePath}`, error),
       ),
-    ),
-  );
+    );
+  });
   const { contents, errors } = yield* Effect.try({
     try: () => generate.render({ ...input, modules }),
     catch: failed,
