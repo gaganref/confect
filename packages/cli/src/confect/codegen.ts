@@ -47,6 +47,7 @@ import {
 import { ProjectRoot } from "../ProjectRoot.js";
 import { preserveComponentOutput } from "../Rollback.js";
 import { assemblyNodesFromLeaves } from "../SpecAssemblyNode.js";
+import * as SectionFiles from "../SectionFiles.js";
 import * as TableModule from "../TableModule.js";
 import * as templates from "../templates.js";
 import {
@@ -147,7 +148,7 @@ const runCodegen = Effect.gen(function* () {
   yield* generateIdConstructor(tableModules);
   // Tables and specs can use bound component IDs and schemas, so their
   // imports need the registry even on a project's first codegen run.
-  yield* generateComponents;
+  const mounts = yield* generateComponents;
   yield* validateCallbackPrefixes(declared);
   // Now that `_generated/id.ts` is on disk, bundle each table module and
   // check its default export is an `UnnamedTable`. Surface diagnostics
@@ -160,6 +161,7 @@ const runCodegen = Effect.gen(function* () {
   const leaves = yield* loadAll;
   yield* rejectComponentNodeGroups(leaves);
   yield* syncManifestSections(leaves, previousManifest, digest);
+  yield* SectionFiles.sync(digest === undefined ? [] : leaves, mounts);
   yield* removeLegacyFiles;
   const snapshot = yield* Effect.fromResult(
     GenerationSnapshot.fromLoadedLeaves(leaves),
@@ -919,7 +921,8 @@ const generateRefs = Effect.gen(function* () {
  * {@link templates.components}). The file is emitted even when there is no
  * `convex.config.ts` (as an empty registry) so the import surface stays stable.
  * It must exist before loading tables and specs because they may import bound
- * component IDs and schemas.
+ * component IDs and schemas. Returns each mount with the specifier of its
+ * definition, relative to `_generated` for an in-repo component.
  */
 export const generateComponents = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -948,21 +951,26 @@ export const generateComponents = Effect.gen(function* () {
       )
     : [];
 
+  const mounts = Array.map(
+    installedComponents,
+    ({ name, componentDefinitionPath }) => ({
+      name,
+      definition: ConvexConfig.typeImportPath(
+        path,
+        componentDefinitionPath,
+        confectGeneratedDirectory,
+      ),
+    }),
+  );
   const contents = yield* templates.components({
-    components: Array.map(
-      installedComponents,
-      ({ name, componentDefinitionPath }) => ({
-        name,
-        typeImportPath: ConvexConfig.typeImportPath(
-          path,
-          componentDefinitionPath,
-          confectGeneratedDirectory,
-        ),
-      }),
-    ),
+    components: Array.map(mounts, ({ name, definition }) => ({
+      name,
+      typeImportPath: definition,
+    })),
   });
 
   yield* writeFileStringAndLog(componentsPath, contents);
+  return mounts;
 });
 
 const logGenerated = <E, R>(

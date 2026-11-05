@@ -313,6 +313,41 @@ Declared app codegen writes `tags: { format: 1, functions: { "notes:list": "note
 
 Section data contributes to the digest. Sections survive profile extension and middleware. Each section declares a stable `owner` string. Definitions under one key agree when their owner and format agree, including when the bundler evaluates a shared profile separately. Conflicts name both owners and formats. Keys `name`, `env`, `http`, `digest`, `__proto__`, `constructor` and `prototype` are refused. Callbacks must preserve their inputs.
 
+### Generate a file from matched modules
+
+An optional `generate` writes one file into `confect/_generated`.
+
+```ts
+const observe: ManifestSection.ManifestSection<null> = {
+  owner: "example/observe",
+  format: 1,
+  describe: () => null,
+  generate: {
+    file: "observe.ts",
+    match: (path) => /^[^/]+\/log\.ts$/.test(path),
+    render: ({ modules }) => ({
+      contents: modules
+        .map(
+          ({ relativePath }) =>
+            `import "../${relativePath.replace(/\.ts$/, ".js")}";\n`,
+        )
+        .join(""),
+      errors: [],
+    }),
+  },
+};
+```
+
+`match` receives each `.ts` file under `confect/` outside `_generated`, as a path relative to `confect/` such as `billing/log.ts`. Codegen bundles every file it accepts and calls `render` with three lists:
+
+- `modules`: each accepted file's `relativePath` and its `exports`.
+- `functions`: each registered function's `path`, such as `notes:list`, and the `source` spec file that declares it, such as `notes.spec.ts`.
+- `mounts`: each mounted component's `name` and `definition`, the specifier of its definition directory. That is a package specifier such as `@convex-dev/workpool`, or a path relative to `confect/_generated` for a component in the same repository.
+
+`render` returns `{ contents, errors }`. Codegen writes `contents` under a two-line header that names the section and lists the accepted files. Each string in `errors` becomes an `InvalidManifestSectionError` under the section key. Every generating section renders before codegen fails with the first error, prints the rest from every section and writes no section file. A `match` or `render` that throws fails the same way, with the reason `generate failed: <message>`.
+
+Sections under one key render once. Like the rest of the section, `generate` runs only for a declared app. Without a section that generates, codegen output is unchanged.
+
 ### Description values must be JSON
 
 Descriptions must contain only JSON data: plain objects, arrays, strings, finite numbers, booleans and `null`. BigInt, functions, undefined properties, non-finite numbers, cycles, and objects such as `Map`, `Set` or class instances fail codegen with `InvalidDeclarationError`. The diagnostic names the section, function, declaring spec and JSON path, such as `$["nested"]["missing"]`. Empty property names remain in the path, for example `$[""]["missing"]`. Own `__proto__` properties are refused at their path because generated object literals cannot preserve them as data. A failing description removes the manifest through section failure cleanup.
