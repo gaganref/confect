@@ -386,16 +386,22 @@ import { limiter } from "./limiter.js";
 const start = FunctionImpl.make(schema, jobs, "start", ({ key }) =>
   Effect.gen(function* () {
     if ((yield* limiter("consume", key, 1)) < 0) return null;
-    const call = yield* OfficialComponent.encodeCall(refs.internal.jobs.run, {
-      key,
-    });
+    const call = yield* OfficialComponent.encodeCall(
+      refs.internal.jobs.run,
+      { key },
+      { carrier: "none" },
+    );
     yield* limiter("schedule", call.reference, call.args);
     return null;
   }),
 );
 ```
 
-`encodeCall` encodes a ref's arguments through its codecs and returns `{ reference, args }`, the function reference and wire record an official method expects. `encodeField(ref, key, value)` encodes one declared argument field, for a method that takes a single field rather than a whole argument record.
+`encodeCall` encodes a ref's arguments through its codecs and returns `{ reference, args }`, the function reference and wire record an official method expects. Its third argument is required.
+
+A carrier is the value returned by [`RegisteredFunction.Forward`](/server/functions#reserved-arguments). `{ carrier: "forward" }` adds that value when the target reserves an argument and is a mutation or action. With no `Forward` provider or no active span, nothing is added. `{ carrier: "none" }` preserves the encoded arguments without a carrier, for components that replay or compare stored arguments. Queries never receive a carrier.
+
+`encodeField(ref, key, value)` encodes one declared argument field, for a method that takes a single field rather than a whole argument record.
 
 A rejected promise is a defect, not a typed error. The effect dies with `ComponentCallFailed`, carrying the `component` name, the `method` and the rejection as `cause`. Calling outside a Confect handler dies with `<component> called outside a Confect handler`.
 
