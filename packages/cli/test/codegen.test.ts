@@ -2176,6 +2176,82 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
+      "imports the section file ahead of each impl and the HTTP router, in full and incremental runs",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            '() => ({ contents: "export {};\\n", errors: [] })',
+          );
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          const imports = Effect.all([
+            project.read("confect/_generated/registeredFunctions/notes.ts"),
+            project.read("convex/http.ts"),
+          ]).pipe(
+            Effect.map(([registration, http]) => [
+              registration.split("\n")[0],
+              http.split("\n")[1],
+            ]),
+          );
+          expect(yield* imports).toEqual([
+            'import "../observe.js";',
+            'import "../confect/_generated/observe.js";',
+          ]);
+          const update = updateDeclarations(
+            snapshot,
+            [
+              {
+                _tag: "Spec",
+                relativePath: SpecModulePath.make("notes.spec.ts"),
+              },
+            ],
+            [],
+          );
+          yield* project.write(
+            "confect/notes.spec.ts",
+            (yield* project.read("confect/notes.spec.ts")).replace(
+              'name: "list"',
+              'name: "list", description: "edited"',
+            ),
+          );
+          yield* project.provide(update);
+          expect(yield* imports).toEqual([
+            'import "../observe.js";',
+            'import "../confect/_generated/observe.js";',
+          ]);
+          yield* project.withoutGenerate;
+          yield* project.provide(update);
+          expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
+            false,
+          );
+          expect(yield* imports).toEqual([
+            'import { ConvexFunctionDefinitions, RegisteredConvexFunction, type RegisteredFunctions } from "@confect/server";',
+            'import { HttpRouter } from "@confect/server";',
+          ]);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "refuses an HTTP router import of a generated file no section wrote",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            '() => ({ contents: "export {};\\n", errors: [] })',
+          );
+          yield* project.run;
+          yield* project.write("confect/_generated/manual.ts", "export {};\n");
+          const router = `import "../confect/_generated/manual.js";\n${yield* project.read("convex/http.ts")}`;
+          yield* project.write("convex/http.ts", router);
+          expect(yield* Effect.flip(project.run)).toMatchObject({
+            _tag: "UnownedConvexEntrypointError",
+            filePaths: ["convex/http.ts"],
+          });
+          expect(yield* project.read("convex/http.ts")).toBe(router);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "removes the file once no section claims it",
       () =>
         Effect.gen(function* () {
@@ -2194,6 +2270,52 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           );
           expect(yield* project.exists("confect/_generated/kept.ts")).toBe(
             true,
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect.each(["full", "incremental"])(
+      "keeps an unclaimed file the router imports until %s codegen rewrites the router",
+      (mode) =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            '() => ({ contents: "export {};\\n", errors: [] })',
+          );
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          const update = project.provide(
+            updateDeclarations(
+              snapshot,
+              [
+                {
+                  _tag: "Spec",
+                  relativePath: SpecModulePath.make("notes.spec.ts"),
+                },
+              ],
+              [],
+            ),
+          );
+          const rerun =
+            mode === "full"
+              ? Effect.asVoid(project.run)
+              : Effect.asVoid(update);
+          const impl = yield* project.read("confect/notes.impl.ts");
+          yield* project.withoutGenerate;
+          yield* project.write(
+            "confect/notes.impl.ts",
+            'throw new Error("broken impl");\n',
+          );
+          yield* Effect.flip(rerun);
+          expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
+            true,
+          );
+          yield* project.write("confect/notes.impl.ts", impl);
+          yield* rerun;
+          expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
+            false,
+          );
+          expect(yield* project.read("convex/http.ts")).not.toContain(
+            "observe",
           );
         }).pipe(Effect.scoped),
       { timeout: 30000 },

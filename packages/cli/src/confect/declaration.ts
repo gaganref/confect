@@ -412,10 +412,18 @@ export const syncDeclaration = Effect.fnUntraced(function* (
  * `confect/http.ts`. Runs after generation, because `http.ts` imports its
  * handlers, which import generated services.
  */
-export const syncDeclaredHttp = (app: App.Any) =>
-  checkAndWriteHttp(app).pipe(Effect.tapError(() => removeManifest));
+export const syncDeclaredHttp = (
+  app: App.Any,
+  sectionFiles: ReadonlyArray<string>,
+) =>
+  checkAndWriteHttp(app, sectionFiles).pipe(
+    Effect.tapError(() => removeManifest),
+  );
 
-const checkAndWriteHttp = Effect.fnUntraced(function* (app: App.Any) {
+const checkAndWriteHttp = Effect.fnUntraced(function* (
+  app: App.Any,
+  sectionFiles: ReadonlyArray<string>,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const convexDirectory = yield* ConvexDirectory.get;
@@ -469,6 +477,14 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (app: App.Any) {
     ),
     httpImportPath: yield* toModuleImportPath(
       path.relative(convexDirectory, httpPath),
+    ),
+    sectionImportPaths: yield* Effect.forEach(sectionFiles, (file) =>
+      toModuleImportPath(
+        path.relative(
+          convexDirectory,
+          path.join(confectDirectory, "_generated", file),
+        ),
+      ),
     ),
   });
   const change = yield* writeFileString(convexHttpPath, contents);

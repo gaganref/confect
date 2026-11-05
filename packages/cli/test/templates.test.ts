@@ -757,3 +757,30 @@ it.effect("passes runtime configuration to a declared HTTP router", () =>
     );
   }),
 );
+
+it.effect("loads section files before the impl and the HTTP router", () =>
+  Effect.gen(function* () {
+    const registration = yield* templates.registeredFunctionsForGroup({
+      spec: GroupSpec.make(),
+      schemaImportPath: "../schema",
+      specImportPath: "../../notes.spec",
+      implImportPath: "../../notes.impl",
+      runtimeImportPath: "../../runtime",
+      sectionImportPaths: ["../observe.js", "../trace.js"],
+    });
+    expect(registration.split("\n").slice(0, 3)).toEqual([
+      'import "../observe.js";',
+      'import "../trace.js";',
+      'import * as RegisteredFunction from "@confect/server/RegisteredFunction";',
+    ]);
+    const http = yield* templates.declaredHttp({
+      schemaImportPath: "../schema",
+      httpImportPath: "../http",
+      sectionImportPaths: ["../confect/_generated/observe.js"],
+    });
+    expect(http.split("\n").slice(1, 3)).toEqual([
+      'import "../confect/_generated/observe.js";',
+      'import { HttpRouter } from "@confect/server";',
+    ]);
+  }),
+);

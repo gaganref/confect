@@ -150,16 +150,32 @@ const render = Effect.fnUntraced(function* (
 });
 
 /**
+ * The files in `confect/_generated` a section wrote, which carry its header.
+ */
+export const written = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const generated = path.join(yield* ConfectDirectory.get, "_generated");
+  if (!(yield* fs.exists(generated))) return [];
+  return yield* Effect.filter(
+    (yield* fs.readDirectory(generated)).filter((file) => file.endsWith(".ts")),
+    (file) =>
+      fs
+        .readFileString(path.join(generated, file))
+        .pipe(Effect.map((contents) => contents.startsWith(PREFIX))),
+  );
+});
+
+/**
  * Write each claimed file into `confect/_generated` once every section has
- * rendered, and remove a file a section wrote that no section claims any more.
- * Every section renders before codegen fails with the first error after logging
- * the rest. Returns the claimed file names.
+ * rendered. Every section renders before codegen fails with the first error
+ * after logging the rest. Returns the claimed file names and whether they
+ * differ from the section files that existed before.
  */
 export const sync = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<Leaf>,
   mounts: ManifestSection.GenerateInput["mounts"],
 ) {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const generated = path.join(yield* ConfectDirectory.get, "_generated");
   const claimed = yield* Effect.fromResult(claims(leaves));
@@ -176,19 +192,31 @@ export const sync = Effect.fnUntraced(function* (
   const [error, ...more] = failures;
   for (const other of more) yield* logCodegenError(other);
   if (error !== undefined) return yield* error;
+  const existing = yield* written;
   for (const { file, contents } of rendered)
     yield* writeFileStringAndLog(path.join(generated, file), contents);
   const names = rendered.map(({ file }) => file);
-  for (const file of yield* fs.readDirectory(generated)) {
-    const absolutePath = path.join(generated, file);
-    if (
-      file.endsWith(".ts") &&
-      !names.includes(file) &&
-      (yield* fs.readFileString(absolutePath)).startsWith(PREFIX)
-    ) {
-      yield* removePathIfExists(absolutePath);
-      yield* logFileRemoved(absolutePath);
+  return {
+    files: names,
+    changed:
+      names.length !== existing.length ||
+      names.some((file) => !existing.includes(file)),
+  };
+});
+
+/**
+ * Remove each file a section wrote that is not in `files`. Codegen runs this
+ * after it rewrites the registration files and the HTTP router, so a run that
+ * fails earlier leaves no import of a removed file.
+ */
+export const removeUnclaimed = Effect.fnUntraced(function* (
+  files: ReadonlyArray<string>,
+) {
+  const path = yield* Path.Path;
+  const generated = path.join(yield* ConfectDirectory.get, "_generated");
+  for (const file of yield* written)
+    if (!files.includes(file)) {
+      yield* removePathIfExists(path.join(generated, file));
+      yield* logFileRemoved(path.join(generated, file));
     }
-  }
-  return names;
 });

@@ -5,7 +5,9 @@ import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as HashSet from "effect/HashSet";
 import * as Match from "effect/Match";
+import * as Schema from "effect/Schema";
 import { UnownedConvexEntrypointError } from "./CodegenError.js";
+import * as SectionFiles from "./SectionFiles.js";
 import * as templates from "./templates.js";
 import * as GenerationSnapshot from "./GenerationSnapshot.js";
 import * as GroupPath from "./GroupPath.js";
@@ -88,6 +90,8 @@ const tokenize = (
   return tokens;
 };
 
+const encodeString = Schema.encodeSync(Schema.fromJsonString(Schema.String));
+
 const matchesShape = (
   actual: readonly string[],
   expected: readonly string[],
@@ -136,6 +140,20 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
       ],
     ],
   ]);
+  // The declared HTTP router first imports each file a manifest section wrote.
+  const sectionImports = new Set(
+    (yield* SectionFiles.written).map((file) =>
+      encodeString(
+        path.join(confect, "_generated", path.basename(file, ".ts")),
+      ),
+    ),
+  );
+  const withoutSectionImports = (
+    tokens: ReadonlyArray<string>,
+  ): ReadonlyArray<string> =>
+    tokens[0] === "import" && sectionImports.has(tokens[1] ?? "")
+      ? withoutSectionImports(tokens.slice(tokens[2] === ";" ? 3 : 2))
+      : tokens;
   const refused: string[] = [];
   for (const relative of yield* getEntrypoints) {
     const absolute = path.join(convex, relative);
@@ -145,7 +163,10 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
         optional
           .get(relative)
           ?.some((template) =>
-            matchesShape(tokens, tokenize(template, absolute, path)!),
+            matchesShape(
+              relative === "http.ts" ? withoutSectionImports(tokens) : tokens,
+              tokenize(template, absolute, path)!,
+            ),
           )
       )
         continue;
