@@ -51,7 +51,7 @@ Thrown checks use the same section attribution. Changeset:
 
 ### Generate files from sections
 
-A section's optional `generate` writes one file into `confect/_generated`. Codegen bundles each `confect/` module the section matches and passes `render` their exports, every registered function with its spec file, and each mount with its definition specifier. Each returned error string is a typed error under the section key. Codegen refuses a built-in name, a name outside `_generated` and a name two keys claim. Frame's observe door needs this to load module declarations before any handler runs. Changeset: `manifest-section-generate.md`. Upstream: planned; no proposal submitted.
+A section's optional `generate` writes one file into `confect/_generated`. Codegen bundles each `confect/` module the section matches and passes `render` their exports, every registered function with its spec file, and each mount with its definition specifier. Each returned error string is a typed error under the section key. Codegen refuses a built-in name, a name outside `_generated` and a name two keys claim, and removes a section file once no section claims it. Frame's observe door needs this to load module declarations before any handler runs. Changeset: `manifest-section-generate.md`. Upstream: planned; no proposal submitted.
 
 ## Reserved arguments
 

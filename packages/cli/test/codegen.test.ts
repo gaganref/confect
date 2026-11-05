@@ -2176,6 +2176,30 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
+      "removes the file once no section claims it",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            '() => ({ contents: "export {};\\n", errors: [] })',
+          );
+          yield* project.run;
+          yield* project.write("confect/_generated/kept.ts", "export {};\n");
+          expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
+            true,
+          );
+          yield* project.withoutGenerate;
+          yield* project.run;
+          expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
+            false,
+          );
+          expect(yield* project.exists("confect/_generated/kept.ts")).toBe(
+            true,
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "refuses a section file named like one codegen writes",
       () =>
         Effect.gen(function* () {

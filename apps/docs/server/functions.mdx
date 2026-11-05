@@ -346,7 +346,7 @@ const observe: ManifestSection.ManifestSection<null> = {
 
 `render` returns `{ contents, errors }`. Codegen writes `contents` under a two-line header that names the section and lists the accepted files. Each string in `errors` becomes an `InvalidManifestSectionError` under the section key. Every generating section renders before codegen fails with the first error, prints the rest from every section and writes no section file. A `match` or `render` that throws fails the same way, with the reason `generate failed: <message>`.
 
-Sections under one key render once. Codegen refuses a name codegen writes itself, such as `spec.ts` or `manifest.ts`, a name that is not a `.ts` file directly in `_generated`, and a name two keys claim. Like the rest of the section, `generate` runs only for a declared app. Without a section that generates, codegen output is unchanged.
+Sections under one key render once. Codegen refuses a name codegen writes itself, such as `spec.ts` or `manifest.ts`, a name that is not a `.ts` file directly in `_generated`, and a name two keys claim. It removes a file a section wrote once no section claims it, and leaves other files in `_generated` alone. Like the rest of the section, `generate` runs only for a declared app. Without a section that generates, codegen output is unchanged.
 
 ### Description values must be JSON
 
