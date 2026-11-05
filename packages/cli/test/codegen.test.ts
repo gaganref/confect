@@ -2275,6 +2275,52 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       { timeout: 30000 },
     );
 
+    it.effect.each(["full", "incremental"])(
+      "keeps an unclaimed file the router imports until %s codegen rewrites the router",
+      (mode) =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            '() => ({ contents: "export {};\\n", errors: [] })',
+          );
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          const update = project.provide(
+            updateDeclarations(
+              snapshot,
+              [
+                {
+                  _tag: "Spec",
+                  relativePath: SpecModulePath.make("notes.spec.ts"),
+                },
+              ],
+              [],
+            ),
+          );
+          const rerun =
+            mode === "full"
+              ? Effect.asVoid(project.run)
+              : Effect.asVoid(update);
+          const impl = yield* project.read("confect/notes.impl.ts");
+          yield* project.withoutGenerate;
+          yield* project.write(
+            "confect/notes.impl.ts",
+            'throw new Error("broken impl");\n',
+          );
+          yield* Effect.flip(rerun);
+          expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
+            true,
+          );
+          yield* project.write("confect/notes.impl.ts", impl);
+          yield* rerun;
+          expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
+            false,
+          );
+          expect(yield* project.read("convex/http.ts")).not.toContain(
+            "observe",
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
     it.effect(
       "refuses a section file named like one codegen writes",
       () =>
