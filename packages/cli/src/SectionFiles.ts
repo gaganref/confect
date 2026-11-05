@@ -150,6 +150,23 @@ const render = Effect.fnUntraced(function* (
 });
 
 /**
+ * The files in `confect/_generated` a section wrote, which carry its header.
+ */
+export const written = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const generated = path.join(yield* ConfectDirectory.get, "_generated");
+  if (!(yield* fs.exists(generated))) return [];
+  return yield* Effect.filter(
+    (yield* fs.readDirectory(generated)).filter((file) => file.endsWith(".ts")),
+    (file) =>
+      fs
+        .readFileString(path.join(generated, file))
+        .pipe(Effect.map((contents) => contents.startsWith(PREFIX))),
+  );
+});
+
+/**
  * Write each claimed file into `confect/_generated` once every section has
  * rendered, and remove a file a section wrote that no section claims any more.
  * Every section renders before codegen fails with the first error after logging
@@ -160,7 +177,6 @@ export const sync = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<Leaf>,
   mounts: ManifestSection.GenerateInput["mounts"],
 ) {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const generated = path.join(yield* ConfectDirectory.get, "_generated");
   const claimed = yield* Effect.fromResult(claims(leaves));
@@ -177,13 +193,7 @@ export const sync = Effect.fnUntraced(function* (
   const [error, ...more] = failures;
   for (const other of more) yield* logCodegenError(other);
   if (error !== undefined) return yield* error;
-  const existing = yield* Effect.filter(
-    (yield* fs.readDirectory(generated)).filter((file) => file.endsWith(".ts")),
-    (file) =>
-      fs
-        .readFileString(path.join(generated, file))
-        .pipe(Effect.map((contents) => contents.startsWith(PREFIX))),
-  );
+  const existing = yield* written;
   for (const { file, contents } of rendered)
     yield* writeFileStringAndLog(path.join(generated, file), contents);
   const names = rendered.map(({ file }) => file);

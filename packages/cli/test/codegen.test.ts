@@ -2232,6 +2232,26 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
+      "refuses an HTTP router import of a generated file no section wrote",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            '() => ({ contents: "export {};\\n", errors: [] })',
+          );
+          yield* project.run;
+          yield* project.write("confect/_generated/manual.ts", "export {};\n");
+          const router = `import "../confect/_generated/manual.js";\n${yield* project.read("convex/http.ts")}`;
+          yield* project.write("convex/http.ts", router);
+          expect(yield* Effect.flip(project.run)).toMatchObject({
+            _tag: "UnownedConvexEntrypointError",
+            filePaths: ["convex/http.ts"],
+          });
+          expect(yield* project.read("convex/http.ts")).toBe(router);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "removes the file once no section claims it",
       () =>
         Effect.gen(function* () {
