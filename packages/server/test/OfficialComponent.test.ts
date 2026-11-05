@@ -6,6 +6,7 @@ import * as MutationRunner from "@confect/server/MutationRunner";
 import * as OfficialComponent from "@confect/server/OfficialComponent";
 import * as QueryCtx from "@confect/server/QueryCtx";
 import * as QueryRunner from "@confect/server/QueryRunner";
+import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import type {
   FunctionArgs,
@@ -219,14 +220,115 @@ const record = Ref.make(
 describe("encodeCall", () => {
   it.effect("encodes the ref's arguments through its codecs", () =>
     Effect.gen(function* () {
-      const call = yield* OfficialComponent.encodeCall(record, {
-        value: 42,
-        note: "n",
-      });
+      const call = yield* OfficialComponent.encodeCall(
+        record,
+        { value: 42, note: "n" },
+        { carrier: "none" },
+      );
 
       expect(getFunctionName(call.reference)).toBe("counter:record");
       expect(call.args).toEqual({ value: "42", note: "n" });
     }),
+  );
+
+  it("requires an explicit carrier option", () => {
+    const missingOptions = () => {
+      // @ts-expect-error TS2554: A component's carrier policy must be explicit.
+      return OfficialComponent.encodeCall(record, { value: 42, note: "n" });
+    };
+    expectTypeOf(missingOptions).returns.toEqualTypeOf<
+      Effect.Effect<OfficialComponent.Fn<typeof record>>
+    >();
+  });
+
+  const options = {
+    name: "run",
+    args: () => ({ value: Schema.FiniteFromString }),
+    returns: () => Schema.Null,
+  };
+  const targets = [
+    {
+      label: "a reserving mutation",
+      ref: Ref.make(
+        "jobs",
+        FunctionSpec.internalMutation({
+          ...options,
+          reservedArgument: "observe",
+        }),
+      ),
+      forwards: true,
+    },
+    {
+      label: "a reserving action",
+      ref: Ref.make(
+        "jobs",
+        FunctionSpec.internalAction({
+          ...options,
+          reservedArgument: "observe",
+        }),
+      ),
+      forwards: true,
+    },
+    {
+      label: "a query retaining a reservation",
+      ref: {
+        ...Ref.make("jobs", FunctionSpec.internalQuery(options)),
+        reservedArgument: "observe",
+      },
+      forwards: false,
+    },
+    {
+      label: "a non-reserving mutation",
+      ref: Ref.make("jobs", FunctionSpec.internalMutation(options)),
+      forwards: false,
+    },
+  ];
+
+  it.effect.each(targets)(
+    "forwards only to a reserving write target ($label)",
+    ({ ref, forwards }) =>
+      Effect.gen(function* () {
+        const args = { value: 42 };
+        const call = yield* OfficialComponent.encodeCall(ref, args, {
+          carrier: "forward",
+        });
+
+        expect(getFunctionName(call.reference)).toBe("jobs:run");
+        expect(call.args).toEqual({
+          value: "42",
+          ...(forwards ? { observe: { parent: "enqueue" } } : {}),
+        });
+        expect(args).toEqual({ value: 42 });
+      }).pipe(
+        Effect.withSpan("enqueue"),
+        Effect.provideService(RegisteredFunction.Forward, (span) => ({
+          parent: span.name,
+        })),
+      ),
+  );
+
+  it.effect.each(targets)(
+    "preserves the encoded bytes with none ($label)",
+    ({ ref }) =>
+      Effect.gen(function* () {
+        const call = yield* OfficialComponent.encodeCall(
+          ref,
+          { value: 42 },
+          { carrier: "none" },
+        );
+
+        expect(getFunctionName(call.reference)).toBe("jobs:run");
+        expect(
+          yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
+            call.args,
+          ),
+        ).toBe('{"value":"42"}');
+      }).pipe(
+        Effect.withSpan("enqueue"),
+        Effect.provideService(RegisteredFunction.Forward, (span) => ({
+          parent: span.name,
+        })),
+      ),
   );
 });
 

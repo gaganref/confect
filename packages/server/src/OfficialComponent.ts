@@ -15,6 +15,7 @@ import * as MutationCtx from "./MutationCtx.js";
 import type * as MutationRunner from "./MutationRunner.js";
 import * as QueryCtx from "./QueryCtx.js";
 import type * as QueryRunner from "./QueryRunner.js";
+import * as ReservedArgument from "./internal/reservedArgument.js";
 
 /**
  * An official component's method rejected. `cause` is the rejection as thrown.
@@ -113,15 +114,27 @@ export interface Fn<R extends Ref.Any> {
   readonly args: DefaultFunctionArgs;
 }
 
+export interface EncodeCallOptions {
+  /**
+   * Forward the caller's carrier to reserving mutations and actions. Use `none`
+   * when the component replays or compares the stored arguments.
+   */
+  readonly carrier: "forward" | "none";
+}
+
 /**
  * Encode a ref's arguments through its codecs to the wire record an official
- * method expects.
+ * method expects, with an explicit carrier policy.
  */
 export const encodeCall = <R extends Ref.Any>(
   ref: R,
   args: NoInfer<Ref.Args<R>>,
+  options: EncodeCallOptions,
 ): Effect.Effect<Fn<R>> =>
-  Ref.encodeArgs(ref, args).pipe(
+  (options.carrier === "forward"
+    ? ReservedArgument.encodeArgs(ref, args)
+    : Ref.encodeArgs(ref, args)
+  ).pipe(
     Effect.flatMap(
       Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.Unknown)),
     ),
