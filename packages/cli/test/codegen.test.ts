@@ -2176,6 +2176,62 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
+      "imports the section file ahead of each impl and the HTTP router, in full and incremental runs",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            '() => ({ contents: "export {};\\n", errors: [] })',
+          );
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          const imports = Effect.all([
+            project.read("confect/_generated/registeredFunctions/notes.ts"),
+            project.read("convex/http.ts"),
+          ]).pipe(
+            Effect.map(([registration, http]) => [
+              registration.split("\n")[0],
+              http.split("\n")[1],
+            ]),
+          );
+          expect(yield* imports).toEqual([
+            'import "../observe.js";',
+            'import "../confect/_generated/observe.js";',
+          ]);
+          const update = updateDeclarations(
+            snapshot,
+            [
+              {
+                _tag: "Spec",
+                relativePath: SpecModulePath.make("notes.spec.ts"),
+              },
+            ],
+            [],
+          );
+          yield* project.write(
+            "confect/notes.spec.ts",
+            (yield* project.read("confect/notes.spec.ts")).replace(
+              'name: "list"',
+              'name: "list", description: "edited"',
+            ),
+          );
+          yield* project.provide(update);
+          expect(yield* imports).toEqual([
+            'import "../observe.js";',
+            'import "../confect/_generated/observe.js";',
+          ]);
+          yield* project.withoutGenerate;
+          yield* project.provide(update);
+          expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
+            false,
+          );
+          expect(yield* imports).toEqual([
+            'import { ConvexFunctionDefinitions, RegisteredConvexFunction, type RegisteredFunctions } from "@confect/server";',
+            'import { HttpRouter } from "@confect/server";',
+          ]);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "removes the file once no section claims it",
       () =>
         Effect.gen(function* () {

@@ -153,7 +153,8 @@ const render = Effect.fnUntraced(function* (
  * Write each claimed file into `confect/_generated` once every section has
  * rendered, and remove a file a section wrote that no section claims any more.
  * Every section renders before codegen fails with the first error after logging
- * the rest. Returns the claimed file names.
+ * the rest. Returns the claimed file names and whether they differ from the
+ * section files that existed before.
  */
 export const sync = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<Leaf>,
@@ -176,19 +177,25 @@ export const sync = Effect.fnUntraced(function* (
   const [error, ...more] = failures;
   for (const other of more) yield* logCodegenError(other);
   if (error !== undefined) return yield* error;
+  const existing = yield* Effect.filter(
+    (yield* fs.readDirectory(generated)).filter((file) => file.endsWith(".ts")),
+    (file) =>
+      fs
+        .readFileString(path.join(generated, file))
+        .pipe(Effect.map((contents) => contents.startsWith(PREFIX))),
+  );
   for (const { file, contents } of rendered)
     yield* writeFileStringAndLog(path.join(generated, file), contents);
   const names = rendered.map(({ file }) => file);
-  for (const file of yield* fs.readDirectory(generated)) {
-    const absolutePath = path.join(generated, file);
-    if (
-      file.endsWith(".ts") &&
-      !names.includes(file) &&
-      (yield* fs.readFileString(absolutePath)).startsWith(PREFIX)
-    ) {
-      yield* removePathIfExists(absolutePath);
-      yield* logFileRemoved(absolutePath);
+  for (const file of existing)
+    if (!names.includes(file)) {
+      yield* removePathIfExists(path.join(generated, file));
+      yield* logFileRemoved(path.join(generated, file));
     }
-  }
-  return names;
+  return {
+    files: names,
+    changed:
+      names.length !== existing.length ||
+      names.some((file) => !existing.includes(file)),
+  };
 });

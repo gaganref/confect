@@ -161,7 +161,10 @@ const runCodegen = Effect.gen(function* () {
   const leaves = yield* loadAll;
   yield* rejectComponentNodeGroups(leaves);
   yield* syncManifestSections(leaves, previousManifest, digest);
-  yield* SectionFiles.sync(digest === undefined ? [] : leaves, mounts);
+  const sections = yield* SectionFiles.sync(
+    digest === undefined ? [] : leaves,
+    mounts,
+  );
   yield* removeLegacyFiles;
   const snapshot = yield* Effect.fromResult(
     GenerationSnapshot.fromLoadedLeaves(leaves),
@@ -187,7 +190,7 @@ const runCodegen = Effect.gen(function* () {
     ? declared.value.requiresMiddleware
     : [];
   yield* validateAllImpls(leaves, required);
-  yield* generateGroupRegisteredFunctions(leaves, required);
+  yield* generateGroupRegisteredFunctions(leaves, required, sections.files);
   yield* removeObsoleteRegisteredFunctions(leaves);
   const [functionPaths] = yield* Effect.all(
     [
@@ -196,7 +199,7 @@ const runCodegen = Effect.gen(function* () {
       logGenerated(
         Option.match(declared, {
           onNone: () => generateHttp,
-          onSome: syncDeclaredHttp,
+          onSome: (app) => syncDeclaredHttp(app, sections.files),
         }),
       ),
       logGenerated(generateCrons),
@@ -249,13 +252,26 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
         );
         const { app: declared, digest } =
           yield* syncDeclaration(previousManifest);
+        const all = Option.isSome(declared) ? yield* loadAll : [];
         if (Option.isSome(declared))
-          yield* syncManifestSections(yield* loadAll, previousManifest, digest);
+          yield* syncManifestSections(all, previousManifest, digest);
+        const sections = yield* SectionFiles.sync(
+          digest === undefined ? [] : all,
+          digest === undefined ? [] : yield* installedMounts,
+        );
         const required = Option.isSome(declared)
           ? declared.value.requiresMiddleware
           : [];
         yield* validateAllImpls(leaves, required);
-        yield* generateGroupRegisteredFunctions(leaves, required);
+        // A section file that appeared or went changes every registration
+        // file's imports and the HTTP router's, not only the edited groups'.
+        yield* generateGroupRegisteredFunctions(
+          sections.changed ? all : leaves,
+          required,
+          sections.files,
+        );
+        if (sections.changed && Option.isSome(declared))
+          yield* logGenerated(syncDeclaredHttp(declared.value, sections.files));
         yield* FunctionModule.applyFunctionPlan(
           GenerationSnapshot.diff(snapshot, next),
         );
@@ -427,7 +443,8 @@ const generateAssembledSpecs = Effect.fnUntraced(function* (
 
 const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<LoadedLeafModule>,
-  required: ReadonlyArray<{ readonly key: string }> = [],
+  required: ReadonlyArray<{ readonly key: string }>,
+  sectionFiles: ReadonlyArray<string>,
 ) {
   const path = yield* Path.Path;
   const fs = yield* FileSystem.FileSystem;
@@ -481,6 +498,14 @@ const generateGroupRegisteredFunctions = Effect.fnUntraced(function* (
         runtimeImportPath: hasRuntime
           ? yield* toModuleImportPath(path.relative(registryDir, runtimePath))
           : undefined,
+        sectionImportPaths: yield* Effect.forEach(sectionFiles, (file) =>
+          toModuleImportPath(
+            path.relative(
+              registryDir,
+              path.join(confectDirectory, "_generated", file),
+            ),
+          ),
+        ),
       });
 
       yield* writeFileStringAndLog(registryPath, contents);
@@ -915,6 +940,36 @@ const generateRefs = Effect.gen(function* () {
   yield* writeFileStringAndLog(refsPath, refsContents);
 });
 
+const installedMounts = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const convexDirectory = yield* ConvexDirectory.get;
+  const projectRoot = yield* ProjectRoot.get;
+  const convexConfigPath = path.join(
+    convexDirectory,
+    ConvexConfig.CONVEX_CONFIG_FILENAME,
+  );
+  const installedComponents = (yield* fs.exists(convexConfigPath))
+    ? yield* ConvexConfig.discoverInstalledComponents(
+        convexConfigPath,
+        path.relative(projectRoot, convexConfigPath),
+        (yield* ConvexDirectory.target).kind,
+      )
+    : [];
+  return Array.map(
+    installedComponents,
+    ({ name, componentDefinitionPath }) => ({
+      name,
+      definition: ConvexConfig.typeImportPath(
+        path,
+        componentDefinitionPath,
+        path.join(confectDirectory, GENERATED_DIRNAME),
+      ),
+    }),
+  );
+});
+
 /**
  * Generate `confect/_generated/components.ts`—the typed registry of Convex
  * components installed in `convex/convex.config.ts` (see
@@ -925,43 +980,9 @@ const generateRefs = Effect.gen(function* () {
  * definition, relative to `_generated` for an in-repo component.
  */
 export const generateComponents = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
-  const convexDirectory = yield* ConvexDirectory.get;
-  const projectRoot = yield* ProjectRoot.get;
-
-  const confectGeneratedDirectory = path.join(
-    confectDirectory,
-    GENERATED_DIRNAME,
-  );
-  const generatedComponentsPath = yield* GENERATED_COMPONENTS_PATH;
-  const componentsPath = path.join(confectDirectory, generatedComponentsPath);
-
-  const convexConfigPath = path.join(
-    convexDirectory,
-    ConvexConfig.CONVEX_CONFIG_FILENAME,
-  );
-
-  const installedComponents = (yield* fs.exists(convexConfigPath))
-    ? yield* ConvexConfig.discoverInstalledComponents(
-        convexConfigPath,
-        path.relative(projectRoot, convexConfigPath),
-        (yield* ConvexDirectory.target).kind,
-      )
-    : [];
-
-  const mounts = Array.map(
-    installedComponents,
-    ({ name, componentDefinitionPath }) => ({
-      name,
-      definition: ConvexConfig.typeImportPath(
-        path,
-        componentDefinitionPath,
-        confectGeneratedDirectory,
-      ),
-    }),
-  );
+  const mounts = yield* installedMounts;
   const contents = yield* templates.components({
     components: Array.map(mounts, ({ name, definition }) => ({
       name,
@@ -969,7 +990,10 @@ export const generateComponents = Effect.gen(function* () {
     })),
   });
 
-  yield* writeFileStringAndLog(componentsPath, contents);
+  yield* writeFileStringAndLog(
+    path.join(confectDirectory, yield* GENERATED_COMPONENTS_PATH),
+    contents,
+  );
   return mounts;
 });
 
