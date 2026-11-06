@@ -127,7 +127,6 @@ export const codegen = Command.make("codegen", DirectoryOptions.flags, () =>
 );
 
 const runCodegen = Effect.gen(function* () {
-  yield* FunctionModule.assertOwnedEntrypoints;
   yield* validateComponentConfiguration;
   yield* generateConfectGeneratedDirectory;
   // A declared backend's `convex.config.ts` and manifest come first: the
@@ -165,6 +164,9 @@ const runCodegen = Effect.gen(function* () {
     digest === undefined ? [] : leaves,
     mounts,
   );
+  // Nothing above writes a Convex entrypoint. The check waits for this run's
+  // section files, because the HTTP router may import any of them.
+  yield* FunctionModule.assertOwnedEntrypoints;
   yield* removeLegacyFiles;
   const snapshot = yield* Effect.fromResult(
     GenerationSnapshot.fromLoadedLeaves(leaves),
