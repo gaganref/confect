@@ -370,6 +370,7 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags:
         path: "$",
       },
       { value: "Object.assign([1], { toJSON: () => 1 })", path: "$" },
+      { value: "Object.assign([1], { keys: 1 })", path: "$" },
       { value: "new (class Levels extends Array {})()", path: "$" },
       {
         value: 'Object.defineProperty({}, "toJSON", { value: () => 1 })',
@@ -409,6 +410,32 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags:
             yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
           ).toBe(false);
         }).pipe(Effect.scoped),
+    );
+
+    it.effect.each([
+      "Object.assign([1], { keys: 1 })",
+      'Object.defineProperty([1], "keys", { get: () => { throw new Error("keys getter ran"); } })',
+    ])("refuses a summary holding %s and removes the manifest", (value) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const project = yield* manifestProject;
+        yield* project.provide(generateWithSnapshot);
+        yield* project.write(
+          "confect/profile.ts",
+          `import { FunctionSpec } from "@confect/core";
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: { owner: "test/tags", format: 1, describe: () => null, summarize: () => ({ format: 1, at: ${value} }) } } });`,
+        );
+        expect(
+          yield* Effect.flip(project.provide(generateWithSnapshot)),
+        ).toMatchObject({
+          _tag: "InvalidManifestSectionError",
+          sectionKey: "tags",
+          reason: 'could not summarize as JSON: Expected JSON data at $["at"]',
+        });
+        expect(
+          yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
+        ).toBe(false);
+      }).pipe(Effect.scoped),
     );
 
     it.effect.each([

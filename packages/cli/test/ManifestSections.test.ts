@@ -160,6 +160,35 @@ describe("ManifestSections", () => {
         value: Object.assign([1], { toJSON: () => ({ n: 1 }) }),
       },
       {
+        returned: "an array with its own keys",
+        value: Object.assign([1], { keys: 1 }),
+      },
+      {
+        returned: "an array whose methods are its own throwing getters",
+        value: Object.defineProperties(
+          [1],
+          Object.fromEntries(
+            [
+              "keys",
+              "values",
+              "entries",
+              "forEach",
+              "map",
+              "every",
+              "some",
+              Symbol.iterator,
+            ].map((name) => [
+              name,
+              {
+                get: () => {
+                  throw new Error(`${String(name)} getter ran`);
+                },
+              },
+            ]),
+          ),
+        ),
+      },
+      {
         returned: "an array with a symbol key",
         value: Object.assign([1], { [Symbol("s")]: 1 }),
       },
