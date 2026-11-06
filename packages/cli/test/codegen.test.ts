@@ -369,6 +369,13 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags:
         value: "new (class Level { toJSON() { return 1; } })()",
         path: "$",
       },
+      { value: "Object.assign([1], { toJSON: () => 1 })", path: "$" },
+      { value: "new (class Levels extends Array {})()", path: "$" },
+      {
+        value: 'Object.defineProperty({}, "toJSON", { value: () => 1 })',
+        path: '$["toJSON"]',
+      },
+      { value: "({ get n() { return 1; } })", path: '$["n"]' },
       { value: '({ "": undefined })', path: '$[""]' },
       { value: '({ "": { missing: undefined } })', path: '$[""]["missing"]' },
       {

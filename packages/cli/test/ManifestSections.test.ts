@@ -155,10 +155,43 @@ describe("ManifestSections", () => {
         })(),
       },
       { returned: "a symbol key", value: { [Symbol("s")]: 1 } },
-    ].map(({ returned, value }) => ({
+      {
+        returned: "an array with toJSON",
+        value: Object.assign([1], { toJSON: () => ({ n: 1 }) }),
+      },
+      {
+        returned: "an array with a symbol key",
+        value: Object.assign([1], { [Symbol("s")]: 1 }),
+      },
+      // oxlint-disable-next-line no-sparse-arrays -- The refusal is of the hole itself.
+      { returned: "an array with a hole", value: [1, , 2], at: '["1"]' },
+      {
+        returned: "an array subclass",
+        value: new (class Levels extends Array {})(),
+      },
+      {
+        returned: "a hidden toJSON",
+        value: Object.defineProperty({}, "toJSON", { value: () => ({ n: 1 }) }),
+        at: '["toJSON"]',
+      },
+      {
+        returned: "a hidden property",
+        value: Object.defineProperty({}, "n", { value: 1 }),
+        at: '["n"]',
+      },
+      {
+        returned: "a getter",
+        value: {
+          get n() {
+            return 1;
+          },
+        },
+        at: '["n"]',
+      },
+    ].map(({ returned, value, at = "" }) => ({
       returned,
       summarizeTags: () => ({ format: 1, at: value }),
-      reason: 'could not summarize as JSON: Expected JSON data at $["at"]',
+      reason: `could not summarize as JSON: Expected JSON data at $["at"]${at}`,
     })),
     {
       returned: "another format",
