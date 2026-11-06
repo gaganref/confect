@@ -1,8 +1,13 @@
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
-import { FunctionSpec, GroupSpec, MiddlewareSpec } from "@confect/core";
+import {
+  FunctionSpec,
+  GroupSpec,
+  MiddlewareSpec,
+  type ManifestSection,
+} from "@confect/core";
 import { describe, expect, it } from "@effect/vitest";
-import { collect } from "@confect/cli/ManifestSections";
+import { collect, summarize } from "@confect/cli/ManifestSections";
 
 const section = {
   owner: "test/tags",
@@ -18,6 +23,20 @@ const leaf = (spec: GroupSpec.AnyWithProps) => [
   { relativePath: "notes.spec.ts", pathSegments: ["notes"] as const, spec },
 ];
 const list = { name: "list", returns: () => Schema.Void } as const;
+const summarized = (
+  summarizeTags: NonNullable<ManifestSection.Any["summarize"]>,
+) => {
+  const p = FunctionSpec.extend()({
+    middleware: [],
+    manifest: { tags: { ...section, summarize: summarizeTags } },
+  });
+  const modules = [{ relativePath: "billing/log.ts", exports: { level: 1 } }];
+  return collect(leaf(GroupSpec.make().addFunction(p.publicQuery(list)))).pipe(
+    Result.flatMap((registry) =>
+      summarize(registry, new Map([["tags", modules]])),
+    ),
+  );
+};
 
 describe("ManifestSections", () => {
   it("describes nested functions with group and function middleware", () => {
@@ -93,6 +112,57 @@ describe("ManifestSections", () => {
         failure: {
           declarationPath: "confect/notes.spec.ts",
           reason: `Manifest section "tags" (notes:list): conflicts between test/tags (format 1) and ${difference.owner ?? "test/tags"} (format ${difference.format ?? 1}).`,
+        },
+      });
+    },
+  );
+  it("replaces a section's data with what summarize builds from its modules and descriptions", () => {
+    const tags = Result.getOrThrow(
+      summarized(({ modules, functions }) => ({
+        format: 1,
+        levels: modules.map(({ exports }) => exports.level),
+        functions,
+      })),
+    ).get("tags");
+    expect(tags?.data).toEqual({
+      format: 1,
+      levels: [1],
+      functions: { "notes:list": [] },
+    });
+  });
+  it.each([
+    {
+      returned: "a throw",
+      summarizeTags: () => {
+        throw new Error("no levels");
+      },
+      reason: "summarize failed: Error: no levels",
+    },
+    {
+      returned: "a Map",
+      summarizeTags: () => ({ format: 1, levels: new Map() }),
+      reason:
+        'could not summarize as JSON: TypeError: Expected JSON data at $["levels"]',
+    },
+    {
+      returned: "another format",
+      summarizeTags: () => ({ format: 2 }),
+      reason: "summarize must return data with format 1.",
+    },
+    {
+      returned: "an array",
+      summarizeTags: () => [] as never,
+      reason: "summarize must return data with format 1.",
+    },
+  ])(
+    "refuses a summarize that returns $returned",
+    ({ summarizeTags, reason }) => {
+      expect(summarized(summarizeTags)).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          _tag: "InvalidManifestSectionError",
+          sectionKey: "tags",
+          reason,
         },
       });
     },

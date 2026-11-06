@@ -2137,6 +2137,62 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
+      "writes the data summarize builds from matched modules and checks it, in full and incremental runs",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            '() => ({ contents: "export {};\\n", errors: [] })',
+          );
+          yield* project.write(
+            "confect/profile.ts",
+            (yield* project.read("confect/profile.ts")).replace(
+              "describe: () => null",
+              `describe: ({ path }) => path,
+summarize: ({ modules, functions }) => ({ format: 1, owners: modules.map(({ exports }) => exports.billingLog.module), functions }),
+check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : [], notes: [] })`,
+            ),
+          );
+          const observe = Bundler.bundle(
+            `${project.root}/confect/_generated/manifest.ts`,
+          ).pipe(Effect.map(({ module }) => module.default.observe));
+          const owner = (module: string) =>
+            project.write(
+              "confect/billing/log.ts",
+              `export const billingLog = { module: "${module}" };\n`,
+            );
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          yield* owner("fees");
+          yield* project.run;
+          expect(yield* observe).toEqual({
+            format: 1,
+            owners: ["fees"],
+            functions: { "notes:list": "notes:list" },
+          });
+          yield* owner("billing");
+          yield* project.provide(
+            updateDeclarations(
+              snapshot,
+              [
+                {
+                  _tag: "Spec",
+                  relativePath: SpecModulePath.make("notes.spec.ts"),
+                },
+              ],
+              [],
+            ),
+          );
+          expect(yield* observe).toMatchObject({ owners: ["billing"] });
+          yield* owner("stale");
+          expect(yield* Effect.flip(project.run)).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "observe",
+            reason: "stale owner",
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "reports every section's render errors and writes no file",
       () =>
         Effect.gen(function* () {
