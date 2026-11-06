@@ -15,8 +15,9 @@ export const sections = (manifest: Readonly<Record<string, unknown>>) =>
   Object.fromEntries(
     Object.entries(manifest).filter(([key]) => !reserved.has(key)),
   );
-// Read property descriptors rather than values, so no getter or `toJSON` runs
-// before the check and nothing `JSON.stringify` would call, skip or convert passes.
+// Read only property descriptors, through static functions, so no getter,
+// `toJSON` or other method of the input runs before the check and nothing
+// `JSON.stringify` would call, skip or convert passes.
 const nonJsonPath = (
   value: unknown,
   path = "$",
@@ -31,7 +32,10 @@ const nonJsonPath = (
   const prototypes = isArray ? [Array.prototype] : [Object.prototype, null];
   if (!prototypes.includes(Object.getPrototypeOf(value))) return path;
   const keys = isArray
-    ? Array.from(value.keys(), String)
+    ? Array.from(
+        { length: Object.getOwnPropertyDescriptor(value, "length")?.value },
+        (_, index) => String(index),
+      )
     : Reflect.ownKeys(value);
   for (const key of keys) {
     if (typeof key === "symbol") return path;
