@@ -15,8 +15,8 @@ export const sections = (manifest: Readonly<Record<string, unknown>>) =>
   Object.fromEntries(
     Object.entries(manifest).filter(([key]) => !reserved.has(key)),
   );
-// Inspect the value itself, not a `JSON.stringify` replacer's view of it, because
-// `toJSON` would already have turned a `Date` or class instance into JSON.
+// Read property descriptors rather than values, so no getter or `toJSON` runs
+// before the check and nothing `JSON.stringify` would call, skip or convert passes.
 const nonJsonPath = (
   value: unknown,
   path = "$",
@@ -27,24 +27,30 @@ const nonJsonPath = (
   if (typeof value === "number")
     return Number.isFinite(value) ? undefined : path;
   if (typeof value !== "object" || ancestors.includes(value)) return path;
-  const prototypes = Array.isArray(value)
-    ? [Array.prototype]
-    : [Object.prototype, null];
-  if (
-    !prototypes.includes(Object.getPrototypeOf(value)) ||
-    Object.getOwnPropertySymbols(value).length > 0
-  )
-    return path;
-  const entries = Array.isArray(value)
-    ? Array.from(value, (item, index) => [String(index), item] as const)
-    : Object.entries(value);
-  for (const [key, item] of entries) {
+  const isArray = Array.isArray(value);
+  const prototypes = isArray ? [Array.prototype] : [Object.prototype, null];
+  if (!prototypes.includes(Object.getPrototypeOf(value))) return path;
+  const keys = isArray
+    ? Array.from(value.keys(), String)
+    : Reflect.ownKeys(value);
+  for (const key of keys) {
+    if (typeof key === "symbol") return path;
     const at = `${path}[${JSON.stringify(key)}]`;
-    const found =
-      key === "__proto__" ? at : nonJsonPath(item, at, [...ancestors, value]);
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
+    if (
+      key === "__proto__" ||
+      !descriptor?.enumerable ||
+      !("value" in descriptor)
+    )
+      return at;
+    const found = nonJsonPath(descriptor.value, at, [...ancestors, value]);
     if (found !== undefined) return found;
   }
-  return undefined;
+  // Every index is an own data property by now, so any other key than `length`
+  // is one `JSON.stringify` would drop or call.
+  return isArray && Reflect.ownKeys(value).length !== keys.length + 1
+    ? path
+    : undefined;
 };
 const json = (value: unknown): Result.Result<unknown, string> => {
   const path = nonJsonPath(value);

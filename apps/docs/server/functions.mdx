@@ -376,7 +376,7 @@ The section's second type parameter types the result and `check`'s `next`. Codeg
 
 ### Description values must be JSON
 
-Descriptions must contain only JSON data: plain objects, arrays, strings, finite numbers, booleans and `null`. BigInt, functions, undefined properties, non-finite numbers, cycles, symbol keys, and objects such as `Date`, `Map`, `Set` or class instances fail codegen with `InvalidDeclarationError`. Codegen never calls `toJSON`, so a value that defines it fails too. The diagnostic names the section, function, declaring spec and JSON path, such as `$["nested"]["missing"]`. Empty property names remain in the path, for example `$[""]["missing"]`. Own `__proto__` properties are refused at their path because generated object literals cannot preserve them as data. A failing description removes the manifest through section failure cleanup.
+Descriptions must contain only JSON data: plain objects, arrays, strings, finite numbers, booleans and `null`. BigInt, functions, undefined properties, non-finite numbers, cycles, symbol keys, and objects such as `Date`, `Map`, `Set` or class instances fail codegen with `InvalidDeclarationError`. Codegen never calls `toJSON` or a getter, so a value with either fails too, and so does a non-enumerable property or an array with properties besides its elements. The diagnostic names the section, function, declaring spec and JSON path, such as `$["nested"]["missing"]`. Empty property names remain in the path, for example `$[""]["missing"]`. Own `__proto__` properties are refused at their path because generated object literals cannot preserve them as data. A failing description removes the manifest through section failure cleanup.
 
 ### Check sections against previous output
 
