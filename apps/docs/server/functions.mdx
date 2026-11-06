@@ -350,12 +350,36 @@ Every registration file in `_generated/registeredFunctions` and the declared HTT
 
 Sections under one key render once. Codegen refuses a name codegen writes itself, such as `spec.ts` or `manifest.ts`, a name that is not a `.ts` file directly in `_generated`, and a name two keys claim. It removes a file a section wrote once no section claims it, and leaves other files in `_generated` alone. Like the rest of the section, `generate` runs only for a declared app. Without a section that generates, codegen output is unchanged.
 
+### Summarize a section's data
+
+An optional `summarize` replaces the section's `{ format, functions }` with data it builds. Added to the `observe` section above, it writes `observe: { format: 1, modules: ["billing/log.ts"] }` into the manifest.
+
+```ts
+const observe: ManifestSection.ManifestSection<
+  null,
+  { readonly format: number; readonly modules: ReadonlyArray<string> }
+> = {
+  // owner, format, describe and generate as above
+  summarize: ({ modules }) => ({
+    format: 1,
+    modules: modules.map(({ relativePath }) => relativePath),
+  }),
+};
+```
+
+`summarize` receives two inputs:
+
+- `modules`: the files the section's `generate` accepted, with their exports, as `render` receives them. Without `generate` the list is empty.
+- `functions`: each function's description, keyed by path.
+
+The section's second type parameter types the result and `check`'s `next`. Codegen runs `summarize` after every `describe` and before `check` and the digest, so `check` judges what `summarize` returned and the digest covers it. The result must be JSON data, like a description, and carry the section's `format`. Otherwise codegen fails with `InvalidManifestSectionError` under the section key, and a `summarize` that throws fails with `summarize failed: <message>`. Spec edits in `confect dev` summarize again, and so does a change to a file the section accepted, because that change reruns codegen. Without `summarize`, the section's data and codegen output are unchanged.
+
 ### Description values must be JSON
 
-Descriptions must contain only JSON data: plain objects, arrays, strings, finite numbers, booleans and `null`. BigInt, functions, undefined properties, non-finite numbers, cycles, and objects such as `Map`, `Set` or class instances fail codegen with `InvalidDeclarationError`. The diagnostic names the section, function, declaring spec and JSON path, such as `$["nested"]["missing"]`. Empty property names remain in the path, for example `$[""]["missing"]`. Own `__proto__` properties are refused at their path because generated object literals cannot preserve them as data. A failing description removes the manifest through section failure cleanup.
+Descriptions must contain only JSON data: plain objects, arrays, strings, finite numbers, booleans and `null`. JSON has no negative zero, so `-0` is written as `0`. BigInt, functions, undefined properties, non-finite numbers, cycles, symbol keys, and objects such as `Date`, `Map`, `Set` or class instances fail codegen with `InvalidDeclarationError`. Codegen never calls `toJSON` or a getter, so a value with either fails too, and so does a non-enumerable property or an array with properties besides its elements. The diagnostic names the section, function, declaring spec and JSON path, such as `$["nested"]["missing"]`. Empty property names remain in the path, for example `$[""]["missing"]`. Own `__proto__` properties are refused at their path because generated object literals cannot preserve them as data. A failing description removes the manifest through section failure cleanup.
 
 ### Check sections against previous output
 
-An optional `check(next, previous)` returns `{ errors: string[], notes: string[] }`. `next` contains `format` and `functions`; `previous` is the old section as `unknown`, or `undefined` when no usable previous section exists. Validate its format before comparing. An unreadable, empty, missing-default or null previous manifest supplies no sections. Every note prints and any error fails codegen. Check errors and a thrown check fail with `InvalidManifestSectionError`, headed by the section key; errors from every failing section are reported. A `describe` that throws fails with its own message under the section, the function and the declaring spec. Only a failing section step removes the manifest; unrelated spec or implementation failures retain the manifest and its previous sections. The early declaration write carries previous sections forward while applying declaration edits. Files whose content is unchanged are not written or logged as modified.
+An optional `check(next, previous)` returns `{ errors: string[], notes: string[] }`. `next` contains `format` and `functions`, or what `summarize` returned; `previous` is the old section as `unknown`, or `undefined` when no usable previous section exists. Validate its format before comparing. An unreadable, empty, missing-default or null previous manifest supplies no sections. Every note prints and any error fails codegen. Check errors and a thrown check fail with `InvalidManifestSectionError`, headed by the section key; errors from every failing section are reported. A `describe` that throws fails with its own message under the section, the function and the declaring spec. Only a failing section step removes the manifest; unrelated spec or implementation failures retain the manifest and its previous sections. The early declaration write carries previous sections forward while applying declaration edits. Files whose content is unchanged are not written or logged as modified.
 
 When the last participant leaves a previous section, codegen prints one generic note naming the section and its previous function paths. No callback remains to run, so per-key removal notes are not promised then. While participants remain, the section's `check` owns those notes. This applies to full generation and spec edits in `confect dev`.

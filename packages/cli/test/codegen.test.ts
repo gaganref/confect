@@ -364,6 +364,19 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags:
         path: '$["a"]["b"]["a"]',
       },
       { value: "({ m: new Map([[1, 2]]) })", path: '$["m"]' },
+      { value: "({ at: new Date(0) })", path: '$["at"]' },
+      {
+        value: "new (class Level { toJSON() { return 1; } })()",
+        path: "$",
+      },
+      { value: "Object.assign([1], { toJSON: () => 1 })", path: "$" },
+      { value: "Object.assign([1], { keys: 1 })", path: "$" },
+      { value: "new (class Levels extends Array {})()", path: "$" },
+      {
+        value: 'Object.defineProperty({}, "toJSON", { value: () => 1 })',
+        path: '$["toJSON"]',
+      },
+      { value: "({ get n() { return 1; } })", path: '$["n"]' },
       { value: '({ "": undefined })', path: '$[""]' },
       { value: '({ "": { missing: undefined } })', path: '$[""]["missing"]' },
       {
@@ -387,16 +400,42 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags:
           expect(error).toMatchObject({
             _tag: "InvalidDeclarationError",
             declarationPath: "confect/notes.spec.ts",
-            reason: `Manifest section "tags" (notes:list): could not describe as JSON: TypeError: Expected JSON data at ${path}`,
+            reason: `Manifest section "tags" (notes:list): could not describe as JSON: Expected JSON data at ${path}`,
           });
           assert(error._tag === "InvalidDeclarationError");
           expect(renderCodegenError(error)).toContain(
-            `could not describe as JSON: TypeError: Expected JSON data at ${path}`,
+            `could not describe as JSON: Expected JSON data at ${path}`,
           );
           expect(
             yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
           ).toBe(false);
         }).pipe(Effect.scoped),
+    );
+
+    it.effect.each([
+      "Object.assign([1], { keys: 1 })",
+      'Object.defineProperty([1], "keys", { get: () => { throw new Error("keys getter ran"); } })',
+    ])("refuses a summary holding %s and removes the manifest", (value) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const project = yield* manifestProject;
+        yield* project.provide(generateWithSnapshot);
+        yield* project.write(
+          "confect/profile.ts",
+          `import { FunctionSpec } from "@confect/core";
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags: { owner: "test/tags", format: 1, describe: () => null, summarize: () => ({ format: 1, at: ${value} }) } } });`,
+        );
+        expect(
+          yield* Effect.flip(project.provide(generateWithSnapshot)),
+        ).toMatchObject({
+          _tag: "InvalidManifestSectionError",
+          sectionKey: "tags",
+          reason: 'could not summarize as JSON: Expected JSON data at $["at"]',
+        });
+        expect(
+          yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
+        ).toBe(false);
+      }).pipe(Effect.scoped),
     );
 
     it.effect.each([
@@ -2132,6 +2171,62 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             ],
           });
           expect(yield* Project.writtenFiles(project.run)).toEqual([]);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "writes the data summarize builds from matched modules and checks it, in full and incremental runs",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            '() => ({ contents: "export {};\\n", errors: [] })',
+          );
+          yield* project.write(
+            "confect/profile.ts",
+            (yield* project.read("confect/profile.ts")).replace(
+              "describe: () => null",
+              `describe: ({ path }) => path,
+summarize: ({ modules, functions }) => ({ format: 1, owners: modules.map(({ exports }) => exports.billingLog.module), functions }),
+check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : [], notes: [] })`,
+            ),
+          );
+          const observe = Bundler.bundle(
+            `${project.root}/confect/_generated/manifest.ts`,
+          ).pipe(Effect.map(({ module }) => module.default.observe));
+          const owner = (module: string) =>
+            project.write(
+              "confect/billing/log.ts",
+              `export const billingLog = { module: "${module}" };\n`,
+            );
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          yield* owner("fees");
+          yield* project.run;
+          expect(yield* observe).toEqual({
+            format: 1,
+            owners: ["fees"],
+            functions: { "notes:list": "notes:list" },
+          });
+          yield* owner("billing");
+          yield* project.provide(
+            updateDeclarations(
+              snapshot,
+              [
+                {
+                  _tag: "Spec",
+                  relativePath: SpecModulePath.make("notes.spec.ts"),
+                },
+              ],
+              [],
+            ),
+          );
+          expect(yield* observe).toMatchObject({ owners: ["billing"] });
+          yield* owner("stale");
+          expect(yield* Effect.flip(project.run)).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "observe",
+            reason: "stale owner",
+          });
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

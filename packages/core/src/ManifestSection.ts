@@ -35,7 +35,19 @@ export interface Generate {
   };
 }
 
-export interface ManifestSection<Value = unknown> {
+/**
+ * What codegen hands a section's `summarize`: the `confect/` files its
+ * `generate` matched, and each function's description by path.
+ */
+export interface SummarizeInput<Value = unknown> {
+  readonly modules: GenerateInput["modules"];
+  readonly functions: Readonly<Record<string, Value>>;
+}
+
+export interface ManifestSection<
+  Value = unknown,
+  Data_ extends { readonly format: number } = Data<Value>,
+> {
   readonly owner: string;
   readonly format: number;
   describe(input: {
@@ -43,8 +55,9 @@ export interface ManifestSection<Value = unknown> {
     readonly spec: FunctionSpec.AnyWithProps;
     readonly middleware: ReadonlyArray<MiddlewareSpec.AnyMiddlewareSpec>;
   }): Value;
+  summarize?(input: SummarizeInput<Value>): Data_;
   check?(
-    next: Data<Value>,
+    next: Data_,
     previous: unknown,
   ): {
     readonly errors: ReadonlyArray<string>;
@@ -53,7 +66,9 @@ export interface ManifestSection<Value = unknown> {
   readonly generate?: Generate;
 }
 
+export type Any = ManifestSection<unknown, { readonly format: number }>;
+
 export interface Entry {
   readonly key: string;
-  readonly section: ManifestSection;
+  readonly section: Any;
 }

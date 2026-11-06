@@ -1,6 +1,7 @@
 import type { GroupSpec, ManifestSection } from "@confect/core";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import type { LoadedLeafModule } from "./LeafModule.js";
 import {
   InvalidDeclarationError,
@@ -14,37 +15,66 @@ export const sections = (manifest: Readonly<Record<string, unknown>>) =>
   Object.fromEntries(
     Object.entries(manifest).filter(([key]) => !reserved.has(key)),
   );
-const json = () => {
-  const ancestors: { value: object; path: string }[] = [];
-  return function (this: object, key: string, value: unknown) {
-    while (ancestors.length > 0 && ancestors.at(-1)?.value !== this)
-      ancestors.pop();
-    const parent = ancestors.at(-1);
-    const path =
-      parent === undefined ? "$" : `${parent.path}[${JSON.stringify(key)}]`;
+// Read only property descriptors, through static functions, so no getter,
+// `toJSON` or other method of the input runs before the check and nothing
+// `JSON.stringify` would call, skip or convert passes.
+const nonJsonPath = (
+  value: unknown,
+  path = "$",
+  ancestors: ReadonlyArray<object> = [],
+): string | undefined => {
+  if (value === null || ["string", "boolean"].includes(typeof value))
+    return undefined;
+  if (typeof value === "number")
+    return Number.isFinite(value) ? undefined : path;
+  if (typeof value !== "object" || ancestors.includes(value)) return path;
+  const isArray = Array.isArray(value);
+  const prototypes = isArray ? [Array.prototype] : [Object.prototype, null];
+  if (!prototypes.includes(Object.getPrototypeOf(value))) return path;
+  const keys = isArray
+    ? Array.from(
+        { length: Object.getOwnPropertyDescriptor(value, "length")?.value },
+        (_, index) => String(index),
+      )
+    : Reflect.ownKeys(value);
+  for (const key of keys) {
+    if (typeof key === "symbol") return path;
+    const at = `${path}[${JSON.stringify(key)}]`;
+    const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (
       key === "__proto__" ||
-      !["string", "number", "boolean", "object"].includes(typeof value) ||
-      (typeof value === "number" && !Number.isFinite(value)) ||
-      (typeof value === "object" &&
-        value !== null &&
-        !Array.isArray(value) &&
-        ![Object.prototype, null].includes(Object.getPrototypeOf(value))) ||
-      ancestors.some((ancestor) => ancestor.value === value)
+      !descriptor?.enumerable ||
+      !("value" in descriptor)
     )
-      throw new TypeError(`Expected JSON data at ${path}`);
-    if (typeof value === "object" && value !== null)
-      ancestors.push({ value, path });
-    return value;
-  };
+      return at;
+    const found = nonJsonPath(descriptor.value, at, [...ancestors, value]);
+    if (found !== undefined) return found;
+  }
+  // Every index is an own data property by now, so any other key than `length`
+  // is one `JSON.stringify` would drop or call.
+  return isArray && Reflect.ownKeys(value).length !== keys.length + 1
+    ? path
+    : undefined;
+};
+const json = (value: unknown): Result.Result<unknown, string> => {
+  const path = nonJsonPath(value);
+  return path === undefined
+    ? Result.succeed(JSON.parse(JSON.stringify(value)))
+    : Result.fail(`Expected JSON data at ${path}`);
 };
 export type Registry = Map<
   string,
   {
-    section: ManifestSection.ManifestSection;
+    section: ManifestSection.Any;
     data: { format: number; functions: Record<string, unknown> };
   }
 >;
+const hasFormat = (format: number) =>
+  Schema.is(Schema.Struct({ format: Schema.Literal(format) }));
+type Summarized = {
+  readonly section: ManifestSection.Any;
+  readonly data: { readonly format: number };
+};
 
 export const collect = (
   leaves: ReadonlyArray<
@@ -100,11 +130,10 @@ export const collect = (
                 }),
               catch: (cause) => invalid(String(cause)),
             });
-            entry.data.functions[functionPath] = yield* Result.try({
-              try: () => JSON.parse(JSON.stringify(description, json())),
-              catch: (cause) =>
-                invalid(`could not describe as JSON: ${String(cause)}`),
-            });
+            entry.data.functions[functionPath] = yield* Result.mapError(
+              json(description),
+              (reason) => invalid(`could not describe as JSON: ${reason}`),
+            );
           }
         }
         for (const [name, child] of Object.entries(group.groups))
@@ -115,8 +144,42 @@ export const collect = (
     return registry;
   });
 
-export const check = (
+/**
+ * Replace the data of each section that has `summarize` with what it returns
+ * from its matched modules and its functions' descriptions.
+ */
+export const summarize = (
   registry: Registry,
+  modules: ReadonlyMap<string, ManifestSection.GenerateInput["modules"]>,
+) =>
+  Result.gen(function* () {
+    const summarized = new Map<string, Summarized>(registry);
+    for (const [key, { section, data }] of registry) {
+      if (section.summarize === undefined) continue;
+      const input = {
+        modules: modules.get(key) ?? [],
+        functions: data.functions,
+      };
+      const invalid = (reason: string) =>
+        new InvalidManifestSectionError({ sectionKey: key, reason });
+      const summary = yield* Result.try({
+        try: () => section.summarize?.(input),
+        catch: (cause) => invalid(`summarize failed: ${String(cause)}`),
+      });
+      const parsed = yield* Result.mapError(json(summary), (reason) =>
+        invalid(`could not summarize as JSON: ${reason}`),
+      );
+      if (!hasFormat(section.format)(parsed))
+        return yield* Result.fail(
+          invalid(`summarize must return data with format ${section.format}.`),
+        );
+      summarized.set(key, { section, data: parsed });
+    }
+    return summarized;
+  });
+
+export const check = (
+  registry: ReadonlyMap<string, Summarized>,
   previous: Readonly<Record<string, unknown>>,
 ) => {
   const errors: InvalidManifestSectionError[] = [];

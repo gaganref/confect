@@ -33,7 +33,7 @@ Codegen checks previous section data, prints notes and removes the manifest only
 
 ### Require JSON description values
 
-Descriptions must be JSON data. Non-JSON values, including `Map`, `Set` and class instances, and own `__proto__` properties fail with a typed diagnostic naming the section, function, declaring spec and exact JSON path. Empty property names retain `[""]` in the path and cycle refusals identify the cyclic reference. Refusing `__proto__` prevents object-literal prototype semantics from changing the manifest on readback and making unchanged runs write repeatedly. Section failure cleanup removes the manifest. Changeset: `profile-manifest-json.md`. Upstream: planned; no proposal submitted.
+Descriptions must be JSON data. Non-JSON values, including `Date`, `Map`, `Set` and class instances even with a `toJSON` method, getters, non-enumerable properties, arrays with properties besides their elements, symbol keys, and own `__proto__` properties fail with a typed diagnostic naming the section, function, declaring spec and exact JSON path. Empty property names retain `[""]` in the path and cycle refusals identify the cyclic reference. Refusing `__proto__` prevents object-literal prototype semantics from changing the manifest on readback and making unchanged runs write repeatedly. Section failure cleanup removes the manifest. Changesets: `profile-manifest-json.md`, `manifest-json-tojson.md`. Upstream: planned; no proposal submitted.
 
 ### Report description refusals accurately
 
@@ -52,6 +52,10 @@ Thrown checks use the same section attribution. Changeset:
 ### Generate files from sections
 
 A section's optional `generate` writes one file into `confect/_generated`. Codegen bundles each `confect/` module the section matches and passes `render` their exports, every registered function with its spec file, and each mount with its definition specifier. Each returned error string is a typed error under the section key. Codegen refuses a built-in name, a name outside `_generated` and a name two keys claim, and removes a section file once no section claims it. Every registration file and the declared HTTP router import each section file first, and incremental spec edits render it again. `confect dev` regenerates when a file the section accepted, or a `confect/` file it imports, changes or is removed, including after a refusal or a load failure. Codegen checks the router's imports after it writes the run's section files, so a regeneration from an empty `_generated` accepts them. Frame's observe door needs this to load module declarations before any handler runs. Changesets: `manifest-section-generate.md`, `manifest-section-clean-regenerate.md`. Upstream: planned; no proposal submitted.
+
+### Summarize a section's data
+
+A section's optional `summarize` returns its whole manifest data from the modules its `generate` matched and its functions' descriptions, in place of `{ format, functions }`. Codegen runs it after `describe` and before `check` and the digest, and refuses a result that is not JSON data or does not carry the section's format. Section files now render before the manifest step so their modules load once. Frame's observe catalogue needs this for `observe: { format: 2, fields, functions }`, with each function's module and arguments. Changeset: `manifest-section-summarize.md`. Upstream: planned; no proposal submitted.
 
 ## Reserved arguments
 

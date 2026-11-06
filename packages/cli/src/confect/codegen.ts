@@ -159,7 +159,6 @@ const runCodegen = Effect.gen(function* () {
   yield* generateRuntimeSchema(tableModules);
   const leaves = yield* loadAll;
   yield* rejectComponentNodeGroups(leaves);
-  yield* syncManifestSections(leaves, previousManifest, digest);
   const sections = yield* SectionFiles.sync(
     digest === undefined ? [] : leaves,
     mounts,
@@ -167,6 +166,12 @@ const runCodegen = Effect.gen(function* () {
   // Nothing above writes a Convex entrypoint. The check waits for this run's
   // section files, because the HTTP router may import any of them.
   yield* FunctionModule.assertOwnedEntrypoints;
+  yield* syncManifestSections(
+    leaves,
+    previousManifest,
+    digest,
+    sections.modules,
+  );
   yield* removeLegacyFiles;
   const snapshot = yield* Effect.fromResult(
     GenerationSnapshot.fromLoadedLeaves(leaves),
@@ -256,12 +261,17 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
         const { app: declared, digest } =
           yield* syncDeclaration(previousManifest);
         const all = Option.isSome(declared) ? yield* loadAll : [];
-        if (Option.isSome(declared))
-          yield* syncManifestSections(all, previousManifest, digest);
         const sections = yield* SectionFiles.sync(
           digest === undefined ? [] : all,
           digest === undefined ? [] : yield* installedMounts,
         );
+        if (Option.isSome(declared))
+          yield* syncManifestSections(
+            all,
+            previousManifest,
+            digest,
+            sections.modules,
+          );
         const required = Option.isSome(declared)
           ? declared.value.requiresMiddleware
           : [];
