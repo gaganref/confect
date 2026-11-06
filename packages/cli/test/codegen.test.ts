@@ -2252,6 +2252,25 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
+      "regenerates from an empty _generated an HTTP router that imports the section file",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* sectionProject(
+            '() => ({ contents: "export {};\\n", errors: [] })',
+          );
+          yield* project.run;
+          const router = yield* project.read("convex/http.ts");
+          yield* fs.remove(`${project.root}/confect/_generated`, {
+            recursive: true,
+          });
+          yield* project.run;
+          expect(yield* project.read("convex/http.ts")).toBe(router);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "records each matched file and its confect imports through refusals",
       () =>
         Effect.gen(function* () {
