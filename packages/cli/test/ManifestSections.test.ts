@@ -144,6 +144,23 @@ describe("ManifestSections", () => {
       reason:
         'could not summarize as JSON: TypeError: Expected JSON data at $["levels"]',
     },
+    ...[
+      // oxlint-disable-next-line effecttsgo/global-date -- The refusal is of the raw Date value itself.
+      { returned: "a Date", value: new Date(0) },
+      {
+        returned: "a class instance with toJSON",
+        value: new (class Level {
+          toJSON() {
+            return { n: 1 };
+          }
+        })(),
+      },
+      { returned: "a symbol key", value: { [Symbol("s")]: 1 } },
+    ].map(({ returned, value }) => ({
+      returned,
+      summarizeTags: () => ({ format: 1, at: value }),
+      reason: 'could not summarize as JSON: Expected JSON data at $["at"]',
+    })),
     {
       returned: "another format",
       summarizeTags: () => ({ format: 2 }),

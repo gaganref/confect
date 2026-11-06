@@ -364,6 +364,11 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags:
         path: '$["a"]["b"]["a"]',
       },
       { value: "({ m: new Map([[1, 2]]) })", path: '$["m"]' },
+      { value: "({ at: new Date(0) })", path: '$["at"]' },
+      {
+        value: "new (class Level { toJSON() { return 1; } })()",
+        path: "$",
+      },
       { value: '({ "": undefined })', path: '$[""]' },
       { value: '({ "": { missing: undefined } })', path: '$[""]["missing"]' },
       {
