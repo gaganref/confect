@@ -392,11 +392,11 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags:
           expect(error).toMatchObject({
             _tag: "InvalidDeclarationError",
             declarationPath: "confect/notes.spec.ts",
-            reason: `Manifest section "tags" (notes:list): could not describe as JSON: TypeError: Expected JSON data at ${path}`,
+            reason: `Manifest section "tags" (notes:list): could not describe as JSON: Expected JSON data at ${path}`,
           });
           assert(error._tag === "InvalidDeclarationError");
           expect(renderCodegenError(error)).toContain(
-            `could not describe as JSON: TypeError: Expected JSON data at ${path}`,
+            `could not describe as JSON: Expected JSON data at ${path}`,
           );
           expect(
             yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),

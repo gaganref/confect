@@ -141,8 +141,7 @@ describe("ManifestSections", () => {
     {
       returned: "a Map",
       summarizeTags: () => ({ format: 1, levels: new Map() }),
-      reason:
-        'could not summarize as JSON: TypeError: Expected JSON data at $["levels"]',
+      reason: 'could not summarize as JSON: Expected JSON data at $["levels"]',
     },
     ...[
       // oxlint-disable-next-line effecttsgo/global-date -- The refusal is of the raw Date value itself.

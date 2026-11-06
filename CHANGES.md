@@ -33,7 +33,7 @@ Codegen checks previous section data, prints notes and removes the manifest only
 
 ### Require JSON description values
 
-Descriptions must be JSON data. Non-JSON values, including `Map`, `Set` and class instances, and own `__proto__` properties fail with a typed diagnostic naming the section, function, declaring spec and exact JSON path. Empty property names retain `[""]` in the path and cycle refusals identify the cyclic reference. Refusing `__proto__` prevents object-literal prototype semantics from changing the manifest on readback and making unchanged runs write repeatedly. Section failure cleanup removes the manifest. Changeset: `profile-manifest-json.md`. Upstream: planned; no proposal submitted.
+Descriptions must be JSON data. Non-JSON values, including `Date`, `Map`, `Set` and class instances even with a `toJSON` method, symbol keys, and own `__proto__` properties fail with a typed diagnostic naming the section, function, declaring spec and exact JSON path. Empty property names retain `[""]` in the path and cycle refusals identify the cyclic reference. Refusing `__proto__` prevents object-literal prototype semantics from changing the manifest on readback and making unchanged runs write repeatedly. Section failure cleanup removes the manifest. Changesets: `profile-manifest-json.md`, `manifest-json-tojson.md`. Upstream: planned; no proposal submitted.
 
 ### Report description refusals accurately
 

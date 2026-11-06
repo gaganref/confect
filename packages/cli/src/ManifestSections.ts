@@ -15,29 +15,42 @@ export const sections = (manifest: Readonly<Record<string, unknown>>) =>
   Object.fromEntries(
     Object.entries(manifest).filter(([key]) => !reserved.has(key)),
   );
-const json = () => {
-  const ancestors: { value: object; path: string }[] = [];
-  return function (this: object, key: string, value: unknown) {
-    while (ancestors.length > 0 && ancestors.at(-1)?.value !== this)
-      ancestors.pop();
-    const parent = ancestors.at(-1);
-    const path =
-      parent === undefined ? "$" : `${parent.path}[${JSON.stringify(key)}]`;
-    if (
-      key === "__proto__" ||
-      !["string", "number", "boolean", "object"].includes(typeof value) ||
-      (typeof value === "number" && !Number.isFinite(value)) ||
-      (typeof value === "object" &&
-        value !== null &&
-        !Array.isArray(value) &&
-        ![Object.prototype, null].includes(Object.getPrototypeOf(value))) ||
-      ancestors.some((ancestor) => ancestor.value === value)
-    )
-      throw new TypeError(`Expected JSON data at ${path}`);
-    if (typeof value === "object" && value !== null)
-      ancestors.push({ value, path });
-    return value;
-  };
+// Inspect the value itself, not a `JSON.stringify` replacer's view of it, because
+// `toJSON` would already have turned a `Date` or class instance into JSON.
+const nonJsonPath = (
+  value: unknown,
+  path = "$",
+  ancestors: ReadonlyArray<object> = [],
+): string | undefined => {
+  if (value === null || ["string", "boolean"].includes(typeof value))
+    return undefined;
+  if (typeof value === "number")
+    return Number.isFinite(value) ? undefined : path;
+  if (typeof value !== "object" || ancestors.includes(value)) return path;
+  const prototypes = Array.isArray(value)
+    ? [Array.prototype]
+    : [Object.prototype, null];
+  if (
+    !prototypes.includes(Object.getPrototypeOf(value)) ||
+    Object.getOwnPropertySymbols(value).length > 0
+  )
+    return path;
+  const entries = Array.isArray(value)
+    ? Array.from(value, (item, index) => [String(index), item] as const)
+    : Object.entries(value);
+  for (const [key, item] of entries) {
+    const at = `${path}[${JSON.stringify(key)}]`;
+    const found =
+      key === "__proto__" ? at : nonJsonPath(item, at, [...ancestors, value]);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+};
+const json = (value: unknown): Result.Result<unknown, string> => {
+  const path = nonJsonPath(value);
+  return path === undefined
+    ? Result.succeed(JSON.parse(JSON.stringify(value)))
+    : Result.fail(`Expected JSON data at ${path}`);
 };
 export type Registry = Map<
   string,
@@ -107,11 +120,10 @@ export const collect = (
                 }),
               catch: (cause) => invalid(String(cause)),
             });
-            entry.data.functions[functionPath] = yield* Result.try({
-              try: () => JSON.parse(JSON.stringify(description, json())),
-              catch: (cause) =>
-                invalid(`could not describe as JSON: ${String(cause)}`),
-            });
+            entry.data.functions[functionPath] = yield* Result.mapError(
+              json(description),
+              (reason) => invalid(`could not describe as JSON: ${reason}`),
+            );
           }
         }
         for (const [name, child] of Object.entries(group.groups))
@@ -144,11 +156,9 @@ export const summarize = (
         try: () => section.summarize?.(input),
         catch: (cause) => invalid(`summarize failed: ${String(cause)}`),
       });
-      const parsed: unknown = yield* Result.try({
-        try: () => JSON.parse(JSON.stringify(summary, json())),
-        catch: (cause) =>
-          invalid(`could not summarize as JSON: ${String(cause)}`),
-      });
+      const parsed = yield* Result.mapError(json(summary), (reason) =>
+        invalid(`could not summarize as JSON: ${reason}`),
+      );
       if (!hasFormat(section.format)(parsed))
         return yield* Result.fail(
           invalid(`summarize must return data with format ${section.format}.`),
