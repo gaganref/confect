@@ -500,6 +500,28 @@ layer(NodeServices.layer, { excludeTestServices: true })(
       { timeout: 15000 },
     );
 
+    test.effect.each(["Update", "Remove"] as const)(
+      "regenerates on a %s of a file a section recorded as an input",
+      (eventTag) =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const { watcher, project, events } = yield* controlledWatcher();
+          yield* watcher.refresh;
+          yield* watcher.next;
+          yield* fs.makeDirectory(`${project.root}/confect/_generated`);
+          yield* project.write(
+            "confect/_generated/sectionInputs.json",
+            '["billing/helper.ts"]',
+          );
+          yield* Queue.offer(events, {
+            _tag: eventTag,
+            path: `${project.root}/confect/billing/helper.ts`,
+          });
+          expect((yield* watcher.next).work._tag).toBe("Full");
+        }).pipe(Effect.scoped, Effect.timeout("10 seconds")),
+      { timeout: 15000 },
+    );
+
     test.effect(
       "settles no-op reconfiguration without replacing the context",
       () =>

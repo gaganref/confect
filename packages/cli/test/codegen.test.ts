@@ -2252,6 +2252,38 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
+      "records each matched file and its confect imports through refusals",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            '() => ({ contents: "", errors: ["refusal"] })',
+          );
+          yield* project.write("confect/billing/helper.ts", "export {};\n");
+          yield* project.write(
+            "confect/billing/log.ts",
+            'import "./helper";\nimport "../_generated/id";\n',
+          );
+          yield* Effect.flip(project.run);
+          const record = "confect/_generated/sectionInputs.json";
+          expect(yield* project.read(record)).toBe(
+            '["billing/helper.ts","billing/log.ts"]',
+          );
+          yield* project.write(
+            "confect/billing/helper.ts",
+            "export const = ;\n",
+          );
+          yield* Effect.flip(project.run);
+          expect(yield* project.read(record)).toBe(
+            '["billing/helper.ts","billing/log.ts"]',
+          );
+          yield* project.withoutGenerate;
+          yield* project.run;
+          expect(yield* project.exists(record)).toBe(false);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "removes the file once no section claims it",
       () =>
         Effect.gen(function* () {
