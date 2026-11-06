@@ -171,9 +171,14 @@ const render = Effect.fnUntraced(function* (
   );
   for (const other of more) yield* logCodegenError(other);
   if (error !== undefined) return yield* error;
-  return [header(key), `// Sources: ${encodeSources(matched)}`, contents].join(
-    "\n",
-  );
+  return {
+    modules,
+    contents: [
+      header(key),
+      `// Sources: ${encodeSources(matched)}`,
+      contents,
+    ].join("\n"),
+  };
 });
 
 /**
@@ -214,8 +219,8 @@ export const inputs = Effect.gen(function* () {
  * rendered. Every section renders before codegen fails with the first error
  * after logging the rest. The record of section inputs is written either way,
  * keeping the previous inputs after a failure, so `confect dev` sees the fix.
- * Returns the claimed file names and whether they differ from the section files
- * that existed before.
+ * Returns the claimed file names, whether they differ from the section files
+ * that existed before, and the modules each section key matched.
  */
 export const sync = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<Leaf>,
@@ -232,7 +237,7 @@ export const sync = Effect.fnUntraced(function* (
   const watched = new Set<string>();
   const [rendered, failures] = yield* Effect.partition(claimed, (claim) =>
     render(claim, { functions, mounts }, files, watched).pipe(
-      Effect.map((contents) => ({ file: claim.generate.file, contents })),
+      Effect.map((output) => ({ ...claim, ...output })),
     ),
   );
   if (failures.length > 0) for (const file of yield* inputs) watched.add(file);
@@ -246,10 +251,11 @@ export const sync = Effect.fnUntraced(function* (
   for (const other of more) yield* logCodegenError(other);
   if (error !== undefined) return yield* error;
   const existing = yield* written;
-  for (const { file, contents } of rendered)
-    yield* writeFileStringAndLog(path.join(generated, file), contents);
-  const names = rendered.map(({ file }) => file);
+  for (const { generate, contents } of rendered)
+    yield* writeFileStringAndLog(path.join(generated, generate.file), contents);
+  const names = rendered.map(({ generate }) => generate.file);
   return {
+    modules: new Map(rendered.map(({ key, modules }) => [key, modules])),
     files: names,
     changed:
       names.length !== existing.length ||

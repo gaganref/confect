@@ -1,6 +1,7 @@
 import type { GroupSpec, ManifestSection } from "@confect/core";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import type { LoadedLeafModule } from "./LeafModule.js";
 import {
   InvalidDeclarationError,
@@ -41,10 +42,16 @@ const json = () => {
 export type Registry = Map<
   string,
   {
-    section: ManifestSection.ManifestSection;
+    section: ManifestSection.Any;
     data: { format: number; functions: Record<string, unknown> };
   }
 >;
+const hasFormat = (format: number) =>
+  Schema.is(Schema.Struct({ format: Schema.Literal(format) }));
+type Summarized = {
+  readonly section: ManifestSection.Any;
+  readonly data: { readonly format: number };
+};
 
 export const collect = (
   leaves: ReadonlyArray<
@@ -115,8 +122,44 @@ export const collect = (
     return registry;
   });
 
-export const check = (
+/**
+ * Replace the data of each section that has `summarize` with what it returns
+ * from its matched modules and its functions' descriptions.
+ */
+export const summarize = (
   registry: Registry,
+  modules: ReadonlyMap<string, ManifestSection.GenerateInput["modules"]>,
+) =>
+  Result.gen(function* () {
+    const summarized = new Map<string, Summarized>(registry);
+    for (const [key, { section, data }] of registry) {
+      if (section.summarize === undefined) continue;
+      const input = {
+        modules: modules.get(key) ?? [],
+        functions: data.functions,
+      };
+      const invalid = (reason: string) =>
+        new InvalidManifestSectionError({ sectionKey: key, reason });
+      const summary = yield* Result.try({
+        try: () => section.summarize?.(input),
+        catch: (cause) => invalid(`summarize failed: ${String(cause)}`),
+      });
+      const parsed: unknown = yield* Result.try({
+        try: () => JSON.parse(JSON.stringify(summary, json())),
+        catch: (cause) =>
+          invalid(`could not summarize as JSON: ${String(cause)}`),
+      });
+      if (!hasFormat(section.format)(parsed))
+        return yield* Result.fail(
+          invalid(`summarize must return data with format ${section.format}.`),
+        );
+      summarized.set(key, { section, data: parsed });
+    }
+    return summarized;
+  });
+
+export const check = (
+  registry: ReadonlyMap<string, Summarized>,
   previous: Readonly<Record<string, unknown>>,
 ) => {
   const errors: InvalidManifestSectionError[] = [];

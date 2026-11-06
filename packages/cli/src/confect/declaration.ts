@@ -1,4 +1,4 @@
-import { App, Http } from "@confect/core";
+import { App, Http, type ManifestSection } from "@confect/core";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Option from "effect/Option";
@@ -247,10 +247,17 @@ export const syncManifestSections = Effect.fnUntraced(
     leaves: ReadonlyArray<LoadedLeafModule>,
     previous: Readonly<Record<string, unknown>>,
     baseDigest: string | undefined,
+    modules: ReadonlyMap<string, ManifestSection.GenerateInput["modules"]>,
   ) {
     if (baseDigest === undefined) return;
     const current = yield* readManifest;
-    const registry = yield* Effect.fromResult(ManifestSections.collect(leaves));
+    const registry = yield* Effect.fromResult(
+      ManifestSections.collect(leaves).pipe(
+        Result.flatMap((described) =>
+          ManifestSections.summarize(described, modules),
+        ),
+      ),
+    );
     const checked = ManifestSections.check(registry, previous);
     for (const note of checked.notes) yield* logWarn(note);
     const [error, ...more] = checked.errors;

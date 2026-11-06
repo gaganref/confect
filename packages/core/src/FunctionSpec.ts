@@ -930,9 +930,7 @@ export type Extended<
     >,
   >(
     config: {
-      readonly manifest?: Readonly<
-        Record<string, ManifestSection.ManifestSection>
-      >;
+      readonly manifest?: Readonly<Record<string, ManifestSection.Any>>;
       readonly reservedArgument?: string;
       readonly middleware: Middleware_ &
         NotInherited<Middleware_, MiddlewareSpecs_>;
@@ -1025,7 +1023,7 @@ const makeExtended = (
         middleware: ReadonlyArray<ProfileMiddleware<any>>;
         schemas?: RuntimeWrappers;
         reservedArgument?: string;
-        manifest?: Readonly<Record<string, ManifestSection.ManifestSection>>;
+        manifest?: Readonly<Record<string, ManifestSection.Any>>;
       }) =>
         makeExtended(
           [...middleware, ...config.middleware],
@@ -1056,9 +1054,7 @@ export const extend =
     >,
   >(
     config: {
-      readonly manifest?: Readonly<
-        Record<string, ManifestSection.ManifestSection>
-      >;
+      readonly manifest?: Readonly<Record<string, ManifestSection.Any>>;
       readonly reservedArgument?: string;
       readonly middleware: Middleware_;
     } & OptionFree<Fields_["Type"]> &
