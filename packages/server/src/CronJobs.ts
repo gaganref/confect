@@ -1,4 +1,5 @@
 import { Ref } from "@confect/core";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import type { CronJob as ConvexCronJob } from "convex/server";
 import { cronJobs as makeConvexCrons, type Crons } from "convex/server";
 import { pipe } from "effect/Function";
@@ -35,7 +36,7 @@ const Proto = {
       crons: { ...this.convexCronJobs.crons },
     });
 
-    const functionReference = Ref.getFunctionReference(cronJob.ref);
+    const functionReference = getFunctionReference(cronJob.ref);
     const encodedArgs = Ref.encodeArgsSync(cronJob.ref, cronJob.args);
 
     Match.value(cronJob.schedule).pipe(
