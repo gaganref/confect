@@ -14,10 +14,18 @@ const Page = () =>
     isDone: Schema.Boolean,
   });
 
-export default GroupSpec.make().addFunction(
-  FunctionSpec.publicQuery({
-    name: "page",
-    args: PageArgs,
-    returns: Page,
-  }),
-);
+export default GroupSpec.make()
+  .addFunction(
+    FunctionSpec.publicQuery({
+      name: "page",
+      args: PageArgs,
+      returns: Page,
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicQuery({
+      name: "searchPage",
+      args: PageArgs,
+      returns: Page,
+    }),
+  );

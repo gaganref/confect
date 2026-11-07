@@ -13,6 +13,13 @@ const page = FunctionImpl.make(schema, spec, "page", (args) =>
     return { ...result, page: result.page.map((d) => d.count) };
   }).pipe(Effect.orDie),
 );
+const searchPage = FunctionImpl.make(schema, spec, "searchPage", (args) =>
+  Effect.gen(function* () {
+    const runner = yield* QueryRunner;
+    const result = yield* runner.runQuery(first.pagination.searchPage, args);
+    return { ...result, page: result.page.map((d) => d.count) };
+  }).pipe(Effect.orDie),
+);
 const twice = FunctionImpl.make(schema, spec, "twice", (args) =>
   Effect.gen(function* () {
     const reader = yield* DatabaseReader;
@@ -26,6 +33,6 @@ const twice = FunctionImpl.make(schema, spec, "twice", (args) =>
   }).pipe(Effect.orDie),
 );
 export default GroupImpl.make(schema, spec).pipe(
-  Layer.provide([page, twice]),
+  Layer.provide([page, searchPage, twice]),
   GroupImpl.finalize,
 );

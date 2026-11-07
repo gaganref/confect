@@ -22,6 +22,13 @@ export default GroupSpec.make()
   )
   .addFunction(
     FunctionSpec.publicQuery({
+      name: "searchPage",
+      args: PageArgs,
+      returns: Page,
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicQuery({
       name: "twice",
       args: PageArgs,
       returns: () => Schema.Null,

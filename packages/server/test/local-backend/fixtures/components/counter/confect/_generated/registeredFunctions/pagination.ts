@@ -11,4 +11,5 @@ const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../..
 
 export default {
 ["page"]: RegisteredConvexFunction.register({ ...definitions["page"], handler: forward(definitions["page"].handler) }),
+["searchPage"]: RegisteredConvexFunction.register({ ...definitions["searchPage"], handler: forward(definitions["searchPage"].handler) }),
 } as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../pagination.spec.js")["default"]>;

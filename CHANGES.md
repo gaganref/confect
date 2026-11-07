@@ -385,7 +385,7 @@ works in applications and components on the local backend pinned to
 `precompiled-2026-10-28-cccbade`, past the pagination change in `d7402d6a`.
 A query can paginate once across the host and its component calls. A second
 call throws; use `QueryStream.paginate` for another paginated index read.
-Local backend tests cover pages, subscriptions and the shared query limit.
+Local backend tests cover index and search pages, subscriptions and the shared query limit.
 
 Changesets: `scoped-scheduler-cancel-pagination.md`, `component-native-pagination.md`.
 Upstream: planned; no linked proposal verified.
