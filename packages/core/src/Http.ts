@@ -70,10 +70,7 @@ export const make = <
 export const isHttp = (u: unknown): u is Any =>
   Predicate.hasProperty(u, TypeId) && u[TypeId] === TypeId;
 
-export type Owner =
-  | { readonly kind: "app" }
-  | { readonly kind: "docs" }
-  | { readonly kind: "mount"; readonly mount: string };
+export type Owner = { readonly kind: "app" } | { readonly kind: "docs" };
 
 export interface Route {
   readonly method: string;
@@ -121,8 +118,7 @@ export type RouteError =
   | DuplicateRoute
   | OverlappingMountPrefixes;
 
-const ownerLabel = (owner: Owner): string =>
-  owner.kind === "mount" ? `mount "${owner.mount}"` : owner.kind;
+const ownerLabel = (owner: Owner): string => owner.kind;
 
 const trimSlash = (prefix: string): string =>
   prefix.length > 1 && prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
@@ -157,14 +153,10 @@ interface KeyedRoute {
   readonly key: string;
 }
 
-const apiRoutes = (
-  api: App.Api,
-  prefix: string,
-  owner: Owner,
-): ReadonlyArray<KeyedRoute> =>
+const apiRoutes = (api: App.Api, owner: Owner): ReadonlyArray<KeyedRoute> =>
   Object.values<HttpApiGroup.Top>(api.groups).flatMap((group) =>
     Object.values(group.endpoints).map((endpoint) => {
-      const path = prefix + endpoint.path;
+      const path = endpoint.path;
       const declared = paramNames(endpoint.params);
       return {
         route: { method: endpoint.method, path, owner },
@@ -209,7 +201,7 @@ export const routes = (
     http === undefined
       ? []
       : [
-          ...apiRoutes(http.api, "", { kind: "app" }),
+          ...apiRoutes(http.api, { kind: "app" }),
           ...(http.docs === undefined
             ? []
             : [
