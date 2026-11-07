@@ -1,3 +1,4 @@
+import { getFunctionReference } from "@confect/core/RefInternal";
 import { assert, describe, expect, expectTypeOf, it } from "@effect/vitest";
 import {
   Callback,
@@ -246,7 +247,7 @@ describe("published component contracts", () => {
   });
   it("wraps a native component ref without inventing a local function name", () => {
     const wrapped = Ref.fromFunctionReference(native.first.items.create);
-    expect(getFunctionAddress(Ref.getFunctionReference(wrapped))).toEqual({
+    expect(getFunctionAddress(getFunctionReference(wrapped))).toEqual({
       reference: "_reference/childComponent/first/items/create",
     });
     expect(Ref.encodeArgsSync(wrapped, { count: "3" })).toEqual({ count: "3" });
@@ -255,7 +256,7 @@ describe("published component contracts", () => {
     expect(Ref.isRef(first.items.create)).toBe(true);
     expect(first.items.create[Ref.TypeId]).toBe(Ref.TypeId);
     expect(
-      getFunctionAddress(Ref.getFunctionReference(first.items.create)),
+      getFunctionAddress(getFunctionReference(first.items.create)),
     ).toEqual({
       reference: "_reference/childComponent/first/items/create",
     });

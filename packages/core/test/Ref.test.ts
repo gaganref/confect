@@ -1,4 +1,5 @@
 import { Component, GroupSpec, IdScope } from "@confect/core";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import { componentsGeneric } from "convex/server";
 import type {
   FunctionReference,
@@ -186,16 +187,12 @@ describe("runWithCodec", () => {
         expect(yield* effect).toBe(2);
         readCount.mockReturnValue(3);
         expect(yield* effect).toBe(2);
-        expect(invoke).toHaveBeenNthCalledWith(
-          1,
-          Ref.getFunctionReference(ref),
-          { count: "1" },
-        );
-        expect(invoke).toHaveBeenNthCalledWith(
-          2,
-          Ref.getFunctionReference(ref),
-          { count: "3" },
-        );
+        expect(invoke).toHaveBeenNthCalledWith(1, getFunctionReference(ref), {
+          count: "1",
+        });
+        expect(invoke).toHaveBeenNthCalledWith(2, getFunctionReference(ref), {
+          count: "3",
+        });
       }),
   );
 
@@ -536,34 +533,6 @@ describe("fromProvenance", () => {
         expect(Ref.getConvexFunctionName(ref)).toBe("counter:add");
       }),
   );
-});
-
-describe("getFunctionReference", () => {
-  const ref = Ref.make(
-    "notes",
-    FunctionSpec.publicQuery({
-      name: "list",
-      returns: () => Schema.Void,
-    }),
-  );
-
-  test("returns a reference for the ref's Convex function name", () => {
-    expect(Ref.getFunctionReference(ref)).toBe(Ref.getFunctionReference(ref));
-  });
-
-  test("distinct function names produce distinct references", () => {
-    const other = Ref.make(
-      "notes",
-      FunctionSpec.publicQuery({
-        name: "get",
-        returns: () => Schema.Void,
-      }),
-    );
-
-    expect(Ref.getFunctionReference(ref)).not.toBe(
-      Ref.getFunctionReference(other),
-    );
-  });
 });
 
 describe("Error type extraction", () => {

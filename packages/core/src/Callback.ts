@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as FunctionProvenance from "./FunctionProvenance.js";
 import * as Ref from "./Ref.js";
+import { getFunctionReference } from "./RefInternal.js";
 import { CallbackContract } from "./internal/annotations.js";
 import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 
@@ -313,4 +314,4 @@ export const toFuture = <Ref_ extends Ref.Any>(
   Ref.GetFunctionVisibility<Ref_>,
   EncodedArgs<Ref_>,
   EncodedReturns<Ref_>
-> => Ref.getFunctionReference(ref) as never;
+> => getFunctionReference(ref) as never;

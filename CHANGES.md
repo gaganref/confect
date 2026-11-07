@@ -12,6 +12,23 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Native function reference conversion
+
+Move `Ref.getFunctionReference` to `@confect/core/RefInternal`. The `Ref` module
+and the package barrel no longer export the converter. Import it directly:
+
+```ts
+import { getFunctionReference } from "@confect/core/RefInternal";
+```
+
+The converter keeps the same types, supplied native references, and cache by
+function name. Core, JavaScript, React, and server callers use the new subpath.
+Generated refs still use `Refs.make(spec)`. A separate import lets component
+projects ban native reference conversion without banning `Ref` types and codecs.
+Frame's official wrappers must update their imports when they take this build.
+Changeset: `ref-internal-subpath.md` marks this as breaking. Upstream: planned;
+no proposal submitted.
+
 ## Schema bundle imports
 
 Serve Scalar CDN docs without importing Effect's inline Scalar module. Effect
@@ -123,6 +140,10 @@ is recorded under "Type component callbacks".
 Upstream: fork only.
 
 ## Package compatibility
+
+### Require Convex 1.49
+
+Raise the Convex peer floor to 1.49.0. Workspace and baseline consumer pins use the same release. Local backend tests use `precompiled-2026-10-28-cccbade`. Changeset: `convex-peer-floor.md`. Upstream: planned; no proposal submitted.
 
 ### Bound the supported crypto API
 

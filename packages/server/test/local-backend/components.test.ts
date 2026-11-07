@@ -429,7 +429,7 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
             client.mutation(api.groups.callbacks.storeMalformed, {
               run: "malformed-handle",
             }),
-          ).rejects.toThrow(/function|handle/i),
+          ).rejects.toThrow(/does not match the schema[\s\S]*v\.function/),
         );
       }),
   );
