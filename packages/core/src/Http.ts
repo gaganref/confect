@@ -174,20 +174,19 @@ const apiRoutes = (
   );
 
 /**
- * Every HTTP route the backend serves: the app's api, its docs page and each
- * mount's api under its prefix. Fails when an app route or the docs page is at
- * or under a mount's prefix (Convex accepts that and lets the app route
- * silently shadow the component's), when two routes share a method and path, or
- * when two mount prefixes overlap.
+ * The backend's own HTTP routes and docs page. Fails when a route is at or
+ * under a mount's prefix (Convex accepts that and lets the app route silently
+ * shadow the component's), when two routes share a method and path, or when two
+ * mount prefixes overlap.
  */
 export const routes = (
   app: App.Any,
   http?: Any,
 ): Result.Result<ReadonlyArray<Route>, RouteError> => {
-  const mounts = App.mounts(app).flatMap(({ name, httpPrefix, api }) =>
+  const mounts = App.mounts(app).flatMap(({ name, httpPrefix }) =>
     httpPrefix === undefined
       ? []
-      : [{ name, httpPrefix: trimSlash(httpPrefix), api }],
+      : [{ name, httpPrefix: trimSlash(httpPrefix) }],
   );
 
   for (const [index, first] of mounts.entries()) {
@@ -241,16 +240,8 @@ export const routes = (
     }
   }
 
-  const all = [
-    ...own,
-    ...mounts.flatMap(({ name, httpPrefix, api }) =>
-      api === undefined
-        ? []
-        : apiRoutes(api, httpPrefix, { kind: "mount", mount: name }),
-    ),
-  ];
   const seen = new Map<string, Route>();
-  for (const { route, key } of all) {
+  for (const { route, key } of own) {
     const previous = seen.get(key);
     if (previous !== undefined) {
       return Result.fail(
@@ -264,5 +255,5 @@ export const routes = (
     }
     seen.set(key, route);
   }
-  return Result.succeed(all.map(({ route }) => route));
+  return Result.succeed(own.map(({ route }) => route));
 };

@@ -413,6 +413,12 @@ Upstream: planned; no linked proposal verified.
 
 ### Label reflected HTTP routes
 
+Mounts no longer accept `api`. Route checks reserve mount prefixes and reject
+overlap. Each backend checks duplicates in its own routes and docs page; a
+Convex component checks its own declaration during codegen. Router endpoint
+labels still use each router's own API. Changeset: `mount-no-api.md`.
+Upstream: planned; no proposal submitted.
+
 Accept `{ api }` on application and component HTTP routers so completion logs and
 the dashboard show endpoint patterns such as `GET /users/:id` instead of a
 catch-all. Preserve Effect dispatch, native route precedence, and fallback labels,
