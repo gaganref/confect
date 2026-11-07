@@ -36,6 +36,7 @@ import type * as DataModel from "./DataModel.js";
 import type * as Handler from "./Handler.js";
 import * as ConvexConfigProvider from "./ConvexConfigProvider.js";
 import * as ObservabilityRuntime from "./internal/observability.js";
+import { withOptions } from "./internal/httpOptions.js";
 import * as ConvexLogger from "./ConvexLogger.js";
 import type * as MutationRunner from "./MutationRunner.js";
 import type * as QueryRunner from "./QueryRunner.js";
@@ -217,7 +218,7 @@ const makeWithLayer = <
   // a `Layer.unwrap` reading `Config`—resolves configuration through the
   // Convex-aware provider; merged so that request fibers—endpoint handlers
   // and middleware—do too.
-  const AppLayer = routes.pipe(
+  const AppLayer = withOptions(routes).pipe(
     Layer.provideMerge(
       observability === undefined
         ? ConvexLogger.layer
@@ -275,6 +276,7 @@ const makeWithLayer = <
   if (api !== undefined) {
     const matcher = FindMyWay.make<string>();
     const reflected: ReturnType<ConvexHttpRouter["getRoutes"]> = [];
+    const optionsPaths = new Map<FindMyWay.PathInput, string>();
     HttpApi.reflect(api, {
       onGroup: () => {},
       onEndpoint: ({ endpoint }) => {
@@ -292,8 +294,21 @@ const makeWithLayer = <
           matcher.on(method, path.slice(0, -2) as `/${string}`, endpoint.path);
         }
         reflected.push([endpoint.path, method, httpAction]);
+        optionsPaths.set(path, endpoint.path);
       },
     });
+    for (const [path, label] of optionsPaths) {
+      if (
+        reflected.some(
+          ([declared, method]) => declared === label && method === "OPTIONS",
+        )
+      )
+        continue;
+      matcher.on("OPTIONS", path, label);
+      if (path.endsWith("/*"))
+        matcher.on("OPTIONS", path.slice(0, -2) as `/${string}`, label);
+      reflected.push([label, "OPTIONS", httpAction]);
+    }
     reflected.sort(
       ([pathA, methodA], [pathB, methodB]) =>
         pathA.localeCompare(pathB) || methodA.localeCompare(methodB),

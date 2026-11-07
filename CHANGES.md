@@ -12,6 +12,13 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## OPTIONS middleware dispatch
+
+Route OPTIONS requests through the declared path's middleware before decoding.
+Preserve explicit OPTIONS handlers, component prefixes and route middleware.
+Reflect OPTIONS in Convex's route list so real backends dispatch it.
+Changeset: `route-options-middleware.md`. Upstream: planned; no proposal submitted.
+
 ## Schema bundle imports
 
 Serve Scalar CDN docs without importing Effect's inline Scalar module. Effect

@@ -21,6 +21,8 @@ import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
+import * as HttpApiMiddleware from "effect/http-api/HttpApiMiddleware";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpApiError from "effect/http-api/HttpApiError";
 
 const api = HttpApi.make("users").add(
@@ -57,8 +59,10 @@ describe("HttpRouter", () => {
   it("lists reflected endpoint methods and patterns without catch-all rows", () => {
     const router = ConfectHttpRouter.make(routes, { api });
     expect(labels(router)).toEqual([
+      ["OPTIONS", "/users"],
       ["POST", "/users"],
       ["GET", "/users/:id"],
+      ["OPTIONS", "/users/:id"],
     ]);
   });
 
@@ -106,8 +110,10 @@ describe("HttpRouter", () => {
     expect(labels(router)).toEqual([
       ["GET", "/users/42"],
       ["POST", "/users/*"],
+      ["OPTIONS", "/users"],
       ["POST", "/users"],
       ["GET", "/users/:id"],
+      ["OPTIONS", "/users/:id"],
     ]);
   });
 
@@ -134,8 +140,10 @@ it("labels component routes relative to the component, with the same reflected A
   );
   const router = ConfectHttpRouter.forSchema(schema)(routes, { api });
   expect(labels(router)).toEqual([
+    ["OPTIONS", "/users"],
     ["POST", "/users"],
     ["GET", "/users/:id"],
+    ["OPTIONS", "/users/:id"],
   ]);
   expect(matchLabel(router, "/users/42")).toEqual(["GET", "/users/:id"]);
   expect(matchLabel(router, "/nope")).toEqual(["GET", "/*"]);
@@ -184,7 +192,10 @@ it("labels prefixed wildcard routes at their base path and descendants", () => {
     ),
   );
   const router = ConfectHttpRouter.make(assetsRoutes, { api: assetsApi });
-  expect(labels(router)).toEqual([["GET", "/v1/assets/*"]]);
+  expect(labels(router)).toEqual([
+    ["GET", "/v1/assets/*"],
+    ["OPTIONS", "/v1/assets/*"],
+  ]);
   expect([
     matchLabel(router, "/v1/assets"),
     matchLabel(router, "/v1/assets/"),
@@ -512,4 +523,126 @@ it.effect("keeps ConvexLogger for HTTP without a runtime layer", () =>
       info.mockRestore();
     }
   }),
+);
+
+class RouteInfo extends Context.Service<
+  RouteInfo,
+  { readonly target: string }
+>()("@confect/server/test/HttpRouter.test/RouteInfo") {}
+class Guard extends HttpApiMiddleware.Service<Guard>()("Guard") {}
+
+const guardedApi = HttpApi.make("conflict").add(
+  HttpApiGroup.make("probe").add(
+    HttpApiEndpoint.post("run", "/probe", {
+      payload: Schema.Struct({ value: Schema.String }),
+      success: Schema.String,
+    })
+      .annotate(RouteInfo, { target: "probe:run" })
+      .middleware(Guard),
+  ),
+);
+
+it.effect.each([
+  { method: "POST", path: "/probe", expected: 401 },
+  { method: "OPTIONS", path: "/probe", expected: 204 },
+  { method: "OPTIONS", path: "/missing", expected: 404 },
+])(
+  "answers $method $path through middleware before decoding",
+  ({ method, path, expected }) =>
+    Effect.gen(function* () {
+      const guardedRoutes = HttpApiBuilder.layer(guardedApi).pipe(
+        Layer.provide(
+          HttpApiBuilder.group(guardedApi, "probe", (handlers) =>
+            handlers.handle("run", () => {
+              return Effect.die(
+                "The handler must not run for a refusal or preflight",
+              );
+            }),
+          ),
+        ),
+        Layer.provide(
+          Layer.succeed(Guard, (_next, { endpoint }) =>
+            Effect.gen(function* () {
+              const request = yield* HttpServerRequest.HttpServerRequest;
+              const info = Context.getUnsafe(endpoint.annotations, RouteInfo);
+              return HttpServerResponse.empty({
+                status:
+                  info.target !== "probe:run"
+                    ? 500
+                    : request.method === "OPTIONS"
+                      ? 204
+                      : 401,
+              });
+            }),
+          ),
+        ),
+      );
+      const router = ConfectHttpRouter.make(guardedRoutes, { api: guardedApi });
+      const t = convexTest(undefined, {
+        ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
+        "./mock-backend/fixtures/convex/http.ts": () =>
+          Promise.resolve({ default: router }),
+      });
+      const response = yield* Effect.promise(() =>
+        t.fetch(path, {
+          method,
+          headers: { "Content-Type": "application/json" },
+          ...(method === "POST" ? { body: '{"value":42}' } : {}),
+        }),
+      );
+      expect([
+        response.status,
+        yield* Effect.promise(() => response.text()),
+      ]).toEqual([expected, ""]);
+    }),
+);
+
+it.effect(
+  "selects preflight middleware by method and keeps explicit OPTIONS",
+  () =>
+    Effect.gen(function* () {
+      const scoped = (method: "GET" | "POST", status: number) =>
+        HttpRouter.add(method, "/shared/:id", Effect.die("handler ran")).pipe(
+          Layer.provide(
+            HttpRouter.middleware((next) =>
+              Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) =>
+                request.method === "OPTIONS"
+                  ? Effect.succeed(HttpServerResponse.empty({ status }))
+                  : next,
+              ),
+            ).layer,
+          ),
+        );
+      const optionsRoutes = Layer.mergeAll(
+        scoped("GET", 204),
+        scoped("POST", 202),
+        HttpRouter.add("GET", "/explicit", Effect.die("handler ran")),
+        HttpRouter.add(
+          "OPTIONS",
+          "/explicit",
+          HttpServerResponse.empty({ status: 203 }),
+        ),
+      );
+      const router = ConfectHttpRouter.make(optionsRoutes);
+      const t = convexTest(undefined, {
+        ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
+        "./mock-backend/fixtures/convex/http.ts": () =>
+          Promise.resolve({ default: router }),
+      });
+      for (const [path, method, status] of [
+        ["/shared/42", "GET", 204],
+        ["/shared/42", "POST", 202],
+        ["/shared/42", "DELETE", 404],
+        ["/explicit", "GET", 203],
+        ["/missing", "GET", 404],
+      ] as const) {
+        const response = yield* Effect.promise(() =>
+          t.fetch(path, {
+            method: "OPTIONS",
+            headers: { "Access-Control-Request-Method": method },
+          }),
+        );
+        expect(response.status).toBe(status);
+      }
+    }),
 );

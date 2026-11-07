@@ -62,6 +62,20 @@ export const layer = HttpApiBuilder.layer(Api).pipe(Layer.provide(ApiLive));
 
 `HttpApiBuilder.layer(Api)` registers the API's routes; `Layer.provide(ApiLive)` supplies its group handlers. Forgetting a group causes a compile-time error where you mount the layer.
 
+## OPTIONS requests
+
+A declared path accepts OPTIONS through the route's existing middleware.
+Middleware sees the original OPTIONS method and endpoint annotations. It can
+return 204 before payload decoding, without calling the endpoint handler.
+Middleware must answer the preflight itself. Calling its next effect continues
+the endpoint's normal decoding and handler.
+
+`Access-Control-Request-Method` selects the declared method at a shared path.
+An absent header selects the first registered method. An undeclared requested
+method or path returns 404. An explicit OPTIONS route takes precedence.
+This applies to application and component routers, with or without `{ api }`.
+Confect does not add CORS response headers. Configure those in middleware.
+
 ## API documentation
 
 `HttpApiScalar.layer` serves interactive docs, powered by Scalar and generated from your endpoint definitions and `OpenApi` annotations. Set `baseServerURL` to your deployment's [site URL](https://docs.convex.dev/production/environment-variables#system-environment-variables) so the docs page's "try it" requests target the right host. Confect installs a Convex-aware `ConfigProvider`, so `Config` reads (in layer construction, route handlers, and middleware alike) resolve against your [Convex environment variables](https://docs.convex.dev/production/environment-variables).
