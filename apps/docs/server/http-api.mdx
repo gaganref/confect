@@ -76,6 +76,36 @@ method or path returns 404. An explicit OPTIONS route takes precedence.
 This applies to application and component routers, with or without `{ api }`.
 Confect does not add CORS response headers. Configure those in middleware.
 
+## Count and share a request body
+
+Use `HttpRouter.withBodyLimit(effect, { maxBytes })` inside endpoint middleware,
+before verification and decoding. `maxBytes` is an Effect `ByteSize`, so each
+endpoint can carry its own cap in an annotation.
+
+```ts
+import { HttpRouter as ConfectHttpRouter } from "@confect/server";
+
+const GuardLive = Layer.succeed(Guard, (next, { endpoint }) =>
+  ConfectHttpRouter.withBodyLimit(
+    Effect.gen(function* () {
+      const request = yield* HttpServerRequest.HttpServerRequest;
+      const bytes = yield* request.arrayBuffer.pipe(Effect.orDie);
+      // Verify bytes here, then continue to payload decoding.
+      return yield* next;
+    }),
+    { maxBytes: Context.getUnsafe(endpoint.annotations, BodyLimit) },
+  ),
+);
+```
+
+Annotate each guarded endpoint with `BodyLimit` and an Effect `ByteSize` value,
+such as `ByteSize.mebibytes(1)`. `BodyLimit` is your `Context.Service` for that value.
+The helper returns 413 after reading at most the cap plus the chunk that crosses
+it. It rejects non-identity `Content-Encoding` with 415 before reading the body.
+Bytes, text and JSON decoding share the counted buffer. Read through the supplied
+request inside the wrapped effect. Read failures remain defects, and downstream
+middleware failures keep their existing error channel.
+
 ## API documentation
 
 `HttpApiScalar.layer` serves interactive docs, powered by Scalar and generated from your endpoint definitions and `OpenApi` annotations. Set `baseServerURL` to your deployment's [site URL](https://docs.convex.dev/production/environment-variables#system-environment-variables) so the docs page's "try it" requests target the right host. Confect installs a Convex-aware `ConfigProvider`, so `Config` reads (in layer construction, route handlers, and middleware alike) resolve against your [Convex environment variables](https://docs.convex.dev/production/environment-variables).
