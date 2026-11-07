@@ -41,6 +41,31 @@ layer(LocalBackend.layer, {
         expect(rows).toEqual([1, 2, 3, 4, 5]);
       }),
   );
+  it.effect("pages search results inside a component", () =>
+    Effect.gen(function* () {
+      const { client } = yield* LocalBackend.LocalBackend;
+      const run = `search${String(yield* Random.next).replaceAll(".", "")}`;
+      yield* Effect.promise(() =>
+        client.mutation(api.groups.components.seed, {
+          run,
+          counts: [1, 2, 3, 4, 5],
+        }),
+      );
+      const page = yield* Effect.promise(() =>
+        client.query(api.groups.pagination.searchPage, {
+          run,
+          cursor: null,
+          numItems: 2,
+        }),
+      );
+      expect(page.page).toHaveLength(2);
+      expect(page.page.every((count) => [1, 2, 3, 4, 5].includes(count))).toBe(
+        true,
+      );
+      expect(page.isDone).toBe(false);
+      expect(page.continueCursor).not.toBe("");
+    }),
+  );
   it.effect("updates a subscribed component page after an insert", () =>
     Effect.gen(function* () {
       const { client } = yield* LocalBackend.LocalBackend;
