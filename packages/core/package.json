@@ -29,6 +29,10 @@
       "types": "./dist/*.d.ts",
       "default": "./dist/*.js"
     },
+    "./RefInternal": {
+      "types": "./dist/RefInternal.d.ts",
+      "default": "./dist/RefInternal.js"
+    },
     "./package.json": "./package.json",
     "./internal/*": null
   },

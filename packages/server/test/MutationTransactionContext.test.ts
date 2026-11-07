@@ -1,6 +1,7 @@
 import * as Forwarding from "./internal/forwarding";
 import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import { FunctionSpec, Ref } from "@confect/core";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import { MutationTransactionContext as BarrelControls } from "@confect/server";
 import * as MutationTransactionContext from "@confect/server/MutationTransactionContext";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
@@ -66,12 +67,12 @@ describe("MutationTransactionContext", () => {
         expect(yield* query).toBe(2);
         expect(yield* mutation).toBe(3);
         expect(runQuery).toHaveBeenCalledWith(
-          Ref.getFunctionReference(queryRef),
+          getFunctionReference(queryRef),
           { count: "1" },
           queryOptions,
         );
         expect(runMutation).toHaveBeenCalledWith(
-          Ref.getFunctionReference(mutationRef),
+          getFunctionReference(mutationRef),
           { count: "1" },
           mutationOptions,
         );

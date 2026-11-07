@@ -1,4 +1,5 @@
 import { Ref } from "@confect/core";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import type { OptimisticLocalStore as ConvexOptimisticLocalStore } from "convex/browser";
 import * as Option from "effect/Option";
 
@@ -38,7 +39,7 @@ export const make = (
   convexLocalStore: ConvexOptimisticLocalStore,
 ): OptimisticLocalStore => ({
   getQuery: (queryRef, ...rest) => {
-    const functionReference = Ref.getFunctionReference(queryRef);
+    const functionReference = getFunctionReference(queryRef);
     const args = (rest[0] ?? {}) as Ref.Args<typeof queryRef>;
     const encodedArgs = Ref.encodeArgsSync(queryRef, args);
     const encoded = convexLocalStore.getQuery(functionReference, encodedArgs);
@@ -47,7 +48,7 @@ export const make = (
       : Option.some(Ref.decodeReturnsSync(queryRef, encoded));
   },
   getAllQueries: (queryRef) => {
-    const functionReference = Ref.getFunctionReference(queryRef);
+    const functionReference = getFunctionReference(queryRef);
     return convexLocalStore
       .getAllQueries(functionReference)
       .map(({ args, value }) => ({
@@ -59,7 +60,7 @@ export const make = (
       }));
   },
   setQuery: (queryRef, args, value) => {
-    const functionReference = Ref.getFunctionReference(queryRef);
+    const functionReference = getFunctionReference(queryRef);
     const encodedArgs = Ref.encodeArgsSync(queryRef, args);
     const encodedValue = Option.match(value, {
       onNone: () => undefined,
