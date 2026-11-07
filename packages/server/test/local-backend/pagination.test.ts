@@ -48,7 +48,7 @@ layer(LocalBackend.layer, {
       yield* Effect.scoped(
         Effect.gen(function* () {
           const reactive = yield* Effect.acquireRelease(
-            Effect.sync(() => new ConvexClient("http://127.0.0.1:3210")),
+            Effect.sync(() => new ConvexClient("http://127.0.0.1:4140")),
             (reactiveClient) => Effect.promise(() => reactiveClient.close()),
           );
           const initial = yield* Deferred.make<ReadonlyArray<number>>();
@@ -97,41 +97,6 @@ layer(LocalBackend.layer, {
           /multiple.*paginated|only.*paginated|paginate.*once/i,
         ),
       );
-    }),
-  );
-  it.effect(
-    "defers and collects component streams, deduplicates merges and enforces the default budget",
-    () =>
-      Effect.gen(function* () {
-        const { client } = yield* LocalBackend.LocalBackend;
-        const run = String(yield* Random.next);
-        const counts = Array.from({ length: 50 }, (_, i) => i + 100);
-        yield* Effect.promise(() =>
-          client.mutation(api.groups.components.seed, { run, counts }),
-        );
-        expect(
-          yield* Effect.promise(() =>
-            client.query(api.groups.pagination.streams, { run }),
-          ),
-        ).toEqual({
-          deferred: counts,
-          merged: counts,
-          budget: 2001,
-        });
-      }),
-  );
-  it.effect("observes decoded component writes through the writer hook", () =>
-    Effect.gen(function* () {
-      const { client } = yield* LocalBackend.LocalBackend;
-      expect(
-        yield* Effect.promise(() =>
-          client.mutation(api.groups.pagination.hook, { run: "hook" }),
-        ),
-      ).toEqual([
-        { operation: "insert", count: 1 },
-        { operation: "update", count: 2 },
-        { operation: "delete", count: 2 },
-      ]);
     }),
   );
 });

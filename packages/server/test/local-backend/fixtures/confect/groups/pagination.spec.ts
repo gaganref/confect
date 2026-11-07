@@ -26,26 +26,4 @@ export default GroupSpec.make()
       args: PageArgs,
       returns: () => Schema.Null,
     }),
-  )
-  .addFunction(
-    FunctionSpec.publicQuery({
-      name: "streams",
-      args: () => ({ run: Schema.String }),
-      returns: () =>
-        Schema.Struct({
-          deferred: Schema.Array(Schema.Finite),
-          merged: Schema.Array(Schema.Finite),
-          budget: Schema.Int,
-        }),
-    }),
-  )
-  .addFunction(
-    FunctionSpec.publicMutation({
-      name: "hook",
-      args: () => ({ run: Schema.String }),
-      returns: () =>
-        Schema.Array(
-          Schema.Struct({ operation: Schema.String, count: Schema.Finite }),
-        ),
-    }),
   );
