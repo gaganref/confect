@@ -350,7 +350,13 @@ boundaries while retaining a vanilla Convex wire API. Port upstream's component
 work to stable Effect and prove nested isolation, errors, pagination, env, crons,
 and storage on the supported backends.
 
-Changeset: `add-confect-components.md`.
+A component's generated services omit the raw `MutationCtx`, `QueryCtx` and
+`ActionCtx` imports and value/type exports. Use the typed database, runner,
+storage and scheduler services in component handlers. Host generation is
+unchanged. The server package still exports the raw tags for middleware;
+removing them from a downstream runtime context belongs to that middleware.
+
+Changesets: `add-confect-components.md`, `component-no-raw-ctx.md`.
 Upstream: port of [upstream #646](https://github.com/rjdellecese/confect/pull/646),
 which remains open; fork-specific follow-up submission is unrecorded.
 

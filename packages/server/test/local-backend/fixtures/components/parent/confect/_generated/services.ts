@@ -1,15 +1,12 @@
 import {
-  ActionCtx as ActionCtx_,
   ActionRunner as ActionRunner_,
   Auth as Auth_,
   type DataModel,
   DatabaseReader as DatabaseReader_,
   DatabaseWriter as DatabaseWriter_,
   ExecutionMetadata as ExecutionMetadata_,
-  MutationCtx as MutationCtx_,
   MutationRunner as MutationRunner_,
   MutationTransactionContext as MutationTransactionContext_,
-  QueryCtx as QueryCtx_,
   QueryRunner as QueryRunner_,
   QueryTransactionContext as QueryTransactionContext_,
   RequestMetadata as RequestMetadata_,
@@ -79,24 +76,3 @@ export type MutationRunner = typeof MutationRunner.Identifier;
 
 export const ActionRunner = ActionRunner_.ActionRunner;
 export type ActionRunner = typeof ActionRunner.Identifier;
-
-export const QueryCtx: QueryCtx_.QueryCtxTag<
-  DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>, typeof scope
-> = QueryCtx_.QueryCtx<
-  DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>, typeof scope
->();
-export type QueryCtx = typeof QueryCtx.Identifier;
-
-export const MutationCtx: MutationCtx_.MutationCtxTag<
-  DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>, typeof scope
-> = MutationCtx_.MutationCtx<
-  DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>, typeof scope
->();
-export type MutationCtx = typeof MutationCtx.Identifier;
-
-export const ActionCtx: ActionCtx_.ActionCtxTag<
-  DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>, typeof scope
-> = ActionCtx_.ActionCtx<
-  DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>, typeof scope
->();
-export type ActionCtx = typeof ActionCtx.Identifier;
