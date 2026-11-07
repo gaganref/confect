@@ -332,12 +332,19 @@ Compare compiled validators before creating Confect handles; equal validators
 cannot distinguish every codec or refinement. Preserve return and error codecs
 on references, include middleware errors, and decode declared errors by tag.
 
-Raise core's Convex peer floor to 1.46.0, the first release that exports the
-`FunctionReference_future` type `Callback.toFuture` returns. The fork shipped the
-import against a 1.39.0 floor; upstream 10.3.1's baseline consumer check, which
-installs the lowest allowed Convex, caught it.
+`Callback.handle` keeps its string-to-ref codec and carries its contract as lazy
+schema metadata. Schema compilation lowers the slot to `v.function` with the
+contract's encoded args and returns, including optional and nested slots.
+Contract and handle construction still build no argument or return schemas.
 
-Changeset: `add-component-callbacks.md`.
+Raise the shared core/server Convex peer floor to 1.49.0, the first release with
+`v.function`. Align workspace pins and baseline consumers so the lowest supported
+SDK exercises the emitted validators. The local test backend moves to
+`precompiled-2026-10-28-cccbade` to accept function validators during deployment.
+The earlier 1.46.0 floor covered the
+`FunctionReference_future` type used by `Callback.toFuture`.
+
+Changesets: `add-component-callbacks.md`, `callback-function-validator.md`.
 Upstream: planned; no linked proposal verified.
 
 ### Preserve component schema and ref types

@@ -420,6 +420,21 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
   );
 
   it.effect(
+    "rejects a malformed callback handle stored in a component table",
+    () =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        yield* Effect.promise(() =>
+          expect(
+            client.mutation(api.groups.callbacks.storeMalformed, {
+              run: "malformed-handle",
+            }),
+          ).rejects.toThrow(/function|handle/i),
+        );
+      }),
+  );
+
+  it.effect(
     "a component stores a host handle and calls it back across a redeploy",
     () =>
       Effect.gen(function* () {

@@ -157,12 +157,25 @@ describe("handle", () => {
     }),
   );
 
-  test("compiles to a string validator", () => {
+  test("compiles to the contract function validator", () => {
     expect(
       SchemaToValidator.compileArgsSchema(
         Schema.Struct({ onEvent: Callback.handle(OnEvent) }),
       ),
-    ).toEqual({ onEvent: v.string() });
+    ).toEqual({
+      onEvent: v.function({
+        fnType: "mutation",
+        args: {
+          run: v.string(),
+          status: v.union(
+            v.literal("queued"),
+            v.literal("sent"),
+            v.literal("bounced"),
+          ),
+        },
+        returns: v.string(),
+      }),
+    });
   });
 
   test("toFuture keeps the handle's reference", () => {

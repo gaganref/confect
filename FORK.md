@@ -36,7 +36,7 @@ checks and exact optional properties. Alchemy alone stays in the resolution pass
 The generated application retains its separate strict typecheck.
 The consumer uses Effect 4.0.6 to cover Scalar's dynamic inline-script import.
 After codegen, `node checkSchemaBundle.mjs` bundles its table schema with
-Convex 1.48's schema options, including splitting and name preservation. It
+Convex 1.49's schema options, including splitting and name preservation. It
 requires one JavaScript output with no static or dynamic imports and evaluates
 that output to check the table export. Run this against installed tarballs,
 without workspace source aliases. Confect's optional Scalar docs use a CDN-only
