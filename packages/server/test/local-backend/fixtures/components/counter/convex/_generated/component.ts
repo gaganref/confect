@@ -184,6 +184,38 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         Name
       >;
     };
+    pagination: {
+      hook: FunctionReference<
+        "mutation",
+        "internal",
+        { run: string },
+        Array<{ count: number; operation: string }>,
+        Name
+      >;
+      page: FunctionReference<
+        "query",
+        "internal",
+        { cursor: string | null; numItems: number; run: string },
+        {
+          continueCursor: string;
+          isDone: boolean;
+          page: Array<{
+            _creationTime: number;
+            _id: string;
+            count: string;
+            run: string;
+          }>;
+        },
+        Name
+      >;
+      streams: FunctionReference<
+        "query",
+        "internal",
+        { run: string },
+        { budget: number; deferred: Array<number>; merged: Array<number> },
+        Name
+      >;
+    };
     reserved: {
       echo: FunctionReference<
         "mutation",

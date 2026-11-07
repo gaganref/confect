@@ -96,7 +96,7 @@ const make = Effect.fnUntraced(function* (options: {
       "--local-site-port",
       String(options.port + 1),
       "--local-backend-version",
-      "precompiled-2026-10-06-a3538c6",
+      "precompiled-2026-10-28-cccbade",
     ],
     {
       cwd: fixturesDir,

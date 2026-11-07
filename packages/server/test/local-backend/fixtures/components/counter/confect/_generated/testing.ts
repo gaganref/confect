@@ -7,6 +7,7 @@ export default { httpMounts: [], schema, convexSchema, modules: { "_generated/te
 "crons.ts": () => import("../../convex/crons.js"),
 "deliveries.ts": () => import("../../convex/deliveries.js"),
 "http.ts": () => import("../../convex/http.js"),
+"pagination.ts": () => import("../../convex/pagination.js"),
 "reserved.ts": () => import("../../convex/reserved.js"),
 "schema.ts": () => import("../../convex/schema.js"),
 }, components: {} };
