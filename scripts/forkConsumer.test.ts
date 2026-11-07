@@ -30,6 +30,7 @@ test("pins all eight public aliases to the requested fork build", () => {
       react: "19.3.0",
       convex: "1.48.0",
       "convex-test": "0.0.65",
+      "counter-kit": "link:./kits/counter-kit",
       effect: "4.0.6",
       "@effect/platform-node": "4.0.4",
     },
@@ -150,6 +151,9 @@ test("writes a declared host, mounted component and callback consumer", () =>
         "confect/auth.ts",
         "confect/http.ts",
         "confect/component.ts",
+        "kits/counter-kit/package.json",
+        "kits/counter-kit/convex.config.ts",
+        "kits/counter-kit/testing.ts",
         "components/counter/confect/env.ts",
         "components/counter/confect/app.ts",
         "components/counter/confect/api.ts",
@@ -164,6 +168,8 @@ test("writes a declared host, mounted component and callback consumer", () =>
       }
       for (const [file, contract] of [
         ["confect/app.ts", 'httpPrefix: "/counter"'],
+        ["confect/app.ts", 'from "counter-kit/convex.config.js"'],
+        ["confect/app.ts", "kitted: App.mount(counterKit)"],
         ["confect/component.ts", "Component.bind"],
         ["components/counter/confect/callbacks.ts", "Callback.mutation"],
         ["confect/hello.impl.ts", "Callback.create"],
