@@ -48,7 +48,7 @@ layer(LocalBackend.layer, {
       yield* Effect.scoped(
         Effect.gen(function* () {
           const reactive = yield* Effect.acquireRelease(
-            Effect.sync(() => new ConvexClient("http://127.0.0.1:4140")),
+            Effect.sync(() => new ConvexClient("http://127.0.0.1:3210")),
             (reactiveClient) => Effect.promise(() => reactiveClient.close()),
           );
           const initial = yield* Deferred.make<ReadonlyArray<number>>();
