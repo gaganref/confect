@@ -784,3 +784,18 @@ it.effect("loads section files before the impl and the HTTP router", () =>
     ]);
   }),
 );
+
+it.effect("keeps raw ctx imports and tags in host services", () =>
+  Effect.gen(function* () {
+    const contents = yield* templates.services({
+      schemaImportPath: "./schema",
+    });
+    for (const name of ["MutationCtx", "QueryCtx", "ActionCtx"]) {
+      expect(contents).toContain(`${name} as ${name}_,`);
+      expect(contents).toContain(`export const ${name}: ${name}_.${name}Tag<`);
+      expect(contents).toContain(
+        `export type ${name} = typeof ${name}.Identifier;`,
+      );
+    }
+  }),
+);
