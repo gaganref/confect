@@ -132,6 +132,10 @@ Upstream: fork only.
 
 ## Package compatibility
 
+### Require Convex 1.49
+
+Raise the Convex peer floor to 1.49.0. Workspace and baseline consumer pins use the same release. Local backend tests use `precompiled-2026-10-28-cccbade`. Changeset: `convex-peer-floor.md`. Upstream: planned; no proposal submitted.
+
 ### Bound the supported crypto API
 
 Cap the package set's Effect peers below 4.1, and cap the Node platform
