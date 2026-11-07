@@ -99,13 +99,12 @@ export default Env.make("consumer", {
 
 ```ts confect/app.ts
 import { App } from "@confect/core";
-import { CounterApi } from "../components/counter/confect/api";
 import counter from "../components/counter/convex/convex.config";
 import env from "./env";
 export default App.make({
   env,
   mounts: {
-    counter: App.mount(counter, { httpPrefix: "/counter", api: CounterApi }),
+    counter: App.mount(counter, { httpPrefix: "/counter" }),
   },
 });
 ```
@@ -208,10 +207,10 @@ The host serves `/health`. The counter declares `/health` relative to its instal
 Codegen calls `Http.routes(app, http)` to validate the route inventory. It returns a `Result` failure for:
 
 - `RouteUnderMountPrefix` when a host endpoint or Scalar docs page is at or under a mount prefix, regardless of method. Convex would otherwise let it shadow the component.
-- `DuplicateRoute` when method and path repeat, including declared parameter names normalised to the same placeholder. Pass the mounted component's `api` to include its endpoints in this check.
-- `OverlappingMountPrefixes` when mount prefixes overlap on path boundaries. This check and mount-prefix reservation run even without `http.ts` or a mounted `api`.
+- `DuplicateRoute` when method and path repeat, including declared parameter names normalised to the same placeholder. Each Convex component checks its own routes during codegen.
+- `OverlappingMountPrefixes` when mount prefixes overlap on path boundaries. This check and mount-prefix reservation run even without `http.ts`.
 
-These checks compare declared paths; they are not a general proof that all dynamic route patterns are disjoint. `api` requires `httpPrefix` in `App.mount`.
+These checks compare declared paths; they are not a general proof that all dynamic route patterns are disjoint.
 
 ## Contracts and callbacks
 

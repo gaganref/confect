@@ -419,6 +419,13 @@ catch-all. Preserve Effect dispatch, native route precedence, and fallback label
 including empty APIs and prefixed component mounts.
 
 Changeset: `label-http-api-routes.md`.
+
+Mounts no longer accept `api`. Route checks reserve mount prefixes and reject
+overlap. Each backend checks duplicates in its own routes and docs page; a
+Convex component checks its own declaration during codegen. Router endpoint
+labels still use each router's own API.
+
+Changeset: `mount-no-api.md`.
 Upstream: planned; no linked proposal verified.
 
 ## Alchemy deployment

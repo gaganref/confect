@@ -70,10 +70,7 @@ export const make = <
 export const isHttp = (u: unknown): u is Any =>
   Predicate.hasProperty(u, TypeId) && u[TypeId] === TypeId;
 
-export type Owner =
-  | { readonly kind: "app" }
-  | { readonly kind: "docs" }
-  | { readonly kind: "mount"; readonly mount: string };
+export type Owner = { readonly kind: "app" } | { readonly kind: "docs" };
 
 export interface Route {
   readonly method: string;
@@ -121,8 +118,7 @@ export type RouteError =
   | DuplicateRoute
   | OverlappingMountPrefixes;
 
-const ownerLabel = (owner: Owner): string =>
-  owner.kind === "mount" ? `mount "${owner.mount}"` : owner.kind;
+const ownerLabel = (owner: Owner): string => owner.kind;
 
 const trimSlash = (prefix: string): string =>
   prefix.length > 1 && prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
@@ -157,14 +153,10 @@ interface KeyedRoute {
   readonly key: string;
 }
 
-const apiRoutes = (
-  api: App.Api,
-  prefix: string,
-  owner: Owner,
-): ReadonlyArray<KeyedRoute> =>
+const apiRoutes = (api: App.Api, owner: Owner): ReadonlyArray<KeyedRoute> =>
   Object.values<HttpApiGroup.Top>(api.groups).flatMap((group) =>
     Object.values(group.endpoints).map((endpoint) => {
-      const path = prefix + endpoint.path;
+      const path = endpoint.path;
       const declared = paramNames(endpoint.params);
       return {
         route: { method: endpoint.method, path, owner },
@@ -174,20 +166,19 @@ const apiRoutes = (
   );
 
 /**
- * Every HTTP route the backend serves: the app's api, its docs page and each
- * mount's api under its prefix. Fails when an app route or the docs page is at
- * or under a mount's prefix (Convex accepts that and lets the app route
- * silently shadow the component's), when two routes share a method and path, or
- * when two mount prefixes overlap.
+ * The backend's own HTTP routes and docs page. Fails when a route is at or
+ * under a mount's prefix (Convex accepts that and lets the app route silently
+ * shadow the component's), when two routes share a method and path, or when two
+ * mount prefixes overlap.
  */
 export const routes = (
   app: App.Any,
   http?: Any,
 ): Result.Result<ReadonlyArray<Route>, RouteError> => {
-  const mounts = App.mounts(app).flatMap(({ name, httpPrefix, api }) =>
+  const mounts = App.mounts(app).flatMap(({ name, httpPrefix }) =>
     httpPrefix === undefined
       ? []
-      : [{ name, httpPrefix: trimSlash(httpPrefix), api }],
+      : [{ name, httpPrefix: trimSlash(httpPrefix) }],
   );
 
   for (const [index, first] of mounts.entries()) {
@@ -210,7 +201,7 @@ export const routes = (
     http === undefined
       ? []
       : [
-          ...apiRoutes(http.api, "", { kind: "app" }),
+          ...apiRoutes(http.api, { kind: "app" }),
           ...(http.docs === undefined
             ? []
             : [
@@ -241,16 +232,8 @@ export const routes = (
     }
   }
 
-  const all = [
-    ...own,
-    ...mounts.flatMap(({ name, httpPrefix, api }) =>
-      api === undefined
-        ? []
-        : apiRoutes(api, httpPrefix, { kind: "mount", mount: name }),
-    ),
-  ];
   const seen = new Map<string, Route>();
-  for (const { route, key } of all) {
+  for (const { route, key } of own) {
     const previous = seen.get(key);
     if (previous !== undefined) {
       return Result.fail(
@@ -264,5 +247,5 @@ export const routes = (
     }
     seen.set(key, route);
   }
-  return Result.succeed(all.map(({ route }) => route));
+  return Result.succeed(own.map(({ route }) => route));
 };
