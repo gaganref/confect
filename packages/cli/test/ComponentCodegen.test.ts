@@ -1,3 +1,4 @@
+import { fileURLToPath } from "node:url";
 import { assert, expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
@@ -17,6 +18,10 @@ import { ConvexDirectory } from "@confect/cli/ConvexDirectory";
 import { renderCodegenError } from "@confect/cli/CodegenError";
 import * as DirectoryOptions from "@confect/cli/DirectoryOptions";
 import * as Project from "./integration/Project";
+import * as Stream from "effect/Stream";
+import * as Config from "effect/Config";
+import * as ChildProcess from "effect/process/ChildProcess";
+import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 
 const fixture = `${import.meta.dirname}/fixtures/authored-component`;
 const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
@@ -71,7 +76,9 @@ it.effect(
         "StorageActionWriter_.StorageActionWriter.forScope<typeof scope>()",
       );
       expect(services).toContain("Scheduler_.forScope<typeof scope>()");
-      expect(services).toContain("MutationCtx_.MutationCtx<");
+      for (const name of ["MutationCtx", "QueryCtx", "ActionCtx"]) {
+        expect(services).not.toContain(name);
+      }
       const contract = yield* fs.readFileString(
         `${directory}/confect/_generated/component.ts`,
       );
@@ -81,6 +88,103 @@ it.effect(
         yield* Project.writtenFiles(codegenHandler.pipe(Effect.provide(dirs))),
       ).toEqual([]);
     }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+it.effect.each([false, true])(
+  "raw ctx yields fail only for generated component handlers (component=%s)",
+  (component) =>
+    Effect.gen(function* () {
+      const project = yield* Project.make;
+      const spawner = yield* ChildProcessSpawner;
+      if (component) {
+        yield* project.write(
+          "confect/app.ts",
+          `import { App, Env } from "@confect/core";
+export default App.make({ kind: "component", env: Env.make("counter", {}) });
+`,
+        );
+        yield* project.write(
+          "package.json",
+          '{"name":"@confect-fixtures/raw-ctx","type":"module"}',
+        );
+        yield* codegenHandler.pipe(
+          Effect.provide(
+            DirectoryOptions.layer({
+              componentDir: Option.some(`${project.root}/convex`),
+            }),
+          ),
+        );
+      } else {
+        yield* codegenHandler.pipe(project.provide);
+      }
+      yield* project.write(
+        "rawCtx.ts",
+        `import * as Effect from "effect/Effect";
+import * as services from "./confect/_generated/services";
+import { MutationCtx, QueryCtx, ActionCtx } from "@confect/server";
+
+export const mutationHandler = () => Effect.gen(function* () { yield* services.MutationCtx; });
+export const queryHandler = () => Effect.gen(function* () { yield* services.QueryCtx; });
+export const actionHandler = () => Effect.gen(function* () { yield* services.ActionCtx; });
+export const serverTags = [MutationCtx.MutationCtx(), QueryCtx.QueryCtx(), ActionCtx.ActionCtx()];
+`,
+      );
+      yield* project.write(
+        "tsconfig.json",
+        `{
+          "compilerOptions": {
+            "strict": true,
+            "noEmit": true,
+            "skipLibCheck": true,
+            "exactOptionalPropertyTypes": true,
+            "module": "ESNext",
+            "moduleResolution": "Bundler",
+            "target": "ESNext"
+          },
+          "include": ["rawCtx.ts"]
+        }`,
+      );
+      const compilerPath = yield* Config.String("CONFECT_TEST_TSC").pipe(
+        Config.withDefault(
+          fileURLToPath(
+            new URL("bin/tsc", import.meta.resolve("typescript/package.json")),
+          ),
+        ),
+      );
+      const compiler = yield* spawner.spawn(
+        ChildProcess.make(process.execPath, [
+          compilerPath,
+          "-p",
+          project.root,
+          "--pretty",
+          "false",
+        ]),
+      );
+      const output = yield* compiler.all.pipe(
+        Stream.decodeText(),
+        Stream.mkString,
+      );
+      expect((yield* compiler.exitCode) === 0, output).toBe(!component);
+      expect(output.match(/error TS/g) ?? [], output).toHaveLength(
+        component ? 3 : 0,
+      );
+      expect(
+        [
+          ...output.matchAll(
+            /rawCtx\.ts\((\d+),\d+\): error TS(\d+): Property '(\w+)'/g,
+          ),
+        ].map((match) => match.slice(1)),
+      ).toEqual(
+        component
+          ? [
+              ["5", "2339", "MutationCtx"],
+              ["6", "2339", "QueryCtx"],
+              ["7", "2339", "ActionCtx"],
+            ]
+          : [],
+      );
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { timeout: 30000 },
 );
 
 it.effect(
