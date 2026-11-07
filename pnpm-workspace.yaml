@@ -68,7 +68,7 @@ minimumReleaseAgeExclude:
 # The published 4.0 range caps live in the eight package manifests. Remove them when Alchemy ships a release without
 # `effect/Crypto` and the fork's call sites (cli Watcher and WatchBuild; alchemy FileLock, LocalBackend and PushLock) move.
 overrides:
-  convex: 1.48.0
+  convex: 1.49.0
   effect: 4.0.4
   happy-dom: 20.14.5
   react: 19.3.0

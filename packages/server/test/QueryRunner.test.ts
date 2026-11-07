@@ -1,4 +1,5 @@
 import { FunctionSpec, Ref } from "@confect/core";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import * as QueryRunner from "@confect/server/QueryRunner";
 import * as QueryTransactionContext from "@confect/server/QueryTransactionContext";
 import * as MutationTransactionContext from "@confect/server/MutationTransactionContext";
@@ -42,7 +43,7 @@ describe("QueryRunner", () => {
         expect(yield* operation).toBe(2);
         expect(yield* operation).toBe(2);
         expect(native).toHaveBeenCalledTimes(2);
-        expect(native).toHaveBeenCalledWith(Ref.getFunctionReference(ref), {
+        expect(native).toHaveBeenCalledWith(getFunctionReference(ref), {
           count: "1",
         });
         expect(args).toEqual({ count: 1 });
@@ -68,12 +69,12 @@ describe("QueryRunner", () => {
         expect(yield* explicit).toBe("ok");
         expect(native).toHaveBeenNthCalledWith(
           1,
-          Ref.getFunctionReference(emptyRef),
+          getFunctionReference(emptyRef),
           {},
         );
         expect(native).toHaveBeenNthCalledWith(
           2,
-          Ref.getFunctionReference(emptyRef),
+          getFunctionReference(emptyRef),
           {},
         );
       }).pipe(Effect.provide(QueryRunner.layer(native)));

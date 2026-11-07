@@ -1,4 +1,5 @@
 import * as Ref from "@confect/core/Ref";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import type {
   DefaultFunctionArgs,
   GenericActionCtx,
@@ -142,7 +143,7 @@ export const encodeCall = <R extends Ref.Any>(
       Schema.decodeUnknownEffect(Schema.Record(Schema.String, Schema.Unknown)),
     ),
     Effect.map((encoded) => ({
-      reference: Ref.getFunctionReference(ref),
+      reference: getFunctionReference(ref),
       args: encoded,
     })),
     Effect.orDie,
