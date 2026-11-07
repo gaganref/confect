@@ -161,6 +161,35 @@ export const api: {
       string | null
     >;
   };
+  pagination: {
+    hook: FunctionReference<
+      "mutation",
+      "public",
+      { run: string },
+      Array<{ count: number; operation: string }>
+    >;
+    page: FunctionReference<
+      "query",
+      "public",
+      { cursor: string | null; numItems: number; run: string },
+      {
+        continueCursor: string;
+        isDone: boolean;
+        page: Array<{
+          _creationTime: number;
+          _id: Id<"counters">;
+          count: string;
+          run: string;
+        }>;
+      }
+    >;
+    streams: FunctionReference<
+      "query",
+      "public",
+      { run: string },
+      { budget: number; deferred: Array<number>; merged: Array<number> }
+    >;
+  };
   reserved: {
     echo: FunctionReference<
       "mutation",

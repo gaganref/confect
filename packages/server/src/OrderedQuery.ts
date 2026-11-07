@@ -40,14 +40,13 @@ export type OrderedQuery<
   >;
   readonly stream: () => Stream.Stream<Doc, Document.DocumentDecodeError>;
   /**
-   * Native pagination is application-only. Use `QueryStream.paginate` for
-   * component index queries.
+   * Native pagination works in applications and components. A query may call
+   * `.paginate()` once across the host and every component query it calls. A
+   * second call throws. Use `QueryStream.paginate` for another index read.
    */
   readonly paginate: {
     readonly app: NativePaginate<TableInfo_, Doc>;
-    readonly component: {
-      readonly "Native pagination is unavailable in components. Use QueryStream.paginate for index queries.": never;
-    };
+    readonly component: NativePaginate<TableInfo_, Doc>;
   }[TargetKind];
 };
 

@@ -1,0 +1,137 @@
+import { expect, layer } from "@effect/vitest";
+import { ConvexClient } from "convex/browser";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Random from "effect/Random";
+import * as Deferred from "effect/Deferred";
+import { api } from "./fixtures/convex/_generated/api";
+import * as LocalBackend from "./LocalBackend";
+
+layer(LocalBackend.layer, {
+  timeout: "120 seconds",
+  excludeTestServices: true,
+})("Component pagination", (it) => {
+  it.effect(
+    "pages a component through its host to the end without gaps or repeats",
+    () =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        const run = String(yield* Random.next);
+        yield* Effect.promise(() =>
+          client.mutation(api.groups.components.seed, {
+            run,
+            counts: [1, 2, 3, 4, 5],
+          }),
+        );
+        const rows: number[] = [];
+        let cursor: string | null = null;
+        let done = false;
+        while (!done) {
+          const page = yield* Effect.promise(() =>
+            client.query(api.groups.pagination.page, {
+              run,
+              cursor,
+              numItems: 2,
+            }),
+          );
+          rows.push(...page.page);
+          cursor = page.continueCursor;
+          done = page.isDone;
+        }
+        expect(rows).toEqual([1, 2, 3, 4, 5]);
+      }),
+  );
+  it.effect("updates a subscribed component page after an insert", () =>
+    Effect.gen(function* () {
+      const { client } = yield* LocalBackend.LocalBackend;
+      const run = String(yield* Random.next);
+      yield* Effect.scoped(
+        Effect.gen(function* () {
+          const reactive = yield* Effect.acquireRelease(
+            Effect.sync(() => new ConvexClient("http://127.0.0.1:3210")),
+            (reactiveClient) => Effect.promise(() => reactiveClient.close()),
+          );
+          const initial = yield* Deferred.make<ReadonlyArray<number>>();
+          const updated = yield* Deferred.make<ReadonlyArray<number>>();
+          const complete = Effect.runSyncWith(yield* Effect.context<never>());
+          let first = true;
+          yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              reactive.onUpdate(
+                api.groups.pagination.page,
+                { run, cursor: null, numItems: 10 },
+                (page) => {
+                  complete(
+                    Deferred.succeed(first ? initial : updated, page.page),
+                  );
+                  first = false;
+                },
+                (error) => {
+                  complete(Deferred.done(initial, Exit.die(error)));
+                  complete(Deferred.done(updated, Exit.die(error)));
+                },
+              ),
+            ),
+            (stop) => Effect.sync(stop),
+          );
+          expect(yield* Deferred.await(initial)).toEqual([]);
+          yield* Effect.promise(() =>
+            client.mutation(api.groups.components.seed, { run, counts: [7] }),
+          );
+          expect(yield* Deferred.await(updated)).toEqual([7]);
+        }).pipe(Effect.timeout("10 seconds")),
+      );
+    }),
+  );
+  it.effect("refuses a second native page across the host and component", () =>
+    Effect.gen(function* () {
+      const { client } = yield* LocalBackend.LocalBackend;
+      yield* Effect.promise(() =>
+        expect(
+          client.query(api.groups.pagination.twice, {
+            run: "twice",
+            cursor: null,
+            numItems: 1,
+          }),
+        ).rejects.toThrow(
+          /multiple.*paginated|only.*paginated|paginate.*once/i,
+        ),
+      );
+    }),
+  );
+  it.effect(
+    "defers and collects component streams, deduplicates merges and enforces the default budget",
+    () =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        const run = String(yield* Random.next);
+        const counts = Array.from({ length: 50 }, (_, i) => i + 100);
+        yield* Effect.promise(() =>
+          client.mutation(api.groups.components.seed, { run, counts }),
+        );
+        expect(
+          yield* Effect.promise(() =>
+            client.query(api.groups.pagination.streams, { run }),
+          ),
+        ).toEqual({
+          deferred: counts,
+          merged: counts,
+          budget: 2001,
+        });
+      }),
+  );
+  it.effect("observes decoded component writes through the writer hook", () =>
+    Effect.gen(function* () {
+      const { client } = yield* LocalBackend.LocalBackend;
+      expect(
+        yield* Effect.promise(() =>
+          client.mutation(api.groups.pagination.hook, { run: "hook" }),
+        ),
+      ).toEqual([
+        { operation: "insert", count: 1 },
+        { operation: "update", count: 2 },
+        { operation: "delete", count: 2 },
+      ]);
+    }),
+  );
+});
