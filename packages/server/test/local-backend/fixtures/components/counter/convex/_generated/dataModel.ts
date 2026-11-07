@@ -46,7 +46,11 @@ export type DataModel = {
   };
   deliveries: {
     document: {
-      onEvent: string;
+      onEvent: import("convex/server").FunctionHandle_future<
+        "mutation",
+        { run: string; status: "queued" | "sent" | "delivered" | "bounced" },
+        null
+      >;
       run: string;
       status: "queued" | "sent" | "delivered" | "bounced";
       _id: Id<"deliveries">;
