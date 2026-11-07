@@ -5,7 +5,7 @@
  * that string→URL decode succeeds in the isolate.
  */
 
-import { Ref } from "@confect/core";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import { expect, layer } from "@effect/vitest";
 import type { GenericId } from "convex/values";
@@ -31,14 +31,20 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
       const storage = refs.public.groups.storage;
       const text = "stored through the unified service";
       const storageId = yield* Effect.promise(() =>
-        client.action(Ref.getFunctionReference(storage.store), { text }),
+        client.action(getFunctionReference(storage.store), {
+          text,
+        }),
       );
       const contents = yield* Effect.promise(() =>
-        client.action(Ref.getFunctionReference(storage.get), { storageId }),
+        client.action(getFunctionReference(storage.get), {
+          storageId,
+        }),
       );
       expect(contents).toBe(text);
       const url = yield* Effect.promise(() =>
-        client.query(Ref.getFunctionReference(storage.getUrl), { storageId }),
+        client.query(getFunctionReference(storage.getUrl), {
+          storageId,
+        }),
       );
       expect(new URL(url).pathname).toContain("/api/storage/");
       expect(
@@ -49,19 +55,23 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
       ).toBe(text);
       expect(
         yield* Effect.promise(() =>
-          client.mutation(Ref.getFunctionReference(storage.deleteBlob), {
+          client.mutation(getFunctionReference(storage.deleteBlob), {
             storageId,
           }),
         ),
       ).toBeNull();
       yield* Effect.promise(() =>
         expect(
-          client.query(Ref.getFunctionReference(storage.getUrl), { storageId }),
+          client.query(getFunctionReference(storage.getUrl), {
+            storageId,
+          }),
         ).rejects.toThrow(/BlobNotFoundError/),
       );
       yield* Effect.promise(() =>
         expect(
-          client.action(Ref.getFunctionReference(storage.get), { storageId }),
+          client.action(getFunctionReference(storage.get), {
+            storageId,
+          }),
         ).rejects.toThrow(/BlobNotFoundError/),
       );
     }),
@@ -75,9 +85,7 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
 
         const uploadUrl = yield* Effect.promise(() =>
           client.mutation(
-            Ref.getFunctionReference(
-              refs.public.groups.storage.generateUploadUrl,
-            ),
+            getFunctionReference(refs.public.groups.storage.generateUploadUrl),
             {},
           ),
         );
@@ -95,7 +103,7 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
 
         const blobUrl = yield* Effect.promise(() =>
           client.query(
-            Ref.getFunctionReference(refs.public.groups.storage.getUrl),
+            getFunctionReference(refs.public.groups.storage.getUrl),
             { storageId: storageId as GenericId<"_storage"> },
           ),
         );

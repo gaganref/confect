@@ -12,7 +12,8 @@ import { Rejected as CounterRejected } from "../local-backend/fixtures/component
 import localConvexSchema from "../local-backend/fixtures/confect/_generated/convexSchema";
 import localRefs from "../local-backend/fixtures/confect/_generated/refs";
 import localSchema from "../local-backend/fixtures/confect/_generated/schema";
-import { Ref } from "@confect/core";
+import type { Ref } from "@confect/core";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import { Component } from "@confect/core";
 import {
   Auth,
@@ -105,7 +106,7 @@ it.effect(
         ),
       );
       const componentToken = yield* Effect.promise(() =>
-        t.mutation(Ref.getFunctionReference(mounts.first.authoring.mint), {
+        t.mutation(getFunctionReference(mounts.first.authoring.mint), {
           expiresInSeconds: 60,
         }),
       );
@@ -177,7 +178,7 @@ it.effect(
       }
       yield* Effect.promise(() =>
         expect(
-          t.mutation(Ref.getFunctionReference(mounts.first.authoring.mint), {
+          t.mutation(getFunctionReference(mounts.first.authoring.mint), {
             expiresInSeconds: 3601,
           }),
         ).rejects.toThrow("3600"),

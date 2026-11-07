@@ -1,4 +1,5 @@
 import * as Ref from "@confect/core/Ref";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import * as Effect from "effect/Effect";
 import * as Queue from "effect/Queue";
 import * as Result from "effect/Result";
@@ -151,7 +152,7 @@ export const make = (address: string, convexClient: Transport) => {
       ReactiveQueryError<Query>
     >;
     const args = (rest[0] ?? {}) as Ref.Args<Query>;
-    const functionReference = Ref.getFunctionReference(ref);
+    const functionReference = getFunctionReference(ref);
     const onError = Ref.decodeErrorOrElse(ref, mapUnknownError);
 
     return Stream.unwrap(

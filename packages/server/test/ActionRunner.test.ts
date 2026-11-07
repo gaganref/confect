@@ -1,6 +1,7 @@
 import * as Forwarding from "./internal/forwarding";
 import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import { FunctionSpec, Ref } from "@confect/core";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import * as ActionRunner from "@confect/server/ActionRunner";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import { ConvexError } from "convex/values";
@@ -40,7 +41,7 @@ describe("ActionRunner", () => {
         expect(yield* operation).toBe(2);
         expect(yield* operation).toBe(2);
         expect(native).toHaveBeenCalledTimes(2);
-        expect(native).toHaveBeenCalledWith(Ref.getFunctionReference(ref), {
+        expect(native).toHaveBeenCalledWith(getFunctionReference(ref), {
           count: "1",
         });
         expect(args).toEqual({ count: 1 });
@@ -55,10 +56,7 @@ describe("ActionRunner", () => {
       return Effect.gen(function* () {
         const runner = yield* ActionRunner.ActionRunner;
         expect(yield* runner.runAction(emptyRef)).toBe("ok");
-        expect(native).toHaveBeenCalledWith(
-          Ref.getFunctionReference(emptyRef),
-          {},
-        );
+        expect(native).toHaveBeenCalledWith(getFunctionReference(emptyRef), {});
         const check = () => {
           expectTypeOf(
             Ref.make("notes", FunctionSpec.publicQuery(definition)),
