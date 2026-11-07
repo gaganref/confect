@@ -134,7 +134,7 @@ Upstream: fork only.
 
 ### Require Convex 1.49
 
-Raise the Convex peer floor to 1.49.0. Workspace and baseline consumer pins use the same release. Local backend tests use `precompiled-2026-10-28-cccbade`. Changeset: `convex-peer-floor.md`. Upstream: planned; no proposal submitted.
+Raise the Convex peer floor to 1.49.0. Workspace and baseline consumer pins use the same release. Local backend tests and new Alchemy local deployments use `precompiled-2026-10-28-cccbade`. Existing local deployments keep their backend release. Changesets: `convex-peer-floor.md`, `alchemy-convex-1-49.md`. Upstream: planned; no proposal submitted.
 
 ### Bound the supported crypto API
 

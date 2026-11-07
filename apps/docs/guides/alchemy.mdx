@@ -168,10 +168,12 @@ pnpm alchemy dev
 
 Under `alchemy dev`, `Convex.providers()` resolves each `Convex` resource to a local implementation. Your stack definition does not change, and no access token or deploy key is used:
 
-- `Convex.Deployment` downloads the Convex backend release `precompiled-2026-10-06-a3538c6` into the Convex CLI's binary cache and runs it on `127.0.0.1`. The deployment's `url` points at the local backend.
+- `Convex.Deployment` downloads the Convex backend release `precompiled-2026-10-28-cccbade` into the Convex CLI's binary cache and runs it on `127.0.0.1`. The deployment's `url` points at the local backend.
 - `Convex.DeployKey` returns the local backend's admin key. It grants full access to that backend whatever `allowedActions` you request.
 - `Convex.Project` returns a local placeholder and does not contact Convex.
 - `Convex.EnvironmentVariables`, `Convex.Code`, and `Confect.Backend` set variables and push code to the local backend, in the same order as in the cloud.
+
+An existing local deployment keeps its old backend and must be recreated to get Convex 1.49 support.
 
 Values your stack reads with `Config`, such as `CONVEX_TEAM_ID`, must still resolve in development. Give them a development default or set them in your shell.
 
