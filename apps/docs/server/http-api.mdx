@@ -83,8 +83,10 @@ before verification and decoding. `maxBytes` is an Effect `ByteSize`, so each
 endpoint can carry its own cap in an annotation.
 
 ```ts
+import { HttpRouter as ConfectHttpRouter } from "@confect/server";
+
 const GuardLive = Layer.succeed(Guard, (next, { endpoint }) =>
-  HttpRouter.withBodyLimit(
+  ConfectHttpRouter.withBodyLimit(
     Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest;
       const bytes = yield* request.arrayBuffer.pipe(Effect.orDie);
