@@ -1,4 +1,10 @@
-import { FunctionImpl, GroupImpl, QueryStream } from "@confect/server";
+import {
+  FunctionImpl,
+  GroupImpl,
+  QueryStream,
+  QueryCtx,
+  type DataModel,
+} from "@confect/server";
 import * as DateTime from "effect/DateTime";
 import * as Config from "effect/Config";
 import * as Duration from "effect/Duration";
@@ -9,11 +15,11 @@ import * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
 import schema from "./_generated/schema";
 import refs from "./_generated/refs";
+import type { scope } from "./_generated/id";
 import {
   DatabaseReader,
   ExecutionMetadata,
   DatabaseWriter,
-  QueryCtx,
   Scheduler,
   StorageReader,
   StorageWriter,
@@ -115,7 +121,13 @@ const storageUrl = FunctionImpl.make(schema, counter, "storageUrl", ({ id }) =>
   }).pipe(Effect.orDie),
 );
 const hasAuth = FunctionImpl.make(schema, counter, "hasAuth", () =>
-  Effect.map(QueryCtx, (ctx) => Predicate.hasProperty(ctx, "auth")),
+  Effect.map(
+    QueryCtx.QueryCtx<
+      DataModel.ToConvex<DataModel.FromSchema<typeof schema>>,
+      typeof scope
+    >(),
+    (ctx) => Predicate.hasProperty(ctx, "auth"),
+  ),
 );
 
 const location = FunctionImpl.make(schema, counter, "location", () =>
