@@ -138,6 +138,7 @@ const isHandleOf =
 const fromText = <Contract_ extends Any>(
   contract: Contract_,
   text: string,
+  reservedArgument?: string,
 ): Handle<Contract_> =>
   Object.assign(
     Ref.fromProvenance(
@@ -147,6 +148,7 @@ const fromText = <Contract_ extends Any>(
       // Convex types a handle as a string that is also a function reference.
       text as unknown as FunctionReference<any, any>,
       contract.functionType,
+      contract.functionType === "query" ? undefined : reservedArgument,
     ),
     { [HandleTypeId]: contract.id },
   ) as unknown as Handle<Contract_>;
@@ -155,9 +157,16 @@ const fromText = <Contract_ extends Any>(
  * The schema of a handle for `contract`: a string on the wire, a runnable ref
  * once decoded. Use it in a component's function args or tables. It lowers to
  * Convex's `v.function` with the contract's encoded args and returns.
+ * `reservedArgument` opts mutation and action handles into context forwarding.
+ * The host target must reserve the same argument name.
  */
 export const handle = <Contract_ extends Any>(
   contract: Contract_,
+  options?: {
+    readonly reservedArgument?: Contract_["functionType"] extends "query"
+      ? never
+      : string;
+  },
 ): Schema.Codec<Handle<Contract_>, string> =>
   Schema.String.annotate({ [CallbackContract]: contract }).pipe(
     Schema.decodeTo(
@@ -166,7 +175,7 @@ export const handle = <Contract_ extends Any>(
       }),
       {
         decode: SchemaGetter.transform((text: string) =>
-          fromText(contract, text),
+          fromText(contract, text, options?.reservedArgument),
         ),
         encode: SchemaGetter.transform(
           (ref: Handle<Contract_>) => ref.convexFunctionName,

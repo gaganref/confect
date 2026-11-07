@@ -13,6 +13,15 @@ import {
 import type * as FunctionProvenance from "@confect/core/FunctionProvenance";
 import type * as RuntimeAndFunctionType from "@confect/core/RuntimeAndFunctionType";
 import * as Callback from "@confect/server/Callback";
+import * as MutationRunner from "@confect/server/MutationRunner";
+import * as ActionRunner from "@confect/server/ActionRunner";
+import * as Scheduler from "@confect/server/Scheduler";
+import * as RegisteredFunction from "@confect/server/RegisteredFunction";
+import * as Forwarding from "./internal/forwarding";
+import * as DateTime from "effect/DateTime";
+import * as Duration from "effect/Duration";
+import * as Layer from "effect/Layer";
+import type { GenericId as ConvexId } from "convex/values";
 import { makeFunctionReference } from "convex/server";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -999,4 +1008,83 @@ describe("create types", () => {
     // @ts-expect-error the caller's ref is checked at the caller's call site
     void send(aQuery);
   });
+});
+
+describe("callback carrier", () => {
+  it.effect.each(Forwarding.cases)(
+    "forwards $label through inline and scheduled callback calls",
+    ({ forward, enabled }) =>
+      Effect.gen(function* () {
+        const mutation = yield* MutationRunner.MutationRunner;
+        const action = yield* ActionRunner.ActionRunner;
+        const scheduled: Array<unknown> = [];
+        const enqueue = (
+          _when: number | Date,
+          _ref: unknown,
+          args?: unknown,
+        ) => {
+          scheduled.push(args);
+          return Promise.resolve("job" as ConvexId<"_scheduled_functions">);
+        };
+        const schedulers = Scheduler.layer({
+          runAfter: enqueue,
+          runAt: enqueue,
+          cancel: () => Promise.resolve(),
+        });
+        const fields = { count: Schema.FiniteFromString };
+        const mutationContract = CoreCallback.mutation("counter/carrier", {
+          args: () => fields,
+          returns: () => Schema.Unknown,
+        });
+        const actionContract = CoreCallback.action("counter/carrier", {
+          args: () => fields,
+          returns: () => Schema.Unknown,
+        });
+        for (const options of [undefined, { reservedArgument: "observe" }]) {
+          const text = "function://;callbacks:carrier";
+          const mutationHandle = yield* Schema.decodeEffect(
+            CoreCallback.handle(mutationContract, options),
+          )(text);
+          const actionHandle = yield* Schema.decodeEffect(
+            CoreCallback.handle(actionContract, options),
+          )(text);
+          const args = { count: 1 };
+          for (const [boundary, call] of [
+            [
+              "MutationRunner.runMutation",
+              mutation.runMutation(mutationHandle, args),
+            ],
+            ["ActionRunner.runAction", action.runAction(actionHandle, args)],
+          ] as const) {
+            expect(yield* call).toEqual({
+              count: "1",
+              ...(enabled && options ? { observe: { boundary } } : {}),
+            });
+          }
+          for (const handle of [mutationHandle, actionHandle]) {
+            yield* Effect.gen(function* () {
+              const scheduler = yield* Scheduler.Scheduler;
+              yield* scheduler.runAfter(Duration.zero, handle, args);
+              yield* scheduler.runAt(DateTime.makeUnsafe(0), handle, args);
+            }).pipe(Effect.provide(schedulers));
+            expect(scheduled.splice(0)).toEqual(
+              ["Scheduler.runAfter", "Scheduler.runAt"].map((boundary) =>
+                enabled && options
+                  ? { count: "1", observe: { boundary } }
+                  : { count: "1" },
+              ),
+            );
+          }
+          expect(args).toEqual({ count: 1 });
+        }
+      }).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            MutationRunner.layer(Forwarding.echo),
+            ActionRunner.layer(Forwarding.echo),
+            Layer.succeed(RegisteredFunction.Forward, forward),
+          ),
+        ),
+      ),
+  );
 });
