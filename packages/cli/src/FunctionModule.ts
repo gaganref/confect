@@ -7,6 +7,7 @@ import * as HashSet from "effect/HashSet";
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import { UnownedConvexEntrypointError } from "./CodegenError.js";
+import * as Declaration from "./Declaration.js";
 import * as SectionFiles from "./SectionFiles.js";
 import * as templates from "./templates.js";
 import * as GenerationSnapshot from "./GenerationSnapshot.js";
@@ -29,6 +30,7 @@ const RESERVED_CONVEX_TS_FILE_NAMES = new Set([
   "crons.ts",
   "auth.config.ts",
   "convex.config.ts",
+  "confectDeploy.ts",
 ]);
 
 // Keep ownership and removal aligned with Convex's bundler entryPoints filter.
@@ -157,7 +159,13 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
   const refused: string[] = [];
   for (const relative of yield* getEntrypoints) {
     const absolute = path.join(convex, relative);
-    const tokens = tokenize(yield* fs.readFileString(absolute), absolute, path);
+    const contents = yield* fs.readFileString(absolute);
+    if (
+      relative === "confectDeploy.ts" &&
+      Declaration.isGenerated(contents, [])
+    )
+      continue;
+    const tokens = tokenize(contents, absolute, path);
     if (tokens !== undefined) {
       if (
         optional

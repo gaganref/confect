@@ -63,6 +63,7 @@ import {
   syncManifestSections,
   readPrevious,
   syncDeclaration,
+  syncDeployModule,
   syncDeclaredHttp,
 } from "./declaration.js";
 
@@ -217,6 +218,7 @@ const runCodegen = Effect.gen(function* () {
     { concurrency: "unbounded" },
   );
   yield* SectionFiles.removeUnclaimed(sections.files);
+  yield* syncDeployModule(declared);
   if (Option.isSome(declared)) yield* generateTesting(declared.value);
   return {
     functionPaths,
