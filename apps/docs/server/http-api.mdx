@@ -64,11 +64,10 @@ export const layer = HttpApiBuilder.layer(Api).pipe(Layer.provide(ApiLive));
 
 ## OPTIONS requests
 
-A declared path accepts OPTIONS through the route's existing middleware, and
-never runs the route's handler. Middleware sees the original OPTIONS method and
-endpoint annotations, so it can answer a preflight with 204. When middleware
-calls its next effect instead, the request returns 404, as an undeclared path
-does.
+A declared path accepts OPTIONS through the route's existing middleware and
+never runs its handler. Middleware sees the OPTIONS method and endpoint
+annotations, so it can answer a preflight with 204. When middleware calls its
+next effect instead, the request returns 404, as an undeclared path does.
 
 `Access-Control-Request-Method` selects the route that method would reach, so
 paths the router treats as one, such as `/a/:id` and `/a/:slug/`, share a

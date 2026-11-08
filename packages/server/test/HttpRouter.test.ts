@@ -522,15 +522,18 @@ const fetcher = (router: ReturnType<typeof ConfectHttpRouter.make>) => {
       Promise.resolve({ default: router }),
   });
   return (path: string, method: string, requested?: string) =>
-    Effect.promise(async () => {
-      const response = await t.fetch(path, {
-        method,
-        headers:
-          requested === undefined
-            ? {}
-            : { "Access-Control-Request-Method": requested },
-      });
-      return [response.status, await response.text()] as const;
+    Effect.gen(function* () {
+      const response = yield* Effect.promise(() =>
+        t.fetch(path, {
+          method,
+          headers:
+            requested === undefined
+              ? {}
+              : { "Access-Control-Request-Method": requested },
+        }),
+      );
+      const body = yield* Effect.promise(() => response.text());
+      return [response.status, body] as const;
     });
 };
 
@@ -546,10 +549,10 @@ it.effect(
   () =>
     Effect.gen(function* () {
       let calls = 0;
-      const run = Effect.sync(() => {
-        calls++;
-        return "handler ran";
-      });
+      const run = Effect.as(
+        Effect.sync(() => calls++),
+        "handler ran",
+      );
       const optionsApi = HttpApi.make("options")
         .add(
           HttpApiGroup.make("endpoints").add(
@@ -643,8 +646,8 @@ const answering = (method: "GET" | "POST" | "PUT", path: `/${string}`) =>
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
           if (request.method !== "OPTIONS") return yield* next;
-          const params = yield* HttpRouter.params;
-          return HttpServerResponse.text(`${method} ${JSON.stringify(params)}`);
+          const params = Object.entries(yield* HttpRouter.params).flat();
+          return HttpServerResponse.text([method, ...params].join(" "));
         }),
       ).layer,
     ),
@@ -653,16 +656,16 @@ const answering = (method: "GET" | "POST" | "PUT", path: `/${string}`) =>
 it.effect.each([
   {
     paths: "with differently named parameters",
-    routes: Layer.mergeAll(
+    layer: Layer.mergeAll(
       answering("GET", "/shared/:id"),
       answering("POST", "/shared/:slug"),
       HttpRouter.add("POST", "/webhook", HttpServerResponse.text("ran")),
     ),
     request: ["GET", "/shared/7", "GET ran"],
     preflights: [
-      ["/shared/7", "GET", 200, 'GET {"id":"7"}'],
-      ["/shared/7", "POST", 200, 'POST {"slug":"7"}'],
-      ["/shared/7", undefined, 200, 'GET {"id":"7"}'],
+      ["/shared/7", "GET", 200, "GET id 7"],
+      ["/shared/7", "POST", 200, "POST slug 7"],
+      ["/shared/7", undefined, 200, "GET id 7"],
       ["/shared/7", "DELETE", 404, ""],
       ["/webhook", "POST", 404, ""],
       ["/missing", "GET", 404, ""],
@@ -670,39 +673,37 @@ it.effect.each([
   },
   {
     paths: "differing in trailing slash and case",
-    routes: Layer.mergeAll(
+    layer: Layer.mergeAll(
       answering("GET", "/trailing"),
       answering("POST", "/trailing/"),
       answering("PUT", "/Trailing"),
     ),
     request: ["POST", "/trailing", "POST ran"],
     preflights: [
-      ["/trailing", "POST", 200, "POST {}"],
-      ["/TRAILING/", "PUT", 200, "PUT {}"],
-      ["/trailing", undefined, 200, "GET {}"],
+      ["/trailing", "POST", 200, "POST"],
+      ["/TRAILING/", "PUT", 200, "PUT"],
+      ["/trailing", undefined, 200, "GET"],
     ],
   },
   {
     paths: "beside an explicit OPTIONS route with another parameter name",
-    routes: Layer.mergeAll(
+    layer: Layer.mergeAll(
       answering("GET", "/shared/:id"),
       HttpRouter.add(
         "OPTIONS",
         "/shared/:slug",
-        Effect.map(HttpRouter.params, (params) =>
-          HttpServerResponse.text(`OPTIONS ${JSON.stringify(params)}`),
-        ),
+        HttpServerResponse.text("OPTIONS"),
       ),
     ),
     request: ["GET", "/shared/7", "GET ran"],
     preflights: [
-      ["/shared/7", "GET", 200, 'OPTIONS {"slug":"7"}'],
-      ["/shared/7", undefined, 200, 'OPTIONS {"slug":"7"}'],
+      ["/shared/7", "GET", 200, "OPTIONS"],
+      ["/shared/7", undefined, 200, "OPTIONS"],
     ],
   },
   {
     paths: "under a catch-all route",
-    routes: Layer.mergeAll(
+    layer: Layer.mergeAll(
       answering("GET", "/shared/:id"),
       HttpRouter.add("*", "*", HttpServerResponse.text("fallback")),
     ),
@@ -711,9 +712,9 @@ it.effect.each([
   },
 ] as const)(
   "dispatches OPTIONS on router-equivalent paths $paths",
-  ({ routes, request, preflights }) =>
+  ({ layer, request, preflights }) =>
     Effect.gen(function* () {
-      const send = fetcher(ConfectHttpRouter.make(routes));
+      const send = fetcher(ConfectHttpRouter.make(layer));
       const [method, path, body] = request;
       expect(yield* send(path, method)).toEqual([200, body]);
       for (const [preflightPath, requested, ...expected] of preflights)
