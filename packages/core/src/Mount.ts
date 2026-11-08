@@ -35,24 +35,28 @@ type Input<T> = T extends Handle
  * `unknown` when the args fit; otherwise the first refusal. A callback slot
  * takes an internal host ref that satisfies the slot's contract.
  */
-type Check<T, A> =
-  NonNullable<T> extends Handle
-    ? NonNullable<A> extends Ref.AnyConfect
-      ? Callback.Check<
-          ContractOf<Extract<NonNullable<T>, Handle>>,
-          NonNullable<A>
-        > &
-          (Ref.GetFunctionVisibility<NonNullable<A>> extends "internal"
-            ? unknown
-            : { readonly callbackMustBeInternal: never })
-      : never
-    : NonNullable<T> extends object
+type Check<T, A> = Fit<NonNullable<T>, NonNullable<A>>;
+
+/**
+ * Distributes over the members of `T` and `A`, so each union value is checked
+ * against the members whose shape it has.
+ */
+type Fit<T, A> = T extends Handle
+  ? [A] extends [Ref.AnyConfect]
+    ? Callback.Check<ContractOf<T>, A> &
+        (Ref.GetFunctionVisibility<A> extends "internal"
+          ? unknown
+          : { readonly callbackMustBeInternal: never })
+    : never
+  : T extends object
+    ? A extends Input<T>
       ? {
           readonly [K in keyof A]: K extends keyof T
             ? Check<T[K], A[K]>
             : never;
         }
-      : unknown;
+      : never
+    : unknown;
 
 type ArgsOf<C> = C extends { readonly init: infer I extends Component.Init }
   ? Ref.Args<I>
