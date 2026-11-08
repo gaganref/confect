@@ -1,4 +1,5 @@
 import { FunctionSpec, Ref } from "@confect/core";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import { QueryTransactionContext as BarrelControls } from "@confect/server";
 import * as QueryTransactionContext from "@confect/server/QueryTransactionContext";
 import type { MutationTransactionContext } from "@confect/server/MutationTransactionContext";
@@ -53,7 +54,7 @@ describe("QueryTransactionContext", () => {
         expect(yield* operation).toBe(2);
         expect(runQuery).toHaveBeenCalledTimes(2);
         expect(runQuery).toHaveBeenCalledWith(
-          Ref.getFunctionReference(ref),
+          getFunctionReference(ref),
           { count: "1" },
           options,
         );

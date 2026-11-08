@@ -39,7 +39,7 @@ export const consumerManifest = (version: string, tarballs?: string) => {
       alchemy: "2.0.0-beta.82",
       foldkit: "0.165.0",
       react: "19.3.0",
-      convex: "1.48.0",
+      convex: "1.49.0",
       "convex-test": "0.0.65",
       effect: "4.0.6",
       "@effect/platform-node": "4.0.4",
