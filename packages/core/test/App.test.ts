@@ -56,7 +56,7 @@ describe("App", () => {
           httpPrefix: "/email",
           env: { ...emailEnv, PLATFORM_URL: env.PLATFORM_URL },
         }),
-        importsPool: App.mount(workpool, { testing: "workpool-kit/testing" }),
+        importsPool: App.mount(workpool),
         literalEmail: App.mount(email, {
           env: { FROM: "noreply@example.test", KEY: "k", TRANSPORT: "log" },
         }),
@@ -70,21 +70,18 @@ describe("App", () => {
         definition: email,
         httpPrefix: "/email",
         env: { ...emailEnv, PLATFORM_URL: env.PLATFORM_URL },
-        testing: undefined,
       },
       {
         name: "importsPool",
         definition: workpool,
         httpPrefix: undefined,
         env: {},
-        testing: "workpool-kit/testing",
       },
       {
         name: "literalEmail",
         definition: email,
         httpPrefix: undefined,
         env: { FROM: "noreply@example.test", KEY: "k", TRANSPORT: "log" },
-        testing: undefined,
       },
     ]);
     expect(App.isApp(app)).toBe(true);
@@ -94,8 +91,9 @@ describe("App", () => {
   it("types each mount's env against the component's own declaration", () => {
     App.mount(workpool);
     App.mount(email, { env: emailEnv });
+    // @ts-expect-error Test kits are discovered from the component package.
     App.mount(email, { env: emailEnv, testing: "email-kit/testing" });
-    // @ts-expect-error A test kit is named by its module specifier.
+    // @ts-expect-error A mount does not accept a testing option.
     App.mount(workpool, { testing: true });
     // @ts-expect-error The options are required when the component has required env.
     App.mount(email);

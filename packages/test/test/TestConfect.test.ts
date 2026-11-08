@@ -38,20 +38,18 @@ it.effect(
     }).pipe(Effect.provide(TestConfect.layer(registry))),
 );
 
-it.effect(
-  "registers a mount and its nested child through the test kit it names",
-  () =>
-    Effect.gen(function* () {
-      const test = yield* TestConfect.TestConfect<typeof registry.schema>();
-      const { right } = yield* test.mutation(
-        refs.public.groups.components.exercise,
-        { run: "kit" },
-      );
-      expect(right).toEqual([13]);
-    }).pipe(Effect.provide(TestConfect.layer(registry))),
+it.effect("registers a local mount and its nested child", () =>
+  Effect.gen(function* () {
+    const test = yield* TestConfect.TestConfect<typeof registry.schema>();
+    const { right } = yield* test.mutation(
+      refs.public.groups.components.exercise,
+      { run: "kit" },
+    );
+    expect(right).toEqual([13]);
+  }).pipe(Effect.provide(TestConfect.layer(registry))),
 );
 
-it.effect("fetches a nested route under a mount that names a test kit", () =>
+it.effect("fetches a nested route under a local mount", () =>
   Effect.gen(function* () {
     const test = yield* TestConfect.TestConfect<typeof registry.schema>();
     const response = yield* test.fetch("/right/child/members/5");
