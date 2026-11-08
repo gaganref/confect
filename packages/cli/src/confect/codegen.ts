@@ -155,12 +155,15 @@ const runCodegen = Effect.gen(function* () {
     yield* Effect.forEach(yield* discoverLeafSpecFiles, toLeafModule),
   );
   yield* generateRefs;
+  // Specs and tables can import the components registry, but the registry
+  // reads the `convex.config.ts` that the declaration writes. Only its type
+  // depends on the config, so any registry on disk, or an empty one on a first
+  // run, serves the declaration bundle until the real one is written below.
+  yield* provisionalComponents;
   // A declared backend's `convex.config.ts` and manifest come next: the
-  // components registry below reads the config, and nothing may validate
-  // against a manifest the current declaration did not produce.
+  // registry below reads the config, and nothing may validate against a
+  // manifest the current declaration did not produce.
   const { app: declared, digest } = yield* syncDeclaration(previousManifest);
-  // Tables and specs can use bound component IDs and schemas, so their
-  // imports need the registry even on a project's first codegen run.
   const mounts = yield* generateComponents;
   yield* validateCallbackPrefixes(declared);
   // Now that `_generated/id.ts` is on disk, bundle each table module and
@@ -1035,6 +1038,20 @@ export const generateComponents = Effect.gen(function* () {
     contents,
   );
   return mounts;
+});
+
+const provisionalComponents = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const registry = path.join(
+    yield* ConfectDirectory.get,
+    yield* GENERATED_COMPONENTS_PATH,
+  );
+  if (yield* fs.exists(registry)) return;
+  yield* writeFileStringAndLog(
+    registry,
+    yield* templates.components({ components: [] }),
+  );
 });
 
 const logGenerated = <E, R>(
