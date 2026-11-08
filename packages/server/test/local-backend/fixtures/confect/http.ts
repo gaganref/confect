@@ -7,6 +7,7 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiSchema from "effect/http-api/HttpApiSchema";
 import { classProbeHandler } from "../components/counter/confect/authoringHandler";
+import { optionalPrefix } from "../components/counter/confect/optionalPrefix";
 import { first } from "./componentBindings";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as Layer from "effect/Layer";
@@ -80,7 +81,9 @@ const componentAuthoring = HttpApiBuilder.group(
     ),
 );
 
-export default Http.make({
+const http = Http.make({
   api: HostApi,
   handlers: Layer.mergeAll(users, metadata, componentAuthoring, auth),
 });
+
+export default { ...http, routes: Layer.merge(http.routes, optionalPrefix) };

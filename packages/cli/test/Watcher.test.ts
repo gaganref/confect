@@ -523,6 +523,22 @@ layer(NodeServices.layer, { excludeTestServices: true })(
     );
 
     test.effect(
+      "regenerates on a Remove of a confect/ file no section accepted, since every render sees the file list",
+      () =>
+        Effect.gen(function* () {
+          const { watcher, project, events } = yield* controlledWatcher();
+          yield* watcher.refresh;
+          yield* watcher.next;
+          yield* Queue.offer(events, {
+            _tag: "Remove",
+            path: `${project.root}/confect/shelf/log.ts`,
+          });
+          expect((yield* watcher.next).work._tag).toBe("Full");
+        }).pipe(Effect.scoped, Effect.timeout("10 seconds")),
+      { timeout: 15000 },
+    );
+
+    test.effect(
       "settles no-op reconfiguration without replacing the context",
       () =>
         Effect.gen(function* () {
