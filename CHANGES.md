@@ -388,11 +388,11 @@ call throws; use `QueryStream.paginate` for another paginated index read.
 Local backend tests cover index and search pages, subscriptions and the shared query limit.
 
 Changesets: `scoped-scheduler-cancel-pagination.md`, `component-native-pagination.md`.
+Upstream: planned; no linked proposal verified.
 
 ### Prove component streams and writer hooks
 
 The local backend fixture covers deferred streams, collection, the default read budget, merge deduplication and decoded writer hooks inside a component. Seed the stream rows in host mutations of ten rows each. Changeset: `component-pagination-proof-gaps.md`. Upstream: planned; no proposal submitted.
-Upstream: planned; no linked proposal verified.
 
 ### Lift official component clients
 
