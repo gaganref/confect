@@ -12,6 +12,18 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## HTTP identity states
+
+The module-level `Auth.getUserIdentity` effect returns `Absent`, `Valid` with
+Convex's verified identity, or `Invalid` when Convex rejects the identity read.
+HTTP handlers and middleware can handle missing and invalid credentials without
+catching defects. The existing service member keeps its identity-or-error
+contract. Interruption remains interruption, and each execution reads identity
+again. No raw token parsing or timing claims are added. Changeset:
+`http-identity-states.md`. The local-backend suite covers absent, accepted,
+bad-signature and foreign-issuer requests with self-minted RS256 test keys.
+Upstream: planned; no proposal submitted.
+
 ## Native function reference conversion
 
 Move `Ref.getFunctionReference` to `@confect/core/RefInternal`. The `Ref` module
