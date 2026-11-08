@@ -675,19 +675,19 @@ const servicesEffect = Effect.fnUntraced(function* ({
   yield* cbw.writeLine("import {");
   yield* cbw.indent(
     Effect.gen(function* () {
-      yield* cbw.writeLine("ActionCtx as ActionCtx_,");
+      if (!component) yield* cbw.writeLine("ActionCtx as ActionCtx_,");
       yield* cbw.writeLine("ActionRunner as ActionRunner_,");
       yield* cbw.writeLine("Auth as Auth_,");
       yield* cbw.writeLine("type DataModel,");
       yield* cbw.writeLine("DatabaseReader as DatabaseReader_,");
       yield* cbw.writeLine("DatabaseWriter as DatabaseWriter_,");
       yield* cbw.writeLine("ExecutionMetadata as ExecutionMetadata_,");
-      yield* cbw.writeLine("MutationCtx as MutationCtx_,");
+      if (!component) yield* cbw.writeLine("MutationCtx as MutationCtx_,");
       yield* cbw.writeLine("MutationRunner as MutationRunner_,");
       yield* cbw.writeLine(
         "MutationTransactionContext as MutationTransactionContext_,",
       );
-      yield* cbw.writeLine("QueryCtx as QueryCtx_,");
+      if (!component) yield* cbw.writeLine("QueryCtx as QueryCtx_,");
       yield* cbw.writeLine("QueryRunner as QueryRunner_,");
       yield* cbw.writeLine(
         "QueryTransactionContext as QueryTransactionContext_,",
@@ -876,61 +876,65 @@ const servicesEffect = Effect.fnUntraced(function* ({
   yield* cbw.writeLine(
     "export type ActionRunner = typeof ActionRunner.Identifier;",
   );
-  yield* cbw.blankLine();
 
-  // QueryCtx
-  yield* cbw.writeLine("export const QueryCtx: QueryCtx_.QueryCtxTag<");
-  yield* cbw.indent(
-    cbw.writeLine(
-      `DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>${component ? ", typeof scope" : ""}`,
-    ),
-  );
-  yield* cbw.writeLine("> = QueryCtx_.QueryCtx<");
-  yield* cbw.indent(
-    cbw.writeLine(
-      `DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>${component ? ", typeof scope" : ""}`,
-    ),
-  );
-  yield* cbw.writeLine(">();");
-  yield* cbw.writeLine("export type QueryCtx = typeof QueryCtx.Identifier;");
-  yield* cbw.blankLine();
+  if (!component) {
+    yield* cbw.blankLine();
+    // QueryCtx
+    yield* cbw.writeLine("export const QueryCtx: QueryCtx_.QueryCtxTag<");
+    yield* cbw.indent(
+      cbw.writeLine(
+        "DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>",
+      ),
+    );
+    yield* cbw.writeLine("> = QueryCtx_.QueryCtx<");
+    yield* cbw.indent(
+      cbw.writeLine(
+        "DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>",
+      ),
+    );
+    yield* cbw.writeLine(">();");
+    yield* cbw.writeLine("export type QueryCtx = typeof QueryCtx.Identifier;");
+    yield* cbw.blankLine();
 
-  // MutationCtx
-  yield* cbw.writeLine(
-    "export const MutationCtx: MutationCtx_.MutationCtxTag<",
-  );
-  yield* cbw.indent(
-    cbw.writeLine(
-      `DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>${component ? ", typeof scope" : ""}`,
-    ),
-  );
-  yield* cbw.writeLine("> = MutationCtx_.MutationCtx<");
-  yield* cbw.indent(
-    cbw.writeLine(
-      `DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>${component ? ", typeof scope" : ""}`,
-    ),
-  );
-  yield* cbw.writeLine(">();");
-  yield* cbw.writeLine(
-    "export type MutationCtx = typeof MutationCtx.Identifier;",
-  );
-  yield* cbw.blankLine();
+    // MutationCtx
+    yield* cbw.writeLine(
+      "export const MutationCtx: MutationCtx_.MutationCtxTag<",
+    );
+    yield* cbw.indent(
+      cbw.writeLine(
+        "DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>",
+      ),
+    );
+    yield* cbw.writeLine("> = MutationCtx_.MutationCtx<");
+    yield* cbw.indent(
+      cbw.writeLine(
+        "DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>",
+      ),
+    );
+    yield* cbw.writeLine(">();");
+    yield* cbw.writeLine(
+      "export type MutationCtx = typeof MutationCtx.Identifier;",
+    );
+    yield* cbw.blankLine();
 
-  // ActionCtx
-  yield* cbw.writeLine("export const ActionCtx: ActionCtx_.ActionCtxTag<");
-  yield* cbw.indent(
-    cbw.writeLine(
-      `DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>${component ? ", typeof scope" : ""}`,
-    ),
-  );
-  yield* cbw.writeLine("> = ActionCtx_.ActionCtx<");
-  yield* cbw.indent(
-    cbw.writeLine(
-      `DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>${component ? ", typeof scope" : ""}`,
-    ),
-  );
-  yield* cbw.writeLine(">();");
-  yield* cbw.writeLine("export type ActionCtx = typeof ActionCtx.Identifier;");
+    // ActionCtx
+    yield* cbw.writeLine("export const ActionCtx: ActionCtx_.ActionCtxTag<");
+    yield* cbw.indent(
+      cbw.writeLine(
+        "DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>",
+      ),
+    );
+    yield* cbw.writeLine("> = ActionCtx_.ActionCtx<");
+    yield* cbw.indent(
+      cbw.writeLine(
+        "DataModel.ToConvex<DataModel.FromSchema<typeof schemaDefinition>>",
+      ),
+    );
+    yield* cbw.writeLine(">();");
+    yield* cbw.writeLine(
+      "export type ActionCtx = typeof ActionCtx.Identifier;",
+    );
+  }
 
   return yield* cbw.toString();
 });

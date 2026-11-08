@@ -1,3 +1,4 @@
+import { getFunctionReference } from "@confect/core/RefInternal";
 import {
   Callback as CoreCallback,
   FunctionSpec,
@@ -222,7 +223,7 @@ describe("create checks the host's validators", () => {
         const handle = Result.getOrThrow(
           yield* created(Callback.create(Declared, subset)),
         );
-        expect(Ref.getFunctionReference(handle)).toBe(
+        expect(getFunctionReference(handle)).toBe(
           "function://;callbacks:onEvent",
         );
       }),

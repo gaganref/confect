@@ -1,6 +1,7 @@
 import * as Forwarding from "./internal/forwarding";
 import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import { FunctionSpec, Ref } from "@confect/core";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import * as MutationRunner from "@confect/server/MutationRunner";
 import * as MutationTransactionContext from "@confect/server/MutationTransactionContext";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
@@ -43,7 +44,7 @@ describe("MutationRunner", () => {
         expect(yield* operation).toBe(2);
         expect(yield* operation).toBe(2);
         expect(native).toHaveBeenCalledTimes(2);
-        expect(native).toHaveBeenCalledWith(Ref.getFunctionReference(ref), {
+        expect(native).toHaveBeenCalledWith(getFunctionReference(ref), {
           count: "1",
         });
         expect(args).toEqual({ count: 1 });
@@ -69,12 +70,12 @@ describe("MutationRunner", () => {
         expect(yield* explicit).toBe("ok");
         expect(native).toHaveBeenNthCalledWith(
           1,
-          Ref.getFunctionReference(emptyRef),
+          getFunctionReference(emptyRef),
           {},
         );
         expect(native).toHaveBeenNthCalledWith(
           2,
-          Ref.getFunctionReference(emptyRef),
+          getFunctionReference(emptyRef),
           {},
         );
       }).pipe(Effect.provide(MutationRunner.layer(native)));

@@ -77,6 +77,10 @@ export default HttpRouter.forSchema(schema)(http.routes, { api: http.api });
 
 Write tables under `confect/tables/` and functions in sibling `*.spec.ts` / `*.impl.ts` files using the same APIs as an application. Codegen writes IDs, schemas, services, refs, registered functions and `confect/_generated/component.ts`, the publishable contract. Only public functions enter that contract.
 
+A component's `_generated/services.ts` omits `MutationCtx`, `QueryCtx` and `ActionCtx`, so a handler that yields one fails to type-check. Use its typed database, runner, storage and scheduler services instead.
+
+Host applications still receive all three raw context tags. `@confect/server` keeps exporting them for middleware authors. Middleware owns removing raw contexts from the context it passes to downstream handlers.
+
 Run Convex's component codegen after Confect's codegen when preparing the package for publication:
 
 ```sh
@@ -306,7 +310,7 @@ Components may mount components. In a declared component, put child `App.mount` 
 
 Bind a child contract with `Component.bind(childContract, components.child, { parentScope: scope })`, importing `scope` from the parent's `_generated/id`. This keeps child IDs associated with the enclosing installation when its contract returns them. Root host bindings omit `parentScope`. Nested HTTP prefixes accumulate through Convex's installation site URL.
 
-Component handlers use their own database, scoped storage services and scheduler. Generated raw contexts omit `auth`; application `Auth` and unified `Storage` are unavailable. Pass identity explicitly in arguments. Native database pagination is unavailable in component readers; use [`QueryStream.paginate`](/server/database/streams#paginating-a-stream) for index queries. Confect does not replace native search pagination or rewrite plain Convex handlers.
+Component handlers use their own database, scoped storage services and scheduler. Application `Auth` and unified `Storage` are unavailable inside a component. Pass identity explicitly in arguments. Native `.paginate()` works in component readers, including search results. A query may paginate once across the host and every component query it calls. A second `.paginate()` throws. Use [`QueryStream.paginate`](/server/database/streams#paginating-a-stream) for a second paginated index read. Confect does not rewrite plain Convex handlers.
 
 ## Wrap an official component
 

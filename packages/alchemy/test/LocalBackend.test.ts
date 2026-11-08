@@ -87,7 +87,7 @@ describe("LocalBackend", () => {
         expect(Redacted.value(backend.adminKey)).toBe(`${name}|0a1b2c1`);
         expect(fake.downloads).toHaveLength(1);
         expect(fake.downloads[0]).toMatch(
-          /^https:\/\/github\.com\/get-convex\/convex-backend\/releases\/download\/precompiled-2026-10-06-a3538c6\/convex-local-backend-[a-z0-9_-]+\.zip$/,
+          /^https:\/\/github\.com\/get-convex\/convex-backend\/releases\/download\/precompiled-2026-10-28-cccbade\/convex-local-backend-[a-z0-9_-]+\.zip$/,
         );
         const [served] = fake.served;
         expect(served?.args).toEqual([

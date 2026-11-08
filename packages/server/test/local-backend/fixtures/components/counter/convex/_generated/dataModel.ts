@@ -41,7 +41,12 @@ export type DataModel = {
       by_run: ["run", "_creationTime"];
       by_run_count: ["run", "count", "_creationTime"];
     };
-    searchIndexes: {};
+    searchIndexes: {
+      search_run: {
+        searchField: "run";
+        filterFields: never;
+      };
+    };
     vectorIndexes: {};
   };
   deliveries: {

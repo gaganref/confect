@@ -98,7 +98,7 @@ export class DuplicateRoute extends Data.TaggedError("DuplicateRoute")<{
   readonly second: Owner;
 }> {
   override get message(): string {
-    return `${this.method} ${this.path} is declared twice (${ownerLabel(this.first)} and ${ownerLabel(this.second)}).`;
+    return `${this.method} ${this.path} is declared twice (${this.first.kind} and ${this.second.kind}).`;
   }
 }
 
@@ -117,8 +117,6 @@ export type RouteError =
   | RouteUnderMountPrefix
   | DuplicateRoute
   | OverlappingMountPrefixes;
-
-const ownerLabel = (owner: Owner): string => owner.kind;
 
 const trimSlash = (prefix: string): string =>
   prefix.length > 1 && prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
