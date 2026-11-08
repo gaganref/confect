@@ -1,3 +1,6 @@
+import * as Callback from "@confect/core/Callback";
+import { compileArgsSchema } from "@confect/core/SchemaToValidator";
+import callbackValidators from "./fixtures/callback-validators.json";
 import {
   compileAst,
   type UndefinedOrValueToValidator,
@@ -350,3 +353,52 @@ describe("compiler preprocessing", () => {
       }),
   );
 });
+
+describe("callback handles", () => {
+  it("lowers optional EmailArgs callbacks with their encoded contract", () => {
+    const OnEvent = Callback.mutation("email/onEvent", {
+      args: () => ({
+        attempts: Schema.Finite,
+        message: Schema.String,
+        fromName: Schema.String,
+      }),
+      returns: () => Schema.Null,
+    });
+    const EmailArgs = Schema.Struct({
+      fromName: Schema.String.annotate({
+        description: "Sender name on every email.",
+      }),
+      maxAttempts: Schema.optional(Schema.Int),
+      onEvent: Schema.optional(Callback.handle(OnEvent)),
+    });
+    expect(Reflect.get(v.object(compileArgsSchema(EmailArgs)), "json")).toEqual(
+      callbackValidators,
+    );
+  });
+});
+
+it.each([
+  ["query", Callback.query],
+  ["mutation", Callback.mutation],
+  ["action", Callback.action],
+] as const)(
+  "lowers %s callback codecs to their encoded validators",
+  (functionType, make) => {
+    const contract = make("email/encoded", {
+      args: () => ({ count: Schema.FiniteFromString }),
+      returns: () => Schema.FiniteFromString,
+    });
+    const fields = compileArgsSchema(
+      Schema.Struct({ callbacks: Schema.Array(Callback.handle(contract)) }),
+    );
+    expect(fields).toEqual({
+      callbacks: v.array(
+        v.function({
+          fnType: functionType,
+          args: { count: v.string() },
+          returns: v.string(),
+        }),
+      ),
+    });
+  },
+);

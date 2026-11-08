@@ -95,6 +95,17 @@ const onEvent = FunctionImpl.make(
     }),
 );
 
+const storeMalformed = FunctionImpl.make(
+  databaseSchema,
+  callbacks,
+  "storeMalformed",
+  (args) =>
+    Effect.gen(function* () {
+      const runner = yield* MutationRunner;
+      return yield* runner.runMutation(first.deliveries.storeMalformed, args);
+    }).pipe(Effect.orDie),
+);
+
 const send = FunctionImpl.make(databaseSchema, callbacks, "send", ({ run }) =>
   Effect.gen(function* () {
     const runner = yield* MutationRunner;
@@ -185,6 +196,7 @@ export default GroupImpl.make(databaseSchema, callbacks).pipe(
   Layer.provide([
     onEvent,
     send,
+    storeMalformed,
     setStatus,
     breach,
     sameHandle,

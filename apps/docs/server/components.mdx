@@ -244,7 +244,7 @@ export const OnResult = Callback.mutation("counter/onResult", {
 
 Codegen checks contracts exported from `confect/callbacks.ts`. Each id must start with the name passed to `defineComponent`, followed by `/` (for a declared component, this is the name in `Env.make`). It checks the exports without evaluating schema thunks. A component without this file passes.
 
-Use `Callback.handle(OnResult)` in the component's function args or tables. On the wire it is a string; after decoding it is a runnable reference branded with the contract id. Handles for different ids are incompatible even when their shapes match. The fixture's component spec is:
+Use `Callback.handle(OnResult)` in the component's function args or tables. A `Callback.handle` slot lowers to `v.function` and requires Convex 1.49 or later. On the wire it is a string; after decoding it is a runnable reference branded with the contract id. Handles for different ids are incompatible even when their shapes match. The fixture's component spec is:
 
 ```ts components/counter/confect/counter.spec.ts
 import { Callback, FunctionSpec, GroupSpec } from "@confect/core";
