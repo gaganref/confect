@@ -2,7 +2,7 @@ import { FunctionSpec, GroupSpec } from "@confect/core";
 import * as Schema from "effect/Schema";
 import args from "./args";
 
-const callback = (name: string) =>
+export const callback = <const Name extends string>(name: Name) =>
   FunctionSpec.internalMutation({
     name,
     args: () => ({ fromName: Schema.String, message: Schema.String }),
