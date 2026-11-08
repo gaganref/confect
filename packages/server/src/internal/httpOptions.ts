@@ -20,6 +20,14 @@ const notFound = Effect.flatMap(
     ),
 );
 
+// Effect's router adds `/a/:b` and `/a` for `/a/:b?` in one call, so an earlier
+// `/a/:id` rejects both. Split the same way, each form claims `first` alone.
+const optional = /(\/:[^/()]*?)\?(\/?)/;
+const forms = (path: Route["path"]) =>
+  (optional.test(path)
+    ? [path.replace(optional, "$1$2"), path.replace(optional, "$2") || "/"]
+    : [path]) as ReadonlyArray<Route["path"]>;
+
 const missingRouteContext = `Service not found: ${HttpRouter.RouteContext.key}`;
 
 // WORKAROUND: Effect 4.0.4 compiles endpoint middleware, decoding and the
@@ -93,9 +101,18 @@ export const withOptions = <A, E, R>(
           byMethod.set(route.method, candidate);
           // Route registration erases request requirements, as in Effect's router.
           yield* Effect.provideContext(at(candidate).addAll([copy]), context);
-          yield* Effect.exit(
-            Effect.provideContext(at(first).addAll([copy]), context),
-          );
+          for (const path of forms(copy.path)) {
+            const form = at(first).addAll([{ ...copy, path }]);
+            yield* Effect.exit(Effect.provideContext(form, context));
+          }
+        }
+        // Effect's router answers HEAD from GET where no HEAD route matches. The
+        // root wildcard matches last, unless a HEAD route already claims it.
+        const get = byMethod.get("GET");
+        if (get !== undefined) {
+          const head = byMethod.get("HEAD") ?? (yield* HttpRouter.make);
+          byMethod.set("HEAD", head);
+          yield* Effect.exit(head.add("OPTIONS", "*", get.asHttpEffect()));
         }
         // An explicit OPTIONS route on the root wildcard answers every path.
         const claimed = yield* Effect.exit(
