@@ -219,6 +219,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       >;
     };
     pagination: {
+      hook: FunctionReference<
+        "mutation",
+        "internal",
+        { run: string },
+        Array<{ count: number; operation: string }>,
+        Name
+      >;
       page: FunctionReference<
         "query",
         "internal",
@@ -249,6 +256,13 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
             run: string;
           }>;
         },
+        Name
+      >;
+      streams: FunctionReference<
+        "query",
+        "internal",
+        { run: string },
+        { budget: number; deferred: Array<number>; merged: Array<number> },
         Name
       >;
     };
