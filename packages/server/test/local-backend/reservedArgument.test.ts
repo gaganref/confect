@@ -2,6 +2,7 @@ import { Ref } from "@confect/core";
 import { expect, layer } from "@effect/vitest";
 import { makeFunctionReference } from "convex/server";
 import * as Effect from "effect/Effect";
+import * as Random from "effect/Random";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 import refs from "./fixtures/confect/_generated/refs";
@@ -57,13 +58,14 @@ layer(LocalBackend.layer, {
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
+        const run = String(yield* Random.next);
         const result = yield* Ref.runWithCodec(
           refs.public.groups.reserved.chain,
-          { run: "chain" },
+          { run },
           (ref, args) => client.action(ref, args),
         );
-        expect(result.mutation.args).toEqual({ run: "chain" });
-        expect(result.action.args).toEqual({ run: "chain" });
+        expect(result.mutation.args).toEqual({ run });
+        expect(result.action.args).toEqual({ run });
         expect(result.hops[hop(result.mutation.received.value)]).toBe(
           "MutationRunner.runMutation",
         );
@@ -76,11 +78,11 @@ layer(LocalBackend.layer, {
         expect(result.inline.child.received.requestId).toBe(
           result.inline.parent.received.requestId,
         );
-        expect(result.inline.child.args).toEqual({ run: "chain" });
+        expect(result.inline.child.args).toEqual({ run });
         expect(result.inline.plain).not.toBe("");
         const scheduled = yield* Ref.runWithCodec(
           refs.public.groups.reserved.read,
-          { run: "chain" },
+          { run },
           (ref, args) => client.query(ref, args),
         ).pipe(
           Effect.repeat({
@@ -89,7 +91,7 @@ layer(LocalBackend.layer, {
           }),
           Effect.timeout("20 seconds"),
         );
-        expect(scheduled?.args).toEqual({ run: "chain" });
+        expect(scheduled?.args).toEqual({ run });
         expect(result.hops[hop(scheduled?.received.value)]).toBe(
           "Scheduler.runAfter",
         );

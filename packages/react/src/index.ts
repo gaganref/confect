@@ -1,4 +1,5 @@
 import { Ref } from "@confect/core";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import { version as convexVersion } from "convex";
 import type { OptimisticUpdate as ConvexOptimisticUpdate } from "convex/browser";
 import * as ConvexReact from "convex/react";
@@ -47,7 +48,7 @@ export const useQuery = <Query extends Ref.AnyPublicQuery>(
   ref: Query,
   ...rest: UseQueryArgs<Query>
 ): QueryResult.QueryResult<Ref.Returns<Query>, Ref.Error<Query>> => {
-  const functionReference = Ref.getFunctionReference(ref);
+  const functionReference = getFunctionReference(ref);
   const args = rest[0];
   const skipped = args === "skip";
   const encodedArgs = skipped
@@ -233,7 +234,7 @@ export const usePaginatedQuery = <Query extends Ref.AnyPublicPaginatedQuery>(
     );
   }
 
-  const functionReference = Ref.getFunctionReference(ref);
+  const functionReference = getFunctionReference(ref);
   const skipped = args === "skip";
 
   // The encoded output is the wire form Convex's hook forwards verbatim, not
@@ -385,7 +386,7 @@ export const useStreamPaginatedQuery = <
   // feeds the queries object is stabilized by *value* here: the function
   // reference by `ref`, and the encoded args by their serialized form (as
   // `convex/react`'s own paginated hook does).
-  const functionReference = useMemo(() => Ref.getFunctionReference(ref), [ref]);
+  const functionReference = useMemo(() => getFunctionReference(ref), [ref]);
   const skipped = args === "skip";
 
   const rawEncodedArgs =
@@ -666,7 +667,7 @@ const makeReactMutation = <Mutation extends Ref.AnyPublicMutation>(
 export const useMutation = <Mutation extends Ref.AnyPublicMutation>(
   ref: Mutation,
 ): ReactMutation<Mutation> => {
-  const functionReference = Ref.getFunctionReference(ref);
+  const functionReference = getFunctionReference(ref);
   const convexReactMutation = useConvexMutation(functionReference);
 
   return useMemo(
@@ -697,7 +698,7 @@ export const useMutation = <Mutation extends Ref.AnyPublicMutation>(
 export const useAction = <Action extends Ref.AnyPublicAction>(
   ref: Action,
 ): ((...args: Ref.OptionalArgs<Action>) => InvokeReturn<Action>) => {
-  const functionReference = Ref.getFunctionReference(ref);
+  const functionReference = getFunctionReference(ref);
   const actualAction = useConvexAction(functionReference);
 
   return useCallback(

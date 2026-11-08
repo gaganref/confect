@@ -10,6 +10,7 @@ const forward = <Ctx, Args, Returns>(handler: (ctx: Ctx, args: Args) => Promise<
 const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../../../groups/callbacks.spec.js")["default"]>(databaseSchema, groupLayer.pipe(Layer.merge(Layer.succeed(RegisteredFunction.Observability, observability))));
 
 export default {
+["storeMalformed"]: RegisteredConvexFunction.register({ ...definitions["storeMalformed"], handler: forward(definitions["storeMalformed"].handler) }),
 ["onEvent"]: RegisteredConvexFunction.register({ ...definitions["onEvent"], handler: forward(definitions["onEvent"].handler) }),
 ["send"]: RegisteredConvexFunction.register({ ...definitions["send"], handler: forward(definitions["send"].handler) }),
 ["setStatus"]: RegisteredConvexFunction.register({ ...definitions["setStatus"], handler: forward(definitions["setStatus"].handler) }),

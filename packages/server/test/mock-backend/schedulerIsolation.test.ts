@@ -15,7 +15,7 @@
  * window is the handler fiber under test.
  */
 
-import { Ref } from "@confect/core";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import { convexTest } from "convex-test";
 import { describe, expect, it } from "@effect/vitest";
 import convexSchema from "./fixtures/confect/_generated/convexSchema";
@@ -60,7 +60,7 @@ describe("Effect scheduler inside the Convex isolate", () => {
     const t = convexTest(convexSchema, modules);
     return withConvexIsolateTimers(() =>
       t.query(
-        Ref.getFunctionReference(refs.public.groups.scheduling.manyOpsQuery),
+        getFunctionReference(refs.public.groups.scheduling.manyOpsQuery),
         {},
       ),
     ).then((result) => expect(result).toBe(expectedSum));
@@ -70,7 +70,7 @@ describe("Effect scheduler inside the Convex isolate", () => {
     const t = convexTest(convexSchema, modules);
     return withConvexIsolateTimers(() =>
       t.mutation(
-        Ref.getFunctionReference(refs.public.groups.scheduling.manyOpsMutation),
+        getFunctionReference(refs.public.groups.scheduling.manyOpsMutation),
         {},
       ),
     ).then((result) => expect(result).toBe(expectedSum));

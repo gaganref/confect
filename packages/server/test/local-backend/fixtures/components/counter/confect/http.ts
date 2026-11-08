@@ -3,7 +3,9 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Predicate from "effect/Predicate";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
-import { ActionCtx } from "./_generated/services";
+import { ActionCtx, type DataModel } from "@confect/server";
+import type schema from "./_generated/schema";
+import type { scope } from "./_generated/id";
 import refs from "./_generated/refs";
 import { classProbeHandler } from "./authoringHandler";
 import { CounterApi } from "./api";
@@ -11,10 +13,15 @@ import { CounterApi } from "./api";
 const health = HttpApiBuilder.group(CounterApi, "health", (handle) =>
   handle
     .handle("health", () =>
-      Effect.map(ActionCtx, (ctx) =>
-        Predicate.hasProperty(ctx, "auth")
-          ? "unexpected-auth"
-          : "component-ready",
+      Effect.map(
+        ActionCtx.ActionCtx<
+          DataModel.ToConvex<DataModel.FromSchema<typeof schema>>,
+          typeof scope
+        >(),
+        (ctx) =>
+          Predicate.hasProperty(ctx, "auth")
+            ? "unexpected-auth"
+            : "component-ready",
       ),
     )
     .handle("echo", ({ payload }) => Effect.succeed(payload)),

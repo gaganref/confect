@@ -7,7 +7,7 @@
  * "Can't use setTimeout in queries and mutations."
  */
 
-import { Ref } from "@confect/core";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import { expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import refs from "./fixtures/confect/_generated/refs";
@@ -24,9 +24,7 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
         const { client } = yield* LocalBackend.LocalBackend;
         const result = yield* Effect.promise(() =>
           client.query(
-            Ref.getFunctionReference(
-              refs.public.groups.scheduling.manyOpsQuery,
-            ),
+            getFunctionReference(refs.public.groups.scheduling.manyOpsQuery),
             {},
           ),
         );
@@ -39,9 +37,7 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
         const { client } = yield* LocalBackend.LocalBackend;
         const result = yield* Effect.promise(() =>
           client.mutation(
-            Ref.getFunctionReference(
-              refs.public.groups.scheduling.manyOpsMutation,
-            ),
+            getFunctionReference(refs.public.groups.scheduling.manyOpsMutation),
             {},
           ),
         );

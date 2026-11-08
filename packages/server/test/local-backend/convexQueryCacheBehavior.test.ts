@@ -7,7 +7,8 @@
  * `Date.now()` call) opt the query out and evict.
  */
 
-import { Ref } from "@confect/core";
+import { getFunctionReference } from "@confect/core/RefInternal";
+import type { Ref } from "@confect/core";
 import { expect, layer } from "@effect/vitest";
 import type { ConvexHttpClient } from "convex/browser";
 import * as Duration from "effect/Duration";
@@ -32,7 +33,7 @@ const queryOnce = <R extends Ref.AnyPublicQuery>(
 ): Effect.Effect<Ref.Returns<R>, ConvexQueryError> =>
   Effect.tryPromise({
     try: () =>
-      client.query(Ref.getFunctionReference(ref), (args[0] ?? {}) as never),
+      client.query(getFunctionReference(ref), (args[0] ?? {}) as never),
     catch: (error) =>
       new ConvexQueryError({ message: `query failed: ${String(error)}` }),
   });

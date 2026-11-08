@@ -1,6 +1,7 @@
 import * as Callback from "@confect/core/Callback";
 import * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
-import * as Ref from "@confect/core/Ref";
+import type * as Ref from "@confect/core/Ref";
+import { getFunctionReference } from "@confect/core/RefInternal";
 import {
   compileAst,
   UnsupportedPropertySignatureKeyTypeError,
@@ -305,7 +306,7 @@ export const create = Effect.fn("Callback.create")(function* <
     yield* Effect.fromResult(verify(contract, ref));
   }
   const text = yield* Effect.promise(() =>
-    createFunctionHandle(Ref.getFunctionReference(ref)),
+    createFunctionHandle(getFunctionReference(ref)),
   );
   return yield* Schema.decodeEffect(Callback.handle(contract))(text).pipe(
     Effect.orDie,
