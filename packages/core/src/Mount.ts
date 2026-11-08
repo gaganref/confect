@@ -88,8 +88,8 @@ type Bindings<E> = { readonly [K in RequiredKeys<E>]: Slot<E[K]> } & {
 };
 
 /**
- * `B` keeps the bindings as written, so `App.make` can see which backends
- * their entries come from.
+ * `B` keeps the bindings as written, so `App.make` can see which backends their
+ * entries come from.
  */
 type EnvField<C, B> = C extends { readonly env: infer E }
   ? [RequiredKeys<E>] extends [never]
@@ -126,8 +126,7 @@ export interface Data<C extends Component.Descriptor = Component.Descriptor> {
 }
 
 /**
- * What a mount was declared with, as written: its HTTP prefix and env
- * bindings.
+ * What a mount was declared with, as written: its HTTP prefix and env bindings.
  */
 export interface Declared<
   P extends App.HttpPrefix | undefined = App.HttpPrefix | undefined,
@@ -152,7 +151,7 @@ export interface Mount<
 
 export type Any = Mount<Component.Descriptor, string>;
 
-export type Name<M> = M extends Mount<any, infer N, any> ? N : never;
+export type NameOf<M> = M extends Mount<any, infer N, any> ? N : never;
 
 /**
  * Mount a Convex component, as Convex's `app.use` does, in the host's

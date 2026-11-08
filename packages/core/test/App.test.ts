@@ -186,7 +186,10 @@ describe("App", () => {
 
   it("rejects a mount bound to another backend's env", () => {
     const platform = Env.make("platform", { EMAIL_FROM: Env.string() });
-    const own = Mount.make(Email, { name: "own", env: { FROM: env.EMAIL_FROM } });
+    const own = Mount.make(Email, {
+      name: "own",
+      env: { FROM: env.EMAIL_FROM },
+    });
     const foreign = Mount.make(Email, {
       name: "foreign",
       env: { FROM: platform.EMAIL_FROM },

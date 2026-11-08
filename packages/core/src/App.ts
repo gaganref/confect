@@ -143,9 +143,13 @@ export type Mounts =
   | Readonly<Record<string, AnyMount>>;
 
 export type MountNames<M extends Mounts> =
-  M extends ReadonlyArray<infer X> ? MountModule.Name<X> : keyof M;
+  M extends ReadonlyArray<infer X> ? MountModule.NameOf<X> : keyof M;
 
-export interface App<E extends Env.Any, M extends Mounts, K extends Kind = Kind> {
+export interface App<
+  E extends Env.Any,
+  M extends Mounts,
+  K extends Kind = Kind,
+> {
   readonly [TypeId]: typeof TypeId;
   readonly kind: K;
   readonly env: E;
@@ -158,9 +162,9 @@ export type Any = App<Env.Any, Mounts>;
 
 /**
  * Declare a backend, in `confect/app.ts`: its env, the `convex.config`
- * definitions of the Convex components it mounts, and its mounts. Set
- * `kind: "component"` when declaring a component; the default is `"app"`.
- * Codegen rejects a kind that differs from its target, and writes
+ * definitions of the Convex components it mounts, and its mounts. Set `kind:
+ * "component"` when declaring a component; the default is `"app"`. Codegen
+ * rejects a kind that differs from its target, and writes
  * `convex/convex.config.ts` with one `app.use` per mount, in list order, using
  * the listed definition whose `defineComponent` name is the mount's component
  * name. A mount that binds another backend's env entry fails to typecheck.

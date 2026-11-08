@@ -239,7 +239,7 @@ export const parse = (input: {
               }),
         );
       }
-      const named = mounts.find(({ name }) => name === mount.name);
+      const named = mounts.find((declared) => declared.name === mount.name);
       if (named !== undefined) {
         return yield* Result.fail(
           new DuplicateMountName({

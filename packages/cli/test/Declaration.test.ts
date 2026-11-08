@@ -143,7 +143,7 @@ export default component;
         mounts: [
           Limiter,
           Mount.make(Workpool, { name: "importsPool", httpPrefix: "/imports" }),
-          Mount.make(Ratelimiter, { name: "strict", env: { LIMIT: "1" } }),
+          Mount.make(Workpool, { name: "exportsPool" }),
         ],
       }),
     );
@@ -168,11 +168,8 @@ app.use(workpool, {
   httpPrefix: "/imports",
 });
 
-app.use(ratelimiter, {
-  name: "strict",
-  env: {
-    LIMIT: "1",
-  },
+app.use(workpool, {
+  name: "exportsPool",
 });
 
 export default app;
@@ -226,12 +223,19 @@ export default app;
     const env = Env.make("tenant", {});
     const other = Env.make("platform", { LIMIT: Env.string() });
     const app: unknown = {
-      ...App.make({ env, components: [ratelimiter] }),
-      mounts: [
-        Mount.make(Ratelimiter, { name: "limiter", env: { LIMIT: other.LIMIT } }),
-      ],
+      ...App.make({ env }),
+      mounts: {
+        limiter: App.mount(ratelimiter, { env: { LIMIT: other.LIMIT } }),
+      },
     };
-    expect(parseApp(app)).toEqual(
+    expect(
+      Declaration.parse({
+        target: "app",
+        app,
+        auth: Option.none(),
+        componentImport,
+      }),
+    ).toEqual(
       Result.fail(
         new Declaration.ForeignEnvBinding({
           mount: "limiter",
@@ -246,15 +250,22 @@ export default app;
 
   it("rejects a binding that is neither a constant nor an env entry", () => {
     const app: unknown = {
-      ...App.make({ env: Env.make("tenant", {}), components: [ratelimiter] }),
-      mounts: [
-        Mount.make(Ratelimiter, {
-          name: "limiter",
-          env: { LIMIT: 1 as unknown as string },
-        }),
-      ],
+      ...App.make({ env: Env.make("tenant", {}) }),
+      mounts: {
+        limiter: {
+          ...App.mount(ratelimiter, { env: { LIMIT: "1" } }),
+          env: { LIMIT: 1 },
+        },
+      },
     };
-    expect(parseApp(app)).toEqual(
+    expect(
+      Declaration.parse({
+        target: "app",
+        app,
+        auth: Option.none(),
+        componentImport,
+      }),
+    ).toEqual(
       Result.fail(
         new Declaration.InvalidBinding({ mount: "limiter", slot: "LIMIT" }),
       ),
