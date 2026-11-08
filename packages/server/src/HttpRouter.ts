@@ -218,7 +218,18 @@ const makeWithLayer = <
   // a `Layer.unwrap` reading `Config`—resolves configuration through the
   // Convex-aware provider; merged so that request fibers—endpoint handlers
   // and middleware—do too.
-  const AppLayer = withOptions(routes).pipe(
+  // Collected now: toWebHandler builds AppLayer before the reflection below.
+  const endpoints = new Set<string>();
+  if (api !== undefined)
+    HttpApi.reflect(api, {
+      onGroup: () => {},
+      onEndpoint: ({ endpoint }) => {
+        endpoints.add(
+          `${endpoint.method} ${apiRouterPath(endpoint.path as FindMyWay.PathInput, endpoint.params)}`,
+        );
+      },
+    });
+  const AppLayer = withOptions(routes, endpoints).pipe(
     Layer.provideMerge(
       observability === undefined
         ? ConvexLogger.layer

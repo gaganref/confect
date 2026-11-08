@@ -1,4 +1,4 @@
-import type * as Context from "effect/Context";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
@@ -28,7 +28,27 @@ const forms = (path: Route["path"]) =>
     ? [path.replace(optional, "$1$2"), path.replace(optional, "$2") || "/"]
     : [path]) as ReadonlyArray<Route["path"]>;
 
-export const withOptions = <A, E, R>(routes: Layer.Layer<A, E, R>) =>
+const missingRouteContext = `Service not found: ${HttpRouter.RouteContext.key}`;
+
+// WORKAROUND: Effect 4.0.4 compiles endpoint middleware, decoding and the
+// handler into one route handler. Its endpoint body reads RouteContext before
+// decoding or calling the handler, so without RouteContext a preflight that
+// middleware passes on stops there. Remove when Effect can run an endpoint's
+// middleware around another handler.
+const preflight = (handler: Route["handler"]) =>
+  handler.pipe(
+    Effect.updateContext(Context.omit(HttpRouter.RouteContext)),
+    Effect.catchDefect((defect) =>
+      defect instanceof Error && defect.message === missingRouteContext
+        ? notFound
+        : Effect.die(defect),
+    ),
+  );
+
+export const withOptions = <A, E, R>(
+  routes: Layer.Layer<A, E, R>,
+  endpoints: ReadonlySet<string>,
+) =>
   Layer.unwrap(
     Effect.gen(function* () {
       const router = yield* HttpRouter.HttpRouter;
@@ -72,7 +92,9 @@ export const withOptions = <A, E, R>(routes: Layer.Layer<A, E, R>) =>
           const copy: Route = {
             ...route,
             method: "OPTIONS",
-            handler: notFound,
+            handler: endpoints.has(`${route.method} ${route.path}`)
+              ? preflight(route.handler)
+              : notFound,
           };
           const candidate =
             byMethod.get(route.method) ?? (yield* HttpRouter.make);

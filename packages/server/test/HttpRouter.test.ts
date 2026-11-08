@@ -21,6 +21,7 @@ import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
+import * as HttpApiMiddleware from "effect/http-api/HttpApiMiddleware";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpApiError from "effect/http-api/HttpApiError";
 
@@ -535,6 +536,108 @@ const fetcher = (router: ReturnType<typeof ConfectHttpRouter.make>) => {
       return [response.status, body] as const;
     });
 };
+
+class RouteInfo extends Context.Service<
+  RouteInfo,
+  { readonly target: string }
+>()("@confect/server/test/HttpRouter.test/RouteInfo") {}
+class Answer extends HttpApiMiddleware.Service<Answer>()("Answer") {}
+class Pass extends HttpApiMiddleware.Service<Pass>()("Pass") {}
+
+it.effect(
+  "answers OPTIONS through endpoint middleware, never the handler",
+  () =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const run = Effect.as(
+        Effect.sync(() => calls++),
+        "handler ran",
+      );
+      const optionsApi = HttpApi.make("options")
+        .add(
+          HttpApiGroup.make("endpoints").add(
+            HttpApiEndpoint.post("probe", "/probe", {
+              payload: Schema.Struct({ value: Schema.String }),
+              success: Schema.String,
+            })
+              .annotate(RouteInfo, { target: "probe" })
+              .middleware(Answer),
+            HttpApiEndpoint.post("trigger", "/trigger", {
+              success: Schema.String,
+            }).middleware(Pass),
+            HttpApiEndpoint.delete("remove", "/items/:id", {
+              params: { id: Schema.String },
+              success: Schema.String,
+            }),
+            HttpApiEndpoint.get("read", "/read", { success: Schema.String }),
+            HttpApiEndpoint.post("raw", "/raw").middleware(Pass),
+          ),
+        )
+        .add(
+          HttpApiGroup.make("grouped")
+            .add(
+              HttpApiEndpoint.post("run", "/grouped", {
+                success: Schema.String,
+              }),
+            )
+            .middleware(Pass),
+        );
+      const send = fetcher(
+        ConfectHttpRouter.make(
+          HttpApiBuilder.layer(optionsApi).pipe(
+            Layer.provide([
+              HttpApiBuilder.group(optionsApi, "endpoints", (handlers) =>
+                handlers
+                  .handle("probe", () => run)
+                  .handle("trigger", () => run)
+                  .handle("remove", () => run)
+                  .handle("read", () => run)
+                  .handleRaw("raw", () =>
+                    Effect.map(run, HttpServerResponse.text),
+                  ),
+              ),
+              HttpApiBuilder.group(optionsApi, "grouped", (handlers) =>
+                handlers.handle("run", () => run),
+              ),
+            ]),
+            Layer.provide([
+              Layer.succeed(Pass, (next) => next),
+              Layer.succeed(Answer, (_next, { endpoint }) =>
+                Effect.map(HttpServerRequest.HttpServerRequest, (request) =>
+                  HttpServerResponse.empty({
+                    status:
+                      Context.getUnsafe(endpoint.annotations, RouteInfo)
+                        .target !== "probe"
+                        ? 500
+                        : request.method === "OPTIONS"
+                          ? 204
+                          : 401,
+                  }),
+                ),
+              ),
+            ]),
+          ),
+          { api: optionsApi },
+        ),
+      );
+      expect(yield* send("/probe", "POST")).toEqual([401, ""]);
+      expect(yield* send("/probe", "OPTIONS")).toEqual([204, ""]);
+      for (const [path, method] of [
+        ["/trigger", undefined],
+        ["/trigger", "POST"],
+        ["/items/42", "DELETE"],
+        ["/read", "GET"],
+        ["/read", "HEAD"],
+        ["/raw", "POST"],
+        ["/grouped", "POST"],
+        ["/missing", undefined],
+      ] as const)
+        expect(yield* send(path, "OPTIONS", method)).toEqual([404, ""]);
+      expect(calls).toBe(0);
+      expect(yield* send("/trigger", "POST")).toEqual([200, '"handler ran"']);
+      expect(calls).toBe(1);
+    }),
+);
 
 const answering = (
   method: "GET" | "HEAD" | "POST" | "PUT",
