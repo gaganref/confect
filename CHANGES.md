@@ -354,7 +354,13 @@ storage and scheduler services in component handlers. Host generation is
 unchanged. The server package still exports the raw tags for middleware;
 removing them from a downstream runtime context belongs to that middleware.
 
-Changesets: `add-confect-components.md`, `component-no-raw-ctx.md`.
+A component's generated `_generated/component.ts` builds its contract with
+`Component.contract(spec, scope, tables)`, the name `Component.make` had. The
+rename frees `Component.make` for the component descriptor. Rerun
+`confect codegen` to regenerate the file.
+
+Changesets: `add-confect-components.md`, `component-no-raw-ctx.md`,
+`component-contract-rename.md`.
 Upstream: port of [upstream #646](https://github.com/rjdellecese/confect/pull/646),
 which remains open; fork-specific follow-up submission is unrecorded.
 

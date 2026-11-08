@@ -75,7 +75,7 @@ import http from "../confect/http";
 export default HttpRouter.forSchema(schema)(http.routes, { api: http.api });
 ```
 
-Write tables under `confect/tables/` and functions in sibling `*.spec.ts` / `*.impl.ts` files using the same APIs as an application. Codegen writes IDs, schemas, services, refs, registered functions and `confect/_generated/component.ts`, the publishable contract. Only public functions enter that contract.
+Write tables under `confect/tables/` and functions in sibling `*.spec.ts` / `*.impl.ts` files using the same APIs as an application. Codegen writes IDs, schemas, services, refs, registered functions and `confect/_generated/component.ts`, the publishable contract that `Component.contract(spec, scope, tables)` builds. Only public functions enter that contract.
 
 A component's `_generated/services.ts` omits `MutationCtx`, `QueryCtx` and `ActionCtx`, so a handler that yields one fails to type-check. Use its typed database, runner, storage and scheduler services instead.
 
