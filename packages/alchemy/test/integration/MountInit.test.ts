@@ -20,7 +20,7 @@ import * as Layer from "effect/Layer";
 import type * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
-import { execFileSync } from "node:child_process";
+import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import { tmpdir } from "node:os";
 import * as ConvexClient from "../../src/ConvexClient";
 import { deploy } from "../../src/internal/CodeDeployment";
@@ -56,15 +56,17 @@ const initial: Args = {
 type Row = Record<string, unknown> & { readonly _id: string };
 
 const codegen = (cwd: string, ...args: ReadonlyArray<string>) =>
-  Effect.try({
-    try: () =>
-      execFileSync(
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+    const code = yield* spawner.exitCode(
+      ChildProcess.make(
         process.execPath,
         [`${packages}/cli/bin/confect.mjs`, "codegen", ...args],
-        { cwd, encoding: "utf8", stdio: "pipe" },
+        { cwd, stdin: "ignore", stdout: "ignore", stderr: "ignore" },
       ),
-    catch: (error) =>
-      new Error(`codegen failed: ${Reflect.get(Object(error), "stdout")}`),
+    );
+    if (code !== 0)
+      return yield* Effect.die(`codegen ${args.join(" ")} exited ${code}`);
   }).pipe(Effect.orDie);
 
 /**
@@ -294,8 +296,11 @@ const withDeployment = <A, E>(
                   "local",
                 ),
               ),
-              Effect.provide(recording(tag, events)),
-              Effect.provide(NodeServices.layer),
+              Effect.provide(
+                recording(tag, events).pipe(
+                  Layer.provideMerge(NodeServices.layer),
+                ),
+              ),
               Effect.result,
             );
         return yield* scenario({
