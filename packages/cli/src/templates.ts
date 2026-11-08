@@ -481,8 +481,9 @@ export const componentContract = Effect.fnUntraced(function* ({
     ...tableNames,
     ...Array.map(systemTables, (name) => `"${name}"`),
   ];
+  const groups = `$Component.Groups<[${Array.map(tableNames, (name) => `typeof ${name}`).join(", ")}]>`;
   yield* cbw.writeLine(
-    `const $component: $Component.Component<typeof $spec, typeof $scope, ${names.join(" | ")}> = $Component.contract($spec, $scope, [${entries.join(", ")}]);`,
+    `const $component: $Component.Component<typeof $spec, typeof $scope, ${names.join(" | ")}, ${groups}> = $Component.contract($spec, $scope, [${entries.join(", ")}]);`,
   );
   yield* cbw.writeLine("export default $component;");
   return yield* cbw.toString();
