@@ -62,8 +62,13 @@ describe("Auth", () => {
       "/auth/jwks.json",
     );
     expect(Auth.siteUrlPath("https://login.example.edu")).toBeUndefined();
-    const AuthCore = Component.make("auth", { client: (native: unknown) => native });
-    const mounted = Mount.make(AuthCore, { name: "auth", httpPrefix: "/auth/" });
+    const AuthCore = Component.make("auth", {
+      client: (native: unknown) => native,
+    });
+    const mounted = Mount.make(AuthCore, {
+      name: "auth",
+      httpPrefix: "/auth/",
+    });
     expect(Auth.siteUrlPath(Auth.siteUrl(mounted, "/jwks.json"))).toBe(
       "/auth/jwks.json",
     );
