@@ -4,6 +4,7 @@ import type * as HttpApi from "effect/http-api/HttpApi";
 import * as Predicate from "effect/Predicate";
 import type * as Env from "./Env.js";
 import type * as MiddlewareSpec from "./MiddlewareSpec.js";
+import * as MountModule from "./Mount.js";
 
 const TypeId = "~@confect/core/App";
 const MountTypeId = "~@confect/core/App/Mount";
@@ -121,7 +122,9 @@ type Owners<M> =
     ? O extends { readonly env: infer B }
       ? { [K in keyof B]: OwnerOf<B[K]> }[keyof B]
       : never
-    : never;
+    : M extends MountModule.Mount<any, any, MountModule.Declared<any, infer B>>
+      ? { [K in keyof B]: OwnerOf<B[K]> }[keyof B]
+      : never;
 
 type OwnedBy<N extends string, M> = {
   readonly [K in keyof M]: [Exclude<Owners<M[K]>, N>] extends [never]
@@ -131,55 +134,69 @@ type OwnedBy<N extends string, M> = {
 
 export type Kind = "app" | "component";
 
+/**
+ * A list of `Mount.make` mounts, or a record of {@link mount} mounts keyed by
+ * name.
+ */
+export type Mounts =
+  | ReadonlyArray<MountModule.Any>
+  | Readonly<Record<string, AnyMount>>;
+
+export type MountNames<M extends Mounts> =
+  M extends ReadonlyArray<infer X> ? MountModule.NameOf<X> : keyof M;
+
 export interface App<
   E extends Env.Any,
-  M extends Readonly<Record<string, AnyMount>>,
+  M extends Mounts,
   K extends Kind = Kind,
 > {
   readonly [TypeId]: typeof TypeId;
   readonly kind: K;
   readonly env: E;
+  readonly components: ReadonlyArray<Definition>;
   readonly mounts: M;
   readonly requiresMiddleware: ReadonlyArray<MiddlewareSpec.AnyMiddlewareSpec>;
 }
 
-export type Any = App<Env.Any, Readonly<Record<string, AnyMount>>>;
+export type Any = App<Env.Any, Mounts>;
 
 /**
- * Declare a backend, in `confect/app.ts`: its env and its mounted Convex
- * components by name. Set `kind: "component"` when declaring a component; the
- * default is `"app"`. Codegen rejects a kind that differs from its target.
- * Codegen writes `convex/convex.config.ts` from it. A mount that binds another
- * backend's env entry fails to typecheck.
+ * Declare a backend, in `confect/app.ts`: its env, the `convex.config`
+ * definitions of the Convex components it mounts, and its mounts. Set `kind:
+ * "component"` when declaring a component; the default is `"app"`. Codegen
+ * rejects a kind that differs from its target, and writes
+ * `convex/convex.config.ts` with one `app.use` per mount, in list order, using
+ * the listed definition whose `defineComponent` name is the mount's component
+ * name. A mount that binds another backend's env entry fails to typecheck.
  *
  * ```ts
+ * import email from "@acme/email/convex.config";
+ * import workpool from "@convex-dev/workpool/convex.config";
+ *
  * export default App.make({
  *   env,
- *   mounts: {
- *     email: App.mount(email, {
- *       httpPrefix: "/email",
- *       env: { FROM: env.EMAIL_FROM, KEY: env.RESEND_API_KEY },
- *     }),
- *     importsPool: App.mount(workpool),
- *   },
+ *   components: [email, workpool],
+ *   mounts: [BulkEmail, TransactionalEmail, ImportsPool],
  * });
  * ```
  */
 export const make = <
   const E extends Env.Any,
-  const M extends Readonly<Record<string, AnyMount>> = {},
+  const M extends Mounts = [],
   const K extends Kind = "app",
 >(
   options: {
     readonly env: E;
     readonly requiresMiddleware?: ReadonlyArray<MiddlewareSpec.AnyMiddlewareSpec>;
+    readonly components?: ReadonlyArray<Definition>;
     readonly mounts?: M & OwnedBy<NoInfer<Env.Name<E>>, NoInfer<M>>;
   } & ([K] extends ["app"] ? { readonly kind?: K } : { readonly kind: K }),
 ): App<E, M, K> => ({
   [TypeId]: TypeId,
   kind: options.kind ?? ("app" as K),
   env: options.env,
-  mounts: options.mounts ?? ({} as M),
+  components: options.components ?? [],
+  mounts: options.mounts ?? ([] as unknown as M),
   requiresMiddleware: options.requiresMiddleware ?? [],
 });
 
@@ -195,14 +212,23 @@ export const isMount = (u: unknown): u is AnyMount =>
 export const env = <A extends Any>(app: A): A["env"] => app.env;
 
 /**
- * Every mount with its name, in declaration order.
+ * The `convex.config` definitions the backend lists, in list order.
+ */
+export const components = (app: Any): ReadonlyArray<Definition> =>
+  app.components;
+
+/**
+ * What each mount was declared with, in declaration order: a `Mount.make`
+ * mount's data, or a {@link mount} with its name and definition.
  */
 export const mounts = (
   app: Any,
-): ReadonlyArray<MountData & { readonly name: string }> =>
-  Object.entries(app.mounts).map(([name, installed]) => ({
-    name,
-    definition: installed.definition,
-    httpPrefix: installed.httpPrefix,
-    env: installed.env,
-  }));
+): ReadonlyArray<MountModule.Data | (MountData & { readonly name: string })> =>
+  Array.isArray(app.mounts)
+    ? app.mounts.map(MountModule.data)
+    : Object.entries(app.mounts).map(([name, installed]) => ({
+        name,
+        definition: installed.definition,
+        httpPrefix: installed.httpPrefix,
+        env: installed.env,
+      }));

@@ -378,7 +378,7 @@ export function layer<
   registry: Registry<DatabaseSchema_> & {
     readonly components: Readonly<
       Record<
-        keyof NoInfer<A>["mounts"],
+        App.MountNames<NoInfer<A>["mounts"]>,
         Registry<DatabaseSchema_>["components"][string]
       >
     >;

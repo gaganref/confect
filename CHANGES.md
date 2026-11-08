@@ -412,12 +412,13 @@ Layer and a test replaces it with `Effect.provideService`. `env` is typed from t
 descriptor and `options` from its client constructor. A descriptor may name its
 `init`, an internal mutation, and each mount then passes install `args` typed
 from it; a callback slot takes only an internal host ref matching its contract.
-The mount records `args`; nothing runs `init` on a push yet. `App.mount` still
-installs the component. `Auth.siteUrl` takes a mount with an `httpPrefix`.
+The mount records `args`; nothing runs `init` on a push yet. A host lists its
+mounts in `App.make({ components, mounts })`, and codegen writes each one's
+`app.use`. `Auth.siteUrl` takes a mount with an `httpPrefix`.
 
 Changesets: `add-confect-components.md`, `component-no-raw-ctx.md`,
 `component-contract-rename.md`, `component-descriptor-mount.md`,
-`mount-install-args.md`, `mount-site-url.md`.
+`mount-install-args.md`, `mount-site-url.md`, `app-mounts-list.md`.
 Upstream: port of [upstream #646](https://github.com/rjdellecese/confect/pull/646),
 which remains open; fork-specific follow-up submission is unrecorded.
 
@@ -513,7 +514,14 @@ Watch declarations in dev mode and reject conflicting routes and hand-written
 owned outputs. Components can declare their env and mounts the same way.
 Raise core's Convex peer floor to 1.39.0 for component env declarations.
 
-Changeset: `backend-declaration.md`.
+`App.make({ env, components, mounts })` takes the `convex.config` definitions of
+the components a backend mounts and its `Mount.make` mounts as lists, so each
+mount's name is written once. Codegen writes one `app.use` per mount, in list
+order, with the definition whose `defineComponent` name is the mount's component
+name. It fails when a mount has no listed definition, when a listed definition
+has no mount, and when two mounts share a name.
+
+Changesets: `backend-declaration.md`, `app-mounts-list.md`.
 Upstream: planned; no linked proposal verified.
 
 ### Label reflected HTTP routes

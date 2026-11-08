@@ -1,30 +1,18 @@
-import { App } from "@confect/core";
+import { App, Mount } from "@confect/core";
 import counter from "../components/counter/convex/convex.config";
+import Parent from "../components/parent/client";
 import parent from "../components/parent/convex/convex.config";
 import env from "./env";
+import { First } from "./first";
+import { Second } from "./second";
 
 export default App.make({
   env,
-  mounts: {
-    first: App.mount(counter, {
-      httpPrefix: "/first",
-      env: {
-        COMPONENT_REQUIRED: "first-required",
-        COMPONENT_OPTIONAL: "first-optional",
-        COMPONENT_MARKER: env.COMPONENT_MARKER,
-      },
-    }),
-    second: App.mount(counter, {
-      httpPrefix: "/second",
-      env: {
-        COMPONENT_REQUIRED: "second-required",
-        COMPONENT_OPTIONAL: env.COMPONENT_MARKER,
-        COMPONENT_MARKER: env.COMPONENT_MARKER,
-      },
-    }),
-    left: App.mount(parent, { httpPrefix: "/left" }),
-    right: App.mount(parent, {
-      httpPrefix: "/right",
-    }),
-  },
+  components: [counter, parent],
+  mounts: [
+    First,
+    Second,
+    Mount.make(Parent, { name: "left", httpPrefix: "/left" }),
+    Mount.make(Parent, { name: "right", httpPrefix: "/right" }),
+  ],
 });

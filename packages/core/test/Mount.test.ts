@@ -69,6 +69,9 @@ describe("Mount.make", () => {
   });
 
   it("keeps what the mount was declared with", () => {
+    expectTypeOf<
+      NonNullable<(typeof TransactionalEmail)["~declared"]>["env"]
+    >().toEqualTypeOf<{ readonly REGION: "eu-west-1" }>();
     expect(Mount.data(BulkEmail)).toEqual({
       component: Email,
       name: "bulkEmail",

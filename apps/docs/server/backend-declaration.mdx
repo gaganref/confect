@@ -60,26 +60,35 @@ Reads resolve through Confect's [Convex-aware `ConfigProvider`](/server/environm
 
 ## `app.ts`
 
-List the components the backend mounts and the env each receives:
+List the `convex.config` definitions of the Convex components the backend mounts, then its mounts. Each mount is declared in its own `confect/<mount>.ts` with [`Mount.make`](/server/components#reach-a-mounts-client), which takes the component's descriptor and the env each mount receives:
 
 ```ts confect/app.ts
 import { App } from "@confect/core";
 import workpool from "@convex-dev/workpool/convex.config.js";
 import email from "@acme/email/convex.config.js";
+import { BulkEmail } from "./bulkEmail";
+import { ImportsPool } from "./importsPool";
 import env from "./env";
 
 export default App.make({
   env,
-  mounts: {
-    email: App.mount(email, {
-      httpPrefix: "/email",
-      env: {
-        FROM: env.EMAIL_FROM,
-        RESEND_API_KEY: env.RESEND_API_KEY,
-        TRANSPORT: env.EMAIL_TRANSPORT,
-      },
-    }),
-    importsPool: App.mount(workpool),
+  components: [email, workpool],
+  mounts: [BulkEmail, ImportsPool],
+});
+```
+
+```ts confect/bulkEmail.ts
+import { Mount } from "@confect/core";
+import Email from "@acme/email/client";
+import env from "./env";
+
+export const BulkEmail = Mount.make(Email, {
+  name: "bulkEmail",
+  httpPrefix: "/bulk-email",
+  env: {
+    FROM: env.EMAIL_FROM,
+    RESEND_API_KEY: env.RESEND_API_KEY,
+    TRANSPORT: env.EMAIL_TRANSPORT,
   },
 });
 ```
@@ -91,7 +100,7 @@ import { Policy, Trace } from "./middleware";
 export default App.make({ env, requiresMiddleware: [Policy, Trace] });
 ```
 
-The record key is the mount name. `App.mount` takes the default export of a component's `convex.config` module and types `env` against the component's own `defineComponent({ env })` declaration. These fail to typecheck:
+Each mount names itself. Codegen pairs it with the listed definition whose `defineComponent` name is its component's name, and writes one `app.use` per mount in list order. It fails, naming the mount or definition, when a mount's component has no listed definition, when a listed definition has no mount, and when two mounts share a name. `Mount.make` types `env` against the descriptor's env slots. These fail to typecheck:
 
 - leaving out a binding the component requires
 - binding an optional entry to a required slot
@@ -122,8 +131,8 @@ const app = defineApp({
 });
 
 app.use(email, {
-  name: "email",
-  httpPrefix: "/email",
+  name: "bulkEmail",
+  httpPrefix: "/bulk-email",
   env: {
     FROM: app.env.EMAIL_FROM,
     RESEND_API_KEY: app.env.RESEND_API_KEY,
@@ -138,7 +147,7 @@ app.use(workpool, {
 export default app;
 ```
 
-A Confect-authored component declares itself with `App.make({ kind: "component", env, mounts })`, with `env.ts` and `app.ts` in its own `confect/` directory. `confect codegen --component-dir` writes its `defineComponent(name, { env })`. The kind defaults to `"app"`; codegen rejects a declaration whose kind differs from the target directory. Components can mount other components, but `Auth.make` accepts only app declarations.
+A Confect-authored component declares itself with `App.make({ kind: "component", env, components, mounts })`, with `env.ts` and `app.ts` in its own `confect/` directory. `confect codegen --component-dir` writes its `defineComponent(name, { env })`. The kind defaults to `"app"`; codegen rejects a declaration whose kind differs from the target directory. Components can mount other components, but `Auth.make` accepts only app declarations.
 
 ## `auth.ts`
 
@@ -147,6 +156,7 @@ Declare the identity providers whose tokens the backend accepts. This is Convex'
 ```ts confect/auth.ts
 import { Auth } from "@confect/core";
 import app from "./app";
+import { BulkEmail } from "./bulkEmail";
 
 export default Auth.make(app, {
   providers: [
@@ -155,7 +165,7 @@ export default Auth.make(app, {
       type: "customJwt",
       applicationID: "tenant",
       issuer: Auth.siteUrl(),
-      jwks: Auth.siteUrl(app.mounts.email, "/.well-known/jwks.json"),
+      jwks: Auth.siteUrl(BulkEmail, "/.well-known/jwks.json"),
       algorithm: "RS256",
     },
   ],
@@ -230,7 +240,7 @@ export default {
     },
     PLATFORM_URL: { kind: "string", optional: true },
   },
-  http: { mounts: { email: "/email" } },
+  http: { mounts: { bulkEmail: "/bulk-email" } },
   digest: "sha256:…",
 } as const;
 ```
