@@ -163,7 +163,7 @@ export const make = <
     ArgsField<C, A> &
     OptionsField<C>,
 ): Mount<C, Name> => {
-  const data = { component, ...(options as object) } as Data<C> & {
+  const data = { ...(options as object), component } as Data<C> & {
     readonly name: Name;
   };
   // The options were checked against the constructor's parameters above.

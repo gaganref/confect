@@ -81,6 +81,11 @@ describe("Mount.make", () => {
     });
   });
 
+  it("records the component it mounts, not one carried in its options", () => {
+    const options = { name: "importsPool", component: Email } as const;
+    expect(Mount.data(Mount.make(Workpool, options)).component).toBe(Workpool);
+  });
+
   it.effect("builds its default client from the component it names", () =>
     Effect.gen(function* () {
       const bulk = yield* BulkEmail;
