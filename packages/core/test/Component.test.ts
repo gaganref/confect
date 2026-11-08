@@ -698,5 +698,21 @@ describe("table groups in a contract", () => {
     const listed: ReadonlyArray<typeof batches | typeof emails> = [batches];
     // @ts-expect-error an array that is not a literal may omit `emails`
     void Component.contract(spec, scope, listed);
+    const eitherTable = (): typeof batches | typeof emails => batches;
+    // @ts-expect-error an entry is one table, not a union of tables
+    void Component.contract(spec, scope, [batches, eitherTable()]);
+    const eitherName = (): "batches" | "_storage" => "_storage";
+    // @ts-expect-error `batches` may be absent when the name is `_storage`
+    void Component.contract(spec, scope, [emails, eitherName()]);
+    const eitherList = ():
+      | readonly [typeof batches, typeof emails]
+      | readonly [typeof batches] => [batches];
+    // @ts-expect-error the `[batches]` branch has no `emails`
+    void Component.contract(spec, scope, eitherList());
+    const eitherValid = ():
+      | readonly [typeof batches, typeof emails]
+      | readonly [typeof batches, "_storage"] => [batches, "_storage"];
+    // @ts-expect-error each branch is valid, but they publish different groups
+    void Component.contract(spec, scope, eitherValid());
   });
 });
