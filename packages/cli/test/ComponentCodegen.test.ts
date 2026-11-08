@@ -219,6 +219,8 @@ export default Table.make(() => Schema.Struct({ name: Schema.String }));
     }).pipe(Effect.provide(NodeServices.layer)),
 );
 
+const schemaBuilds = globalThis as { emailSchemaBuilds?: number };
+
 const generateGroupedContract = Effect.gen(function* () {
   const directory = yield* freshFixture;
   const fs = yield* FileSystem.FileSystem;
@@ -247,8 +249,7 @@ export default Table.make(() => {
     componentDir: Option.some(`${directory}/convex`),
   });
   yield* codegenHandler.pipe(Effect.provide(dirs));
-  const builds = globalThis as { emailSchemaBuilds?: number };
-  builds.emailSchemaBuilds = 0;
+  schemaBuilds.emailSchemaBuilds = 0;
   const generated: {
     readonly default: Parameters<typeof Component.groups>[0];
   } = yield* Effect.promise(
@@ -277,9 +278,7 @@ it.effect(
   () =>
     Effect.gen(function* () {
       yield* generateGroupedContract;
-      expect(
-        (globalThis as { emailSchemaBuilds?: number }).emailSchemaBuilds,
-      ).toBe(0);
+      expect(schemaBuilds.emailSchemaBuilds).toBe(0);
     }).pipe(Effect.provide(NodeServices.layer)),
   { timeout: 30000 },
 );
