@@ -103,6 +103,23 @@ layer(
       }
     }),
   );
+  it.effect(
+    "reaches middleware on the short form of an optional prefix parameter",
+    () =>
+      Effect.gen(function* () {
+        for (const requestPath of ["/prefix", "/first/prefix"]) {
+          const response = yield* HttpClient.execute(
+            HttpClientRequest.make("OPTIONS")(
+              `http://127.0.0.1:3211${requestPath}`,
+            ),
+          );
+          expect([response.status, yield* response.text]).toEqual([
+            200,
+            "POST middleware",
+          ]);
+        }
+      }),
+  );
   it.effect("reads absent, valid and rejected HTTP identity", () =>
     Effect.gen(function* () {
       const backend = yield* LocalBackend.LocalBackend;
