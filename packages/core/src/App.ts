@@ -47,19 +47,13 @@ export type Bindings<E extends EnvDefinition> = {
 
 type HttpOptions = { readonly httpPrefix?: HttpPrefix };
 
-export type Options<D extends Definition> = HttpOptions & {
-  /**
-   * The package specifier of the module whose `register(t, name)` the generated
-   * test registry calls for this mount, in place of the component package's own
-   * `<package>/test`. The kit registers the mount's children.
-   */
-  readonly testing?: string;
-} & ([RequiredKeys<EnvOf<D>>] extends [never]
+export type Options<D extends Definition> = HttpOptions &
+  ([RequiredKeys<EnvOf<D>>] extends [never]
     ? { readonly env?: Bindings<EnvOf<D>> }
     : { readonly env: Bindings<EnvOf<D>> });
 
 type Exact<D extends Definition, O> = {
-  readonly [K in Exclude<keyof O, "env" | "httpPrefix" | "testing">]: never;
+  readonly [K in Exclude<keyof O, "env" | "httpPrefix">]: never;
 } & (O extends { readonly env: infer B }
   ? {
       readonly env: { readonly [K in Exclude<keyof B, keyof EnvOf<D>>]: never };
@@ -70,7 +64,6 @@ export interface MountData {
   readonly definition: Definition;
   readonly httpPrefix: HttpPrefix | undefined;
   readonly env: Readonly<Record<string, string | Env.AnyEntry | undefined>>;
-  readonly testing: string | undefined;
 }
 
 /**
@@ -110,7 +103,6 @@ export function mount(
   options?: {
     readonly httpPrefix?: HttpPrefix;
     readonly env?: MountData["env"];
-    readonly testing?: string;
   },
 ): AnyMount {
   return {
@@ -118,7 +110,6 @@ export function mount(
     definition,
     httpPrefix: options?.httpPrefix,
     env: options?.env ?? {},
-    testing: options?.testing,
     // The overloads above carry the precise types; this body serves both.
   } as AnyMount;
 }
@@ -214,5 +205,4 @@ export const mounts = (
     definition: installed.definition,
     httpPrefix: installed.httpPrefix,
     env: installed.env,
-    testing: installed.testing,
   }));
