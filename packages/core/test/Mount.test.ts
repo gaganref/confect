@@ -185,6 +185,61 @@ describe("Mount.make args", () => {
     });
   });
 
+  it("takes an optional struct and a union member, checking each one's fields", () => {
+    const Notifier = Component.make("notifier", {
+      init: Ref.make(
+        "install",
+        FunctionSpec.internalMutation({
+          name: "init",
+          args: () => ({
+            retry: Schema.optionalKey(
+              Schema.Struct({
+                attempts: Schema.Int,
+                onGiveUp: Schema.optionalKey(Callback.handle(OnEvent)),
+              }),
+            ),
+            transport: Schema.Union([
+              Schema.Struct({
+                kind: Schema.Literal("resend"),
+                apiKey: Schema.String,
+              }),
+              Schema.Struct({
+                kind: Schema.Literal("smtp"),
+                host: Schema.String,
+              }),
+            ]),
+          }),
+          returns: () => Schema.Null,
+        }),
+      ),
+      client: (native: Native) => native,
+    });
+    const n = { name: "notifier" } as const;
+    const resend = { kind: "resend", apiKey: "synthetic" } as const;
+    void Mount.make(Notifier, {
+      ...n,
+      args: { retry: { attempts: 3, onGiveUp: onEvent }, transport: resend },
+    });
+    void Mount.make(Notifier, {
+      ...n,
+      args: { transport: { kind: "smtp", host: "mail.example.test" } },
+    });
+    const query = Ref.make(
+      "callbacks",
+      FunctionSpec.internalQuery({
+        name: "giveUpQuery",
+        args: () => EventFields,
+        returns: () => Schema.Null,
+      }),
+    );
+    const retry = { attempts: 3, onGiveUp: query };
+    // @ts-expect-error RULE nested-callback-kind: a callback inside an optional struct is checked.
+    void Mount.make(Notifier, { ...n, args: { retry, transport: resend } });
+    const mixed = { kind: "resend", host: "mail.example.test" } as const;
+    // @ts-expect-error RULE union-member-mix: a union value fits one member's fields.
+    void Mount.make(Notifier, { ...n, args: { transport: mixed } });
+  });
+
   it("refuses args init does not take", () => {
     const n = { name: "bad" } as const;
     const fromName = "office";
