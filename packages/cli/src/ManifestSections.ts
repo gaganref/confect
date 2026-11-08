@@ -67,6 +67,7 @@ export type Registry = Map<
   {
     section: ManifestSection.Any;
     data: { format: number; functions: Record<string, unknown> };
+    sources: Record<string, string>;
   }
 >;
 const hasFormat = (format: number) =>
@@ -116,6 +117,7 @@ export const collect = (
                 format: section.format,
                 functions: Object.create(null) as Record<string, unknown>,
               },
+              sources: Object.create(null) as Record<string, string>,
             };
             registry.set(key, entry);
             const description = yield* Result.try({
@@ -134,6 +136,7 @@ export const collect = (
               json(description),
               (reason) => invalid(`could not describe as JSON: ${reason}`),
             );
+            entry.sources[functionPath] = source;
           }
         }
         for (const [name, child] of Object.entries(group.groups))
@@ -146,7 +149,7 @@ export const collect = (
 
 /**
  * Replace the data of each section that has `summarize` with what it returns
- * from its matched modules and its functions' descriptions.
+ * from its matched modules, its functions' descriptions and their spec files.
  */
 export const summarize = (
   registry: Registry,
@@ -154,11 +157,12 @@ export const summarize = (
 ) =>
   Result.gen(function* () {
     const summarized = new Map<string, Summarized>(registry);
-    for (const [key, { section, data }] of registry) {
+    for (const [key, { section, data, sources }] of registry) {
       if (section.summarize === undefined) continue;
       const input = {
         modules: modules.get(key) ?? [],
         functions: data.functions,
+        sources,
       };
       const invalid = (reason: string) =>
         new InvalidManifestSectionError({ sectionKey: key, reason });
