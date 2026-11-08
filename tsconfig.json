@@ -49,6 +49,8 @@
     "tools/test-types",
     // Convex emits unused imports and an incorrect nested API import in these
     // unused helpers. Imported ComponentApi types remain in the checked graph.
-    "packages/server/test/local-backend/fixtures/components/*/convex/_generated"
+    "packages/server/test/local-backend/fixtures/components/*/convex/_generated",
+    // Its generated imports exist only in the copy a test runs codegen on.
+    "packages/alchemy/test/fixtures/init-app"
   ]
 }
