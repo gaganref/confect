@@ -117,7 +117,6 @@ const sourceFiles = Effect.gen(function* () {
 const render = Effect.fnUntraced(function* (
   { key, generate }: Claim,
   input: Omit<ManifestSection.GenerateInput, "modules">,
-  files: ReadonlyArray<string>,
   watched: Set<string>,
 ) {
   const path = yield* Path.Path;
@@ -128,7 +127,7 @@ const render = Effect.fnUntraced(function* (
       reason: `generate failed: ${String(cause)}`,
     });
   const matched = yield* Effect.try({
-    try: () => files.filter((file) => generate.match(file)),
+    try: () => input.files.filter((file) => generate.match(file)),
     catch: failed,
   });
   for (const file of matched) watched.add(file);
@@ -236,7 +235,7 @@ export const sync = Effect.fnUntraced(function* (
   const files = claimed.length === 0 ? [] : yield* sourceFiles;
   const watched = new Set<string>();
   const [rendered, failures] = yield* Effect.partition(claimed, (claim) =>
-    render(claim, { functions, mounts }, files, watched).pipe(
+    render(claim, { functions, mounts, files }, watched).pipe(
       Effect.map((output) => ({ ...claim, ...output })),
     ),
   );
