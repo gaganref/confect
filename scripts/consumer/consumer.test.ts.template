@@ -1,6 +1,8 @@
+import { readFileSync } from "node:fs";
 import { TestConfect } from "@confect/test";
 import * as Effect from "effect/Effect";
 import { expect, test } from "vitest";
+import { kitted } from "./confect/component.js";
 import registry from "./confect/_generated/testing.js";
 import auth from "./convex/auth.config.js";
 import manifest from "./confect/_generated/manifest.js";
@@ -79,3 +81,14 @@ test.each([
     }).pipe(Effect.provide(layer)),
   ),
 );
+
+test("installed codegen discovers and executes the package test kit", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      expect(
+        readFileSync(new URL("./confect/_generated/testing.ts", import.meta.url), "utf8"),
+      ).toContain('from "counter-kit/testing"');
+      const confect = yield* Test;
+      expect(yield* confect.query(kitted.counter.increment, { value: 7 })).toBe(8);
+    }).pipe(Effect.provide(layer)),
+  ));

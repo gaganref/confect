@@ -5,13 +5,13 @@ import firstSchema from "../../components/counter/convex/schema.js";
 import leftSchema from "../../components/parent/convex/schema.js";
 import left_deepSchema from "../../components/middle/convex/schema.js";
 import left_deep_childSchema from "../../components/inner/convex/schema.js";
-import * as rightKit from "parent-kit/testing";
 const firstKit = { schema: firstSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "authoring.ts": () => import("../../components/counter/convex/authoring.js"),
 "counter.ts": () => import("../../components/counter/convex/counter.js"),
 "crons.ts": () => import("../../components/counter/convex/crons.js"),
 "deliveries.ts": () => import("../../components/counter/convex/deliveries.js"),
 "http.ts": () => import("../../components/counter/convex/http.js"),
+"pagination.ts": () => import("../../components/counter/convex/pagination.js"),
 "reserved.ts": () => import("../../components/counter/convex/reserved.js"),
 "schema.ts": () => import("../../components/counter/convex/schema.js"),
 } };
@@ -35,6 +35,7 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "groups/components.ts": () => import("../../convex/groups/components.js"),
 "groups/metadata.ts": () => import("../../convex/groups/metadata.js"),
 "groups/nativeComponents.ts": () => import("../../convex/groups/nativeComponents.js"),
+"groups/pagination.ts": () => import("../../convex/groups/pagination.js"),
 "groups/reserved.ts": () => import("../../convex/groups/reserved.js"),
 "groups/scheduling.ts": () => import("../../convex/groups/scheduling.js"),
 "groups/storage.ts": () => import("../../convex/groups/storage.js"),
@@ -48,5 +49,9 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "left/deep": left_deepKit,
 "left/deep/child": left_deep_childKit,
 "left/deep/child/child": firstKit,
-"right": rightKit,
+"right": leftKit,
+"right/child": firstKit,
+"right/deep": left_deepKit,
+"right/deep/child": left_deep_childKit,
+"right/deep/child/child": firstKit,
 "second": firstKit,} };

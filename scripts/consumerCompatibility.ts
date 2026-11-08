@@ -41,7 +41,7 @@ export type Manager = "npm" | "pnpm";
 
 export const consumerDependencies = (profile: Profile, lane: Lane) => ({
   effect: lane === "baseline" ? "4.0.4" : cliPackage.peerDependencies.effect,
-  convex: lane === "baseline" ? "1.48.0" : "^1.48.0",
+  convex: lane === "baseline" ? "1.49.0" : "^1.49.0",
   "@effect/platform-node":
     lane === "baseline"
       ? "4.0.4"

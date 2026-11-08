@@ -8,6 +8,8 @@ import * as Schema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
 import * as FunctionProvenance from "./FunctionProvenance.js";
 import * as Ref from "./Ref.js";
+import { getFunctionReference } from "./RefInternal.js";
+import { CallbackContract } from "./internal/annotations.js";
 import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 
 export const TypeId = "~@confect/core/Callback";
@@ -137,6 +139,7 @@ const isHandleOf =
 const fromText = <Contract_ extends Any>(
   contract: Contract_,
   text: string,
+  reservedArgument?: string,
 ): Handle<Contract_> =>
   Object.assign(
     Ref.fromProvenance(
@@ -146,25 +149,34 @@ const fromText = <Contract_ extends Any>(
       // Convex types a handle as a string that is also a function reference.
       text as unknown as FunctionReference<any, any>,
       contract.functionType,
+      contract.functionType === "query" ? undefined : reservedArgument,
     ),
     { [HandleTypeId]: contract.id },
   ) as unknown as Handle<Contract_>;
 
 /**
  * The schema of a handle for `contract`: a string on the wire, a runnable ref
- * once decoded. Use it in a component's function args or tables.
+ * once decoded. Use it in a component's function args or tables. It lowers to
+ * Convex's `v.function` with the contract's encoded args and returns.
+ * `reservedArgument` opts mutation and action handles into context forwarding.
+ * The host target must reserve the same argument name.
  */
 export const handle = <Contract_ extends Any>(
   contract: Contract_,
+  options?: {
+    readonly reservedArgument?: Contract_["functionType"] extends "query"
+      ? never
+      : string;
+  },
 ): Schema.Codec<Handle<Contract_>, string> =>
-  Schema.String.pipe(
+  Schema.String.annotate({ [CallbackContract]: contract }).pipe(
     Schema.decodeTo(
       Schema.declare(isHandleOf(contract), {
         identifier: `Callback.Handle<${contract.id}>`,
       }),
       {
         decode: SchemaGetter.transform((text: string) =>
-          fromText(contract, text),
+          fromText(contract, text, options?.reservedArgument),
         ),
         encode: SchemaGetter.transform(
           (ref: Handle<Contract_>) => ref.convexFunctionName,
@@ -302,4 +314,4 @@ export const toFuture = <Ref_ extends Ref.Any>(
   Ref.GetFunctionVisibility<Ref_>,
   EncodedArgs<Ref_>,
   EncodedReturns<Ref_>
-> => Ref.getFunctionReference(ref) as never;
+> => getFunctionReference(ref) as never;

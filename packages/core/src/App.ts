@@ -45,25 +45,15 @@ export type Bindings<E extends EnvDefinition> = {
   readonly [K in Exclude<keyof E, RequiredKeys<E>>]?: Slot<E[K]>;
 };
 
-type HttpOptions =
-  | { readonly httpPrefix?: never; readonly api?: never }
-  | { readonly httpPrefix: HttpPrefix; readonly api?: Api };
+type HttpOptions = { readonly httpPrefix?: HttpPrefix };
 
-export type Options<D extends Definition> = HttpOptions & {
-  /**
-   * The package specifier of the module whose `register(t, name)` the generated
-   * test registry calls for this mount, in place of the component package's own
-   * `<package>/test`. The kit registers the mount's children.
-   */
-  readonly testing?: string;
-} & ([RequiredKeys<EnvOf<D>>] extends [never]
+export type Options<D extends Definition> = HttpOptions &
+  ([RequiredKeys<EnvOf<D>>] extends [never]
     ? { readonly env?: Bindings<EnvOf<D>> }
     : { readonly env: Bindings<EnvOf<D>> });
 
 type Exact<D extends Definition, O> = {
-  readonly [
-    K in Exclude<keyof O, "env" | "httpPrefix" | "api" | "testing">
-  ]: never;
+  readonly [K in Exclude<keyof O, "env" | "httpPrefix">]: never;
 } & (O extends { readonly env: infer B }
   ? {
       readonly env: { readonly [K in Exclude<keyof B, keyof EnvOf<D>>]: never };
@@ -73,9 +63,7 @@ type Exact<D extends Definition, O> = {
 export interface MountData {
   readonly definition: Definition;
   readonly httpPrefix: HttpPrefix | undefined;
-  readonly api: Api | undefined;
   readonly env: Readonly<Record<string, string | Env.AnyEntry | undefined>>;
-  readonly testing: string | undefined;
 }
 
 /**
@@ -98,7 +86,7 @@ export type AnyMount = Mount<Definition, unknown>;
  * official or Confect-authored. `env` is typed against the component's own
  * `defineComponent({ env })` declaration, so a missing required binding, an
  * optional entry in a required slot, a wrong literal and an unknown slot fail
- * to typecheck. `api` is the component's `HttpApi`, for route checks.
+ * to typecheck.
  */
 export function mount<const D extends Definition>(
   definition: D &
@@ -114,18 +102,14 @@ export function mount(
   definition: Definition,
   options?: {
     readonly httpPrefix?: HttpPrefix;
-    readonly api?: Api;
     readonly env?: MountData["env"];
-    readonly testing?: string;
   },
 ): AnyMount {
   return {
     [MountTypeId]: { definition, options },
     definition,
     httpPrefix: options?.httpPrefix,
-    api: options?.api,
     env: options?.env ?? {},
-    testing: options?.testing,
     // The overloads above carry the precise types; this body serves both.
   } as AnyMount;
 }
@@ -220,7 +204,5 @@ export const mounts = (
     name,
     definition: installed.definition,
     httpPrefix: installed.httpPrefix,
-    api: installed.api,
     env: installed.env,
-    testing: installed.testing,
   }));

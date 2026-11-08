@@ -1,15 +1,43 @@
-import type * as Context from "effect/Context";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServerError from "effect/http/HttpServerError";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
-import * as HttpServerResponse from "effect/http/HttpServerResponse";
 
 /* oxlint-disable effecttsgo/any-unknown-in-error-context -- Preserve the router's erased request errors at the routing boundary. */
 
 type Route = Parameters<HttpRouter.HttpRouter["addAll"]>[0][number];
 
-export const withOptions = <A, E, R>(routes: Layer.Layer<A, E, R>) =>
+const notFound = Effect.flatMap(
+  HttpServerRequest.HttpServerRequest,
+  (request) =>
+    Effect.fail(
+      new HttpServerError.HttpServerError({
+        reason: new HttpServerError.RouteNotFound({ request }),
+      }),
+    ),
+);
+
+const missingRouteContext = `Service not found: ${HttpRouter.RouteContext.key}`;
+
+// An endpoint's compiled handler runs its middleware, then reads RouteContext
+// before decoding or calling the endpoint handler. Without RouteContext, the
+// preflight stops there.
+const preflight = (handler: Route["handler"]) =>
+  handler.pipe(
+    Effect.updateContext(Context.omit(HttpRouter.RouteContext)),
+    Effect.catchDefect((defect) =>
+      defect instanceof Error && defect.message === missingRouteContext
+        ? notFound
+        : Effect.die(defect),
+    ),
+  );
+
+export const withOptions = <A, E, R>(
+  routes: Layer.Layer<A, E, R>,
+  endpoints: ReadonlySet<string>,
+) =>
   Layer.unwrap(
     Effect.gen(function* () {
       const router = yield* HttpRouter.HttpRouter;
@@ -60,11 +88,15 @@ export const withOptions = <A, E, R>(routes: Layer.Layer<A, E, R>) =>
             const candidate = yield* HttpRouter.make;
             const target =
               prefix === "" ? candidate : candidate.prefixed(prefix);
+            const copy: Route = {
+              ...route,
+              method: "OPTIONS",
+              handler: endpoints.has(`${route.method} ${route.path}`)
+                ? preflight(route.handler)
+                : notFound,
+            };
             // Route registration erases request requirements, as in Effect's router.
-            yield* Effect.provideContext(
-              target.addAll([{ ...route, method: "OPTIONS" }]),
-              context,
-            );
+            yield* Effect.provideContext(target.addAll([copy]), context);
             candidates.set(route.method, candidate.asHttpEffect());
           }
           yield* router.add(
@@ -76,10 +108,7 @@ export const withOptions = <A, E, R>(routes: Layer.Layer<A, E, R>) =>
                 method === undefined
                   ? candidates.values().next().value
                   : candidates.get(method);
-              return (
-                candidate ??
-                Effect.succeed(HttpServerResponse.empty({ status: 404 }))
-              );
+              return candidate ?? notFound;
             }),
           );
         }

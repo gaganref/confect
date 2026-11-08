@@ -156,7 +156,14 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { id: string },
         {
-          onEvent: string;
+          onEvent: import("convex/server").FunctionHandle_future<
+            "mutation",
+            {
+              run: string;
+              status: "queued" | "sent" | "delivered" | "bounced";
+            },
+            null
+          >;
           run: string;
           status: "queued" | "sent" | "delivered" | "bounced";
         },
@@ -165,14 +172,34 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
       notify: FunctionReference<
         "action",
         "internal",
-        { onEvent: string; run: string },
+        {
+          onEvent: import("convex/server").FunctionHandle_future<
+            "mutation",
+            {
+              run: string;
+              status: "queued" | "sent" | "delivered" | "bounced";
+            },
+            null
+          >;
+          run: string;
+        },
         null,
         Name
       >;
       send: FunctionReference<
         "mutation",
         "internal",
-        { onEvent: string; run: string },
+        {
+          onEvent: import("convex/server").FunctionHandle_future<
+            "mutation",
+            {
+              run: string;
+              status: "queued" | "sent" | "delivered" | "bounced";
+            },
+            null
+          >;
+          run: string;
+        },
         string,
         Name
       >;
@@ -181,6 +208,61 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         { id: string; status: "queued" | "sent" | "delivered" | "bounced" },
         string | null,
+        Name
+      >;
+      storeMalformed: FunctionReference<
+        "mutation",
+        "internal",
+        { run: string },
+        string,
+        Name
+      >;
+    };
+    pagination: {
+      hook: FunctionReference<
+        "mutation",
+        "internal",
+        { run: string },
+        Array<{ count: number; operation: string }>,
+        Name
+      >;
+      page: FunctionReference<
+        "query",
+        "internal",
+        { cursor: string | null; numItems: number; run: string },
+        {
+          continueCursor: string;
+          isDone: boolean;
+          page: Array<{
+            _creationTime: number;
+            _id: string;
+            count: string;
+            run: string;
+          }>;
+        },
+        Name
+      >;
+      searchPage: FunctionReference<
+        "query",
+        "internal",
+        { cursor: string | null; numItems: number; run: string },
+        {
+          continueCursor: string;
+          isDone: boolean;
+          page: Array<{
+            _creationTime: number;
+            _id: string;
+            count: string;
+            run: string;
+          }>;
+        },
+        Name
+      >;
+      streams: FunctionReference<
+        "query",
+        "internal",
+        { run: string },
+        { budget: number; deferred: Array<number>; merged: Array<number> },
         Name
       >;
     };

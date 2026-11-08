@@ -3,6 +3,8 @@ import { App, Env, MiddlewareSpec } from "@confect/core";
 import { defineComponent } from "convex/server";
 import { v } from "convex/values";
 import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
+import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 
 const env = Env.make("tenant", {
   EMAIL_FROM: Env.string(),
@@ -20,6 +22,9 @@ const email = defineComponent("email", {
   },
 });
 const workpool = defineComponent("workpool");
+const EmailApi = HttpApi.make("email").add(
+  HttpApiGroup.make("health").add(HttpApiEndpoint.get("health", "/health")),
+);
 
 const emailEnv = {
   FROM: env.EMAIL_FROM,
@@ -51,37 +56,32 @@ describe("App", () => {
           httpPrefix: "/email",
           env: { ...emailEnv, PLATFORM_URL: env.PLATFORM_URL },
         }),
-        importsPool: App.mount(workpool, { testing: "workpool-kit/testing" }),
+        importsPool: App.mount(workpool),
         literalEmail: App.mount(email, {
           env: { FROM: "noreply@example.test", KEY: "k", TRANSPORT: "log" },
         }),
       },
     });
     expect(App.env(app)).toBe(env);
+    expect(App.mounts(app).every((mount) => !("api" in mount))).toBe(true);
     expect(App.mounts(app)).toEqual([
       {
         name: "email",
         definition: email,
         httpPrefix: "/email",
-        api: undefined,
         env: { ...emailEnv, PLATFORM_URL: env.PLATFORM_URL },
-        testing: undefined,
       },
       {
         name: "importsPool",
         definition: workpool,
         httpPrefix: undefined,
-        api: undefined,
         env: {},
-        testing: "workpool-kit/testing",
       },
       {
         name: "literalEmail",
         definition: email,
         httpPrefix: undefined,
-        api: undefined,
         env: { FROM: "noreply@example.test", KEY: "k", TRANSPORT: "log" },
-        testing: undefined,
       },
     ]);
     expect(App.isApp(app)).toBe(true);
@@ -91,8 +91,9 @@ describe("App", () => {
   it("types each mount's env against the component's own declaration", () => {
     App.mount(workpool);
     App.mount(email, { env: emailEnv });
+    // @ts-expect-error Test kits are discovered from the component package.
     App.mount(email, { env: emailEnv, testing: "email-kit/testing" });
-    // @ts-expect-error A test kit is named by its module specifier.
+    // @ts-expect-error A mount does not accept a testing option.
     App.mount(workpool, { testing: true });
     // @ts-expect-error The options are required when the component has required env.
     App.mount(email);
@@ -118,8 +119,10 @@ describe("App", () => {
       // @ts-expect-error A binding for a slot the component does not declare.
       env: { ...emailEnv, UNKNOWN: env.EMAIL_FROM },
     });
-    // @ts-expect-error A mount's api describes routes under its prefix, so it needs one.
-    App.mount(workpool, { api: HttpApi.make("workpool") });
+    // @ts-expect-error A mount does not accept an api, even with an HTTP prefix.
+    App.mount(workpool, { httpPrefix: "/email", api: EmailApi });
+    // @ts-expect-error A mount does not accept an api.
+    App.mount(workpool, { api: EmailApi });
   });
 
   it("rejects a reference from another backend's env", () => {

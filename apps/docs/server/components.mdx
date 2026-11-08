@@ -77,6 +77,10 @@ export default HttpRouter.forSchema(schema)(http.routes, { api: http.api });
 
 Write tables under `confect/tables/` and functions in sibling `*.spec.ts` / `*.impl.ts` files using the same APIs as an application. Codegen writes IDs, schemas, services, refs, registered functions and `confect/_generated/component.ts`, the publishable contract. Only public functions enter that contract.
 
+A component's `_generated/services.ts` omits `MutationCtx`, `QueryCtx` and `ActionCtx`, so a handler that yields one fails to type-check. Use its typed database, runner, storage and scheduler services instead.
+
+Host applications still receive all three raw context tags. `@confect/server` keeps exporting them for middleware authors. Middleware owns removing raw contexts from the context it passes to downstream handlers.
+
 Run Convex's component codegen after Confect's codegen when preparing the package for publication:
 
 ```sh
@@ -99,13 +103,12 @@ export default Env.make("consumer", {
 
 ```ts confect/app.ts
 import { App } from "@confect/core";
-import { CounterApi } from "../components/counter/confect/api";
 import counter from "../components/counter/convex/convex.config";
 import env from "./env";
 export default App.make({
   env,
   mounts: {
-    counter: App.mount(counter, { httpPrefix: "/counter", api: CounterApi }),
+    counter: App.mount(counter, { httpPrefix: "/counter" }),
   },
 });
 ```
@@ -208,10 +211,10 @@ The host serves `/health`. The counter declares `/health` relative to its instal
 Codegen calls `Http.routes(app, http)` to validate the route inventory. It returns a `Result` failure for:
 
 - `RouteUnderMountPrefix` when a host endpoint or Scalar docs page is at or under a mount prefix, regardless of method. Convex would otherwise let it shadow the component.
-- `DuplicateRoute` when method and path repeat, including declared parameter names normalised to the same placeholder. Pass the mounted component's `api` to include its endpoints in this check.
-- `OverlappingMountPrefixes` when mount prefixes overlap on path boundaries. This check and mount-prefix reservation run even without `http.ts` or a mounted `api`.
+- `DuplicateRoute` when method and path repeat, including declared parameter names normalised to the same placeholder. Each Convex component checks its own routes during codegen.
+- `OverlappingMountPrefixes` when mount prefixes overlap on path boundaries. This check and mount-prefix reservation run even without `http.ts`.
 
-These checks compare declared paths; they are not a general proof that all dynamic route patterns are disjoint. `api` requires `httpPrefix` in `App.mount`.
+These checks compare declared paths; they are not a general proof that all dynamic route patterns are disjoint.
 
 ## Contracts and callbacks
 
@@ -241,7 +244,7 @@ export const OnResult = Callback.mutation("counter/onResult", {
 
 Codegen checks contracts exported from `confect/callbacks.ts`. Each id must start with the name passed to `defineComponent`, followed by `/` (for a declared component, this is the name in `Env.make`). It checks the exports without evaluating schema thunks. A component without this file passes.
 
-Use `Callback.handle(OnResult)` in the component's function args or tables. On the wire it is a string; after decoding it is a runnable reference branded with the contract id. Handles for different ids are incompatible even when their shapes match. The fixture's component spec is:
+Use `Callback.handle(OnResult)` in the component's function args or tables. A `Callback.handle` slot lowers to `v.function` and requires Convex 1.49 or later. On the wire it is a string; after decoding it is a runnable reference branded with the contract id. Handles for different ids are incompatible even when their shapes match. The fixture's component spec is:
 
 ```ts components/counter/confect/counter.spec.ts
 import { Callback, FunctionSpec, GroupSpec } from "@confect/core";
@@ -299,6 +302,15 @@ const notify = FunctionImpl.make(schema, hello, "notify", ({ value }) =>
 
 The host's `onResult` spec uses the same `Schema.FiniteFromString` argument and return codecs as `OnResult`. `Callback.create` checks function kind, encoded args and returns, and declared errors, including middleware errors. The host may declare fewer errors. It also compares compiled Convex validators before asking Convex for a handle; a mismatch fails with `CallbackContractMismatch`. Matching validators cannot distinguish every refinement or codec, so reuse the contract's schemas and error classes.
 
+To forward context through a mutation or action callback, decode it with
+`Callback.handle(OnResult, { reservedArgument: "context" })`. The host function
+must reserve the same name. Runners and the scheduler inject the value from
+`RegisteredFunction.Forward` after encoding domain arguments. The handle stays
+a string on the wire, so each receiving schema declares the reservation. Omit
+the option for targets that accept only domain arguments. Query handles cannot
+reserve an argument. This transports a value without authenticating it. The
+host owns its trust policy, including whether to accept an incoming run id.
+
 The component runs the handle with its runner or scheduler. No generated callback adapter is needed. The fixture decodes `21`, calls the host which adds `21`, and adds `1` in the component, returning `43`. Keep callback contracts in a client-safe entry point without server implementation imports.
 
 ## Nested components
@@ -307,7 +319,7 @@ Components may mount components. In a declared component, put child `App.mount` 
 
 Bind a child contract with `Component.bind(childContract, components.child, { parentScope: scope })`, importing `scope` from the parent's `_generated/id`. This keeps child IDs associated with the enclosing installation when its contract returns them. Root host bindings omit `parentScope`. Nested HTTP prefixes accumulate through Convex's installation site URL.
 
-Component handlers use their own database, scoped storage services and scheduler. Generated raw contexts omit `auth`; application `Auth` and unified `Storage` are unavailable. Pass identity explicitly in arguments. Native database pagination is unavailable in component readers; use [`QueryStream.paginate`](/server/database/streams#paginating-a-stream) for index queries. Confect does not replace native search pagination or rewrite plain Convex handlers.
+Component handlers use their own database, scoped storage services and scheduler. Application `Auth` and unified `Storage` are unavailable inside a component. Pass identity explicitly in arguments. Native `.paginate()` works in component readers, including search results. A query may paginate once across the host and every component query it calls. A second `.paginate()` throws. Use [`QueryStream.paginate`](/server/database/streams#paginating-a-stream) for a second paginated index read. Confect does not rewrite plain Convex handlers.
 
 ## Wrap an official component
 
@@ -471,7 +483,7 @@ test.each([
 );
 ```
 
-Codegen supplies each local component's schema and module loaders, registers each component from another package through its `<package>/test` export or the kit its mount names with `testing`, and supplies the declaration's installation paths and HTTP prefixes. The tests exercise both the host and mounted routes. The same fixture checks host-to-component calls, the callback result `43`, and validator mismatch rejection.
+Codegen supplies each local component's schema and module loaders, registers each component from another package through its `<package>/testing` export, falling back to `<package>/test`, and supplies the declaration's installation paths and HTTP prefixes. The tests exercise both the host and mounted routes. The same fixture checks host-to-component calls, the callback result `43`, and validator mismatch rejection.
 
 Nested installations and their full HTTP prefixes are generated automatically. The schema-based constructor remains available for manual registration and custom loaders. A component reused at multiple HTTP mounts needs a fresh router factory per HTTP module loader. See [mounted component HTTP tests](/guides/testing#fetch-mounted-component-routes) for module-cache and process-environment limits.
 

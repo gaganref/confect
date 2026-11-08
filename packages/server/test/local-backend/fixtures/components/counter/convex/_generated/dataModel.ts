@@ -41,12 +41,21 @@ export type DataModel = {
       by_run: ["run", "_creationTime"];
       by_run_count: ["run", "count", "_creationTime"];
     };
-    searchIndexes: {};
+    searchIndexes: {
+      search_run: {
+        searchField: "run";
+        filterFields: never;
+      };
+    };
     vectorIndexes: {};
   };
   deliveries: {
     document: {
-      onEvent: string;
+      onEvent: import("convex/server").FunctionHandle_future<
+        "mutation",
+        { run: string; status: "queued" | "sent" | "delivered" | "bounced" },
+        null
+      >;
       run: string;
       status: "queued" | "sent" | "delivered" | "bounced";
       _id: Id<"deliveries">;

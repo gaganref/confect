@@ -6,7 +6,7 @@ import type {
   PaginationOptions,
   PaginationResult,
 } from "convex/server";
-import { getFunctionAddress, makeFunctionReference } from "convex/server";
+import { getFunctionAddress } from "convex/server";
 import type { Value } from "convex/values";
 import { ConvexError } from "convex/values";
 import * as Effect from "effect/Effect";
@@ -18,6 +18,7 @@ import type * as FunctionProvenance from "./FunctionProvenance.js";
 import type * as FunctionSpec from "./FunctionSpec.js";
 import * as Lazy from "./Lazy.js";
 import * as MiddlewareSpec from "./MiddlewareSpec.js";
+import { getFunctionReference } from "./RefInternal.js";
 import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 
 export const TypeId = "~@confect/core/Ref";
@@ -511,27 +512,6 @@ export const fromProvenance = (
 
 export const getConvexFunctionName = (ref: Any): string =>
   ref.convexFunctionName;
-
-const functionReferenceCache = new Map<string, FunctionReference<Any>>();
-
-export const getFunctionReference = <Ref_ extends Any>(
-  ref: Ref_,
-): FunctionReference<Ref_> => {
-  if (ref.functionReference !== undefined) {
-    return ref.functionReference as FunctionReference<Ref_>;
-  }
-  const convexFunctionName = getConvexFunctionName(ref);
-
-  const cached = functionReferenceCache.get(convexFunctionName);
-  if (cached !== undefined) {
-    return cached as FunctionReference<Ref_>;
-  }
-
-  const functionReference = makeFunctionReference(convexFunctionName);
-  functionReferenceCache.set(convexFunctionName, functionReference);
-
-  return functionReference as FunctionReference<Ref_>;
-};
 
 /**
  * Adapt a native reference without assigning Confect codecs or typed errors.
