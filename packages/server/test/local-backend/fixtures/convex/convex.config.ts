@@ -6,6 +6,7 @@ import parent from "../components/parent/convex/convex.config.js";
 
 const app = defineApp({
   env: {
+    TEST_AUTH_JWKS: v.string(),
     COMPONENT_MARKER: v.optional(v.string()),
     COMPONENT_HOST_ONLY: v.optional(v.string()),
   },
