@@ -9,6 +9,7 @@ import * as SchemaGetter from "effect/SchemaGetter";
 import * as FunctionProvenance from "./FunctionProvenance.js";
 import * as Ref from "./Ref.js";
 import { getFunctionReference } from "./RefInternal.js";
+import { CallbackContract } from "./internal/annotations.js";
 import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 
 export const TypeId = "~@confect/core/Callback";
@@ -153,12 +154,13 @@ const fromText = <Contract_ extends Any>(
 
 /**
  * The schema of a handle for `contract`: a string on the wire, a runnable ref
- * once decoded. Use it in a component's function args or tables.
+ * once decoded. Use it in a component's function args or tables. It lowers to
+ * Convex's `v.function` with the contract's encoded args and returns.
  */
 export const handle = <Contract_ extends Any>(
   contract: Contract_,
 ): Schema.Codec<Handle<Contract_>, string> =>
-  Schema.String.pipe(
+  Schema.String.annotate({ [CallbackContract]: contract }).pipe(
     Schema.decodeTo(
       Schema.declare(isHandleOf(contract), {
         identifier: `Callback.Handle<${contract.id}>`,

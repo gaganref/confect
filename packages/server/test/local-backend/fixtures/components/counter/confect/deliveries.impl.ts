@@ -41,6 +41,22 @@ const notify = FunctionImpl.make(
     }),
 );
 
+const storeMalformed = FunctionImpl.make(
+  schema,
+  deliveries,
+  "storeMalformed",
+  ({ run }) =>
+    Effect.gen(function* () {
+      const writer = yield* DatabaseWriter;
+      const onEvent = yield* Schema.decodeEffect(Callback.handle(OnEvent))(
+        "not-a-function-handle",
+      );
+      return yield* writer
+        .table("deliveries")
+        .insert({ run, status: "queued", onEvent });
+    }).pipe(Effect.orDie),
+);
+
 const send = FunctionImpl.make(schema, deliveries, "send", ({ run, onEvent }) =>
   Effect.gen(function* () {
     const writer = yield* DatabaseWriter;
@@ -118,7 +134,15 @@ const get = FunctionImpl.make(schema, deliveries, "get", ({ id }) =>
 );
 
 export default GroupImpl.make(schema, deliveries).pipe(
-  Layer.provide([send, deliver, setStatus, breach, get, notify]),
+  Layer.provide([
+    storeMalformed,
+    send,
+    deliver,
+    setStatus,
+    breach,
+    get,
+    notify,
+  ]),
   Layer.provide(ActionCallImpl.layer(schema)),
   GroupImpl.finalize,
 );
