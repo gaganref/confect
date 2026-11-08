@@ -665,6 +665,16 @@ exceeded the five-second default. Other platforms keep their defaults.
 Changeset: none; test configuration only.
 Upstream: unrecorded; no linked proposal verified.
 
+### Allow system operations on a loaded test runner
+
+Local-backend tests allow five seconds for system operations instead of one,
+so valid fixture calls tolerate a loaded runner. The user timeout stays at one
+second. Cache tests derive their eight-second waits from the same cache-age
+calculation.
+
+Changeset: none; test configuration only.
+Upstream: unrecorded; submission goes through the maintainer.
+
 ### Bound nested-binding fixture requests
 
 Split nested component writes and reads into separate requests per installation
