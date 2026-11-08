@@ -704,14 +704,12 @@ describe("table groups in a contract", () => {
     const eitherName = (): "batches" | "_storage" => "_storage";
     // @ts-expect-error `batches` may be absent when the name is `_storage`
     void Component.contract(spec, scope, [emails, eitherName()]);
-    const eitherList = ():
-      | readonly [typeof batches, typeof emails]
-      | readonly [typeof batches] => [batches];
+    type Both = readonly [typeof batches, typeof emails];
+    const eitherList = (): Both | readonly [typeof batches] => [batches];
     // @ts-expect-error the `[batches]` branch has no `emails`
     void Component.contract(spec, scope, eitherList());
-    const eitherValid = ():
-      | readonly [typeof batches, typeof emails]
-      | readonly [typeof batches, "_storage"] => [batches, "_storage"];
+    type Stored = readonly [typeof batches, "_storage"];
+    const eitherValid = (): Both | Stored => [batches, "_storage"];
     // @ts-expect-error each branch is valid, but they publish different groups
     void Component.contract(spec, scope, eitherValid());
   });

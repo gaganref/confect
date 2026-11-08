@@ -177,21 +177,20 @@ type EntryName<Entry extends TableEntry> = Entry extends string
     ? Table_.Name<Entry>
     : never;
 
-type IsUnion<A, All = A> = A extends unknown
-  ? [All] extends [A]
-    ? false
-    : true
-  : never;
+type Many<A, All = A> = string extends A
+  ? true
+  : number extends A
+    ? true
+    : A extends unknown
+      ? [All] extends [A]
+        ? never
+        : true
+      : never;
 
 type Loose<Entries extends ReadonlyArray<TableEntry>> = true extends
-  | IsUnion<Entries>
-  | IsUnion<Entries["length"]>
-  | (number extends Entries["length"] ? true : never)
-  | {
-      [Index in keyof Entries]:
-        | IsUnion<Entries[Index]>
-        | (string extends Entries[Index] ? true : never);
-    }[number]
+  | Many<Entries>
+  | Many<Entries["length"]>
+  | { [Index in keyof Entries]: Many<Entries[Index]> }[number]
   ? "pass one table or one name per entry; a union may be absent at runtime"
   : never;
 
