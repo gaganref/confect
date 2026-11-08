@@ -385,14 +385,16 @@ contract.
 Changeset: `component-authoring-contracts.md`.
 Upstream: planned; no linked proposal verified.
 
-### Cancel component jobs and gate pagination
+### Cancel component jobs and allow native pagination
 
-Expose `Scheduler.cancel` for component-scoped scheduled IDs. Reject native
-component `.paginate()` at compile time and direct callers to `QueryStream.paginate`
-for index queries, because native pagination is unavailable in components.
-Application schemas keep native pagination.
+Expose `Scheduler.cancel` for component-scoped scheduled IDs. Native `.paginate()`
+works in applications and components on the local backend pinned to
+`precompiled-2026-10-28-cccbade`, past the pagination change in `d7402d6a`.
+A query can paginate once across the host and its component calls. A second
+call throws; use `QueryStream.paginate` for another paginated index read.
+Local backend tests cover index and search pages, subscriptions and the shared query limit.
 
-Changeset: `scoped-scheduler-cancel-pagination.md`.
+Changesets: `scoped-scheduler-cancel-pagination.md`, `component-native-pagination.md`.
 Upstream: planned; no linked proposal verified.
 
 ### Lift official component clients
