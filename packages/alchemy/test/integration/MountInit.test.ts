@@ -69,18 +69,6 @@ const app = (root: string, name: string) =>
       );
     }
     yield* fs.makeDirectory(`${directory}/convex`);
-    // WORKAROUND: a host's first codegen bundles confect/app.ts before it
-    // writes _generated/refs, which the mount files import, so it first runs
-    // on a declaration without mounts. Goes when the F5 fix for a first
-    // codegen whose mounts import the host's refs lands.
-    const declaration = `${directory}/confect/app.ts`;
-    const declared = yield* fs.readFileString(declaration);
-    yield* fs.writeFileString(
-      declaration,
-      'import { App } from "@confect/core";\nimport env from "./env";\nexport default App.make({ env });\n',
-    );
-    yield* node(directory, confect, "codegen");
-    yield* fs.writeFileString(declaration, declared);
     return directory;
   });
 
