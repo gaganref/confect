@@ -553,6 +553,34 @@ describe("Mount.initCall", () => {
     }),
   );
 
+  it.effect("finds a callback slot in each value of a record", () =>
+    Effect.gen(function* () {
+      const Fanout = Component.make("fanout", {
+        init: Ref.make(
+          "install",
+          FunctionSpec.internalMutation({
+            name: "init",
+            args: () => ({
+              callbacks: Schema.Record(Schema.String, Callback.handle(OnEvent)),
+            }),
+            returns: () => Schema.Null,
+          }),
+        ),
+        client: (native: Native) => native,
+      });
+      const mount = Mount.make(Fanout, {
+        name: "fanout",
+        args: { callbacks: { onEvent } },
+      });
+      const call = yield* Mount.initCall(mount, handleFor);
+      expect(Option.map(call, ({ args }) => args)).toEqual(
+        Option.some({
+          callbacks: { onEvent: "handle for callbacks:onEvent" },
+        }),
+      );
+    }),
+  );
+
   it.effect("is none for a component without init", () =>
     Effect.gen(function* () {
       expect(yield* Mount.initCall(BulkEmail, handleFor)).toEqual(
