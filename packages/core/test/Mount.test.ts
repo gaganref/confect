@@ -476,7 +476,7 @@ describe("Mount.initCall", () => {
       }),
   );
 
-  it.effect("finds a callback slot inside a struct", () =>
+  it.effect("finds callback slots inside a struct and a record", () =>
     Effect.gen(function* () {
       const Retrying = Component.make("retrying", {
         init: Ref.make(
@@ -490,6 +490,7 @@ describe("Mount.initCall", () => {
                   onGiveUp: Callback.handle(OnEvent),
                 }),
               ),
+              callbacks: Schema.Record(Schema.String, Callback.handle(OnEvent)),
             }),
             returns: () => Schema.Null,
           }),
@@ -498,12 +499,16 @@ describe("Mount.initCall", () => {
       });
       const mount = Mount.make(Retrying, {
         name: "retrying",
-        args: { retry: { attempts: 3, onGiveUp: onEvent } },
+        args: {
+          retry: { attempts: 3, onGiveUp: onEvent },
+          callbacks: { onEvent },
+        },
       });
       const call = yield* Mount.initCall(mount, handleFor);
       expect(Option.map(call, ({ args }) => args)).toEqual(
         Option.some({
           retry: { attempts: 3, onGiveUp: "handle for callbacks:onEvent" },
+          callbacks: { onEvent: "handle for callbacks:onEvent" },
         }),
       );
     }),
@@ -549,34 +554,6 @@ describe("Mount.initCall", () => {
       );
       expect(yield* argsOf(drop)).toEqual(
         Option.some({ route: { kind: "drop" } }),
-      );
-    }),
-  );
-
-  it.effect("finds a callback slot in each value of a record", () =>
-    Effect.gen(function* () {
-      const Fanout = Component.make("fanout", {
-        init: Ref.make(
-          "install",
-          FunctionSpec.internalMutation({
-            name: "init",
-            args: () => ({
-              callbacks: Schema.Record(Schema.String, Callback.handle(OnEvent)),
-            }),
-            returns: () => Schema.Null,
-          }),
-        ),
-        client: (native: Native) => native,
-      });
-      const mount = Mount.make(Fanout, {
-        name: "fanout",
-        args: { callbacks: { onEvent } },
-      });
-      const call = yield* Mount.initCall(mount, handleFor);
-      expect(Option.map(call, ({ args }) => args)).toEqual(
-        Option.some({
-          callbacks: { onEvent: "handle for callbacks:onEvent" },
-        }),
       );
     }),
   );
