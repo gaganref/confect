@@ -379,11 +379,14 @@ descriptor and `options` from its client constructor. A descriptor may name its
 from it; a callback slot takes only an internal host ref matching its contract.
 The mount records `args`; nothing runs `init` on a push yet. A host lists its
 mounts in `App.make({ components, mounts })`, and codegen writes each one's
-`app.use`. `Auth.siteUrl` takes a mount with an `httpPrefix`.
+`app.use`. `Auth.siteUrl` takes a mount with an `httpPrefix`. A descriptor
+that passes its `contract` gives each mount `callbackArgs(slot)`, a callback
+contract's args with component ids typed for that mount.
 
 Changesets: `add-confect-components.md`, `component-no-raw-ctx.md`,
 `component-contract-rename.md`, `component-descriptor-mount.md`,
-`mount-install-args.md`, `mount-site-url.md`, `app-mounts-list.md`.
+`mount-install-args.md`, `mount-site-url.md`, `app-mounts-list.md`,
+`mount-callback-args.md`.
 Upstream: port of [upstream #646](https://github.com/rjdellecese/confect/pull/646),
 which remains open; fork-specific follow-up submission is unrecorded.
 
