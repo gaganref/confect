@@ -646,3 +646,78 @@ it.effect(
       }
     }),
 );
+
+it.effect.each([
+  { kind: "unguarded", method: "DELETE", path: "/items/42" },
+  { kind: "pass-through", method: "POST", path: "/trigger" },
+  { kind: "plain", method: "POST", path: "/webhook" },
+] as const)(
+  "keeps implicit OPTIONS from invoking $kind handlers",
+  ({ kind, method, path }) =>
+    Effect.gen(function* () {
+      let calls = 0;
+      const optionsApi = HttpApi.make("options").add(
+        HttpApiGroup.make("trigger").add(
+          kind === "pass-through"
+            ? HttpApiEndpoint.post("run", "/trigger", {
+                success: Schema.String,
+              }).middleware(Guard)
+            : HttpApiEndpoint.delete("run", "/items/:id", {
+                params: { id: Schema.String },
+                success: Schema.String,
+              }),
+        ),
+      );
+      const run = Effect.sync(() => {
+        calls++;
+        return "handler ran";
+      });
+      const router =
+        kind === "plain"
+          ? ConfectHttpRouter.make(
+              HttpRouter.add(
+                method,
+                path,
+                Effect.map(run, HttpServerResponse.text),
+              ),
+            )
+          : ConfectHttpRouter.make(
+              HttpApiBuilder.layer(optionsApi).pipe(
+                Layer.provide(
+                  HttpApiBuilder.group(optionsApi, "trigger", (handlers) =>
+                    handlers.handle("run", () => run),
+                  ),
+                ),
+                Layer.provide(Layer.succeed(Guard, (next) => next)),
+              ),
+              { api: optionsApi },
+            );
+      const t = convexTest(undefined, {
+        ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
+        "./mock-backend/fixtures/convex/http.ts": () =>
+          Promise.resolve({ default: router }),
+      });
+      const missing = yield* Effect.promise(() =>
+        t.fetch("/missing", { method: "OPTIONS" }),
+      );
+      const headers = [...missing.headers];
+      const body = yield* Effect.promise(() => missing.text());
+      for (const requestHeaders of [
+        {},
+        { "Access-Control-Request-Method": method },
+      ]) {
+        const response = yield* Effect.promise(() =>
+          t.fetch(path, { method: "OPTIONS", headers: requestHeaders }),
+        );
+        expect([
+          response.status,
+          [...response.headers],
+          yield* Effect.promise(() => response.text()),
+          calls,
+        ]).toEqual([404, headers, body, 0]);
+      }
+      const response = yield* Effect.promise(() => t.fetch(path, { method }));
+      expect(response.status).toBe(200);
+      expect(calls).toBe(1);
+    }),
+);
