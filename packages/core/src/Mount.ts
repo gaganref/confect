@@ -104,9 +104,10 @@ type Bindings<E> = { readonly [K in RequiredKeys<E>]: Slot<E[K]> } & {
 
 /**
  * `B` keeps the bindings as written, so `App.make` can see which backends their
- * entries come from.
+ * entries come from. `[C]` for the reason `ArgsField` gives: a bare `C` widens
+ * an inline constant to `string`.
  */
-type EnvField<C, B> = C extends { readonly env: infer E }
+type EnvField<C, B> = [C] extends [{ readonly env: infer E }]
   ? [RequiredKeys<E>] extends [never]
     ? { readonly env?: B & Bindings<E> & NoExtra<B, E> }
     : { readonly env: B & Bindings<E> & NoExtra<B, E> }
