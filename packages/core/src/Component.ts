@@ -143,16 +143,25 @@ interface Tree {
   readonly [key: string]: Tree | Ref.Any;
 }
 
+/**
+ * Each grouped table's name, mapped to its id field and the table that id
+ * names.
+ */
+export interface GroupMap {
+  readonly [table: string]: { readonly key: string; readonly table: string };
+}
+
 export interface Component<
   Spec_ extends Spec.AnyWithProps,
   Scope extends IdScope.IdScope,
   Tables extends string = string,
+  Groups_ extends GroupMap = GroupMap,
 > {
   readonly [TypeId]: {
     readonly refs: Tree;
     readonly scope: Scope;
     readonly tables: ReadonlyArray<Tables>;
-    readonly groups: Readonly<Record<string, Table_.Group>>;
+    readonly groups: Groups_;
   };
   readonly "~Spec": Spec_;
 }
@@ -182,6 +191,24 @@ type StrayGroup<
       : `${Name}.${Key} is not an id of a table of this component`
     : never;
 }[number];
+
+/**
+ * The group map `contract` publishes for these table entries.
+ */
+export type Groups<Entries extends ReadonlyArray<TableEntry>> = {
+  readonly [
+    Entry in Entries[number] as Entry extends {
+      readonly tableName: infer Name extends string;
+      readonly group: Table_.Group;
+    }
+      ? Name
+      : never
+  ]: Entry extends {
+    readonly group: Table_.Group<infer Key, infer Target>;
+  }
+    ? { readonly key: Key; readonly table: Target }
+    : never;
+};
 
 /**
  * `unknown` when every group's id names a table of this component in its scope,
@@ -256,7 +283,7 @@ export type Bound<
  * `tables` lists the component's tables, each a table or a system table's name.
  * A table grouped by an id must group by an id of one of these tables.
  */
-export const contract = <
+export function contract<
   Spec_ extends Spec.AnyWithProps,
   const Scope extends IdScope.IdScope,
   const Entries extends ReadonlyArray<TableEntry>,
@@ -264,7 +291,25 @@ export const contract = <
   spec: Spec_,
   scope: Scope,
   tables: Entries & CheckGroups<Entries, Scope>,
-): Component<Spec_, Scope, EntryName<Entries[number]>> => {
+): Component<Spec_, Scope, EntryName<Entries[number]>, Groups<Entries>>;
+/**
+ * The names-only form, for a caller that spells the table names as a type
+ * argument. Names alone carry no groups.
+ */
+export function contract<
+  Spec_ extends Spec.AnyWithProps,
+  const Scope extends IdScope.IdScope,
+  const Tables extends string,
+>(
+  spec: Spec_,
+  scope: Scope,
+  tables: ReadonlyArray<Tables>,
+): Component<Spec_, Scope, Tables, {}>;
+export function contract(
+  spec: Spec.AnyWithProps,
+  scope: IdScope.IdScope,
+  tables: ReadonlyArray<TableEntry>,
+): Component<Spec.AnyWithProps, IdScope.IdScope> {
   const specGroups = Spec.groups(spec);
   Result.getOrThrow(validateContract(scope, specGroups));
   const collect = (
@@ -292,9 +337,8 @@ export const contract = <
       }),
       Record.filter((children) => !Record.isEmptyRecord(children)),
     );
-  const entries: ReadonlyArray<TableEntry> = tables;
-  const grouped: Readonly<Record<string, Table_.Group>> = pipe(
-    entries,
+  const grouped: GroupMap = pipe(
+    tables,
     Array.flatMap((entry) =>
       typeof entry !== "string" && entry.group !== undefined
         ? [[entry.tableName, entry.group] as const]
@@ -303,35 +347,32 @@ export const contract = <
     Record.fromEntries,
   );
   const published: Component<
-    Spec_,
-    Scope,
-    EntryName<Entries[number]>
+    Spec.AnyWithProps,
+    IdScope.IdScope
   >[typeof TypeId] = {
     refs: collect(specGroups),
     scope,
-    tables: Array.map(
-      entries,
-      (entry) =>
-        (typeof entry === "string" ? entry : entry.tableName) as EntryName<
-          Entries[number]
-        >,
+    tables: Array.map(tables, (entry) =>
+      typeof entry === "string" ? entry : entry.tableName,
     ),
     groups: grouped,
   };
   return { [TypeId]: published } as Component<
-    Spec_,
-    Scope,
-    EntryName<Entries[number]>
+    Spec.AnyWithProps,
+    IdScope.IdScope
   >;
-};
+}
 
 /**
  * Each grouped table's id field and the table that id names.
  */
-export const groups = (
-  component: Component<Spec.AnyWithProps, IdScope.IdScope>,
-): Readonly<Record<string, { readonly key: string; readonly table: string }>> =>
-  Record.map(component[TypeId].groups, ({ key, table }) => ({ key, table }));
+export const groups = <Groups_ extends GroupMap>(
+  component: Component<Spec.AnyWithProps, IdScope.IdScope, string, Groups_>,
+): Groups_ =>
+  Record.map(component[TypeId].groups, ({ key, table }) => ({
+    key,
+    table,
+  })) as Groups_;
 
 /**
  * Bind the published contract to an actual installed component reference.
