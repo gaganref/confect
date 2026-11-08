@@ -92,7 +92,7 @@ After upgrading to the fork based on upstream 10.3.1, rerun `confect codegen` fo
 
 ## Mount it in a host
 
-The host declares its own env, then installs the component with `App.mount`. The record key supplies the mount name; there is no `App.use` API:
+The host declares its own env, then lists the component's `convex.config` definition and a [`Mount.make`](#reach-a-mounts-client) mount of it. The mount supplies the mount name; there is no `App.use` API:
 
 ```ts confect/env.ts
 import { Env } from "@confect/core";
@@ -102,14 +102,14 @@ export default Env.make("consumer", {
 ```
 
 ```ts confect/app.ts
-import { App } from "@confect/core";
+import { App, Mount } from "@confect/core";
+import Counter from "../components/counter/client";
 import counter from "../components/counter/convex/convex.config";
 import env from "./env";
 export default App.make({
   env,
-  mounts: {
-    counter: App.mount(counter, { httpPrefix: "/counter" }),
-  },
+  components: [counter],
+  mounts: [Mount.make(Counter, { name: "counter", httpPrefix: "/counter" })],
 });
 ```
 
@@ -135,7 +135,7 @@ app.use(counter, {
 export default app;
 ```
 
-The fixture's component has no env slots to bind. For a component with slots, pass `env` in the `App.mount` options, as shown in [Backend Declaration](/server/backend-declaration#appts). A binding is a constant string or an entry from the host's env. Required slots need required entries; literal values must fit the slot; unknown slots and entries from another backend fail to typecheck. Codegen emits constant bindings directly and env entries as `app.env.KEY`.
+The fixture's component has no env slots to bind. For a component with slots, pass `env` to `Mount.make`, as shown in [Backend Declaration](/server/backend-declaration#appts). A binding is a constant string or an entry from the host's env. Required slots need required entries; literal values must fit the slot; unknown slots and entries from another backend fail to typecheck. Codegen emits constant bindings directly and env entries as `app.env.KEY`.
 
 Author the host's authentication providers:
 
@@ -250,7 +250,7 @@ The mount records its `args`. Nothing runs `init` on a push yet. A component wit
 
 A mount is a `Context.Reference` keyed `mount/<name>`. Any handler yields it, `const counter = yield* First`, and gets the client over that installation with no Layer to provide. The client's methods still need the runners they call through. `Effect.provideService(First, fake)` replaces the client inside one effect, which is how a test swaps it. A mount file imports no `convex.config`, so function bundles can import it. `Auth.siteUrl(First, "/jwks.json")` points at a mount's HTTP routes; a mount without an `httpPrefix` fails to typecheck there.
 
-`App.mount` in `confect/app.ts` still installs the component, and codegen writes `convex/convex.config.ts` from it. Give `Mount.make` the same name and bindings as that entry.
+List each mount in `App.make`'s `mounts` and the component's `convex.config` definition in its `components`, and codegen writes one `app.use` per mount into `convex/convex.config.ts`.
 
 ## How HTTP routes compose
 
@@ -363,7 +363,7 @@ The component runs the handle with its runner or scheduler. No generated callbac
 
 ## Nested components
 
-Components may mount components. In a declared component, put child `App.mount` entries in its `App.make({ env, mounts })`; codegen writes `defineComponent(...).use(child, { name, httpPrefix, env })`. Without a declaration, write the native component configuration yourself. Run codegen for each component directory before generating its parent.
+Components may mount components. In a declared component, list each child's definition and mount in its `App.make({ env, components, mounts })`; codegen writes `defineComponent(...).use(child, { name, httpPrefix, env })`. Without a declaration, write the native component configuration yourself. Run codegen for each component directory before generating its parent.
 
 Bind a child contract with `Component.bind(childContract, components.child, { parentScope: scope })`, importing `scope` from the parent's `_generated/id`. This keeps child IDs associated with the enclosing installation when its contract returns them. Root host bindings omit `parentScope`. Nested HTTP prefixes accumulate through Convex's installation site URL.
 

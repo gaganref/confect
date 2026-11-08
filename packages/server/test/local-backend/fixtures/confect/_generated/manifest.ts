@@ -20,5 +20,5 @@ export default {
       "right": "/right"
     }
   },
-  "digest": "sha256:977a17be972ec1952f10d8ec5afd8e4bfc2cac077dc469c94fe0c559c04fa7bf"
+  "digest": "sha256:32255de40fc69ac4e1aec0419977239b39c6d2753f78b6847a0659b2f36b0e1e"
 } as const;

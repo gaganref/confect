@@ -92,6 +92,40 @@ export class UnknownComponentImport extends Data.TaggedError(
   }
 }
 
+export class InvalidComponentDefinition extends Data.TaggedError(
+  "InvalidComponentDefinition",
+)<{ readonly index: number }> {
+  override get message(): string {
+    return `App.make's components[${this.index}] must be the default export of a component's convex.config module, imported directly in the declaration.`;
+  }
+}
+
+export class MountWithoutDefinition extends Data.TaggedError(
+  "MountWithoutDefinition",
+)<{ readonly mount: string; readonly component: string }> {
+  override get message(): string {
+    return `The mount "${this.mount}" mounts the component "${this.component}", but App.make's components lists no definition named "${this.component}".`;
+  }
+}
+
+export class DefinitionWithoutMount extends Data.TaggedError(
+  "DefinitionWithoutMount",
+)<{ readonly component: string; readonly importPath: string }> {
+  override get message(): string {
+    return `App.make's components lists the definition "${this.component}" from ${this.importPath}, but no mount mounts it.`;
+  }
+}
+
+export class DuplicateMountName extends Data.TaggedError("DuplicateMountName")<{
+  readonly mount: string;
+  readonly first: string;
+  readonly second: string;
+}> {
+  override get message(): string {
+    return `Two mounts are named "${this.mount}", one of "${this.first}" and one of "${this.second}"; give each mount its own name.`;
+  }
+}
+
 export class AuthForAnotherBackend extends Data.TaggedError(
   "AuthForAnotherBackend",
 )<{ readonly backend: string; readonly expectedBackend: string }> {
@@ -117,6 +151,10 @@ export type DeclarationError =
   | ForeignEnvBinding
   | InvalidBinding
   | UnknownComponentImport
+  | InvalidComponentDefinition
+  | MountWithoutDefinition
+  | DefinitionWithoutMount
+  | DuplicateMountName
   | AuthForAnotherBackend
   | InvalidProviderEnv;
 
@@ -145,7 +183,8 @@ export interface ComponentImport {
 /**
  * Parse the default exports of `confect/app.ts` and, when present,
  * `confect/auth.ts`. `componentImport` recovers how the generated config
- * imports a mounted definition; codegen's bundler records it.
+ * imports a listed definition; codegen's bundler records it. Each mount takes
+ * the definition whose `defineComponent` name is its component's name.
  */
 export const parse = (input: {
   readonly target: "app" | "component";
@@ -172,19 +211,46 @@ export const parse = (input: {
         return yield* Result.fail(new InvalidEnvKey({ key }));
     }
 
+    const definitions = new Map<string, ComponentImport>();
+    for (const [index, definition] of App.components(input.app).entries()) {
+      const component = input.componentImport(definition);
+      if (Option.isNone(component)) {
+        return yield* Result.fail(new InvalidComponentDefinition({ index }));
+      }
+      definitions.set(component.value.componentName, component.value);
+    }
+
     const mounts: Array<Mount> = [];
     for (const mount of App.mounts(input.app)) {
       if (!MOUNT_NAME.test(mount.name)) {
         return yield* Result.fail(new InvalidMountName({ mount: mount.name }));
       }
-      const component = input.componentImport(mount.definition);
-      if (Option.isNone(component)) {
+      const component =
+        "definition" in mount
+          ? Option.getOrUndefined(input.componentImport(mount.definition))
+          : definitions.get(mount.component.name);
+      if (component === undefined) {
         return yield* Result.fail(
-          new UnknownComponentImport({ mount: mount.name }),
+          "definition" in mount
+            ? new UnknownComponentImport({ mount: mount.name })
+            : new MountWithoutDefinition({
+                mount: mount.name,
+                component: mount.component.name,
+              }),
+        );
+      }
+      const named = mounts.find(({ name }) => name === mount.name);
+      if (named !== undefined) {
+        return yield* Result.fail(
+          new DuplicateMountName({
+            mount: mount.name,
+            first: named.componentName,
+            second: component.componentName,
+          }),
         );
       }
       const bindings: Array<readonly [string, Binding]> = [];
-      for (const [slot, bound] of Object.entries(mount.env)) {
+      for (const [slot, bound] of Object.entries(mount.env ?? {})) {
         if (bound === undefined) continue;
         if (typeof bound === "string") {
           bindings.push([slot, { kind: "value", value: bound }]);
@@ -211,11 +277,18 @@ export const parse = (input: {
       }
       mounts.push({
         name: mount.name,
-        importPath: component.value.importPath,
-        componentName: component.value.componentName,
+        importPath: component.importPath,
+        componentName: component.componentName,
         httpPrefix: mount.httpPrefix,
         env: bindings,
       });
+    }
+    for (const [component, { importPath }] of definitions) {
+      if (!mounts.some(({ componentName }) => componentName === component)) {
+        return yield* Result.fail(
+          new DefinitionWithoutMount({ component, importPath }),
+        );
+      }
     }
 
     const providers: Option.Option<ReadonlyArray<Provider>> = Option.isNone(

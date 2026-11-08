@@ -87,11 +87,17 @@ type Bindings<E> = { readonly [K in RequiredKeys<E>]: Slot<E[K]> } & {
   readonly [K in Exclude<keyof E, RequiredKeys<E>>]?: Slot<E[K]>;
 };
 
-type EnvField<C> = C extends { readonly env: infer E }
+/**
+ * `B` keeps the bindings as written, so `App.make` can see which backends
+ * their entries come from.
+ */
+type EnvField<C, B> = C extends { readonly env: infer E }
   ? [RequiredKeys<E>] extends [never]
-    ? { readonly env?: Bindings<E> }
-    : { readonly env: Bindings<E> }
+    ? { readonly env?: B & Bindings<E> & NoExtra<B, E> }
+    : { readonly env: B & Bindings<E> & NoExtra<B, E> }
   : { readonly env?: never };
+
+type NoExtra<B, E> = { readonly [K in Exclude<keyof B, keyof E>]: never };
 
 /**
  * The client constructor's parameters after the native mount decide whether
@@ -120,12 +126,15 @@ export interface Data<C extends Component.Descriptor = Component.Descriptor> {
 }
 
 /**
- * What a mount was declared with, as written: its HTTP prefix.
+ * What a mount was declared with, as written: its HTTP prefix and env
+ * bindings.
  */
 export interface Declared<
   P extends App.HttpPrefix | undefined = App.HttpPrefix | undefined,
+  B = unknown,
 > {
   readonly httpPrefix: P;
+  readonly env: B;
 }
 
 /**
@@ -142,6 +151,8 @@ export interface Mount<
 }
 
 export type Any = Mount<Component.Descriptor, string>;
+
+export type Name<M> = M extends Mount<any, infer N, any> ? N : never;
 
 /**
  * Mount a Convex component, as Convex's `app.use` does, in the host's
@@ -166,15 +177,16 @@ export const make = <
   const Name extends string,
   const A extends Input<ArgsOf<C>>,
   const P extends App.HttpPrefix = never,
+  const B = {},
 >(
   component: C,
   options: {
     readonly name: Name;
     readonly httpPrefix?: P;
-  } & EnvField<C> &
+  } & EnvField<C, B> &
     ArgsField<C, A> &
     OptionsField<C>,
-): Mount<C, Name, Declared<[P] extends [never] ? undefined : P>> => {
+): Mount<C, Name, Declared<[P] extends [never] ? undefined : P, B>> => {
   const data = { component, ...(options as object) } as Data<C> & {
     readonly name: Name;
   };
