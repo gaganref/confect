@@ -33,13 +33,17 @@ type Input<T> = T extends Handle
 
 /**
  * `unknown` when the args fit; otherwise the first refusal. A callback slot
- * takes an internal host ref that satisfies the slot's contract.
+ * takes an internal host ref that satisfies the slot's contract. Whether a slot
+ * may be left `undefined` is `Input`'s to say.
  */
-type Check<T, A> = Fit<NonNullable<T>, NonNullable<A>>;
+type Check<T, A> = [NonNullable<A>] extends [never]
+  ? unknown
+  : Fit<NonNullable<T>, NonNullable<A>>;
 
 /**
  * Distributes over the members of `T` and `A`, so each union value is checked
- * against the members whose shape it has.
+ * against the members whose shape it has. A primitive member admits only its
+ * own values, so it cannot absorb an object member's refusal.
  */
 type Fit<T, A> = T extends Handle
   ? [A] extends [Ref.AnyConfect]
@@ -56,15 +60,23 @@ type Fit<T, A> = T extends Handle
             : never;
         }
       : never
-    : unknown;
+    : A extends T
+      ? unknown
+      : never;
 
 type ArgsOf<C> = C extends { readonly init: infer I extends Component.Init }
   ? Ref.Args<I>
   : never;
 
-type ArgsField<C, A> = C extends {
-  readonly init: infer I extends Component.Init;
-}
+/**
+ * `[C]`, not a bare `C`, so the conditional is not distributive. A distributive
+ * one resolves against `Component.Descriptor` while `C` is inferred, drops `A`
+ * from the contextual type, and widens inline literals until `A` falls back to
+ * its constraint.
+ */
+type ArgsField<C, A> = [C] extends [
+  { readonly init: infer I extends Component.Init },
+]
   ? { readonly args: A & NoInfer<Check<Ref.Args<I>, A>> }
   : { readonly args?: never };
 
@@ -105,7 +117,9 @@ type NoExtra<B, E> = { readonly [K in Exclude<keyof B, keyof E>]: never };
 
 /**
  * The client constructor's parameters after the native mount decide whether
- * `options` is absent, optional or required.
+ * `options` is absent, optional or required. A client that takes no native
+ * mount cannot be mounted. That branch is an object, not `never`, so the
+ * literal `name` and `args` beside it keep their types.
  */
 type OptionsField<C extends Component.Descriptor> =
   Parameters<C["client"]> extends [unknown, ...infer Rest]
@@ -116,7 +130,7 @@ type OptionsField<C extends Component.Descriptor> =
         : Rest extends [options?: infer O]
           ? { readonly options?: Exclude<O, undefined> }
           : never
-    : never;
+    : { readonly options: never };
 
 export type Client<C extends Component.Descriptor> = ReturnType<C["client"]>;
 

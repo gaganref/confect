@@ -191,6 +191,39 @@ const onEvent = Ref.make(
   }),
 );
 
+const publicRef = Ref.make(
+  "callbacks",
+  FunctionSpec.publicMutation({
+    name: "publicEvent",
+    args: () => EventFields,
+    returns: () => Schema.Null,
+  }),
+);
+const wrongArgs = Ref.make(
+  "callbacks",
+  FunctionSpec.internalMutation({
+    name: "args",
+    args: () => ({ ...EventFields, fromName: Schema.Int }),
+    returns: () => Schema.Null,
+  }),
+);
+const returns = Ref.make(
+  "callbacks",
+  FunctionSpec.internalMutation({
+    name: "returns",
+    args: () => EventFields,
+    returns: () => Schema.String,
+  }),
+);
+const query = Ref.make(
+  "callbacks",
+  FunctionSpec.internalQuery({
+    name: "queryEvent",
+    args: () => EventFields,
+    returns: () => Schema.Null,
+  }),
+);
+
 describe("Mount.make args", () => {
   it("keeps the install args, with a host ref in each callback slot", () => {
     const args = { fromName: "School office", onEvent };
@@ -240,14 +273,13 @@ describe("Mount.make args", () => {
       ...n,
       args: { transport: { kind: "smtp", host: "mail.example.test" } },
     });
-    const query = Ref.make(
-      "callbacks",
-      FunctionSpec.internalQuery({
-        name: "giveUpQuery",
-        args: () => EventFields,
-        returns: () => Schema.Null,
-      }),
-    );
+    void Mount.make(Notifier, {
+      ...n,
+      args: {
+        retry: { attempts: 3, onGiveUp: onEvent },
+        transport: { kind: "smtp", host: "mail.example.test" },
+      },
+    });
     const retry = { attempts: 3, onGiveUp: query };
     // @ts-expect-error RULE nested-callback-kind: a callback inside an optional struct is checked.
     void Mount.make(Notifier, { ...n, args: { retry, transport: resend } });
@@ -256,41 +288,44 @@ describe("Mount.make args", () => {
     void Mount.make(Notifier, { ...n, args: { transport: mixed } });
   });
 
+  it("checks a union's object member beside a primitive member", () => {
+    const Hook = Component.make("hook", {
+      init: Ref.make(
+        "install",
+        FunctionSpec.internalMutation({
+          name: "init",
+          args: () => ({
+            target: Schema.Union([
+              Schema.String,
+              Schema.Struct({ callback: Callback.handle(OnEvent) }),
+            ]),
+            label: Schema.optional(Schema.String),
+          }),
+          returns: () => Schema.Null,
+        }),
+      ),
+      client: (native: Native) => native,
+    });
+    const n = { name: "hook" } as const;
+    void Mount.make(Hook, { ...n, args: { target: "https://example.test" } });
+    void Mount.make(Hook, { ...n, args: { target: { callback: onEvent } } });
+    void Mount.make(Hook, { ...n, args: { target: "x", label: undefined } });
+    // @ts-expect-error RULE union-callback-kind: a query cannot answer a mutation contract.
+    void Mount.make(Hook, { ...n, args: { target: { callback: query } } });
+    // @ts-expect-error RULE union-callback-public: a callback is an internal host function.
+    void Mount.make(Hook, { ...n, args: { target: { callback: publicRef } } });
+    // @ts-expect-error RULE union-callback-args: the target takes the args the contract sends.
+    void Mount.make(Hook, { ...n, args: { target: { callback: wrongArgs } } });
+    // @ts-expect-error RULE union-callback-return: the target returns what the contract accepts.
+    void Mount.make(Hook, { ...n, args: { target: { callback: returns } } });
+    const extra = { callback: onEvent, surprise: true };
+    // @ts-expect-error RULE union-member-extra: the object member takes no surprise.
+    void Mount.make(Hook, { ...n, args: { target: extra } });
+  });
+
   it("refuses args init does not take", () => {
     const n = { name: "bad" } as const;
     const fromName = "office";
-    const publicRef = Ref.make(
-      "callbacks",
-      FunctionSpec.publicMutation({
-        name: "publicEvent",
-        args: () => EventFields,
-        returns: () => Schema.Null,
-      }),
-    );
-    const wrongArgs = Ref.make(
-      "callbacks",
-      FunctionSpec.internalMutation({
-        name: "args",
-        args: () => ({ ...EventFields, fromName: Schema.Int }),
-        returns: () => Schema.Null,
-      }),
-    );
-    const returns = Ref.make(
-      "callbacks",
-      FunctionSpec.internalMutation({
-        name: "returns",
-        args: () => EventFields,
-        returns: () => Schema.String,
-      }),
-    );
-    const query = Ref.make(
-      "callbacks",
-      FunctionSpec.internalQuery({
-        name: "queryEvent",
-        args: () => EventFields,
-        returns: () => Schema.Null,
-      }),
-    );
     // @ts-expect-error RULE callback-public: a callback is an internal host function.
     void Mount.make(Mailer, { ...n, args: { fromName, onEvent: publicRef } });
     // @ts-expect-error RULE callback-args: the target takes the args the contract sends.
