@@ -586,10 +586,11 @@ export const syncDeployModule = Effect.fnUntraced(function* (
       component !== undefined && (yield* hasDeployModule(component, config));
     if (mount.component.init === undefined && !nested) continue;
     const { file, exportName } = yield* mountExport(mount.name);
+    const local = `mount${entries.length}`;
     imports.push(
-      `import { ${exportName} } from "${yield* toModuleImportPath(path.relative(convexDirectory, file))}";`,
+      `import { ${exportName} as ${local} } from "${yield* toModuleImportPath(path.relative(convexDirectory, file))}";`,
     );
-    entries.push(`  { mount: ${exportName}, nested: ${nested} },`);
+    entries.push(`  { mount: ${local}, nested: ${nested} },`);
   }
   if (entries.length === 0) return yield* removeGenerated(deployPath, []);
   yield* writeFileStringAndLog(
