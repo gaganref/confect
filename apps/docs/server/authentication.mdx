@@ -39,6 +39,44 @@ Effect.gen(function* () {
 });
 ```
 
+## Reading HTTP identity without errors
+
+Use the module-level `Auth.getUserIdentity` effect in an HTTP handler or
+middleware to distinguish missing credentials from credentials Convex rejects.
+It returns an `Identity` union without a failure for either case.
+
+```ts
+import * as Auth from "@confect/server/Auth";
+import * as Effect from "effect/Effect";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
+
+const handler = Effect.gen(function* () {
+  const result = yield* Auth.getUserIdentity;
+  switch (result._tag) {
+    case "Absent":
+      return HttpServerResponse.text("No credentials", { status: 401 });
+    case "Invalid":
+      return HttpServerResponse.text("Invalid credentials", { status: 401 });
+    case "Valid":
+      return HttpServerResponse.text(result.identity.subject);
+  }
+});
+```
+
+`Absent` means Convex returned no identity. `Valid` contains Convex's verified
+`UserIdentity` in `identity`. `Invalid` means the identity read was rejected,
+including malformed headers, non-JWT credentials, bad signatures and foreign
+issuers. Rejected reads expose no credential or error detail. Interruption
+still interrupts the effect.
+
+The HTTP router supplies the `Auth` service per request. This module-level
+effect also works wherever that service is available. The existing service
+member, `auth.getUserIdentity`, retains its identity-or-error behavior.
+
+Convex's native identity does not expose the token's `exp`, `iat` or `nbf` timing
+claims. This effect returns the native identity unchanged and does not parse
+the `Authorization` header to recover them.
+
 ## Signing deployment JWTs
 
 `MutationAuth` is available in application and component mutations, including
