@@ -2784,6 +2784,45 @@ export const steps = MountInit.mutation([
     );
 
     it.effect(
+      "removes a nested confectDeploy group's module once its files are deleted",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const project = yield* initProject;
+          yield* fs.makeDirectory(path.join(project.root, "confect/jobs"));
+          yield* project.write(
+            "confect/jobs/confectDeploy.spec.ts",
+            Project.spec.replace("./_generated", "../_generated"),
+          );
+          yield* project.write(
+            "confect/jobs/confectDeploy.impl.ts",
+            Project.impl
+              .replaceAll("./_generated", "../_generated")
+              .replace("./notes.spec", "./confectDeploy.spec"),
+          );
+          yield* project.run;
+          expect(yield* project.exists("convex/jobs/confectDeploy.ts")).toBe(
+            true,
+          );
+          yield* fs.remove(
+            path.join(project.root, "confect/jobs/confectDeploy.spec.ts"),
+          );
+          yield* fs.remove(
+            path.join(project.root, "confect/jobs/confectDeploy.impl.ts"),
+          );
+          yield* project.run;
+          expect(yield* project.exists("convex/jobs/confectDeploy.ts")).toBe(
+            false,
+          );
+          expect(yield* project.read("convex/confectDeploy.ts")).toBe(
+            expectedDeploy(false),
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
       "refuses a mount with init that its mount file does not export",
       () =>
         Effect.gen(function* () {
