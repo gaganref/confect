@@ -4,6 +4,9 @@ import {
   Component,
   Env,
   FunctionSpec,
+  GenericId,
+  GroupSpec,
+  IdScope,
   Mount,
   Ref,
 } from "@confect/core";
@@ -11,6 +14,7 @@ import { getFunctionAddress } from "convex/server";
 import type * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as TestSpec from "./TestSpec";
 
 type Native = Record<string, Record<string, unknown>>;
 const emailClient = (native: Native) => ({
@@ -373,5 +377,73 @@ describe("Mount.make args", () => {
     void Mount.make(Mailer, { ...n, args: { maxAttempts: 3 } });
     // @ts-expect-error RULE args-extra: init takes no surprise.
     void Mount.make(Mailer, { ...n, args: { fromName, surprise: true } });
+  });
+});
+
+const scope = IdScope.component("notices");
+const NoticeId = GenericId.GenericId("notices", scope);
+const OnRead = Callback.mutation("notices/onRead", {
+  args: () => ({ noticeId: NoticeId, reader: Schema.String }),
+  returns: () => Schema.Null,
+});
+const noticesSpec = TestSpec.fromGroups({
+  notices: GroupSpec.make().addFunction(
+    FunctionSpec.publicQuery({
+      name: "get",
+      args: () => ({ noticeId: NoticeId }),
+      returns: () => Schema.String,
+    }),
+  ),
+});
+const init = Ref.make(
+  "install",
+  FunctionSpec.internalMutation({
+    name: "init",
+    args: () => ({
+      title: Schema.String,
+      onRead: Schema.optionalKey(Callback.handle(OnRead)),
+    }),
+    returns: () => Schema.Null,
+  }),
+);
+const Notices = Component.make("notices", {
+  init,
+  contract: Component.contract(noticesSpec, scope, ["notices"]),
+  client: (native: Native) => native,
+});
+const School = Mount.make(Notices, { name: "school", args: { title: "A" } });
+const Office = Mount.make(Notices, { name: "office", args: { title: "B" } });
+
+describe("Mount callbackArgs", () => {
+  it("returns the contract's args with ids typed for the mount", () => {
+    const fields = School.callbackArgs("onRead");
+    const encoded = { noticeId: "n1", reader: "ann" };
+    const decoded = Schema.decodeUnknownSync(Schema.Struct(fields))(encoded);
+    expect(decoded).toEqual(encoded);
+    expect(Schema.encodeSync(Schema.Struct(fields))(decoded)).toEqual(encoded);
+    expectTypeOf(decoded.reader).toEqualTypeOf<string>();
+    expectTypeOf(decoded.noticeId).toEqualTypeOf<
+      GenericId.GenericId<
+        "notices",
+        Component.MountScope<IdScope.App, "school">
+      >
+    >();
+  });
+
+  it("refuses what the mount cannot rebase", () => {
+    const schoolId = Schema.decodeUnknownSync(
+      Schema.Struct(School.callbackArgs("onRead")),
+    )({ noticeId: "n1", reader: "ann" }).noticeId;
+    const officeFields = Office.callbackArgs("onRead");
+    // @ts-expect-error RULE callback-args-per-mount: an id rebased for one mount is not another's.
+    const officeId: Schema.Schema.Type<typeof officeFields.noticeId> = schoolId;
+    void officeId;
+    const wrongSlot = () =>
+      // @ts-expect-error RULE callback-args-slot: title is not a callback slot.
+      School.callbackArgs("title");
+    void wrongSlot;
+    const plain = Mount.make(Mailer, { name: "m", args: { fromName: "x" } });
+    // @ts-expect-error RULE callback-args-contract: a descriptor without a contract has no callbackArgs.
+    void plain.callbackArgs;
   });
 });

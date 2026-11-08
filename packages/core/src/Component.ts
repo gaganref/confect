@@ -430,6 +430,11 @@ export type Init = Ref.AnyConfect & {
 
 export interface DescriptorOptions {
   readonly init?: Init;
+  /**
+   * The component's `_generated/component` contract. A mount of a descriptor
+   * with one rebases a callback slot's args with `callbackArgs`.
+   */
+  readonly contract?: Component<Spec.AnyWithProps, IdScope.IdScope, string>;
   readonly env?: Readonly<Record<string, Schema.Top>>;
   /**
    * Builds the component's client from its native mount, then the mount's

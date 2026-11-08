@@ -215,6 +215,7 @@ import contract from "./confect/_generated/component";
 import type spec from "./confect/_generated/spec";
 
 export default Component.make("counter", {
+  contract,
   env: { COMPONENT_REQUIRED: Schema.String },
   client: (native: Component.Api<typeof spec>) =>
     Component.bind(contract, native),
@@ -247,6 +248,18 @@ export const BulkEmail = Mount.make(Email, {
 ```
 
 The mount records its `args`. Nothing runs `init` on a push yet. A component without `init` takes no `args`.
+
+A descriptor that passes its `contract` gives each mount `callbackArgs(slot)`: the args a callback slot's contract sends, with the component's ids typed for that mount. The host function that answers the callback declares them as its args:
+
+```ts confect/circulars.spec.ts
+FunctionSpec.internalMutation({
+  name: "onEmailEvent",
+  args: () => BulkEmail.callbackArgs("onEvent"),
+  returns: () => Schema.Null,
+});
+```
+
+An id from one mount's `callbackArgs` does not typecheck as another mount's. A descriptor without `contract` has no `callbackArgs`.
 
 A mount is a `Context.Reference` keyed `mount/<name>`. Any handler yields it, `const counter = yield* First`, and gets the client over that installation with no Layer to provide. The client's methods still need the runners they call through. `Effect.provideService(First, fake)` replaces the client inside one effect, which is how a test swaps it. A mount file imports no `convex.config`, so function bundles can import it. `Auth.siteUrl(First, "/jwks.json")` points at a mount's HTTP routes; a mount without an `httpPrefix` fails to typecheck there.
 

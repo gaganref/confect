@@ -1,10 +1,14 @@
 import { componentsGeneric } from "convex/server";
 import * as Context from "effect/Context";
-import type * as Schema from "effect/Schema";
+import * as Schema from "effect/Schema";
+import * as SchemaAST from "effect/SchemaAST";
 import type * as App from "./App.js";
 import type * as Callback from "./Callback.js";
-import type * as Component from "./Component.js";
+import * as Component from "./Component.js";
 import type * as Env from "./Env.js";
+import type * as GenericId from "./GenericId.js";
+import type * as IdScope from "./IdScope.js";
+import { CallbackContract } from "./internal/annotations.js";
 import type * as Ref from "./Ref.js";
 
 const TypeId = "~@confect/core/Mount";
@@ -171,6 +175,43 @@ export type Any = Mount<Component.Descriptor, string>;
 
 export type NameOf<M> = M extends Mount<any, infer N, any> ? N : never;
 
+type InitArgs<C> = C extends { readonly init: infer I extends Component.Init }
+  ? Ref.Args<I>
+  : never;
+
+type CallbackSlot<C> = {
+  [K in keyof InitArgs<C>]-?: NonNullable<InitArgs<C>[K]> extends Handle
+    ? K
+    : never;
+}[keyof InitArgs<C>] &
+  string;
+
+type SlotArgs<C, K extends PropertyKey> = Extract<
+  NonNullable<InitArgs<C>[K & keyof InitArgs<C>]>,
+  Handle
+>["args"]["fields"];
+
+/**
+ * `callbackArgs`, on a mount whose descriptor carries its contract.
+ */
+type CallbackArgs<C, Name extends string> = C extends {
+  readonly contract: Component.Component<any, infer From, any>;
+}
+  ? {
+      /**
+       * A callback slot's contract args, with the component's ids typed for
+       * this mount, for the host function that answers the callback.
+       */
+      readonly callbackArgs: <const K extends CallbackSlot<C>>(
+        slot: K,
+      ) => GenericId.RebaseSchema<
+        Schema.Struct<SlotArgs<C, K>>,
+        From,
+        Component.MountScope<IdScope.App, Name>
+      >["fields"];
+    }
+  : unknown;
+
 /**
  * Mount a Convex component, as Convex's `app.use` does, in the host's
  * `confect/<mount>.ts`. `args` is typed from the component's `init`, `env` from
@@ -203,7 +244,8 @@ export const make = <
   } & EnvField<C, B> &
     ArgsField<C, A> &
     OptionsField<C>,
-): Mount<C, Name, Declared<[P] extends [never] ? undefined : P, B>> => {
+): Mount<C, Name, Declared<[P] extends [never] ? undefined : P, B>> &
+  CallbackArgs<C, Name> => {
   const data = { ...(options as object), component } as Data<C> & {
     readonly name: Name;
   };
@@ -212,10 +254,25 @@ export const make = <
     native: unknown,
     options?: unknown,
   ) => Client<C>;
+  const native = () => componentsGeneric()[data.name];
   const mount = Context.Reference<Client<C>>(`mount/${data.name}`, {
-    defaultValue: () => client(componentsGeneric()[data.name], data.options),
+    defaultValue: () => client(native(), data.options),
   });
-  return Object.assign(mount, { [TypeId]: data });
+  const { contract, init } = component;
+  const callbackArgs = (slot: string) => {
+    const field = init!.args.fields[slot]!;
+    const callback = SchemaAST.resolveAt<Callback.Any>(CallbackContract)(
+      Schema.toEncoded(field).ast,
+    )!;
+    const bound = Component.bind(contract!, native() as never);
+    return Component.schema(bound, callback.functionProvenance.args).fields;
+  };
+  return Object.assign(
+    mount,
+    { [TypeId]: data },
+    contract === undefined ? {} : { callbackArgs },
+  ) as Mount<C, Name, Declared<[P] extends [never] ? undefined : P, B>> &
+    CallbackArgs<C, Name>;
 };
 
 /**
