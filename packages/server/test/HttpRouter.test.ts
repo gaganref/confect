@@ -536,8 +536,13 @@ const fetcher = (router: ReturnType<typeof ConfectHttpRouter.make>) => {
     });
 };
 
-const answering = (method: "GET" | "POST" | "PUT", path: `/${string}`) =>
-  HttpRouter.add(method, path, HttpServerResponse.text(`${method} ran`)).pipe(
+const answering = (
+  method: "GET" | "HEAD" | "POST" | "PUT",
+  path: `/${string}`,
+) =>
+  HttpRouter.addAll([
+    HttpRouter.route(method, path, HttpServerResponse.text(`${method} ran`)),
+  ]).pipe(
     Layer.provide(
       HttpRouter.middleware((next) =>
         Effect.gen(function* () {
@@ -580,6 +585,31 @@ it.effect.each([
       ["/trailing", "POST", 200, "POST"],
       ["/TRAILING/", "PUT", 200, "PUT"],
       ["/trailing", undefined, 200, "GET"],
+    ],
+  },
+  {
+    paths: "requesting HEAD, which GET answers where no HEAD route matches",
+    layer: Layer.mergeAll(
+      answering("GET", "/head/:id"),
+      answering("HEAD", "/wild/*"),
+      answering("GET", "/wild/:id"),
+    ),
+    request: ["HEAD", "/head/7", ""],
+    preflights: [
+      ["/head/7", "HEAD", 200, "GET id 7"],
+      ["/wild/7", "HEAD", 200, "HEAD * 7"],
+    ],
+  },
+  {
+    paths: "with an optional parameter whose full form an earlier route claims",
+    layer: Layer.mergeAll(
+      answering("GET", "/optional/:id"),
+      answering("POST", "/optional/:slug?"),
+    ),
+    request: ["POST", "/optional", "POST ran"],
+    preflights: [
+      ["/optional", undefined, 200, "POST"],
+      ["/optional/7", undefined, 200, "GET id 7"],
     ],
   },
   {
