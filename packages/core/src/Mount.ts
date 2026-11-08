@@ -2,10 +2,82 @@ import { componentsGeneric } from "convex/server";
 import * as Context from "effect/Context";
 import type * as Schema from "effect/Schema";
 import type * as App from "./App.js";
+import type * as Callback from "./Callback.js";
 import type * as Component from "./Component.js";
 import type * as Env from "./Env.js";
+import type * as Ref from "./Ref.js";
 
 const TypeId = "~@confect/core/Mount";
+
+type Handle = Ref.AnyConfect & {
+  readonly "~@confect/core/Callback/Handle": Callback.Id;
+};
+
+type ContractOf<H extends Handle> = Callback.Contract<
+  H["~@confect/core/Callback/Handle"],
+  Ref.GetFunctionType<H>,
+  H["args"]["fields"],
+  H["returns"],
+  Extract<NonNullable<H["error"]>, Schema.Top>
+>;
+
+/**
+ * What a mount passes for `init`'s args: the same shape, with a host ref in
+ * each callback slot.
+ */
+type Input<T> = T extends Handle
+  ? Ref.AnyConfect
+  : T extends object
+    ? { readonly [K in keyof T]: Input<T[K]> }
+    : T;
+
+/**
+ * `A` when every alternative of `A` fits `T`; otherwise a type that refuses
+ * each alternative that does not. A callback slot takes an internal host ref
+ * that satisfies the slot's contract. Whether a slot may be left `undefined` is
+ * `Input`'s to say.
+ */
+type Check<T, A> = A extends unknown ? Fit<T, A> : never;
+
+/**
+ * Distributes over the members of `T`, so a value is checked against the
+ * members whose shape it has and fits when it fits one of them.
+ */
+type Fit<T, A> = T extends Handle
+  ? A extends Ref.AnyConfect
+    ? A &
+        Callback.Check<ContractOf<T>, A> &
+        (Ref.GetFunctionVisibility<A> extends "internal"
+          ? unknown
+          : { readonly callbackMustBeInternal: never })
+    : never
+  : T extends object
+    ? A extends Input<T>
+      ? {
+          readonly [K in keyof A]: K extends keyof T
+            ? Check<T[K], A[K]>
+            : never;
+        }
+      : never
+    : A extends T
+      ? A
+      : never;
+
+type ArgsOf<C> = C extends { readonly init: infer I extends Component.Init }
+  ? Ref.Args<I>
+  : never;
+
+/**
+ * `[C]`, not a bare `C`, so the conditional is not distributive. A distributive
+ * one resolves against `Component.Descriptor` while `C` is inferred, drops `A`
+ * from the contextual type, and widens inline literals until `A` falls back to
+ * its constraint.
+ */
+type ArgsField<C, A> = [C] extends [
+  { readonly init: infer I extends Component.Init },
+]
+  ? { readonly args: A & NoInfer<Check<Ref.Args<I>, A>> }
+  : { readonly args?: never };
 
 type IsOptional<S> = S extends { readonly "~type.optionality": "optional" }
   ? true
@@ -38,7 +110,9 @@ type EnvField<C> = C extends { readonly env: infer E }
 
 /**
  * The client constructor's parameters after the native mount decide whether
- * `options` is absent, optional or required.
+ * `options` is absent, optional or required. A client that takes no native
+ * mount cannot be mounted. That branch is an object, not `never`, so the
+ * literal `name` and `args` beside it keep their types.
  */
 type OptionsField<C extends Component.Descriptor> =
   Parameters<C["client"]> extends [unknown, ...infer Rest]
@@ -49,7 +123,7 @@ type OptionsField<C extends Component.Descriptor> =
         : Rest extends [options?: infer O]
           ? { readonly options?: Exclude<O, undefined> }
           : never
-    : never;
+    : { readonly options: never };
 
 export type Client<C extends Component.Descriptor> = ReturnType<C["client"]>;
 
@@ -58,6 +132,7 @@ export interface Data<C extends Component.Descriptor = Component.Descriptor> {
   readonly name: string;
   readonly httpPrefix?: App.HttpPrefix;
   readonly env?: Readonly<Record<string, string | Env.AnyEntry | undefined>>;
+  readonly args?: unknown;
   readonly options?: unknown;
 }
 
@@ -76,24 +151,33 @@ export type Any = Mount<Component.Descriptor, string>;
 
 /**
  * Mount a Convex component, as Convex's `app.use` does, in the host's
- * `confect/<mount>.ts`. `env` is typed from the component's env slots, and
- * `options` from its client constructor. A handler reaches the client with
- * `yield* BulkEmail`.
+ * `confect/<mount>.ts`. `args` is typed from the component's `init`, `env` from
+ * its env slots, and `options` from its client constructor. A handler reaches
+ * the client with `yield* BulkEmail`.
  *
  * ```ts
  * export const BulkEmail = Mount.make(Email, {
  *   name: "bulkEmail",
  *   httpPrefix: "/bulk-email",
  *   env: { RESEND_API_KEY: env.BULK_RESEND_KEY },
+ *   args: {
+ *     fromName: "School office",
+ *     onEvent: refs.internal.circulars.onEmailEvent,
+ *   },
  * });
  * ```
  */
-export const make = <C extends Component.Descriptor, const Name extends string>(
+export const make = <
+  C extends Component.Descriptor,
+  const Name extends string,
+  const A extends Input<ArgsOf<C>>,
+>(
   component: C,
   options: {
     readonly name: Name;
     readonly httpPrefix?: App.HttpPrefix;
   } & EnvField<C> &
+    ArgsField<C, A> &
     OptionsField<C>,
 ): Mount<C, Name> => {
   const data = { ...(options as object), component } as Data<C> & {
@@ -111,8 +195,8 @@ export const make = <C extends Component.Descriptor, const Name extends string>(
 };
 
 /**
- * What a mount was declared with: its component, name, HTTP prefix, env and
- * options.
+ * What a mount was declared with: its component, name, HTTP prefix, env, args
+ * and options.
  */
 export const data = <C extends Component.Descriptor, Name extends string>(
   mount: Mount<C, Name>,

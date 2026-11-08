@@ -244,6 +244,26 @@ export declare const api: {
         }
       >;
     };
+    mounts: {
+      counts: FunctionReference<
+        "query",
+        "public",
+        { mount: "first" | "second"; run: string },
+        Array<number>
+      >;
+      create: FunctionReference<
+        "mutation",
+        "public",
+        { count: number; mount: "first" | "second"; run: string },
+        null
+      >;
+      replaced: FunctionReference<
+        "query",
+        "public",
+        { run: string },
+        { inside: Array<number>; outside: Array<number> }
+      >;
+    };
     nativeComponents: {
       roundTrip: FunctionReference<"mutation", "public", { run: string }, any>;
     };

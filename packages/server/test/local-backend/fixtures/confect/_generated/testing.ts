@@ -34,6 +34,7 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "groups/componentAuthoring.ts": () => import("../../convex/groups/componentAuthoring.js"),
 "groups/components.ts": () => import("../../convex/groups/components.js"),
 "groups/metadata.ts": () => import("../../convex/groups/metadata.js"),
+"groups/mounts.ts": () => import("../../convex/groups/mounts.js"),
 "groups/nativeComponents.ts": () => import("../../convex/groups/nativeComponents.js"),
 "groups/pagination.ts": () => import("../../convex/groups/pagination.js"),
 "groups/reserved.ts": () => import("../../convex/groups/reserved.js"),
