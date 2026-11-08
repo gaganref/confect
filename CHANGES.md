@@ -12,6 +12,19 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Counted HTTP bodies
+
+Add `HttpRouter.withBodyLimit` for endpoint middleware. Count bytes while reading,
+return 413 at the cap and 415 for non-identity content encoding. Verification and
+payload decoding share one buffer. Effect 4.0.4's Web readers do not provide these
+guarantees. Changeset: `counted-http-body.md`. Upstream: planned; no proposal submitted.
+
+## OPTIONS middleware dispatch
+
+Route OPTIONS requests through the declared path's middleware, never its handler.
+Preserve explicit OPTIONS handlers, component prefixes and route middleware.
+Changeset: `route-options-middleware.md`. Upstream: planned; no proposal submitted.
+
 ## HTTP identity states
 
 The module-level `Auth.getUserIdentity` effect returns `Absent`, `Valid` with
@@ -82,9 +95,17 @@ Thrown checks use the same section attribution. Changeset:
 
 A section's optional `generate` writes one file into `confect/_generated`. Codegen bundles each `confect/` module the section matches and passes `render` their exports, every registered function with its spec file, and each mount with its definition specifier. Each returned error string is a typed error under the section key. Codegen refuses a built-in name, a name outside `_generated` and a name two keys claim, and removes a section file once no section claims it. Every registration file and the declared HTTP router import each section file first, and incremental spec edits render it again. `confect dev` regenerates when a file the section accepted, or a `confect/` file it imports, changes or is removed, including after a refusal or a load failure. Codegen checks the router's imports after it writes the run's section files, so a regeneration from an empty `_generated` accepts them. Frame's observe door needs this to load module declarations before any handler runs. Changesets: `manifest-section-generate.md`, `manifest-section-clean-regenerate.md`. Upstream: planned; no proposal submitted.
 
+### Show render every offered file
+
+A generating section's `render` also receives `files`, every `.ts` file under `confect/` outside `_generated` that `match` was offered, so a section can see a folder whose files it does not load. `confect dev` now regenerates when any such file is removed, as it already did when one is added. Frame's authz section needs this to list every module folder. Changeset: `manifest-section-render-files.md`. Upstream: planned; no proposal submitted.
+
 ### Summarize a section's data
 
 A section's optional `summarize` returns its whole manifest data from the modules its `generate` matched and its functions' descriptions, in place of `{ format, functions }`. Codegen runs it after `describe` and before `check` and the digest, and refuses a result that is not JSON data or does not carry the section's format. Section files now render before the manifest step so their modules load once. Frame's observe catalogue needs this for `observe: { format: 2, fields, functions }`, with each function's module and arguments. Changeset: `manifest-section-summarize.md`. Upstream: planned; no proposal submitted.
+
+### Show summarize each function's spec file
+
+A section's `summarize` also receives `sources`, the spec file under `confect/` that declares each of its functions, keyed by function path. Frame's observe catalogue reads a function's module from its folder, and matching every spec per section cost about 0.4 s per section on Docket. Changeset: `manifest-section-summarize-sources.md`. Upstream: planned; no proposal submitted.
 
 ## Reserved arguments
 
