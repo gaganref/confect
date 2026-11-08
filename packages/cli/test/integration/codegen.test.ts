@@ -439,6 +439,84 @@ export default App.make({ env: Env.make("host", {}), components: [email], mounts
     { timeout: 30000 },
   );
 
+  it.effect.each([
+    ["inside a thunk", "", "components.bulkEmail"],
+    [
+      "at module top level",
+      "const bulkEmail = components.bulkEmail;",
+      "bulkEmail",
+    ],
+  ])(
+    "generates a fresh host whose spec uses the component registry %s in one stable run",
+    ([, topLevel, use]) =>
+      Effect.gen(function* () {
+        const project = yield* Project.make;
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(`${project.root}/email`);
+        yield* project.write(
+          "email/convex.config.ts",
+          'import { defineComponent } from "convex/server"; export default defineComponent("email");',
+        );
+        yield* project.write(
+          "email/client.ts",
+          `import { Callback, Component, FunctionSpec, Ref } from "@confect/core";
+import * as Schema from "effect/Schema";
+export const OnEvent = Callback.mutation("email/onEvent", { args: () => ({ status: Schema.String }), returns: () => Schema.Null });
+export default Component.make("email", {
+  init: Ref.make("install", FunctionSpec.internalMutation({ name: "init", args: () => ({ onEvent: Callback.handle(OnEvent) }), returns: () => Schema.Null })),
+  client: (native: unknown) => native,
+});`,
+        );
+        yield* project.write(
+          "confect/events.spec.ts",
+          `import { FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+import { components } from "./_generated/components";
+${topLevel}
+export default GroupSpec.make().addFunction(FunctionSpec.internalMutation({ name: "onEvent", args: () => (${use} ? { status: Schema.String } : {}), returns: () => Schema.Null }));`,
+        );
+        yield* project.write(
+          "confect/events.impl.ts",
+          `import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import schema from "./_generated/schema";
+import events from "./events.spec";
+const onEvent = FunctionImpl.make(schema, events, "onEvent", () => Effect.succeed(null));
+export default GroupImpl.make(schema, events).pipe(Layer.provide(onEvent), GroupImpl.finalize);`,
+        );
+        yield* project.write(
+          "confect/bulkEmail.ts",
+          `import { Mount } from "@confect/core";
+import Email from "../email/client";
+import refs from "./_generated/refs";
+export const BulkEmail = Mount.make(Email, { name: "bulkEmail", args: { onEvent: refs.internal.events.onEvent } });`,
+        );
+        yield* project.write(
+          "confect/app.ts",
+          `import { App, Env } from "@confect/core";
+import email from "../email/convex.config";
+import { BulkEmail } from "./bulkEmail";
+export default App.make({ env: Env.make("host", {}), components: [email], mounts: [BulkEmail] });`,
+        );
+        const run = Effect.gen(function* () {
+          const generated = yield* project.start("codegen");
+          expect(
+            yield* generated.handle.exitCode,
+            yield* Ref.get(generated.output),
+          ).toBe(0);
+          return yield* project.generatedFiles;
+        });
+        const first = yield* run;
+        expect(first["confect/_generated/components.ts"]).toContain(
+          '"bulkEmail": import("../../email/_generated/component.js").ComponentApi<"bulkEmail">;',
+        );
+        expect(first["convex/convex.config.ts"]).toContain('name: "bulkEmail"');
+        expect(yield* run).toStrictEqual(first);
+      }),
+    { timeout: 60000 },
+  );
+
   it.effect.each([false, true])(
     "enforces declared middleware in generated registration (covered=%s)",
     (covered) =>
