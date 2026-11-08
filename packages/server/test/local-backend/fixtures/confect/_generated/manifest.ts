@@ -3,6 +3,10 @@
 export default {
   "name": "host",
   "env": {
+    "TEST_AUTH_JWKS": {
+      "kind": "string",
+      "optional": false
+    },
     "COMPONENT_MARKER": {
       "kind": "string",
       "optional": true
@@ -20,5 +24,5 @@ export default {
       "right": "/right"
     }
   },
-  "digest": "sha256:977a17be972ec1952f10d8ec5afd8e4bfc2cac077dc469c94fe0c559c04fa7bf"
+  "digest": "sha256:970c38cc35e5cee0c2949d20288ff90dd52a631896a59808e30dcc6b6553c7e5"
 } as const;
