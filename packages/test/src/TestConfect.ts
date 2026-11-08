@@ -1,4 +1,4 @@
-import { App, Ref } from "@confect/core";
+import { App, type Mount, Ref } from "@confect/core";
 import type { DatabaseSchema, DataModel } from "@confect/server";
 import { RegisteredConvexFunction } from "@confect/server";
 import type {
@@ -378,7 +378,7 @@ export function layer<
   registry: Registry<DatabaseSchema_> & {
     readonly components: Readonly<
       Record<
-        App.MountNames<NoInfer<A>["mounts"]>,
+        Mount.NameOf<NoInfer<A>["mounts"][number]>,
         Registry<DatabaseSchema_>["components"][string]
       >
     >;

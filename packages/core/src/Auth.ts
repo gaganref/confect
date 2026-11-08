@@ -86,28 +86,19 @@ export type Any = Auth<App.Any>;
  */
 export function siteUrl(path?: `/${string}`): SiteUrl;
 export function siteUrl(
-  mount:
-    | Mount.Mount<any, string, Mount.Declared<App.HttpPrefix>>
-    | { readonly httpPrefix: App.HttpPrefix },
+  mount: Mount.Mount<any, string, Mount.Declared<App.HttpPrefix>>,
   path?: `/${string}`,
 ): SiteUrl;
 export function siteUrl(
-  pathOrMount?:
-    | `/${string}`
-    | Mount.Any
-    | { readonly httpPrefix: App.HttpPrefix },
+  pathOrMount?: `/${string}` | Mount.Any,
   path: string = "",
 ): SiteUrl {
-  if (typeof pathOrMount === "string" || pathOrMount === undefined) {
-    return { [SiteUrlTypeId]: SiteUrlTypeId, path: pathOrMount ?? "" };
-  }
-  const prefix =
-    "httpPrefix" in pathOrMount
-      ? pathOrMount.httpPrefix
-      : Mount.data(pathOrMount).httpPrefix;
   return {
     [SiteUrlTypeId]: SiteUrlTypeId,
-    path: (prefix ?? "").replace(/\/+$/, "") + path,
+    path:
+      typeof pathOrMount === "string" || pathOrMount === undefined
+        ? (pathOrMount ?? "")
+        : (Mount.data(pathOrMount).httpPrefix ?? "").replace(/\/+$/, "") + path,
   };
 }
 

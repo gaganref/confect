@@ -268,10 +268,11 @@ export default Auth.make(app, { providers: [
           "provider/convex.config.ts",
           'import { defineComponent } from "convex/server"; export default defineComponent("auth");',
         );
-        const app = `import { App, Env } from "@confect/core";
+        const app = `import { App, Component, Env, Mount } from "@confect/core";
 import auth from "../provider/convex.config";
 export const env = Env.make("host", { PLATFORM_ISSUER: Env.string() });
-export default App.make({ env, mounts: { auth: App.mount(auth) } });`;
+const Auth = Component.make("auth", { client: (native: unknown) => native });
+export default App.make({ env, components: [auth], mounts: [Mount.make(Auth, { name: "auth" })] });`;
         yield* project.write("confect/app.ts", app);
         yield* project.write(
           "confect/auth.ts",

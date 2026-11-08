@@ -84,14 +84,6 @@ export class InvalidBinding extends Data.TaggedError("InvalidBinding")<{
   }
 }
 
-export class UnknownComponentImport extends Data.TaggedError(
-  "UnknownComponentImport",
-)<{ readonly mount: string }> {
-  override get message(): string {
-    return `The mount "${this.mount}" must pass the default export of a component's convex.config module, imported directly in the declaration.`;
-  }
-}
-
 export class InvalidComponentDefinition extends Data.TaggedError(
   "InvalidComponentDefinition",
 )<{ readonly index: number }> {
@@ -150,7 +142,6 @@ export type DeclarationError =
   | InvalidMountName
   | ForeignEnvBinding
   | InvalidBinding
-  | UnknownComponentImport
   | InvalidComponentDefinition
   | MountWithoutDefinition
   | DefinitionWithoutMount
@@ -225,18 +216,13 @@ export const parse = (input: {
       if (!MOUNT_NAME.test(mount.name)) {
         return yield* Result.fail(new InvalidMountName({ mount: mount.name }));
       }
-      const component =
-        "definition" in mount
-          ? Option.getOrUndefined(input.componentImport(mount.definition))
-          : definitions.get(mount.component.name);
+      const component = definitions.get(mount.component.name);
       if (component === undefined) {
         return yield* Result.fail(
-          "definition" in mount
-            ? new UnknownComponentImport({ mount: mount.name })
-            : new MountWithoutDefinition({
-                mount: mount.name,
-                component: mount.component.name,
-              }),
+          new MountWithoutDefinition({
+            mount: mount.name,
+            component: mount.component.name,
+          }),
         );
       }
       const named = mounts.find((declared) => declared.name === mount.name);
