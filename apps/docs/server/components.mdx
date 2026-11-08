@@ -90,6 +90,22 @@ convex codegen --component-dir components/counter/convex
 
 After upgrading to the fork based on upstream 10.3.1, rerun `confect codegen` for both the component and host. For local iteration, run `confect dev --component-dir components/counter/convex` and a separate host `confect dev` alongside the Convex development workflow.
 
+### Group a table's rows
+
+A table's rows can belong to rows of another table in the component. `.group` names the required id field that holds that owner, and the field's table is the owner's table:
+
+```ts title="confect/tables/emails.ts"
+import { Table } from "@confect/core";
+import * as Schema from "effect/Schema";
+import { Id } from "../_generated/id";
+
+export default Table.make(() =>
+  Schema.Struct({ batchId: Id("batches"), to: Schema.String }),
+).group("batchId");
+```
+
+`.group` takes only a required id field. `.group("to")`, `.group("nope")` and an optional id are type errors. `Component.contract(spec, scope, tables)` takes tables beside system table names, such as `[batches, emails, "_storage"]`, and refuses a grouped table whose id is not one of the listed tables in the component's scope, such as an id from another component or an application id. `Component.groups(contract)` returns `{ emails: { key: "batchId", table: "batches" } }`. Generated `_generated/component.ts` passes table names only, so a generated contract lists no groups until codegen passes the tables.
+
 ## Mount it in a host
 
 The host declares its own env, then lists the component's `convex.config` definition and a [`Mount.make`](#reach-a-mounts-client) mount of it. The mount supplies the mount name; there is no `App.use` API:
