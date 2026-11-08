@@ -146,7 +146,9 @@ export const make = Effect.gen(function* () {
             Effect.map((entries) =>
               entries
                 .filter((entry) => entry.endsWith(".ts"))
-                .map((entry) => path.join(directory, entry)),
+                .map((entry) =>
+                  [directory, ...entry.split(path.sep)].join("/"),
+                ),
             ),
           ),
     );
