@@ -410,10 +410,13 @@ which remains open; fork-specific follow-up submission is unrecorded.
 table's rows and refuses any other field. `Component.contract(spec, scope,
 tables)` takes tables beside system table names and refuses a grouped table whose
 id is not one of them, in the component's scope. `Component.groups(contract)`
-returns each grouped table's `{ key, table }`. Codegen still passes table names
-only, so a generated contract lists no groups yet.
+returns each grouped table's `{ key, table }`. Codegen passes each table to
+the contract, so a generated contract lists its groups. The generated
+`_generated/component.ts` binds its own imports with a leading `$`, as
+`convexSchema.ts` does, so a table named `spec`, `scope` or `component` cannot
+collide with them. Rerun `confect codegen` to publish groups.
 
-Changeset: `table-group.md`.
+Changesets: `table-group.md`, `codegen-table-groups.md`.
 Upstream: planned; no proposal submitted.
 
 ### Type component callbacks
