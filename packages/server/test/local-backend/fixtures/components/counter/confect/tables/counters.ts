@@ -8,4 +8,5 @@ export default Table.make(() =>
   }),
 )
   .index("by_run", ["run"])
-  .index("by_run_count", ["run", "count"]);
+  .index("by_run_count", ["run", "count"])
+  .searchIndex("search_run", { searchField: "run" });

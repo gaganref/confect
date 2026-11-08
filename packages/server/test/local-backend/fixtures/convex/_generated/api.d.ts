@@ -247,6 +247,26 @@ export declare const api: {
     nativeComponents: {
       roundTrip: FunctionReference<"mutation", "public", { run: string }, any>;
     };
+    pagination: {
+      page: FunctionReference<
+        "query",
+        "public",
+        { cursor: string | null; numItems: number; run: string },
+        { continueCursor: string; isDone: boolean; page: Array<number> }
+      >;
+      searchPage: FunctionReference<
+        "query",
+        "public",
+        { cursor: string | null; numItems: number; run: string },
+        { continueCursor: string; isDone: boolean; page: Array<number> }
+      >;
+      twice: FunctionReference<
+        "query",
+        "public",
+        { cursor: string | null; numItems: number; run: string },
+        null
+      >;
+    };
     reserved: {
       chain: FunctionReference<
         "action",

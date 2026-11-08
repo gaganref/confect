@@ -185,6 +185,38 @@ export const api: {
       Id<"deliveries">
     >;
   };
+  pagination: {
+    page: FunctionReference<
+      "query",
+      "public",
+      { cursor: string | null; numItems: number; run: string },
+      {
+        continueCursor: string;
+        isDone: boolean;
+        page: Array<{
+          _creationTime: number;
+          _id: Id<"counters">;
+          count: string;
+          run: string;
+        }>;
+      }
+    >;
+    searchPage: FunctionReference<
+      "query",
+      "public",
+      { cursor: string | null; numItems: number; run: string },
+      {
+        continueCursor: string;
+        isDone: boolean;
+        page: Array<{
+          _creationTime: number;
+          _id: Id<"counters">;
+          count: string;
+          run: string;
+        }>;
+      }
+    >;
+  };
   reserved: {
     echo: FunctionReference<
       "mutation",
