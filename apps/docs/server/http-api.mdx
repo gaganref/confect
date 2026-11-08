@@ -70,9 +70,10 @@ endpoint annotations, so it can answer a preflight with 204. When middleware
 calls its next effect instead, the request returns 404, as an undeclared path
 does.
 
-`Access-Control-Request-Method` selects the declared method at a shared path.
-An absent header selects the first registered method. An undeclared requested
-method or path returns 404. An explicit OPTIONS route takes precedence.
+`Access-Control-Request-Method` selects the route that method would reach, so
+paths the router treats as one, such as `/a/:id` and `/a/:slug/`, share a
+preflight. An absent header selects the first registered method. An undeclared
+method or path returns 404. A matching explicit OPTIONS route takes precedence.
 Router middleware sees OPTIONS on every declared route. Endpoint middleware sees
 it when the router receives `{ api }`, as generated backends do.
 Confect does not add CORS response headers. Configure those in middleware.
