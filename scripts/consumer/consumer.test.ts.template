@@ -85,9 +85,10 @@ test.each([
 );
 
 test("installed codegen publishes a component table's group in its contract", () => {
-  expect(Component.groups(counterContract)).toEqual({
-    emails: { key: "batchId", table: "batches" },
-  });
+  const relation: {
+    readonly emails: { readonly key: "batchId"; readonly table: "batches" };
+  } = Component.groups(counterContract);
+  expect(relation).toEqual({ emails: { key: "batchId", table: "batches" } });
 });
 
 test("installed codegen discovers and executes the package test kit", () =>
