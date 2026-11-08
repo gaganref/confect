@@ -431,12 +431,10 @@ which remains open; fork-specific follow-up submission is unrecorded.
 table's rows and refuses any other field. `Component.contract(spec, scope,
 tables)` takes tables beside system table names and refuses a grouped table whose
 id is not one of them, in the component's scope. `Component.groups(contract)`
-returns each grouped table's `{ key, table }`, and its type keeps the literal
-key and table, `{ readonly emails: { readonly key: "batchId"; readonly table:
-"batches" } }`. An explicit names-only type argument, as in
-`Component.contract<typeof spec, typeof scope, "batches">(...)`, still compiles
-and carries no groups. Codegen passes each table to the contract, so a generated
-contract lists its groups and its declared type keeps them. The generated
+returns each grouped table's `{ key, table }`, typed with the literal key and
+table. Table names alone, even as an explicit type argument, carry no groups.
+Codegen passes each table to the contract, so a generated contract lists its
+groups and its declared type keeps them. The generated
 `_generated/component.ts` binds its own imports with a leading `$`, as
 `convexSchema.ts` does, so a table named `spec`, `scope` or `component` cannot
 collide with them. Rerun `confect codegen` to publish groups.

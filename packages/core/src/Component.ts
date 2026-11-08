@@ -144,8 +144,7 @@ interface Tree {
 }
 
 /**
- * Each grouped table's name, mapped to its id field and the table that id
- * names.
+ * Each grouped table's name, mapped to its id field and that id's table.
  */
 export interface GroupMap {
   readonly [table: string]: { readonly key: string; readonly table: string };
@@ -197,17 +196,14 @@ type StrayGroup<
  */
 export type Groups<Entries extends ReadonlyArray<TableEntry>> = {
   readonly [
-    Entry in Entries[number] as Entry extends {
-      readonly tableName: infer Name extends string;
-      readonly group: Table_.Group;
-    }
-      ? Name
-      : never
-  ]: Entry extends {
-    readonly group: Table_.Group<infer Key, infer Target>;
-  }
-    ? { readonly key: Key; readonly table: Target }
-    : never;
+    Entry in Extract<
+      Entries[number],
+      { readonly tableName: string; readonly group: Table_.Group }
+    > as Entry["tableName"]
+  ]: {
+    readonly key: Entry["group"]["key"];
+    readonly table: Entry["group"]["table"];
+  };
 };
 
 /**
@@ -293,8 +289,7 @@ export function contract<
   tables: Entries & CheckGroups<Entries, Scope>,
 ): Component<Spec_, Scope, EntryName<Entries[number]>, Groups<Entries>>;
 /**
- * The names-only form, for a caller that spells the table names as a type
- * argument. Names alone carry no groups.
+ * Table names alone, as in an explicit third type argument, carry no groups.
  */
 export function contract<
   Spec_ extends Spec.AnyWithProps,
