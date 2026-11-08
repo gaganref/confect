@@ -2,6 +2,7 @@ import type {
   Auth as ConvexAuth,
   MutationAuth as ConvexMutationAuth,
   SignJwtOptions,
+  UserIdentity,
 } from "convex/server";
 import * as Context from "effect/Context";
 import { flow } from "effect/Function";
@@ -29,6 +30,31 @@ const make = (auth: ConvexAuth) => ({
 export class Auth extends Context.Service<Auth, ReturnType<typeof make>>()(
   "@confect/server/Auth",
 ) {}
+
+/**
+ * The outcome of Convex's identity verification for the current request.
+ */
+export type Identity =
+  | { readonly _tag: "Absent" }
+  | { readonly _tag: "Valid"; readonly identity: UserIdentity }
+  | { readonly _tag: "Invalid" };
+
+/**
+ * Read HTTP identity without failing for missing or rejected credentials.
+ * Convex verifies the credential. Rejected reads expose no token or error
+ * detail.
+ */
+export const getUserIdentity: Effect.Effect<Identity, never, Auth> = Auth.pipe(
+  Effect.flatMap((auth) =>
+    auth.getUserIdentity.pipe(
+      Effect.map((identity): Identity => ({ _tag: "Valid", identity })),
+      Effect.catchTag("NoUserIdentityFoundError", () =>
+        Effect.succeed<Identity>({ _tag: "Absent" }),
+      ),
+      Effect.catchDefect(() => Effect.succeed<Identity>({ _tag: "Invalid" })),
+    ),
+  ),
+);
 
 export const layer = (auth: ConvexAuth) => Layer.succeed(Auth, make(auth));
 

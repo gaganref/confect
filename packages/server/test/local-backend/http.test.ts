@@ -13,6 +13,8 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as LocalBackend from "./LocalBackend";
 
+const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+
 const LogEntry = Schema.fromJsonString(
   Schema.Struct({
     kind: Schema.String,
@@ -25,7 +27,7 @@ const LogEntry = Schema.fromJsonString(
 layer(
   Layer.mergeAll(LocalBackend.layer, NodeServices.layer, FetchHttpClient.layer),
   { timeout: "120 seconds", excludeTestServices: true },
-)("HTTP route labels on a real backend", (it) => {
+)("HTTP routes on a real backend", (it) => {
   it.effect(
     "logs reflected patterns for application and mounted component completions",
     () =>
@@ -98,6 +100,86 @@ layer(
           ),
         );
         expect([response.status, yield* response.text]).toEqual([404, ""]);
+      }
+    }),
+  );
+  it.effect("reads absent, valid and rejected HTTP identity", () =>
+    Effect.gen(function* () {
+      const backend = yield* LocalBackend.LocalBackend;
+      const keys = yield* Effect.promise(() =>
+        crypto.subtle.generateKey(
+          {
+            name: "RSASSA-PKCS1-v1_5",
+            modulusLength: 2048,
+            publicExponent: new Uint8Array([1, 0, 1]),
+            hash: "SHA-256",
+          },
+          true,
+          ["sign", "verify"],
+        ),
+      );
+      const key = yield* Effect.promise(() =>
+        crypto.subtle.exportKey("jwk", keys.publicKey),
+      );
+      const jwks = {
+        keys: [{ ...key, kid: "test", alg: "RS256", use: "sig" }],
+      };
+      yield* backend.setEnv(
+        "TEST_AUTH_JWKS",
+        `data:application/json;base64,${Buffer.from(encodeJson(jwks)).toString("base64")}`,
+      );
+      yield* backend.redeploy;
+      const issuer = "https://confect-auth.invalid";
+      const expires =
+        Math.floor((yield* Clock.currentTimeMillis) / 1000) + 3600;
+      const encode = (value: unknown) =>
+        Buffer.from(encodeJson(value)).toString("base64url");
+      const sign = Effect.fnUntraced(function* (iss: string) {
+        const unsigned = `${encode({ alg: "RS256", kid: "test" })}.${encode({ iss, aud: "confect-test", sub: "person", exp: expires, name: "Synthetic Person", role: "student" })}`;
+        const signature = yield* Effect.promise(() =>
+          crypto.subtle.sign(
+            "RSASSA-PKCS1-v1_5",
+            keys.privateKey,
+            new TextEncoder().encode(unsigned),
+          ),
+        );
+        return `${unsigned}.${Buffer.from(signature).toString("base64url")}`;
+      });
+      const valid = yield* sign(issuer);
+      const signatureStart = valid.lastIndexOf(".") + 1;
+      const badSignature =
+        valid.slice(0, signatureStart) +
+        (valid[signatureStart] === "A" ? "B" : "A") +
+        valid.slice(signatureStart + 1);
+      const foreign = yield* sign("https://foreign.invalid");
+      const cases = [
+        ["absent", undefined, { _tag: "Absent" }],
+        [
+          "valid",
+          valid,
+          {
+            _tag: "Valid",
+            identity: {
+              issuer,
+              subject: "person",
+              tokenIdentifier: `${issuer}|person`,
+              name: "Synthetic Person",
+              role: "student",
+            },
+          },
+        ],
+        ["bad signature", badSignature, { _tag: "Invalid" }],
+        ["foreign issuer", foreign, { _tag: "Invalid" }],
+      ] as const;
+      for (const [label, token, expected] of cases) {
+        const response = yield* HttpClient.get(
+          "http://127.0.0.1:3211/identity",
+          token === undefined
+            ? {}
+            : { headers: { authorization: `Bearer ${token}` } },
+        );
+        expect(response.status, label).toBe(200);
+        expect(yield* response.json, label).toEqual(expected);
       }
     }),
   );
