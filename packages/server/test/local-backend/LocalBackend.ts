@@ -37,6 +37,10 @@ export class LocalBackend extends Context.Service<
   LocalBackend,
   {
     readonly client: ConvexHttpClient;
+    readonly setEnv: (
+      name: string,
+      value: string,
+    ) => Effect.Effect<void, BackendEnvironmentSetupError>;
     /**
      * Push the unchanged fixture code to the running backend again.
      */
@@ -82,6 +86,26 @@ const make = Effect.fnUntraced(function* (options: {
   const spawner = yield* ChildProcessSpawner;
   const parentScope = yield* Effect.scope;
   const fixturesDir = path.resolve(import.meta.dirname, options.directory);
+  const setEnv = Effect.fn("LocalBackend.setEnv")(function* (
+    name: string,
+    value: string,
+  ) {
+    const code = yield* spawner
+      .exitCode(
+        ChildProcess.make("pnpm", ["convex", "env", "set", name, value], {
+          cwd: fixturesDir,
+          shell: process.platform === "win32",
+          extendEnv: true,
+          env: { CONVEX_AGENT_MODE: "anonymous" },
+        }),
+      )
+      .pipe(Effect.orDie);
+    if (code !== 0)
+      return yield* new BackendEnvironmentSetupError({
+        name,
+        exitCode: code,
+      });
+  });
 
   const command = ChildProcess.make(
     "pnpm",
@@ -122,6 +146,12 @@ const make = Effect.fnUntraced(function* (options: {
         handle.stdout.pipe(Stream.decodeText(), Stream.splitLines),
         handle.stderr.pipe(Stream.decodeText(), Stream.splitLines),
       ).pipe(
+        // Auth config reads env before the first successful deployment.
+        Stream.tap((line) =>
+          Effect.forEach(options.env, ([name, value]) =>
+            line.includes(name) ? setEnv(name, value) : Effect.void,
+          ),
+        ),
         Stream.takeUntil((line) => line.includes(READY_LINE)),
         Stream.runFold(
           () => ({ readySeen: false, versionLookupFailed: false }),
@@ -136,21 +166,7 @@ const make = Effect.fnUntraced(function* (options: {
       );
 
       if (readySeen) {
-        for (const [name, value] of options.env) {
-          const code = yield* spawner.exitCode(
-            ChildProcess.make("pnpm", ["convex", "env", "set", name, value], {
-              cwd: fixturesDir,
-              shell: true,
-              extendEnv: true,
-              env: { CONVEX_AGENT_MODE: "anonymous" },
-            }),
-          );
-          if (code !== 0)
-            return yield* new BackendEnvironmentSetupError({
-              name,
-              exitCode: code,
-            });
-        }
+        for (const [name, value] of options.env) yield* setEnv(name, value);
         const redeploy = Effect.gen(function* () {
           const code = yield* spawner
             .exitCode(
@@ -178,6 +194,7 @@ const make = Effect.fnUntraced(function* (options: {
         });
         return {
           client: new ConvexHttpClient(`http://127.0.0.1:${options.port}`),
+          setEnv,
           redeploy,
         };
       }
@@ -223,6 +240,10 @@ export const layer = Layer.effect(
     directory: "./fixtures",
     port: 3210,
     env: [
+      [
+        "TEST_AUTH_JWKS",
+        `data:application/json;base64,${Buffer.from('{"keys":[]}').toString("base64")}`,
+      ],
       ["COMPONENT_MARKER", "from-app"],
       ["COMPONENT_HOST_ONLY", "host-only"],
     ],
