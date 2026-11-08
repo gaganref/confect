@@ -510,6 +510,50 @@ describe("Mount.initCall", () => {
     }),
   );
 
+  it.effect("finds a callback slot in the union member the args take", () =>
+    Effect.gen(function* () {
+      const Routed = Component.make("routed", {
+        init: Ref.make(
+          "install",
+          FunctionSpec.internalMutation({
+            name: "init",
+            args: () => ({
+              route: Schema.Union([
+                Schema.Struct({ kind: Schema.Literal("drop") }),
+                Schema.Struct({
+                  kind: Schema.Literal("notify"),
+                  onEvent: Callback.handle(OnEvent),
+                }),
+              ]),
+            }),
+            returns: () => Schema.Null,
+          }),
+        ),
+        client: (native: Native) => native,
+      });
+      const notify = Mount.make(Routed, {
+        name: "notify",
+        args: { route: { kind: "notify", onEvent } },
+      });
+      const drop = Mount.make(Routed, {
+        name: "drop",
+        args: { route: { kind: "drop" } },
+      });
+      const argsOf = (mount: Mount.Any) =>
+        Mount.initCall(mount, handleFor).pipe(
+          Effect.map(Option.map(({ args }) => args)),
+        );
+      expect(yield* argsOf(notify)).toEqual(
+        Option.some({
+          route: { kind: "notify", onEvent: "handle for callbacks:onEvent" },
+        }),
+      );
+      expect(yield* argsOf(drop)).toEqual(
+        Option.some({ route: { kind: "drop" } }),
+      );
+    }),
+  );
+
   it.effect("is none for a component without init", () =>
     Effect.gen(function* () {
       expect(yield* Mount.initCall(BulkEmail, handleFor)).toEqual(
