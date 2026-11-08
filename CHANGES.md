@@ -88,6 +88,10 @@ Thrown checks use the same section attribution. Changeset:
 
 A section's optional `generate` writes one file into `confect/_generated`. Codegen bundles each `confect/` module the section matches and passes `render` their exports, every registered function with its spec file, and each mount with its definition specifier. Each returned error string is a typed error under the section key. Codegen refuses a built-in name, a name outside `_generated` and a name two keys claim, and removes a section file once no section claims it. Every registration file and the declared HTTP router import each section file first, and incremental spec edits render it again. `confect dev` regenerates when a file the section accepted, or a `confect/` file it imports, changes or is removed, including after a refusal or a load failure. Codegen checks the router's imports after it writes the run's section files, so a regeneration from an empty `_generated` accepts them. Frame's observe door needs this to load module declarations before any handler runs. Changesets: `manifest-section-generate.md`, `manifest-section-clean-regenerate.md`. Upstream: planned; no proposal submitted.
 
+### Show render every offered file
+
+A generating section's `render` also receives `files`, every `.ts` file under `confect/` outside `_generated` that `match` was offered, so a section can see a folder whose files it does not load. `confect dev` now regenerates when any such file is removed, as it already did when one is added. Frame's authz section needs this to list every module folder. Changeset: `manifest-section-render-files.md`. Upstream: planned; no proposal submitted.
+
 ### Summarize a section's data
 
 A section's optional `summarize` returns its whole manifest data from the modules its `generate` matched and its functions' descriptions, in place of `{ format, functions }`. Codegen runs it after `describe` and before `check` and the digest, and refuses a result that is not JSON data or does not carry the section's format. Section files now render before the manifest step so their modules load once. Frame's observe catalogue needs this for `observe: { format: 2, fields, functions }`, with each function's module and arguments. Changeset: `manifest-section-summarize.md`. Upstream: planned; no proposal submitted.
@@ -381,7 +385,15 @@ storage and scheduler services in component handlers. Host generation is
 unchanged. The server package still exports the raw tags for middleware;
 removing them from a downstream runtime context belongs to that middleware.
 
-Changesets: `add-confect-components.md`, `component-no-raw-ctx.md`.
+A component's generated `_generated/component.ts` builds its contract with
+`Component.contract(spec, scope, tables)`, the name `Component.make` had. The
+rename frees `Component.make` for the component descriptor. Breaking change:
+replace `Component.make(spec, scope, tables)` with
+`Component.contract(spec, scope, tables)`. Rerun `confect codegen` for
+generated callers.
+
+Changesets: `add-confect-components.md`, `component-no-raw-ctx.md`,
+`component-contract-rename.md`.
 Upstream: port of [upstream #646](https://github.com/rjdellecese/confect/pull/646),
 which remains open; fork-specific follow-up submission is unrecorded.
 

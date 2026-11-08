@@ -168,7 +168,7 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
               yield* fs.readFileString(
                 `${project.root}/confect/_generated/component.ts`,
               ),
-            ).toContain("Component.make(spec, scope,");
+            ).toContain("Component.contract(spec, scope,");
           }
           const settled = yield* Ref.get(watching.output);
           yield* Effect.sleep("6 seconds");
@@ -180,7 +180,7 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
             yield* fs.readFileString(
               `${project.root}/confect/_generated/component.ts`,
             ),
-          ).toContain("Component.make(spec, scope,");
+          ).toContain("Component.contract(spec, scope,");
           expect(yield* fs.exists(`${project.root}/convex/tasks.ts`)).toBe(
             false,
           );
