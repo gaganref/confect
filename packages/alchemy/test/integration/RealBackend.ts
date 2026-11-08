@@ -89,10 +89,46 @@ const stack = ({ variables, ...code }: Code) =>
  * The backend binds a port in `ports`, unless CONFECT_LOCAL_BACKEND_PORTS
  * overrides the range.
  */
+interface VitestGlobal {
+  readonly __vitest_worker__?: {
+    readonly evaluatedModules?: {
+      readonly fileToModulesMap: ReadonlyMap<string, unknown>;
+    };
+  };
+}
+
+/**
+ * Fail unless this test process runs the built packages. An `@confect/*` import
+ * is aliased to source, so only vitest's module registry shows where each
+ * import landed.
+ */
+const runsBuiltPackages = Effect.suspend(() => {
+  const loaded = (globalThis as VitestGlobal).__vitest_worker__
+    ?.evaluatedModules?.fileToModulesMap;
+  const self = new URL(import.meta.url).pathname;
+  if (loaded === undefined || !loaded.has(self))
+    return Effect.die(
+      new Error(
+        "vitest's module registry no longer lists this harness, so it cannot check that it runs the built packages",
+      ),
+    );
+  const source = [...loaded.keys()].filter((file) =>
+    /\/packages\/[^/]+\/src\//.test(file),
+  );
+  return source.length === 0
+    ? Effect.void
+    : Effect.die(
+        new Error(
+          `The real-backend harness runs the built packages, but this test loaded their source: ${source.join(", ")}`,
+        ),
+      );
+});
+
 export const make = Effect.fn("RealBackend.make")(function* (options: {
   readonly name: string;
   readonly ports: string;
 }) {
+  yield* runsBuiltPackages;
   const fs = yield* FileSystem.FileSystem;
   const root = yield* fs.makeTempDirectoryScoped({
     prefix: `confect-${options.name}-`,
