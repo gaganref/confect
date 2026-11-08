@@ -563,7 +563,12 @@ internal mutation that makes each mount's callback handles with
 failing mount stops the push with `<mount>: init failed; earlier mounts are
 applied, and the next push retries`, and the next push converges. A push
 outside Alchemy skips `init`. The step stands in for Convex's own component
-`init` until gaganref/confect#18's trigger.
+`init` until gaganref/confect#18's trigger: a stable `convex` release with
+`init` and `args`, and an open-source backend that accepts them. At that
+trigger the push step goes, codegen stops writing `convex/confectDeploy.ts` and
+deletes the copy an earlier run left, and `Mount.initCall`,
+`MountInit.mutation` and `MountInitFailed` are removed. `ConvexClient.runFunction`
+stays.
 
 Changeset: `mount-init-on-push.md`.
 Upstream: planned; no linked proposal verified.
