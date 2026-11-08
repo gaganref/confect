@@ -1,10 +1,11 @@
 import { App } from "@confect/core";
+import counterKit from "counter-kit/convex.config.js";
 import counter from "../components/counter/convex/convex.config.js";
 import env from "./env.js";
 export default App.make({
   env,
   mounts: {
     counter: App.mount(counter, { httpPrefix: "/counter" }),
-    kitted: App.mount(counter, { testing: "counter-kit/testing" }),
+    kitted: App.mount(counterKit),
   },
 });

@@ -3,6 +3,9 @@
   "private": true,
   "type": "module",
   "exports": {
-    "./testing": "./testing.ts"
+    "./convex.config.js": "./convex.config.ts",
+    "./convex.config": "./convex.config.ts",
+    "./testing": "./testing.ts",
+    "./_generated/component.js": "./_generated/component.ts"
   }
 }

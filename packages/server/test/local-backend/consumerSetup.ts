@@ -31,7 +31,7 @@ const prepare = Effect.gen(function* () {
       path.join(import.meta.dirname, "fixtures/package.json"),
     ),
   );
-  // The fixture's installed packages, plus the consumer's linked test kit.
+  // Reuse the fixture's installed packages and the consumer's linked kit.
   const installed = path.join(import.meta.dirname, "fixtures/node_modules");
   const modules = path.join(destination, "node_modules");
   yield* fs.remove(modules, { recursive: true, force: true });
