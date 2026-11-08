@@ -666,6 +666,24 @@ describe("table groups in a contract", () => {
     expect(Component.groups(contract)).toEqual({});
   });
 
+  it("types each grouped table's key and table as literals", () => {
+    const mail = Component.contract(spec, scope, [batches, emails, "_storage"]);
+    const relation: {
+      readonly emails: { readonly key: "batchId"; readonly table: "batches" };
+    } = Component.groups(mail);
+    expectTypeOf(Component.groups(mail)).toEqualTypeOf<typeof relation>();
+  });
+
+  it("takes the table names as an explicit type argument", () => {
+    const named = Component.contract<
+      typeof spec,
+      typeof scope,
+      "batches" | "_storage"
+    >(spec, scope, ["batches", "_storage"]);
+    expectTypeOf(Component.groups(named)).toEqualTypeOf<{}>();
+    expect(Component.groups(named)).toEqual({});
+  });
+
   it("refuses a group whose id is not one of the component's own tables", () => {
     // @ts-expect-error `batches` is not among this component's tables
     void Component.contract(spec, scope, [emails, "_storage"]);
