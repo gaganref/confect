@@ -12,6 +12,13 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Counted HTTP bodies
+
+Add `HttpRouter.withBodyLimit` for endpoint middleware. Count bytes while reading,
+return 413 at the cap and 415 for non-identity content encoding. Verification and
+payload decoding share one buffer. Effect 4.0.4's Web readers do not provide these
+guarantees. Changeset: `counted-http-body.md`. Upstream: planned; no proposal submitted.
+
 ## OPTIONS middleware dispatch
 
 Route OPTIONS requests through the declared path's middleware, never its handler.

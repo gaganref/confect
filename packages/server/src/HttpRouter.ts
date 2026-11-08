@@ -448,3 +448,5 @@ const applyMonkeyPatches = () => {
     });
   }
 };
+
+export { withBodyLimit } from "./internal/httpBody.js";
