@@ -186,6 +186,12 @@ export const api: {
     >;
   };
   pagination: {
+    hook: FunctionReference<
+      "mutation",
+      "public",
+      { run: string },
+      Array<{ count: number; operation: string }>
+    >;
     page: FunctionReference<
       "query",
       "public",
@@ -215,6 +221,12 @@ export const api: {
           run: string;
         }>;
       }
+    >;
+    streams: FunctionReference<
+      "query",
+      "public",
+      { run: string },
+      { budget: number; deferred: Array<number>; merged: Array<number> }
     >;
   };
   reserved: {
