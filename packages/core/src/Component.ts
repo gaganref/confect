@@ -215,7 +215,7 @@ export type Bound<
 /**
  * Build a publishable contract containing only exported functions and codecs.
  */
-export const make = <
+export const contract = <
   Spec_ extends Spec.AnyWithProps,
   const Scope extends IdScope.IdScope,
   const Tables extends string,
@@ -275,14 +275,14 @@ export const bind = <
   MountScope<Parent, Extract<MountName<Native>, string | undefined>>,
   Tables
 > => {
-  const contract = component[TypeId];
+  const published = component[TypeId];
   const address = getFunctionAddress(native);
   const installedReference = Result.getOrThrow(
     Result.fromNullishOr(
       address.reference,
       () =>
         new UninstalledComponentReferenceError({
-          definitionScope: contract.scope,
+          definitionScope: published.scope,
         }),
     ),
   );
@@ -293,7 +293,7 @@ export const bind = <
     installedReference,
   );
   const rebase = (schema: Schema.ConstraintCodec<any, any, never, never>) =>
-    GenericId.rebase(schema, contract.scope, scope);
+    GenericId.rebase(schema, published.scope, scope);
   const rebaseMiddleware = memoize(
     (middleware: MiddlewareSpec.AnyMiddlewareSpec) => {
       if (!("error" in middleware)) return middleware;
@@ -368,9 +368,9 @@ export const bind = <
         return visit(child, reference);
       }
     });
-  const refs = visit(contract.refs, native);
+  const refs = visit(published.refs, native);
   Object.defineProperty(refs, BoundTypeId, {
-    value: { from: contract.scope, scope, tables: contract.tables },
+    value: { from: published.scope, scope, tables: published.tables },
   });
   return refs as Bound<
     Spec_,

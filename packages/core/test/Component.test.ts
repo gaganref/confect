@@ -60,7 +60,7 @@ const spec = TestSpec.fromGroups({
       }),
     ),
 });
-const contract = Component.make(spec, scope, ["items"]);
+const contract = Component.contract(spec, scope, ["items"]);
 const native = componentsGeneric() as unknown as {
   first: Component.Api<typeof spec, "first">;
   second: Component.Api<typeof spec, "second">;
@@ -92,7 +92,7 @@ describe("published component contracts", () => {
           FunctionSpec.publicQuery({ name: "unused", returns: unused }),
         ),
     });
-    const lazyContract = Component.make(lazySpec, scope, ["items"]);
+    const lazyContract = Component.contract(lazySpec, scope, ["items"]);
     const registry = componentsGeneric() as unknown as {
       first: Component.Api<typeof lazySpec, "first">;
       second: Component.Api<typeof lazySpec, "second">;
@@ -139,7 +139,7 @@ describe("published component contracts", () => {
       first: Component.Api<typeof paginatedSpec, "first">;
     };
     const bound = Component.bind(
-      Component.make(paginatedSpec, scope, ["items"]),
+      Component.contract(paginatedSpec, scope, ["items"]),
       registry.first,
     );
     assert(bound.items.list._tag === "Confect");
@@ -185,7 +185,9 @@ describe("published component contracts", () => {
       first: Component.Api<typeof middlewareSpec, "first">;
       second: Component.Api<typeof middlewareSpec, "second">;
     };
-    const middlewareContract = Component.make(middlewareSpec, scope, ["items"]);
+    const middlewareContract = Component.contract(middlewareSpec, scope, [
+      "items",
+    ]);
     const left = Component.bind(middlewareContract, registry.first);
     const right = Component.bind(middlewareContract, registry.second);
     assert(
@@ -232,7 +234,7 @@ describe("published component contracts", () => {
         >()("id"),
       ),
     });
-    const mixedContract = Component.make(mixedSpec, scope, ["items"]);
+    const mixedContract = Component.contract(mixedSpec, scope, ["items"]);
     const registry = componentsGeneric() as unknown as {
       mixed: Component.Api<typeof mixedSpec, "mixed">;
     };
@@ -304,7 +306,9 @@ describe("published component contracts", () => {
           }),
         ),
     });
-    const collectionContract = Component.make(collectionSpec, scope, ["items"]);
+    const collectionContract = Component.contract(collectionSpec, scope, [
+      "items",
+    ]);
     const registry = componentsGeneric() as unknown as {
       first: Component.Api<typeof collectionSpec, "first">;
       second: Component.Api<typeof collectionSpec, "second">;
@@ -471,7 +475,7 @@ describe("published component contracts", () => {
       nested: Component.Api<typeof nestedSpec, "nested">;
     };
     const bound = Component.bind(
-      Component.make(nestedSpec, scope, []),
+      Component.contract(nestedSpec, scope, []),
       registry.nested,
     );
     expect(Record.keys(bound.nested)).toEqual(["publicOnly"]);
@@ -490,11 +494,11 @@ describe("published component contracts", () => {
         { conflict: GroupSpec.make() },
       ),
     });
-    expect(() => Component.make(conflicting, scope, [])).toThrow(
+    expect(() => Component.contract(conflicting, scope, [])).toThrow(
       "Group and function at same level have same name ('nested:conflict')",
     );
     expect(
-      Result.try(() => Component.make(conflicting, scope, [])),
+      Result.try(() => Component.contract(conflicting, scope, [])),
     ).toMatchObject({
       _tag: "Failure",
       failure: {
@@ -509,7 +513,7 @@ describe("published component contracts", () => {
     const parentScope = IdScope.component("@example/parent");
     const nested = Component.bind(contract, native.first, { parentScope });
     const nestedId = Component.id(nested, "items");
-    const parent = Component.make(
+    const parent = Component.contract(
       TestSpec.fromGroups({
         parent: GroupSpec.make().addFunction(
           FunctionSpec.publicQuery({ name: "child", returns: () => nestedId }),
@@ -534,7 +538,7 @@ describe("published component contracts", () => {
   });
   it("reports an empty component scope as a tagged validation failure", () => {
     expect(
-      Result.try(() => Component.make(spec, IdScope.app, ["items"])),
+      Result.try(() => Component.contract(spec, IdScope.app, ["items"])),
     ).toMatchObject({
       _tag: "Failure",
       failure: {
@@ -582,7 +586,7 @@ describe("callback handles through a binding", () => {
       ),
   });
   const bound = Component.bind(
-    Component.make(handleSpec, scope, []),
+    Component.contract(handleSpec, scope, []),
     (
       componentsGeneric() as unknown as {
         first: Component.Api<typeof handleSpec, "first">;

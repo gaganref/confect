@@ -1,5 +1,6 @@
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Layer from "effect/Layer";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServerError from "effect/http/HttpServerError";
@@ -68,52 +69,57 @@ export const withOptions = <A, E, R>(
         });
       };
       const register = Effect.gen(function* () {
-        const paths = new Map<string, typeof registered>();
-        for (const entry of registered) {
-          const path = `${entry.prefix}${entry.route.path}`;
-          const entries = paths.get(path) ?? [];
-          entries.push(entry);
-          paths.set(path, entries);
-        }
-        for (const [path, entries] of paths) {
-          if (
-            entries.some(
-              ({ route }) => route.method === "OPTIONS" || route.method === "*",
-            )
-          )
+        // Effect's routers decide which paths match: one per declared method,
+        // and `first`, which refuses a path equivalent to an earlier one.
+        const byMethod = new Map<string, HttpRouter.HttpRouter>();
+        const first = yield* HttpRouter.make;
+        const explicit = yield* HttpRouter.make;
+        for (const { route, prefix, context } of registered) {
+          const at = (target: HttpRouter.HttpRouter) =>
+            prefix === "" ? target : target.prefixed(prefix);
+          if (route.method === "OPTIONS" || route.method === "*") {
+            yield* at(explicit).addAll([{ ...route, handler: notFound }]);
             continue;
-          const candidates = new Map<
-            string,
-            ReturnType<HttpRouter.HttpRouter["asHttpEffect"]>
-          >();
-          for (const { route, prefix, context } of entries) {
-            const candidate = yield* HttpRouter.make;
-            const target =
-              prefix === "" ? candidate : candidate.prefixed(prefix);
-            const copy: Route = {
-              ...route,
-              method: "OPTIONS",
-              handler: endpoints.has(`${route.method} ${route.path}`)
-                ? preflight(route.handler)
-                : notFound,
-            };
-            // Route registration erases request requirements, as in Effect's router.
-            yield* Effect.provideContext(target.addAll([copy]), context);
-            candidates.set(route.method, candidate.asHttpEffect());
           }
-          yield* router.add(
-            "OPTIONS",
-            path as HttpRouter.PathInput,
-            Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => {
-              const method = request.headers["access-control-request-method"];
-              const candidate =
-                method === undefined
-                  ? candidates.values().next().value
-                  : candidates.get(method);
-              return candidate ?? notFound;
-            }),
+          const copy: Route = {
+            ...route,
+            method: "OPTIONS",
+            handler: endpoints.has(`${route.method} ${route.path}`)
+              ? preflight(route.handler)
+              : notFound,
+          };
+          const candidate =
+            byMethod.get(route.method) ?? (yield* HttpRouter.make);
+          byMethod.set(route.method, candidate);
+          // Route registration erases request requirements, as in Effect's router.
+          yield* Effect.provideContext(at(candidate).addAll([copy]), context);
+          yield* Effect.exit(
+            Effect.provideContext(at(first).addAll([copy]), context),
           );
         }
+        // An explicit OPTIONS route on the root wildcard answers every path.
+        const claimed = yield* Effect.exit(
+          explicit.add("OPTIONS", "*", notFound),
+        );
+        if (Exit.isFailure(claimed)) return;
+        const candidates = new Map(
+          Array.from(byMethod, ([method, candidate]) => [
+            method,
+            candidate.asHttpEffect(),
+          ]),
+        );
+        const fallback = first.asHttpEffect();
+        // The root wildcard matches last, so explicit OPTIONS routes still win.
+        yield* router.add(
+          "OPTIONS",
+          "*",
+          Effect.flatMap(HttpServerRequest.HttpServerRequest, (request) => {
+            const method = request.headers["access-control-request-method"];
+            return method === undefined
+              ? fallback
+              : (candidates.get(method) ?? notFound);
+          }),
+        );
       });
       return Layer.effectDiscard(register).pipe(
         Layer.provideMerge(
