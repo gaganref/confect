@@ -103,6 +103,15 @@ Upstream: unrecorded; submission goes through the maintainer.
 
 Full and incremental codegen reject a domain argument reserved by its profile before loading its implementation. The diagnostic names the spec file, function and argument. Registration retains its load-time backstop. Changeset: `reserved-argument-fence.md`. Upstream: planned; no proposal submitted.
 
+### Forward context through callback handles
+
+`Callback.handle(contract, { reservedArgument })` retains the reservation on
+decoded mutation and action handles. The existing runners and scheduler then
+forward context, including a run id, to a host target that reserves the same
+name. Query handles and handles without the option keep their previous
+behavior. This carries values without adding a trust policy. Changeset:
+`callback-reserved-argument.md`. Upstream: planned; no proposal submitted.
+
 ## Invocation instrumentation
 
 Add invocation root spans and an optional `confect/runtime.ts` layer so applications can install Effect tracers and loggers without duplicate console logging. Preserve original declared failures for tracers, encoded client errors and query caching. Cache each layer context once per isolate so permanent scope ownership stays bounded. Changeset: `invocation-observability.md`. The root span ends with the outcome the client gets: a failure in a function with no error schema, other than a raw `ConvexError`, ends it as a defect, and so does an error encoding that dies with a `ConvexError`. Changeset: `undeclared-failure-span-defect.md`. Upstream: planned; no proposal submitted.
@@ -398,6 +407,10 @@ Local backend tests cover index and search pages, subscriptions and the shared q
 
 Changesets: `scoped-scheduler-cancel-pagination.md`, `component-native-pagination.md`.
 Upstream: planned; no linked proposal verified.
+
+### Prove component streams and writer hooks
+
+The local backend fixture covers deferred streams, collection, the default read budget, merge deduplication and decoded writer hooks inside a component. Seed the stream rows in host mutations of ten rows each. Changeset: `component-pagination-proof-gaps.md`. Upstream: planned; no proposal submitted.
 
 ### Lift official component clients
 
