@@ -92,6 +92,13 @@ Upstream: planned; no proposal submitted.
 
 The existing local-backend CI job exercises generated registrations with arbitrary incoming context, runner hops, an inline owned counter component, an ordinary strict component call and persisted scheduled context. The local-backend fixture app always runs with a runtime layer; unit and mock-backend suites cover the no-layer path. Scheduled polling uses live time. Native API additions come from the registered validators without starting a backend. Changeset: `reserved-argument-backend.md`. Upstream: planned; no proposal submitted.
 
+The local-backend reserved-argument test gives each scheduled chain a random
+`run` value. The scheduled read selects the current run's record even when the
+backend preserves earlier results. The test keeps every transport assertion.
+
+Changeset: none; test isolation only.
+Upstream: unrecorded; submission goes through the maintainer.
+
 ### Refuse domain collisions in codegen
 
 Full and incremental codegen reject a domain argument reserved by its profile before loading its implementation. The diagnostic names the spec file, function and argument. Registration retains its load-time backstop. Changeset: `reserved-argument-fence.md`. Upstream: planned; no proposal submitted.
