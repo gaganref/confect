@@ -134,6 +134,22 @@ describe("Mount.make", () => {
     void Mount.make(Email, { ...o, env: { REGION: "eu", SURPRISE: "x" } });
     // @ts-expect-error RULE env-optional-entry: an optional entry cannot fill a required slot.
     void Mount.make(Email, { ...o, env: { REGION: hostEnv.MAYBE_REGION } });
+    // @ts-expect-error RULE env-not-prefix: an HTTP prefix does not stand in for required env.
+    void Mount.make(Email, { ...n, httpPrefix: "/email" });
+    // @ts-expect-error RULE no-testing: a component's test kit is found from its package.
+    void Mount.make(Email, { ...o, testing: "email-kit/testing" });
+    // @ts-expect-error RULE no-api: a mount takes no api.
+    void Mount.make(Workpool, { ...n, httpPrefix: "/pool", api: {} });
+    const Transport = Component.make("transport", {
+      env: { MODE: Schema.Literals(["resend", "log"]) },
+      client: (native: Native) => native,
+    });
+    // @ts-expect-error RULE env-missing-binding: a required slot cannot be left out.
+    void Mount.make(Transport, { ...n, env: {} });
+    // @ts-expect-error RULE env-literal-entry: a plain string entry cannot fill a literal slot.
+    void Mount.make(Transport, { ...n, env: { MODE: hostEnv.BULK_REGION } });
+    // @ts-expect-error RULE env-literal-value: a constant must be one of the slot's literals.
+    void Mount.make(Transport, { ...n, env: { MODE: "smtp" } });
   });
 });
 

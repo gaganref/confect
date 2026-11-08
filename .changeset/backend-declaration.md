@@ -16,18 +16,21 @@ export default Env.make("tenant", {
 });
 
 // confect/app.ts
-import { App } from "@confect/core";
+import { App, Mount } from "@confect/core";
+import Email from "@acme/email/client";
 import email from "@acme/email/convex.config.js";
 import env from "./env";
 
 export default App.make({
   env,
-  mounts: {
-    email: App.mount(email, {
+  components: [email],
+  mounts: [
+    Mount.make(Email, {
+      name: "email",
       httpPrefix: "/email",
       env: { FROM: env.EMAIL_FROM, RESEND_API_KEY: env.RESEND_API_KEY },
     }),
-  },
+  ],
 });
 
 // confect/auth.ts
@@ -45,7 +48,7 @@ import { TenantApi, TenantHandlers } from "./api";
 export default Http.make({ api: TenantApi, handlers: TenantHandlers });
 ```
 
-Each `Env` entry is an Effect `Config`, so a handler reads `yield* env.RESEND_API_KEY` as `Redacted<string>`. `App.mount` types each mount's env against the component's own `defineComponent({ env })`, and `Manifest.Values<typeof manifest>` types the values a deployment supplies. `Auth.siteUrl` stands in for the deployment's site URL in a provider.
+Each `Env` entry is an Effect `Config`, so a handler reads `yield* env.RESEND_API_KEY` as `Redacted<string>`. `Mount.make` types each mount's env against the component descriptor's env slots, and `Manifest.Values<typeof manifest>` types the values a deployment supplies. `Auth.siteUrl` stands in for the deployment's site URL in a provider.
 
 Codegen reports a `convex.config.ts` or `auth.config.ts` it did not write ("Found a hand-written … `confect codegen` writes it from … now"), an app route under a mount's HTTP prefix, a duplicate route, and overlapping mount prefixes. `confect codegen --component-dir` also accepts a Confect-authored component that declares itself with `env.ts` and `app.ts`, and writes its `defineComponent`.
 

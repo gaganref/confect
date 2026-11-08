@@ -81,7 +81,8 @@ describe("Declaration", () => {
       app: App.make({
         kind: "component",
         env,
-        mounts: { limiter: App.mount(ratelimiter, { env: { LIMIT: "10" } }) },
+        components: [ratelimiter],
+        mounts: [Limiter],
       }),
       auth: Option.none(),
       componentImport,
@@ -113,12 +114,15 @@ export default component;
   });
 
   it("never uses a reserved word as an import name", () => {
-    const worker = defineComponent("default");
+    const Worker = Component.make("default", {
+      client: (native: unknown) => native,
+    });
     const parsed = Declaration.parse({
       target: "app",
       app: App.make({
         env: Env.make("host", {}),
-        mounts: { worker: App.mount(worker) },
+        components: [defineComponent("default")],
+        mounts: [Mount.make(Worker, { name: "worker" })],
       }),
       auth: Option.none(),
       componentImport: () =>
@@ -223,19 +227,15 @@ export default app;
     const env = Env.make("tenant", {});
     const other = Env.make("platform", { LIMIT: Env.string() });
     const app: unknown = {
-      ...App.make({ env }),
-      mounts: {
-        limiter: App.mount(ratelimiter, { env: { LIMIT: other.LIMIT } }),
-      },
+      ...App.make({ env, components: [ratelimiter] }),
+      mounts: [
+        Mount.make(Ratelimiter, {
+          name: "limiter",
+          env: { LIMIT: other.LIMIT },
+        }),
+      ],
     };
-    expect(
-      Declaration.parse({
-        target: "app",
-        app,
-        auth: Option.none(),
-        componentImport,
-      }),
-    ).toEqual(
+    expect(parseApp(app)).toEqual(
       Result.fail(
         new Declaration.ForeignEnvBinding({
           mount: "limiter",
@@ -250,22 +250,15 @@ export default app;
 
   it("rejects a binding that is neither a constant nor an env entry", () => {
     const app: unknown = {
-      ...App.make({ env: Env.make("tenant", {}) }),
-      mounts: {
-        limiter: {
-          ...App.mount(ratelimiter, { env: { LIMIT: "1" } }),
-          env: { LIMIT: 1 },
-        },
-      },
+      ...App.make({ env: Env.make("tenant", {}), components: [ratelimiter] }),
+      mounts: [
+        Mount.make(Ratelimiter, {
+          name: "limiter",
+          env: { LIMIT: 1 as unknown as string },
+        }),
+      ],
     };
-    expect(
-      Declaration.parse({
-        target: "app",
-        app,
-        auth: Option.none(),
-        componentImport,
-      }),
-    ).toEqual(
+    expect(parseApp(app)).toEqual(
       Result.fail(
         new Declaration.InvalidBinding({ mount: "limiter", slot: "LIMIT" }),
       ),

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
-import { App, Env, Http } from "@confect/core";
+import { App, Component, Env, Http, Mount } from "@confect/core";
 import { defineComponent } from "convex/server";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -14,16 +14,19 @@ import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as HttpApiScalar from "effect/http-api/HttpApiScalar";
 
-const counter = defineComponent("counter");
-const workpool = defineComponent("workpool");
+const components = [defineComponent("counter"), defineComponent("workpool")];
+const client = (native: unknown) => native;
+const Counter = Component.make("counter", { client });
+const Workpool = Component.make("workpool", { client });
 
 const app = App.make({
   env: Env.make("host", {}),
-  mounts: {
-    first: App.mount(counter, { httpPrefix: "/first" }),
-    second: App.mount(counter, { httpPrefix: "/second/" }),
-    pool: App.mount(workpool),
-  },
+  components,
+  mounts: [
+    Mount.make(Counter, { name: "first", httpPrefix: "/first" }),
+    Mount.make(Counter, { name: "second", httpPrefix: "/second/" }),
+    Mount.make(Workpool, { name: "pool" }),
+  ],
 });
 
 const hostApi = (path: `/${string}`) =>
@@ -215,10 +218,11 @@ describe("Http", () => {
   it("rejects mounts whose prefixes overlap", () => {
     const overlapping = App.make({
       env: Env.make("host", {}),
-      mounts: {
-        outer: App.mount(workpool, { httpPrefix: "/jobs" }),
-        inner: App.mount(counter, { httpPrefix: "/jobs/inner" }),
-      },
+      components,
+      mounts: [
+        Mount.make(Workpool, { name: "outer", httpPrefix: "/jobs" }),
+        Mount.make(Counter, { name: "inner", httpPrefix: "/jobs/inner" }),
+      ],
     });
     expect(Http.routes(overlapping)).toEqual(
       Result.fail(

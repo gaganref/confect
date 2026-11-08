@@ -1302,25 +1302,30 @@ export default Env.make("host", {
   );
   yield* project.write(
     "confect/app.ts",
-    `import { App } from "@confect/core";
+    `import { App, Component, Mount } from "@confect/core";
+import * as Schema from "effect/Schema";
 import counter from "../components/counter/convex/convex.config";
 import env from "./env";
+const client = (native: unknown) => native;
+const Counter = Component.make("counter", { env: { REQUIRED: Schema.String, MARKER: Schema.optionalKey(Schema.String) }, client });
+export const First = Mount.make(Counter, { name: "first", httpPrefix: "/first", env: { REQUIRED: "first-required", MARKER: env.MARKER } });
 export default App.make({
   env,
-  mounts: {
-    first: App.mount(counter, { httpPrefix: "/first", env: { REQUIRED: "first-required", MARKER: env.MARKER } }),
-    second: App.mount(counter, { env: { REQUIRED: env.API_KEY } }),
-  },
+  components: [counter],
+  mounts: [
+    First,
+    Mount.make(Counter, { name: "second", env: { REQUIRED: env.API_KEY } }),
+  ],
 });
 `,
   );
   yield* project.write(
     "confect/auth.ts",
     `import { Auth } from "@confect/core";
-import app from "./app";
+import app, { First } from "./app";
 export default Auth.make(app, {
   providers: [
-    { type: "customJwt", applicationID: "host", issuer: Auth.siteUrl(), jwks: Auth.siteUrl(app.mounts.first, "/jwks.json"), algorithm: "RS256" },
+    { type: "customJwt", applicationID: "host", issuer: Auth.siteUrl(), jwks: Auth.siteUrl(First, "/jwks.json"), algorithm: "RS256" },
     { domain: "https://login.example.test", applicationID: "host" },
   ],
 });
@@ -1484,15 +1489,29 @@ const kitProject = (files: Readonly<Record<string, string>>) =>
     }
     yield* project.write(
       "confect/app.ts",
-      (yield* project.read("confect/app.ts"))
-        .replace(
-          'import env from "./env";',
-          'import env from "./env";\nimport workpool from "pool-kit/convex.config";',
-        )
-        .replace("  mounts: {", "  mounts: {\n    pool: App.mount(workpool),"),
+      withMount(
+        yield* project.read("confect/app.ts"),
+        "workpool",
+        "pool-kit/convex.config",
+        'Mount.make(Component.make("pool", { client }), { name: "pool" })',
+      ),
     );
     return project;
   });
+
+const withMount = (
+  app: string,
+  definition: string,
+  specifier: string,
+  mount: string,
+) =>
+  app
+    .replace(
+      'import env from "./env";',
+      `import env from "./env";\nimport ${definition} from "${specifier}";`,
+    )
+    .replace("  components: [", `  components: [${definition}, `)
+    .replace("  mounts: [", `  mounts: [\n    ${mount},`);
 
 const digestOf = (manifest: string) =>
   /"digest": "(sha256:[0-9a-f]{64})"/.exec(manifest)?.[1] ?? "missing";
@@ -1574,15 +1593,12 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const project = yield* declarationProject;
           yield* project.write(
             "confect/app.ts",
-            (yield* project.read("confect/app.ts"))
-              .replace(
-                'import env from "./env";',
-                'import env from "./env";\nimport workpool from "@convex-dev/workpool/convex.config";',
-              )
-              .replace(
-                "  mounts: {",
-                "  mounts: {\n    pool: App.mount(workpool),",
-              ),
+            withMount(
+              yield* project.read("confect/app.ts"),
+              "workpool",
+              "@convex-dev/workpool/convex.config",
+              'Mount.make(Component.make("workpool", { client }), { name: "pool" })',
+            ),
           );
           yield* project.run;
           const testing = yield* project.read("confect/_generated/testing.ts");
@@ -1739,9 +1755,10 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
                 'import env from "./env";',
                 'import env from "./env";\nimport parent from "../components/parent/convex/convex.config.js";',
               )
+              .replace("[workpool, ", "[parent, ")
               .replace(
-                "App.mount(workpool)",
-                'App.mount(parent, { httpPrefix: "/pool" })',
+                'Component.make("pool", { client }), { name: "pool" }',
+                'Component.make("parent", { client }), { name: "pool", httpPrefix: "/pool" }',
               ),
           );
           yield* project.run;
@@ -1778,13 +1795,12 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           );
           yield* project.write(
             "confect/app.ts",
-            (yield* project.read("confect/app.ts"))
-              .replace(
-                'import env from "./env";',
-                'import env from "./env";\nimport parent from "../components/parent/convex/convex.config.js";',
-              )
-              .replace("  mounts: {", "  mounts: {\n    a: App.mount(parent),")
-              .replace("first: App.mount", "a_b: App.mount"),
+            withMount(
+              yield* project.read("confect/app.ts"),
+              "parent",
+              "../components/parent/convex/convex.config.js",
+              'Mount.make(Component.make("parent", { client }), { name: "a" })',
+            ).replace('name: "first"', 'name: "a_b"'),
           );
           yield* project.run;
           const testing = yield* project.read("confect/_generated/testing.ts");
@@ -1825,12 +1841,12 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           );
           yield* project.write(
             "confect/app.ts",
-            (yield* project.read("confect/app.ts"))
-              .replace(
-                'import env from "./env";',
-                'import env from "./env";\nimport kit from "no-test-kit/convex.config";',
-              )
-              .replace("  mounts: {", "  mounts: {\n    kit: App.mount(kit),"),
+            withMount(
+              yield* project.read("confect/app.ts"),
+              "kit",
+              "no-test-kit/convex.config",
+              'Mount.make(Component.make("noTestKit", { client }), { name: "kit" })',
+            ),
           );
           expect(yield* Effect.flip(project.run)).toEqual(
             new InvalidConvexConfigError({
@@ -2012,15 +2028,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           yield* project.write(
             "confect/app.ts",
             (yield* project.read("confect/app.ts")).replace(
-              "first: App.mount",
-              '"first-mount": App.mount',
-            ),
-          );
-          yield* project.write(
-            "confect/auth.ts",
-            (yield* project.read("confect/auth.ts")).replace(
-              "app.mounts.first",
-              'app.mounts["first-mount"]',
+              'name: "first"',
+              'name: "first-mount"',
             ),
           );
           expect(yield* Effect.flip(project.run)).toEqual(
@@ -2160,15 +2169,12 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           );
           yield* project.write(
             "confect/app.ts",
-            (yield* project.read("confect/app.ts"))
-              .replace(
-                'import env from "./env";',
-                'import env from "./env";\nimport workpool from "@convex-dev/workpool/convex.config";',
-              )
-              .replace(
-                "  mounts: {",
-                "  mounts: {\n    pool: App.mount(workpool),",
-              ),
+            withMount(
+              yield* project.read("confect/app.ts"),
+              "workpool",
+              "@convex-dev/workpool/convex.config",
+              'Mount.make(Component.make("workpool", { client }), { name: "pool" })',
+            ),
           );
           yield* project.run;
           const generated = yield* project.read(

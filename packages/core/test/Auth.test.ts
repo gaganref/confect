@@ -2,14 +2,18 @@ import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import { App, Auth, Component, Env, Mount } from "@confect/core";
 import { defineComponent } from "convex/server";
 
-const authCore = defineComponent("auth");
-const workpool = defineComponent("workpool");
+const AuthCore = Component.make("auth", {
+  client: (native: unknown) => native,
+});
+const Workpool = Component.make("workpool", {
+  client: (native: unknown) => native,
+});
+const AuthMount = Mount.make(AuthCore, { name: "auth", httpPrefix: "/auth" });
+const ImportsPool = Mount.make(Workpool, { name: "importsPool" });
 const app = App.make({
   env: Env.make("tenant", {}),
-  mounts: {
-    auth: App.mount(authCore, { httpPrefix: "/auth" }),
-    importsPool: App.mount(workpool),
-  },
+  components: [defineComponent("auth"), defineComponent("workpool")],
+  mounts: [AuthMount, ImportsPool],
 });
 
 describe("Auth", () => {
@@ -39,7 +43,7 @@ describe("Auth", () => {
           type: "customJwt",
           applicationID: "tenant",
           issuer: Auth.siteUrl(),
-          jwks: Auth.siteUrl(app.mounts.auth, "/.well-known/jwks.json"),
+          jwks: Auth.siteUrl(AuthMount, "/.well-known/jwks.json"),
           algorithm: "RS256",
         },
         { domain: "https://login.example.edu", applicationID: "campus" },
@@ -56,24 +60,15 @@ describe("Auth", () => {
       },
       { domain: "https://login.example.edu", applicationID: "campus" },
     ]);
-    expect(Auth.siteUrlPath(Auth.siteUrl(app.mounts.auth))).toBe("/auth");
-    const slashed = App.mount(authCore, { httpPrefix: "/auth/" });
+    expect(Auth.siteUrlPath(Auth.siteUrl(AuthMount))).toBe("/auth");
+    const slashed = Mount.make(AuthCore, {
+      name: "auth",
+      httpPrefix: "/auth/",
+    });
     expect(Auth.siteUrlPath(Auth.siteUrl(slashed, "/jwks.json"))).toBe(
       "/auth/jwks.json",
     );
     expect(Auth.siteUrlPath("https://login.example.edu")).toBeUndefined();
-    const AuthCore = Component.make("auth", {
-      client: (native: unknown) => native,
-    });
-    const mounted = Mount.make(AuthCore, {
-      name: "auth",
-      httpPrefix: "/auth/",
-    });
-    expect(Auth.siteUrlPath(Auth.siteUrl(mounted, "/jwks.json"))).toBe(
-      "/auth/jwks.json",
-    );
-    // @ts-expect-error A mount without an HTTP prefix has no URL to point at.
-    void Auth.siteUrl(Mount.make(AuthCore, { name: "bare" }));
   });
 
   it("describes deployment cloud URLs and required env provider fields", () => {
@@ -140,7 +135,7 @@ describe("Auth", () => {
     });
     const unprefixed = () =>
       // @ts-expect-error A mount without an HTTP prefix has no URL to point at.
-      Auth.siteUrl(app.mounts.importsPool);
+      Auth.siteUrl(ImportsPool);
     void unprefixed;
   });
 });

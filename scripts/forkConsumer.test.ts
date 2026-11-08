@@ -169,7 +169,7 @@ test("writes a declared host, mounted component and callback consumer", () =>
       for (const [file, contract] of [
         ["confect/app.ts", 'httpPrefix: "/counter"'],
         ["confect/app.ts", 'from "counter-kit/convex.config.js"'],
-        ["confect/app.ts", "kitted: App.mount(counterKit)"],
+        ["confect/app.ts", 'name: "kitted"'],
         ["confect/component.ts", "Component.bind"],
         ["components/counter/confect/callbacks.ts", "Callback.mutation"],
         ["confect/hello.impl.ts", "Callback.create"],
