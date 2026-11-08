@@ -648,6 +648,9 @@ describe("table groups in a contract", () => {
   const appEmails = emailsGroupedBy(GenericId.GenericId("batches")).group(
     "batchId",
   )("emails", scope);
+  type Relation = {
+    readonly emails: { readonly key: "batchId"; readonly table: "batches" };
+  };
 
   it("publishes each grouped table's key and table, and no group for the rest", () => {
     const mail = Component.contract(spec, scope, [batches, emails, "_storage"]);
@@ -656,28 +659,14 @@ describe("table groups in a contract", () => {
         typeof spec,
         typeof scope,
         "batches" | "emails" | "_storage",
-        {
-          readonly emails: {
-            readonly key: "batchId";
-            readonly table: "batches";
-          };
-        }
+        Relation
       >
     >();
     expect(schemaBuilds).toBe(0);
-    expect(Component.groups(mail)).toEqual({
-      emails: { key: "batchId", table: "batches" },
-    });
+    const relation: Relation = Component.groups(mail);
+    expect(relation).toEqual({ emails: { key: "batchId", table: "batches" } });
     expect(schemaBuilds).toBe(1);
     expect(Component.groups(contract)).toEqual({});
-  });
-
-  it("types each grouped table's key and table as literals", () => {
-    const mail = Component.contract(spec, scope, [batches, emails, "_storage"]);
-    const relation: {
-      readonly emails: { readonly key: "batchId"; readonly table: "batches" };
-    } = Component.groups(mail);
-    expectTypeOf(Component.groups(mail)).toEqualTypeOf<typeof relation>();
   });
 
   it("takes the table names as an explicit type argument", () => {
