@@ -2,7 +2,12 @@ import * as Provider from "alchemy/Provider";
 import type { ProviderMode } from "alchemy/ProviderMode";
 import { Resource } from "alchemy/Resource";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
+import * as Path from "effect/Path";
+import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import type * as Redacted from "effect/Redacted";
+import { ConvexClient, layer as ConvexClientLayer } from "./ConvexClient.js";
 import type { Providers } from "./Providers.js";
 import { deploy } from "./internal/CodeDeployment.js";
 import {
@@ -36,6 +41,9 @@ const make = (mode: ProviderMode) =>
   Effect.gen(function* () {
     const runner = yield* CommandRunner;
     const lock = yield* PushLock;
+    const client = yield* ConvexClient;
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
     return {
       read: ({ output }) => Effect.succeed(output),
       diff: () => Effect.succeed({ action: "update" }),
@@ -43,6 +51,9 @@ const make = (mode: ProviderMode) =>
         deploy(news, mode).pipe(
           Effect.provideService(CommandRunner, runner),
           Effect.provideService(PushLock, lock),
+          Effect.provideService(ConvexClient, client),
+          Effect.provideService(FileSystem.FileSystem, fs),
+          Effect.provideService(Path.Path, path),
         ),
       delete: () => Effect.void,
     } satisfies Provider.ProviderServiceInput<Code>;
@@ -55,4 +66,10 @@ export const provider = make("live");
 export const localProvider = make("local");
 
 export const layer = Provider.effect(Code, provider);
-export const localLayer = Provider.effect(Code, localProvider);
+export const localLayer = Provider.effect(Code, localProvider).pipe(
+  Layer.provide(
+    ConvexClientLayer({ mode: "local" }).pipe(
+      Layer.provide(FetchHttpClient.layer),
+    ),
+  ),
+);

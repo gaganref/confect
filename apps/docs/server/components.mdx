@@ -247,7 +247,7 @@ export const BulkEmail = Mount.make(Email, {
 });
 ```
 
-The mount records its `args`. Nothing runs `init` on a push yet. A component without `init` takes no `args`.
+Every Alchemy push runs each mount's `init` with its `args`; see [Run each mount's `init`](/guides/alchemy#run-each-mounts-init). Export a mount whose component declares `init` from `confect/<name>.ts`, as above, since the push imports it from there. A component without `init` takes no `args`.
 
 A descriptor that passes its `contract` gives each mount `callbackArgs(slot)`: the args a callback slot's contract sends, with the component's ids typed for that mount. The host function that answers the callback declares them as its args:
 

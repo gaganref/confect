@@ -202,6 +202,18 @@ Each data directory keeps running the backend release that created it, even afte
   which other users of the same machine can see in the process list.
 </Warning>
 
+## Run each mount's `init`
+
+Each push runs the `init` of every [mount](/server/components) whose component declares one. It runs after the code push and before the push releases the deployment's lock, so no other push lands between this push's code and its `init`. Mounts run one at a time, in the order `App.make` lists them. A Confect component that mounts components of its own runs their `init` after its own, at their nested component path, such as `relay/inbox`.
+
+`confect codegen` writes the steps into `convex/confectDeploy.ts`, an internal mutation that makes each mount's callback handles, and imports each mount from `confect/<name>.ts`. Run codegen for each component directory before its parent's, so the parent finds the component's own `confectDeploy.ts`.
+
+Each `init` is its own transaction. When one fails, the push fails with `bulkEmail: init failed; earlier mounts are applied, and the next push retries`. Mounts before it keep their new config, and it and the mounts after it keep their old config. The next push runs every `init` again and converges, so write `init` to be safe to run twice. A callback target that is no longer deployed fails the push at its mount, before that mount's `init` runs.
+
+New code can serve requests briefly before its mounts' `init` has run. Write handlers that tolerate the previous config.
+
+A push outside Alchemy, such as `convex deploy` or `convex dev`, does not run `init`, and is unsupported for a backend whose mounts declare one. `confect dev` does not push, so it runs no `init` either.
+
 ## Understand updates and deletion
 
 Code is pushed on every Alchemy deployment, including when resource props have not changed. This deliberately catches source-only edits, workspace dependency changes, and out-of-band code pushes without relying on an incomplete file hash. Convex still performs its normal validation and deployment checks. Removing `Code` or `Backend` does not erase deployed functions or data.
@@ -220,6 +232,6 @@ After upgrading to the fork based on upstream 10.3.1, regenerate with `confect c
 
 ## Troubleshoot a failed push
 
-Command failures identify the phase and exit status. Child-process output is suppressed to avoid exposing credentials through CLI diagnostics. Run `confect codegen` or the Convex deploy command directly in a trusted terminal to inspect the underlying error. Keep deploy keys out of command arguments and terminal recordings.
+Command failures identify the phase and exit status. A failed `init` names its mount, and its `detail` carries the error Convex reported. Child-process output is suppressed to avoid exposing credentials through CLI diagnostics. Run `confect codegen` or the Convex deploy command directly in a trusted terminal to inspect the underlying error. Keep deploy keys out of command arguments and terminal recordings.
 
 The integration does not bypass Convex's schema checks or large-index safeguards. Code and environment updates are separate operations, not a transaction: an environment update may have succeeded even if the subsequent code push fails.

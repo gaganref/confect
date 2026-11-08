@@ -89,6 +89,22 @@ export class ConvexConflict extends Schema.TaggedError<ConvexConflict>()(
   errorFields,
 ) {}
 
+/**
+ * A function the deployment ran failed, with the message Convex reports.
+ */
+export class ConvexFunctionError extends Schema.TaggedError<ConvexFunctionError>()(
+  "ConvexFunctionError",
+  { functionPath: Schema.String, errorMessage: Schema.String },
+) {}
+
+const FunctionResponse = Schema.Union([
+  Schema.Struct({ status: Schema.Literal("success"), value: Schema.Unknown }),
+  Schema.Struct({
+    status: Schema.Literal("error"),
+    errorMessage: Schema.String,
+  }),
+]);
+
 export type ConvexClientError =
   | ConvexApiError
   | ConvexNotFound
@@ -336,6 +352,63 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
   });
 
   return {
+    /**
+     * Run a deployment function with admin authority, internal ones and ones
+     * inside a component included.
+     */
+    runFunction: Effect.fn("ConvexClient.runFunction")(function* (
+      url: string,
+      key: Redacted.Redacted<string>,
+      functionPath: string,
+      args: unknown,
+      componentPath?: string,
+    ) {
+      const operation = "runFunction";
+      const origin = (yield* deploymentUrl(operation, url)).replace(
+        /\/api\/v1$/,
+        "",
+      );
+      const request = yield* HttpClientRequest.post(
+        `${origin}/api/function`,
+      ).pipe(
+        HttpClientRequest.setHeader(
+          "authorization",
+          `Convex ${Redacted.value(key)}`,
+        ),
+        HttpClientRequest.acceptJson,
+        HttpClientRequest.bodyJson({
+          path: functionPath,
+          args,
+          format: "json",
+          ...(componentPath === undefined ? {} : { componentPath }),
+        }),
+        Effect.mapError(
+          () => new ConvexApiError({ operation, code: "InvalidRequest" }),
+        ),
+      );
+      const response = yield* http.execute(request).pipe(
+        Effect.provideService(FetchHttpClient.RequestInit, {
+          redirect: "manual",
+        }),
+        Effect.mapError(
+          () => new ConvexApiError({ operation, code: "TransportError" }),
+        ),
+      );
+      // Convex answers a function that threw with 560 and its message.
+      if (response.status !== 200 && response.status !== 560)
+        return yield* new ConvexApiError({
+          operation,
+          status: response.status,
+          code: "HttpError",
+        });
+      const result = yield* decode(operation, response, FunctionResponse);
+      if (result.status === "error")
+        return yield* new ConvexFunctionError({
+          functionPath,
+          errorMessage: result.errorMessage,
+        });
+      return result.value;
+    }),
     listProjects: Effect.fn("ConvexClient.listProjects")(function* (
       teamId: number,
     ) {

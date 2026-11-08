@@ -26,6 +26,7 @@ import type * as Redacted from "effect/Redacted";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import { tmpdir } from "node:os";
+import * as ConvexClient from "../../src/ConvexClient";
 import { deploy } from "../../src/internal/CodeDeployment";
 import {
   CommandRunner,
@@ -212,7 +213,15 @@ describe.skipIf(process.platform === "win32")("real local backend", () => {
                 ),
               { concurrency: "unbounded" },
             ).pipe(
-              Effect.provide(Layer.mergeAll(recordingRunner, lockLayer())),
+              Effect.provide(
+                Layer.mergeAll(
+                  recordingRunner,
+                  lockLayer(),
+                  ConvexClient.layer({ mode: "local" }).pipe(
+                    Layer.provide(FetchHttpClient.layer),
+                  ),
+                ),
+              ),
             );
             return outputs;
           }),
