@@ -44,12 +44,14 @@ interface Sender {
 interface Args {
   readonly bulkEmail: Sender;
   readonly transactionalEmail: Sender;
+  readonly relay: { readonly label: string };
   readonly bulkTarget: "record" | "gone";
   readonly withGone: boolean;
 }
 const initial: Args = {
   bulkEmail: { fromName: "School office", maxAttempts: 3 },
   transactionalEmail: { fromName: "Receipts", maxAttempts: 2 },
+  relay: { label: "Relay" },
   bulkTarget: "record",
   withGone: true,
 };
@@ -68,9 +70,10 @@ const codegen = (cwd: string, ...args: ReadonlyArray<string>) =>
   }).pipe(Effect.orDie);
 
 /**
- * A copy of the fixture with its components generated. A host's first codegen
- * bundles `confect/app.ts` before it writes `_generated/refs`, which the mount
- * files import, so it first runs on a declaration without mounts.
+ * A copy of the fixture with its components generated, children first. A host's
+ * first codegen bundles `confect/app.ts` before it writes `_generated/refs`,
+ * which the mount files import, so it first runs on a declaration without
+ * mounts.
  */
 const app = (root: string, name: string) =>
   Effect.gen(function* () {
@@ -94,7 +97,7 @@ const app = (root: string, name: string) =>
       `${directory}/package.json`,
       `{ "name": "${name}", "private": true, "type": "module", "dependencies": { "convex": "*" } }\n`,
     );
-    for (const component of ["email"]) {
+    for (const component of ["email", "relay"]) {
       yield* fs.makeDirectory(`${directory}/components/${component}/convex`);
       yield* codegen(
         directory,
@@ -374,6 +377,117 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
           ).toEqual([
             { fromName: "School office", message: "Synthetic callback" },
           ]);
+        }),
+      ),
+    600_000,
+  );
+
+  it.live(
+    "runs nested mounts after their parent, stops at a failing mount, refuses a deleted target, and never interleaves two pushes",
+    () =>
+      withDeployment(({ push, settings, apps: [appA, appB] }) =>
+        Effect.gen(function* () {
+          const steps = (tag: string | undefined) => [
+            `${tag} acquire`,
+            `${tag} code`,
+            `${tag} init bulkEmail`,
+            `${tag} init transactionalEmail`,
+            `${tag} init relay`,
+            `${tag} init relay/inbox`,
+            `${tag} release`,
+          ];
+          const all = Effect.all({
+            bulkEmail: settings("bulkEmail"),
+            transactionalEmail: settings("transactionalEmail"),
+            relay: settings("relay"),
+            inbox: settings("relay/inbox"),
+          });
+          const first = yield* all;
+          expect(first.relay).toMatchObject({ label: "Relay" });
+          expect(first.inbox).toMatchObject({ fromName: "Relay inbox" });
+          const events: Array<string> = [];
+          expect(
+            Result.isSuccess(yield* push(appA, initial, "A", events)),
+          ).toBe(true);
+          expect(events).toEqual(steps("A"));
+          expect(yield* all).toEqual(first);
+
+          const second = {
+            ...initial,
+            bulkEmail: { fromName: "School office v2" },
+            relay: { label: "Relay v2" },
+          };
+          const stopped = yield* push(appA, {
+            ...second,
+            transactionalEmail: { fromName: "FAIL_AFTER_WRITE" },
+          });
+          assert(Result.isFailure(stopped));
+          expect(stopped.failure).toMatchObject({
+            message:
+              "transactionalEmail: init failed; earlier mounts are applied, and the next push retries",
+          });
+          const partial = yield* all;
+          expect(partial.bulkEmail.fromName).toBe("School office v2");
+          expect(partial.transactionalEmail).toEqual(first.transactionalEmail);
+          expect(partial.relay).toEqual(first.relay);
+          const clean = {
+            ...second,
+            transactionalEmail: { fromName: "Receipts v2" },
+          };
+          expect(Result.isSuccess(yield* push(appA, clean))).toBe(true);
+          const converged = yield* all;
+          expect(converged.bulkEmail).toMatchObject(clean.bulkEmail);
+          expect(converged.transactionalEmail).toMatchObject(
+            clean.transactionalEmail,
+          );
+          expect(converged.relay).toMatchObject(clean.relay);
+          expect(converged.inbox).toEqual(first.inbox);
+
+          const gone = { ...clean, bulkTarget: "gone" as const };
+          expect(Result.isSuccess(yield* push(appA, gone))).toBe(true);
+          const target = yield* settings("bulkEmail");
+          expect(target.onEvent).not.toBe(converged.bulkEmail.onEvent);
+          const deleted: Array<string> = [];
+          const refused = yield* push(
+            appA,
+            { ...gone, bulkEmail: { fromName: "Unapplied" }, withGone: false },
+            "D",
+            deleted,
+          );
+          assert(Result.isFailure(refused));
+          expect(refused.failure).toMatchObject({
+            _tag: "MountInitFailed",
+            mount: "bulkEmail",
+            detail: expect.stringContaining("Function handle not found"),
+          });
+          expect(deleted).toEqual(["D acquire", "D code", "D release"]);
+          expect(yield* settings("bulkEmail")).toEqual(target);
+
+          const together: Array<string> = [];
+          const [a, b] = yield* Effect.all(
+            [
+              push(
+                appA,
+                { ...clean, bulkEmail: { fromName: "A" } },
+                "A",
+                together,
+              ),
+              push(
+                appB,
+                { ...clean, bulkEmail: { fromName: "B" } },
+                "B",
+                together,
+              ),
+            ],
+            { concurrency: "unbounded" },
+          );
+          expect(Result.isSuccess(a) && Result.isSuccess(b)).toBe(true);
+          const [earlier, later] = [together[0], together.at(-1)].map(
+            (event) => event?.split(" ")[0],
+          );
+          expect(earlier).not.toBe(later);
+          expect(together).toEqual([...steps(earlier), ...steps(later)]);
+          expect((yield* settings("bulkEmail")).fromName).toBe(later);
         }),
       ),
     600_000,
