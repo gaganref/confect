@@ -365,8 +365,10 @@ removing them from a downstream runtime context belongs to that middleware.
 
 A component's generated `_generated/component.ts` builds its contract with
 `Component.contract(spec, scope, tables)`, the name `Component.make` had. The
-rename frees `Component.make` for the component descriptor. Rerun
-`confect codegen` to regenerate the file.
+rename frees `Component.make` for the component descriptor. Breaking change:
+replace `Component.make(spec, scope, tables)` with
+`Component.contract(spec, scope, tables)`. Rerun `confect codegen` for
+generated callers.
 
 A component package describes itself with `Component.make(name, { env, client })`,
 and a host declares each mount's client with `Mount.make(component, { name,
