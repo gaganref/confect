@@ -69,6 +69,9 @@ describe("Mount.make", () => {
   });
 
   it("keeps what the mount was declared with", () => {
+    expectTypeOf<
+      NonNullable<(typeof TransactionalEmail)["~declared"]>["env"]
+    >().toEqualTypeOf<{ readonly REGION: "eu-west-1" }>();
     expect(Mount.data(BulkEmail)).toEqual({
       component: Email,
       name: "bulkEmail",
@@ -321,6 +324,39 @@ describe("Mount.make args", () => {
     const extra = { callback: onEvent, surprise: true };
     // @ts-expect-error RULE union-member-extra: the object member takes no surprise.
     void Mount.make(Hook, { ...n, args: { target: extra } });
+  });
+
+  it("checks every alternative of a union value", () => {
+    const Hook = Component.make("hook", {
+      init: Ref.make(
+        "install",
+        FunctionSpec.internalMutation({
+          name: "init",
+          args: () => ({
+            target: Schema.Union([
+              Schema.String,
+              Schema.Struct({ callback: Callback.handle(OnEvent) }),
+            ]),
+            fallback: Schema.NullOr(
+              Schema.Struct({ callback: Callback.handle(OnEvent) }),
+            ),
+            retry: Schema.optional(
+              Schema.Struct({ callback: Callback.handle(OnEvent) }),
+            ),
+          }),
+          returns: () => Schema.Null,
+        }),
+      ),
+      client: (native: Native) => native,
+    });
+    const n = { name: "hook" } as const;
+    const either = Math.random() > 0.5;
+    const fallback = either ? null : { callback: onEvent };
+    const retry = either ? undefined : { callback: onEvent };
+    void Mount.make(Hook, { ...n, args: { target: "x", fallback, retry } });
+    const target = either ? "https://example.test" : { callback: query };
+    // @ts-expect-error RULE union-value-callback-kind: each alternative of a union value is checked.
+    void Mount.make(Hook, { ...n, args: { target, fallback: null } });
   });
 
   it("refuses args init does not take", () => {
