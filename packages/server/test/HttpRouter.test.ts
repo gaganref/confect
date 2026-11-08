@@ -16,6 +16,7 @@ import * as HttpApiSchema from "effect/http-api/HttpApiSchema";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as HttpApi from "effect/http-api/HttpApi";
@@ -730,12 +731,22 @@ it.effect(
           })
             .annotate(BodyLimit, ByteSize.bytes(64))
             .middleware(Guard),
+          HttpApiEndpoint.post("bytes", "/bytes", {
+            payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
+            success: Schema.String,
+          })
+            .annotate(BodyLimit, ByteSize.bytes(64))
+            .middleware(Guard),
         ),
       );
       const bodyRoutes = HttpApiBuilder.layer(bodyApi).pipe(
         Layer.provide(
           HttpApiBuilder.group(bodyApi, "body", (h) =>
-            h.handle("run", ({ payload }) => Effect.succeed(payload.value)),
+            h
+              .handle("run", ({ payload }) => Effect.succeed(payload.value))
+              .handle("bytes", ({ payload }) =>
+                Effect.succeed(new TextDecoder().decode(payload)),
+              ),
           ),
         ),
         Layer.provide(
@@ -743,10 +754,22 @@ it.effect(
             ConfectHttpRouter.withBodyLimit(
               Effect.gen(function* () {
                 const request = yield* HttpServerRequest.HttpServerRequest;
-                const first = yield* request.arrayBuffer.pipe(Effect.orDie);
-                const second = yield* request.arrayBuffer.pipe(Effect.orDie);
-                expect(first).toBe(second);
-                if (new TextDecoder().decode(first) !== '{"value":"signed"}')
+                // The bytes verifier consumes the stream before its decoder
+                // reads arrayBuffer.
+                let text: string;
+                if (endpoint.identifier === "bytes") {
+                  text = yield* request.stream.pipe(
+                    Stream.decodeText(),
+                    Stream.mkString,
+                    Effect.orDie,
+                  );
+                } else {
+                  const first = yield* request.arrayBuffer.pipe(Effect.orDie);
+                  const second = yield* request.arrayBuffer.pipe(Effect.orDie);
+                  expect(first).toBe(second);
+                  text = new TextDecoder().decode(first);
+                }
+                if (text !== '{"value":"signed"}')
                   return HttpServerResponse.empty({ status: 401 });
                 return yield* next;
               }),
@@ -761,17 +784,28 @@ it.effect(
         "./mock-backend/fixtures/convex/http.ts": () =>
           Promise.resolve({ default: router }),
       });
-      for (const [body, encoding, status, result] of [
-        ['{"value":"signed"}', "identity", 200, '"signed"'],
-        ['{"value":"changed"}', "identity", 401, ""],
-        ['{"value":"signed"}', "gzip", 415, ""],
-        ["x".repeat(65), "identity", 413, ""],
+      for (const [path, body, encoding, status, result] of [
+        ["/body", '{"value":"signed"}', "identity", 200, '"signed"'],
+        ["/body", '{"value":"changed"}', "identity", 401, ""],
+        ["/body", '{"value":"signed"}', "gzip", 415, ""],
+        ["/body", "x".repeat(65), "identity", 413, ""],
+        [
+          "/bytes",
+          '{"value":"signed"}',
+          "identity",
+          200,
+          JSON.stringify('{"value":"signed"}'),
+        ],
+        ["/bytes", '{"value":"changed"}', "identity", 401, ""],
       ] as const) {
         const response = yield* Effect.promise(() =>
-          t.fetch("/body", {
+          t.fetch(path, {
             method: "POST",
             headers: {
-              "Content-Type": "application/json",
+              "Content-Type":
+                path === "/body"
+                  ? "application/json"
+                  : "application/octet-stream",
               "Content-Encoding": encoding,
             },
             body,
@@ -820,6 +854,32 @@ it.effect("stops a chunked body after the cap and one transport chunk", () =>
       1048576 + 65536,
       true,
     ]);
+    pulled = 0;
+    const encoded = yield* ConfectHttpRouter.withBodyLimit(
+      Effect.succeed(HttpServerResponse.empty()),
+      { maxBytes: ByteSize.mebibytes(1) },
+    ).pipe(
+      Effect.provideService(
+        HttpServerRequest.HttpServerRequest,
+        HttpServerRequest.fromWeb(
+          new Request(source.url, {
+            method: "POST",
+            headers: { "Content-Encoding": "gzip" },
+            duplex: "half",
+            body: new ReadableStream<Uint8Array>(
+              {
+                pull(controller) {
+                  pulled += 65536;
+                  controller.enqueue(new Uint8Array(65536));
+                },
+              },
+              { highWaterMark: 0 },
+            ),
+          } as RequestInit & { duplex: "half" }),
+        ),
+      ),
+    );
+    expect([encoded.status, pulled]).toEqual([415, 0]);
   }),
 );
 
