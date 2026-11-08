@@ -143,7 +143,7 @@ Upstream: fork only.
 
 ### Require Convex 1.49
 
-Raise the Convex peer floor to 1.49.0. Workspace and baseline consumer pins use the same release. Local backend tests use `precompiled-2026-10-28-cccbade`. Changeset: `convex-peer-floor.md`. Upstream: planned; no proposal submitted.
+Raise the Convex peer floor to 1.49.0. Workspace and baseline consumer pins use the same release. Local backend tests and new Alchemy local deployments use `precompiled-2026-10-28-cccbade`. Existing local deployments keep their backend release. Changesets: `convex-peer-floor.md`, `alchemy-convex-1-49.md`. Upstream: planned; no proposal submitted.
 
 ### Bound the supported crypto API
 
@@ -373,12 +373,7 @@ schema metadata. Schema compilation lowers the slot to `v.function` with the
 contract's encoded args and returns, including optional and nested slots.
 Contract and handle construction still build no argument or return schemas.
 
-Raise the shared core/server Convex peer floor to 1.49.0, the first release with
-`v.function`. Align workspace pins and baseline consumers so the lowest supported
-SDK exercises the emitted validators. The local test backend moves to
-`precompiled-2026-10-28-cccbade` to accept function validators during deployment.
-The earlier 1.46.0 floor covered the
-`FunctionReference_future` type used by `Callback.toFuture`.
+The SDK floor, workspace pins, consumer pins and local backend release are recorded under "Require Convex 1.49".
 
 Changesets: `add-component-callbacks.md`, `callback-function-validator.md`.
 Upstream: planned; no linked proposal verified.
