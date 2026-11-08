@@ -6,8 +6,7 @@
     "@confect/core": "workspace:*",
     "@confect/server": "workspace:*",
     "convex": "*",
-    "effect": "*",
-    "parent-kit": "link:./kits/parent"
+    "effect": "*"
   },
   "devDependencies": {
     "@confect/cli": "workspace:*"
