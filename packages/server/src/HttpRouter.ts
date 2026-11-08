@@ -36,6 +36,7 @@ import type * as DataModel from "./DataModel.js";
 import type * as Handler from "./Handler.js";
 import * as ConvexConfigProvider from "./ConvexConfigProvider.js";
 import * as ObservabilityRuntime from "./internal/observability.js";
+import { withOptions } from "./internal/httpOptions.js";
 import * as ConvexLogger from "./ConvexLogger.js";
 import type * as MutationRunner from "./MutationRunner.js";
 import type * as QueryRunner from "./QueryRunner.js";
@@ -217,7 +218,7 @@ const makeWithLayer = <
   // a `Layer.unwrap` reading `Config`—resolves configuration through the
   // Convex-aware provider; merged so that request fibers—endpoint handlers
   // and middleware—do too.
-  const AppLayer = routes.pipe(
+  const AppLayer = withOptions(routes).pipe(
     Layer.provideMerge(
       observability === undefined
         ? ConvexLogger.layer

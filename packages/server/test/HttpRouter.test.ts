@@ -21,6 +21,7 @@ import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpApiError from "effect/http-api/HttpApiError";
 
 const api = HttpApi.make("users").add(
@@ -512,4 +513,110 @@ it.effect("keeps ConvexLogger for HTTP without a runtime layer", () =>
       info.mockRestore();
     }
   }),
+);
+const fetcher = (router: ReturnType<typeof ConfectHttpRouter.make>) => {
+  const t = convexTest(undefined, {
+    ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
+    "./mock-backend/fixtures/convex/http.ts": () =>
+      Promise.resolve({ default: router }),
+  });
+  return (path: string, method: string, requested?: string) =>
+    Effect.gen(function* () {
+      const response = yield* Effect.promise(() =>
+        t.fetch(path, {
+          method,
+          headers:
+            requested === undefined
+              ? {}
+              : { "Access-Control-Request-Method": requested },
+        }),
+      );
+      const body = yield* Effect.promise(() => response.text());
+      return [response.status, body] as const;
+    });
+};
+
+const answering = (method: "GET" | "POST" | "PUT", path: `/${string}`) =>
+  HttpRouter.add(method, path, HttpServerResponse.text(`${method} ran`)).pipe(
+    Layer.provide(
+      HttpRouter.middleware((next) =>
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          if (request.method !== "OPTIONS") return yield* next;
+          const params = Object.entries(yield* HttpRouter.params).flat();
+          return HttpServerResponse.text([method, ...params].join(" "));
+        }),
+      ).layer,
+    ),
+  );
+
+it.effect.each([
+  {
+    paths: "with differently named parameters",
+    layer: Layer.mergeAll(
+      answering("GET", "/shared/:id"),
+      answering("POST", "/shared/:slug"),
+      HttpRouter.add("POST", "/webhook", HttpServerResponse.text("ran")),
+    ),
+    request: ["GET", "/shared/7", "GET ran"],
+    preflights: [
+      ["/shared/7", "GET", 200, "GET id 7"],
+      ["/shared/7", "POST", 200, "POST slug 7"],
+      ["/shared/7", undefined, 200, "GET id 7"],
+      ["/shared/7", "DELETE", 404, ""],
+      ["/webhook", "POST", 404, ""],
+      ["/missing", "GET", 404, ""],
+    ],
+  },
+  {
+    paths: "differing in trailing slash and case",
+    layer: Layer.mergeAll(
+      answering("GET", "/trailing"),
+      answering("POST", "/trailing/"),
+      answering("PUT", "/Trailing"),
+    ),
+    request: ["POST", "/trailing", "POST ran"],
+    preflights: [
+      ["/trailing", "POST", 200, "POST"],
+      ["/TRAILING/", "PUT", 200, "PUT"],
+      ["/trailing", undefined, 200, "GET"],
+    ],
+  },
+  {
+    paths: "beside an explicit OPTIONS route with another parameter name",
+    layer: Layer.mergeAll(
+      answering("GET", "/shared/:id"),
+      HttpRouter.add(
+        "OPTIONS",
+        "/shared/:slug",
+        HttpServerResponse.text("OPTIONS"),
+      ),
+    ),
+    request: ["GET", "/shared/7", "GET ran"],
+    preflights: [
+      ["/shared/7", "GET", 200, "OPTIONS"],
+      ["/shared/7", undefined, 200, "OPTIONS"],
+    ],
+  },
+  {
+    paths: "under a catch-all route",
+    layer: Layer.mergeAll(
+      answering("GET", "/shared/:id"),
+      HttpRouter.add("*", "*", HttpServerResponse.text("fallback")),
+    ),
+    request: ["GET", "/shared/7", "GET ran"],
+    preflights: [["/shared/7", "GET", 200, "fallback"]],
+  },
+] as const)(
+  "dispatches OPTIONS on router-equivalent paths $paths",
+  ({ layer, request, preflights }) =>
+    Effect.gen(function* () {
+      const send = fetcher(ConfectHttpRouter.make(layer));
+      const [method, path, body] = request;
+      expect(yield* send(path, method)).toEqual([200, body]);
+      for (const [preflightPath, requested, ...expected] of preflights)
+        expect(yield* send(preflightPath, "OPTIONS", requested)).toEqual(
+          expected,
+        );
+    }),
 );

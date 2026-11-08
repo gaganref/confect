@@ -8,6 +8,7 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as LocalBackend from "./LocalBackend";
@@ -85,6 +86,20 @@ layer(
         );
         expect(response.status).toBe(404);
         expect(yield* response.text).toBe("");
+      }
+    }),
+  );
+  it.effect("dispatches OPTIONS on app and component endpoints to Effect", () =>
+    Effect.gen(function* () {
+      for (const requestPath of ["/users/42", "/first/members/42"]) {
+        const response = yield* HttpClient.execute(
+          HttpClientRequest.make("OPTIONS")(
+            `http://127.0.0.1:3211${requestPath}`,
+          ).pipe(
+            HttpClientRequest.setHeader("Access-Control-Request-Method", "GET"),
+          ),
+        );
+        expect([response.status, yield* response.text]).toEqual([404, ""]);
       }
     }),
   );
