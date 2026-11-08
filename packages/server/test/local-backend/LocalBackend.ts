@@ -48,10 +48,10 @@ const READY_LINE = "Convex functions ready!";
 
 // Knobs read by `crates/common/src/knobs.rs` in convex-backend. Lowering
 // these shrinks `MAX_CACHE_AGE` (= `USER_TIMEOUT` + `SYSTEM_TIMEOUT` + 1s,
-// per `crates/application/src/cache/mod.rs`) to ~3s so a single test run
+// per `crates/application/src/cache/mod.rs`) to ~7s so a single test run
 // can wait past the cache eviction window.
 const USER_TIMEOUT_SECONDS = 1;
-const SYSTEM_TIMEOUT_SECONDS = 1;
+const SYSTEM_TIMEOUT_SECONDS = 5;
 
 /**
  * Duration after which a query whose handler observed time is evicted from the
