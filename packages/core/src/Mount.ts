@@ -36,10 +36,10 @@ type Input<T> = T extends Handle
     : T;
 
 /**
- * `A` when every alternative of `A` fits `T`; otherwise a type an alternative
- * that does not fit cannot be assigned to. A callback slot takes an internal
- * host ref that satisfies the slot's contract. Whether a slot may be left
- * `undefined` is `Input`'s to say.
+ * `A` when every alternative of `A` fits `T`; otherwise a type that refuses
+ * each alternative that does not. A callback slot takes an internal host ref
+ * that satisfies the slot's contract. Whether a slot may be left `undefined` is
+ * `Input`'s to say.
  */
 type Check<T, A> = A extends unknown ? Fit<T, A> : never;
 
