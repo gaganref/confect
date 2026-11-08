@@ -501,11 +501,12 @@ the components a backend mounts and its `Mount.make` mounts as lists, so each
 mount's name is written once. Codegen writes one `app.use` per mount, in list
 order, with the definition whose `defineComponent` name is the mount's component
 name. It fails when a mount has no listed definition, when a listed definition
-has no mount, and when two mounts share a name. `App.mount` and its record of
+has no mount, when two mounts share a name, and when two listed definitions
+share a `defineComponent` name. `App.mount` and its record of
 mounts are removed; a mount is declared once, with `Mount.make`.
 
 Changesets: `backend-declaration.md`, `app-mounts-list.md`,
-`remove-app-mount.md`.
+`remove-app-mount.md`, `unique-definition-names.md`.
 Upstream: planned; no linked proposal verified.
 
 ### Label reflected HTTP routes
