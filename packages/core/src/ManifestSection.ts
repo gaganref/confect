@@ -37,11 +37,13 @@ export interface Generate {
 
 /**
  * What codegen hands a section's `summarize`: the `confect/` files its
- * `generate` matched, and each function's description by path.
+ * `generate` matched, each function's description by path, and the spec file
+ * declaring each function by path, relative to `confect/`.
  */
 export interface SummarizeInput<Value = unknown> {
   readonly modules: GenerateInput["modules"];
   readonly functions: Readonly<Record<string, Value>>;
+  readonly sources: Readonly<Record<string, string>>;
 }
 
 export interface ManifestSection<
