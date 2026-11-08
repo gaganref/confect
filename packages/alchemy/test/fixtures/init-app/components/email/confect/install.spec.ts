@@ -20,11 +20,4 @@ export default GroupSpec.make()
       name: "settings",
       returns: () => Schema.NullOr(settings.Doc),
     }),
-  )
-  .addFunction(
-    FunctionSpec.publicMutation({
-      name: "send",
-      args: () => ({ message: Schema.String }),
-      returns: () => Schema.Null,
-    }),
   );
