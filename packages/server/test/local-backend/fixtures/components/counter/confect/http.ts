@@ -9,6 +9,7 @@ import type { scope } from "./_generated/id";
 import refs from "./_generated/refs";
 import { classProbeHandler } from "./authoringHandler";
 import { CounterApi } from "./api";
+import { optionalPrefix } from "./optionalPrefix";
 
 const health = HttpApiBuilder.group(CounterApi, "health", (handle) =>
   handle
@@ -37,7 +38,9 @@ const authoring = HttpApiBuilder.group(CounterApi, "authoring", (handle) =>
   ),
 );
 
-export default Http.make({
+const http = Http.make({
   api: CounterApi,
   handlers: Layer.mergeAll(health, users, authoring),
 });
+
+export default { ...http, routes: Layer.merge(http.routes, optionalPrefix) };
