@@ -103,13 +103,12 @@ export default Env.make("consumer", {
 
 ```ts confect/app.ts
 import { App } from "@confect/core";
-import { CounterApi } from "../components/counter/confect/api";
 import counter from "../components/counter/convex/convex.config";
 import env from "./env";
 export default App.make({
   env,
   mounts: {
-    counter: App.mount(counter, { httpPrefix: "/counter", api: CounterApi }),
+    counter: App.mount(counter, { httpPrefix: "/counter" }),
   },
 });
 ```
@@ -260,10 +259,10 @@ The host serves `/health`. The counter declares `/health` relative to its instal
 Codegen calls `Http.routes(app, http)` to validate the route inventory. It returns a `Result` failure for:
 
 - `RouteUnderMountPrefix` when a host endpoint or Scalar docs page is at or under a mount prefix, regardless of method. Convex would otherwise let it shadow the component.
-- `DuplicateRoute` when method and path repeat, including declared parameter names normalised to the same placeholder. Pass the mounted component's `api` to include its endpoints in this check.
-- `OverlappingMountPrefixes` when mount prefixes overlap on path boundaries. This check and mount-prefix reservation run even without `http.ts` or a mounted `api`.
+- `DuplicateRoute` when method and path repeat, including declared parameter names normalised to the same placeholder. Each Convex component checks its own routes during codegen.
+- `OverlappingMountPrefixes` when mount prefixes overlap on path boundaries. This check and mount-prefix reservation run even without `http.ts`.
 
-These checks compare declared paths; they are not a general proof that all dynamic route patterns are disjoint. `api` requires `httpPrefix` in `App.mount`.
+These checks compare declared paths; they are not a general proof that all dynamic route patterns are disjoint.
 
 ## Contracts and callbacks
 
@@ -350,6 +349,15 @@ const notify = FunctionImpl.make(schema, hello, "notify", ({ value }) =>
 ```
 
 The host's `onResult` spec uses the same `Schema.FiniteFromString` argument and return codecs as `OnResult`. `Callback.create` checks function kind, encoded args and returns, and declared errors, including middleware errors. The host may declare fewer errors. It also compares compiled Convex validators before asking Convex for a handle; a mismatch fails with `CallbackContractMismatch`. Matching validators cannot distinguish every refinement or codec, so reuse the contract's schemas and error classes.
+
+To forward context through a mutation or action callback, decode it with
+`Callback.handle(OnResult, { reservedArgument: "context" })`. The host function
+must reserve the same name. Runners and the scheduler inject the value from
+`RegisteredFunction.Forward` after encoding domain arguments. The handle stays
+a string on the wire, so each receiving schema declares the reservation. Omit
+the option for targets that accept only domain arguments. Query handles cannot
+reserve an argument. This transports a value without authenticating it. The
+host owns its trust policy, including whether to accept an incoming run id.
 
 The component runs the handle with its runner or scheduler. No generated callback adapter is needed. The fixture decodes `21`, calls the host which adds `21`, and adds `1` in the component, returning `43`. Keep callback contracts in a client-safe entry point without server implementation imports.
 

@@ -1,5 +1,4 @@
 import { App } from "@confect/core";
-import { CounterApi } from "../components/counter/confect/api";
 import counter from "../components/counter/convex/convex.config";
 import parent from "../components/parent/convex/convex.config";
 import env from "./env";
@@ -9,7 +8,6 @@ export default App.make({
   mounts: {
     first: App.mount(counter, {
       httpPrefix: "/first",
-      api: CounterApi,
       env: {
         COMPONENT_REQUIRED: "first-required",
         COMPONENT_OPTIONAL: "first-optional",
@@ -18,7 +16,6 @@ export default App.make({
     }),
     second: App.mount(counter, {
       httpPrefix: "/second",
-      api: CounterApi,
       env: {
         COMPONENT_REQUIRED: "second-required",
         COMPONENT_OPTIONAL: env.COMPONENT_MARKER,
