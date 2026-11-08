@@ -13,6 +13,7 @@ import {
 import { getFunctionAddress } from "convex/server";
 import type * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as TestSpec from "./TestSpec";
 
@@ -411,4 +412,73 @@ describe("Mount callbackArgs", () => {
     // @ts-expect-error RULE callback-args-contract: a descriptor without a contract has no callbackArgs.
     void plain.callbackArgs;
   });
+});
+
+describe("Mount.initCall", () => {
+  const handleFor = (contract: Callback.Any, ref: Ref.Any) =>
+    Schema.decodeEffect(Callback.handle(contract))(
+      `handle for ${ref.convexFunctionName}`,
+    );
+
+  it.effect(
+    "encodes the install args, with a handle in each callback slot",
+    () =>
+      Effect.gen(function* () {
+        const mailer = Mount.make(Mailer, {
+          name: "mailer",
+          args: { fromName: "School office", onEvent },
+        });
+        expect(yield* Mount.initCall(mailer, handleFor)).toEqual(
+          Option.some({
+            componentPath: "mailer",
+            functionName: "install:init",
+            args: {
+              fromName: "School office",
+              onEvent: "handle for callbacks:onEvent",
+            },
+          }),
+        );
+      }),
+  );
+
+  it.effect("finds a callback slot inside a struct", () =>
+    Effect.gen(function* () {
+      const Retrying = Component.make("retrying", {
+        init: Ref.make(
+          "install",
+          FunctionSpec.internalMutation({
+            name: "init",
+            args: () => ({
+              retry: Schema.optionalKey(
+                Schema.Struct({
+                  attempts: Schema.Int,
+                  onGiveUp: Callback.handle(OnEvent),
+                }),
+              ),
+            }),
+            returns: () => Schema.Null,
+          }),
+        ),
+        client: (native: Native) => native,
+      });
+      const mount = Mount.make(Retrying, {
+        name: "retrying",
+        args: { retry: { attempts: 3, onGiveUp: onEvent } },
+      });
+      const call = yield* Mount.initCall(mount, handleFor);
+      expect(Option.map(call, ({ args }) => args)).toEqual(
+        Option.some({
+          retry: { attempts: 3, onGiveUp: "handle for callbacks:onEvent" },
+        }),
+      );
+    }),
+  );
+
+  it.effect("is none for a component without init", () =>
+    Effect.gen(function* () {
+      expect(yield* Mount.initCall(BulkEmail, handleFor)).toEqual(
+        Option.none(),
+      );
+    }),
+  );
 });
