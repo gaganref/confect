@@ -137,14 +137,25 @@ export interface Data<C extends Component.Descriptor = Component.Descriptor> {
 }
 
 /**
+ * What a mount was declared with, as written: its HTTP prefix.
+ */
+export interface Declared<
+  P extends App.HttpPrefix | undefined = App.HttpPrefix | undefined,
+> {
+  readonly httpPrefix: P;
+}
+
+/**
  * A mounted Convex component. Yield it for its client. Its default is the
  * component's client over this mount, and `Effect.provideService` replaces it.
  */
 export interface Mount<
   C extends Component.Descriptor,
   Name extends string,
+  D extends Declared = Declared,
 > extends Context.Reference<Client<C>> {
   readonly [TypeId]: Data<C> & { readonly name: Name };
+  readonly "~declared"?: D;
 }
 
 export type Any = Mount<Component.Descriptor, string>;
@@ -171,15 +182,16 @@ export const make = <
   C extends Component.Descriptor,
   const Name extends string,
   const A extends Input<ArgsOf<C>>,
+  const P extends App.HttpPrefix = never,
 >(
   component: C,
   options: {
     readonly name: Name;
-    readonly httpPrefix?: App.HttpPrefix;
+    readonly httpPrefix?: P;
   } & EnvField<C> &
     ArgsField<C, A> &
     OptionsField<C>,
-): Mount<C, Name> => {
+): Mount<C, Name, Declared<[P] extends [never] ? undefined : P>> => {
   const data = { ...(options as object), component } as Data<C> & {
     readonly name: Name;
   };
@@ -199,5 +211,5 @@ export const make = <
  * and options.
  */
 export const data = <C extends Component.Descriptor, Name extends string>(
-  mount: Mount<C, Name>,
+  mount: Mount<C, Name, Declared>,
 ): Data<C> & { readonly name: Name } => mount[TypeId];

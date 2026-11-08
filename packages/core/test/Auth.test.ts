@@ -1,5 +1,5 @@
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
-import { App, Auth, Env } from "@confect/core";
+import { App, Auth, Component, Env, Mount } from "@confect/core";
 import { defineComponent } from "convex/server";
 
 const authCore = defineComponent("auth");
@@ -62,6 +62,18 @@ describe("Auth", () => {
       "/auth/jwks.json",
     );
     expect(Auth.siteUrlPath("https://login.example.edu")).toBeUndefined();
+    const AuthCore = Component.make("auth", {
+      client: (native: unknown) => native,
+    });
+    const mounted = Mount.make(AuthCore, {
+      name: "auth",
+      httpPrefix: "/auth/",
+    });
+    expect(Auth.siteUrlPath(Auth.siteUrl(mounted, "/jwks.json"))).toBe(
+      "/auth/jwks.json",
+    );
+    // @ts-expect-error A mount without an HTTP prefix has no URL to point at.
+    void Auth.siteUrl(Mount.make(AuthCore, { name: "bare" }));
   });
 
   it("describes deployment cloud URLs and required env provider fields", () => {
