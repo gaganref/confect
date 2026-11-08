@@ -460,7 +460,7 @@ export const componentContract = Effect.fnUntraced(function* ({
     (name) => `"${name}"`,
   );
   yield* cbw.writeLine(
-    `const component: Component.Component<typeof spec, typeof scope, ${names.join(" | ")}> = Component.make(spec, scope, [${names.join(", ")}]);`,
+    `const component: Component.Component<typeof spec, typeof scope, ${names.join(" | ")}> = Component.contract(spec, scope, [${names.join(", ")}]);`,
   );
   yield* cbw.writeLine("export default component;");
   return yield* cbw.toString();

@@ -44,7 +44,7 @@ describe("Callable", () => {
       first: Component.Api<typeof spec, "first">;
     };
     const bound = Component.bind(
-      Component.make(spec, IdScope.component("greetings"), []),
+      Component.contract(spec, IdScope.component("greetings"), []),
       native.first,
     );
     const use = (ref: Ref.Callable<typeof own>) =>

@@ -82,7 +82,7 @@ it.effect(
       const contract = yield* fs.readFileString(
         `${directory}/confect/_generated/component.ts`,
       );
-      expect(contract).toContain("Component.make(spec, scope,");
+      expect(contract).toContain("Component.contract(spec, scope,");
       expect(contract).not.toContain("impl");
       expect(
         yield* Project.writtenFiles(codegenHandler.pipe(Effect.provide(dirs))),
