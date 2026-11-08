@@ -123,7 +123,9 @@ const packageVersion = Effect.fnUntraced(function* (
  * Every first-party file the declaration modules import, by project-relative
  * path and contents. Files under `node_modules` and outside the project count
  * through package versions instead, so rebuilding a dependency does not change
- * the digest.
+ * the digest. The components registry is left out: codegen derives it from the
+ * `convex.config.ts` this declaration writes, so its inputs are already here,
+ * and a first run bundles a provisional registry that the real one replaces.
  */
 const declarationInputs = Effect.fnUntraced(function* (
   bundles: ReadonlyArray<Bundler.Bundled>,
@@ -131,6 +133,11 @@ const declarationInputs = Effect.fnUntraced(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const projectRoot = yield* ProjectRoot.get;
+  const registry = path.join(
+    yield* ConfectDirectory.get,
+    "_generated",
+    "components.ts",
+  );
   const files = new Set<string>();
   for (const { metafile } of bundles) {
     for (const input of Object.keys(metafile.inputs)) {
@@ -138,7 +145,8 @@ const declarationInputs = Effect.fnUntraced(function* (
       if (
         path.isAbsolute(input) &&
         !relative.startsWith("..") &&
-        !relative.split(path.sep).includes("node_modules")
+        !relative.split(path.sep).includes("node_modules") &&
+        path.resolve(input) !== registry
       ) {
         files.add(input);
       }
