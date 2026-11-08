@@ -36,6 +36,7 @@ import type * as DataModel from "./DataModel.js";
 import type * as Handler from "./Handler.js";
 import * as ConvexConfigProvider from "./ConvexConfigProvider.js";
 import * as ObservabilityRuntime from "./internal/observability.js";
+import { withOptions } from "./internal/httpOptions.js";
 import * as ConvexLogger from "./ConvexLogger.js";
 import type * as MutationRunner from "./MutationRunner.js";
 import type * as QueryRunner from "./QueryRunner.js";
@@ -217,7 +218,18 @@ const makeWithLayer = <
   // a `Layer.unwrap` reading `Config`—resolves configuration through the
   // Convex-aware provider; merged so that request fibers—endpoint handlers
   // and middleware—do too.
-  const AppLayer = routes.pipe(
+  // Collected now: toWebHandler builds AppLayer before the reflection below.
+  const endpoints = new Set<string>();
+  if (api !== undefined)
+    HttpApi.reflect(api, {
+      onGroup: () => {},
+      onEndpoint: ({ endpoint }) => {
+        endpoints.add(
+          `${endpoint.method} ${apiRouterPath(endpoint.path as FindMyWay.PathInput, endpoint.params)}`,
+        );
+      },
+    });
+  const AppLayer = withOptions(routes, endpoints).pipe(
     Layer.provideMerge(
       observability === undefined
         ? ConvexLogger.layer
@@ -436,3 +448,5 @@ const applyMonkeyPatches = () => {
     });
   }
 };
+
+export { withBodyLimit } from "./internal/httpBody.js";
