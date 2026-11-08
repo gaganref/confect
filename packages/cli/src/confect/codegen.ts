@@ -28,9 +28,11 @@ import * as GenerationSnapshot from "../GenerationSnapshot.js";
 import * as EntryPoint from "../EntryPoint.js";
 import type { ImplModulePath } from "../ImplModulePath.js";
 import {
+  discoverLeafSpecFiles,
   implPathForSpec,
   loadAll,
   registeredFunctionsRelativePath,
+  toLeafModule,
   validateAllImpls,
   withImplFiles,
   type LeafModule,
@@ -129,11 +131,7 @@ export const codegen = Command.make("codegen", DirectoryOptions.flags, () =>
 const runCodegen = Effect.gen(function* () {
   yield* validateComponentConfiguration;
   yield* generateConfectGeneratedDirectory;
-  // A declared backend's `convex.config.ts` and manifest come first: the
-  // components registry below reads the config, and nothing may validate
-  // against a manifest the current declaration did not produce.
   const previousManifest = yield* readPrevious;
-  const { app: declared, digest } = yield* syncDeclaration(previousManifest);
   // Reject a legacy `confect/schema.ts` up front so the user-facing
   // migration message surfaces before any bundler error from impl
   // validation (each impl imports `_generated/schema.ts`).
@@ -145,6 +143,20 @@ const runCodegen = Effect.gen(function* () {
   const tableModules = yield* TableModule.discover;
   yield* warnIfNoTables(tableModules);
   yield* generateIdConstructor(tableModules);
+  // The declaration can import `_generated/refs` (a mount's callback arg),
+  // which imports the assembled spec, the leaf specs and their table
+  // wrappers. Their text follows from the file layout alone, so they are
+  // written before the declaration is bundled, even on a first run.
+  yield* generateTableWrappers(tableModules);
+  yield* removeObsoleteTableWrappers(tableModules);
+  yield* generateAssembledSpecs(
+    yield* Effect.forEach(yield* discoverLeafSpecFiles, toLeafModule),
+  );
+  yield* generateRefs;
+  // A declared backend's `convex.config.ts` and manifest come next: the
+  // components registry below reads the config, and nothing may validate
+  // against a manifest the current declaration did not produce.
+  const { app: declared, digest } = yield* syncDeclaration(previousManifest);
   // Tables and specs can use bound component IDs and schemas, so their
   // imports need the registry even on a project's first codegen run.
   const mounts = yield* generateComponents;
@@ -154,8 +166,6 @@ const runCodegen = Effect.gen(function* () {
   // here (rather than later) so they appear before impl-validation noise.
   yield* TableModule.validate(tableModules);
   yield* validateNoDocNameCollisions(tableModules);
-  yield* generateTableWrappers(tableModules);
-  yield* removeObsoleteTableWrappers(tableModules);
   yield* generateRuntimeSchema(tableModules);
   const leaves = yield* loadAll;
   yield* rejectComponentNodeGroups(leaves);
@@ -176,7 +186,6 @@ const runCodegen = Effect.gen(function* () {
   const snapshot = yield* Effect.fromResult(
     GenerationSnapshot.fromLoadedLeaves(leaves),
   );
-  yield* generateAssembledSpecs(leaves);
   // `_generated/api.ts`/`nodeApi.ts` are no longer imported by generated or
   // impl code (impls take the database schema from `_generated/schema`
   // directly), so remove any copies left over from earlier versions before
@@ -184,7 +193,6 @@ const runCodegen = Effect.gen(function* () {
   yield* Effect.all(
     [
       removeGeneratedApi,
-      generateRefs,
       generateComponentContract(tableModules),
       removeGeneratedNodeApi,
       generateDocs(tableModules),
