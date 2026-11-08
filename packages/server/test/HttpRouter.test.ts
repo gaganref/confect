@@ -718,7 +718,8 @@ it.effect.each([
     ],
   },
   {
-    paths: "under a prefix with an optional parameter whose full form is claimed",
+    paths:
+      "under a prefix with an optional parameter whose full form is claimed",
     layer: Layer.mergeAll(
       answering("GET", "/prefix/:id"),
       answering("POST", "/", "/prefix/:slug?"),
