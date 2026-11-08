@@ -75,6 +75,12 @@ export declare const api: {
         { id: string; status: "queued" | "sent" | "delivered" | "bounced" },
         string | null
       >;
+      storeMalformed: FunctionReference<
+        "mutation",
+        "public",
+        { run: string },
+        string
+      >;
     };
     componentAuthoring: {
       probe: FunctionReference<

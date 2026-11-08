@@ -7,6 +7,13 @@ export const Outcome = Schema.Literals(["success", "failure", "defect"]);
 
 export default GroupSpec.make()
   .addFunction(
+    FunctionSpec.publicMutation({
+      name: "storeMalformed",
+      args: () => ({ run: Schema.String }),
+      returns: () => Id("deliveries"),
+    }),
+  )
+  .addFunction(
     ActionCall.profile.publicAction({
       name: "notify",
       args: () => ({ run: Schema.String, onEvent: Callback.handle(OnEvent) }),

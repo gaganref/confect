@@ -16,6 +16,13 @@ const Observation = Schema.Struct({
 
 export default GroupSpec.make()
   .addFunction(
+    FunctionSpec.publicMutation({
+      name: "storeMalformed",
+      args: () => ({ run: Schema.String }),
+      returns: DeliveryId,
+    }),
+  )
+  .addFunction(
     FunctionSpec.internalMutation({
       name: "onEvent",
       args: () => ({ run: Schema.String, status: Status }),
