@@ -26,7 +26,8 @@ export type TableInfo<Table_ extends Table.AnyWithProps> =
     infer Indexes,
     infer SearchIndexes,
     infer VectorIndexes,
-    infer Scope
+    infer Scope,
+    any
   >
     ? {
         readonly [TypeId]: TypeId;

@@ -11,6 +11,7 @@ import {
   MiddlewareSpec,
   Ref,
   SchemaToValidator,
+  Table,
 } from "@confect/core";
 import {
   componentsGeneric,
@@ -624,5 +625,53 @@ describe("callback handles through a binding", () => {
     expect(
       Ref.encodeArgsSync(bound.deliveries.send, { onEvent: handle }),
     ).toEqual({ onEvent: text });
+  });
+});
+
+describe("table groups in a contract", () => {
+  const batches = Table.make(() => Schema.Struct({ name: Schema.String }))(
+    "batches",
+    scope,
+  );
+  let schemaBuilds = 0;
+  const emailsGroupedBy = <const Id extends Schema.Codec<any, any>>(id: Id) =>
+    Table.make(() => {
+      schemaBuilds += 1;
+      return Schema.Struct({ batchId: id, to: Schema.String });
+    });
+  const emails = emailsGroupedBy(GenericId.GenericId("batches", scope)).group(
+    "batchId",
+  )("emails", scope);
+  const strayEmails = emailsGroupedBy(
+    GenericId.GenericId("batches", IdScope.component("@x/other")),
+  ).group("batchId")("emails", scope);
+  const appEmails = emailsGroupedBy(GenericId.GenericId("batches")).group(
+    "batchId",
+  )("emails", scope);
+
+  it("publishes each grouped table's key and table, and no group for the rest", () => {
+    const mail = Component.contract(spec, scope, [batches, emails, "_storage"]);
+    expectTypeOf(mail).toEqualTypeOf<
+      Component.Component<
+        typeof spec,
+        typeof scope,
+        "batches" | "emails" | "_storage"
+      >
+    >();
+    expect(schemaBuilds).toBe(0);
+    expect(Component.groups(mail)).toEqual({
+      emails: { key: "batchId", table: "batches" },
+    });
+    expect(schemaBuilds).toBe(1);
+    expect(Component.groups(contract)).toEqual({});
+  });
+
+  it("refuses a group whose id is not one of the component's own tables", () => {
+    // @ts-expect-error `batches` is not among this component's tables
+    void Component.contract(spec, scope, [emails, "_storage"]);
+    // @ts-expect-error the id belongs to another component's `batches`
+    void Component.contract(spec, scope, [batches, strayEmails]);
+    // @ts-expect-error an application id is not this component's `batches`
+    void Component.contract(spec, scope, [batches, appEmails]);
   });
 });

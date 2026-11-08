@@ -18,6 +18,7 @@ import * as Ref from "./Ref.js";
 import type * as Refs from "./Refs.js";
 import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 import * as Spec from "./Spec.js";
+import type * as Table_ from "./Table.js";
 
 export class EmptyComponentScopeError extends Data.TaggedError(
   "EmptyComponentScopeError",
@@ -151,9 +152,47 @@ export interface Component<
     readonly refs: Tree;
     readonly scope: Scope;
     readonly tables: ReadonlyArray<Tables>;
+    readonly groups: Readonly<Record<string, Table_.Group>>;
   };
   readonly "~Spec": Spec_;
 }
+
+/**
+ * A component's tables as `contract` takes them: a table, or the name of a
+ * system table.
+ */
+export type TableEntry = string | Table_.AnyWithProps;
+
+type EntryName<Entry extends TableEntry> = Entry extends string
+  ? Entry
+  : Entry extends Table_.AnyWithProps
+    ? Table_.Name<Entry>
+    : never;
+
+type StrayGroup<
+  Entries extends ReadonlyArray<TableEntry>,
+  Scope extends IdScope.IdScope,
+> = {
+  [Index in keyof Entries]: Entries[Index] extends {
+    readonly tableName: infer Name extends string;
+    readonly group: Table_.Group<infer Key, infer Target, infer GroupScope>;
+  }
+    ? [Target, GroupScope] extends [EntryName<Entries[number]>, Scope]
+      ? never
+      : `${Name}.${Key} is not an id of a table of this component`
+    : never;
+}[number];
+
+/**
+ * `unknown` when every group's id names a table of this component in its scope,
+ * otherwise an object type naming a stray group.
+ */
+export type CheckGroups<
+  Entries extends ReadonlyArray<TableEntry>,
+  Scope extends IdScope.IdScope,
+> = [StrayGroup<Entries, Scope>] extends [never]
+  ? unknown
+  : { readonly "~StrayGroup": StrayGroup<Entries, Scope> };
 
 /**
  * An opaque identity: its string representation is not part of the API.
@@ -214,16 +253,18 @@ export type Bound<
 
 /**
  * Build a publishable contract containing only exported functions and codecs.
+ * `tables` lists the component's tables, each a table or a system table's name.
+ * A table grouped by an id must group by an id of one of these tables.
  */
 export const contract = <
   Spec_ extends Spec.AnyWithProps,
   const Scope extends IdScope.IdScope,
-  const Tables extends string,
+  const Entries extends ReadonlyArray<TableEntry>,
 >(
   spec: Spec_,
   scope: Scope,
-  tables: ReadonlyArray<Tables>,
-): Component<Spec_, Scope, Tables> => {
+  tables: Entries & CheckGroups<Entries, Scope>,
+): Component<Spec_, Scope, EntryName<Entries[number]>> => {
   const specGroups = Spec.groups(spec);
   Result.getOrThrow(validateContract(scope, specGroups));
   const collect = (
@@ -251,10 +292,46 @@ export const contract = <
       }),
       Record.filter((children) => !Record.isEmptyRecord(children)),
     );
-  return {
-    [TypeId]: { refs: collect(specGroups), scope, tables },
-  } as Component<Spec_, Scope, Tables>;
+  const entries: ReadonlyArray<TableEntry> = tables;
+  const grouped: Readonly<Record<string, Table_.Group>> = pipe(
+    entries,
+    Array.flatMap((entry) =>
+      typeof entry !== "string" && entry.group !== undefined
+        ? [[entry.tableName, entry.group] as const]
+        : [],
+    ),
+    Record.fromEntries,
+  );
+  const published: Component<
+    Spec_,
+    Scope,
+    EntryName<Entries[number]>
+  >[typeof TypeId] = {
+    refs: collect(specGroups),
+    scope,
+    tables: Array.map(
+      entries,
+      (entry) =>
+        (typeof entry === "string" ? entry : entry.tableName) as EntryName<
+          Entries[number]
+        >,
+    ),
+    groups: grouped,
+  };
+  return { [TypeId]: published } as Component<
+    Spec_,
+    Scope,
+    EntryName<Entries[number]>
+  >;
 };
+
+/**
+ * Each grouped table's id field and the table that id names.
+ */
+export const groups = (
+  component: Component<Spec.AnyWithProps, IdScope.IdScope>,
+): Readonly<Record<string, { readonly key: string; readonly table: string }>> =>
+  Record.map(component[TypeId].groups, ({ key, table }) => ({ key, table }));
 
 /**
  * Bind the published contract to an actual installed component reference.
