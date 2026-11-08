@@ -431,7 +431,7 @@ which remains open; fork-specific follow-up submission is unrecorded.
 table's rows and refuses any other field. `Component.contract(spec, scope,
 tables)` takes tables beside system table names and refuses a grouped table whose
 id is not one of them, in the component's scope, and a table entry that may be
-absent, such as a union entry. `Component.groups(contract)`
+absent, such as any union in the tables. `Component.groups(contract)`
 returns each grouped table's `{ key, table }`, typed with the literal key and
 table. Table names alone, even as an explicit type argument, carry no groups.
 Codegen passes each table to the contract, so a generated contract lists its
@@ -542,10 +542,12 @@ order, with the definition whose `defineComponent` name is the mount's component
 name. It fails when a mount has no listed definition, when a listed definition
 has no mount, when two mounts share a name, and when two listed definitions
 share a `defineComponent` name. `App.mount` and its record of
-mounts are removed; a mount is declared once, with `Mount.make`.
+mounts are removed; a mount is declared once, with `Mount.make`. Codegen writes
+`_generated/refs` before it loads the declaration, so a mount can pass one of the
+host's own refs from the first run.
 
 Changesets: `backend-declaration.md`, `app-mounts-list.md`,
-`remove-app-mount.md`, `unique-definition-names.md`.
+`remove-app-mount.md`, `unique-definition-names.md`, `first-codegen-refs.md`.
 Upstream: planned; no linked proposal verified.
 
 ### Label reflected HTTP routes

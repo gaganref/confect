@@ -177,30 +177,38 @@ type EntryName<Entry extends TableEntry> = Entry extends string
     ? Table_.Name<Entry>
     : never;
 
-type MaybeTable<Entry, InTuple, All = Entry> = Entry extends Table_.AnyWithProps
-  ? [All, InTuple] extends [Entry, true]
-    ? never
-    : `${Table_.Name<Entry>} may be absent: list one table or name per entry, in a tuple`
+type Many<A, All = A> = string extends A
+  ? true
+  : number extends A
+    ? true
+    : A extends unknown
+      ? [All] extends [A]
+        ? never
+        : true
+      : never;
+
+type Loose<Entries extends ReadonlyArray<TableEntry>> = true extends
+  | Many<Entries>
+  | Many<Entries["length"]>
+  | { [Index in keyof Entries]: Many<Entries[Index]> }[number]
+  ? "pass one table or one name per entry; a union may be absent at runtime"
   : never;
 
 type StrayGroup<
   Entries extends ReadonlyArray<TableEntry>,
   Scope extends IdScope.IdScope,
-> = {
-  [Index in keyof Entries]:
-    | MaybeTable<
-        Entries[Index],
-        number extends Entries["length"] ? false : true
-      >
-    | (Entries[Index] extends {
+> = [Loose<Entries>] extends [never]
+  ? {
+      [Index in keyof Entries]: Entries[Index] extends {
         readonly tableName: infer Name extends string;
         readonly group: Table_.Group<infer Key, infer Target, infer GroupScope>;
       }
         ? [Target, GroupScope] extends [EntryName<Entries[number]>, Scope]
           ? never
           : `${Name}.${Key} is not an id of a table of this component`
-        : never);
-}[number];
+        : never;
+    }[number]
+  : Loose<Entries>;
 
 /**
  * The group map `contract` publishes for these table entries.
