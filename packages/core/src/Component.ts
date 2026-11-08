@@ -419,7 +419,17 @@ export const schema = <
     component[BoundTypeId].scope,
   );
 
+/**
+ * A component's `init`: an internal Confect mutation whose args are the install
+ * args each mount passes.
+ */
+export type Init = Ref.AnyConfect & {
+  readonly "~RuntimeAndFunctionType": RuntimeAndFunctionType.ConvexMutation;
+  readonly "~FunctionVisibility": "internal";
+};
+
 export interface DescriptorOptions {
+  readonly init?: Init;
   readonly env?: Readonly<Record<string, Schema.Top>>;
   /**
    * Builds the component's client from its native mount, then the mount's
@@ -435,11 +445,12 @@ export type Descriptor<
 
 /**
  * Describe a Convex component for `Mount.make`, as `defineComponent` does for
- * Convex. A component with `env` takes `env` at each mount. Export it from the
- * package's `./client` entry.
+ * Convex. A component with `init` takes install `args` at each mount, and one
+ * with `env` takes `env`. Export it from the package's `./client` entry.
  *
  * ```ts
  * export default Component.make("email", {
+ *   init: refs.internal.install.init,
  *   env: { RESEND_API_KEY: Schema.String },
  *   client: Client.make,
  * });

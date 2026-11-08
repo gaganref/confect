@@ -1,5 +1,12 @@
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
-import { Component, Env, Mount } from "@confect/core";
+import {
+  Callback,
+  Component,
+  Env,
+  FunctionSpec,
+  Mount,
+  Ref,
+} from "@confect/core";
 import { getFunctionAddress } from "convex/server";
 import type * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -127,5 +134,98 @@ describe("Mount.make", () => {
     void Mount.make(Email, { ...o, env: { REGION: "eu", SURPRISE: "x" } });
     // @ts-expect-error RULE env-optional-entry: an optional entry cannot fill a required slot.
     void Mount.make(Email, { ...o, env: { REGION: hostEnv.MAYBE_REGION } });
+  });
+});
+
+const EventFields = {
+  fromName: Schema.String,
+  message: Schema.String,
+  attempts: Schema.Int,
+};
+const OnEvent = Callback.mutation("mailer/onEvent", {
+  args: () => EventFields,
+  returns: () => Schema.Null,
+});
+const Mailer = Component.make("mailer", {
+  init: Ref.make(
+    "install",
+    FunctionSpec.internalMutation({
+      name: "init",
+      args: () => ({
+        fromName: Schema.String,
+        maxAttempts: Schema.optionalKey(Schema.Int),
+        onEvent: Schema.optionalKey(Callback.handle(OnEvent)),
+      }),
+      returns: () => Schema.Null,
+    }),
+  ),
+  client: (native: Native) => native,
+});
+const onEvent = Ref.make(
+  "callbacks",
+  FunctionSpec.internalMutation({
+    name: "onEvent",
+    args: () => EventFields,
+    returns: () => Schema.Null,
+  }),
+);
+
+describe("Mount.make args", () => {
+  it("keeps the install args, with a host ref in each callback slot", () => {
+    const args = { fromName: "School office", onEvent };
+    expect(Mount.data(Mount.make(Mailer, { name: "mailer", args }))).toEqual({
+      component: Mailer,
+      name: "mailer",
+      args,
+    });
+  });
+
+  it("refuses args init does not take", () => {
+    const n = { name: "bad" } as const;
+    const fromName = "office";
+    const publicRef = Ref.make(
+      "callbacks",
+      FunctionSpec.publicMutation({
+        name: "publicEvent",
+        args: () => EventFields,
+        returns: () => Schema.Null,
+      }),
+    );
+    const wrongArgs = Ref.make(
+      "callbacks",
+      FunctionSpec.internalMutation({
+        name: "args",
+        args: () => ({ ...EventFields, fromName: Schema.Int }),
+        returns: () => Schema.Null,
+      }),
+    );
+    const returns = Ref.make(
+      "callbacks",
+      FunctionSpec.internalMutation({
+        name: "returns",
+        args: () => EventFields,
+        returns: () => Schema.String,
+      }),
+    );
+    const query = Ref.make(
+      "callbacks",
+      FunctionSpec.internalQuery({
+        name: "queryEvent",
+        args: () => EventFields,
+        returns: () => Schema.Null,
+      }),
+    );
+    // @ts-expect-error RULE callback-public: a callback is an internal host function.
+    void Mount.make(Mailer, { ...n, args: { fromName, onEvent: publicRef } });
+    // @ts-expect-error RULE callback-args: the target takes the args the contract sends.
+    void Mount.make(Mailer, { ...n, args: { fromName, onEvent: wrongArgs } });
+    // @ts-expect-error RULE callback-return: the target returns what the contract accepts.
+    void Mount.make(Mailer, { ...n, args: { fromName, onEvent: returns } });
+    // @ts-expect-error RULE callback-kind: a query cannot answer a mutation contract.
+    void Mount.make(Mailer, { ...n, args: { fromName, onEvent: query } });
+    // @ts-expect-error RULE args-required: init requires fromName.
+    void Mount.make(Mailer, { ...n, args: { maxAttempts: 3 } });
+    // @ts-expect-error RULE args-extra: init takes no surprise.
+    void Mount.make(Mailer, { ...n, args: { fromName, surprise: true } });
   });
 });

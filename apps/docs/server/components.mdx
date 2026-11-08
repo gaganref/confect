@@ -207,7 +207,7 @@ Import `env.ts` in handlers, never `app.ts`. Component definitions load only dur
 
 ## Reach a mount's client
 
-A component package describes itself to hosts with `Component.make`, exported from its `./client` entry, as Convex's `defineComponent` names a component. The descriptor declares the env slots a mount binds and the constructor that builds the client from the native mount, followed by the mount's options when it takes any:
+A component package describes itself to hosts with `Component.make`, exported from its `./client` entry, as Convex's `defineComponent` names a component. The descriptor names its `init` when it has one, and declares the env slots a mount binds and the constructor that builds the client from the native mount, followed by the mount's options when it takes any:
 
 ```ts components/counter/client.ts
 import { Component } from "@confect/core";
@@ -234,6 +234,20 @@ export const First = Mount.make(Counter, {
   env: { COMPONENT_REQUIRED: "first-required" },
 });
 ```
+
+A component that declares `init`, an internal mutation in its `install` group, takes install `args` at each mount, as Convex's preview `app.use(component, { args })` does. `args` is typed from `init`'s args. A callback slot, a `Callback.handle(contract)` field, takes an internal host ref whose args, returns and kind match the contract:
+
+```ts confect/bulkEmail.ts
+export const BulkEmail = Mount.make(Email, {
+  name: "bulkEmail",
+  args: {
+    fromName: "School office",
+    onEvent: refs.internal.circulars.onEmailEvent,
+  },
+});
+```
+
+The mount records its `args`. Nothing runs `init` on a push yet. A component without `init` takes no `args`.
 
 A mount is a `Context.Reference` keyed `mount/<name>`. Any handler yields it, `const counter = yield* First`, and gets the client over that installation with no Layer to provide. The client's methods still need the runners they call through. `Effect.provideService(First, fake)` replaces the client inside one effect, which is how a test swaps it. A mount file imports no `convex.config`, so function bundles can import it.
 
