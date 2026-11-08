@@ -248,7 +248,7 @@ export const BulkEmail = Mount.make(Email, {
 
 The mount records its `args`. Nothing runs `init` on a push yet. A component without `init` takes no `args`.
 
-A mount is a `Context.Reference` keyed `mount/<name>`. Any handler yields it, `const counter = yield* First`, and gets the client over that installation with no Layer to provide. The client's methods still need the runners they call through. `Effect.provideService(First, fake)` replaces the client inside one effect, which is how a test swaps it. A mount file imports no `convex.config`, so function bundles can import it.
+A mount is a `Context.Reference` keyed `mount/<name>`. Any handler yields it, `const counter = yield* First`, and gets the client over that installation with no Layer to provide. The client's methods still need the runners they call through. `Effect.provideService(First, fake)` replaces the client inside one effect, which is how a test swaps it. A mount file imports no `convex.config`, so function bundles can import it. `Auth.siteUrl(First, "/jwks.json")` points at a mount's HTTP routes; a mount without an `httpPrefix` fails to typecheck there.
 
 `App.mount` in `confect/app.ts` still installs the component, and codegen writes `convex/convex.config.ts` from it. Give `Mount.make` the same name and bindings as that entry.
 

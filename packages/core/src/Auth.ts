@@ -2,6 +2,7 @@ import type { AuthProvider } from "convex/server";
 import * as Predicate from "effect/Predicate";
 import type * as App from "./App.js";
 import type * as Env from "./Env.js";
+import * as Mount from "./Mount.js";
 import type { TypeError } from "./Types.js";
 
 const TypeId = "~@confect/core/Auth";
@@ -85,19 +86,28 @@ export type Any = Auth<App.Any>;
  */
 export function siteUrl(path?: `/${string}`): SiteUrl;
 export function siteUrl(
-  mount: { readonly httpPrefix: App.HttpPrefix },
+  mount:
+    | Mount.Mount<any, string, Mount.Declared<App.HttpPrefix>>
+    | { readonly httpPrefix: App.HttpPrefix },
   path?: `/${string}`,
 ): SiteUrl;
 export function siteUrl(
-  pathOrMount?: `/${string}` | { readonly httpPrefix: App.HttpPrefix },
+  pathOrMount?:
+    | `/${string}`
+    | Mount.Any
+    | { readonly httpPrefix: App.HttpPrefix },
   path: string = "",
 ): SiteUrl {
+  if (typeof pathOrMount === "string" || pathOrMount === undefined) {
+    return { [SiteUrlTypeId]: SiteUrlTypeId, path: pathOrMount ?? "" };
+  }
+  const prefix =
+    "httpPrefix" in pathOrMount
+      ? pathOrMount.httpPrefix
+      : Mount.data(pathOrMount).httpPrefix;
   return {
     [SiteUrlTypeId]: SiteUrlTypeId,
-    path:
-      typeof pathOrMount === "object"
-        ? pathOrMount.httpPrefix.replace(/\/+$/, "") + path
-        : (pathOrMount ?? ""),
+    path: (prefix ?? "").replace(/\/+$/, "") + path,
   };
 }
 

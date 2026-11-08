@@ -378,11 +378,11 @@ descriptor and `options` from its client constructor. A descriptor may name its
 `init`, an internal mutation, and each mount then passes install `args` typed
 from it; a callback slot takes only an internal host ref matching its contract.
 The mount records `args`; nothing runs `init` on a push yet. `App.mount` still
-installs the component.
+installs the component. `Auth.siteUrl` takes a mount with an `httpPrefix`.
 
 Changesets: `add-confect-components.md`, `component-no-raw-ctx.md`,
 `component-contract-rename.md`, `component-descriptor-mount.md`,
-`mount-install-args.md`.
+`mount-install-args.md`, `mount-site-url.md`.
 Upstream: port of [upstream #646](https://github.com/rjdellecese/confect/pull/646),
 which remains open; fork-specific follow-up submission is unrecorded.
 
