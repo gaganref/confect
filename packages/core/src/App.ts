@@ -59,7 +59,7 @@ export type Any = App<Env.Any, ReadonlyArray<Mount.Any>>;
  * mount that binds another backend's env entry fails to typecheck.
  *
  * ```ts
- * import email from "@englever/email/convex.config";
+ * import email from "@acme/email/convex.config";
  * import workpool from "@convex-dev/workpool/convex.config";
  *
  * export default App.make({
