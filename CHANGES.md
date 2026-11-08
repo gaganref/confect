@@ -431,7 +431,7 @@ which remains open; fork-specific follow-up submission is unrecorded.
 table's rows and refuses any other field. `Component.contract(spec, scope,
 tables)` takes tables beside system table names and refuses a grouped table whose
 id is not one of them, in the component's scope, and a table entry that may be
-absent, such as a union entry. `Component.groups(contract)`
+absent, such as any union in the tables. `Component.groups(contract)`
 returns each grouped table's `{ key, table }`, typed with the literal key and
 table. Table names alone, even as an explicit type argument, carry no groups.
 Codegen still passes table names
