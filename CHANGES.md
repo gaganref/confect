@@ -103,6 +103,10 @@ A generating section's `render` also receives `files`, every `.ts` file under `c
 
 A section's optional `summarize` returns its whole manifest data from the modules its `generate` matched and its functions' descriptions, in place of `{ format, functions }`. Codegen runs it after `describe` and before `check` and the digest, and refuses a result that is not JSON data or does not carry the section's format. Section files now render before the manifest step so their modules load once. Frame's observe catalogue needs this for `observe: { format: 2, fields, functions }`, with each function's module and arguments. Changeset: `manifest-section-summarize.md`. Upstream: planned; no proposal submitted.
 
+### Show summarize each function's spec file
+
+A section's `summarize` also receives `sources`, the spec file under `confect/` that declares each of its functions, keyed by function path. Frame's observe catalogue reads a function's module from its folder, and matching every spec per section cost about 0.4 s per section on Docket. Changeset: `manifest-section-summarize-sources.md`. Upstream: planned; no proposal submitted.
+
 ## Reserved arguments
 
 Profiles and internal mutation, action and Node action constructors can reserve one argument without changing domain schemas or visibility. Refs, including component refs, retain the name. Registration accepts any optional value, strips it before decoding and refuses domain collisions. Queries ignore the option to preserve cache keys. Changeset: `reserved-argument.md`. Upstream: planned; no proposal submitted.

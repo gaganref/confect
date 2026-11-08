@@ -101,8 +101,11 @@ export const withOptions = <A, E, R>(
           byMethod.set(route.method, candidate);
           // Route registration erases request requirements, as in Effect's router.
           yield* Effect.provideContext(at(candidate).addAll([copy]), context);
-          for (const path of forms(copy.path)) {
-            const form = at(first).addAll([{ ...copy, path }]);
+          // Split the prefixed path: an optional parameter may sit in the prefix.
+          const placed =
+            prefix === "" ? copy : HttpRouter.prefixRoute(copy, prefix);
+          for (const path of forms(placed.path)) {
+            const form = first.addAll([{ ...placed, path }]);
             yield* Effect.exit(Effect.provideContext(form, context));
           }
         }

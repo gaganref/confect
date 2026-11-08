@@ -644,10 +644,12 @@ it.effect(
 const answering = (
   method: "GET" | "HEAD" | "POST" | "PUT",
   path: `/${string}`,
+  prefix?: string,
 ) =>
-  HttpRouter.addAll([
-    HttpRouter.route(method, path, HttpServerResponse.text(`${method} ran`)),
-  ]).pipe(
+  HttpRouter.addAll(
+    [HttpRouter.route(method, path, HttpServerResponse.text(`${method} ran`))],
+    { prefix },
+  ).pipe(
     Layer.provide(
       HttpRouter.middleware((next) =>
         Effect.gen(function* () {
@@ -715,6 +717,19 @@ it.effect.each([
     preflights: [
       ["/optional", undefined, 200, "POST"],
       ["/optional/7", undefined, 200, "GET id 7"],
+    ],
+  },
+  {
+    paths: "under a prefix with an optional parameter whose full form is claimed",
+    layer: Layer.mergeAll(
+      answering("GET", "/prefix/:id"),
+      answering("POST", "/", "/prefix/:slug?"),
+    ),
+    request: ["POST", "/prefix", "POST ran"],
+    preflights: [
+      ["/prefix", undefined, 200, "POST"],
+      ["/prefix", "POST", 200, "POST"],
+      ["/prefix/7", undefined, 200, "GET id 7"],
     ],
   },
   {
