@@ -8,8 +8,9 @@ export interface Data<Value = unknown> {
 
 /**
  * What codegen hands a section's `render`: the exports of each `confect/` file
- * it matched, every registered function with the spec file declaring it, and
- * each mounted component with the specifier of its definition.
+ * it matched, every registered function with the spec file declaring it, each
+ * mounted component with the specifier of its definition, and every file
+ * `match` was offered.
  */
 export interface GenerateInput {
   readonly modules: ReadonlyArray<{
@@ -24,6 +25,7 @@ export interface GenerateInput {
     readonly name: string;
     readonly definition: string;
   }>;
+  readonly files: ReadonlyArray<string>;
 }
 
 export interface Generate {
@@ -37,11 +39,13 @@ export interface Generate {
 
 /**
  * What codegen hands a section's `summarize`: the `confect/` files its
- * `generate` matched, and each function's description by path.
+ * `generate` matched, each function's description by path, and the spec file
+ * declaring each function by path, relative to `confect/`.
  */
 export interface SummarizeInput<Value = unknown> {
   readonly modules: GenerateInput["modules"];
   readonly functions: Readonly<Record<string, Value>>;
+  readonly sources: Readonly<Record<string, string>>;
 }
 
 export interface ManifestSection<
