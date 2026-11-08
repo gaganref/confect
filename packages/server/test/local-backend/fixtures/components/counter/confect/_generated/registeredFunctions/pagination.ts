@@ -13,4 +13,5 @@ export default {
 ["page"]: RegisteredConvexFunction.register({ ...definitions["page"], handler: forward(definitions["page"].handler) }),
 ["streams"]: RegisteredConvexFunction.register({ ...definitions["streams"], handler: forward(definitions["streams"].handler) }),
 ["hook"]: RegisteredConvexFunction.register({ ...definitions["hook"], handler: forward(definitions["hook"].handler) }),
+["searchPage"]: RegisteredConvexFunction.register({ ...definitions["searchPage"], handler: forward(definitions["searchPage"].handler) }),
 } as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../pagination.spec.js")["default"]>;

@@ -183,6 +183,21 @@ export const api: {
         }>;
       }
     >;
+    searchPage: FunctionReference<
+      "query",
+      "public",
+      { cursor: string | null; numItems: number; run: string },
+      {
+        continueCursor: string;
+        isDone: boolean;
+        page: Array<{
+          _creationTime: number;
+          _id: Id<"counters">;
+          count: string;
+          run: string;
+        }>;
+      }
+    >;
     streams: FunctionReference<
       "query",
       "public",

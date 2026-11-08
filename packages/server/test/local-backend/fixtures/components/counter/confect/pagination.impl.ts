@@ -87,7 +87,21 @@ const hook = FunctionImpl.make(schema, spec, "hook", ({ run }) =>
   }).pipe(Effect.orDie),
 );
 
+const searchPage = FunctionImpl.make(
+  schema,
+  spec,
+  "searchPage",
+  ({ run, cursor, numItems }) =>
+    Effect.gen(function* () {
+      const reader = yield* DatabaseReader;
+      return yield* reader
+        .table("counters")
+        .search("search_run", (q) => q.search("run", run))
+        .paginate({ cursor, numItems });
+    }).pipe(Effect.orDie),
+);
+
 export default GroupImpl.make(schema, spec).pipe(
-  Layer.provide([page, streams, hook]),
+  Layer.provide([page, searchPage, streams, hook]),
   GroupImpl.finalize,
 );

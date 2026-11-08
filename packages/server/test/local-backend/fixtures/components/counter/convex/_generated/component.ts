@@ -208,6 +208,22 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         },
         Name
       >;
+      searchPage: FunctionReference<
+        "query",
+        "internal",
+        { cursor: string | null; numItems: number; run: string },
+        {
+          continueCursor: string;
+          isDone: boolean;
+          page: Array<{
+            _creationTime: number;
+            _id: string;
+            count: string;
+            run: string;
+          }>;
+        },
+        Name
+      >;
       streams: FunctionReference<
         "query",
         "internal",

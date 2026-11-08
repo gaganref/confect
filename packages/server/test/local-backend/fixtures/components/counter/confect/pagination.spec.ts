@@ -43,4 +43,11 @@ export default GroupSpec.make()
           Schema.Struct({ operation: Schema.String, count: Schema.Finite }),
         ),
     }),
+  )
+  .addFunction(
+    FunctionSpec.publicQuery({
+      name: "searchPage",
+      args: PageArgs,
+      returns: Page,
+    }),
   );
