@@ -36,22 +36,21 @@ type Input<T> = T extends Handle
     : T;
 
 /**
- * `unknown` when the args fit; otherwise the first refusal. A callback slot
- * takes an internal host ref that satisfies the slot's contract. Whether a slot
- * may be left `undefined` is `Input`'s to say.
+ * `A` when every alternative of `A` fits `T`; otherwise a type an alternative
+ * that does not fit cannot be assigned to. A callback slot takes an internal
+ * host ref that satisfies the slot's contract. Whether a slot may be left
+ * `undefined` is `Input`'s to say.
  */
-type Check<T, A> = [NonNullable<A>] extends [never]
-  ? unknown
-  : Fit<NonNullable<T>, NonNullable<A>>;
+type Check<T, A> = A extends unknown ? Fit<T, A> : never;
 
 /**
- * Distributes over the members of `T` and `A`, so each union value is checked
- * against the members whose shape it has. A primitive member admits only its
- * own values, so it cannot absorb an object member's refusal.
+ * Distributes over the members of `T`, so a value is checked against the
+ * members whose shape it has and fits when it fits one of them.
  */
 type Fit<T, A> = T extends Handle
-  ? [A] extends [Ref.AnyConfect]
-    ? Callback.Check<ContractOf<T>, A> &
+  ? A extends Ref.AnyConfect
+    ? A &
+        Callback.Check<ContractOf<T>, A> &
         (Ref.GetFunctionVisibility<A> extends "internal"
           ? unknown
           : { readonly callbackMustBeInternal: never })
@@ -65,7 +64,7 @@ type Fit<T, A> = T extends Handle
         }
       : never
     : A extends T
-      ? unknown
+      ? A
       : never;
 
 type ArgsOf<C> = C extends { readonly init: infer I extends Component.Init }
@@ -109,9 +108,10 @@ type Bindings<E> = { readonly [K in RequiredKeys<E>]: Slot<E[K]> } & {
 
 /**
  * `B` keeps the bindings as written, so `App.make` can see which backends their
- * entries come from.
+ * entries come from. `[C]` for the reason `ArgsField` gives: a bare `C` widens
+ * an inline constant to `string`.
  */
-type EnvField<C, B> = C extends { readonly env: infer E }
+type EnvField<C, B> = [C] extends [{ readonly env: infer E }]
   ? [RequiredKeys<E>] extends [never]
     ? { readonly env?: B & Bindings<E> & NoExtra<B, E> }
     : { readonly env: B & Bindings<E> & NoExtra<B, E> }
