@@ -59,10 +59,8 @@ describe("HttpRouter", () => {
   it("lists reflected endpoint methods and patterns without catch-all rows", () => {
     const router = ConfectHttpRouter.make(routes, { api });
     expect(labels(router)).toEqual([
-      ["OPTIONS", "/users"],
       ["POST", "/users"],
       ["GET", "/users/:id"],
-      ["OPTIONS", "/users/:id"],
     ]);
   });
 
@@ -110,10 +108,8 @@ describe("HttpRouter", () => {
     expect(labels(router)).toEqual([
       ["GET", "/users/42"],
       ["POST", "/users/*"],
-      ["OPTIONS", "/users"],
       ["POST", "/users"],
       ["GET", "/users/:id"],
-      ["OPTIONS", "/users/:id"],
     ]);
   });
 
@@ -140,10 +136,8 @@ it("labels component routes relative to the component, with the same reflected A
   );
   const router = ConfectHttpRouter.forSchema(schema)(routes, { api });
   expect(labels(router)).toEqual([
-    ["OPTIONS", "/users"],
     ["POST", "/users"],
     ["GET", "/users/:id"],
-    ["OPTIONS", "/users/:id"],
   ]);
   expect(matchLabel(router, "/users/42")).toEqual(["GET", "/users/:id"]);
   expect(matchLabel(router, "/nope")).toEqual(["GET", "/*"]);
@@ -192,10 +186,7 @@ it("labels prefixed wildcard routes at their base path and descendants", () => {
     ),
   );
   const router = ConfectHttpRouter.make(assetsRoutes, { api: assetsApi });
-  expect(labels(router)).toEqual([
-    ["GET", "/v1/assets/*"],
-    ["OPTIONS", "/v1/assets/*"],
-  ]);
+  expect(labels(router)).toEqual([["GET", "/v1/assets/*"]]);
   expect([
     matchLabel(router, "/v1/assets"),
     matchLabel(router, "/v1/assets/"),

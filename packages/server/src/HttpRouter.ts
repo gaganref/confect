@@ -286,7 +286,6 @@ const makeWithLayer = <
   if (api !== undefined) {
     const matcher = FindMyWay.make<string>();
     const reflected: ReturnType<ConvexHttpRouter["getRoutes"]> = [];
-    const optionsPaths = new Map<FindMyWay.PathInput, string>();
     HttpApi.reflect(api, {
       onGroup: () => {},
       onEndpoint: ({ endpoint }) => {
@@ -304,21 +303,8 @@ const makeWithLayer = <
           matcher.on(method, path.slice(0, -2) as `/${string}`, endpoint.path);
         }
         reflected.push([endpoint.path, method, httpAction]);
-        optionsPaths.set(path, endpoint.path);
       },
     });
-    for (const [path, label] of optionsPaths) {
-      if (
-        reflected.some(
-          ([declared, method]) => declared === label && method === "OPTIONS",
-        )
-      )
-        continue;
-      matcher.on("OPTIONS", path, label);
-      if (path.endsWith("/*"))
-        matcher.on("OPTIONS", path.slice(0, -2) as `/${string}`, label);
-      reflected.push([label, "OPTIONS", httpAction]);
-    }
     reflected.sort(
       ([pathA, methodA], [pathB, methodB]) =>
         pathA.localeCompare(pathB) || methodA.localeCompare(methodB),
