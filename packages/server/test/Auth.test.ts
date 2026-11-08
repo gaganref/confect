@@ -1,7 +1,13 @@
 import * as Auth from "@confect/server/Auth";
-import { expect, it } from "@effect/vitest";
+import { expect, expectTypeOf, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+
+it("requires Auth without a typed failure", () => {
+  expectTypeOf(Auth.getUserIdentity).toEqualTypeOf<
+    Effect.Effect<Auth.Identity, never, Auth.Auth>
+  >();
+});
 
 const verifiedIdentity = {
   tokenIdentifier: "https://synthetic.invalid|person",

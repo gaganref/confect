@@ -20,7 +20,9 @@ HTTP handlers and middleware can handle missing and invalid credentials without
 catching defects. The existing service member keeps its identity-or-error
 contract. Interruption remains interruption, and each execution reads identity
 again. No raw token parsing or timing claims are added. Changeset:
-`http-identity-states.md`. Upstream: planned; no proposal submitted.
+`http-identity-states.md`. The local-backend suite covers absent, accepted,
+bad-signature and foreign-issuer requests with self-minted RS256 test keys.
+Upstream: planned; no proposal submitted.
 
 ## Native function reference conversion
 

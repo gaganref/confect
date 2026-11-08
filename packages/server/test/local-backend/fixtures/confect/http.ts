@@ -1,4 +1,5 @@
 import { Http } from "@confect/core";
+import * as Auth from "@confect/server/Auth";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as HttpApi from "effect/http-api/HttpApi";
@@ -12,6 +13,11 @@ import * as Layer from "effect/Layer";
 import { ExecutionMetadata, RequestMetadata } from "./_generated/services";
 
 const HostApi = HttpApi.make("host")
+  .add(
+    HttpApiGroup.make("auth").add(
+      HttpApiEndpoint.get("identity", "/identity", { success: Schema.Unknown }),
+    ),
+  )
   .add(
     HttpApiGroup.make("componentAuthoring").add(
       HttpApiEndpoint.get("classProbe", "/component-class-probe/:value", {
@@ -44,6 +50,10 @@ const users = HttpApiBuilder.group(HostApi, "users", (handle) =>
   handle.handle("get", ({ params }) => Effect.succeed(params.id)),
 );
 
+const auth = HttpApiBuilder.group(HostApi, "auth", (handle) =>
+  handle.handle("identity", () => Auth.getUserIdentity),
+);
+
 const metadata = HttpApiBuilder.group(HostApi, "metadata", (handle) =>
   handle.handle("contextMetadata", () =>
     Effect.gen(function* () {
@@ -72,5 +82,5 @@ const componentAuthoring = HttpApiBuilder.group(
 
 export default Http.make({
   api: HostApi,
-  handlers: Layer.mergeAll(users, metadata, componentAuthoring),
+  handlers: Layer.mergeAll(users, metadata, componentAuthoring, auth),
 });
