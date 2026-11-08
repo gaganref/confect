@@ -118,6 +118,18 @@ export class DuplicateMountName extends Data.TaggedError("DuplicateMountName")<{
   }
 }
 
+export class DuplicateDefinitionName extends Data.TaggedError(
+  "DuplicateDefinitionName",
+)<{
+  readonly component: string;
+  readonly first: string;
+  readonly second: string;
+}> {
+  override get message(): string {
+    return `Two component definitions are named "${this.component}", from ${this.first} and ${this.second}; give each definition its own name.`;
+  }
+}
+
 export class AuthForAnotherBackend extends Data.TaggedError(
   "AuthForAnotherBackend",
 )<{ readonly backend: string; readonly expectedBackend: string }> {
@@ -146,6 +158,7 @@ export type DeclarationError =
   | MountWithoutDefinition
   | DefinitionWithoutMount
   | DuplicateMountName
+  | DuplicateDefinitionName
   | AuthForAnotherBackend
   | InvalidProviderEnv;
 
@@ -208,7 +221,18 @@ export const parse = (input: {
       if (Option.isNone(component)) {
         return yield* Result.fail(new InvalidComponentDefinition({ index }));
       }
-      definitions.set(component.value.componentName, component.value);
+      const { componentName, importPath } = component.value;
+      const named = definitions.get(componentName);
+      if (named !== undefined && named.importPath !== importPath) {
+        return yield* Result.fail(
+          new DuplicateDefinitionName({
+            component: componentName,
+            first: named.importPath,
+            second: importPath,
+          }),
+        );
+      }
+      definitions.set(componentName, component.value);
     }
 
     const mounts: Array<Mount> = [];

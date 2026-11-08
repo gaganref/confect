@@ -100,7 +100,7 @@ import { Policy, Trace } from "./middleware";
 export default App.make({ env, requiresMiddleware: [Policy, Trace] });
 ```
 
-Each mount names itself. Codegen pairs it with the listed definition whose `defineComponent` name is its component's name, and writes one `app.use` per mount in list order. It fails, naming the mount or definition, when a mount's component has no listed definition, when a listed definition has no mount, and when two mounts share a name. `Mount.make` types `env` against the descriptor's env slots. These fail to typecheck:
+Each mount names itself. Codegen pairs it with the listed definition whose `defineComponent` name is its component's name, and writes one `app.use` per mount in list order. It fails, naming the mount or definition, when a mount's component has no listed definition, when a listed definition has no mount, when two mounts share a name, and when two listed definitions share a `defineComponent` name. `Mount.make` types `env` against the descriptor's env slots. These fail to typecheck:
 
 - leaving out a binding the component requires
 - binding an optional entry to a required slot

@@ -223,6 +223,35 @@ export default app;
     );
   });
 
+  it("refuses distinct definitions sharing one defineComponent name", () => {
+    const first = defineComponent("workpool");
+    const second = defineComponent("workpool");
+    const Pool = Component.make("workpool", {
+      client: (native: unknown) => native,
+    });
+    const parsed = Declaration.parse({
+      target: "app",
+      app: App.make({
+        env: Env.make("host", {}),
+        components: [first, second],
+        mounts: [Mount.make(Pool, { name: "importsPool" })],
+      }),
+      auth: Option.none(),
+      componentImport: (definition) =>
+        Option.some({
+          importPath:
+            definition === first
+              ? "@one/pool/convex.config.js"
+              : "@two/pool/convex.config.js",
+          componentName: "workpool",
+        }),
+    });
+    assert(Result.isFailure(parsed));
+    expect(parsed.failure.message).toBe(
+      'Two component definitions are named "workpool", from @one/pool/convex.config.js and @two/pool/convex.config.js; give each definition its own name.',
+    );
+  });
+
   it("rejects an entry from another backend's env when types were bypassed", () => {
     const env = Env.make("tenant", {});
     const other = Env.make("platform", { LIMIT: Env.string() });
