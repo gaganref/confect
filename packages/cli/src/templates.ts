@@ -445,24 +445,46 @@ const refsEffect = Effect.fnUntraced(function* ({
   return yield* cbw.toString();
 });
 
+/**
+ * Emit `confect/_generated/component.ts`—the published contract. It passes
+ * `Component.contract` each table from its `_generated/tables/<name>` wrapper,
+ * so the contract carries the tables' groups. Importing a wrapper builds no
+ * schema, because a table's schema stays a thunk until something reads it.
+ *
+ * As in `convexSchema`, library imports and the spec carry a leading `$` so a
+ * table named `spec`, `scope` or `component` cannot collide with them.
+ */
 export const componentContract = Effect.fnUntraced(function* ({
   tableNames,
 }: {
   tableNames: ReadonlyArray<string>;
 }) {
   const cbw = new CodeBlockWriter({ indentNumberOfSpaces: 2 });
-  yield* cbw.writeLine('import { Component } from "@confect/core";');
-  yield* cbw.writeLine('import spec from "./spec.js";');
-  yield* cbw.writeLine('import { scope } from "./id.js";');
+  yield* cbw.writeLine(
+    'import { Component as $Component } from "@confect/core";',
+  );
+  yield* cbw.writeLine('import $spec from "./spec.js";');
+  yield* cbw.writeLine('import { scope as $scope } from "./id.js";');
+  if (tableNames.length > 0) {
+    yield* cbw.blankLine();
+    yield* Effect.forEach(tableNames, (name) =>
+      cbw.writeLine(`import ${name} from "./tables/${name}.js";`),
+    );
+  }
   yield* cbw.blankLine();
+  const systemTables = ["_storage", "_scheduled_functions"];
   const names = Array.map(
-    [...tableNames, "_storage", "_scheduled_functions"],
+    [...tableNames, ...systemTables],
     (name) => `"${name}"`,
   );
+  const entries = [
+    ...tableNames,
+    ...Array.map(systemTables, (name) => `"${name}"`),
+  ];
   yield* cbw.writeLine(
-    `const component: Component.Component<typeof spec, typeof scope, ${names.join(" | ")}> = Component.contract(spec, scope, [${names.join(", ")}]);`,
+    `const $component: $Component.Component<typeof $spec, typeof $scope, ${names.join(" | ")}> = $Component.contract($spec, $scope, [${entries.join(", ")}]);`,
   );
-  yield* cbw.writeLine("export default component;");
+  yield* cbw.writeLine("export default $component;");
   return yield* cbw.toString();
 });
 

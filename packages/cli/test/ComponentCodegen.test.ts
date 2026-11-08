@@ -13,7 +13,7 @@ import {
   codegenHandler,
   makeCodegenHandler,
 } from "@confect/cli/confect/codegen";
-import { IdScope } from "@confect/core";
+import { Component, IdScope } from "@confect/core";
 import { ConvexDirectory } from "@confect/cli/ConvexDirectory";
 import { renderCodegenError } from "@confect/cli/CodegenError";
 import * as DirectoryOptions from "@confect/cli/DirectoryOptions";
@@ -82,7 +82,9 @@ it.effect(
       const contract = yield* fs.readFileString(
         `${directory}/confect/_generated/component.ts`,
       );
-      expect(contract).toContain("Component.contract(spec, scope,");
+      expect(contract).toContain(
+        '$Component.contract($spec, $scope, [counters, "_storage", "_scheduled_functions"])',
+      );
       expect(contract).not.toContain("impl");
       expect(
         yield* Project.writtenFiles(codegenHandler.pipe(Effect.provide(dirs))),
@@ -215,6 +217,71 @@ export default Table.make(() => Schema.Struct({ name: Schema.String }));
         yield* Project.writtenFiles(codegenHandler.pipe(Effect.provide(dirs))),
       ).toEqual([]);
     }).pipe(Effect.provide(NodeServices.layer)),
+);
+
+const generateGroupedContract = Effect.gen(function* () {
+  const directory = yield* freshFixture;
+  const fs = yield* FileSystem.FileSystem;
+  for (const name of ["batches", "component"]) {
+    yield* fs.writeFileString(
+      `${directory}/confect/tables/${name}.ts`,
+      `import { Table } from "@confect/core";
+import * as Schema from "effect/Schema";
+export default Table.make(() => Schema.Struct({ name: Schema.String }));
+`,
+    );
+  }
+  yield* fs.writeFileString(
+    `${directory}/confect/tables/emails.ts`,
+    `import { Table } from "@confect/core";
+import * as Schema from "effect/Schema";
+import { Id } from "../_generated/id";
+const builds = globalThis as { emailSchemaBuilds?: number };
+export default Table.make(() => {
+  builds.emailSchemaBuilds = (builds.emailSchemaBuilds ?? 0) + 1;
+  return Schema.Struct({ batchId: Id("batches"), to: Schema.String });
+}).group("batchId");
+`,
+  );
+  const dirs = DirectoryOptions.layer({
+    componentDir: Option.some(`${directory}/convex`),
+  });
+  yield* codegenHandler.pipe(Effect.provide(dirs));
+  const builds = globalThis as { emailSchemaBuilds?: number };
+  builds.emailSchemaBuilds = 0;
+  const generated: {
+    readonly default: Parameters<typeof Component.groups>[0];
+  } = yield* Effect.promise(
+    () => import(`${directory}/confect/_generated/component.ts`),
+  );
+  return { contract: generated.default, dirs };
+});
+
+it.effect(
+  "publishes a grouped table's key and table in the generated contract",
+  () =>
+    Effect.gen(function* () {
+      const { contract, dirs } = yield* generateGroupedContract;
+      expect(Component.groups(contract)).toEqual({
+        emails: { key: "batchId", table: "batches" },
+      });
+      expect(
+        yield* Project.writtenFiles(codegenHandler.pipe(Effect.provide(dirs))),
+      ).toEqual([]);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  { timeout: 30000 },
+);
+
+it.effect(
+  "loads the generated contract without building any table schema",
+  () =>
+    Effect.gen(function* () {
+      yield* generateGroupedContract;
+      expect(
+        (globalThis as { emailSchemaBuilds?: number }).emailSchemaBuilds,
+      ).toBe(0);
+    }).pipe(Effect.provide(NodeServices.layer)),
+  { timeout: 30000 },
 );
 
 it.effect(
