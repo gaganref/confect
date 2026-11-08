@@ -307,8 +307,8 @@ class TestConfectImpl<
 
 /**
  * How a test registers one installed component: its own schema and modules, or
- * the `register(t, name)` a component package exports from `<package>/test`,
- * which also registers the package's own children.
+ * the `register(t, name)` a component package exports from `<package>/testing`
+ * or `<package>/test`, which also registers the package's own children.
  */
 export type ComponentKit =
   | {

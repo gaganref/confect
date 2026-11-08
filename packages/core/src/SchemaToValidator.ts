@@ -1,4 +1,6 @@
 import * as IdScope from "./IdScope.js";
+import type * as Callback from "./Callback.js";
+import { CallbackContract } from "./internal/annotations.js";
 import type {
   GenericId as ConvexGenericId,
   PropertyValidators,
@@ -51,17 +53,7 @@ export const compileArgsSchema = <ConfectValue, ConvexValue>(
 ): PropertyValidators => {
   const ast = Schema.toEncoded(argsSchema).ast;
 
-  const validators = pipe(
-    ast,
-    Match.value,
-    Match.tag("Objects", (objectsAst) =>
-      Array.isReadonlyArrayEmpty(objectsAst.indexSignatures)
-        ? handlePropertySignatures(objectsAst, scope)
-        : Effect.fail(new IndexSignaturesAreNotSupportedError()),
-    ),
-    Match.orElse(() => Effect.fail(new TopLevelMustBeObjectError())),
-    Effect.runSync,
-  );
+  const validators = Effect.runSync(compileArgsAst(ast, scope));
   if (reservedArgument === undefined) return validators;
   if (Object.hasOwn(validators, reservedArgument)) {
     throw new ReservedArgumentCollision({
@@ -71,6 +63,18 @@ export const compileArgsSchema = <ConfectValue, ConvexValue>(
   }
   return { ...validators, [reservedArgument]: v.optional(v.any()) };
 };
+
+const compileArgsAst = (ast: SchemaAST.AST, scope: IdScope.IdScope) =>
+  pipe(
+    ast,
+    Match.value,
+    Match.tag("Objects", (objectsAst) =>
+      Array.isReadonlyArrayEmpty(objectsAst.indexSignatures)
+        ? handlePropertySignatures(objectsAst, scope)
+        : Effect.fail(new IndexSignaturesAreNotSupportedError()),
+    ),
+    Match.orElse(() => Effect.fail(new TopLevelMustBeObjectError())),
+  );
 
 export class ReservedArgumentCollision extends Data.TaggedError(
   "ReservedArgumentCollision",
@@ -334,6 +338,7 @@ export const compileAst = (
   scope: IdScope.IdScope = IdScope.app,
 ): Effect.Effect<
   Validator<any, any, any>,
+  | TopLevelMustBeObjectError
   | UnsupportedSchemaTypeError
   | UnsupportedPropertySignatureKeyTypeError
   | IndexSignaturesAreNotSupportedError
@@ -341,8 +346,23 @@ export const compileAst = (
   | OptionalTupleElementsAreNotSupportedError
   | EmptyTupleIsNotSupportedError
   | EmptyUnionIsNotSupportedError
-> =>
-  isRecursive(ast)
+> => {
+  const contract = SchemaAST.resolveAt<Callback.Any>(CallbackContract)(ast);
+  if (contract !== undefined) {
+    return Effect.gen(function* () {
+      const args = yield* compileArgsAst(
+        Schema.toEncoded(contract.functionProvenance.args).ast,
+        scope,
+      );
+      const returns = yield* compileAst(
+        Schema.toEncoded(contract.functionProvenance.returns).ast,
+        false,
+        scope,
+      );
+      return v.function({ fnType: contract.functionType, args, returns });
+    });
+  }
+  return isRecursive(ast)
     ? Effect.succeed(v.any())
     : pipe(
         ast,
@@ -421,6 +441,7 @@ export const compileAst = (
         ),
         Match.exhaustive,
       );
+};
 
 const handleUnion = (
   { types }: SchemaAST.Union,

@@ -134,7 +134,11 @@ export const api: {
       "public",
       { id: Id<"deliveries"> },
       {
-        onEvent: string;
+        onEvent: import("convex/server").FunctionHandle_future<
+          "mutation",
+          { run: string; status: "queued" | "sent" | "delivered" | "bounced" },
+          null
+        >;
         run: string;
         status: "queued" | "sent" | "delivered" | "bounced";
       }
@@ -142,13 +146,27 @@ export const api: {
     notify: FunctionReference<
       "action",
       "public",
-      { onEvent: string; run: string },
+      {
+        onEvent: import("convex/server").FunctionHandle_future<
+          "mutation",
+          { run: string; status: "queued" | "sent" | "delivered" | "bounced" },
+          null
+        >;
+        run: string;
+      },
       null
     >;
     send: FunctionReference<
       "mutation",
       "public",
-      { onEvent: string; run: string },
+      {
+        onEvent: import("convex/server").FunctionHandle_future<
+          "mutation",
+          { run: string; status: "queued" | "sent" | "delivered" | "bounced" },
+          null
+        >;
+        run: string;
+      },
       Id<"deliveries">
     >;
     setStatus: FunctionReference<
@@ -160,8 +178,20 @@ export const api: {
       },
       string | null
     >;
+    storeMalformed: FunctionReference<
+      "mutation",
+      "public",
+      { run: string },
+      Id<"deliveries">
+    >;
   };
   pagination: {
+    hook: FunctionReference<
+      "mutation",
+      "public",
+      { run: string },
+      Array<{ count: number; operation: string }>
+    >;
     page: FunctionReference<
       "query",
       "public",
@@ -191,6 +221,12 @@ export const api: {
           run: string;
         }>;
       }
+    >;
+    streams: FunctionReference<
+      "query",
+      "public",
+      { run: string },
+      { budget: number; deferred: Array<number>; merged: Array<number> }
     >;
   };
   reserved: {

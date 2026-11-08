@@ -1,4 +1,4 @@
-import { Table } from "@confect/core";
+import { IdScope, Table } from "@confect/core";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
@@ -1291,17 +1291,6 @@ export default defineComponent("counter", { env: { REQUIRED: v.string(), MARKER:
 `,
   );
   yield* project.write(
-    "components/counter/api.ts",
-    `import * as Schema from "effect/Schema";
-import * as HttpApi from "effect/http-api/HttpApi";
-import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
-import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
-export const CounterApi = HttpApi.make("counter").add(
-  HttpApiGroup.make("health").add(HttpApiEndpoint.get("health", "/health", { success: Schema.String })),
-);
-`,
-  );
-  yield* project.write(
     "confect/env.ts",
     `import { Env } from "@confect/core";
 export default Env.make("host", {
@@ -1315,12 +1304,11 @@ export default Env.make("host", {
     "confect/app.ts",
     `import { App } from "@confect/core";
 import counter from "../components/counter/convex/convex.config";
-import { CounterApi } from "../components/counter/api";
 import env from "./env";
 export default App.make({
   env,
   mounts: {
-    first: App.mount(counter, { httpPrefix: "/first", api: CounterApi, env: { REQUIRED: "first-required", MARKER: env.MARKER } }),
+    first: App.mount(counter, { httpPrefix: "/first", env: { REQUIRED: "first-required", MARKER: env.MARKER } }),
     second: App.mount(counter, { env: { REQUIRED: env.API_KEY } }),
   },
 });
@@ -1460,12 +1448,15 @@ import http from "../confect/http.js";
 export default HttpRouter.forSchema(schema)(http.routes, { api: http.api });
 `;
 
-/**
- * The declaration project with workpool mounted as `pool`, its test kit named
- * by `testing`, and a `pool-kit` package of `files`, by default an ES module
- * package exporting `./testing` from `testing.js`.
- */
-const kitProject = (testing: string, files: Readonly<Record<string, string>>) =>
+const KitManifest = Schema.fromJsonString(
+  Schema.Struct({
+    name: Schema.String,
+    type: Schema.optionalKey(Schema.String),
+    exports: Schema.Record(Schema.String, Schema.String),
+  }),
+);
+
+const kitProject = (files: Readonly<Record<string, string>>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -1473,10 +1464,21 @@ const kitProject = (testing: string, files: Readonly<Record<string, string>>) =>
     yield* fs.makeDirectory(path.join(project.root, "node_modules/pool-kit"), {
       recursive: true,
     });
+    const manifest = yield* Schema.decodeEffect(KitManifest)(
+      files["package.json"] ??
+        '{ "name": "pool-kit", "type": "module", "exports": { "./testing": "./testing.js" } }',
+    );
     for (const [file, source] of Object.entries({
-      "package.json":
-        '{ "name": "pool-kit", "type": "module", "exports": { "./testing": "./testing.js" } }\n',
       ...files,
+      "package.json": yield* Schema.encodeEffect(KitManifest)({
+        ...manifest,
+        exports: {
+          "./convex.config": "./convex.config.js",
+          ...manifest.exports,
+        },
+      }),
+      "convex.config.js":
+        'import { defineComponent } from "convex/server";\nexport default defineComponent("pool");\n',
     })) {
       yield* project.write(`node_modules/pool-kit/${file}`, source);
     }
@@ -1485,12 +1487,9 @@ const kitProject = (testing: string, files: Readonly<Record<string, string>>) =>
       (yield* project.read("confect/app.ts"))
         .replace(
           'import env from "./env";',
-          'import env from "./env";\nimport workpool from "@convex-dev/workpool/convex.config";',
+          'import env from "./env";\nimport workpool from "pool-kit/convex.config";',
         )
-        .replace(
-          "  mounts: {",
-          `  mounts: {\n    pool: App.mount(workpool, { testing: "${testing}" }),`,
-        ),
+        .replace("  mounts: {", "  mounts: {\n    pool: App.mount(workpool),"),
     );
     return project;
   });
@@ -1612,11 +1611,42 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       { timeout: 30000 },
     );
 
+    it.effect.each([
+      { entries: ["testing"], selected: "testing" },
+      { entries: ["test"], selected: "test" },
+      { entries: ["testing", "test"], selected: "testing" },
+    ])(
+      "discovers $selected from package entries $entries",
+      ({ entries, selected }) =>
+        Effect.gen(function* () {
+          const project = yield* kitProject({
+            "package.json": yield* Schema.encodeEffect(KitManifest)({
+              name: "pool-kit",
+              type: "module",
+              exports: Object.fromEntries(
+                entries.map((entry) => [`./${entry}`, `./${entry}.js`]),
+              ),
+            }),
+            "testing.js": "export function register() {}\n",
+            "test.js": "export function register() {}\n",
+          });
+          yield* project.run;
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(testing).toContain(
+            `import * as poolKit from "pool-kit/${selected}";`,
+          );
+          expect(testing).not.toContain(
+            `from "pool-kit/${selected === "testing" ? "test" : "testing"}"`,
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
     it.effect(
-      "registers a mount through the test kit it names",
+      "discovers a mount test kit at the package testing entry",
       () =>
         Effect.gen(function* () {
-          const project = yield* kitProject("pool-kit/testing", {
+          const project = yield* kitProject({
             "testing.js":
               "export function register(t, name) { t.registerComponent(name); }\n",
           });
@@ -1665,7 +1695,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       "registers a mount through a test kit that is $shape",
       ({ files }) =>
         Effect.gen(function* () {
-          const project = yield* kitProject("pool-kit/testing", files);
+          const project = yield* kitProject(files);
           yield* project.run;
           expect(
             yield* project.read("confect/_generated/testing.ts"),
@@ -1675,12 +1705,12 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
-      "keeps the HTTP mounts nested under a mount that names a test kit",
+      "keeps nested HTTP mounts for local components",
       () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const project = yield* kitProject("pool-kit/testing", {
+          const project = yield* kitProject({
             "testing.js":
               "export function register(t, name) { t.registerComponent(name); }\n",
           });
@@ -1710,8 +1740,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
                 'import env from "./env";\nimport parent from "../components/parent/convex/convex.config.js";',
               )
               .replace(
-                "App.mount(workpool, {",
-                'App.mount(parent, { httpPrefix: "/pool",',
+                "App.mount(workpool)",
+                'App.mount(parent, { httpPrefix: "/pool" })',
               ),
           );
           yield* project.run;
@@ -1720,62 +1750,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             '[{ componentPath: "pool/b", httpPrefix: "/pool/b" }]',
           );
           expect(testing).toContain('"pool": poolKit,');
-          expect(testing).not.toContain('"pool/b":');
-        }).pipe(Effect.scoped),
-      { timeout: 30000 },
-    );
-
-    it.effect(
-      "rejects a named test kit that does not export register",
-      () =>
-        Effect.gen(function* () {
-          const project = yield* kitProject("pool-kit/testing", {
-            "testing.js": "export default { register() {} };\n",
-          });
-          expect(yield* Effect.flip(project.run)).toEqual(
-            new InvalidDeclarationError({
-              declarationPath: "confect/app.ts",
-              reason:
-                'the mount "pool" names the test kit "pool-kit/testing", which does not export `register(t, name)`.',
-            }),
-          );
-        }).pipe(Effect.scoped),
-      { timeout: 30000 },
-    );
-
-    it.effect(
-      "rejects a named test kit that does not resolve",
-      () =>
-        Effect.gen(function* () {
-          const project = yield* kitProject("missing-kit/testing", {
-            "testing.js": "export function register() {}\n",
-          });
-          expect(yield* Effect.flip(project.run)).toEqual(
-            new InvalidDeclarationError({
-              declarationPath: "confect/app.ts",
-              reason:
-                'the mount "pool" names the test kit "missing-kit/testing", which does not resolve from convex/convex.config.ts.',
-            }),
-          );
-        }).pipe(Effect.scoped),
-      { timeout: 30000 },
-    );
-
-    it.effect(
-      "rejects a test kit named by a relative path",
-      () =>
-        Effect.gen(function* () {
-          const project = yield* kitProject(
-            "../node_modules/pool-kit/testing.js",
-            { "testing.js": "export function register() {}\n" },
-          );
-          expect(yield* Effect.flip(project.run)).toEqual(
-            new InvalidDeclarationError({
-              declarationPath: "confect/app.ts",
-              reason:
-                'the mount "pool" names the test kit "../node_modules/pool-kit/testing.js"; name it by a package specifier, such as "<package>/testing".',
-            }),
-          );
+          expect(testing).toContain('"pool/b": pool_bKit,');
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -1861,7 +1836,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             new InvalidConvexConfigError({
               configPath: "../../convex/convex.config.ts",
               reason:
-                'the component package "no-test-kit" has no "no-test-kit/test" export. Tests register a component from another package through that entry\'s `register(t, name)`.',
+                'the component package "no-test-kit" has no "no-test-kit/testing" or "no-test-kit/test" export. Tests register a component from another package through that entry\'s `register(t, name)`.',
             }),
           );
         }).pipe(Effect.scoped),
@@ -1878,14 +1853,64 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             yield* project.read("confect/_generated/manifest.ts"),
           );
           yield* project.write(
-            "components/counter/api.ts",
-            `${yield* project.read("components/counter/api.ts")}// edited\n`,
+            "confect/env.ts",
+            `${yield* project.read("confect/env.ts")}// edited\n`,
           );
           yield* project.run;
           const after = digestOf(
             yield* project.read("confect/_generated/manifest.ts"),
           );
           expect(after).not.toBe(before);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "rejects duplicate routes in a component's own HTTP declaration",
+      () =>
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const project = yield* declarationProject;
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.remove(path.join(project.root, "confect/auth.ts"));
+          yield* project.write(
+            "confect/app.ts",
+            (yield* project.read("confect/app.ts")).replace(
+              "  env,",
+              '  kind: "component",\n  env,',
+            ),
+          );
+          yield* project.write(
+            "confect/http.ts",
+            project
+              .http("/items/:id")
+              .replace(
+                'HttpApiEndpoint.get("status", "/items/:id", { success: Schema.String })',
+                'HttpApiEndpoint.get("status", "/items/:id", { params: Schema.Struct({ id: Schema.String }), success: Schema.String }), HttpApiEndpoint.get("other", "/items/:key", { params: Schema.Struct({ key: Schema.String }), success: Schema.String })',
+              )
+              .replace(
+                'h.handle("status", () => Effect.succeed("ok"))',
+                'h.handle("status", () => Effect.succeed("ok")).handle("other", () => Effect.succeed("ok"))',
+              ),
+          );
+          const run = codegenHandler.pipe(
+            Effect.provideService(ProjectRoot, {
+              get: Effect.succeed(project.root),
+            }),
+            Effect.provideService(ConfectDirectory, {
+              get: Effect.succeed(path.join(project.root, "confect")),
+            }),
+            Effect.provideService(ConvexDirectory, {
+              get: Effect.succeed(path.join(project.root, "convex")),
+              target: { kind: "component", scope: IdScope.component("host") },
+            }),
+          );
+          expect(yield* Effect.flip(run)).toEqual(
+            new InvalidDeclarationError({
+              declarationPath: "confect/http.ts",
+              reason: "GET /items/:key is declared twice (app and app).",
+            }),
+          );
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

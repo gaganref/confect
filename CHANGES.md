@@ -110,6 +110,15 @@ Upstream: unrecorded; submission goes through the maintainer.
 
 Full and incremental codegen reject a domain argument reserved by its profile before loading its implementation. The diagnostic names the spec file, function and argument. Registration retains its load-time backstop. Changeset: `reserved-argument-fence.md`. Upstream: planned; no proposal submitted.
 
+### Forward context through callback handles
+
+`Callback.handle(contract, { reservedArgument })` retains the reservation on
+decoded mutation and action handles. The existing runners and scheduler then
+forward context, including a run id, to a host target that reserves the same
+name. Query handles and handles without the option keep their previous
+behavior. This carries values without adding a trust policy. Changeset:
+`callback-reserved-argument.md`. Upstream: planned; no proposal submitted.
+
 ## Invocation instrumentation
 
 Add invocation root spans and an optional `confect/runtime.ts` layer so applications can install Effect tracers and loggers without duplicate console logging. Preserve original declared failures for tracers, encoded client errors and query caching. Cache each layer context once per isolate so permanent scope ownership stays bounded. Changeset: `invocation-observability.md`. The root span ends with the outcome the client gets: a failure in a function with no error schema, other than a raw `ConvexError`, ends it as a defect, and so does an error encoding that dies with a `ConvexError`. Changeset: `undeclared-failure-span-defect.md`. Upstream: planned; no proposal submitted.
@@ -373,12 +382,14 @@ Compare compiled validators before creating Confect handles; equal validators
 cannot distinguish every codec or refinement. Preserve return and error codecs
 on references, include middleware errors, and decode declared errors by tag.
 
-Raise core's Convex peer floor to 1.46.0, the first release that exports the
-`FunctionReference_future` type `Callback.toFuture` returns. The fork shipped the
-import against a 1.39.0 floor; upstream 10.3.1's baseline consumer check, which
-installs the lowest allowed Convex, caught it.
+`Callback.handle` keeps its string-to-ref codec and carries its contract as lazy
+schema metadata. Schema compilation lowers the slot to `v.function` with the
+contract's encoded args and returns, including optional and nested slots.
+Contract and handle construction still build no argument or return schemas.
 
-Changeset: `add-component-callbacks.md`.
+The SDK floor, workspace pins, consumer pins and local backend release are recorded under "Require Convex 1.49".
+
+Changesets: `add-component-callbacks.md`, `callback-function-validator.md`.
 Upstream: planned; no linked proposal verified.
 
 ### Preserve component schema and ref types
@@ -403,6 +414,10 @@ Local backend tests cover index and search pages, subscriptions and the shared q
 
 Changesets: `scoped-scheduler-cancel-pagination.md`, `component-native-pagination.md`.
 Upstream: planned; no linked proposal verified.
+
+### Prove component streams and writer hooks
+
+The local backend fixture covers deferred streams, collection, the default read budget, merge deduplication and decoded writer hooks inside a component. Seed the stream rows in host mutations of ten rows each. Changeset: `component-pagination-proof-gaps.md`. Upstream: planned; no proposal submitted.
 
 ### Lift official component clients
 
@@ -462,6 +477,13 @@ catch-all. Preserve Effect dispatch, native route precedence, and fallback label
 including empty APIs and prefixed component mounts.
 
 Changeset: `label-http-api-routes.md`.
+
+Mounts no longer accept `api`. Route checks reserve mount prefixes and reject
+overlap. Each backend checks duplicates in its own routes and docs page; a
+Convex component checks its own declaration during codegen. Router endpoint
+labels still use each router's own API.
+
+Changeset: `mount-no-api.md`.
 Upstream: planned; no linked proposal verified.
 
 ## Alchemy deployment
@@ -581,32 +603,22 @@ Register a component mounted from another package through its public
 convention. The generated test registry previously serialized the resolved
 physical path, so it imported files from the pnpm store or from another
 workspace package's private directory, and its committed output differed
-across lockfiles. Fail codegen when the package has no `/test` export.
+across lockfiles. Fail codegen when the package has neither a `/testing` nor a
+`/test` export.
 
 Changeset: `component-test-entry.md`.
 Upstream: fork only; upstream has no generated test registry.
 
-### Name a mount's test kit
+### Find a mount's test kit
 
-Add `App.mount`'s `testing` option, a package specifier for the module whose
-`register(t, name)` the generated test registry calls for that mount in place of
-`<package>/test`. Some official kits leave out a nested component, such as
-aggregate's batch worker, so a wrapper package ships a kit that registers it.
-Hosts had to replace the generated entry by hand. The kit registers the mount's
-children, and codegen still writes their HTTP prefixes. Codegen fails, naming the
-mount, on a relative specifier or an unresolved module. It reads the kit's
-exports without running it and fails on a missing `register` when it can list
-them. A CommonJS kit or an `export *` from another package passes, and
-`TestConfect.layer` names the mount if the kit has neither `register` nor both
-`schema` and `modules`. The option is
-test-only and stays out of the deployment manifest's mount data. It covers the
-generating backend's own mounts; a package mount inside a local component still
-uses `<package>/test`, and the docs name the workaround, a kit for the containing
-component.
-The packed consumer mounts its counter a second time through a linked kit, so the
-installed CLI's import is checked under NodeNext and run by its tests.
+Codegen discovers a Convex component package's kit at `<package>/testing`, then
+`<package>/test`, preferring `/testing` when both resolve. A package with neither
+fails with the kit-specific error naming both entries. The unresolved component
+definition error is unchanged. Remove the `testing` mount option and its static
+kit checks. Local components and their nested HTTP routes use generated kits;
+a package's own `register(t, name)` registers its children.
 
-Changeset: `mount-test-kit.md`.
+Changeset: `discover-component-test-kit.md`.
 Upstream: planned; it builds on the fork-only generated test registry, and no
 proposal is submitted.
 

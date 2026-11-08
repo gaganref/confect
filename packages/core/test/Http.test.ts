@@ -17,18 +17,11 @@ import * as HttpApiScalar from "effect/http-api/HttpApiScalar";
 const counter = defineComponent("counter");
 const workpool = defineComponent("workpool");
 
-const CounterApi = HttpApi.make("counter").add(
-  HttpApiGroup.make("health").add(
-    HttpApiEndpoint.get("health", "/health", { success: Schema.String }),
-    HttpApiEndpoint.post("echo", "/echo", { success: Schema.String }),
-  ),
-);
-
 const app = App.make({
   env: Env.make("host", {}),
   mounts: {
-    first: App.mount(counter, { httpPrefix: "/first", api: CounterApi }),
-    second: App.mount(counter, { httpPrefix: "/second/", api: CounterApi }),
+    first: App.mount(counter, { httpPrefix: "/first" }),
+    second: App.mount(counter, { httpPrefix: "/second/" }),
     pool: App.mount(workpool),
   },
 });
@@ -104,31 +97,11 @@ describe("Http", () => {
     },
   );
 
-  it("lists the app's routes and each mount's prefixed routes", () => {
+  it("lists the app's own routes and docs page", () => {
     expect(Http.routes(app, declare("/context-metadata", "/docs"))).toEqual(
       Result.succeed([
         { method: "GET", path: "/context-metadata", owner: { kind: "app" } },
         { method: "GET", path: "/docs", owner: { kind: "docs" } },
-        {
-          method: "GET",
-          path: "/first/health",
-          owner: { kind: "mount", mount: "first" },
-        },
-        {
-          method: "POST",
-          path: "/first/echo",
-          owner: { kind: "mount", mount: "first" },
-        },
-        {
-          method: "GET",
-          path: "/second/health",
-          owner: { kind: "mount", mount: "second" },
-        },
-        {
-          method: "POST",
-          path: "/second/echo",
-          owner: { kind: "mount", mount: "second" },
-        },
       ]),
     );
   });
@@ -162,7 +135,7 @@ describe("Http", () => {
     );
   });
 
-  it("rejects a duplicate method and path after merging mount apis", () => {
+  it("rejects a duplicate method and path in the app api", () => {
     const shared = HttpApi.make("shared").add(
       HttpApiGroup.make("a").add(
         HttpApiEndpoint.get("one", "/items/:id", {
@@ -175,17 +148,25 @@ describe("Http", () => {
         }),
       ),
     );
-    const duplicated = App.make({
-      env: Env.make("host", {}),
-      mounts: { items: App.mount(counter, { httpPrefix: "/x", api: shared }) },
-    });
-    expect(Http.routes(duplicated)).toEqual(
+    expect(
+      Http.routes(
+        app,
+        Http.make({
+          api: shared,
+          handlers: HttpApiBuilder.group(shared, "a", (h) =>
+            h
+              .handle("one", () => Effect.succeed("ok"))
+              .handle("two", () => Effect.succeed("ok")),
+          ),
+        }),
+      ),
+    ).toEqual(
       Result.fail(
         new Http.DuplicateRoute({
           method: "GET",
-          path: "/x/items/:key",
-          first: { kind: "mount", mount: "items" },
-          second: { kind: "mount", mount: "items" },
+          path: "/items/:key",
+          first: { kind: "app" },
+          second: { kind: "app" },
         }),
       ),
     );
@@ -212,14 +193,26 @@ describe("Http", () => {
         }),
       ),
     );
-    const distinct = App.make({
-      env: Env.make("host", {}),
-      mounts: { items: App.mount(counter, { httpPrefix: "/x", api: actions }) },
-    });
-    expect(Result.isSuccess(Http.routes(distinct))).toBe(true);
+    expect(
+      Result.isSuccess(
+        Http.routes(
+          app,
+          Http.make({
+            api: actions,
+            handlers: HttpApiBuilder.group(actions, "a", (h) =>
+              h
+                .handle("cancel", () => Effect.succeed("ok"))
+                .handle("archive", () => Effect.succeed("ok"))
+                .handle("json", () => Effect.succeed("ok"))
+                .handle("text", () => Effect.succeed("ok")),
+            ),
+          }),
+        ),
+      ),
+    ).toBe(true);
   });
 
-  it("rejects mounts whose prefixes overlap, with or without an api", () => {
+  it("rejects mounts whose prefixes overlap", () => {
     const overlapping = App.make({
       env: Env.make("host", {}),
       mounts: {

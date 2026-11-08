@@ -78,6 +78,21 @@ describe("contract", () => {
 });
 
 describe("handle", () => {
+  test("a handle opts into the reserved argument without changing its wire string", () => {
+    const codec = Callback.handle(OnEvent, { reservedArgument: "observe" });
+    const handle = Schema.decodeSync(codec)(handleText);
+    expect(handle.reservedArgument).toBe("observe");
+    expect(Schema.encodeSync(codec)(handle)).toBe(handleText);
+    expect(
+      Schema.decodeSync(Callback.handle(OnEvent))(handleText).reservedArgument,
+    ).toBeUndefined();
+    const query = Callback.query("test/read", { returns: () => Schema.Null });
+    // @ts-expect-error Query callbacks do not carry reserved arguments.
+    const queryCodec = Callback.handle(query, { reservedArgument: "observe" });
+    expect(
+      Schema.decodeSync(queryCodec)(handleText).reservedArgument,
+    ).toBeUndefined();
+  });
   test("decoded handles preserve their dispatch type", () => {
     for (const make of [Callback.query, Callback.mutation, Callback.action]) {
       const contract = make("test/dispatch", { returns: () => Schema.Null });
@@ -157,12 +172,25 @@ describe("handle", () => {
     }),
   );
 
-  test("compiles to a string validator", () => {
+  test("compiles to the contract function validator", () => {
     expect(
       SchemaToValidator.compileArgsSchema(
         Schema.Struct({ onEvent: Callback.handle(OnEvent) }),
       ),
-    ).toEqual({ onEvent: v.string() });
+    ).toEqual({
+      onEvent: v.function({
+        fnType: "mutation",
+        args: {
+          run: v.string(),
+          status: v.union(
+            v.literal("queued"),
+            v.literal("sent"),
+            v.literal("bounced"),
+          ),
+        },
+        returns: v.string(),
+      }),
+    });
   });
 
   test("toFuture keeps the handle's reference", () => {
