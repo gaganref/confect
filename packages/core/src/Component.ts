@@ -418,3 +418,37 @@ export const schema = <
     component[BoundTypeId].from,
     component[BoundTypeId].scope,
   );
+
+export interface DescriptorOptions {
+  readonly env?: Readonly<Record<string, Schema.Top>>;
+  /**
+   * Builds the component's client from its native mount, then the mount's
+   * `options` when the client takes any.
+   */
+  readonly client: (...args: never) => unknown;
+}
+
+export type Descriptor<
+  Name extends string = string,
+  Options extends DescriptorOptions = DescriptorOptions,
+> = Options & { readonly name: Name };
+
+/**
+ * Describe a Convex component for `Mount.make`, as `defineComponent` does for
+ * Convex. A component with `env` takes `env` at each mount. Export it from the
+ * package's `./client` entry.
+ *
+ * ```ts
+ * export default Component.make("email", {
+ *   env: { RESEND_API_KEY: Schema.String },
+ *   client: Client.make,
+ * });
+ * ```
+ */
+export const make = <
+  const Name extends string,
+  const Options extends DescriptorOptions,
+>(
+  name: Name,
+  options: Options,
+): Descriptor<Name, Options> => ({ ...options, name });

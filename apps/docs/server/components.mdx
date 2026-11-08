@@ -205,6 +205,40 @@ export default HttpRouter.forSchema(schema)(http.routes, { api: http.api });
 
 Import `env.ts` in handlers, never `app.ts`. Component definitions load only during Convex config analysis. Without `confect/app.ts`, the declaration is opt-in and you manage `convex/convex.config.ts` yourself with Convex's API.
 
+## Reach a mount's client
+
+A component package describes itself to hosts with `Component.make`, exported from its `./client` entry, as Convex's `defineComponent` names a component. The descriptor declares the env slots a mount binds and the constructor that builds the client from the native mount, followed by the mount's options when it takes any:
+
+```ts components/counter/client.ts
+import { Component } from "@confect/core";
+import * as Schema from "effect/Schema";
+import contract from "./confect/_generated/component";
+import type spec from "./confect/_generated/spec";
+
+export default Component.make("counter", {
+  env: { COMPONENT_REQUIRED: Schema.String },
+  client: (native: Component.Api<typeof spec>) =>
+    Component.bind(contract, native),
+});
+```
+
+A host declares each mount in its own `confect/<mount>.ts` with `Mount.make`, as Convex's `app.use` installs one. `env` is typed from the descriptor's slots, and takes a constant or an entry of the host's env. `options` is typed from the client constructor's parameters after the native mount: absent when it takes none, optional or required as the constructor declares it.
+
+```ts confect/first.ts
+import { Mount } from "@confect/core";
+import Counter from "../components/counter/client";
+
+export const First = Mount.make(Counter, {
+  name: "first",
+  httpPrefix: "/first",
+  env: { COMPONENT_REQUIRED: "first-required" },
+});
+```
+
+A mount is a `Context.Reference` keyed `mount/<name>`. Any handler yields it, `const counter = yield* First`, and gets the client over that installation with no Layer to provide. The client's methods still need the runners they call through. `Effect.provideService(First, fake)` replaces the client inside one effect, which is how a test swaps it. A mount file imports no `convex.config`, so function bundles can import it.
+
+`App.mount` in `confect/app.ts` still installs the component, and codegen writes `convex/convex.config.ts` from it. Give `Mount.make` the same name and bindings as that entry.
+
 ## How HTTP routes compose
 
 The host serves `/health`. The counter declares `/health` relative to its installation, so the mount serves `/counter/health`. Convex selects each installation's HTTP action. `HttpRouter.forSchema` prefixes the component's Effect router with the pathname of its `CONVEX_SITE_URL`, including ancestor mount prefixes; it preserves the original request and body. Host middleware does not wrap the component's routes.
