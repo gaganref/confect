@@ -713,3 +713,94 @@ it.effect.each([
       expect(calls).toBe(1);
     }),
 );
+
+const answering = (method: "GET" | "POST" | "PUT", path: `/${string}`) =>
+  HttpRouter.add(method, path, HttpServerResponse.text(`${method} ran`)).pipe(
+    Layer.provide(
+      HttpRouter.middleware((next) =>
+        Effect.gen(function* () {
+          const request = yield* HttpServerRequest.HttpServerRequest;
+          if (request.method !== "OPTIONS") return yield* next;
+          const params = yield* HttpRouter.params;
+          return HttpServerResponse.text(`${method} ${JSON.stringify(params)}`);
+        }),
+      ).layer,
+    ),
+  );
+
+it.effect.each([
+  {
+    paths: "with differently named parameters",
+    routes: Layer.mergeAll(
+      answering("GET", "/shared/:id"),
+      answering("POST", "/shared/:slug"),
+    ),
+    request: ["GET", "/shared/7", "GET ran"],
+    preflights: [
+      ["/shared/7", "GET", 'GET {"id":"7"}'],
+      ["/shared/7", "POST", 'POST {"slug":"7"}'],
+      ["/shared/7", undefined, 'GET {"id":"7"}'],
+    ],
+  },
+  {
+    paths: "differing in trailing slash and case",
+    routes: Layer.mergeAll(
+      answering("GET", "/trailing"),
+      answering("POST", "/trailing/"),
+      answering("PUT", "/Trailing"),
+    ),
+    request: ["POST", "/trailing", "POST ran"],
+    preflights: [
+      ["/trailing", "POST", "POST {}"],
+      ["/TRAILING/", "PUT", "PUT {}"],
+      ["/trailing", undefined, "GET {}"],
+    ],
+  },
+  {
+    paths: "beside an explicit OPTIONS route with another parameter name",
+    routes: Layer.mergeAll(
+      answering("GET", "/shared/:id"),
+      HttpRouter.add(
+        "OPTIONS",
+        "/shared/:slug",
+        Effect.map(HttpRouter.params, (params) =>
+          HttpServerResponse.text(`OPTIONS ${JSON.stringify(params)}`),
+        ),
+      ),
+    ),
+    request: ["GET", "/shared/7", "GET ran"],
+    preflights: [
+      ["/shared/7", "GET", 'OPTIONS {"slug":"7"}'],
+      ["/shared/7", undefined, 'OPTIONS {"slug":"7"}'],
+    ],
+  },
+] as const)(
+  "dispatches OPTIONS on router-equivalent paths $paths",
+  ({ routes, request, preflights }) =>
+    Effect.gen(function* () {
+      const router = ConfectHttpRouter.make(routes);
+      const t = convexTest(undefined, {
+        ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
+        "./mock-backend/fixtures/convex/http.ts": () =>
+          Promise.resolve({ default: router }),
+      });
+      const send = (path: string, init: RequestInit) =>
+        Effect.promise(async () => {
+          const response = await t.fetch(path, init);
+          return [response.status, await response.text()];
+        });
+      const [method, path, body] = request;
+      expect(yield* send(path, { method })).toEqual([200, body]);
+      for (const [preflightPath, requested, expected] of preflights) {
+        expect(
+          yield* send(preflightPath, {
+            method: "OPTIONS",
+            headers:
+              requested === undefined
+                ? {}
+                : { "Access-Control-Request-Method": requested },
+          }),
+        ).toEqual([200, expected]);
+      }
+    }),
+);
