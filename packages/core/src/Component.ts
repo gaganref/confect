@@ -177,18 +177,29 @@ type EntryName<Entry extends TableEntry> = Entry extends string
     ? Table_.Name<Entry>
     : never;
 
+type MaybeTable<Entry, InTuple, All = Entry> = Entry extends Table_.AnyWithProps
+  ? [All, InTuple] extends [Entry, true]
+    ? never
+    : `${Table_.Name<Entry>} may be absent: list one table or name per entry, in a tuple`
+  : never;
+
 type StrayGroup<
   Entries extends ReadonlyArray<TableEntry>,
   Scope extends IdScope.IdScope,
 > = {
-  [Index in keyof Entries]: Entries[Index] extends {
-    readonly tableName: infer Name extends string;
-    readonly group: Table_.Group<infer Key, infer Target, infer GroupScope>;
-  }
-    ? [Target, GroupScope] extends [EntryName<Entries[number]>, Scope]
-      ? never
-      : `${Name}.${Key} is not an id of a table of this component`
-    : never;
+  [Index in keyof Entries]:
+    | MaybeTable<
+        Entries[Index],
+        number extends Entries["length"] ? false : true
+      >
+    | (Entries[Index] extends {
+        readonly tableName: infer Name extends string;
+        readonly group: Table_.Group<infer Key, infer Target, infer GroupScope>;
+      }
+        ? [Target, GroupScope] extends [EntryName<Entries[number]>, Scope]
+          ? never
+          : `${Name}.${Key} is not an id of a table of this component`
+        : never);
 }[number];
 
 /**
@@ -207,8 +218,9 @@ export type Groups<Entries extends ReadonlyArray<TableEntry>> = {
 };
 
 /**
- * `unknown` when every group's id names a table of this component in its scope,
- * otherwise an object type naming a stray group.
+ * `unknown` when every entry is one table or name and every group's id names a
+ * table of this component in its scope, otherwise an object type naming the
+ * refused entry.
  */
 export type CheckGroups<
   Entries extends ReadonlyArray<TableEntry>,

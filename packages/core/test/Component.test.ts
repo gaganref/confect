@@ -687,4 +687,16 @@ describe("table groups in a contract", () => {
     // @ts-expect-error an application id is not this component's `batches`
     void Component.contract(spec, scope, [batches, appEmails]);
   });
+
+  it("refuses an entry that may be one table or another", () => {
+    const either = (): typeof emails | "_storage" => emails;
+    // @ts-expect-error an entry is one table or one name, not a union
+    void Component.contract(spec, scope, [either()]);
+    const maybeEmails = (): typeof emails | "emails" => "emails";
+    // @ts-expect-error a union entry would publish a group it may not have
+    void Component.contract(spec, scope, [batches, maybeEmails()]);
+    const listed: ReadonlyArray<typeof batches | typeof emails> = [batches];
+    // @ts-expect-error an array that is not a literal may omit `emails`
+    void Component.contract(spec, scope, listed);
+  });
 });
