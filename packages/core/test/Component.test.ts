@@ -11,6 +11,7 @@ import {
   MiddlewareSpec,
   Ref,
   SchemaToValidator,
+  Table,
 } from "@confect/core";
 import {
   componentsGeneric,
@@ -624,5 +625,92 @@ describe("callback handles through a binding", () => {
     expect(
       Ref.encodeArgsSync(bound.deliveries.send, { onEvent: handle }),
     ).toEqual({ onEvent: text });
+  });
+});
+
+describe("table groups in a contract", () => {
+  const batches = Table.make(() => Schema.Struct({ name: Schema.String }))(
+    "batches",
+    scope,
+  );
+  let schemaBuilds = 0;
+  const emailsGroupedBy = <const Id extends Schema.Codec<any, any>>(id: Id) =>
+    Table.make(() => {
+      schemaBuilds += 1;
+      return Schema.Struct({ batchId: id, to: Schema.String });
+    });
+  const emails = emailsGroupedBy(GenericId.GenericId("batches", scope)).group(
+    "batchId",
+  )("emails", scope);
+  const strayEmails = emailsGroupedBy(
+    GenericId.GenericId("batches", IdScope.component("@x/other")),
+  ).group("batchId")("emails", scope);
+  const appEmails = emailsGroupedBy(GenericId.GenericId("batches")).group(
+    "batchId",
+  )("emails", scope);
+  type Relation = {
+    readonly emails: { readonly key: "batchId"; readonly table: "batches" };
+  };
+
+  it("publishes each grouped table's key and table, and no group for the rest", () => {
+    const mail = Component.contract(spec, scope, [batches, emails, "_storage"]);
+    expectTypeOf(mail).toEqualTypeOf<
+      Component.Component<
+        typeof spec,
+        typeof scope,
+        "batches" | "emails" | "_storage",
+        Relation
+      >
+    >();
+    expect(schemaBuilds).toBe(0);
+    const relation: Relation = Component.groups(mail);
+    expect(relation).toEqual({ emails: { key: "batchId", table: "batches" } });
+    expect(schemaBuilds).toBe(1);
+    expect(Component.groups(contract)).toEqual({});
+  });
+
+  it("takes the table names as an explicit type argument", () => {
+    const named = Component.contract<
+      typeof spec,
+      typeof scope,
+      "batches" | "_storage"
+    >(spec, scope, ["batches", "_storage"]);
+    expectTypeOf(Component.groups(named)).toEqualTypeOf<{}>();
+    expect(Component.groups(named)).toEqual({});
+  });
+
+  it("refuses a group whose id is not one of the component's own tables", () => {
+    // @ts-expect-error `batches` is not among this component's tables
+    void Component.contract(spec, scope, [emails, "_storage"]);
+    // @ts-expect-error the id belongs to another component's `batches`
+    void Component.contract(spec, scope, [batches, strayEmails]);
+    // @ts-expect-error an application id is not this component's `batches`
+    void Component.contract(spec, scope, [batches, appEmails]);
+  });
+
+  it("refuses an entry that may be one table or another", () => {
+    const either = (): typeof emails | "_storage" => emails;
+    // @ts-expect-error an entry is one table or one name, not a union
+    void Component.contract(spec, scope, [either()]);
+    const maybeEmails = (): typeof emails | "emails" => "emails";
+    // @ts-expect-error a union entry would publish a group it may not have
+    void Component.contract(spec, scope, [batches, maybeEmails()]);
+    const listed: ReadonlyArray<typeof batches | typeof emails> = [batches];
+    // @ts-expect-error an array that is not a literal may omit `emails`
+    void Component.contract(spec, scope, listed);
+    const eitherTable = (): typeof batches | typeof emails => batches;
+    // @ts-expect-error an entry is one table, not a union of tables
+    void Component.contract(spec, scope, [batches, eitherTable()]);
+    const eitherName = (): "batches" | "_storage" => "_storage";
+    // @ts-expect-error `batches` may be absent when the name is `_storage`
+    void Component.contract(spec, scope, [emails, eitherName()]);
+    type Both = readonly [typeof batches, typeof emails];
+    const eitherList = (): Both | readonly [typeof batches] => [batches];
+    // @ts-expect-error the `[batches]` branch has no `emails`
+    void Component.contract(spec, scope, eitherList());
+    type Stored = readonly [typeof batches, "_storage"];
+    const eitherValid = (): Both | Stored => [batches, "_storage"];
+    // @ts-expect-error each branch is valid, but they publish different groups
+    void Component.contract(spec, scope, eitherValid());
   });
 });
