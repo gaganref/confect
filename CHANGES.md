@@ -538,7 +538,8 @@ Register a component mounted from another package through its public
 convention. The generated test registry previously serialized the resolved
 physical path, so it imported files from the pnpm store or from another
 workspace package's private directory, and its committed output differed
-across lockfiles. Fail codegen when the package has neither a `/testing` nor a `/test` export.
+across lockfiles. Fail codegen when the package has neither a `/testing` nor a
+`/test` export.
 
 Changeset: `component-test-entry.md`.
 Upstream: fork only; upstream has no generated test registry.
@@ -552,7 +553,7 @@ definition error is unchanged. Remove the `testing` mount option and its static
 kit checks. Local components and their nested HTTP routes use generated kits;
 a package's own `register(t, name)` registers its children.
 
-Changesets: `discover-component-test-kit.md`, superseding `mount-test-kit.md`.
+Changeset: `discover-component-test-kit.md`.
 Upstream: planned; it builds on the fork-only generated test registry, and no
 proposal is submitted.
 
