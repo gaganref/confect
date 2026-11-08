@@ -5,6 +5,7 @@ import {
   Mount,
   Ref,
 } from "@confect/core";
+import type * as FunctionProvenance from "@confect/core/FunctionProvenance";
 import * as Callback from "@confect/server/Callback";
 import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -12,8 +13,11 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { vi } from "vitest";
 
-const internalMutation = <const Fields extends Schema.Struct.Fields>(
-  name: string,
+const internalMutation = <
+  const Name extends string,
+  const Fields extends FunctionProvenance.ArgsFields,
+>(
+  name: Name,
   fields: Fields,
 ) =>
   FunctionSpec.internalMutation({
@@ -21,7 +25,13 @@ const internalMutation = <const Fields extends Schema.Struct.Fields>(
     args: () => fields,
     returns: () => Schema.Null,
   });
-const handle = (id: `probe/${string}`, fields: Schema.Struct.Fields) =>
+const handle = <
+  const Id extends `probe/${string}`,
+  const Fields extends FunctionProvenance.ArgsFields,
+>(
+  id: Id,
+  fields: Fields,
+) =>
   CoreCallback.handle(
     CoreCallback.mutation(id, {
       args: () => fields,
