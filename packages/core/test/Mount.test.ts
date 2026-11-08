@@ -326,7 +326,7 @@ describe("Mount.make args", () => {
     void Mount.make(Hook, { ...n, args: { target: extra } });
   });
 
-  it("checks every alternative of a union value", () => {
+  it.each([true, false])("checks every union alternative (%s)", (either) => {
     const Hook = Component.make("hook", {
       init: Ref.make(
         "install",
@@ -350,7 +350,6 @@ describe("Mount.make args", () => {
       client: (native: Native) => native,
     });
     const n = { name: "hook" } as const;
-    const either = Math.random() > 0.5;
     const fallback = either ? null : { callback: onEvent };
     const retry = either ? undefined : { callback: onEvent };
     void Mount.make(Hook, { ...n, args: { target: "x", fallback, retry } });
