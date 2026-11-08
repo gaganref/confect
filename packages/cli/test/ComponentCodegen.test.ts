@@ -86,6 +86,9 @@ it.effect(
         '$Component.contract($spec, $scope, [counters, "_storage", "_scheduled_functions"])',
       );
       expect(contract).not.toContain("impl");
+      expect(contract).toBe(
+        yield* fs.readFileString(`${fixture}/confect/_generated/component.ts`),
+      );
       expect(
         yield* Project.writtenFiles(codegenHandler.pipe(Effect.provide(dirs))),
       ).toEqual([]);
