@@ -403,8 +403,17 @@ replace `Component.make(spec, scope, tables)` with
 `Component.contract(spec, scope, tables)`. Rerun `confect codegen` for
 generated callers.
 
+A component package describes itself with `Component.make(name, { env, client })`,
+and a host declares each mount's client with `Mount.make(component, { name,
+httpPrefix, env, options })` in `confect/<mount>.ts`, mirroring Convex's
+`defineComponent` and `app.use`. A mount is a `Context.Reference` whose default
+is the component's client over that installation, so a handler yields it with no
+Layer and a test replaces it with `Effect.provideService`. `env` is typed from the
+descriptor and `options` from its client constructor. `App.mount` still installs
+the component.
+
 Changesets: `add-confect-components.md`, `component-no-raw-ctx.md`,
-`component-contract-rename.md`.
+`component-contract-rename.md`, `component-descriptor-mount.md`.
 Upstream: port of [upstream #646](https://github.com/rjdellecese/confect/pull/646),
 which remains open; fork-specific follow-up submission is unrecorded.
 

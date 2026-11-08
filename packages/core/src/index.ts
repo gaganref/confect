@@ -15,6 +15,7 @@ export * as Identifier from "./Identifier.js";
 export * as Lazy from "./Lazy.js";
 export * as Manifest from "./Manifest.js";
 export * as ManifestSection from "./ManifestSection.js";
+export * as Mount from "./Mount.js";
 export * as MiddlewareAttachment from "./MiddlewareAttachment.js";
 export * as MiddlewareSpec from "./MiddlewareSpec.js";
 export * as PaginationError from "./PaginationError.js";
