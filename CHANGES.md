@@ -541,10 +541,14 @@ has no mount, when two mounts share a name, and when two listed definitions
 share a `defineComponent` name. `App.mount` and its record of
 mounts are removed; a mount is declared once, with `Mount.make`. Codegen writes
 `_generated/refs` before it loads the declaration, so a mount can pass one of the
-host's own refs from the first run.
+host's own refs from the first run. It also writes a provisional
+`_generated/components` registry first, so a spec the declaration reaches can
+import the registry on the first run, and the manifest digest leaves the
+registry out, so the second run writes nothing.
 
 Changesets: `backend-declaration.md`, `app-mounts-list.md`,
-`remove-app-mount.md`, `unique-definition-names.md`, `first-codegen-refs.md`.
+`remove-app-mount.md`, `unique-definition-names.md`, `first-codegen-refs.md`,
+`first-codegen-registry.md`.
 Upstream: planned; no linked proposal verified.
 
 ### Label reflected HTTP routes
