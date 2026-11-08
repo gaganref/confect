@@ -749,15 +749,17 @@ const handleConfectChange = ({
   // entry point imports them—its onEnd flips the right dirty flag.
   // Creates are our safety net: when a previously-missing import is added,
   // esbuild may not have its parent directory on a poll path, so we
-  // re-run codegen on Create here. A manifest section's input, whether a file
-  // it matched or one that file imports, may have no entry point importing it
-  // and is read again only by a full run, even after a refusal.
+  // re-run codegen on Create here. Every manifest section's `render` sees the
+  // list of `confect/` files, so a Remove re-runs codegen too. A section's
+  // input, whether a file it matched or one that file imports, may have no
+  // entry point importing it and is read again only by a full run, even after
+  // a refusal.
   const source = relativePath.split(/[/\\]/).join("/");
   return Match.value(eventTag).pipe(
-    Match.when("Create", () =>
+    Match.whenOr("Create", "Remove", () =>
       flipDirtyAndSignal(pendingRef, signal, restart, false),
     ),
-    Match.whenOr("Update", "Remove", () =>
+    Match.when("Update", () =>
       SectionFiles.inputs.pipe(
         Effect.map((inputs) => inputs.includes(source)),
         Effect.orElseSucceed(() => false),

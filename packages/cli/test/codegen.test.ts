@@ -2194,8 +2194,65 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
               { name: "pool", definition: "@convex-dev/workpool" },
               { name: "second", definition: "../../components/counter/convex" },
             ],
+            files: [
+              "app.ts",
+              "auth.ts",
+              "billing/fees.ts",
+              "billing/log.ts",
+              "env.ts",
+              "http.ts",
+              "notes.impl.ts",
+              "notes.spec.ts",
+              "profile.ts",
+              "tables/notes.ts",
+            ],
           });
           expect(yield* Project.writtenFiles(project.run)).toEqual([]);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "renders every file match was offered, including a folder match accepted nothing from",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* sectionProject(
+            "({ files }) => ({ contents: `export default ${JSON.stringify(files)};\\n`, errors: [] })",
+          );
+          yield* project.write(
+            "confect/profile.ts",
+            (yield* project.read("confect/profile.ts")).replace(
+              'match: (path) => path.endsWith("/log.ts")',
+              "match: () => false",
+            ),
+          );
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.makeDirectory(`${project.root}/confect/shelf`);
+          yield* project.write(
+            "confect/shelf/log.ts",
+            "export const shelfLog = {};\n",
+          );
+          yield* project.run;
+          const generated = yield* project.read(
+            "confect/_generated/observe.ts",
+          );
+          expect(generated.split("\n")[1]).toBe("// Sources: []");
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/observe.ts`,
+          );
+          expect(module.default).toEqual([
+            "app.ts",
+            "auth.ts",
+            "billing/fees.ts",
+            "billing/log.ts",
+            "env.ts",
+            "http.ts",
+            "notes.impl.ts",
+            "notes.spec.ts",
+            "profile.ts",
+            "shelf/log.ts",
+            "tables/notes.ts",
+          ]);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
