@@ -30,8 +30,10 @@ const RESERVED_CONVEX_TS_FILE_NAMES = new Set([
   "crons.ts",
   "auth.config.ts",
   "convex.config.ts",
-  "confectDeploy.ts",
 ]);
+
+// Only the root module is codegen's; a nested group may take the name.
+const DEPLOY_MODULE = "confectDeploy.ts";
 
 // Keep ownership and removal aligned with Convex's bundler entryPoints filter.
 const getEntrypoints = Effect.gen(function* () {
@@ -160,10 +162,7 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
   for (const relative of yield* getEntrypoints) {
     const absolute = path.join(convex, relative);
     const contents = yield* fs.readFileString(absolute);
-    if (
-      relative === "confectDeploy.ts" &&
-      Declaration.isGenerated(contents, [])
-    )
+    if (relative === DEPLOY_MODULE && Declaration.isGenerated(contents, []))
       continue;
     const tokens = tokenize(contents, absolute, path);
     if (tokens !== undefined) {
@@ -364,7 +363,8 @@ const getGroupPathsFromFs = Effect.gen(function* () {
     Array.filter(
       (convexPath) =>
         path.extname(convexPath) === ".ts" &&
-        !RESERVED_CONVEX_TS_FILE_NAMES.has(path.basename(convexPath)),
+        !RESERVED_CONVEX_TS_FILE_NAMES.has(path.basename(convexPath)) &&
+        convexPath !== DEPLOY_MODULE,
     ),
     Effect.forEach((groupModulePath) =>
       GroupPath.fromGroupModulePath(groupModulePath),

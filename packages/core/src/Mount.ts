@@ -310,24 +310,46 @@ const placeholderHandle: Create<never, never> = (contract) =>
   Schema.decodeEffect(Callback.handle(contract))("").pipe(Effect.orDie);
 
 /**
- * The union member `value` belongs to once its callback slots hold handles.
- * Placeholder handles decide it, so no real handle is made for a member the
- * value does not take.
+ * Handles for the union member `value` takes: the first member that fits once
+ * its callback slots hold placeholder handles and whose handles `create` makes.
+ * A target that satisfies only a later member's contract takes that member.
  */
-const memberOf = (
+const withMemberHandles = <E, R>(
   members: ReadonlyArray<Schema.Top>,
   value: unknown,
-): Schema.Top | undefined =>
-  members.find((member) =>
+  create: Create<E, R>,
+): Effect.Effect<unknown, E, R> => {
+  const fitting = members.filter((member) =>
     Schema.is(member)(
       Effect.runSync(withHandles(member, value, placeholderHandle)),
     ),
   );
+  return fitting.length === 0
+    ? Effect.succeed(value)
+    : Effect.firstSuccessOf(
+        fitting.map((member) => withHandles(member, value, create)),
+      );
+};
+
+/**
+ * The schema of each key's value in a struct or a record.
+ */
+const entrySchema = (
+  schema: Schema.Top,
+): ((key: string) => Schema.Top | undefined) | undefined => {
+  if (Predicate.hasProperty(schema, "fields")) {
+    const fields = schema.fields as Readonly<Record<string, Schema.Top>>;
+    return (key) => fields[key];
+  }
+  if (SchemaAST.isObjects(schema.ast) && Predicate.hasProperty(schema, "value"))
+    return () => schema.value as Schema.Top;
+  return undefined;
+};
 
 /**
  * Put a handle in each callback slot: a host ref in a field whose schema
- * carries a callback contract, at any depth of struct fields, through
- * `optionalKey`, `optional` and the union member the value takes.
+ * carries a callback contract, at any depth of struct fields and record values,
+ * through `optionalKey`, `optional` and the union member the value takes.
  */
 const withHandles = <E, R>(
   schema: Schema.Top,
@@ -339,25 +361,19 @@ const withHandles = <E, R>(
     return create(contract, value);
   if (Predicate.hasProperty(schema, "schema"))
     return withHandles(schema.schema as Schema.Top, value, create);
-  if (
-    Predicate.hasProperty(schema, "members") &&
-    Array.isArray(schema.members)
-  ) {
-    const member = memberOf(schema.members, value);
-    return member === undefined
-      ? Effect.succeed(value)
-      : withHandles(member, value, create);
-  }
-  if (!Predicate.hasProperty(schema, "fields") || !Predicate.isObject(value))
+  if (Predicate.hasProperty(schema, "members") && Array.isArray(schema.members))
+    return withMemberHandles(schema.members, value, create);
+  const at = entrySchema(schema);
+  if (at === undefined || !Predicate.isObject(value))
     return Effect.succeed(value);
-  const fields = schema.fields as Readonly<Record<string, Schema.Top>>;
-  return Effect.forEach(Object.entries(value), ([key, field]) =>
-    fields[key] === undefined
+  return Effect.forEach(Object.entries(value), ([key, field]) => {
+    const fieldSchema = at(key);
+    return fieldSchema === undefined
       ? Effect.succeed([key, field] as const)
-      : withHandles(fields[key], field, create).pipe(
+      : withHandles(fieldSchema, field, create).pipe(
           Effect.map((resolved) => [key, resolved] as const),
-        ),
-  ).pipe(Effect.map(Object.fromEntries));
+        );
+  }).pipe(Effect.map(Object.fromEntries));
 };
 
 /**
