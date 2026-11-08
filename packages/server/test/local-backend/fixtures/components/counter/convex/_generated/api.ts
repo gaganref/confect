@@ -134,7 +134,11 @@ export const api: {
       "public",
       { id: Id<"deliveries"> },
       {
-        onEvent: string;
+        onEvent: import("convex/server").FunctionHandle_future<
+          "mutation",
+          { run: string; status: "queued" | "sent" | "delivered" | "bounced" },
+          null
+        >;
         run: string;
         status: "queued" | "sent" | "delivered" | "bounced";
       }
@@ -142,13 +146,27 @@ export const api: {
     notify: FunctionReference<
       "action",
       "public",
-      { onEvent: string; run: string },
+      {
+        onEvent: import("convex/server").FunctionHandle_future<
+          "mutation",
+          { run: string; status: "queued" | "sent" | "delivered" | "bounced" },
+          null
+        >;
+        run: string;
+      },
       null
     >;
     send: FunctionReference<
       "mutation",
       "public",
-      { onEvent: string; run: string },
+      {
+        onEvent: import("convex/server").FunctionHandle_future<
+          "mutation",
+          { run: string; status: "queued" | "sent" | "delivered" | "bounced" },
+          null
+        >;
+        run: string;
+      },
       Id<"deliveries">
     >;
     setStatus: FunctionReference<
@@ -159,6 +177,44 @@ export const api: {
         status: "queued" | "sent" | "delivered" | "bounced";
       },
       string | null
+    >;
+    storeMalformed: FunctionReference<
+      "mutation",
+      "public",
+      { run: string },
+      Id<"deliveries">
+    >;
+  };
+  pagination: {
+    page: FunctionReference<
+      "query",
+      "public",
+      { cursor: string | null; numItems: number; run: string },
+      {
+        continueCursor: string;
+        isDone: boolean;
+        page: Array<{
+          _creationTime: number;
+          _id: Id<"counters">;
+          count: string;
+          run: string;
+        }>;
+      }
+    >;
+    searchPage: FunctionReference<
+      "query",
+      "public",
+      { cursor: string | null; numItems: number; run: string },
+      {
+        continueCursor: string;
+        isDone: boolean;
+        page: Array<{
+          _creationTime: number;
+          _id: Id<"counters">;
+          count: string;
+          run: string;
+        }>;
+      }
     >;
   };
   reserved: {

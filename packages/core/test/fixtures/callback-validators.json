@@ -1,0 +1,50 @@
+{
+  "type": "object",
+  "value": {
+    "fromName": {
+      "fieldType": {
+        "type": "string"
+      },
+      "optional": false
+    },
+    "maxAttempts": {
+      "fieldType": {
+        "type": "number"
+      },
+      "optional": true
+    },
+    "onEvent": {
+      "fieldType": {
+        "type": "function",
+        "fnType": "mutation",
+        "args": {
+          "type": "object",
+          "value": {
+            "attempts": {
+              "fieldType": {
+                "type": "number"
+              },
+              "optional": false
+            },
+            "message": {
+              "fieldType": {
+                "type": "string"
+              },
+              "optional": false
+            },
+            "fromName": {
+              "fieldType": {
+                "type": "string"
+              },
+              "optional": false
+            }
+          }
+        },
+        "returns": {
+          "type": "null"
+        }
+      },
+      "optional": true
+    }
+  }
+}

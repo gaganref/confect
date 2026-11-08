@@ -28,7 +28,7 @@ import { extract } from "./Zip.js";
  * keeps running the release that created it, so upgrading this package never
  * opens a database with a different release.
  */
-export const backendVersion = "precompiled-2026-10-06-a3538c6";
+export const backendVersion = "precompiled-2026-10-28-cccbade";
 
 export class LocalBackendError extends Schema.TaggedError<LocalBackendError>()(
   "LocalBackendError",

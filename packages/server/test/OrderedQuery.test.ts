@@ -135,7 +135,7 @@ describe("OrderedQuery", () => {
     expectTypeOf(componentInitializer).toBeFunction();
   });
 
-  it("rejects native component pagination and directs index queries to QueryStream.paginate", () => {
+  it("supports native component pagination for indexes, search and system tables", () => {
     const check = (
       reader: DatabaseReader.DatabaseReaderService<
         typeof componentSchema,
@@ -143,38 +143,31 @@ describe("OrderedQuery", () => {
       >,
     ) => {
       const query = reader.table("notes").index("by_title");
-      // @ts-expect-error Native pagination is unavailable in components. Use QueryStream.paginate.
-      query.paginate(options);
+      void query.paginate(options);
       const ranged = reader
         .table("notes")
         .index("by_title", (q) => q.eq("title", "Ada"));
-      // @ts-expect-error The index-range overload retains the component scope.
-      ranged.paginate(options);
+      void ranged.paginate(options);
       const search = reader
         .table("notes")
         .search("search_title", (q) => q.search("title", "Ada"));
-      // @ts-expect-error Search results also use native pagination.
-      search.paginate(options);
+      void search.paginate(options);
       const scheduled = reader
         .table("_scheduled_functions")
         .index("by_creation_time");
-      // @ts-expect-error Component system tables have the same pagination restriction.
-      scheduled.paginate(options);
-      // @ts-expect-error Component storage metadata also belongs to the component database.
-      reader.table("_storage").index("by_creation_time").paginate(options);
+      void scheduled.paginate(options);
+      void reader.table("_storage").index("by_creation_time").paginate(options);
       const paginate = query.paginate;
-      // @ts-expect-error Detaching the property cannot make it callable.
-      paginate(options);
-      // @ts-expect-error A component paginator cannot be passed as an application callback.
+      void paginate(options);
       const callback: (options: PaginationOptions) => unknown = paginate;
       void callback;
-      // @ts-expect-error A component query cannot be widened to an application helper's query type.
+      // @ts-expect-error A component query retains its execution scope.
       const applicationQuery: OrderedQuery.OrderedQuery<TableInfo.AnyWithProps> =
         query;
       void applicationQuery;
-      expectTypeOf(query.paginate).toEqualTypeOf<{
-        readonly "Native pagination is unavailable in components. Use QueryStream.paginate for index queries.": never;
-      }>();
+      expectTypeOf(query.paginate(options)).toEqualTypeOf<
+        Effect.Effect<PaginationResult<NamedDoc>, Document.DocumentDecodeError>
+      >();
       expectTypeOf(query.collect()).toEqualTypeOf<
         Effect.Effect<ReadonlyArray<NamedDoc>, Document.DocumentDecodeError>
       >();
@@ -186,14 +179,13 @@ describe("OrderedQuery", () => {
     expectTypeOf(check).toBeFunction();
   });
 
-  it("rejects pagination when a table may belong to a component", () => {
+  it("supports pagination for either execution scope", () => {
     const check = (
       reader: DatabaseReader.DatabaseReaderService<
         typeof appSchema | typeof componentSchema
       >,
     ) => {
-      // @ts-expect-error A reader that may address a component must not expose native pagination.
-      reader.table("notes").index("by_title").paginate(options);
+      void reader.table("notes").index("by_title").paginate(options);
     };
     const checkScope = (mixedScope: IdScope.App | typeof scope) => {
       const notes = Table.make(fields)("notes", mixedScope);
@@ -203,8 +195,7 @@ describe("OrderedQuery", () => {
         >,
       ) => {
         const ordered = OrderedQuery.make(query, notes);
-        // @ts-expect-error A single table with an app/component scope union is gated too.
-        ordered.paginate(options);
+        void ordered.paginate(options);
       };
       return checkQuery;
     };

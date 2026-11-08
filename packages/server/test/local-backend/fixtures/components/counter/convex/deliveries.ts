@@ -6,3 +6,4 @@ export const get = registeredFunctions.get;
 export const notify = registeredFunctions.notify;
 export const send = registeredFunctions.send;
 export const setStatus = registeredFunctions.setStatus;
+export const storeMalformed = registeredFunctions.storeMalformed;

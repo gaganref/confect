@@ -312,7 +312,7 @@ it.effect(
         path.join(directory, "identity.json"),
         yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
           name: deploymentName,
-          version: "precompiled-2026-10-06-a3538c6",
+          version: "precompiled-2026-10-28-cccbade",
           instanceSecret: "00ff",
           adminKey: `${deploymentName}|0a1b2c`,
           ports: { port: 3300, sitePort: 3301 },

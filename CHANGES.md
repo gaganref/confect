@@ -12,6 +12,23 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Native function reference conversion
+
+Move `Ref.getFunctionReference` to `@confect/core/RefInternal`. The `Ref` module
+and the package barrel no longer export the converter. Import it directly:
+
+```ts
+import { getFunctionReference } from "@confect/core/RefInternal";
+```
+
+The converter keeps the same types, supplied native references, and cache by
+function name. Core, JavaScript, React, and server callers use the new subpath.
+Generated refs still use `Refs.make(spec)`. A separate import lets component
+projects ban native reference conversion without banning `Ref` types and codecs.
+Frame's official wrappers must update their imports when they take this build.
+Changeset: `ref-internal-subpath.md` marks this as breaking. Upstream: planned;
+no proposal submitted.
+
 ## Schema bundle imports
 
 Serve Scalar CDN docs without importing Effect's inline Scalar module. Effect
@@ -75,6 +92,13 @@ Upstream: planned; no proposal submitted.
 
 The existing local-backend CI job exercises generated registrations with arbitrary incoming context, runner hops, an inline owned counter component, an ordinary strict component call and persisted scheduled context. The local-backend fixture app always runs with a runtime layer; unit and mock-backend suites cover the no-layer path. Scheduled polling uses live time. Native API additions come from the registered validators without starting a backend. Changeset: `reserved-argument-backend.md`. Upstream: planned; no proposal submitted.
 
+The local-backend reserved-argument test gives each scheduled chain a random
+`run` value. The scheduled read selects the current run's record even when the
+backend preserves earlier results. The test keeps every transport assertion.
+
+Changeset: none; test isolation only.
+Upstream: unrecorded; submission goes through the maintainer.
+
 ### Refuse domain collisions in codegen
 
 Full and incremental codegen reject a domain argument reserved by its profile before loading its implementation. The diagnostic names the spec file, function and argument. Registration retains its load-time backstop. Changeset: `reserved-argument-fence.md`. Upstream: planned; no proposal submitted.
@@ -114,6 +138,10 @@ is recorded under "Type component callbacks".
 Upstream: fork only.
 
 ## Package compatibility
+
+### Require Convex 1.49
+
+Raise the Convex peer floor to 1.49.0. Workspace and baseline consumer pins use the same release. Local backend tests and new Alchemy local deployments use `precompiled-2026-10-28-cccbade`. Existing local deployments keep their backend release. Changesets: `convex-peer-floor.md`, `alchemy-convex-1-49.md`. Upstream: planned; no proposal submitted.
 
 ### Bound the supported crypto API
 
@@ -320,7 +348,13 @@ boundaries while retaining a vanilla Convex wire API. Port upstream's component
 work to stable Effect and prove nested isolation, errors, pagination, env, crons,
 and storage on the supported backends.
 
-Changeset: `add-confect-components.md`.
+A component's generated services omit the raw `MutationCtx`, `QueryCtx` and
+`ActionCtx` imports and value/type exports. Use the typed database, runner,
+storage and scheduler services in component handlers. Host generation is
+unchanged. The server package still exports the raw tags for middleware;
+removing them from a downstream runtime context belongs to that middleware.
+
+Changesets: `add-confect-components.md`, `component-no-raw-ctx.md`.
 Upstream: port of [upstream #646](https://github.com/rjdellecese/confect/pull/646),
 which remains open; fork-specific follow-up submission is unrecorded.
 
@@ -332,12 +366,14 @@ Compare compiled validators before creating Confect handles; equal validators
 cannot distinguish every codec or refinement. Preserve return and error codecs
 on references, include middleware errors, and decode declared errors by tag.
 
-Raise core's Convex peer floor to 1.46.0, the first release that exports the
-`FunctionReference_future` type `Callback.toFuture` returns. The fork shipped the
-import against a 1.39.0 floor; upstream 10.3.1's baseline consumer check, which
-installs the lowest allowed Convex, caught it.
+`Callback.handle` keeps its string-to-ref codec and carries its contract as lazy
+schema metadata. Schema compilation lowers the slot to `v.function` with the
+contract's encoded args and returns, including optional and nested slots.
+Contract and handle construction still build no argument or return schemas.
 
-Changeset: `add-component-callbacks.md`.
+The SDK floor, workspace pins, consumer pins and local backend release are recorded under "Require Convex 1.49".
+
+Changesets: `add-component-callbacks.md`, `callback-function-validator.md`.
 Upstream: planned; no linked proposal verified.
 
 ### Preserve component schema and ref types
@@ -351,14 +387,16 @@ contract.
 Changeset: `component-authoring-contracts.md`.
 Upstream: planned; no linked proposal verified.
 
-### Cancel component jobs and gate pagination
+### Cancel component jobs and allow native pagination
 
-Expose `Scheduler.cancel` for component-scoped scheduled IDs. Reject native
-component `.paginate()` at compile time and direct callers to `QueryStream.paginate`
-for index queries, because native pagination is unavailable in components.
-Application schemas keep native pagination.
+Expose `Scheduler.cancel` for component-scoped scheduled IDs. Native `.paginate()`
+works in applications and components on the local backend pinned to
+`precompiled-2026-10-28-cccbade`, past the pagination change in `d7402d6a`.
+A query can paginate once across the host and its component calls. A second
+call throws; use `QueryStream.paginate` for another paginated index read.
+Local backend tests cover index and search pages, subscriptions and the shared query limit.
 
-Changeset: `scoped-scheduler-cancel-pagination.md`.
+Changesets: `scoped-scheduler-cancel-pagination.md`, `component-native-pagination.md`.
 Upstream: planned; no linked proposal verified.
 
 ### Lift official component clients
@@ -631,6 +669,16 @@ exceeded the five-second default. Other platforms keep their defaults.
 
 Changeset: none; test configuration only.
 Upstream: unrecorded; no linked proposal verified.
+
+### Allow system operations on a loaded test runner
+
+Local-backend tests allow five seconds for system operations instead of one,
+so valid fixture calls tolerate a loaded runner. The user timeout stays at one
+second. Cache tests derive their eight-second waits from the same cache-age
+calculation.
+
+Changeset: none; test configuration only.
+Upstream: unrecorded; submission goes through the maintainer.
 
 ### Bound nested-binding fixture requests
 

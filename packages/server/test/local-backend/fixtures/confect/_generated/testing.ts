@@ -11,6 +11,7 @@ const firstKit = { schema: firstSchema, modules: { "_generated/testing.ts": () =
 "crons.ts": () => import("../../components/counter/convex/crons.js"),
 "deliveries.ts": () => import("../../components/counter/convex/deliveries.js"),
 "http.ts": () => import("../../components/counter/convex/http.js"),
+"pagination.ts": () => import("../../components/counter/convex/pagination.js"),
 "reserved.ts": () => import("../../components/counter/convex/reserved.js"),
 "schema.ts": () => import("../../components/counter/convex/schema.js"),
 } };
@@ -34,6 +35,7 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "groups/components.ts": () => import("../../convex/groups/components.js"),
 "groups/metadata.ts": () => import("../../convex/groups/metadata.js"),
 "groups/nativeComponents.ts": () => import("../../convex/groups/nativeComponents.js"),
+"groups/pagination.ts": () => import("../../convex/groups/pagination.js"),
 "groups/reserved.ts": () => import("../../convex/groups/reserved.js"),
 "groups/scheduling.ts": () => import("../../convex/groups/scheduling.js"),
 "groups/storage.ts": () => import("../../convex/groups/storage.js"),
