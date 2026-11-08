@@ -3,6 +3,8 @@ import { App, Env, MiddlewareSpec } from "@confect/core";
 import { defineComponent } from "convex/server";
 import { v } from "convex/values";
 import * as HttpApi from "effect/http-api/HttpApi";
+import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
+import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 
 const env = Env.make("tenant", {
   EMAIL_FROM: Env.string(),
@@ -20,6 +22,9 @@ const email = defineComponent("email", {
   },
 });
 const workpool = defineComponent("workpool");
+const EmailApi = HttpApi.make("email").add(
+  HttpApiGroup.make("health").add(HttpApiEndpoint.get("health", "/health")),
+);
 
 const emailEnv = {
   FROM: env.EMAIL_FROM,
@@ -58,26 +63,24 @@ describe("App", () => {
       },
     });
     expect(App.env(app)).toBe(env);
+    expect(App.mounts(app).every((mount) => !("api" in mount))).toBe(true);
     expect(App.mounts(app)).toEqual([
       {
         name: "email",
         definition: email,
         httpPrefix: "/email",
-        api: undefined,
         env: { ...emailEnv, PLATFORM_URL: env.PLATFORM_URL },
       },
       {
         name: "importsPool",
         definition: workpool,
         httpPrefix: undefined,
-        api: undefined,
         env: {},
       },
       {
         name: "literalEmail",
         definition: email,
         httpPrefix: undefined,
-        api: undefined,
         env: { FROM: "noreply@example.test", KEY: "k", TRANSPORT: "log" },
       },
     ]);
@@ -116,8 +119,10 @@ describe("App", () => {
       // @ts-expect-error A binding for a slot the component does not declare.
       env: { ...emailEnv, UNKNOWN: env.EMAIL_FROM },
     });
-    // @ts-expect-error A mount's api describes routes under its prefix, so it needs one.
-    App.mount(workpool, { api: HttpApi.make("workpool") });
+    // @ts-expect-error A mount does not accept an api, even with an HTTP prefix.
+    App.mount(workpool, { httpPrefix: "/email", api: EmailApi });
+    // @ts-expect-error A mount does not accept an api.
+    App.mount(workpool, { api: EmailApi });
   });
 
   it("rejects a reference from another backend's env", () => {

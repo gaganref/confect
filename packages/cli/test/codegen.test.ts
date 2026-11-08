@@ -1,4 +1,4 @@
-import { Table } from "@confect/core";
+import { IdScope, Table } from "@confect/core";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
@@ -1291,17 +1291,6 @@ export default defineComponent("counter", { env: { REQUIRED: v.string(), MARKER:
 `,
   );
   yield* project.write(
-    "components/counter/api.ts",
-    `import * as Schema from "effect/Schema";
-import * as HttpApi from "effect/http-api/HttpApi";
-import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
-import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
-export const CounterApi = HttpApi.make("counter").add(
-  HttpApiGroup.make("health").add(HttpApiEndpoint.get("health", "/health", { success: Schema.String })),
-);
-`,
-  );
-  yield* project.write(
     "confect/env.ts",
     `import { Env } from "@confect/core";
 export default Env.make("host", {
@@ -1315,12 +1304,11 @@ export default Env.make("host", {
     "confect/app.ts",
     `import { App } from "@confect/core";
 import counter from "../components/counter/convex/convex.config";
-import { CounterApi } from "../components/counter/api";
 import env from "./env";
 export default App.make({
   env,
   mounts: {
-    first: App.mount(counter, { httpPrefix: "/first", api: CounterApi, env: { REQUIRED: "first-required", MARKER: env.MARKER } }),
+    first: App.mount(counter, { httpPrefix: "/first", env: { REQUIRED: "first-required", MARKER: env.MARKER } }),
     second: App.mount(counter, { env: { REQUIRED: env.API_KEY } }),
   },
 });
@@ -1865,14 +1853,64 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             yield* project.read("confect/_generated/manifest.ts"),
           );
           yield* project.write(
-            "components/counter/api.ts",
-            `${yield* project.read("components/counter/api.ts")}// edited\n`,
+            "confect/env.ts",
+            `${yield* project.read("confect/env.ts")}// edited\n`,
           );
           yield* project.run;
           const after = digestOf(
             yield* project.read("confect/_generated/manifest.ts"),
           );
           expect(after).not.toBe(before);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "rejects duplicate routes in a component's own HTTP declaration",
+      () =>
+        Effect.gen(function* () {
+          const path = yield* Path.Path;
+          const project = yield* declarationProject;
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.remove(path.join(project.root, "confect/auth.ts"));
+          yield* project.write(
+            "confect/app.ts",
+            (yield* project.read("confect/app.ts")).replace(
+              "  env,",
+              '  kind: "component",\n  env,',
+            ),
+          );
+          yield* project.write(
+            "confect/http.ts",
+            project
+              .http("/items/:id")
+              .replace(
+                'HttpApiEndpoint.get("status", "/items/:id", { success: Schema.String })',
+                'HttpApiEndpoint.get("status", "/items/:id", { params: Schema.Struct({ id: Schema.String }), success: Schema.String }), HttpApiEndpoint.get("other", "/items/:key", { params: Schema.Struct({ key: Schema.String }), success: Schema.String })',
+              )
+              .replace(
+                'h.handle("status", () => Effect.succeed("ok"))',
+                'h.handle("status", () => Effect.succeed("ok")).handle("other", () => Effect.succeed("ok"))',
+              ),
+          );
+          const run = codegenHandler.pipe(
+            Effect.provideService(ProjectRoot, {
+              get: Effect.succeed(project.root),
+            }),
+            Effect.provideService(ConfectDirectory, {
+              get: Effect.succeed(path.join(project.root, "confect")),
+            }),
+            Effect.provideService(ConvexDirectory, {
+              get: Effect.succeed(path.join(project.root, "convex")),
+              target: { kind: "component", scope: IdScope.component("host") },
+            }),
+          );
+          expect(yield* Effect.flip(run)).toEqual(
+            new InvalidDeclarationError({
+              declarationPath: "confect/http.ts",
+              reason: "GET /items/:key is declared twice (app and app).",
+            }),
+          );
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

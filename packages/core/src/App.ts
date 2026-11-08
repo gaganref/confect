@@ -45,9 +45,7 @@ export type Bindings<E extends EnvDefinition> = {
   readonly [K in Exclude<keyof E, RequiredKeys<E>>]?: Slot<E[K]>;
 };
 
-type HttpOptions =
-  | { readonly httpPrefix?: never; readonly api?: never }
-  | { readonly httpPrefix: HttpPrefix; readonly api?: Api };
+type HttpOptions = { readonly httpPrefix?: HttpPrefix };
 
 export type Options<D extends Definition> = HttpOptions &
   ([RequiredKeys<EnvOf<D>>] extends [never]
@@ -55,7 +53,7 @@ export type Options<D extends Definition> = HttpOptions &
     : { readonly env: Bindings<EnvOf<D>> });
 
 type Exact<D extends Definition, O> = {
-  readonly [K in Exclude<keyof O, "env" | "httpPrefix" | "api">]: never;
+  readonly [K in Exclude<keyof O, "env" | "httpPrefix">]: never;
 } & (O extends { readonly env: infer B }
   ? {
       readonly env: { readonly [K in Exclude<keyof B, keyof EnvOf<D>>]: never };
@@ -65,7 +63,6 @@ type Exact<D extends Definition, O> = {
 export interface MountData {
   readonly definition: Definition;
   readonly httpPrefix: HttpPrefix | undefined;
-  readonly api: Api | undefined;
   readonly env: Readonly<Record<string, string | Env.AnyEntry | undefined>>;
 }
 
@@ -89,7 +86,7 @@ export type AnyMount = Mount<Definition, unknown>;
  * official or Confect-authored. `env` is typed against the component's own
  * `defineComponent({ env })` declaration, so a missing required binding, an
  * optional entry in a required slot, a wrong literal and an unknown slot fail
- * to typecheck. `api` is the component's `HttpApi`, for route checks.
+ * to typecheck.
  */
 export function mount<const D extends Definition>(
   definition: D &
@@ -105,7 +102,6 @@ export function mount(
   definition: Definition,
   options?: {
     readonly httpPrefix?: HttpPrefix;
-    readonly api?: Api;
     readonly env?: MountData["env"];
   },
 ): AnyMount {
@@ -113,7 +109,6 @@ export function mount(
     [MountTypeId]: { definition, options },
     definition,
     httpPrefix: options?.httpPrefix,
-    api: options?.api,
     env: options?.env ?? {},
     // The overloads above carry the precise types; this body serves both.
   } as AnyMount;
@@ -209,6 +204,5 @@ export const mounts = (
     name,
     definition: installed.definition,
     httpPrefix: installed.httpPrefix,
-    api: installed.api,
     env: installed.env,
   }));

@@ -66,7 +66,6 @@ List the components the backend mounts and the env each receives:
 import { App } from "@confect/core";
 import workpool from "@convex-dev/workpool/convex.config.js";
 import email from "@acme/email/convex.config.js";
-import { EmailApi } from "@acme/email/api";
 import env from "./env";
 
 export default App.make({
@@ -74,7 +73,6 @@ export default App.make({
   mounts: {
     email: App.mount(email, {
       httpPrefix: "/email",
-      api: EmailApi,
       env: {
         FROM: env.EMAIL_FROM,
         RESEND_API_KEY: env.RESEND_API_KEY,
@@ -101,7 +99,7 @@ The record key is the mount name. `App.mount` takes the default export of a comp
 - binding a slot the component does not declare
 - binding an entry from another backend's env (reported at `App.make`)
 
-A binding is an entry of your env, or a constant string. `api` is the component's `HttpApi`; codegen uses it to check routes. It requires `httpPrefix`.
+A binding is an entry of your env, or a constant string. `httpPrefix` reserves the mounted Convex component's routes.
 
 The [generated test registry](/guides/testing) discovers a mounted Convex component's test kit at `<package>/testing`, then `<package>/test`. Mounts do not accept a `testing` option.
 
@@ -213,7 +211,7 @@ export default HttpRouter.forSchema(schema)(http.routes, { api: http.api });
 
 The schema supplies the backend's capabilities; `{ api }` supplies endpoint labels for Convex logs and the dashboard. Mounted components serve their own routes under their prefixes; your middleware does not run in front of them.
 
-Codegen fails when an app route or the docs page is at or under a mount's prefix, because Convex accepts such a route and lets it silently shadow the component's. It also fails when two routes share a method and path after adding each mount's `api` under its prefix, and when two mount prefixes overlap. These checks run even without `http.ts`.
+Codegen fails when an app route or the docs page is at or under a mount's prefix, because Convex accepts such a route and lets it silently shadow the component's. It also fails when two of the backend's own routes share a method and path, or when two mount prefixes overlap. Prefix checks run even without `http.ts`. Each Convex component checks its own routes during codegen.
 
 ## The manifest
 
