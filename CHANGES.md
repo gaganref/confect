@@ -539,10 +539,12 @@ order, with the definition whose `defineComponent` name is the mount's component
 name. It fails when a mount has no listed definition, when a listed definition
 has no mount, when two mounts share a name, and when two listed definitions
 share a `defineComponent` name. `App.mount` and its record of
-mounts are removed; a mount is declared once, with `Mount.make`.
+mounts are removed; a mount is declared once, with `Mount.make`. Codegen writes
+`_generated/refs` before it loads the declaration, so a mount can pass one of the
+host's own refs from the first run.
 
 Changesets: `backend-declaration.md`, `app-mounts-list.md`,
-`remove-app-mount.md`, `unique-definition-names.md`.
+`remove-app-mount.md`, `unique-definition-names.md`, `first-codegen-refs.md`.
 Upstream: planned; no linked proposal verified.
 
 ### Label reflected HTTP routes
