@@ -410,7 +410,11 @@ which remains open; fork-specific follow-up submission is unrecorded.
 table's rows and refuses any other field. `Component.contract(spec, scope,
 tables)` takes tables beside system table names and refuses a grouped table whose
 id is not one of them, in the component's scope. `Component.groups(contract)`
-returns each grouped table's `{ key, table }`. Codegen still passes table names
+returns each grouped table's `{ key, table }`, and its type keeps the literal
+key and table, `{ readonly emails: { readonly key: "batchId"; readonly table:
+"batches" } }`. An explicit names-only type argument, as in
+`Component.contract<typeof spec, typeof scope, "batches">(...)`, still compiles
+and carries no groups. Codegen still passes table names
 only, so a generated contract lists no groups yet.
 
 Changeset: `table-group.md`.

@@ -655,7 +655,13 @@ describe("table groups in a contract", () => {
       Component.Component<
         typeof spec,
         typeof scope,
-        "batches" | "emails" | "_storage"
+        "batches" | "emails" | "_storage",
+        {
+          readonly emails: {
+            readonly key: "batchId";
+            readonly table: "batches";
+          };
+        }
       >
     >();
     expect(schemaBuilds).toBe(0);
