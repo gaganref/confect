@@ -695,10 +695,11 @@ it.effect.each([
       );
       const headers = [...missing.headers];
       const body = yield* Effect.promise(() => missing.text());
-      for (const requestHeaders of [
+      const preflights: ReadonlyArray<Record<string, string>> = [
         {},
         { "Access-Control-Request-Method": method },
-      ]) {
+      ];
+      for (const requestHeaders of preflights) {
         const response = yield* Effect.promise(() =>
           t.fetch(path, { method: "OPTIONS", headers: requestHeaders }),
         );
