@@ -795,7 +795,7 @@ it.effect(
           '{"value":"signed"}',
           "identity",
           200,
-          JSON.stringify('{"value":"signed"}'),
+          '"{\\"value\\":\\"signed\\"}"',
         ],
         ["/bytes", '{"value":"changed"}', "identity", 401, ""],
       ] as const) {
