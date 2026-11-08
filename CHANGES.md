@@ -14,7 +14,7 @@ until the fork adopts a release containing it.
 
 ## OPTIONS middleware dispatch
 
-Route OPTIONS requests through the declared path's middleware before decoding.
+Route OPTIONS requests through the declared path's middleware, never its handler.
 Preserve explicit OPTIONS handlers, component prefixes and route middleware.
 Reflect OPTIONS in Convex's route list so real backends dispatch it.
 Changeset: `route-options-middleware.md`. Upstream: planned; no proposal submitted.

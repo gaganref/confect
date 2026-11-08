@@ -218,6 +218,7 @@ const makeWithLayer = <
   // a `Layer.unwrap` reading `Config`—resolves configuration through the
   // Convex-aware provider; merged so that request fibers—endpoint handlers
   // and middleware—do too.
+  // Collected now: toWebHandler builds AppLayer before the reflection below.
   const endpoints = new Set<string>();
   if (api !== undefined)
     HttpApi.reflect(api, {

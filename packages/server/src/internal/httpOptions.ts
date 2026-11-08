@@ -21,9 +21,11 @@ const notFound = Effect.flatMap(
 
 const missingRouteContext = `Service not found: ${HttpRouter.RouteContext.key}`;
 
-// An endpoint's compiled handler runs its middleware, then reads RouteContext
-// before decoding or calling the endpoint handler. Without RouteContext, the
-// preflight stops there.
+// WORKAROUND: Effect 4.0.4 compiles endpoint middleware, decoding and the
+// handler into one route handler. Its endpoint body reads RouteContext before
+// decoding or calling the handler, so without RouteContext a preflight that
+// middleware passes on stops there. Remove when Effect can run an endpoint's
+// middleware around another handler.
 const preflight = (handler: Route["handler"]) =>
   handler.pipe(
     Effect.updateContext(Context.omit(HttpRouter.RouteContext)),
