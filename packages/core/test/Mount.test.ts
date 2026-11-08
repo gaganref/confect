@@ -81,6 +81,11 @@ describe("Mount.make", () => {
     });
   });
 
+  it("records the component it mounts, not one carried in its options", () => {
+    const options = { name: "importsPool", component: Email } as const;
+    expect(Mount.data(Mount.make(Workpool, options)).component).toBe(Workpool);
+  });
+
   it.effect("builds its default client from the component it names", () =>
     Effect.gen(function* () {
       const bulk = yield* BulkEmail;
@@ -194,6 +199,61 @@ describe("Mount.make args", () => {
       name: "mailer",
       args,
     });
+  });
+
+  it("takes an optional struct and a union member, checking each one's fields", () => {
+    const Notifier = Component.make("notifier", {
+      init: Ref.make(
+        "install",
+        FunctionSpec.internalMutation({
+          name: "init",
+          args: () => ({
+            retry: Schema.optionalKey(
+              Schema.Struct({
+                attempts: Schema.Int,
+                onGiveUp: Schema.optionalKey(Callback.handle(OnEvent)),
+              }),
+            ),
+            transport: Schema.Union([
+              Schema.Struct({
+                kind: Schema.Literal("resend"),
+                apiKey: Schema.String,
+              }),
+              Schema.Struct({
+                kind: Schema.Literal("smtp"),
+                host: Schema.String,
+              }),
+            ]),
+          }),
+          returns: () => Schema.Null,
+        }),
+      ),
+      client: (native: Native) => native,
+    });
+    const n = { name: "notifier" } as const;
+    const resend = { kind: "resend", apiKey: "synthetic" } as const;
+    void Mount.make(Notifier, {
+      ...n,
+      args: { retry: { attempts: 3, onGiveUp: onEvent }, transport: resend },
+    });
+    void Mount.make(Notifier, {
+      ...n,
+      args: { transport: { kind: "smtp", host: "mail.example.test" } },
+    });
+    const query = Ref.make(
+      "callbacks",
+      FunctionSpec.internalQuery({
+        name: "giveUpQuery",
+        args: () => EventFields,
+        returns: () => Schema.Null,
+      }),
+    );
+    const retry = { attempts: 3, onGiveUp: query };
+    // @ts-expect-error RULE nested-callback-kind: a callback inside an optional struct is checked.
+    void Mount.make(Notifier, { ...n, args: { retry, transport: resend } });
+    const mixed = { kind: "resend", host: "mail.example.test" } as const;
+    // @ts-expect-error RULE union-member-mix: a union value fits one member's fields.
+    void Mount.make(Notifier, { ...n, args: { transport: mixed } });
   });
 
   it("refuses args init does not take", () => {
