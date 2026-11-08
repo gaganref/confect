@@ -248,6 +248,12 @@ export declare const api: {
         { cursor: string | null; numItems: number; run: string },
         { continueCursor: string; isDone: boolean; page: Array<number> }
       >;
+      searchPage: FunctionReference<
+        "query",
+        "public",
+        { cursor: string | null; numItems: number; run: string },
+        { continueCursor: string; isDone: boolean; page: Array<number> }
+      >;
       twice: FunctionReference<
         "query",
         "public",
