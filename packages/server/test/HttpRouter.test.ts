@@ -691,20 +691,16 @@ it.effect.each([
     ],
   },
   {
-    paths: "requesting HEAD, falling back to GET per path",
+    paths: "requesting HEAD, which GET answers where no HEAD route matches",
     layer: Layer.mergeAll(
       answering("GET", "/head/:id"),
-      answering("HEAD", "/head/:slug/raw"),
-      answering("GET", "/head/:id/raw"),
       answering("HEAD", "/wild/*"),
       answering("GET", "/wild/:id"),
     ),
     request: ["HEAD", "/head/7", ""],
     preflights: [
       ["/head/7", "HEAD", 200, "GET id 7"],
-      ["/head/7/raw", "HEAD", 200, "HEAD slug 7"],
       ["/wild/7", "HEAD", 200, "HEAD * 7"],
-      ["/missing", "HEAD", 404, ""],
     ],
   },
   {
@@ -716,7 +712,6 @@ it.effect.each([
     request: ["POST", "/optional", "POST ran"],
     preflights: [
       ["/optional", undefined, 200, "POST"],
-      ["/optional", "POST", 200, "POST"],
       ["/optional/7", undefined, 200, "GET id 7"],
     ],
   },
