@@ -96,7 +96,7 @@ export const make = <C extends Component.Descriptor, const Name extends string>(
   } & EnvField<C> &
     OptionsField<C>,
 ): Mount<C, Name> => {
-  const data = { component, ...(options as object) } as Data<C> & {
+  const data = { ...(options as object), component } as Data<C> & {
     readonly name: Name;
   };
   // The options were checked against the constructor's parameters above.
