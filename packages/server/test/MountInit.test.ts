@@ -13,7 +13,7 @@ import * as Schema from "effect/Schema";
 import { vi } from "vitest";
 
 const ProbeA = CoreCallback.mutation("probe/a", {
-  args: () => ({ count: Schema.Number }),
+  args: () => ({ count: Schema.Finite }),
   returns: () => Schema.Null,
 });
 const ProbeB = CoreCallback.mutation("probe/b", {
