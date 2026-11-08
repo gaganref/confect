@@ -2776,7 +2776,9 @@ export const steps = MountInit.mutation([
             _tag: "InvalidDeclarationError",
             declarationPath: "confect/confectDeploy.spec.ts",
           });
-          expect(`${Reflect.get(error, "reason")}`).toContain("Rename the group");
+          expect(`${Reflect.get(error, "reason")}`).toContain(
+            "Rename the group",
+          );
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
