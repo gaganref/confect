@@ -130,6 +130,47 @@ describe("ManifestSections", () => {
       functions: { "notes:list": [] },
     });
   });
+  it("hands summarize the spec file that declares each function", () => {
+    const p = FunctionSpec.extend()({
+      middleware: [],
+      manifest: {
+        tags: {
+          ...section,
+          summarize: ({ sources }) => ({ format: 1, sources }),
+        },
+      },
+    });
+    const notes = GroupSpec.addGroupsAt(
+      GroupSpec.make().addFunction(p.publicQuery(list)),
+      {
+        child: GroupSpec.make().addFunction(
+          p.publicMutation({ name: "save", returns: () => Schema.Void }),
+        ),
+      },
+    );
+    const leaves = [
+      {
+        relativePath: "inbox/inbox.spec.ts",
+        pathSegments: ["inbox", "inbox"] as const,
+        spec: GroupSpec.make().addFunction(p.publicQuery(list)),
+      },
+      ...leaf(notes),
+    ];
+    expect(
+      Result.getOrThrow(
+        collect(leaves).pipe(
+          Result.flatMap((registry) => summarize(registry, new Map())),
+        ),
+      ).get("tags")?.data,
+    ).toEqual({
+      format: 1,
+      sources: {
+        "inbox/inbox:list": "inbox/inbox.spec.ts",
+        "notes:list": "notes.spec.ts",
+        "notes/child:save": "notes.spec.ts",
+      },
+    });
+  });
   it.each([
     {
       returned: "a throw",
