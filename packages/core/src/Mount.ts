@@ -6,7 +6,7 @@ import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import type * as App from "./App.js";
-import type * as Callback from "./Callback.js";
+import * as Callback from "./Callback.js";
 import * as Component from "./Component.js";
 import type * as Env from "./Env.js";
 import type * as GenericId from "./GenericId.js";
@@ -301,47 +301,56 @@ const contractOf = (schema: Schema.Top) =>
     Schema.toEncoded(schema).ast,
   );
 
-type Fields = Readonly<Record<string, Schema.Top>>;
+type Create<E, R> = (
+  contract: Callback.Any,
+  ref: Ref.Any,
+) => Effect.Effect<unknown, E, R>;
+
+const placeholderHandle: Create<never, never> = (contract) =>
+  Schema.decodeEffect(Callback.handle(contract))("").pipe(Effect.orDie);
 
 /**
- * A struct's fields, seen through `optionalKey`, `optional` and a union with
- * one struct member.
+ * The union member `value` belongs to once its callback slots hold handles.
+ * Placeholder handles decide it, so no real handle is made for a member the
+ * value does not take.
  */
-const structFields = (schema: unknown): Fields | undefined => {
-  if (Predicate.hasProperty(schema, "fields")) return schema.fields as Fields;
-  if (Predicate.hasProperty(schema, "schema"))
-    return structFields(schema.schema);
-  if (
-    Predicate.hasProperty(schema, "members") &&
-    Array.isArray(schema.members)
-  ) {
-    const structs = schema.members.flatMap((member: unknown) => {
-      const fields = structFields(member);
-      return fields === undefined ? [] : [fields];
-    });
-    return structs.length === 1 ? structs[0] : undefined;
-  }
-  return undefined;
-};
+const memberOf = (
+  members: ReadonlyArray<Schema.Top>,
+  value: unknown,
+): Schema.Top | undefined =>
+  members.find((member) =>
+    Schema.is(member)(
+      Effect.runSync(withHandles(member, value, placeholderHandle)),
+    ),
+  );
 
 /**
  * Put a handle in each callback slot: a host ref in a field whose schema
- * carries a callback contract, at any depth of struct fields.
+ * carries a callback contract, at any depth of struct fields, through
+ * `optionalKey`, `optional` and the union member the value takes.
  */
 const withHandles = <E, R>(
   schema: Schema.Top,
   value: unknown,
-  create: (
-    contract: Callback.Any,
-    ref: Ref.Any,
-  ) => Effect.Effect<unknown, E, R>,
+  create: Create<E, R>,
 ): Effect.Effect<unknown, E, R> => {
   const contract = contractOf(schema);
   if (contract !== undefined && Ref.isRef(value))
     return create(contract, value);
-  const fields = structFields(schema);
-  if (fields === undefined || !Predicate.isObject(value))
+  if (Predicate.hasProperty(schema, "schema"))
+    return withHandles(schema.schema as Schema.Top, value, create);
+  if (
+    Predicate.hasProperty(schema, "members") &&
+    Array.isArray(schema.members)
+  ) {
+    const member = memberOf(schema.members, value);
+    return member === undefined
+      ? Effect.succeed(value)
+      : withHandles(member, value, create);
+  }
+  if (!Predicate.hasProperty(schema, "fields") || !Predicate.isObject(value))
     return Effect.succeed(value);
+  const fields = schema.fields as Readonly<Record<string, Schema.Top>>;
   return Effect.forEach(Object.entries(value), ([key, field]) =>
     fields[key] === undefined
       ? Effect.succeed([key, field] as const)
@@ -358,10 +367,7 @@ const withHandles = <E, R>(
  */
 export const initCall = <E, R>(
   mount: Any,
-  create: (
-    contract: Callback.Any,
-    ref: Ref.Any,
-  ) => Effect.Effect<unknown, E, R>,
+  create: Create<E, R>,
 ): Effect.Effect<Option.Option<InitCall>, E | Schema.SchemaError, R> => {
   const { component, name, args } = data(mount);
   const init = component.init;

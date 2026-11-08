@@ -10,18 +10,18 @@ import {
 } from "./_generated/services";
 import install from "./install.spec";
 
+const current = Effect.flatMap(DatabaseReader, (reader) =>
+  reader.table("settings").index("by_creation_time").first(),
+);
+
 // The author's config store: one row, replaced on every push, so an omitted
 // optional arg drops its field.
 const init = FunctionImpl.make(schema, install, "init", (args) =>
   Effect.gen(function* () {
-    const reader = yield* DatabaseReader;
     const writer = yield* DatabaseWriter;
-    const current = yield* reader
-      .table("settings")
-      .index("by_creation_time")
-      .first();
-    if (Option.isSome(current))
-      yield* writer.table("settings").replace(current.value._id, args);
+    const row = yield* current;
+    if (Option.isSome(row))
+      yield* writer.table("settings").replace(row.value._id, args);
     else yield* writer.table("settings").insert(args);
     if (args.fromName.startsWith("FAIL"))
       return yield* Effect.die(new Error("SyntheticInitAfterWrite"));
@@ -30,21 +30,13 @@ const init = FunctionImpl.make(schema, install, "init", (args) =>
 );
 
 const settings = FunctionImpl.make(schema, install, "settings", () =>
-  Effect.gen(function* () {
-    const reader = yield* DatabaseReader;
-    return Option.getOrNull(
-      yield* reader.table("settings").index("by_creation_time").first(),
-    );
-  }).pipe(Effect.orDie),
+  current.pipe(Effect.map(Option.getOrNull), Effect.orDie),
 );
 
 const send = FunctionImpl.make(schema, install, "send", ({ message }) =>
   Effect.gen(function* () {
-    const reader = yield* DatabaseReader;
     const runner = yield* MutationRunner;
-    const { fromName, onEvent } = Option.getOrThrow(
-      yield* reader.table("settings").index("by_creation_time").first(),
-    );
+    const { fromName, onEvent } = Option.getOrThrow(yield* current);
     if (onEvent !== undefined)
       yield* runner.runMutation(onEvent, { fromName, message });
     return null;

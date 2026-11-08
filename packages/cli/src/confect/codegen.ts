@@ -129,6 +129,7 @@ export const codegen = Command.make("codegen", DirectoryOptions.flags, () =>
 
 const runCodegen = Effect.gen(function* () {
   yield* validateComponentConfiguration;
+  yield* rejectDeployModuleGroup;
   yield* generateConfectGeneratedDirectory;
   // A declared backend's `convex.config.ts` and manifest come first: the
   // components registry below reads the config, and nothing may validate
@@ -246,6 +247,7 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
     declarations: Array.NonEmptyReadonlyArray<EntryPoint.Declaration>,
     affectedImpls: ReadonlyArray<ImplModulePath>,
   ) {
+    yield* rejectDeployModuleGroup;
     const previousManifest = yield* readPrevious;
     const path = yield* Path.Path;
     const { paths, tables } = EntryPoint.planDeclarations(
@@ -652,6 +654,20 @@ const rejectLegacySchemaFile = Effect.gen(function* () {
   if (yield* fs.exists(legacyPath)) {
     return yield* new LegacySchemaFileError({ schemaPath: "schema.ts" });
   }
+});
+
+// A root group named `confectDeploy` would write the entrypoint
+// `syncDeployModule` owns, so refuse it before anything is written.
+const rejectDeployModuleGroup = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  if (yield* fs.exists(path.join(confectDirectory, "confectDeploy.spec.ts")))
+    return yield* new CodegenError.InvalidDeclarationError({
+      declarationPath: "confect/confectDeploy.spec.ts",
+      reason:
+        "its functions would go in convex/confectDeploy.ts, which codegen writes for the mounts a push initialises. Rename the group, for example to confect/deploy.spec.ts.",
+    });
 });
 
 /**

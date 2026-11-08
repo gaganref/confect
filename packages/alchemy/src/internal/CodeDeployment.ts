@@ -83,7 +83,7 @@ export const deploy = Effect.fn("Code.deploy")(function* (
       // the lock so no other push lands between this code and its `init`.
       // Delete this step at gaganref/confect#18's trigger: a stable `convex`
       // release with `init` and `args`, and an open-source backend that
-      // accepts them.
+      // accepts them. CHANGES.md lists what else goes with it.
       yield* MountInit.run(
         props.deployment.url,
         props.deployKey,
