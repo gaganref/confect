@@ -12,6 +12,12 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## OPTIONS middleware dispatch
+
+Route OPTIONS requests through the declared path's middleware, never its handler.
+Preserve explicit OPTIONS handlers, component prefixes and route middleware.
+Changeset: `route-options-middleware.md`. Upstream: planned; no proposal submitted.
+
 ## HTTP identity states
 
 The module-level `Auth.getUserIdentity` effect returns `Absent`, `Valid` with
