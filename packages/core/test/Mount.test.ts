@@ -307,6 +307,39 @@ describe("Mount.make args", () => {
     void Mount.make(Hook, { ...n, args: { target: extra } });
   });
 
+  it("checks every alternative of a union value", () => {
+    const Hook = Component.make("hook", {
+      init: Ref.make(
+        "install",
+        FunctionSpec.internalMutation({
+          name: "init",
+          args: () => ({
+            target: Schema.Union([
+              Schema.String,
+              Schema.Struct({ callback: Callback.handle(OnEvent) }),
+            ]),
+            fallback: Schema.NullOr(
+              Schema.Struct({ callback: Callback.handle(OnEvent) }),
+            ),
+            retry: Schema.optional(
+              Schema.Struct({ callback: Callback.handle(OnEvent) }),
+            ),
+          }),
+          returns: () => Schema.Null,
+        }),
+      ),
+      client: (native: Native) => native,
+    });
+    const n = { name: "hook" } as const;
+    const either = Math.random() > 0.5;
+    const fallback = either ? null : { callback: onEvent };
+    const retry = either ? undefined : { callback: onEvent };
+    void Mount.make(Hook, { ...n, args: { target: "x", fallback, retry } });
+    const target = either ? "https://example.test" : { callback: query };
+    // @ts-expect-error RULE union-value-callback-kind: each alternative of a union value is checked.
+    void Mount.make(Hook, { ...n, args: { target, fallback: null } });
+  });
+
   it("refuses args init does not take", () => {
     const n = { name: "bad" } as const;
     const fromName = "office";
