@@ -451,6 +451,7 @@ export default App.make({ env: Env.make("host", {}), components: [email], mounts
     ([, topLevel, use]) =>
       Effect.gen(function* () {
         const project = yield* Project.make;
+        const path = yield* Path.Path;
         const fs = yield* FileSystem.FileSystem;
         yield* fs.makeDirectory(`${project.root}/email`);
         yield* project.write(
@@ -508,10 +509,14 @@ export default App.make({ env: Env.make("host", {}), components: [email], mounts
           return yield* project.generatedFiles;
         });
         const first = yield* run;
-        expect(first["confect/_generated/components.ts"]).toContain(
+        expect(
+          first[path.join("confect", "_generated", "components.ts")],
+        ).toContain(
           '"bulkEmail": import("../../email/_generated/component.js").ComponentApi<"bulkEmail">;',
         );
-        expect(first["convex/convex.config.ts"]).toContain('name: "bulkEmail"');
+        expect(first[path.join("convex", "convex.config.ts")]).toContain(
+          'name: "bulkEmail"',
+        );
         expect(yield* run).toStrictEqual(first);
       }),
     { timeout: 60000 },
