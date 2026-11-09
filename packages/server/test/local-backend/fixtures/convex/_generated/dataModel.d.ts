@@ -43,6 +43,23 @@ export type DataModel = {
     searchIndexes: {};
     vectorIndexes: {};
   };
+  commitStamps: {
+    document: {
+      at: bigint | import("convex/values").CommitTsPlaceholder;
+      caseId: string;
+      label: string;
+      _id: Id<"commitStamps">;
+      _creationTime: number;
+    };
+    fieldPaths: "_creationTime" | "_id" | "at" | "caseId" | "label";
+    indexes: {
+      by_id: ["_id"];
+      by_creation_time: ["_creationTime"];
+      by_caseId_at: ["caseId", "at", "_creationTime"];
+    };
+    searchIndexes: {};
+    vectorIndexes: {};
+  };
   transactionNotes: {
     document: {
       caseId: string;

@@ -82,6 +82,23 @@ export declare const api: {
         string
       >;
     };
+    commitTs: {
+      newestFirst: FunctionReference<
+        "query",
+        "public",
+        { caseId: string },
+        Array<{
+          at: bigint | import("convex/values").CommitTsPlaceholder;
+          label: string;
+        }>
+      >;
+      stamp: FunctionReference<
+        "mutation",
+        "public",
+        { caseId: string; label: string },
+        "placeholder" | "bigint"
+      >;
+    };
     componentAuthoring: {
       probe: FunctionReference<
         "query",
