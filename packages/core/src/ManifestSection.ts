@@ -7,10 +7,18 @@ export interface Data<Value = unknown> {
 }
 
 /**
+ * The backend codegen generates: the app, or a component under the name its
+ * `defineComponent` gives it.
+ */
+export type Target =
+  | { readonly kind: "app" }
+  | { readonly kind: "component"; readonly name: string };
+
+/**
  * What codegen hands a section's `render`: the exports of each `confect/` file
  * it matched, every registered function with the spec file declaring it, each
- * mounted component with the specifier of its definition, and every file
- * `match` was offered.
+ * mounted component with the specifier of its definition, every file `match`
+ * was offered, the backend it generates and the absolute path of `confect/`.
  */
 export interface GenerateInput {
   readonly modules: ReadonlyArray<{
@@ -26,6 +34,8 @@ export interface GenerateInput {
     readonly definition: string;
   }>;
   readonly files: ReadonlyArray<string>;
+  readonly target: Target;
+  readonly confectDirectory: string;
 }
 
 export interface Generate {

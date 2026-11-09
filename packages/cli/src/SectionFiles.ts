@@ -116,7 +116,8 @@ const sourceFiles = Effect.gen(function* () {
 
 const render = Effect.fnUntraced(function* (
   { key, generate }: Claim,
-  input: Omit<ManifestSection.GenerateInput, "modules">,
+  target: ManifestSection.Target,
+  input: Pick<ManifestSection.GenerateInput, "functions" | "mounts" | "files">,
   watched: Set<string>,
 ) {
   const path = yield* Path.Path;
@@ -162,7 +163,7 @@ const render = Effect.fnUntraced(function* (
     );
   });
   const { contents, errors } = yield* Effect.try({
-    try: () => generate.render({ ...input, modules }),
+    try: () => generate.render({ ...input, modules, target, confectDirectory }),
     catch: failed,
   });
   const [error, ...more] = errors.map(
@@ -215,29 +216,38 @@ export const inputs = Effect.gen(function* () {
 
 /**
  * Write each claimed file into `confect/_generated` once every section has
- * rendered. Every section renders before codegen fails with the first error
- * after logging the rest. The record of section inputs is written either way,
- * keeping the previous inputs after a failure, so `confect dev` sees the fix.
- * Returns the claimed file names, whether they differ from the section files
- * that existed before, and the modules each section key matched.
+ * rendered for the `declared` backend's target; an undeclared backend renders
+ * none. Every section renders before codegen fails with the first error after
+ * logging the rest. The record of section inputs is written either way, keeping
+ * the previous inputs after a failure, so `confect dev` sees the fix. Returns
+ * the claimed file names, whether they differ from the section files that
+ * existed before, and the modules each section key matched.
  */
 export const sync = Effect.fnUntraced(function* (
+  declared: Option.Option<ManifestSection.Target>,
   leaves: ReadonlyArray<Leaf>,
   mounts: ManifestSection.GenerateInput["mounts"],
 ) {
   const path = yield* Path.Path;
   const generated = path.join(yield* ConfectDirectory.get, "_generated");
-  const claimed = yield* Effect.fromResult(claims(leaves));
+  const claimed = Option.isSome(declared)
+    ? (yield* Effect.fromResult(claims(leaves))).map((claim) => ({
+        claim,
+        target: declared.value,
+      }))
+    : [];
   const functions: Array<{ path: string; source: string }> = [];
   visit(leaves, (_, functionPath, source) =>
     functions.push({ path: functionPath, source }),
   );
   const files = claimed.length === 0 ? [] : yield* sourceFiles;
   const watched = new Set<string>();
-  const [rendered, failures] = yield* Effect.partition(claimed, (claim) =>
-    render(claim, { functions, mounts, files }, watched).pipe(
-      Effect.map((output) => ({ ...claim, ...output })),
-    ),
+  const [rendered, failures] = yield* Effect.partition(
+    claimed,
+    ({ claim, target }) =>
+      render(claim, target, { functions, mounts, files }, watched).pipe(
+        Effect.map((output) => ({ ...claim, ...output })),
+      ),
   );
   if (failures.length > 0) for (const file of yield* inputs) watched.add(file);
   yield* claimed.length === 0
