@@ -161,6 +161,8 @@ test("writes a declared host, mounted component and callback consumer", () =>
         "components/counter/confect/callbacks.ts",
         "components/counter/confect/counter.spec.ts",
         "components/counter/confect/counter.impl.ts",
+        "components/counter/confect/tables/batches.ts",
+        "components/counter/confect/tables/emails.ts",
         "components/counter/convex/_generated/api.ts",
         "components/counter/convex/_generated/component.ts",
       ]) {
@@ -172,6 +174,8 @@ test("writes a declared host, mounted component and callback consumer", () =>
         ["confect/app.ts", 'name: "kitted"'],
         ["confect/component.ts", "Component.bind"],
         ["components/counter/confect/callbacks.ts", "Callback.mutation"],
+        ["components/counter/confect/tables/emails.ts", '.group("batchId")'],
+        ["consumer.test.ts", "Component.groups(counterContract)"],
         ["confect/hello.impl.ts", "Callback.create"],
         ["consumer.test.ts", "toBe(43)"],
       ] as const) {

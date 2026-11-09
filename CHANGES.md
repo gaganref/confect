@@ -425,6 +425,24 @@ Changesets: `add-confect-components.md`, `component-no-raw-ctx.md`,
 Upstream: port of [upstream #646](https://github.com/rjdellecese/confect/pull/646),
 which remains open; fork-specific follow-up submission is unrecorded.
 
+### Name the field that groups a component table's rows
+
+`Table.make(...).group("batchId")` names the required id field that groups a
+table's rows and refuses any other field. `Component.contract(spec, scope,
+tables)` takes tables beside system table names and refuses a grouped table whose
+id is not one of them, in the component's scope, and a table entry that may be
+absent, such as any union in the tables. `Component.groups(contract)`
+returns each grouped table's `{ key, table }`, typed with the literal key and
+table. Table names alone, even as an explicit type argument, carry no groups.
+Codegen passes each table to the contract, so a generated contract lists its
+groups and its declared type keeps them. The generated
+`_generated/component.ts` binds its own imports with a leading `$`, as
+`convexSchema.ts` does, so a table named `spec`, `scope` or `component` cannot
+collide with them. Rerun `confect codegen` to publish groups.
+
+Changesets: `table-group.md`, `codegen-table-groups.md`.
+Upstream: planned; no proposal submitted.
+
 ### Type component callbacks
 
 Add callback contracts, stored handle schemas, and host handle creation so a

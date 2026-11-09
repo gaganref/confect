@@ -1,3 +1,4 @@
+import * as GenericId from "./GenericId.js";
 import * as IdScope from "./IdScope.js";
 import * as Lazy from "./Lazy.js";
 import * as SystemFields from "./SystemFields.js";
@@ -12,7 +13,13 @@ import type {
   SearchIndexConfig,
   VectorIndexConfig,
 } from "convex/server";
-import type { GenericValidator, Validator } from "convex/values";
+import type {
+  GenericId as ConvexGenericId,
+  GenericValidator,
+  Validator,
+} from "convex/values";
+import * as Data from "effect/Data";
+import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import type * as Schema from "effect/Schema";
 
@@ -37,6 +44,97 @@ export const isUnnamedTable = (u: unknown): u is UnnamedAny =>
   Predicate.hasProperty(u, TypeId) && !Predicate.hasProperty(u, "tableName");
 
 // -----------------------------------------------------------------------------
+// Group
+// -----------------------------------------------------------------------------
+//
+// A table is grouped by one of its required id fields, and the id's table owns
+// its rows. `table` and `scope` come from the id's schema on first read, so
+// binding a table never builds its `Fields`.
+
+export interface Group<
+  Key extends string = string,
+  Table_ extends string = string,
+  Scope_ extends IdScope.IdScope = IdScope.IdScope,
+> {
+  readonly key: Key;
+  readonly table: Table_;
+  readonly scope: Scope_;
+}
+
+export class GroupFieldError extends Data.TaggedError("GroupFieldError")<{
+  readonly tableName: string;
+  readonly key: string;
+}> {
+  override get message(): string {
+    return `Table '${this.tableName}' cannot be grouped by '${this.key}': it is not a field holding an id.`;
+  }
+}
+
+type FieldsOf<TableSchema_> = TableSchema_ extends {
+  readonly fields: infer StructFields extends Schema.Struct.Fields;
+}
+  ? StructFields
+  : never;
+
+type GroupKeys<TableSchema_> = {
+  [
+    Key in keyof FieldsOf<TableSchema_> & string
+  ]: FieldsOf<TableSchema_>[Key] extends {
+    readonly Type: ConvexGenericId<string>;
+  }
+    ? [FieldsOf<TableSchema_>[Key]["~type.optionality"]] extends ["optional"]
+      ? never
+      : Key
+    : never;
+}[keyof FieldsOf<TableSchema_> & string];
+
+type IdTableName<Id> = Id extends {
+  readonly "~@confect/core/ScopedId": {
+    readonly table: infer TableName extends string;
+  };
+}
+  ? TableName
+  : Id extends ConvexGenericId<infer TableName>
+    ? TableName
+    : never;
+
+type IdScopeOf<Id> = Id extends {
+  readonly "~@confect/core/ScopedId": {
+    readonly scope: infer Scope_ extends IdScope.IdScope;
+  };
+}
+  ? Scope_
+  : IdScope.App;
+
+type GroupOf<TableSchema_, Key extends string> = Group<
+  Key,
+  IdTableName<
+    FieldsOf<TableSchema_>[Key & keyof FieldsOf<TableSchema_>]["Type"]
+  >,
+  IdScopeOf<FieldsOf<TableSchema_>[Key & keyof FieldsOf<TableSchema_>]["Type"]>
+>;
+
+const makeGroup = (
+  tableName: string,
+  key: string,
+  fields: () => Schema.Codec<any, any>,
+): Group => {
+  const idField = () => {
+    const ast = (fields() as { readonly fields?: Schema.Struct.Fields })
+      .fields?.[key]?.ast;
+    const table =
+      ast === undefined ? Option.none() : GenericId.tableName<string>(ast);
+    if (ast === undefined || Option.isNone(table))
+      throw new GroupFieldError({ tableName, key });
+    return { table: table.value, scope: GenericId.scope(ast) };
+  };
+  const group = { key };
+  Lazy.defineProperty(group, "table", () => idField().table);
+  Lazy.defineProperty(group, "scope", () => idField().scope);
+  return group as Group;
+};
+
+// -----------------------------------------------------------------------------
 // Bound Table
 // -----------------------------------------------------------------------------
 //
@@ -54,10 +152,12 @@ export interface Table<
   SearchIndexes_ extends GenericTableSearchIndexes = {},
   VectorIndexes_ extends GenericTableVectorIndexes = {},
   Scope_ extends IdScope.IdScope = IdScope.App,
+  Group_ extends Group | undefined = undefined,
 > {
   readonly [TypeId]: TypeId;
   readonly tableName: Name_;
   readonly scope: Scope_;
+  readonly group: Group_;
   readonly Fields: TableSchema_;
   readonly Doc: SystemFields.ExtendWithSystemFields<
     Name_,
@@ -82,7 +182,8 @@ export type AnyWithProps = Table<
   GenericTableIndexes,
   GenericTableSearchIndexes,
   GenericTableVectorIndexes,
-  IdScope.IdScope
+  IdScope.IdScope,
+  Group | undefined
 >;
 
 // -----------------------------------------------------------------------------
@@ -105,6 +206,7 @@ export interface UnnamedTable<
   Indexes_ extends GenericTableIndexes = {},
   SearchIndexes_ extends GenericTableSearchIndexes = {},
   VectorIndexes_ extends GenericTableVectorIndexes = {},
+  Group_ extends Group | undefined = undefined,
 > {
   <
     const Name_ extends string,
@@ -119,7 +221,8 @@ export interface UnnamedTable<
     Indexes_,
     SearchIndexes_,
     VectorIndexes_,
-    Scope_
+    Scope_,
+    Group_
   >;
 
   readonly [TypeId]: TypeId;
@@ -146,7 +249,8 @@ export interface UnnamedTable<
         >
     >,
     SearchIndexes_,
-    VectorIndexes_
+    VectorIndexes_,
+    Group_
   >;
 
   searchIndex<
@@ -170,7 +274,8 @@ export interface UnnamedTable<
           }
         >
     >,
-    VectorIndexes_
+    VectorIndexes_,
+    Group_
   >;
 
   vectorIndex<
@@ -195,7 +300,23 @@ export interface UnnamedTable<
             filterFields: FilterFields;
           }
         >
-    >
+    >,
+    Group_
+  >;
+
+  /**
+   * Name the required id field that groups this table's rows. The field's table
+   * is the one whose rows own these rows.
+   */
+  group<const Key extends GroupKeys<TableSchema_>>(
+    key: Key,
+  ): UnnamedTable<
+    TableSchema_,
+    TableValidator_,
+    Indexes_,
+    SearchIndexes_,
+    VectorIndexes_,
+    GroupOf<TableSchema_, Key>
   >;
 }
 
@@ -208,7 +329,8 @@ export type UnnamedAnyWithProps = UnnamedTable<
   GenericValidator,
   GenericTableIndexes,
   GenericTableSearchIndexes,
-  GenericTableVectorIndexes
+  GenericTableVectorIndexes,
+  Group | undefined
 >;
 
 // -----------------------------------------------------------------------------
@@ -266,6 +388,7 @@ interface UnnamedState<
   VectorIndexes_ extends GenericTableVectorIndexes,
 > {
   readonly lazyFields: () => TableSchema_;
+  readonly groupKey: string | undefined;
   readonly indexes: Indexes_;
   readonly searchIndexes: SearchIndexes_;
   readonly vectorIndexes: VectorIndexes_;
@@ -279,6 +402,7 @@ const makeBound = <
   SearchIndexes_ extends GenericTableSearchIndexes,
   VectorIndexes_ extends GenericTableVectorIndexes,
   Scope_ extends IdScope.IdScope,
+  Group_ extends Group | undefined,
 >(
   tableName: Name_,
   state: UnnamedState<TableSchema_, Indexes_, SearchIndexes_, VectorIndexes_>,
@@ -290,12 +414,17 @@ const makeBound = <
   Indexes_,
   SearchIndexes_,
   VectorIndexes_,
-  Scope_
+  Scope_,
+  Group_
 > => {
   const bound = {
     [TypeId]: TypeId as TypeId,
     tableName,
     scope,
+    group:
+      state.groupKey === undefined
+        ? undefined
+        : makeGroup(tableName, state.groupKey, () => bound.Fields),
     indexes: state.indexes,
     searchIndexes: state.searchIndexes,
     vectorIndexes: state.vectorIndexes,
@@ -306,7 +435,8 @@ const makeBound = <
     Indexes_,
     SearchIndexes_,
     VectorIndexes_,
-    Scope_
+    Scope_,
+    Group_
   >;
 
   Lazy.defineProperty(bound, "Fields", () => state.lazyFields());
@@ -328,6 +458,7 @@ const makeUnnamed = <
   Indexes_ extends GenericTableIndexes,
   SearchIndexes_ extends GenericTableSearchIndexes,
   VectorIndexes_ extends GenericTableVectorIndexes,
+  Group_ extends Group | undefined,
 >(
   state: UnnamedState<TableSchema_, Indexes_, SearchIndexes_, VectorIndexes_>,
 ): UnnamedTable<
@@ -335,14 +466,16 @@ const makeUnnamed = <
   TableValidator_,
   Indexes_,
   SearchIndexes_,
-  VectorIndexes_
+  VectorIndexes_,
+  Group_
 > => {
   type UnnamedTable_ = UnnamedTable<
     TableSchema_,
     TableValidator_,
     Indexes_,
     SearchIndexes_,
-    VectorIndexes_
+    VectorIndexes_,
+    Group_
   >;
 
   type UnnamedTableFunction<FunctionName extends keyof UnnamedTable_> =
@@ -361,7 +494,8 @@ const makeUnnamed = <
     Indexes_,
     SearchIndexes_,
     VectorIndexes_,
-    Scope_
+    Scope_,
+    Group_
   > =>
     makeBound<
       Name_,
@@ -370,18 +504,17 @@ const makeUnnamed = <
       Indexes_,
       SearchIndexes_,
       VectorIndexes_,
-      Scope_
+      Scope_,
+      Group_
     >(tableName, state, (scope ?? IdScope.app) as Scope_);
 
   const index: UnnamedTableFunction<"index"> = (name, fields) =>
     makeUnnamed({
-      lazyFields: state.lazyFields,
+      ...state,
       indexes: {
         ...state.indexes,
         [name]: fields,
       } as any,
-      searchIndexes: state.searchIndexes,
-      vectorIndexes: state.vectorIndexes,
     });
 
   const searchIndex: UnnamedTableFunction<"searchIndex"> = (
@@ -389,13 +522,11 @@ const makeUnnamed = <
     indexConfig,
   ) =>
     makeUnnamed({
-      lazyFields: state.lazyFields,
-      indexes: state.indexes,
+      ...state,
       searchIndexes: {
         ...state.searchIndexes,
         [name]: indexConfig,
       } as any,
-      vectorIndexes: state.vectorIndexes,
     });
 
   const vectorIndex: UnnamedTableFunction<"vectorIndex"> = (
@@ -403,14 +534,15 @@ const makeUnnamed = <
     indexConfig,
   ) =>
     makeUnnamed({
-      lazyFields: state.lazyFields,
-      indexes: state.indexes,
-      searchIndexes: state.searchIndexes,
+      ...state,
       vectorIndexes: {
         ...state.vectorIndexes,
         [name]: indexConfig,
       } as any,
     });
+
+  const group: UnnamedTableFunction<"group"> = (key) =>
+    makeUnnamed({ ...state, groupKey: key });
 
   return Object.assign(bind, {
     [TypeId]: TypeId as TypeId,
@@ -420,6 +552,7 @@ const makeUnnamed = <
     index,
     searchIndex,
     vectorIndex,
+    group,
   }) as UnnamedTable_;
 };
 
@@ -429,8 +562,9 @@ export const make = <const TableSchema_ extends Schema.Codec<any, any>>(
   type TableValidator_ = TableSchemaToTableValidator<TableSchema_>;
   type UnnamedTable_ = UnnamedTable<TableSchema_, TableValidator_>;
 
-  return makeUnnamed<TableSchema_, TableValidator_, {}, {}, {}>({
+  return makeUnnamed<TableSchema_, TableValidator_, {}, {}, {}, undefined>({
     lazyFields,
+    groupKey: undefined,
     indexes: {},
     searchIndexes: {},
     vectorIndexes: {},

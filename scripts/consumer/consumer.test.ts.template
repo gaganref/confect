@@ -1,10 +1,12 @@
 import { readFileSync } from "node:fs";
+import { Component } from "@confect/core";
 import { TestConfect } from "@confect/test";
 import * as Effect from "effect/Effect";
 import { expect, test } from "vitest";
 import { kitted } from "./confect/component.js";
 import registry from "./confect/_generated/testing.js";
 import auth from "./convex/auth.config.js";
+import counterContract from "./components/counter/confect/_generated/component.js";
 import manifest from "./confect/_generated/manifest.js";
 import refs from "./confect/_generated/refs.js";
 import databaseSchema from "./confect/_generated/schema.js";
@@ -81,6 +83,13 @@ test.each([
     }).pipe(Effect.provide(layer)),
   ),
 );
+
+test("installed codegen publishes a component table's group in its contract", () => {
+  const relation: {
+    readonly emails: { readonly key: "batchId"; readonly table: "batches" };
+  } = Component.groups(counterContract);
+  expect(relation).toEqual({ emails: { key: "batchId", table: "batches" } });
+});
 
 test("installed codegen discovers and executes the package test kit", () =>
   Effect.runPromise(
