@@ -12,6 +12,18 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Commit timestamps
+
+Add `CommitTs` in `@confect/core` and `vars.commitTs` on the database writer.
+A `CommitTs` field compiles to `v.commitTs()`, required, optional or nested,
+and keeps it when a component contract rebases the table's IDs. A mutation
+writes `writer.vars.commitTs`, which Convex resolves at commit. Later reads
+decode a `bigint`, and an index on the field orders by commit. The field's type
+is `bigint | CommitTsPlaceholder`, as in Convex, because the writing mutation
+reads back the placeholder. Plain `Schema.BigInt` still compiles to `v.int64()`.
+Frame's audit rows declare their commit-order column with it. Changeset:
+`commit-ts-schema.md`. Upstream: planned; no proposal submitted.
+
 ## Counted HTTP bodies
 
 Add `HttpRouter.withBodyLimit` for endpoint middleware. Count bytes while reading,

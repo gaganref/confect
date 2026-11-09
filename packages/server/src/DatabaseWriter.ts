@@ -5,7 +5,7 @@ import type {
   GenericDatabaseWriter,
   WithoutSystemFields,
 } from "convex/server";
-import type { GenericId } from "convex/values";
+import type { CommitTsPlaceholder, GenericId } from "convex/values";
 import { pipe } from "effect/Function";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -85,6 +85,11 @@ export interface DatabaseWriterService<
       ? Docs[TableName]
       : DocumentByName_<DataModel.FromSchema<DatabaseSchema_>, TableName>
   >;
+  /**
+   * Values not known until the mutation commits. Write `vars.commitTs` into a
+   * `CommitTs` field to store the transaction's commit timestamp.
+   */
+  readonly vars: { readonly commitTs: CommitTsPlaceholder };
 }
 
 /**
@@ -361,6 +366,7 @@ export const make = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
 
   return {
     table,
+    vars: convexDatabaseWriter.vars,
   } as DatabaseWriterService<DatabaseSchema_>;
 };
 

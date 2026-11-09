@@ -1,5 +1,6 @@
 export * as ActionCall from "./ActionCall.js";
 export * as Callback from "./Callback.js";
+export * as CommitTs from "./CommitTs.js";
 export * as FunctionProvenance from "./FunctionProvenance.js";
 export * as FunctionSpec from "./FunctionSpec.js";
 export * as GenericId from "./GenericId.js";

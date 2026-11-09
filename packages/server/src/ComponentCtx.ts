@@ -17,6 +17,7 @@ import type {
   VectorIndexNames,
   VectorSearchQuery,
 } from "convex/server";
+import type { CommitTsPlaceholder } from "convex/values";
 import type { PatchValue } from "./DatabaseWriter.js";
 
 /**
@@ -104,6 +105,7 @@ export interface DatabaseWriter<
   delete<TableName extends TableNamesInDataModel<DataModel>>(
     id: GenericId<TableName, Scope>,
   ): Promise<void>;
+  readonly vars: { readonly commitTs: CommitTsPlaceholder };
 }
 
 export interface StorageReader<Scope extends IdScope.IdScope> {
