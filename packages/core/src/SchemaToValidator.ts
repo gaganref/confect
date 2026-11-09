@@ -279,11 +279,29 @@ export type UndefinedOrValueToValidator<Vl extends ReadonlyValue | undefined> =
 type UnionValueToValidator<Vl, Optionality extends "required" | "optional"> =
   IsRecursive<Vl> extends true
     ? VAny<any, Optionality>
-    : VUnion<
-        OptionalValue<MutableValue<Vl>, Optionality>,
-        ValueTupleToValidatorTuple<UnionToTuple<Vl>>,
-        Optionality
-      >;
+    : UnionMembersToValidators<Vl> extends infer VdMembers extends Validator<
+          any,
+          "required",
+          any
+        >[]
+      ? VUnion<
+          OptionalValue<MutableValue<Vl>, Optionality>,
+          VdMembers,
+          Optionality
+        >
+      : never;
+
+// A CommitTs is one validator at runtime, so its bigint and placeholder
+// branches collapse into a single member, as true and false do into VBoolean.
+type UnionMembersToValidators<Vl> =
+  IsCommitTs<Extract<Vl, bigint | CommitTsPlaceholder>> extends true
+    ? [
+        VCommitTs,
+        ...ValueTupleToValidatorTuple<
+          UnionToTuple<Exclude<Vl, bigint | CommitTsPlaceholder>>
+        >,
+      ]
+    : ValueTupleToValidatorTuple<UnionToTuple<Vl>>;
 
 type ValueTupleToValidatorTuple<
   VlTuple extends readonly unknown[],
