@@ -279,29 +279,29 @@ export type UndefinedOrValueToValidator<Vl extends ReadonlyValue | undefined> =
 type UnionValueToValidator<Vl, Optionality extends "required" | "optional"> =
   IsRecursive<Vl> extends true
     ? VAny<any, Optionality>
-    : UnionMembersToValidators<Vl> extends infer VdMembers extends Validator<
-          any,
-          "required",
-          any
-        >[]
+    : [Extract<Vl, CommitTsPlaceholder>] extends [never]
       ? VUnion<
           OptionalValue<MutableValue<Vl>, Optionality>,
-          VdMembers,
+          ValueTupleToValidatorTuple<UnionToTuple<Vl>>,
           Optionality
         >
-      : never;
+      : CommitTsUnionValueToValidator<Vl, Optionality>;
 
 // A CommitTs is one validator at runtime, so its bigint and placeholder
 // branches collapse into a single member, as true and false do into VBoolean.
-type UnionMembersToValidators<Vl> =
-  IsCommitTs<Extract<Vl, bigint | CommitTsPlaceholder>> extends true
-    ? [
-        VCommitTs,
-        ...ValueTupleToValidatorTuple<
-          UnionToTuple<Exclude<Vl, bigint | CommitTsPlaceholder>>
-        >,
-      ]
-    : ValueTupleToValidatorTuple<UnionToTuple<Vl>>;
+// Only a union holding a placeholder comes here, because the infer that lets
+// the spread tuple satisfy VUnion's constraint makes other unions far costlier.
+type CommitTsUnionValueToValidator<
+  Vl,
+  Optionality extends "required" | "optional",
+> = [
+  VCommitTs,
+  ...ValueTupleToValidatorTuple<
+    UnionToTuple<Exclude<Vl, bigint | CommitTsPlaceholder>>
+  >,
+] extends infer VdMembers extends Validator<any, "required", any>[]
+  ? VUnion<OptionalValue<MutableValue<Vl>, Optionality>, VdMembers, Optionality>
+  : never;
 
 type ValueTupleToValidatorTuple<
   VlTuple extends readonly unknown[],
