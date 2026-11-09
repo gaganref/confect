@@ -3,7 +3,11 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import schema from "./_generated/schema";
-import { DatabaseReader, DatabaseWriter } from "./_generated/services";
+import {
+  DatabaseReader,
+  DatabaseWriter,
+  MutationRunner,
+} from "./_generated/services";
 import install from "./install.spec";
 
 const current = Effect.flatMap(DatabaseReader, (reader) =>
@@ -29,7 +33,17 @@ const settings = FunctionImpl.make(schema, install, "settings", () =>
   current.pipe(Effect.map(Option.getOrNull), Effect.orDie),
 );
 
+const send = FunctionImpl.make(schema, install, "send", ({ message }) =>
+  Effect.gen(function* () {
+    const runner = yield* MutationRunner;
+    const { fromName, onEvent } = Option.getOrThrow(yield* current);
+    if (onEvent !== undefined)
+      yield* runner.runMutation(onEvent, { fromName, message });
+    return null;
+  }).pipe(Effect.orDie),
+);
+
 export default GroupImpl.make(schema, install).pipe(
-  Layer.provide([init, settings]),
+  Layer.provide([init, settings, send]),
   GroupImpl.finalize,
 );

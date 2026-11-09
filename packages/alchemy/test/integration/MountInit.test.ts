@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, describe, expect, it } from "@effect/vitest";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Result from "effect/Result";
@@ -18,6 +19,7 @@ const prepare = { command: "confect", args: ["codegen"] };
 const initial = {
   bulkEmail: { fromName: "School office", maxAttempts: 3 } as Sender,
   transactionalEmail: { fromName: "Receipts", maxAttempts: 2 } as Sender,
+  relay: { label: "Relay" },
   bulkTarget: "record" as "record" | "gone",
   withGone: true,
 };
@@ -42,7 +44,7 @@ const node = (cwd: string, ...args: ReadonlyArray<string>) =>
 
 /**
  * A copy of the fixture, linked to the built packages, with its components
- * generated.
+ * generated, children first.
  */
 const app = (root: string, name: string) =>
   Effect.gen(function* () {
@@ -58,7 +60,7 @@ const app = (root: string, name: string) =>
         ]),
       ),
     });
-    for (const component of ["email"]) {
+    for (const component of ["email", "relay"]) {
       yield* fs.makeDirectory(`${directory}/components/${component}/convex`);
       yield* node(
         directory,
@@ -106,6 +108,20 @@ const makeDeployment = (
 };
 
 type Deployment = ReturnType<typeof makeDeployment>;
+
+/**
+ * What one clean push notes, in order.
+ */
+const steps = (tag: string) => [
+  `${tag} attempt`,
+  `${tag} acquire`,
+  `${tag} code`,
+  `${tag} init bulkEmail`,
+  `${tag} init transactionalEmail`,
+  `${tag} init relay`,
+  `${tag} init relay/inbox`,
+  `${tag} release`,
+];
 
 /**
  * Start a fresh local backend whose first push is the stack's own
@@ -173,6 +189,145 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             detail: expect.stringContaining("SyntheticInitAfterWrite"),
           });
           expect(yield* settings("bulkEmail")).toEqual(removed);
+        }),
+      ),
+    600_000,
+  );
+
+  it.live(
+    "calls the host callback with stored config, runs nested mounts after their parent, stops at a failing mount, and refuses a deleted target",
+    () =>
+      withDeployment(({ push, call, settings, apps: [appA] }) =>
+        Effect.gen(function* () {
+          yield* call("install:send", "bulkEmail", { message: "Synthetic" });
+          const sent = (yield* call("events:list")) as ReadonlyArray<Row>;
+          expect(
+            sent.map(({ fromName, message }) => ({ fromName, message })),
+          ).toEqual([{ fromName: "School office", message: "Synthetic" }]);
+
+          const all = Effect.all({
+            bulkEmail: settings("bulkEmail"),
+            transactionalEmail: settings("transactionalEmail"),
+            relay: settings("relay"),
+            inbox: settings("relay/inbox"),
+          });
+          const first = yield* all;
+          expect(first.relay).toMatchObject({ label: "Relay" });
+          expect(first.inbox).toMatchObject({ fromName: "Relay inbox" });
+          const events: Array<string> = [];
+          expect(
+            Result.isSuccess(yield* push(appA, initial, "A", events)),
+          ).toBe(true);
+          expect(events).toEqual(steps("A"));
+          expect(yield* all).toEqual(first);
+
+          const second = {
+            ...initial,
+            bulkEmail: { fromName: "School office v2" },
+            relay: { label: "Relay v2" },
+          };
+          const stopped = yield* push(appA, {
+            ...second,
+            transactionalEmail: { fromName: "FAIL_AFTER_WRITE" },
+          });
+          assert(Result.isFailure(stopped));
+          expect(stopped.failure).toMatchObject({
+            message:
+              "transactionalEmail: init failed; earlier mounts are applied, and the next push retries",
+          });
+          const partial = yield* all;
+          expect(partial.bulkEmail.fromName).toBe("School office v2");
+          expect(partial.transactionalEmail).toEqual(first.transactionalEmail);
+          expect(partial.relay).toEqual(first.relay);
+          const clean = {
+            ...second,
+            transactionalEmail: { fromName: "Receipts v2" },
+          };
+          expect(Result.isSuccess(yield* push(appA, clean))).toBe(true);
+          const converged = yield* all;
+          expect(converged.bulkEmail).toMatchObject(clean.bulkEmail);
+          expect(converged.transactionalEmail).toMatchObject(
+            clean.transactionalEmail,
+          );
+          expect(converged.relay).toMatchObject(clean.relay);
+          expect(converged.inbox).toEqual(first.inbox);
+
+          const gone = { ...clean, bulkTarget: "gone" as const };
+          expect(Result.isSuccess(yield* push(appA, gone))).toBe(true);
+          const target = yield* settings("bulkEmail");
+          expect(target.onEvent).not.toBe(converged.bulkEmail.onEvent);
+          const deleted: Array<string> = [];
+          const refused = yield* push(
+            appA,
+            { ...gone, bulkEmail: { fromName: "Unapplied" }, withGone: false },
+            "D",
+            deleted,
+          );
+          assert(Result.isFailure(refused));
+          expect(refused.failure).toMatchObject({
+            _tag: "MountInitFailed",
+            mount: "bulkEmail",
+            detail: expect.stringContaining("Function handle not found"),
+          });
+          expect(deleted).toEqual([
+            "D attempt",
+            "D acquire",
+            "D code",
+            "D release",
+          ]);
+          expect(yield* settings("bulkEmail")).toEqual(target);
+        }),
+      ),
+    600_000,
+  );
+
+  it.live(
+    "holds a second push at the lock while the first is between its code and its init",
+    () =>
+      withDeployment(({ push, settings, apps: [appA, appB] }) =>
+        Effect.gen(function* () {
+          const events: Array<string> = [];
+          const aCoded = yield* Deferred.make<void>();
+          const bWaiting = yield* Deferred.make<void>();
+          // A waits, after its code push, until B asks for the lock. Pushes
+          // that cannot overlap time out here instead of hanging.
+          const holdA = Deferred.succeed(aCoded, undefined).pipe(
+            Effect.andThen(Deferred.await(bWaiting)),
+            Effect.timeout("30 seconds"),
+            Effect.orDie,
+          );
+          const [a, b] = yield* Effect.all(
+            [
+              push(appA, { ...initial, relay: { label: "A" } }, "A", events, {
+                coded: holdA,
+              }),
+              Deferred.await(aCoded).pipe(
+                Effect.andThen(
+                  push(
+                    appB,
+                    { ...initial, relay: { label: "B" } },
+                    "B",
+                    events,
+                    {
+                      attempting: Deferred.succeed(bWaiting, undefined),
+                    },
+                  ),
+                ),
+              ),
+            ],
+            { concurrency: "unbounded" },
+          );
+          expect(Result.isSuccess(a) && Result.isSuccess(b)).toBe(true);
+          const [attemptA, ...heldA] = steps("A");
+          expect(events).toEqual([
+            attemptA,
+            heldA[0],
+            heldA[1],
+            "B attempt",
+            ...heldA.slice(2),
+            ...steps("B").slice(1),
+          ]);
+          expect((yield* settings("relay")).label).toBe("B");
         }),
       ),
     600_000,

@@ -5,5 +5,8 @@
     "skipLibCheck": true,
     "module": "preserve",
     "noEmit": true
-  }
+  },
+  // Convex emits an incorrect nested API import in a nested component's
+  // unused helpers, as the repo's tsconfig.json notes for the server fixtures.
+  "exclude": ["node_modules", "components/*/convex/_generated"]
 }
