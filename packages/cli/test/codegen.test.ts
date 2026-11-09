@@ -44,6 +44,9 @@ import {
   renderCodegenError,
 } from "@confect/cli/CodegenError";
 import * as Project from "./integration/Project";
+import { DatabaseSchema } from "@confect/server";
+import { TestConfect } from "../../test/src";
+import { defineSchema } from "convex/server";
 
 vi.mock("esbuild", (importOriginal) =>
   importOriginal<typeof esbuild>().then((original) => ({
@@ -1513,6 +1516,70 @@ const withMount = (
     .replace("  components: [", `  components: [${definition}, `)
     .replace("  mounts: [", `  mounts: [\n    ${mount},`);
 
+const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
+
+/**
+ * A component package's test kit that registers the mount and `children` below
+ * it, and records each registered path on `globalThis.registered`.
+ */
+const recordingKit = (children: ReadonlyArray<string>) =>
+  `import { defineSchema } from "convex/server";
+const modules = { "_generated/api.js": () => Promise.resolve({}) };
+export function register(t, name) {
+  for (const path of [name, ...[${children.map((child) => stringLiteral(child)).join(", ")}].map((child) => name + "/" + child)]) {
+    (globalThis.registered ??= []).push(path);
+    t.registerComponent(path, defineSchema({}), modules);
+  }
+}
+`;
+
+/**
+ * `pool-kit`'s own `/test` kit misses the `batchWorker` child its component
+ * mounts; `pool-frame/testing` registers it.
+ */
+const wrongKitProject = (testing: string | undefined) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const project = yield* kitProject({
+      "package.json":
+        '{ "name": "pool-kit", "type": "module", "exports": { "./test": "./test.js" } }',
+      "test.js": recordingKit([]),
+    });
+    yield* fs.makeDirectory(
+      path.join(project.root, "node_modules/pool-frame"),
+      {
+        recursive: true,
+      },
+    );
+    yield* project.write(
+      "node_modules/pool-frame/package.json",
+      '{ "name": "pool-frame", "type": "module", "exports": { "./testing": "./testing.js", "./plain": "./plain.js" } }',
+    );
+    yield* project.write(
+      "node_modules/pool-frame/testing.js",
+      recordingKit(["batchWorker"]),
+    );
+    yield* project.write(
+      "node_modules/pool-frame/plain.js",
+      "export const layer = {};\n",
+    );
+    yield* project.write(
+      "components/counter/convex/schema.ts",
+      'import { defineSchema } from "convex/server";\nexport default defineSchema({});\n',
+    );
+    if (testing !== undefined) {
+      yield* project.write(
+        "confect/app.ts",
+        (yield* project.read("confect/app.ts")).replace(
+          'Component.make("pool", { client })',
+          `Component.make("pool", { client, testing: ${stringLiteral(testing)} })`,
+        ),
+      );
+    }
+    return project;
+  });
+
 const digestOf = (manifest: string) =>
   /"digest": "(sha256:[0-9a-f]{64})"/.exec(manifest)?.[1] ?? "missing";
 
@@ -1720,6 +1787,78 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       { timeout: 30000 },
     );
 
+    it.effect.each<{
+      readonly testing: string | undefined;
+      readonly kit: string;
+      readonly registered: ReadonlyArray<string>;
+    }>([
+      { testing: undefined, kit: "pool-kit/test", registered: ["pool"] },
+      {
+        testing: "pool-frame/testing",
+        kit: "pool-frame/testing",
+        registered: ["pool", "pool/batchWorker"],
+      },
+    ])(
+      "registers a mount through $kit when its descriptor names $testing",
+      ({ testing, kit, registered }) =>
+        Effect.gen(function* () {
+          const project = yield* wrongKitProject(testing);
+          yield* project.run;
+          const generated = yield* project.read(
+            "confect/_generated/testing.ts",
+          );
+          expect(generated).toContain(`import * as poolKit from "${kit}";`);
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/testing.ts`,
+          );
+          const state = globalThis as { registered?: Array<string> };
+          state.registered = [];
+          const databaseSchema = DatabaseSchema.make({});
+          yield* TestConfect.TestConfect<typeof databaseSchema>().pipe(
+            Effect.provide(
+              TestConfect.layer({
+                schema: databaseSchema,
+                convexSchema: defineSchema({}),
+                modules: { "_generated/server.ts": () => Promise.resolve({}) },
+                components: { pool: module.default.components.pool },
+                httpMounts: [],
+              }),
+            ),
+          );
+          expect(state.registered).toEqual(registered);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect.each([
+      {
+        testing: "pool-frame/missing",
+        problem: ", which does not resolve from convex/convex.config.ts.",
+      },
+      {
+        testing: "pool-frame/plain",
+        problem: ", which does not export `register(t, name)`.",
+      },
+      {
+        testing: "./testing.js",
+        problem:
+          '; name it by a package specifier, such as "<package>/testing".',
+      },
+    ])(
+      "refuses a descriptor's test kit $testing",
+      ({ testing, problem }) =>
+        Effect.gen(function* () {
+          const project = yield* wrongKitProject(testing);
+          expect(yield* Effect.flip(project.run)).toEqual(
+            new InvalidDeclarationError({
+              declarationPath: "confect/app.ts",
+              reason: `the mount "pool" names the test kit ${stringLiteral(testing)} in its component descriptor${problem}`,
+            }),
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
     it.effect(
       "keeps nested HTTP mounts for local components",
       () =>
@@ -1758,7 +1897,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
               .replace("[workpool, ", "[parent, ")
               .replace(
                 'Component.make("pool", { client }), { name: "pool" }',
-                'Component.make("parent", { client }), { name: "pool", httpPrefix: "/pool" }',
+                'Component.make("parent", { client, testing: "pool-kit/testing" }), { name: "pool", httpPrefix: "/pool" }',
               ),
           );
           yield* project.run;

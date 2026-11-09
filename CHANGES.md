@@ -744,6 +744,25 @@ Changeset: `discover-component-test-kit.md`.
 Upstream: planned; it builds on the fork-only generated test registry, and no
 proposal is submitted.
 
+### Name a component's test kit in its descriptor
+
+`Component.make` takes `testing`, the package specifier of the kit whose
+`register(t, name)` installs the component and its children. Codegen imports it
+for each mount of the descriptor from another package before searching
+`<package>/testing` and `<package>/test`, and the search is unchanged without
+it. A local component's mount ignores it. A wrapper package can
+now supply a kit when the mounted package's own is wrong: Frame's aggregate kit
+registers the `batchWorker` child that `@convex-dev/aggregate`'s `/test` kit
+misses, and its auth kit exports the `register` that `@convex-dev/auth`'s kits
+lack. Codegen fails with `InvalidDeclarationError`, naming the mount and the
+kit, for a relative or absolute specifier, one that does not resolve, or one
+whose listed exports have no `register`. This restores the static kit checks
+removed with the mount option.
+
+Changeset: `descriptor-test-kit.md`.
+Upstream: planned; it builds on the fork-only generated test registry, and no
+proposal is submitted.
+
 ### Keep fork housekeeping separate
 
 Move fork prose and rules from README.md and AGENTS.md into FORK.md so upstream

@@ -61,6 +61,17 @@ export const layer = TestConfect.layer(app);
 
 The generated registry imports the schema and lazy module loaders of each local Convex component by a relative path. For a component mounted from another package, codegen tries `<package>/testing`, then `<package>/test`. It prefers `/testing` when both resolve. The registry imports the selected namespace as a mount-named kit, such as `workpoolKit`, and calls its `register(t, name)`. That kit also registers the package's nested components. `TestConfect.layer` names the mount if the kit exports neither `register` nor both `schema` and `modules`.
 
+When a package's own kit is missing or wrong, the component's descriptor names the kit to use instead, by package specifier:
+
+```ts
+export default Component.make("aggregate", {
+  client: Client.make,
+  testing: "@acme/aggregate/testing",
+});
+```
+
+Codegen then imports that kit for every mount of the descriptor from another package and skips the `<package>/testing` and `<package>/test` search. A local component's mount ignores it. It fails, naming the mount and the kit, when the specifier is a relative or absolute path, does not resolve from `convex/convex.config.ts`, or lists its exports without a `register`.
+
 Local kits use names such as `emailSchema` and `emailKit`. Repeated mounts of one definition share the first mount's kit. Codegen sanitizes identifiers, adds suffixes on collision, and writes imports before local kit declarations. Relative imports carry `.js` extensions for NodeNext. Module-map keys retain their source extensions, such as `mail.ts`. When neither public test entry resolves, codegen reports both entries it tried. It never writes another package's private file paths.
 
 Keep the registry in test imports only. It is separate from the runtime schema and function wrappers, so production functions retain their per-group bundles. Regenerate it when adding functions or changing component installations. The schema-based constructor above remains available for hand-written component kits and custom HTTP router loaders.

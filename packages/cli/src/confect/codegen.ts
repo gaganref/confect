@@ -1089,12 +1089,54 @@ const logGenerated = <E, R>(
  */
 const quote = (value: string) => JSON.stringify(value);
 
+/**
+ * A descriptor's `testing` kit must be a package specifier, so the generated
+ * registry holds no machine-specific path, and must export `register`. A kit
+ * whose exports cannot be listed without running it passes here, and
+ * `TestConfect.layer` names the mount if it has no `register`.
+ */
+const checkTestKit = Effect.fnUntraced(function* (
+  mount: string,
+  specifier: string,
+  config: string,
+  configDisplay: string,
+) {
+  const path = yield* Path.Path;
+  const invalid = (problem: string) =>
+    new CodegenError.InvalidDeclarationError({
+      declarationPath: "confect/app.ts",
+      reason: `the mount ${quote(mount)} names the test kit ${quote(specifier)} in its component descriptor${problem}`,
+    });
+  if (specifier.startsWith(".") || path.isAbsolute(specifier)) {
+    return yield* invalid(
+      '; name it by a package specifier, such as "<package>/testing".',
+    );
+  }
+  const resolved = Bundler.resolveModule(specifier, config);
+  if (Option.isNone(resolved)) {
+    return yield* invalid(`, which does not resolve from ${configDisplay}.`);
+  }
+  const exports = yield* Bundler.exportNames(resolved.value).pipe(
+    Effect.mapError((error) => fromBundlerError(specifier, error)),
+  );
+  if (Option.isSome(exports) && !exports.value.includes("register")) {
+    return yield* invalid(", which does not export `register(t, name)`.");
+  }
+});
+
 const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
   const convexDirectory = yield* ConvexDirectory.get;
   const generated = path.join(confectDirectory, "_generated");
+  const configDisplay = path
+    .relative(
+      yield* ProjectRoot.get,
+      path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
+    )
+    .split(path.sep)
+    .join("/");
   const relative = (file: string) => {
     const value = path.relative(generated, file).split(path.sep).join("/");
     return value.startsWith(".") ? value : `./${value}`;
@@ -1134,7 +1176,8 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
     void,
     | PlatformError.PlatformError
     | BuildError
-    | CodegenError.InvalidConvexConfigError,
+    | CodegenError.InvalidConvexConfigError
+    | CodegenError.InvalidDeclarationError,
     FileSystem.FileSystem | Path.Path
   > {
     const config = path.join(directory, ConvexConfig.CONVEX_CONFIG_FILENAME);
@@ -1151,14 +1194,22 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
           ? App.mounts(app).find((declared) => declared.name === component.name)
           : undefined;
       // A bare definition belongs to another package. Its directory is read
-      // here but never written out; tests use its public test entry.
+      // here but never written out; tests use the kit its descriptor names,
+      // else its public test entry.
       const fromPackage = !path.isAbsolute(component.componentDefinitionPath);
-      const kitEntries = fromPackage
-        ? [
-            `${component.componentDefinitionPath}/testing`,
-            `${component.componentDefinitionPath}/test`,
-          ]
-        : [];
+      const named = fromPackage ? mount?.component.testing : undefined;
+      if (named !== undefined) {
+        yield* checkTestKit(name, named, config, configDisplay);
+      }
+      const kitEntries =
+        named !== undefined
+          ? [named]
+          : fromPackage
+            ? [
+                `${component.componentDefinitionPath}/testing`,
+                `${component.componentDefinitionPath}/test`,
+              ]
+            : [];
       const kitEntry = kitEntries.find((entry) =>
         Option.isSome(Bundler.resolveModule(entry, config)),
       );

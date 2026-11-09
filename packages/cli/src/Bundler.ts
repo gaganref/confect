@@ -110,6 +110,41 @@ export const resolveModule = (
   );
 
 /**
+ * The names `file` exports, read by esbuild without evaluating the module, so a
+ * test kit that only runs under Vite (`import.meta.glob`) can be checked. None
+ * when only running the module would list them: a CommonJS module assigns its
+ * exports at run time, and bare imports stay external, so `export *` from
+ * another package hides its names.
+ */
+export const exportNames = (
+  file: string,
+): Effect.Effect<Option.Option<ReadonlyArray<string>>, BundlerError> =>
+  Effect.tryPromise({
+    try: () =>
+      esbuild.build({
+        entryPoints: [file],
+        bundle: true,
+        packages: "external",
+        format: "esm",
+        platform: "node",
+        write: false,
+        metafile: true,
+        logLevel: "silent",
+        outdir: "out",
+      }),
+    catch: (cause) => new BundlerError({ cause }),
+  }).pipe(
+    Effect.map(({ metafile, outputFiles }) =>
+      Object.values(metafile.inputs).some(({ format }) => format === "cjs") ||
+      outputFiles.some(({ text }) => /^export \* from /m.test(text))
+        ? Option.none()
+        : Option.some(
+            Object.values(metafile.outputs).flatMap(({ exports }) => exports),
+          ),
+    ),
+  );
+
+/**
  * Bundles first-party workspace dependencies that `bundle-require` would
  * otherwise externalize and hand to Node's native ESM resolver. Resolves each
  * bare specifier and, following symlinks, bundles it when its real path lives
