@@ -7,6 +7,7 @@ import * as HashSet from "effect/HashSet";
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import { UnownedConvexEntrypointError } from "./CodegenError.js";
+import * as Declaration from "./Declaration.js";
 import * as SectionFiles from "./SectionFiles.js";
 import * as templates from "./templates.js";
 import * as GenerationSnapshot from "./GenerationSnapshot.js";
@@ -30,6 +31,9 @@ const RESERVED_CONVEX_TS_FILE_NAMES = new Set([
   "auth.config.ts",
   "convex.config.ts",
 ]);
+
+// Only the root module is codegen's; a nested group may take the name.
+const DEPLOY_MODULE = "confectDeploy.ts";
 
 // Keep ownership and removal aligned with Convex's bundler entryPoints filter.
 const getEntrypoints = Effect.gen(function* () {
@@ -157,7 +161,10 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
   const refused: string[] = [];
   for (const relative of yield* getEntrypoints) {
     const absolute = path.join(convex, relative);
-    const tokens = tokenize(yield* fs.readFileString(absolute), absolute, path);
+    const contents = yield* fs.readFileString(absolute);
+    if (relative === DEPLOY_MODULE && Declaration.isGenerated(contents, []))
+      continue;
+    const tokens = tokenize(contents, absolute, path);
     if (tokens !== undefined) {
       if (
         optional
@@ -356,7 +363,8 @@ const getGroupPathsFromFs = Effect.gen(function* () {
     Array.filter(
       (convexPath) =>
         path.extname(convexPath) === ".ts" &&
-        !RESERVED_CONVEX_TS_FILE_NAMES.has(path.basename(convexPath)),
+        !RESERVED_CONVEX_TS_FILE_NAMES.has(path.basename(convexPath)) &&
+        convexPath !== DEPLOY_MODULE,
     ),
     Effect.forEach((groupModulePath) =>
       GroupPath.fromGroupModulePath(groupModulePath),
