@@ -1197,7 +1197,7 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
       // here but never written out; tests use the kit its descriptor names,
       // else its public test entry.
       const fromPackage = !path.isAbsolute(component.componentDefinitionPath);
-      const named = mount?.component.testing;
+      const named = fromPackage ? mount?.component.testing : undefined;
       if (named !== undefined) {
         yield* checkTestKit(name, named, config, configDisplay);
       }
@@ -1267,7 +1267,7 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
         identifiers.add(identifier);
         identifiers.add(schemaIdentifier);
         kits.set(kitKey, identifier);
-        if (kitEntries.length === 0) {
+        if (!fromPackage) {
           imports.push(
             `import ${schemaIdentifier} from ${quote(relative(path.join(resolved, "schema.js")))};`,
           );
@@ -1285,8 +1285,8 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
         }
       }
       components.push(`${quote(name)}: ${identifier},`);
-      // A kit's `register` installs the mount's own children.
-      if (kitEntries.length === 0) {
+      // A package's own `register` installs its children.
+      if (!fromPackage) {
         yield* visit(resolved, `${name}/`, "component", httpPrefix);
       }
     }

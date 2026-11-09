@@ -70,7 +70,7 @@ export default Component.make("aggregate", {
 });
 ```
 
-Codegen then imports that kit for every mount of the descriptor and skips the `<package>/testing` and `<package>/test` search. It fails, naming the mount and the kit, when the specifier is a relative or absolute path, does not resolve from `convex/convex.config.ts`, or lists its exports without a `register`.
+Codegen then imports that kit for every mount of the descriptor from another package and skips the `<package>/testing` and `<package>/test` search. A local component's mount ignores it. It fails, naming the mount and the kit, when the specifier is a relative or absolute path, does not resolve from `convex/convex.config.ts`, or lists its exports without a `register`.
 
 Local kits use names such as `emailSchema` and `emailKit`. Repeated mounts of one definition share the first mount's kit. Codegen sanitizes identifiers, adds suffixes on collision, and writes imports before local kit declarations. Relative imports carry `.js` extensions for NodeNext. Module-map keys retain their source extensions, such as `mail.ts`. When neither public test entry resolves, codegen reports both entries it tried. It never writes another package's private file paths.
 

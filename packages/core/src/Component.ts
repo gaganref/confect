@@ -573,7 +573,8 @@ export interface DescriptorOptions {
    * The package specifier of the test kit whose `register(t, name)` installs
    * this component and its children under `TestConfect`, such as
    * `"@acme/email/testing"`. Codegen imports it for each mount of the
-   * descriptor in place of `<package>/testing` or `<package>/test`.
+   * descriptor from another package in place of `<package>/testing` or
+   * `<package>/test`. A local component's mount ignores it.
    */
   readonly testing?: string;
   /**

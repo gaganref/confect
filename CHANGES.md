@@ -748,8 +748,9 @@ proposal is submitted.
 
 `Component.make` takes `testing`, the package specifier of the kit whose
 `register(t, name)` installs the component and its children. Codegen imports it
-for each mount of the descriptor before searching `<package>/testing` and
-`<package>/test`, and the search is unchanged without it. A wrapper package can
+for each mount of the descriptor from another package before searching
+`<package>/testing` and `<package>/test`, and the search is unchanged without
+it. A local component's mount ignores it. A wrapper package can
 now supply a kit when the mounted package's own is wrong: Frame's aggregate kit
 registers the `batchWorker` child that `@convex-dev/aggregate`'s `/test` kit
 misses, and its auth kit exports the `register` that `@convex-dev/auth`'s kits
