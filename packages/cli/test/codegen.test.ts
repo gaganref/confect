@@ -2164,6 +2164,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       "renders matched modules, every function and each mount into the section's file",
       () =>
         Effect.gen(function* () {
+          const path = yield* Path.Path;
           const project = yield* sectionProject(
             "(input) => ({ contents: `export default ${JSON.stringify(input)};\\n`, errors: [] })",
           );
@@ -2213,7 +2214,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
               "tables/notes.ts",
             ],
             target: { kind: "app" },
-            confectDirectory: `${project.root}/confect`,
+            confectDirectory: path.join(project.root, "confect"),
           });
           expect(yield* Project.writtenFiles(project.run)).toEqual([]);
         }).pipe(Effect.scoped),

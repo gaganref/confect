@@ -735,6 +735,7 @@ it.effect(
     Effect.gen(function* () {
       const project = yield* Project.make;
       const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
       yield* project.write(
         "package.json",
         '{"name":"@confect-fixtures/ledger","type":"module"}',
@@ -794,7 +795,7 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { obser
       expect(module.default).toEqual({
         modules: ["ledger/log.ts"],
         target: { kind: "component", name: "ledger" },
-        confectDirectory: `${project.root}/confect`,
+        confectDirectory: path.join(project.root, "confect"),
       });
       const registration = yield* fs.readFileString(
         `${project.root}/confect/_generated/registeredFunctions/notes.ts`,
