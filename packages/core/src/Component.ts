@@ -570,6 +570,13 @@ export interface DescriptorOptions {
   readonly contract?: Component<Spec.AnyWithProps, IdScope.IdScope, string>;
   readonly env?: Readonly<Record<string, Schema.Top>>;
   /**
+   * The package specifier of the test kit whose `register(t, name)` installs
+   * this component and its children under `TestConfect`, such as
+   * `"@acme/email/testing"`. Codegen imports it for each mount of the
+   * descriptor in place of `<package>/testing` or `<package>/test`.
+   */
+  readonly testing?: string;
+  /**
    * Builds the component's client from its native mount, then the mount's
    * `options` when the client takes any.
    */

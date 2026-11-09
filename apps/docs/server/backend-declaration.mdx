@@ -110,7 +110,7 @@ Each mount names itself. Codegen pairs it with the listed definition whose `defi
 
 A binding is an entry of your env, or a constant string. `httpPrefix` reserves the mounted Convex component's routes.
 
-The [generated test registry](/guides/testing) discovers a mounted Convex component's test kit at `<package>/testing`, then `<package>/test`. Mounts do not accept a `testing` option.
+The [generated test registry](/guides/testing) discovers a mounted Convex component's test kit at `<package>/testing`, then `<package>/test`, unless the component's descriptor names one with `testing`. Mounts do not accept a `testing` option.
 
 Codegen writes the matching Convex definition:
 
