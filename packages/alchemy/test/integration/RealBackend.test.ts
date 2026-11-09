@@ -16,3 +16,22 @@ it.effect("fails a test that loads package source after make", () =>
     expect(String(exit)).toContain("loaded their source");
   }).pipe(Effect.provide(NodeServices.layer)),
 );
+
+it("reads a Windows registry as it reads a POSIX one", () => {
+  const harness = "D:\\a\\confect\\packages\\alchemy\\test\\RealBackend.ts";
+  const registry = RealBackend.readRegistry(
+    [
+      "D:/a/confect/packages/alchemy/test/RealBackend.ts",
+      "D:\\a\\confect\\packages\\core\\src\\Ref.ts",
+    ],
+    harness,
+  );
+  expect(registry.listsHarness).toBe(true);
+  expect(registry.source).toEqual(["D:/a/confect/packages/core/src/Ref.ts"]);
+  expect(
+    RealBackend.readRegistry(
+      ["/work/confect/packages/alchemy/test/Other.ts"],
+      harness,
+    ).listsHarness,
+  ).toBe(false);
+});
