@@ -6,7 +6,9 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 
-import { GenericId } from "@confect/core/GenericId";
+import { CommitTs } from "@confect/core/CommitTs";
+import { GenericId, rebase } from "@confect/core/GenericId";
+import * as IdScope from "@confect/core/IdScope";
 import * as PaginationOptions from "@confect/core/PaginationOptions";
 import {
   compileArgsSchema,
@@ -1534,6 +1536,84 @@ describe(compileTableSchema, () => {
       );
     }),
   );
+});
+
+describe("commit timestamps", () => {
+  test("a CommitTs field compiles to v.commitTs() and a BigInt field to v.int64()", () => {
+    const compiledValidator = compileTableSchema(
+      Schema.Struct({
+        committedAt: CommitTs,
+        sequence: Schema.BigInt,
+      }),
+    );
+
+    const expectedValidator = v.object({
+      committedAt: v.commitTs(),
+      sequence: v.int64(),
+    });
+
+    expectTypeOf(compiledValidator).toEqualTypeOf(expectedValidator);
+    expect(compiledValidator).toStrictEqual(expectedValidator);
+  });
+
+  test("an optional CommitTs field compiles to an optional v.commitTs()", () => {
+    const compiledValidator = compileTableSchema(
+      Schema.Struct({
+        exactAt: Schema.optionalKey(CommitTs),
+        looseAt: Schema.optional(CommitTs),
+      }),
+    );
+
+    const expectedValidator = v.object({
+      exactAt: v.optional(v.commitTs()),
+      looseAt: v.optional(v.commitTs()),
+    });
+
+    expectTypeOf(compiledValidator).toEqualTypeOf(expectedValidator);
+    expect(compiledValidator).toStrictEqual(expectedValidator);
+  });
+
+  test("a nested CommitTs field compiles to v.commitTs()", () => {
+    const compiledValidator = compileTableSchema(
+      Schema.Struct({
+        audit: Schema.Struct({ at: CommitTs }),
+      }),
+    );
+
+    const expectedValidator = v.object({
+      audit: v.object({ at: v.commitTs() }),
+    });
+
+    expectTypeOf(compiledValidator).toEqualTypeOf(expectedValidator);
+    expect(compiledValidator).toStrictEqual(expectedValidator);
+  });
+
+  test("a component table keeps v.commitTs() after its IDs are rebased", () => {
+    const scope = IdScope.component("audit");
+    const compiledValidator = compileTableSchema(
+      rebase(
+        Schema.Struct({
+          entryId: GenericId("entries", scope),
+          at: CommitTs,
+        }),
+        scope,
+        IdScope.app,
+      ),
+    );
+
+    expect(compiledValidator).toStrictEqual(
+      v.object({ entryId: v.id("entries"), at: v.commitTs() }),
+    );
+  });
+
+  test("the CommitTs type maps to the v.commitTs() validator type", () => {
+    const _expectedValidator = v.commitTs();
+    type ExpectedValidator = typeof _expectedValidator;
+
+    type CompiledValidator = ValueToValidator<CommitTs>;
+
+    expectTypeOf<CompiledValidator>().toEqualTypeOf<ExpectedValidator>();
+  });
 });
 
 describe(compileArgsSchema, () => {

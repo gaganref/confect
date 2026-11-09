@@ -2,6 +2,7 @@ import * as IdScope from "./IdScope.js";
 import type * as Callback from "./Callback.js";
 import { CallbackContract } from "./internal/annotations.js";
 import type {
+  CommitTsPlaceholder,
   GenericId as ConvexGenericId,
   PropertyValidators,
   Validator,
@@ -9,6 +10,7 @@ import type {
   VArray,
   VBoolean,
   VBytes,
+  VCommitTs,
   VFloat64,
   VId,
   VInt64,
@@ -32,6 +34,7 @@ import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import * as String from "effect/String";
 
+import * as CommitTs from "./CommitTs.js";
 import * as GenericId from "./GenericId.js";
 import type {
   IsAny,
@@ -138,6 +141,7 @@ export type ReadonlyValue =
   | bigint
   | boolean
   | ArrayBuffer
+  | CommitTsPlaceholder
   | ReadonlyArrayValue
   | ReadonlyRecordValue
   | null;
@@ -184,31 +188,42 @@ type ConvertValueToValidator<
         ? [boolean] extends [Vl]
           ? VBoolean<OptionalValue<boolean, Optionality>, Optionality>
           : VLiteral<OptionalValue<Vl, Optionality>, Optionality>
-        : IsUnion<Vl> extends true
-          ? UnionValueToValidator<Vl, Optionality>
-          : [Vl] extends [number]
-            ? [number] extends [Vl]
-              ? VFloat64<OptionalValue<number, Optionality>, Optionality>
-              : VLiteral<OptionalValue<Vl, Optionality>, Optionality>
-            : [Vl] extends [bigint]
-              ? [bigint] extends [Vl]
-                ? VInt64<OptionalValue<bigint, Optionality>, Optionality>
+        : IsCommitTs<Vl> extends true
+          ? VCommitTs<OptionalValue<Vl, Optionality>, Optionality>
+          : IsUnion<Vl> extends true
+            ? UnionValueToValidator<Vl, Optionality>
+            : [Vl] extends [number]
+              ? [number] extends [Vl]
+                ? VFloat64<OptionalValue<number, Optionality>, Optionality>
                 : VLiteral<OptionalValue<Vl, Optionality>, Optionality>
-              : [Vl] extends [string]
-                ? StringValueToValidator<Vl, Optionality>
-                : [Vl] extends [ArrayBuffer]
-                  ? VBytes<OptionalValue<ArrayBuffer, Optionality>, Optionality>
-                  : IsRecursive<Vl> extends true
-                    ? VAny<any, Optionality>
-                    : Vl extends ReadonlyArray<infer El>
-                      ? VArray<
-                          OptionalValue<MutableValue<El[]>, Optionality>,
-                          ConvertValueToValidator<El>,
-                          Optionality
-                        >
-                      : Vl extends object
-                        ? ObjectValueToValidator<Vl, Optionality>
-                        : never;
+              : [Vl] extends [bigint]
+                ? [bigint] extends [Vl]
+                  ? VInt64<OptionalValue<bigint, Optionality>, Optionality>
+                  : VLiteral<OptionalValue<Vl, Optionality>, Optionality>
+                : [Vl] extends [string]
+                  ? StringValueToValidator<Vl, Optionality>
+                  : [Vl] extends [ArrayBuffer]
+                    ? VBytes<
+                        OptionalValue<ArrayBuffer, Optionality>,
+                        Optionality
+                      >
+                    : IsRecursive<Vl> extends true
+                      ? VAny<any, Optionality>
+                      : Vl extends ReadonlyArray<infer El>
+                        ? VArray<
+                            OptionalValue<MutableValue<El[]>, Optionality>,
+                            ConvertValueToValidator<El>,
+                            Optionality
+                          >
+                        : Vl extends object
+                          ? ObjectValueToValidator<Vl, Optionality>
+                          : never;
+
+type IsCommitTs<Vl> = [Vl] extends [bigint | CommitTsPlaceholder]
+  ? [CommitTsPlaceholder] extends [Vl]
+    ? true
+    : false
+  : false;
 
 type StringValueToValidator<Vl, Optionality extends "required" | "optional"> =
   Vl extends ConvexGenericId<string>
@@ -362,6 +377,7 @@ export const compileAst = (
       return v.function({ fnType: contract.functionType, args, returns });
     });
   }
+  if (CommitTs.isCommitTs(ast)) return Effect.succeed(v.commitTs());
   return isRecursive(ast)
     ? Effect.succeed(v.any())
     : pipe(
