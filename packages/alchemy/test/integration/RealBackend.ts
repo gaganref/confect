@@ -19,6 +19,7 @@ import * as Layer from "effect/Layer";
 import type * as Redacted from "effect/Redacted";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import { tmpdir } from "node:os";
+import { fileURLToPath } from "node:url";
 // The built package, not its source, so these tests run what ships.
 import { Convex } from "../../dist/index.js";
 import * as ConvexClient from "../../dist/ConvexClient.js";
@@ -91,6 +92,21 @@ interface VitestGlobal {
   };
 }
 
+const forwardSlashes = (file: string) => file.replaceAll("\\", "/");
+
+/**
+ * What vitest's module registry shows of a test process. Windows paths differ
+ * in slash and in a leading `/` from a URL's pathname, so both sides are
+ * compared as filesystem paths with forward slashes.
+ */
+export const readRegistry = (files: Iterable<string>, harness: string) => {
+  const loaded = [...files].map(forwardSlashes);
+  return {
+    listsHarness: loaded.includes(forwardSlashes(harness)),
+    source: loaded.filter((file) => /\/packages\/[^/]+\/src\//.test(file)),
+  };
+};
+
 /**
  * Fail unless this test process runs the built packages. An `@confect/*` import
  * is aliased to source, so only vitest's module registry shows where each
@@ -103,17 +119,19 @@ const runsBuiltPackages = Effect.suspend(() => {
   const loaded = worker?.evaluatedModules?.fileToModulesMap;
   const pool = worker?.config?.pool;
   const die = (message: string) => Effect.die(new Error(message));
+  const registry =
+    loaded === undefined
+      ? undefined
+      : readRegistry(loaded.keys(), fileURLToPath(import.meta.url));
   if (
-    loaded === undefined ||
-    !loaded.has(new URL(import.meta.url).pathname) ||
+    registry === undefined ||
+    !registry.listsHarness ||
     (pool !== "forks" && pool !== "threads")
   )
     return die(
       `vitest's module registry (pool "${pool}") is not a forks or threads registry that lists this harness, so it cannot check that it runs the built packages`,
     );
-  const source = [...loaded.keys()].filter((file) =>
-    /\/packages\/[^/]+\/src\//.test(file),
-  );
+  const { source } = registry;
   return source.length === 0
     ? Effect.void
     : die(
