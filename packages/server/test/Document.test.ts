@@ -1,3 +1,4 @@
+import * as GenericIdSchema from "@confect/core/GenericId";
 import type { GenericId } from "@confect/core/GenericId";
 import * as Table from "@confect/server/Table";
 import * as SystemFields from "@confect/core/SystemFields";
@@ -230,6 +231,24 @@ describe("Document.Document", () => {
       .toEqualTypeOf<{ readonly amount: number }>();
     expectTypeOf<Effect.Success<ReturnType<typeof encode>>>().toEqualTypeOf<{
       readonly amount: string;
+    }>();
+  });
+
+  it("derives the same document types for a grouped table", () => {
+    const emails = Table.make(() =>
+      Schema.Struct({
+        batchId: GenericIdSchema.GenericId("batches"),
+        to: Schema.String,
+      }),
+    ).group("batchId")("emails");
+
+    expectTypeOf<
+      Document.WithoutSystemFields<
+        TableInfo.TableInfo<typeof emails>["document"]
+      >
+    >().toEqualTypeOf<{
+      readonly batchId: GenericId<"batches">;
+      readonly to: string;
     }>();
   });
 
