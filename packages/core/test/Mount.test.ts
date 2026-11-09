@@ -13,6 +13,7 @@ import {
 import { getFunctionAddress } from "convex/server";
 import type * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as TestSpec from "./TestSpec";
 
@@ -446,4 +447,122 @@ describe("Mount callbackArgs", () => {
     // @ts-expect-error RULE callback-args-contract: a descriptor without a contract has no callbackArgs.
     void plain.callbackArgs;
   });
+});
+
+describe("Mount.initCall", () => {
+  const handleFor = (contract: Callback.Any, ref: Ref.Any) =>
+    Schema.decodeEffect(Callback.handle(contract))(
+      `handle for ${ref.convexFunctionName}`,
+    );
+
+  it.effect(
+    "encodes the install args, with a handle in each callback slot",
+    () =>
+      Effect.gen(function* () {
+        const mailer = Mount.make(Mailer, {
+          name: "mailer",
+          args: { fromName: "School office", onEvent },
+        });
+        expect(yield* Mount.initCall(mailer, handleFor)).toEqual(
+          Option.some({
+            componentPath: "mailer",
+            functionName: "install:init",
+            args: {
+              fromName: "School office",
+              onEvent: "handle for callbacks:onEvent",
+            },
+          }),
+        );
+      }),
+  );
+
+  it.effect("finds callback slots inside a struct and a record", () =>
+    Effect.gen(function* () {
+      const Retrying = Component.make("retrying", {
+        init: Ref.make(
+          "install",
+          FunctionSpec.internalMutation({
+            name: "init",
+            args: () => ({
+              retry: Schema.optionalKey(
+                Schema.Struct({
+                  attempts: Schema.Int,
+                  onGiveUp: Callback.handle(OnEvent),
+                }),
+              ),
+              callbacks: Schema.Record(Schema.String, Callback.handle(OnEvent)),
+            }),
+            returns: () => Schema.Null,
+          }),
+        ),
+        client: (native: Native) => native,
+      });
+      const mount = Mount.make(Retrying, {
+        name: "retrying",
+        args: {
+          retry: { attempts: 3, onGiveUp: onEvent },
+          callbacks: { onEvent },
+        },
+      });
+      const call = yield* Mount.initCall(mount, handleFor);
+      expect(Option.map(call, ({ args }) => args)).toEqual(
+        Option.some({
+          retry: { attempts: 3, onGiveUp: "handle for callbacks:onEvent" },
+          callbacks: { onEvent: "handle for callbacks:onEvent" },
+        }),
+      );
+    }),
+  );
+
+  it.effect("finds a callback slot in the union member the args take", () =>
+    Effect.gen(function* () {
+      const Routed = Component.make("routed", {
+        init: Ref.make(
+          "install",
+          FunctionSpec.internalMutation({
+            name: "init",
+            args: () => ({
+              route: Schema.Union([
+                Schema.Struct({ kind: Schema.Literal("drop") }),
+                Schema.Struct({
+                  kind: Schema.Literal("notify"),
+                  onEvent: Callback.handle(OnEvent),
+                }),
+              ]),
+            }),
+            returns: () => Schema.Null,
+          }),
+        ),
+        client: (native: Native) => native,
+      });
+      const notify = Mount.make(Routed, {
+        name: "notify",
+        args: { route: { kind: "notify", onEvent } },
+      });
+      const drop = Mount.make(Routed, {
+        name: "drop",
+        args: { route: { kind: "drop" } },
+      });
+      const argsOf = (mount: Mount.Any) =>
+        Mount.initCall(mount, handleFor).pipe(
+          Effect.map(Option.map(({ args }) => args)),
+        );
+      expect(yield* argsOf(notify)).toEqual(
+        Option.some({
+          route: { kind: "notify", onEvent: "handle for callbacks:onEvent" },
+        }),
+      );
+      expect(yield* argsOf(drop)).toEqual(
+        Option.some({ route: { kind: "drop" } }),
+      );
+    }),
+  );
+
+  it.effect("is none for a component without init", () =>
+    Effect.gen(function* () {
+      expect(yield* Mount.initCall(BulkEmail, handleFor)).toEqual(
+        Option.none(),
+      );
+    }),
+  );
 });

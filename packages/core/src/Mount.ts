@@ -1,15 +1,18 @@
 import { componentsGeneric } from "convex/server";
 import * as Context from "effect/Context";
+import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import type * as App from "./App.js";
-import type * as Callback from "./Callback.js";
+import * as Callback from "./Callback.js";
 import * as Component from "./Component.js";
 import type * as Env from "./Env.js";
 import type * as GenericId from "./GenericId.js";
 import type * as IdScope from "./IdScope.js";
 import { CallbackContract } from "./internal/annotations.js";
-import type * as Ref from "./Ref.js";
+import * as Ref from "./Ref.js";
 
 const TypeId = "~@confect/core/Mount";
 
@@ -282,3 +285,117 @@ export const make = <
 export const data = <C extends Component.Descriptor, Name extends string>(
   mount: Mount<C, Name, Declared>,
 ): Data<C> & { readonly name: Name } => mount[TypeId];
+
+/**
+ * What a push runs for a mount: its component's `init`, at the mount's
+ * component path, with the install args encoded.
+ */
+export interface InitCall {
+  readonly componentPath: string;
+  readonly functionName: string;
+  readonly args: unknown;
+}
+
+const contractOf = (schema: Schema.Top) =>
+  SchemaAST.resolveAt<Callback.Any>(CallbackContract)(
+    Schema.toEncoded(schema).ast,
+  );
+
+type Create<E, R> = (
+  contract: Callback.Any,
+  ref: Ref.Any,
+) => Effect.Effect<unknown, E, R>;
+
+const placeholderHandle: Create<never, never> = (contract) =>
+  Schema.decodeEffect(Callback.handle(contract))("").pipe(Effect.orDie);
+
+/**
+ * Handles for the union member `value` takes: the first member that fits once
+ * its callback slots hold placeholder handles and whose handles `create` makes.
+ * A target that satisfies only a later member's contract takes that member.
+ */
+const withMemberHandles = <E, R>(
+  members: ReadonlyArray<Schema.Top>,
+  value: unknown,
+  create: Create<E, R>,
+): Effect.Effect<unknown, E, R> => {
+  const fitting = members.filter((member) =>
+    Schema.is(member)(
+      Effect.runSync(withHandles(member, value, placeholderHandle)),
+    ),
+  );
+  return fitting.length === 0
+    ? Effect.succeed(value)
+    : Effect.firstSuccessOf(
+        fitting.map((member) => withHandles(member, value, create)),
+      );
+};
+
+/**
+ * The schema of each key's value in a struct or a record.
+ */
+const entrySchema = (
+  schema: Schema.Top,
+): ((key: string) => Schema.Top | undefined) | undefined => {
+  if (Predicate.hasProperty(schema, "fields")) {
+    const fields = schema.fields as Readonly<Record<string, Schema.Top>>;
+    return (key) => fields[key];
+  }
+  if (SchemaAST.isObjects(schema.ast) && Predicate.hasProperty(schema, "value"))
+    return () => schema.value as Schema.Top;
+  return undefined;
+};
+
+/**
+ * Put a handle in each callback slot: a host ref in a field whose schema
+ * carries a callback contract, at any depth of struct fields and record values,
+ * through `optionalKey`, `optional` and the union member the value takes.
+ */
+const withHandles = <E, R>(
+  schema: Schema.Top,
+  value: unknown,
+  create: Create<E, R>,
+): Effect.Effect<unknown, E, R> => {
+  const contract = contractOf(schema);
+  if (contract !== undefined && Ref.isRef(value))
+    return create(contract, value);
+  if (Predicate.hasProperty(schema, "schema"))
+    return withHandles(schema.schema as Schema.Top, value, create);
+  if (Predicate.hasProperty(schema, "members") && Array.isArray(schema.members))
+    return withMemberHandles(schema.members, value, create);
+  const at = entrySchema(schema);
+  if (at === undefined || !Predicate.isObject(value))
+    return Effect.succeed(value);
+  return Effect.forEach(Object.entries(value), ([key, field]) => {
+    const fieldSchema = at(key);
+    return fieldSchema === undefined
+      ? Effect.succeed([key, field] as const)
+      : withHandles(fieldSchema, field, create).pipe(
+          Effect.map((resolved) => [key, resolved] as const),
+        );
+  }).pipe(Effect.map(Object.fromEntries));
+};
+
+/**
+ * The `init` call a mount's install args make, with each callback slot's host
+ * ref replaced by the handle `create` makes for the slot's contract. None for a
+ * component without `init`.
+ */
+export const initCall = <E, R>(
+  mount: Any,
+  create: Create<E, R>,
+): Effect.Effect<Option.Option<InitCall>, E | Schema.SchemaError, R> => {
+  const { component, name, args } = data(mount);
+  const init = component.init;
+  if (init === undefined) return Effect.succeedNone;
+  return withHandles(init.args, args ?? {}, create).pipe(
+    Effect.flatMap(Schema.encodeUnknownEffect(init.args)),
+    Effect.map((encoded) =>
+      Option.some({
+        componentPath: name,
+        functionName: init.convexFunctionName,
+        args: encoded,
+      }),
+    ),
+  );
+};
