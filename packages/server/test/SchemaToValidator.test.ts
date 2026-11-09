@@ -1614,6 +1614,28 @@ describe("commit timestamps", () => {
 
     expectTypeOf<CompiledValidator>().toEqualTypeOf<ExpectedValidator>();
   });
+
+  test("a nullable CommitTs field compiles to a two-member union", () => {
+    const compiledValidator = compileTableSchema(
+      Schema.Struct({ at: Schema.Union([CommitTs, Schema.Null]) }),
+    );
+
+    const expectedValidator = v.object({
+      at: v.union(v.commitTs(), v.null()),
+    });
+
+    expectTypeOf(compiledValidator).toEqualTypeOf(expectedValidator);
+    expect(compiledValidator).toStrictEqual(expectedValidator);
+  });
+
+  test("CommitTs | string maps to a two-member union validator type", () => {
+    const _expectedValidator = v.union(v.commitTs(), v.string());
+    type ExpectedValidator = typeof _expectedValidator;
+
+    type CompiledValidator = ValueToValidator<CommitTs | string>;
+
+    expectTypeOf<CompiledValidator>().toEqualTypeOf<ExpectedValidator>();
+  });
 });
 
 describe(compileArgsSchema, () => {
