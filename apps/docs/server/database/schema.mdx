@@ -77,6 +77,34 @@ type NoteProps = { noteId: Id<"notes"> };
 
 These types are compatible with Convex's generated `Id` types. IDs remain strings at runtime; a TypeScript annotation or cast does not validate an external string or check whether a document exists.
 
+## Commit timestamps
+
+Declare a field with `CommitTs` to store the commit timestamp of the mutation that writes it. The field compiles to Convex's `v.commitTs()`, and an index on it orders documents by commit order. A plain `Schema.BigInt` field still compiles to `v.int64()`.
+
+```ts confect/tables/auditEntries.ts
+import { CommitTs, Table } from "@confect/core";
+import * as Schema from "effect/Schema";
+
+export default Table.make(() =>
+  Schema.Struct({
+    action: Schema.String,
+    committedAt: CommitTs.CommitTs,
+  }),
+).index("by_committedAt", ["committedAt"]);
+```
+
+The commit timestamp is unknown until the mutation commits. To write it, pass the database writer's `vars.commitTs` placeholder:
+
+```ts
+const writer = yield * DatabaseWriter;
+yield *
+  writer
+    .table("auditEntries")
+    .insert({ action, committedAt: writer.vars.commitTs });
+```
+
+Later queries and mutations read the field as a `bigint`. Inside the mutation that wrote it, the field still holds the placeholder, which throws if you use it as a number. The field's type is `bigint | CommitTsPlaceholder`, as in Convex, so narrow it with `typeof committedAt === "bigint"` before you compare or format it.
+
 ## Deriving table `Schema`s
 
 ### Fields
