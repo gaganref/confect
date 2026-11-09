@@ -39,6 +39,7 @@
     "**/.pnpm-store/**",
     "**/.tsup/**",
     "**/_generated/**",
+    "packages/alchemy/test/fixtures/init-app/**",
     "**/.mintlify/**"
   ],
   "rules": {

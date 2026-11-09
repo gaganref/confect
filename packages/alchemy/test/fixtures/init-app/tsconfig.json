@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "strict": true,
+    "exactOptionalPropertyTypes": true,
+    "skipLibCheck": true,
+    "module": "preserve",
+    "noEmit": true
+  }
+}
