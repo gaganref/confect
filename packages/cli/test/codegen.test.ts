@@ -1897,7 +1897,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
               .replace("[workpool, ", "[parent, ")
               .replace(
                 'Component.make("pool", { client }), { name: "pool" }',
-                'Component.make("parent", { client }), { name: "pool", httpPrefix: "/pool" }',
+                'Component.make("parent", { client, testing: "pool-kit/testing" }), { name: "pool", httpPrefix: "/pool" }',
               ),
           );
           yield* project.run;
