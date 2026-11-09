@@ -17,6 +17,7 @@ import { Component, IdScope } from "@confect/core";
 import { ConvexDirectory } from "@confect/cli/ConvexDirectory";
 import { renderCodegenError } from "@confect/cli/CodegenError";
 import * as DirectoryOptions from "@confect/cli/DirectoryOptions";
+import * as Bundler from "@confect/cli/Bundler";
 import * as Project from "./integration/Project";
 import * as Stream from "effect/Stream";
 import * as Config from "effect/Config";
@@ -726,4 +727,80 @@ it.effect("leaves host callback exports unchecked", () =>
     );
     yield* project.provide(codegenHandler);
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+);
+
+it.effect(
+  "renders a section file for a declared component and imports it ahead of each impl",
+  () =>
+    Effect.gen(function* () {
+      const project = yield* Project.make;
+      const fs = yield* FileSystem.FileSystem;
+      yield* project.write(
+        "package.json",
+        '{"name":"@confect-fixtures/ledger","type":"module"}',
+      );
+      yield* project.write(
+        "confect/app.ts",
+        `import { App, Env } from "@confect/core";
+export default App.make({ kind: "component", env: Env.make("ledger", {}) });
+`,
+      );
+      yield* project.write(
+        "confect/profile.ts",
+        `import { FunctionSpec } from "@confect/core";
+const observe = {
+  owner: "test/observe",
+  format: 1,
+  describe: () => null,
+  summarize: () => { throw new Error("summarize ran for a component"); },
+  check: () => { throw new Error("check ran for a component"); },
+  generate: {
+    file: "observe.ts",
+    match: (path) => path.endsWith("/log.ts"),
+    render: ({ modules, target, confectDirectory }) => ({
+      contents: \`export default \${JSON.stringify({ modules: modules.map(({ relativePath }) => relativePath), target, confectDirectory })};\\n\`,
+      errors: [],
+    }),
+  },
+};
+export const profile = FunctionSpec.extend()({ middleware: [], manifest: { observe } });
+`,
+      );
+      yield* project.write(
+        "confect/notes.spec.ts",
+        Project.spec
+          .replace(
+            "export default",
+            'import { profile } from "./profile";\nexport default',
+          )
+          .replace("FunctionSpec.publicQuery", "profile.publicQuery"),
+      );
+      yield* fs.makeDirectory(`${project.root}/confect/ledger`);
+      yield* project.write(
+        "confect/ledger/log.ts",
+        'export const ledgerLog = { module: "ledger" };\n',
+      );
+      const run = codegenHandler.pipe(
+        Effect.provide(
+          DirectoryOptions.layer({
+            componentDir: Option.some(`${project.root}/convex`),
+          }),
+        ),
+      );
+      yield* run;
+      const { module } = yield* Bundler.bundle(
+        `${project.root}/confect/_generated/observe.ts`,
+      );
+      expect(module.default).toEqual({
+        modules: ["ledger/log.ts"],
+        target: { kind: "component", name: "ledger" },
+        confectDirectory: `${project.root}/confect`,
+      });
+      const registration = yield* fs.readFileString(
+        `${project.root}/confect/_generated/registeredFunctions/notes.ts`,
+      );
+      expect(registration.split("\n")[0]).toBe('import "../observe.js";');
+      expect(yield* Project.writtenFiles(run)).toEqual([]);
+    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+  { timeout: 30000 },
 );

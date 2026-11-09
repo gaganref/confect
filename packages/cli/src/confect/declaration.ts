@@ -395,9 +395,14 @@ const writeDeclaration = Effect.fnUntraced(function* (
         );
       }),
   });
+  const sectionTarget: ManifestSection.Target =
+    target === "app"
+      ? { kind: "app" }
+      : { kind: "component", name: declaration.name };
   return {
     app: App.isApp(appValue) ? Option.some(appValue) : Option.none<App.Any>(),
     digest,
+    target: Option.some(sectionTarget),
   };
 });
 
@@ -413,7 +418,11 @@ export const syncDeclaration = Effect.fnUntraced(function* (
   if (!(yield* isDeclared)) {
     yield* removeManifest;
     yield* removeAuthProviders;
-    return { app: Option.none<App.Any>(), digest: undefined };
+    return {
+      app: Option.none<App.Any>(),
+      digest: undefined,
+      target: Option.none<ManifestSection.Target>(),
+    };
   }
   return yield* writeDeclaration(previous).pipe(
     Effect.tapError(() =>

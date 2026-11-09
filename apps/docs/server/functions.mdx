@@ -309,7 +309,7 @@ const tags: ManifestSection.ManifestSection<string> = {
 const Tagged = FunctionSpec.extend()({ middleware: [], manifest: { tags } });
 ```
 
-Declared app codegen writes `tags: { format: 1, functions: { "notes:list": "notes:list" } }` in `confect/_generated/manifest.ts`. `describe` receives the registered `path`, the `spec` and its group and function `middleware`. Callbacks run after specs load, including in `confect dev`, where spec edits update section data and the digest and remove sections without participants; importing a profile never runs them. Components do not emit sections.
+Declared app codegen writes `tags: { format: 1, functions: { "notes:list": "notes:list" } }` in `confect/_generated/manifest.ts`. `describe` receives the registered `path`, the `spec` and its group and function `middleware`. Callbacks run after specs load, including in `confect dev`, where spec edits update section data and the digest and remove sections without participants; importing a profile never runs them. A component has no manifest, so it runs no `describe`, `summarize` or `check`; only `generate` runs for it.
 
 Section data contributes to the digest. Sections survive profile extension and middleware. Each section declares a stable `owner` string. Definitions under one key agree when their owner and format agree, including when the bundler evaluates a shared profile separately. Conflicts name both owners and formats. Keys `name`, `env`, `http`, `digest`, `__proto__`, `constructor` and `prototype` are refused. Callbacks must preserve their inputs.
 
@@ -338,18 +338,20 @@ const observe: ManifestSection.ManifestSection<null> = {
 };
 ```
 
-`match` receives each `.ts` file under `confect/` outside `_generated`, as a path relative to `confect/` such as `billing/log.ts`. Codegen bundles every file it accepts and calls `render` with four lists:
+`match` receives each `.ts` file under `confect/` outside `_generated`, as a path relative to `confect/` such as `billing/log.ts`. Codegen bundles every file it accepts and calls `render` with four lists and two facts about the backend:
 
 - `modules`: each accepted file's `relativePath` and its `exports`.
 - `functions`: each registered function's `path`, such as `notes:list`, and the `source` spec file that declares it, such as `notes.spec.ts`.
 - `mounts`: each mounted component's `name` and `definition`, the specifier of its definition directory. That is a package specifier such as `@convex-dev/workpool`, or a path relative to `confect/_generated` for a component in the same repository.
 - `files`: every path `match` was offered, sorted, whether it accepted the file or not.
+- `target`: the backend being generated, `{ kind: "app" }` or `{ kind: "component", name }` with the name its `defineComponent` gives it, such as `ledger`.
+- `confectDirectory`: the absolute path of the backend's `confect/` folder.
 
 `render` returns `{ contents, errors }`. Codegen writes `contents` under a two-line header that names the section and lists the accepted files. Each string in `errors` becomes an `InvalidManifestSectionError` under the section key. Every generating section renders before codegen fails with the first error, prints the rest from every section and writes no section file. A `match` or `render` that throws fails the same way, with the reason `generate failed: <message>`.
 
 Every registration file in `_generated/registeredFunctions` and the declared HTTP router in `convex/http.ts` import each section file before anything else, so the modules it imports load before any handler runs. Codegen still refuses a `convex/http.ts` that imports any other file, including one in `_generated` that no section wrote. It checks after it writes this run's section files, so a regeneration from an empty `_generated` accepts the router's imports of them. It removes a file no section claims only after rewriting these imports, so a failed run leaves no import of a removed file. Spec edits in `confect dev` render the file again, and a file that appears or goes updates every registration file. `confect dev` also regenerates when a file the section accepted, or a `confect/` file it imports, changes or is removed. Codegen records those files in `_generated/sectionInputs.json`, even when a section refuses or a module throws on load, so fixing the file regenerates. A file added to or removed from `confect/` triggers a full run, because every `render` sees `files`.
 
-Sections under one key render once. Codegen refuses a name codegen writes itself, such as `spec.ts` or `manifest.ts`, a name that is not a `.ts` file directly in `_generated`, and a name two keys claim. It removes a file a section wrote once no section claims it, and leaves other files in `_generated` alone. Like the rest of the section, `generate` runs only for a declared app. Without a section that generates, codegen output is unchanged.
+Sections under one key render once. Codegen refuses a name codegen writes itself, such as `spec.ts` or `manifest.ts`, a name that is not a `.ts` file directly in `_generated`, and a name two keys claim. It removes a file a section wrote once no section claims it, and leaves other files in `_generated` alone. `generate` runs for a declared app and for a declared component, which `confect codegen --component-dir` generates. A component's registration files import the section file the same way, so its `confect/runtime.ts` needs no import of it. Without a section that generates, codegen output is unchanged.
 
 ### Summarize a section's data
 

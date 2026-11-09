@@ -2212,6 +2212,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
               "profile.ts",
               "tables/notes.ts",
             ],
+            target: { kind: "app" },
+            confectDirectory: `${project.root}/confect`,
           });
           expect(yield* Project.writtenFiles(project.run)).toEqual([]);
         }).pipe(Effect.scoped),

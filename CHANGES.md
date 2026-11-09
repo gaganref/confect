@@ -107,6 +107,10 @@ A section's optional `summarize` returns its whole manifest data from the module
 
 A section's `summarize` also receives `sources`, the spec file under `confect/` that declares each of its functions, keyed by function path. Frame's observe catalogue reads a function's module from its folder, and matching every spec per section cost about 0.4 s per section on Docket. Changeset: `manifest-section-summarize-sources.md`. Upstream: planned; no proposal submitted.
 
+### Generate section files for a component
+
+A declared component's codegen now runs each section's `generate`, so `confect codegen --component-dir` writes the section's file into the component's `confect/_generated` and its registration files import it. `describe`, `summarize` and `check` stay app-only, because a component has no manifest. `render` also receives `target`, `{ kind: "app" }` or `{ kind: "component", name }` with the component's `defineComponent` name, and `confectDirectory`, the absolute path of `confect/`. Sections that ignore the new fields render the same file. Frame's observe door needs this so a component's `confect/runtime.ts` stays one line with no hand-written registry import. Changeset: `manifest-section-component-generate.md`. Upstream: planned; no proposal submitted.
+
 ## Reserved arguments
 
 Profiles and internal mutation, action and Node action constructors can reserve one argument without changing domain schemas or visibility. Refs, including component refs, retain the name. Registration accepts any optional value, strips it before decoding and refuses domain collisions. Queries ignore the option to preserve cache keys. Changeset: `reserved-argument.md`. Upstream: planned; no proposal submitted.

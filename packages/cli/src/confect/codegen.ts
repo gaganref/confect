@@ -161,7 +161,11 @@ const runCodegen = Effect.gen(function* () {
   // A declared backend's `convex.config.ts` and manifest come next: the
   // registry below reads the config, and nothing may validate against a
   // manifest the current declaration did not produce.
-  const { app: declared, digest } = yield* syncDeclaration(previousManifest);
+  const {
+    app: declared,
+    digest,
+    target,
+  } = yield* syncDeclaration(previousManifest);
   const mounts = yield* generateComponents;
   yield* validateCallbackPrefixes(declared);
   // Now that `_generated/id.ts` is on disk, bundle each table module and
@@ -172,10 +176,7 @@ const runCodegen = Effect.gen(function* () {
   yield* generateRuntimeSchema(tableModules);
   const leaves = yield* loadAll;
   yield* rejectComponentNodeGroups(leaves);
-  const sections = yield* SectionFiles.sync(
-    digest === undefined ? [] : leaves,
-    mounts,
-  );
+  const sections = yield* SectionFiles.sync(target, leaves, mounts);
   // Nothing above writes a Convex entrypoint. The check waits for this run's
   // section files, because the HTTP router may import any of them.
   yield* FunctionModule.assertOwnedEntrypoints;
@@ -269,12 +270,16 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
         const next = yield* Effect.fromResult(
           GenerationSnapshot.update(snapshot, leaves),
         );
-        const { app: declared, digest } =
-          yield* syncDeclaration(previousManifest);
+        const {
+          app: declared,
+          digest,
+          target,
+        } = yield* syncDeclaration(previousManifest);
         const all = Option.isSome(declared) ? yield* loadAll : [];
         const sections = yield* SectionFiles.sync(
-          digest === undefined ? [] : all,
-          digest === undefined ? [] : yield* installedMounts,
+          target,
+          all,
+          Option.isSome(target) ? yield* installedMounts : [],
         );
         if (Option.isSome(declared))
           yield* syncManifestSections(
