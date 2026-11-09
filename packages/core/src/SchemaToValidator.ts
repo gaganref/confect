@@ -188,25 +188,24 @@ type ConvertValueToValidator<
         ? [boolean] extends [Vl]
           ? VBoolean<OptionalValue<boolean, Optionality>, Optionality>
           : VLiteral<OptionalValue<Vl, Optionality>, Optionality>
-        : IsCommitTs<Vl> extends true
-          ? VCommitTs<OptionalValue<Vl, Optionality>, Optionality>
-          : IsUnion<Vl> extends true
-            ? UnionValueToValidator<Vl, Optionality>
-            : [Vl] extends [number]
-              ? [number] extends [Vl]
-                ? VFloat64<OptionalValue<number, Optionality>, Optionality>
+        : IsUnion<Vl> extends true
+          ? IsCommitTs<Vl> extends true
+            ? VCommitTs<OptionalValue<Vl, Optionality>, Optionality>
+            : UnionValueToValidator<Vl, Optionality>
+          : [Vl] extends [number]
+            ? [number] extends [Vl]
+              ? VFloat64<OptionalValue<number, Optionality>, Optionality>
+              : VLiteral<OptionalValue<Vl, Optionality>, Optionality>
+            : [Vl] extends [bigint]
+              ? [bigint] extends [Vl]
+                ? VInt64<OptionalValue<bigint, Optionality>, Optionality>
                 : VLiteral<OptionalValue<Vl, Optionality>, Optionality>
-              : [Vl] extends [bigint]
-                ? [bigint] extends [Vl]
-                  ? VInt64<OptionalValue<bigint, Optionality>, Optionality>
-                  : VLiteral<OptionalValue<Vl, Optionality>, Optionality>
-                : [Vl] extends [string]
-                  ? StringValueToValidator<Vl, Optionality>
-                  : [Vl] extends [ArrayBuffer]
-                    ? VBytes<
-                        OptionalValue<ArrayBuffer, Optionality>,
-                        Optionality
-                      >
+              : [Vl] extends [string]
+                ? StringValueToValidator<Vl, Optionality>
+                : [Vl] extends [ArrayBuffer]
+                  ? VBytes<OptionalValue<ArrayBuffer, Optionality>, Optionality>
+                  : IsCommitTs<Vl> extends true
+                    ? VCommitTs<OptionalValue<Vl, Optionality>, Optionality>
                     : IsRecursive<Vl> extends true
                       ? VAny<any, Optionality>
                       : Vl extends ReadonlyArray<infer El>
