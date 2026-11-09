@@ -1,5 +1,7 @@
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import * as Schema from "effect/Schema";
+import * as GenericId from "@confect/core/GenericId";
+import * as IdScope from "@confect/core/IdScope";
 import * as Table from "@confect/core/Table";
 
 describe("Table", () => {
@@ -212,6 +214,59 @@ describe("Table", () => {
       const fields = notes.Fields;
       expect(Schema.isSchema(fields)).toBe(true);
       expect(calls.count).toBe(1);
+    });
+  });
+
+  describe("group", () => {
+    const scope = IdScope.component("@example/mail");
+    const BatchId = GenericId.GenericId("batches", scope);
+    const mail = (lazyFields = () => fields) => Table.make(lazyFields);
+    const fields = Schema.Struct({
+      batchId: BatchId,
+      to: Schema.String,
+      retryOf: Schema.optionalKey(BatchId),
+    });
+
+    it("takes only a required field whose schema is an id", () => {
+      // @ts-expect-error `to` is a string, not an id
+      void mail().group("to");
+      // @ts-expect-error the table has no `nope` field
+      void mail().group("nope");
+      // @ts-expect-error an optional id cannot group rows that may name no group
+      void mail().group("retryOf");
+      expectTypeOf(
+        mail().group("batchId")("emails", scope).group,
+      ).toEqualTypeOf<{
+        readonly key: "batchId";
+        readonly table: "batches";
+        readonly scope: typeof scope;
+      }>();
+    });
+
+    it("names the field's table and scope only once read", () => {
+      let evaluations = 0;
+      const emails = mail(() => {
+        evaluations += 1;
+        return fields;
+      }).group("batchId")("emails", scope);
+      expect(evaluations).toBe(0);
+      expect(emails.group.key).toBe("batchId");
+      expect(emails.group.table).toBe("batches");
+      expect(emails.group.scope).toBe(scope);
+    });
+
+    it("fails on first read when a refused group names no id field", () => {
+      const emails = Table.make(() => Schema.Union([fields, fields]))
+        // @ts-expect-error a union schema has no single field to group by
+        .group("batchId")("emails", scope);
+      expect(emails.group.key).toBe("batchId");
+      expect(() => emails.group.table).toThrow(Table.GroupFieldError);
+    });
+
+    it("keeps a group through later chaining and leaves other tables ungrouped", () => {
+      const emails = mail().group("batchId").index("by_batch", ["batchId"]);
+      expect(emails("emails", scope).group.key).toBe("batchId");
+      expect(mail()("emails", scope).group).toBeUndefined();
     });
   });
 });

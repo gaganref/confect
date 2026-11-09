@@ -18,6 +18,7 @@ import * as Ref from "./Ref.js";
 import type * as Refs from "./Refs.js";
 import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 import * as Spec from "./Spec.js";
+import type * as Table_ from "./Table.js";
 
 export class EmptyComponentScopeError extends Data.TaggedError(
   "EmptyComponentScopeError",
@@ -142,18 +143,99 @@ interface Tree {
   readonly [key: string]: Tree | Ref.Any;
 }
 
+/**
+ * Each grouped table's name, mapped to its id field and that id's table.
+ */
+export interface GroupMap {
+  readonly [table: string]: { readonly key: string; readonly table: string };
+}
+
 export interface Component<
   Spec_ extends Spec.AnyWithProps,
   Scope extends IdScope.IdScope,
   Tables extends string = string,
+  Groups_ extends GroupMap = GroupMap,
 > {
   readonly [TypeId]: {
     readonly refs: Tree;
     readonly scope: Scope;
     readonly tables: ReadonlyArray<Tables>;
+    readonly groups: Groups_;
   };
   readonly "~Spec": Spec_;
 }
+
+/**
+ * A component's tables as `contract` takes them: a table, or the name of a
+ * system table.
+ */
+export type TableEntry = string | Table_.AnyWithProps;
+
+type EntryName<Entry extends TableEntry> = Entry extends string
+  ? Entry
+  : Entry extends Table_.AnyWithProps
+    ? Table_.Name<Entry>
+    : never;
+
+type Many<A, All = A> = string extends A
+  ? true
+  : number extends A
+    ? true
+    : A extends unknown
+      ? [All] extends [A]
+        ? never
+        : true
+      : never;
+
+type Loose<Entries extends ReadonlyArray<TableEntry>> = true extends
+  | Many<Entries>
+  | Many<Entries["length"]>
+  | { [Index in keyof Entries]: Many<Entries[Index]> }[number]
+  ? "pass one table or one name per entry; a union may be absent at runtime"
+  : never;
+
+type StrayGroup<
+  Entries extends ReadonlyArray<TableEntry>,
+  Scope extends IdScope.IdScope,
+> = [Loose<Entries>] extends [never]
+  ? {
+      [Index in keyof Entries]: Entries[Index] extends {
+        readonly tableName: infer Name extends string;
+        readonly group: Table_.Group<infer Key, infer Target, infer GroupScope>;
+      }
+        ? [Target, GroupScope] extends [EntryName<Entries[number]>, Scope]
+          ? never
+          : `${Name}.${Key} is not an id of a table of this component`
+        : never;
+    }[number]
+  : Loose<Entries>;
+
+/**
+ * The group map `contract` publishes for these table entries.
+ */
+export type Groups<Entries extends ReadonlyArray<TableEntry>> = {
+  readonly [
+    Entry in Extract<
+      Entries[number],
+      { readonly tableName: string; readonly group: Table_.Group }
+    > as Entry["tableName"]
+  ]: {
+    readonly key: Entry["group"]["key"];
+    readonly table: Entry["group"]["table"];
+  };
+};
+
+/**
+ * `unknown` when every entry is one table or name and every group's id names a
+ * table of this component in its scope, otherwise an object type naming the
+ * refused entry.
+ */
+export type CheckGroups<
+  Entries extends ReadonlyArray<TableEntry>,
+  Scope extends IdScope.IdScope,
+> = [StrayGroup<Entries, Scope>] extends [never]
+  ? unknown
+  : { readonly "~StrayGroup": StrayGroup<Entries, Scope> };
 
 /**
  * An opaque identity: its string representation is not part of the API.
@@ -214,8 +296,22 @@ export type Bound<
 
 /**
  * Build a publishable contract containing only exported functions and codecs.
+ * `tables` lists the component's tables, each a table or a system table's name.
+ * A table grouped by an id must group by an id of one of these tables.
  */
-export const contract = <
+export function contract<
+  Spec_ extends Spec.AnyWithProps,
+  const Scope extends IdScope.IdScope,
+  const Entries extends ReadonlyArray<TableEntry>,
+>(
+  spec: Spec_,
+  scope: Scope,
+  tables: Entries & CheckGroups<Entries, Scope>,
+): Component<Spec_, Scope, EntryName<Entries[number]>, Groups<Entries>>;
+/**
+ * Table names alone, as in an explicit third type argument, carry no groups.
+ */
+export function contract<
   Spec_ extends Spec.AnyWithProps,
   const Scope extends IdScope.IdScope,
   const Tables extends string,
@@ -223,7 +319,12 @@ export const contract = <
   spec: Spec_,
   scope: Scope,
   tables: ReadonlyArray<Tables>,
-): Component<Spec_, Scope, Tables> => {
+): Component<Spec_, Scope, Tables, {}>;
+export function contract(
+  spec: Spec.AnyWithProps,
+  scope: IdScope.IdScope,
+  tables: ReadonlyArray<TableEntry>,
+): Component<Spec.AnyWithProps, IdScope.IdScope> {
   const specGroups = Spec.groups(spec);
   Result.getOrThrow(validateContract(scope, specGroups));
   const collect = (
@@ -251,10 +352,42 @@ export const contract = <
       }),
       Record.filter((children) => !Record.isEmptyRecord(children)),
     );
-  return {
-    [TypeId]: { refs: collect(specGroups), scope, tables },
-  } as Component<Spec_, Scope, Tables>;
-};
+  const grouped: GroupMap = pipe(
+    tables,
+    Array.flatMap((entry) =>
+      typeof entry !== "string" && entry.group !== undefined
+        ? [[entry.tableName, entry.group] as const]
+        : [],
+    ),
+    Record.fromEntries,
+  );
+  const published: Component<
+    Spec.AnyWithProps,
+    IdScope.IdScope
+  >[typeof TypeId] = {
+    refs: collect(specGroups),
+    scope,
+    tables: Array.map(tables, (entry) =>
+      typeof entry === "string" ? entry : entry.tableName,
+    ),
+    groups: grouped,
+  };
+  return { [TypeId]: published } as Component<
+    Spec.AnyWithProps,
+    IdScope.IdScope
+  >;
+}
+
+/**
+ * Each grouped table's id field and the table that id names.
+ */
+export const groups = <Groups_ extends GroupMap>(
+  component: Component<Spec.AnyWithProps, IdScope.IdScope, string, Groups_>,
+): Groups_ =>
+  Record.map(component[TypeId].groups, ({ key, table }) => ({
+    key,
+    table,
+  })) as Groups_;
 
 /**
  * Bind the published contract to an actual installed component reference.
