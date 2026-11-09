@@ -82,15 +82,9 @@ const stack = ({ variables, ...code }: Code) =>
     return { name: deployed.name, url: deployed.url, adminKey: key.deployKey };
   });
 
-/**
- * A temp root and one Alchemy state for a test. Each `session` applies a stack
- * of a deployment, its key and `Code`, which starts the real pinned backend, or
- * restarts it on the state's data, then runs `during` and stops the backend.
- * The backend binds a port in `ports`, unless CONFECT_LOCAL_BACKEND_PORTS
- * overrides the range.
- */
 interface VitestGlobal {
   readonly __vitest_worker__?: {
+    readonly config?: { readonly pool?: string };
     readonly evaluatedModules?: {
       readonly fileToModulesMap: ReadonlyMap<string, unknown>;
     };
@@ -100,16 +94,26 @@ interface VitestGlobal {
 /**
  * Fail unless this test process runs the built packages. An `@confect/*` import
  * is aliased to source, so only vitest's module registry shows where each
- * import landed.
+ * import landed. `make` runs it and registers it to run again when the scope
+ * closes, which catches a source import made after `make`.
+ *
+ * The registry is the test process's own. A worker the code under test starts
+ * has another, which this cannot see, and the acceptance starts none.
  */
 const runsBuiltPackages = Effect.suspend(() => {
-  const loaded = (globalThis as VitestGlobal).__vitest_worker__
-    ?.evaluatedModules?.fileToModulesMap;
+  const worker = (globalThis as VitestGlobal).__vitest_worker__;
+  const loaded = worker?.evaluatedModules?.fileToModulesMap;
   const self = new URL(import.meta.url).pathname;
   if (loaded === undefined || !loaded.has(self))
     return Effect.die(
       new Error(
         "vitest's module registry no longer lists this harness, so it cannot check that it runs the built packages",
+      ),
+    );
+  if (worker?.config?.pool !== "forks" && worker?.config?.pool !== "threads")
+    return Effect.die(
+      new Error(
+        `The harness checks the module registry of a forks or threads pool, not "${worker?.config?.pool}"`,
       ),
     );
   const source = [...loaded.keys()].filter((file) =>
@@ -124,11 +128,19 @@ const runsBuiltPackages = Effect.suspend(() => {
       );
 });
 
+/**
+ * A temp root and one Alchemy state for a test. Each `session` applies a stack
+ * of a deployment, its key and `Code`, which starts the real pinned backend, or
+ * restarts it on the state's data, then runs `during` and stops the backend.
+ * The backend binds a port in `ports`, unless CONFECT_LOCAL_BACKEND_PORTS
+ * overrides the range.
+ */
 export const make = Effect.fn("RealBackend.make")(function* (options: {
   readonly name: string;
   readonly ports: string;
 }) {
   yield* runsBuiltPackages;
+  yield* Effect.addFinalizer(() => runsBuiltPackages);
   const fs = yield* FileSystem.FileSystem;
   const root = yield* fs.makeTempDirectoryScoped({
     prefix: `confect-${options.name}-`,
