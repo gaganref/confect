@@ -1526,7 +1526,7 @@ const recordingKit = (children: ReadonlyArray<string>) =>
   `import { defineSchema } from "convex/server";
 const modules = { "_generated/api.js": () => Promise.resolve({}) };
 export function register(t, name) {
-  for (const path of [name, ...[${children.map(stringLiteral).join(", ")}].map((child) => name + "/" + child)]) {
+  for (const path of [name, ...[${children.map((child) => stringLiteral(child)).join(", ")}].map((child) => name + "/" + child)]) {
     (globalThis.registered ??= []).push(path);
     t.registerComponent(path, defineSchema({}), modules);
   }
