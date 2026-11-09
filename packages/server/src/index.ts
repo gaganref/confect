@@ -26,6 +26,7 @@ export * as Handler from "./Handler.js";
 export * as HttpRouter from "./HttpRouter.js";
 export * as MiddlewareImpl from "./MiddlewareImpl.js";
 export * as MiddlewareRegistryItem from "./MiddlewareRegistryItem.js";
+export * as MountInit from "./MountInit.js";
 export * as MutationCtx from "./MutationCtx.js";
 export * as MutationRunner from "./MutationRunner.js";
 export * as MutationTransactionContext from "./MutationTransactionContext.js";

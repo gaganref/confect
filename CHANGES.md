@@ -416,7 +416,7 @@ Layer and a test replaces it with `Effect.provideService`. `env` is typed from t
 descriptor and `options` from its client constructor. A descriptor may name its
 `init`, an internal mutation, and each mount then passes install `args` typed
 from it; a callback slot takes only an internal host ref matching its contract.
-The mount records `args`; nothing runs `init` on a push yet. A host lists its
+An Alchemy push runs each mount's `init` with its `args`. A host lists its
 mounts in `App.make({ components, mounts })`, and codegen writes each one's
 `app.use`. `Auth.siteUrl` takes a mount with an `httpPrefix`. A descriptor
 that passes its `contract` gives each mount `callbackArgs(slot)`, a callback
@@ -599,6 +599,27 @@ schema-overwrite races. Document port selection, data ownership, recovery, and
 lifecycle errors; make the deployment's `region` output optional for local use.
 
 Changeset: `alchemy-local-providers.md`.
+Upstream: planned; no linked proposal verified.
+
+### Run each mount's init on a push
+
+Each Alchemy push, local and cloud, runs every mount's `init` after the code
+push and inside the deployment's push lock, one mount at a time in declaration
+order. A Confect component's own mounts run after its `init`, at their nested
+component path. Codegen writes the steps into `convex/confectDeploy.ts`, an
+internal mutation that makes each mount's callback handles with
+`Callback.create`, and imports each such mount from `confect/<name>.ts`. A
+failing mount stops the push with `<mount>: init failed; earlier mounts are
+applied, and the next push retries`, and the next push converges. A push
+outside Alchemy skips `init`. The step stands in for Convex's own component
+`init` until gaganref/confect#18's trigger: a stable `convex` release with
+`init` and `args`, and an open-source backend that accepts them. At that
+trigger the push step goes, codegen stops writing `convex/confectDeploy.ts` and
+deletes the copy an earlier run left, and `Mount.initCall`,
+`MountInit.mutation` and `MountInitFailed` are removed. `ConvexClient.runFunction`
+stays.
+
+Changeset: `mount-init-on-push.md`.
 Upstream: planned; no linked proposal verified.
 
 ## CLI generation and recovery
