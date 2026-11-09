@@ -94,46 +94,38 @@ interface VitestGlobal {
 /**
  * Fail unless this test process runs the built packages. An `@confect/*` import
  * is aliased to source, so only vitest's module registry shows where each
- * import landed. `make` runs it and registers it to run again when the scope
- * closes, which catches a source import made after `make`.
- *
- * The registry is the test process's own. A worker the code under test starts
- * has another, which this cannot see, and the acceptance starts none.
+ * import landed. `make` runs it, and again when the scope closes. A worker the
+ * code under test starts has a registry this cannot see; the acceptance starts
+ * none.
  */
 const runsBuiltPackages = Effect.suspend(() => {
   const worker = (globalThis as VitestGlobal).__vitest_worker__;
   const loaded = worker?.evaluatedModules?.fileToModulesMap;
-  const self = new URL(import.meta.url).pathname;
-  if (loaded === undefined || !loaded.has(self))
-    return Effect.die(
-      new Error(
-        "vitest's module registry no longer lists this harness, so it cannot check that it runs the built packages",
-      ),
-    );
-  if (worker?.config?.pool !== "forks" && worker?.config?.pool !== "threads")
-    return Effect.die(
-      new Error(
-        `The harness checks the module registry of a forks or threads pool, not "${worker?.config?.pool}"`,
-      ),
+  const pool = worker?.config?.pool;
+  const die = (message: string) => Effect.die(new Error(message));
+  if (
+    loaded === undefined ||
+    !loaded.has(new URL(import.meta.url).pathname) ||
+    (pool !== "forks" && pool !== "threads")
+  )
+    return die(
+      `vitest's module registry (pool "${pool}") is not a forks or threads registry that lists this harness, so it cannot check that it runs the built packages`,
     );
   const source = [...loaded.keys()].filter((file) =>
     /\/packages\/[^/]+\/src\//.test(file),
   );
   return source.length === 0
     ? Effect.void
-    : Effect.die(
-        new Error(
-          `The real-backend harness runs the built packages, but this test loaded their source: ${source.join(", ")}`,
-        ),
+    : die(
+        `The real-backend harness runs the built packages, but this test loaded their source: ${source.join(", ")}`,
       );
 });
 
 /**
  * A temp root and one Alchemy state for a test. Each `session` applies a stack
  * of a deployment, its key and `Code`, which starts the real pinned backend, or
- * restarts it on the state's data, then runs `during` and stops the backend.
- * The backend binds a port in `ports`, unless CONFECT_LOCAL_BACKEND_PORTS
- * overrides the range.
+ * restarts it on the state's data, then runs `during` and stops the backend. It
+ * binds a port in `ports`; CONFECT_LOCAL_BACKEND_PORTS overrides the range.
  */
 export const make = Effect.fn("RealBackend.make")(function* (options: {
   readonly name: string;
@@ -243,8 +235,8 @@ export const call = (
   }).pipe(Effect.provide(localClient), Effect.orDie);
 
 /**
- * Hooks a test uses to line two pushes up: `attempting` runs as the push asks
- * for the lock, `coded` after its code push and before any `init`.
+ * Hooks to line two pushes up: `attempting` runs as a push asks for the lock,
+ * `coded` after its code push and before any `init`.
  */
 export interface Probe {
   readonly attempting?: Effect.Effect<void>;
