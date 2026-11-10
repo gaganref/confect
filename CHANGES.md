@@ -25,6 +25,22 @@ Frame's backend testing kernel (Frame ADR 0012).
 Changeset: `test-invocation-services.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel storage and attempts
+
+`@confect/test` has an internal kernel that runs Convex functions in process
+without convex-test. It keeps committed rows per component and a write log.
+Each query and mutation runs as an attempt over a snapshot and its own pending
+writes. A nested mutation's writes merge into its caller's or are dropped, and
+only the outermost mutation publishes, across every component at once. The
+kernel loads every module Convex's bundler would deploy before the first
+function runs, and Node actions run through the action path. Scheduling,
+storage, HTTP, JWT and transaction limits refuse until later kernel rows land.
+A second mock-backend run aliases `convex-test` to the kernel's shim and
+refuses the real package. `test/mock-backend/kernelPlacement.ts` lists the
+cases that wait for a later row. This is row 2 of Frame's backend testing
+kernel (Frame ADR 0012). Changeset: `test-kernel-storage.md`. Upstream: fork
+only, as the kernel is fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector

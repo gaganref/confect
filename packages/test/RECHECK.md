@@ -73,3 +73,46 @@ handler that scheduled it. Convex gives it its own `scheduledFunctionId`, so the
 bridge gives it a fresh record with the world's services and the job's request
 metadata. The attempt is always 1 until row 3 adds attempts. A nested action joins its caller's record too. The design gives it a fresh one, which differs from the joined record only once an attempt can differ, so it lands with row 3. A query still runs on its pinned `queryClock`, which the query base provides inside the handler effect, so an invocation's clock reaches mutations and actions only. The bridge does not
 reach HTTP route handlers, `t.run` or mount `init`, as recorded above.
+
+## Storage and attempts (row 2)
+
+`src/internal/Kernel.ts` holds the committed state: rows per component path
+and table, the latest version and commit timestamp, and the write log.
+`Kernel.apply` is its only writer. It publishes one attempt's writes as one
+version, across every component. `src/internal/Attempt.ts` is one attempt: the
+committed state it started from and a stack of pending-write frames. A nested
+mutation pushes a frame, which merges into its caller's when it returns and is
+dropped when it fails. `src/internal/Execution.ts` answers Convex's syscalls
+for the function that made them and runs queries, mutations and actions. Its
+query, range, pagination and validator rules come from convex-test 0.0.65
+(`KernelValues.ts`, `KernelQuery.ts`, Apache-2.0, credited in each file).
+
+Row 2 publishes one top-level mutation at a time. Row 3 replaces that with
+read-set validation and held attempts. Scheduling, storage, HTTP, JWT signing
+and transaction limits refuse with `KernelRowPending`, naming the row that
+supplies them. Text and vector search refuse with `RequiresBinary`.
+
+`src/internal/ConvexTest.ts` gives the kernel convex-test's `convexTest`
+signature. `vitest.mock-backend.kernel.config.ts` in `@confect/server` aliases
+`convex-test` to it, so `TestConfect` and every suite that calls `convexTest`
+directly run on the kernel. A plugin refuses any import that resolves into the
+installed convex-test package, and `kernelLane.ts` fails a case when another
+backend installed `globalThis.Convex`. `test:mock-backend` runs the
+convex-test lane and then this one.
+
+### Placement changes
+
+`test/mock-backend/kernelPlacement.ts` is the inventory above as data. Two
+facts differ from it.
+
+- `integration.test.ts:394`, "uses the canonical Doc decoder across database
+  read paths", reads through a text search at `:429`. The inventory places it
+  in row 2. The kernel never simulates search, so no row supplies it. It is
+  placed `binary`. This contradicts lane 1's zero exceptions, as recorded in
+  the row 2 PR.
+- At open the kernel loads the modules Convex's bundler would deploy, by the
+  rule in `convex/src/bundler/index.ts` (1.49). It skips `_generated`,
+  `schema.ts`, any file with more than one dot, dotfiles and nested component
+  directories. The official Workflow kit registers its packages' own
+  `*.test.ts` files, and importing those inside a running test fails, so
+  loading every registered file would break that kit.
