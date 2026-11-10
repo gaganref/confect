@@ -1,0 +1,5 @@
+---
+"@confect/test": minor
+---
+
+`TestConfect.RegisterComponent` and `registerComponent` take an optional fourth argument, `{ standing }`. It names a component's functions that schedule their own next run, such as the crons component's `public:rescheduler`. The internal test kernel now runs scheduled functions on its own clock, never a host timer. Jobs are rows that exist only once the scheduling mutation commits, and cancellation marks them canceled. Each scheduled call starts at its deadline with no identity and fresh request metadata carrying its job ID. Inside a query or mutation, `Date` reads the invocation's start time. `finishAllScheduledFunctions` runs jobs in deadline order until only standing jobs remain. It fails with `DrainBudgetExceeded` after 100 jobs, so an undeclared self-rescheduling function fails the drain instead of looping. convex-test ignores the new option, and the public `TestConfect` layer still runs on convex-test.
