@@ -449,7 +449,7 @@ export class World {
     validateFunctionArgs(
       resolved.args,
       args ?? {},
-      functionPath as any,
+      functionPath,
       from.parent?.attempt !== undefined,
     );
     return this.runQuery(functionPath, resolved, args, from, snapshotOnly);
@@ -460,7 +460,7 @@ export class World {
     validateFunctionArgs(
       resolved.args,
       args ?? {},
-      functionPath as any,
+      functionPath,
       from.parent?.attempt !== undefined,
     );
     return this.runMutation(functionPath, resolved, args, from);
@@ -468,7 +468,7 @@ export class World {
 
   private actionAt(functionPath: FunctionPath, args: any, from: From) {
     const resolved = this.resolve(functionPath, "action");
-    validateFunctionArgs(resolved.args, args ?? {}, functionPath as any, false);
+    validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
     return this.runAction(functionPath, resolved, args, from);
   }
 
@@ -548,12 +548,7 @@ export class World {
                 `cannot return an unresolved placeholder value.`,
             );
           }
-          validateReturnValue(
-            resolved.returns,
-            result,
-            "query",
-            functionPath as any,
-          );
+          validateReturnValue(resolved.returns, result, "query", functionPath);
           return result;
         })
         .catch((error: unknown) => {
@@ -591,7 +586,7 @@ export class World {
             resolved.returns,
             result,
             "mutation",
-            functionPath as any,
+            functionPath,
           );
           return result;
         });
@@ -687,12 +682,7 @@ export class World {
       )
       .then((raw) => {
         const result = jsonToConvex(JSON.parse(raw));
-        validateReturnValue(
-          resolved.returns,
-          result,
-          "action",
-          functionPath as any,
-        );
+        validateReturnValue(resolved.returns, result, "action", functionPath);
         return result;
       })
       .catch((error: unknown) => {
@@ -835,7 +825,7 @@ export class World {
       case "1.0/actions/mutation":
       case "1.0/actions/action": {
         const from: From = {
-          caller: anonymousWith(execution),
+          caller: anonymous,
           request: execution.request,
           parent: execution,
         };
@@ -851,7 +841,7 @@ export class World {
       case "1.0/runUdf": {
         const { udfType, args: udfArgs } = args;
         const from: From = {
-          caller: anonymousWith(execution),
+          caller: anonymous,
           request: execution.request,
           parent: execution,
         };
@@ -874,7 +864,7 @@ export class World {
       case "1.0/createFunctionHandle": {
         const functionPath = functionPathOf(args, execution.componentPath);
         this.component(functionPath.componentPath);
-        return JSON.stringify(createFunctionHandle(functionPath as any));
+        return JSON.stringify(createFunctionHandle(functionPath));
       }
       case "1.0/auditLog":
         return JSON.stringify(null);
@@ -1036,16 +1026,15 @@ export class World {
   }
 }
 
+/**
+ * Where a call comes from. A call from the test carries its accessor's caller.
+ * A nested call carries its parent execution and takes its identity from it.
+ */
 interface From {
   readonly caller: Caller;
   readonly request: Request;
   readonly parent?: Execution;
 }
-
-const anonymousWith = (execution: Execution): Caller => ({
-  ...anonymous,
-  identity: execution.identity,
-});
 
 const transaction = (execution: Execution): KernelAttempt => {
   if (execution.attempt === undefined) {
