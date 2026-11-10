@@ -1,0 +1,659 @@
+// oxlint-disable effecttsgo/async-function, effecttsgo/global-date -- The fixtures are plain Convex functions, which are async and read the pinned `Date` as product code does.
+import { describe, expect, it } from "@effect/vitest";
+import {
+  actionGeneric,
+  componentsGeneric,
+  createFunctionHandle,
+  defineSchema,
+  defineTable,
+  makeFunctionReference,
+  mutationGeneric,
+  queryGeneric,
+  type FunctionHandle,
+  type FunctionReference,
+} from "convex/server";
+import { v, type GenericId } from "convex/values";
+import * as Effect from "effect/Effect";
+import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
+
+const start = 1_000_000;
+const runtime = {
+  now: () => start,
+  commitTs: (version: number) => 10n + BigInt(version),
+};
+
+type Job = GenericId<"_scheduled_functions">;
+type Next = { readonly label: string; readonly ms: number };
+
+const jobs = {
+  mark: makeFunctionReference<"mutation", { label: string; next?: Next }>(
+    "jobs:mark",
+  ),
+  schedule: makeFunctionReference<
+    "mutation",
+    { marks: ReadonlyArray<{ label: string; ms: number; next?: Next }> },
+    Array<Job>
+  >("jobs:schedule"),
+  scheduleThenCancel: makeFunctionReference<"mutation", {}, Job>(
+    "jobs:scheduleThenCancel",
+  ),
+  scheduleThenFail: makeFunctionReference<"mutation">("jobs:scheduleThenFail"),
+  scheduleFromAction: makeFunctionReference<"action">(
+    "jobs:scheduleFromAction",
+  ),
+  cancel: makeFunctionReference<"mutation", { id: Job }>("jobs:cancel"),
+  cancelFromAction: makeFunctionReference<"action", { id: Job }>(
+    "jobs:cancelFromAction",
+  ),
+  state: makeFunctionReference<"query", { id: Job }, string | null>(
+    "jobs:state",
+  ),
+  marks: makeFunctionReference<
+    "query",
+    {},
+    Array<{ label: string; at: number }>
+  >("jobs:marks"),
+  now: makeFunctionReference<"mutation", {}, number>("jobs:now"),
+  scheduleProbe: makeFunctionReference<"mutation", {}, Job>(
+    "jobs:scheduleProbe",
+  ),
+  probe: makeFunctionReference<"mutation", { label: string }>("jobs:probe"),
+  probes: makeFunctionReference<"query", {}, Array<Record<string, unknown>>>(
+    "jobs:probes",
+  ),
+  sendMail: makeFunctionReference<"mutation", { text: string }>(
+    "jobs:sendMail",
+  ),
+  delivered: makeFunctionReference<"mutation", { text: string }>(
+    "jobs:delivered",
+  ),
+};
+
+const components = componentsGeneric() as unknown as {
+  readonly beat: {
+    readonly public: {
+      readonly start: FunctionReference<"mutation", "internal">;
+      readonly count: FunctionReference<"query", "internal", {}, number>;
+    };
+  };
+  readonly flow: {
+    readonly flow: {
+      readonly start: FunctionReference<"mutation", "internal", {}, string>;
+      readonly send: FunctionReference<
+        "mutation",
+        "internal",
+        { id: string; value: string }
+      >;
+      readonly get: FunctionReference<
+        "query",
+        "internal",
+        { id: string },
+        { state: string; value?: string }
+      >;
+    };
+  };
+  readonly mailer: {
+    readonly mailer: {
+      readonly send: FunctionReference<
+        "mutation",
+        "internal",
+        { handle: string; text: string }
+      >;
+    };
+  };
+};
+
+const hostSchema = defineSchema({
+  marks: defineTable({ label: v.string(), at: v.number() }),
+  probes: defineTable({ probe: v.any() }),
+});
+
+const mark = mutationGeneric({
+  args: {
+    label: v.string(),
+    next: v.optional(v.object({ label: v.string(), ms: v.number() })),
+  },
+  handler: async (ctx, { label, next }) => {
+    await ctx.db.insert("marks", { label, at: Date.now() });
+    if (next !== undefined)
+      await ctx.scheduler.runAfter(next.ms, jobs.mark, { label: next.label });
+    return null;
+  },
+});
+
+const probe = mutationGeneric({
+  args: { label: v.string() },
+  handler: async (ctx, { label }) => {
+    const identity = await ctx.auth.getUserIdentity();
+    const request = await (
+      ctx as unknown as {
+        meta: { getRequestMetadata: () => Promise<Record<string, unknown>> };
+      }
+    ).meta.getRequestMetadata();
+    await ctx.db.insert("probes", {
+      probe: {
+        label,
+        subject: identity?.subject ?? null,
+        ip: request.ip,
+        userAgent: request.userAgent,
+        requestId: request.requestId,
+        scheduledFunctionId: request.scheduledFunctionId,
+      },
+    });
+    return null;
+  },
+});
+
+const hostModules = {
+  "_generated/server.ts": () => Promise.resolve({}),
+  "jobs.ts": () =>
+    Promise.resolve({
+      mark,
+      probe,
+      schedule: mutationGeneric({
+        args: { marks: v.array(v.any()) },
+        handler: (ctx, { marks }) =>
+          Promise.all(
+            marks.map(({ label, ms, next }) =>
+              ctx.scheduler.runAfter(ms, jobs.mark, {
+                label,
+                ...(next === undefined ? {} : { next }),
+              }),
+            ),
+          ),
+      }),
+      scheduleThenCancel: mutationGeneric({
+        args: {},
+        handler: async (ctx) => {
+          const id = await ctx.scheduler.runAfter(10, jobs.mark, {
+            label: "canceled",
+          });
+          await ctx.scheduler.cancel(id);
+          return id;
+        },
+      }),
+      scheduleThenFail: mutationGeneric({
+        args: {},
+        handler: async (ctx) => {
+          await ctx.scheduler.runAfter(0, jobs.mark, { label: "orphan" });
+          throw new Error("The scheduling mutation failed.");
+        },
+      }),
+      scheduleFromAction: actionGeneric({
+        args: {},
+        handler: async (ctx) => {
+          await ctx.scheduler.runAfter(0, jobs.mark, { label: "from action" });
+          throw new Error("The action failed after it scheduled.");
+        },
+      }),
+      cancel: mutationGeneric({
+        args: { id: v.id("_scheduled_functions") },
+        handler: (ctx, { id }) => ctx.scheduler.cancel(id).then(() => null),
+      }),
+      cancelFromAction: actionGeneric({
+        args: { id: v.id("_scheduled_functions") },
+        handler: (ctx, { id }) => ctx.scheduler.cancel(id).then(() => null),
+      }),
+      state: queryGeneric({
+        args: { id: v.id("_scheduled_functions") },
+        handler: (ctx, { id }) =>
+          ctx.db.system.get(id).then((job) => job?.state.kind ?? null),
+      }),
+      marks: queryGeneric({
+        args: {},
+        handler: (ctx) =>
+          ctx.db
+            .query("marks")
+            .collect()
+            .then((rows) => rows.map(({ label, at }) => ({ label, at }))),
+      }),
+      now: mutationGeneric({
+        args: {},
+        handler: () => Promise.resolve(Date.now()),
+      }),
+      scheduleProbe: mutationGeneric({
+        args: {},
+        handler: async (ctx) => {
+          await ctx.runMutation(jobs.probe, { label: "caller" });
+          return ctx.scheduler.runAfter(0, jobs.probe, { label: "job" });
+        },
+      }),
+      probes: queryGeneric({
+        args: {},
+        handler: (ctx) =>
+          ctx.db
+            .query("probes")
+            .collect()
+            .then((rows) => rows.map((row) => row.probe)),
+      }),
+      sendMail: mutationGeneric({
+        args: { text: v.string() },
+        handler: async (ctx, { text }) => {
+          const handle = await createFunctionHandle(jobs.delivered);
+          await ctx.runMutation(components.mailer.mailer.send, {
+            handle,
+            text,
+          });
+          return null;
+        },
+      }),
+      delivered: mutationGeneric({
+        args: { text: v.string() },
+        handler: (ctx, { text }) =>
+          ctx.db
+            .insert("marks", { label: `delivered ${text}`, at: Date.now() })
+            .then(() => null),
+      }),
+    }),
+};
+
+// A component whose `tick` schedules its own next run forever, as the official
+// crons component's `public:rescheduler` does.
+const beatModules = {
+  "_generated/server.ts": () => Promise.resolve({}),
+  "public.ts": () =>
+    Promise.resolve({
+      start: mutationGeneric({
+        args: {},
+        handler: (ctx) =>
+          ctx.scheduler
+            .runAfter(1000, makeFunctionReference<"mutation">("public:tick"), {
+              n: 0,
+            })
+            .then(() => null),
+      }),
+      tick: mutationGeneric({
+        args: { n: v.number() },
+        handler: async (ctx, { n }) => {
+          await ctx.db.insert("beats", { n });
+          await ctx.scheduler.runAfter(
+            1000,
+            makeFunctionReference<"mutation">("public:tick"),
+            {
+              n: n + 1,
+            },
+          );
+          return null;
+        },
+      }),
+      count: queryGeneric({
+        args: {},
+        handler: (ctx) =>
+          ctx.db
+            .query("beats")
+            .collect()
+            .then((rows) => rows.length),
+      }),
+    }),
+};
+const beatSchema = defineSchema({ beats: defineTable({ n: v.number() }) });
+
+// A workflow whose step awaits an event, as the official Workflow component's
+// `awaitEvent` does: the step parks the run, and `send` schedules it again.
+const flowStep = makeFunctionReference<"mutation", { id: string }>("flow:step");
+const flowModules = {
+  "_generated/server.ts": () => Promise.resolve({}),
+  "flow.ts": () =>
+    Promise.resolve({
+      start: mutationGeneric({
+        args: {},
+        handler: async (ctx) => {
+          const id = await ctx.db.insert("flows", { state: "running" });
+          await ctx.scheduler.runAfter(0, flowStep, { id });
+          return id;
+        },
+      }),
+      step: mutationGeneric({
+        args: { id: v.id("flows") },
+        handler: async (ctx, { id }) => {
+          const event = await ctx.db
+            .query("events")
+            .filter((q) => q.eq(q.field("flow"), id))
+            .first();
+          await ctx.db.patch(
+            id,
+            event === null
+              ? { state: "waiting" }
+              : { state: "done", value: event.value },
+          );
+          return null;
+        },
+      }),
+      send: mutationGeneric({
+        args: { id: v.id("flows"), value: v.string() },
+        handler: async (ctx, { id, value }) => {
+          await ctx.db.insert("events", { flow: id, value });
+          await ctx.scheduler.runAfter(0, flowStep, { id });
+          return null;
+        },
+      }),
+      get: queryGeneric({
+        args: { id: v.id("flows") },
+        handler: (ctx, { id }) =>
+          ctx.db.get(id).then((flow) => ({
+            state: flow!.state,
+            ...(flow!.value === undefined ? {} : { value: flow!.value }),
+          })),
+      }),
+    }),
+};
+const flowSchema = defineSchema({
+  flows: defineTable({ state: v.string(), value: v.optional(v.string()) }),
+  events: defineTable({ flow: v.id("flows"), value: v.string() }),
+});
+
+// A component that stores the host's callback handle in a row, and from a
+// scheduled job schedules the handle, as the crons component's rescheduler
+// schedules its target.
+const mailerModules = {
+  "_generated/server.ts": () => Promise.resolve({}),
+  "mailer.ts": () =>
+    Promise.resolve({
+      send: mutationGeneric({
+        args: { handle: v.string(), text: v.string() },
+        handler: async (ctx, { handle, text }) => {
+          const id = await ctx.db.insert("outbox", { handle, text });
+          await ctx.scheduler.runAfter(
+            10,
+            makeFunctionReference<"mutation">("mailer:deliver"),
+            {
+              id,
+            },
+          );
+          return null;
+        },
+      }),
+      deliver: mutationGeneric({
+        args: { id: v.id("outbox") },
+        handler: async (ctx, { id }) => {
+          const row = await ctx.db.get(id);
+          await ctx.scheduler.runAfter(
+            0,
+            row!.handle as FunctionHandle<"mutation">,
+            { text: row!.text },
+          );
+          return null;
+        },
+      }),
+    }),
+};
+const mailerSchema = defineSchema({
+  outbox: defineTable({ handle: v.string(), text: v.string() }),
+});
+
+const world = (
+  register: (t: {
+    registerComponent: (
+      path: string,
+      schema: unknown,
+      modules: unknown,
+      options?: { readonly standing?: ReadonlyArray<string> },
+    ) => unknown;
+  }) => void = () => {},
+): KernelControls => {
+  const t = convexTest({ schema: hostSchema, modules: hostModules, runtime });
+  register(t);
+  return t;
+};
+
+const call = <A>(thunk: () => Promise<A>) => Effect.promise(thunk);
+const failure = (thunk: () => Promise<unknown>) =>
+  call(() =>
+    thunk().then(
+      () => null,
+      (error: unknown) => error,
+    ),
+  );
+
+describe("the controlled clock", () => {
+  it.effect(
+    "advance walks every deadline in order, a job's own schedule included, and pins each job's start to its deadline",
+    () =>
+      Effect.gen(function* () {
+        const t = world();
+        yield* call(() =>
+          t.mutation(jobs.schedule, {
+            marks: [
+              { label: "c", ms: 100 },
+              { label: "b", ms: 30 },
+              { label: "chain", ms: 20, next: { label: "chained", ms: 15 } },
+              { label: "a", ms: 10 },
+            ],
+          }),
+        );
+        yield* call(() => t.advance(50));
+        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([
+          { label: "a", at: start + 10 },
+          { label: "chain", at: start + 20 },
+          { label: "b", at: start + 30 },
+          { label: "chained", at: start + 35 },
+        ]);
+        expect(t.jobs()).toEqual([
+          expect.objectContaining({
+            name: "jobs:mark",
+            scheduledTime: start + 100,
+            standing: false,
+          }),
+        ]);
+        expect(yield* call(() => t.mutation(jobs.now, {}))).toBe(start + 50);
+      }),
+  );
+
+  it.effect(
+    "settling runs the jobs due now and never crosses a future deadline",
+    () =>
+      Effect.gen(function* () {
+        const t = world();
+        yield* call(() =>
+          t.mutation(jobs.schedule, {
+            marks: [
+              { label: "now", ms: 0 },
+              { label: "later", ms: 10 },
+            ],
+          }),
+        );
+        yield* call(() => t.finishInProgressScheduledFunctions());
+        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([
+          { label: "now", at: start },
+        ]);
+        expect(t.jobs().map((job) => job.scheduledTime)).toEqual([start + 10]);
+      }),
+  );
+});
+
+describe("jobs", () => {
+  it.effect(
+    "a canceled job never runs, whether its own mutation, a later mutation or an action cancels it",
+    () =>
+      Effect.gen(function* () {
+        const t = world();
+        const same = yield* call(() => t.mutation(jobs.scheduleThenCancel, {}));
+        const [later, fromAction] = yield* call(() =>
+          t.mutation(jobs.schedule, {
+            marks: [
+              { label: "later", ms: 10 },
+              { label: "from action", ms: 10 },
+            ],
+          }),
+        );
+        yield* call(() => t.mutation(jobs.cancel, { id: later! }));
+        yield* call(() => t.action(jobs.cancelFromAction, { id: fromAction! }));
+        yield* call(() => t.finishAllScheduledFunctions());
+        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([]);
+        expect(
+          yield* call(() =>
+            Promise.all(
+              [same, later!, fromAction!].map((id) =>
+                t.query(jobs.state, { id }),
+              ),
+            ),
+          ),
+        ).toEqual(["canceled", "canceled", "canceled"]);
+      }),
+  );
+
+  it.effect(
+    "a job exists only if the mutation that scheduled it commits, and an action's schedule commits at once",
+    () =>
+      Effect.gen(function* () {
+        const t = world();
+        yield* failure(() => t.mutation(jobs.scheduleThenFail, {}));
+        expect(t.jobs()).toEqual([]);
+        yield* failure(() => t.action(jobs.scheduleFromAction, {}));
+        yield* call(() => t.finishAllScheduledFunctions());
+        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([
+          { label: "from action", at: start },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "a scheduled call runs with no identity and fresh request metadata that carries its job id",
+    () =>
+      Effect.gen(function* () {
+        const t = world() as KernelControls & {
+          withIdentity: (identity: object) => {
+            withRequestMetadata: (metadata: object) => KernelControls;
+          };
+        };
+        const id = yield* call(() =>
+          t
+            .withIdentity({ subject: "ada" })
+            .withRequestMetadata({ ip: "203.0.113.7", userAgent: "probe" })
+            .mutation(jobs.scheduleProbe, {}),
+        );
+        yield* call(() => t.finishAllScheduledFunctions());
+        const [caller, job] = yield* call(() => t.query(jobs.probes, {}));
+        expect(caller).toMatchObject({
+          label: "caller",
+          subject: "ada",
+          ip: "203.0.113.7",
+          userAgent: "probe",
+          scheduledFunctionId: null,
+        });
+        expect(job).toEqual({
+          label: "job",
+          subject: null,
+          ip: null,
+          userAgent: null,
+          requestId: expect.any(String),
+          scheduledFunctionId: id,
+        });
+        expect(job!["requestId"]).not.toBe(caller!["requestId"]);
+      }),
+  );
+
+  it.effect(
+    "a host handle a component stores in a row is called back after the drain",
+    () =>
+      Effect.gen(function* () {
+        const t = world((kit) =>
+          kit.registerComponent("mailer", mailerSchema, mailerModules),
+        );
+        yield* call(() => t.mutation(jobs.sendMail, { text: "hello" }));
+        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([]);
+        yield* call(() => t.finishAllScheduledFunctions());
+        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([
+          { label: "delivered hello", at: start + 10 },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "a workflow that awaits an event holds through the drain until the event is sent",
+    () =>
+      Effect.gen(function* () {
+        const t = world((kit) =>
+          kit.registerComponent("flow", flowSchema, flowModules),
+        );
+        const id = yield* call(() =>
+          t.mutation(components.flow.flow.start, {}),
+        );
+        yield* call(() => t.finishAllScheduledFunctions());
+        expect(
+          yield* call(() => t.query(components.flow.flow.get, { id })),
+        ).toEqual({
+          state: "waiting",
+        });
+        expect(t.jobs()).toEqual([]);
+        yield* call(() =>
+          t.mutation(components.flow.flow.send, { id, value: "approved" }),
+        );
+        yield* call(() => t.finishAllScheduledFunctions());
+        expect(
+          yield* call(() => t.query(components.flow.flow.get, { id })),
+        ).toEqual({
+          state: "done",
+          value: "approved",
+        });
+      }),
+  );
+});
+
+describe("standing sources", () => {
+  it.effect(
+    "the drain fails its budget on a self-rescheduling job no kit declared standing",
+    () =>
+      Effect.gen(function* () {
+        const t = world((kit) =>
+          kit.registerComponent("beat", beatSchema, beatModules),
+        );
+        yield* call(() => t.mutation(components.beat.public.start, {}));
+        const error = yield* failure(() => t.finishAllScheduledFunctions());
+        expect(error).toMatchObject({
+          _tag: "DrainBudgetExceeded",
+          budget: 100,
+          pending: [{ componentPath: "beat", name: "public:tick" }],
+        });
+      }),
+  );
+
+  it.effect(
+    "a declared standing source leaves the drain quiescent with its next run pending, and advancing time fires it",
+    () =>
+      Effect.gen(function* () {
+        const t = world((kit) =>
+          kit.registerComponent("beat", beatSchema, beatModules, {
+            standing: ["public:tick"],
+          }),
+        );
+        yield* call(() => t.mutation(components.beat.public.start, {}));
+        yield* call(() => t.finishAllScheduledFunctions());
+        expect(
+          yield* call(() => t.query(components.beat.public.count, {})),
+        ).toBe(0);
+        expect(t.jobs()).toEqual([
+          expect.objectContaining({
+            componentPath: "beat",
+            name: "public:tick",
+            scheduledTime: start + 1000,
+            standing: true,
+          }),
+        ]);
+        yield* call(() => t.advance(2500));
+        expect(
+          yield* call(() => t.query(components.beat.public.count, {})),
+        ).toBe(2);
+        expect(t.jobs().map((job) => job.scheduledTime)).toEqual([
+          start + 3000,
+        ]);
+      }),
+  );
+
+  it.effect(
+    "a standing name the component does not export is refused when the backend opens",
+    () =>
+      Effect.gen(function* () {
+        const t = world((kit) =>
+          kit.registerComponent("beat", beatSchema, beatModules, {
+            standing: ["public:rescheduler"],
+          }),
+        );
+        expect(yield* failure(() => t.query(jobs.marks, {}))).toMatchObject({
+          _tag: "UnknownStandingSource",
+          componentPath: "beat",
+          name: "public:rescheduler",
+        });
+      }),
+  );
+});

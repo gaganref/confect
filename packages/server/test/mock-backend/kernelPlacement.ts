@@ -31,12 +31,6 @@ export const placements: ReadonlyArray<Placement> = [
   },
   {
     file: "integration.test.ts",
-    name: "Scheduler",
-    row: 5,
-    needs: "the scheduler",
-  },
-  {
-    file: "integration.test.ts",
     name: "DatabaseReader > uses the canonical Doc decoder across database read paths",
     row: "binary",
     needs: "text search, which the kernel never simulates (RequiresBinary)",
@@ -46,12 +40,6 @@ export const placements: ReadonlyArray<Placement> = [
     name: "verifies app and generated component mutation JWTs against deployment JWKS",
     row: 6,
     needs: "JWT verification",
-  },
-  {
-    file: "components.test.ts",
-    name: "cancels component jobs from runAfter and runAt before they execute",
-    row: 5,
-    needs: "the scheduler",
   },
   ...[
     "fetches each mounted component with its site URL at construction",
@@ -68,16 +56,5 @@ export const placements: ReadonlyArray<Placement> = [
     name,
     row: 6,
     needs: "HTTP routes, after storage",
-  })),
-  ...[
-    "a component stores a host handle and calls it back through the scheduler and the runner",
-    "a handle called with args outside the host's validator fails the component as a defect",
-    "refuses to create a handle for a host function whose validators differ from the contract",
-    "a profiled component action calls a decoded host callback",
-  ].map((name): Placement => ({
-    file: "components.test.ts",
-    name,
-    row: 5,
-    needs: "stored function handles",
   })),
 ];
