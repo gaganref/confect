@@ -1,7 +1,11 @@
 import { TestConfect } from "@confect/test";
-import { beforeEach, expect, it } from "@effect/vitest";
+import { DatabaseSchema, MutationCtx } from "@confect/server";
+import { assert, beforeEach, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Schema from "effect/Schema";
 import { App, Mount } from "@confect/core";
 import {
   componentsGeneric,
@@ -9,6 +13,7 @@ import {
   defineTable,
   makeFunctionReference,
   mutationGeneric,
+  queryGeneric,
   type FunctionReference,
   type GenericDataModel,
 } from "convex/server";
@@ -164,13 +169,46 @@ it.effect("registers a component through its test entry's register", () =>
   ),
 );
 
+const host = DatabaseSchema.make({});
+const Host = TestConfect.TestConfect<typeof host>();
+const generatedOnly = { "_generated/server.ts": () => Promise.resolve({}) };
+
+const notes = {
+  add: makeFunctionReference<"mutation", { text: string }>("notes:add"),
+  list: makeFunctionReference<"query", {}, Array<string>>("notes:list"),
+};
+const texts = (rows: ReadonlyArray<{ readonly text: string }>) =>
+  rows.map((row) => row.text);
+const listModule = (table: string) => ({
+  add: mutationGeneric({
+    args: { text: v.string() },
+    handler: (ctx, { text }) => ctx.db.insert(table, { text }).then(() => null),
+  }),
+  list: queryGeneric({
+    args: {},
+    handler: (ctx) => ctx.db.query(table).collect().then(texts),
+  }),
+});
+const hostSchema = defineSchema({ notes: defineTable({ text: v.string() }) });
+const hostModules = {
+  ...generatedOnly,
+  "notes.ts": () => Promise.resolve(listModule("notes")),
+};
+const store = {
+  schema: defineSchema({ rows: defineTable({ text: v.string() }) }),
+  modules: {
+    ...generatedOnly,
+    "rows.ts": () => Promise.resolve(listModule("rows")),
+  },
+};
+
 // A component whose `tick` schedules its own next run forever, as the official
 // crons component's `public:rescheduler` does.
 const tick = makeFunctionReference<"mutation">("public:tick");
 const beat = {
   schema: defineSchema({ beats: defineTable({ n: v.number() }) }),
   modules: {
-    "_generated/server.ts": () => Promise.resolve({}),
+    ...generatedOnly,
     "public.ts": () =>
       Promise.resolve({
         tick: mutationGeneric({
@@ -185,50 +223,153 @@ const beat = {
   },
 };
 
+const mounted = componentsGeneric() as unknown as {
+  readonly store: {
+    readonly rows: {
+      readonly add: FunctionReference<"mutation", "internal", { text: string }>;
+      readonly list: FunctionReference<"query", "internal", {}, Array<string>>;
+    };
+  };
+  readonly beat: {
+    readonly public: {
+      readonly tick: FunctionReference<"mutation", "internal">;
+    };
+  };
+};
+
+const withCtx = <A>(
+  use: (ctx: MutationCtx.MutationCtx<GenericDataModel>) => Promise<A>,
+) =>
+  Effect.gen(function* () {
+    const ctx = yield* MutationCtx.MutationCtx<GenericDataModel>();
+    return yield* Effect.promise(() => use(ctx));
+  });
+
+// One program: a direct write, a component call, a scheduled function and a
+// drain, read back.
+const program = Effect.gen(function* () {
+  const test = yield* Host;
+  yield* test.run(
+    withCtx((ctx) =>
+      ctx.db
+        .insert("notes", { text: "direct" })
+        .then(() =>
+          ctx.runMutation(mounted.store.rows.add, { text: "component" }),
+        )
+        .then(() =>
+          ctx.scheduler.runAfter(0, notes.add, { text: "scheduled" }),
+        ),
+    ),
+  );
+  yield* test.finishAllScheduledFunctions(() => vi.runAllTimers());
+  return yield* test.run(
+    withCtx((ctx) =>
+      Promise.all([
+        ctx.runQuery(notes.list, {}),
+        ctx.runQuery(mounted.store.rows.list, {}),
+      ]).then(([hostNotes, rows]) => ({ notes: hostNotes, rows })),
+    ),
+    Schema.Struct({
+      notes: Schema.mutable(Schema.Array(Schema.String)),
+      rows: Schema.mutable(Schema.Array(Schema.String)),
+    }),
+  );
+});
+
+it.effect.each([{ target: "convex-test" }, { target: "kernel" }] as const)(
+  "runs one program the same way on $target",
+  ({ target }) =>
+    Effect.gen(function* () {
+      vi.useFakeTimers();
+      expect(yield* program).toEqual({
+        notes: ["direct", "scheduled"],
+        rows: ["component"],
+      });
+    }).pipe(
+      Effect.ensuring(Effect.sync(() => vi.useRealTimers())),
+      Effect.provide(
+        TestConfect.layer(host, hostSchema, hostModules, {
+          target,
+          register: (registerComponent) =>
+            registerComponent("store", store.schema, store.modules),
+        }),
+      ),
+    ),
+);
+
+const drainBeat = (standing: ReadonlyArray<string> | undefined) =>
+  Effect.gen(function* () {
+    const test = yield* Host;
+    yield* test.run(
+      withCtx((ctx) => ctx.runMutation(mounted.beat.public.tick, {})),
+    );
+    yield* test.finishAllScheduledFunctions(() => {});
+  }).pipe(
+    Effect.provide(
+      TestConfect.layer(host, defineSchema({}), generatedOnly, {
+        target: "kernel",
+        register: (registerComponent) =>
+          registerComponent(
+            "beat",
+            beat.schema,
+            beat.modules,
+            standing === undefined ? undefined : { standing },
+          ),
+      }),
+    ),
+  );
+
 it.effect(
-  "hands a kit's standing sources to the backend, so the test kernel's drain ends with their next run pending",
+  "on the kernel target, a kit's standing source lets the drain end and an undeclared one fails its budget",
   () =>
     Effect.gen(function* () {
-      vi.doMock("convex-test", () => import("../src/internal/ConvexTest"));
-      // The modules reset before each test, so the service keys come from the
-      // same fresh imports as the layer.
-      const [{ TestConfect: OnKernel }, { DatabaseSchema, MutationCtx }] =
-        yield* Effect.promise(() =>
-          Promise.all([import("@confect/test"), import("@confect/server")]),
-        );
-      const host = DatabaseSchema.make({});
-      const start = (
-        componentsGeneric() as unknown as {
-          readonly beat: {
-            readonly public: {
-              readonly tick: FunctionReference<"mutation", "internal">;
-            };
-          };
-        }
-      ).beat.public.tick;
-      yield* Effect.gen(function* () {
-        const test = yield* OnKernel.TestConfect<typeof host>();
-        yield* test.run(
-          Effect.gen(function* () {
-            const ctx = yield* MutationCtx.MutationCtx<GenericDataModel>();
-            yield* Effect.promise(() => ctx.runMutation(start, {}));
-          }),
-        );
-        yield* test.finishAllScheduledFunctions(() => {});
-      }).pipe(
-        Effect.provide(
-          OnKernel.layer(
-            host,
-            defineSchema({}),
-            { "_generated/server.ts": () => Promise.resolve({}) },
-            {
-              register: (registerComponent) =>
-                registerComponent("beat", beat.schema, beat.modules, {
-                  standing: ["public:tick"],
-                }),
-            },
-          ),
-        ),
-      );
-    }).pipe(Effect.ensuring(Effect.sync(() => vi.doUnmock("convex-test")))),
+      yield* drainBeat(["public:tick"]);
+      const exit = yield* Effect.exit(drainBeat(undefined));
+      assert(Exit.isFailure(exit));
+      expect(Cause.squash(exit.cause)).toMatchObject({
+        _tag: "DrainBudgetExceeded",
+        pending: [{ componentPath: "beat", name: "public:tick" }],
+      });
+    }),
+);
+
+// convex-test advances the test's timers while it drains. The kernel keeps its
+// own clock and never does, so the callback shows which target ran.
+const advancesTimers = Effect.gen(function* () {
+  const test = yield* TestConfect.TestConfect<typeof registry.schema>();
+  let advanced = false;
+  yield* test.finishAllScheduledFunctions(() => {
+    advanced = true;
+  });
+  return advanced;
+});
+
+it.effect.each([
+  {
+    form: "declared app",
+    layer: (options: TestConfect.TargetOptions) =>
+      TestConfect.layer(registry, options),
+  },
+  {
+    form: "app and registry",
+    layer: (options: TestConfect.TargetOptions) =>
+      TestConfect.layer(app, registry, options),
+  },
+  {
+    form: "schema and modules",
+    layer: (options: TestConfect.TargetOptions) =>
+      TestConfect.layer(
+        registry.schema,
+        registry.convexSchema,
+        registry.modules,
+        options,
+      ),
+  },
+])("the $form form runs on the target it names", ({ layer }) =>
+  Effect.gen(function* () {
+    expect(yield* advancesTimers.pipe(Effect.provide(layer({})))).toBe(true);
+    expect(
+      yield* advancesTimers.pipe(Effect.provide(layer({ target: "kernel" }))),
+    ).toBe(false);
+  }),
 );
