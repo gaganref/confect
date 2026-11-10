@@ -18,40 +18,35 @@ import type * as Table from "./Table.js";
 export declare const TypeId: "~@confect/server/TableInfo";
 export type TypeId = typeof TypeId;
 
+// Read through Table's extractors, not `infer`: an intersection with a Table,
+// or an interface extending one, matches `Table<infer ...>` only structurally,
+// which widens the name and scope. `Indexes` stays inferred: a generic table's
+// index names resolve only through the inferred type's constraint.
 export type TableInfo<Table_ extends Table.AnyWithProps> =
-  Table_ extends Table.Table<
-    infer TableName,
-    infer TableSchema_,
-    infer TableValidator,
-    infer Indexes,
-    infer SearchIndexes,
-    infer VectorIndexes,
-    infer Scope,
-    any
-  >
+  Table_ extends Table.Table<any, any, any, infer Indexes, any, any, any, any>
     ? {
         readonly [TypeId]: TypeId;
         readonly document: WithSystemFields<
-          TableName,
-          Schema.Schema.Type<TableSchema_>,
-          Scope
+          Table.Name<Table_>,
+          Schema.Schema.Type<Table.TableSchema<Table_>>,
+          Table.Scope<Table_>
         >;
         readonly encodedDocument: WithSystemFields<
-          TableName,
-          Schema.Codec.Encoded<TableSchema_>,
-          Scope
+          Table.Name<Table_>,
+          Schema.Codec.Encoded<Table.TableSchema<Table_>>,
+          Table.Scope<Table_>
         >;
         readonly convexDocument: ExtractConvexDocument<
-          TableName,
-          TableValidator,
-          Scope
+          Table.Name<Table_>,
+          Table.TableValidator<Table_>,
+          Table.Scope<Table_>
         >;
         readonly fieldPaths:
-          | keyof IdField<TableName>
-          | ExtractFieldPaths<TableValidator>;
+          | keyof IdField<Table.Name<Table_>>
+          | ExtractFieldPaths<Table.TableValidator<Table_>>;
         readonly indexes: Types.Simplify<Indexes & SystemIndexes>;
-        readonly searchIndexes: SearchIndexes;
-        readonly vectorIndexes: VectorIndexes;
+        readonly searchIndexes: Table.SearchIndexes<Table_>;
+        readonly vectorIndexes: Table.VectorIndexes<Table_>;
       }
     : never;
 
