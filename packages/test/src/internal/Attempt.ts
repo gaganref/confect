@@ -1,6 +1,10 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- The drain waits a real turn of the event loop. Fake timers in a test replace the global `setImmediate`, not this one.
+import { setImmediate } from "node:timers/promises";
+import type { Attempt as AttemptNumber } from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
 import type { DocumentId, StoredDocument } from "./KernelValues.js";
 import { tableNameFromId } from "./KernelValues.js";
+import type * as ReadSet from "./ReadSet.js";
 
 /**
  * Pending writes, keyed by component path, then document ID. `null` deletes.
@@ -8,18 +12,85 @@ import { tableNameFromId } from "./KernelValues.js";
 type Overlay = Map<string, Map<DocumentId, StoredDocument | null>>;
 
 /**
- * One attempt at a query or mutation: the committed state it started from and
- * its pending writes. The outermost frame belongs to the top-level function.
- * Each nested mutation pushes a frame, which merges into its caller's frame
- * when it returns and is dropped when it fails.
+ * One attempt at a query or mutation: the committed state it started from, its
+ * pending writes and what it read. The outermost frame belongs to the top-level
+ * function. Each nested mutation pushes a frame, which merges into its caller's
+ * frame when it returns and is dropped when it fails. Reads are never dropped:
+ * a failed nested mutation's reads stay in the attempt.
+ *
+ * An attempt takes reads and writes until it is closed. A mutation's attempt
+ * closes once its function has returned and no syscall it started is still
+ * running, so a write a detached fiber makes after the handler settled still
+ * lands in it, as on the binary.
  *
  * Only the invocation that owns an attempt writes to it. `Kernel.apply`
  * publishes its writes.
  */
 export class KernelAttempt {
   private readonly frames: Array<Overlay> = [new Map()];
+  private readonly recorded: Array<ReadSet.Read> = [];
+  private running = 0;
+  private started = 0;
+  private open = true;
 
-  constructor(readonly snapshot: Kernel.State) {}
+  constructor(
+    readonly snapshot: Kernel.State,
+    readonly number: AttemptNumber = 1,
+  ) {}
+
+  get reads(): ReadonlyArray<ReadSet.Read> {
+    return this.recorded;
+  }
+
+  get closed(): boolean {
+    return !this.open;
+  }
+
+  readDocument(componentPath: string, id: DocumentId) {
+    this.recorded.push({ kind: "document", componentPath, id });
+  }
+
+  /**
+   * Record a read of an interval. The returned function advances how far the
+   * query examined it.
+   */
+  readInterval(
+    read: Omit<ReadSet.IntervalRead, "through">,
+  ): (through: ReadSet.Key | "end") => void {
+    const interval: ReadSet.IntervalRead = { ...read, through: null };
+    this.recorded.push(interval);
+    return (through) => {
+      interval.through = through;
+    };
+  }
+
+  /**
+   * A syscall began. `end` runs when it settles.
+   */
+  begin(): () => void {
+    this.running++;
+    this.started++;
+    return () => {
+      this.running--;
+    };
+  }
+
+  /**
+   * Resolves once a whole turn of the event loop passes with no syscall of this
+   * attempt running or started.
+   */
+  drained(): Promise<void> {
+    const before = this.started;
+    return setImmediate().then(() =>
+      this.running === 0 && this.started === before
+        ? undefined
+        : this.drained(),
+    );
+  }
+
+  close() {
+    this.open = false;
+  }
 
   get depth(): number {
     return this.frames.length;

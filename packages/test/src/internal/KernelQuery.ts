@@ -2,7 +2,8 @@
 // Inc., licensed under the Apache License, Version 2.0
 // (https://www.apache.org/licenses/LICENSE-2.0). The ordering, index range and
 // pagination rules are convex-test's. They read a table through the attempt
-// that runs the query instead of convex-test's database.
+// that runs the query instead of convex-test's database, and record the
+// interval each query examined.
 
 import type {
   GenericDocument,
@@ -16,10 +17,12 @@ import {
   jsonToConvex,
 } from "convex/values";
 import * as KernelRefusal from "./KernelRefusal.js";
+import * as ReadSet from "./ReadSet.js";
 import type {
   FilterJson,
   Index,
   SerializedQuery,
+  SerializedRangeExpression,
   StoredDocument,
   ValidatorJSON,
 } from "./KernelValues.js";
@@ -96,20 +99,33 @@ export const validateDocument = (
 };
 
 /**
+ * An interval a query reads, before it says where it starts and how far it got.
+ */
+export type Interval = Omit<
+  ReadSet.IntervalRead,
+  "componentPath" | "after" | "through"
+>;
+
+/**
  * What a query reads: one table of one component, as the running attempt sees
- * it.
+ * it. `read` records an interval in the attempt's read set and returns how to
+ * advance it.
  */
 export interface TableView {
   readonly schema: KernelSchema | null;
   readonly scan: (tableName: string) => ReadonlyArray<StoredDocument>;
+  readonly read: (
+    interval: Interval,
+    after: ReadSet.Key | null,
+  ) => (through: ReadSet.Key | "end") => void;
 }
 
 interface ResolvedSource {
   readonly sortedDocs: ReadonlyArray<GenericDocument>;
   readonly filterFn: (doc: GenericDocument) => boolean;
   readonly limit: number | null;
-  readonly fieldPathsToSortBy: ReadonlyArray<string>;
   readonly order: "asc" | "desc";
+  readonly interval: Interval;
 }
 
 const resolveSource = (
@@ -120,8 +136,11 @@ const resolveSource = (
   let docs: Array<GenericDocument>;
   let fieldPathsToSortBy: Array<string>;
   let order: "asc" | "desc";
+  let table: string;
+  let range: ReadonlyArray<SerializedRangeExpression> = [];
   switch (source.type) {
     case "FullTableScan": {
+      table = source.tableName;
       docs = [...view.scan(source.tableName)];
       order = source.order ?? "asc";
       fieldPathsToSortBy = ["_creationTime"];
@@ -132,6 +151,8 @@ const resolveSource = (
         string,
         string,
       ];
+      table = tableName;
+      range = source.range;
       order = source.order ?? "asc";
       let fields: Array<string>;
       if (indexName === "by_creation_time") {
@@ -192,29 +213,41 @@ const resolveSource = (
     sortedDocs: docs,
     filterFn: (doc) => filters.every((f) => evaluateFilter(doc, f)),
     limit: limit?.limit ?? null,
-    fieldPathsToSortBy,
     order,
+    interval: {
+      kind: "interval",
+      table,
+      fields: fieldPathsToSortBy.includes("_id")
+        ? fieldPathsToSortBy
+        : [...fieldPathsToSortBy, "_id"],
+      order,
+      range,
+    },
   };
 };
 
 /**
  * A query's documents in order. The source is read when the query starts, as a
- * snapshot, and consumed lazily.
+ * snapshot, and consumed lazily. The read set holds the prefix the stream has
+ * examined, filtered documents included, or the whole range once it ends.
  */
 export const stream = (
   view: TableView,
   query: SerializedQuery,
 ): Iterator<GenericDocument> => {
-  const { sortedDocs, filterFn, limit } = resolveSource(view, query);
+  const { sortedDocs, filterFn, limit, interval } = resolveSource(view, query);
+  const examined = view.read(interval, null);
   return (function* () {
     let returned = 0;
     for (const doc of sortedDocs) {
       if (limit !== null && returned >= limit) return;
+      examined(ReadSet.keyOf(interval.fields, doc as StoredDocument));
       if (filterFn(doc)) {
         returned++;
         yield doc;
       }
     }
+    examined("end");
   })();
 };
 
@@ -273,16 +306,13 @@ export const paginate = (
     maximumBytesRead,
   }: PageRequest,
 ) => {
-  const { sortedDocs, filterFn, fieldPathsToSortBy, order } = resolveSource(
-    view,
-    query,
-  );
-  const cursorFields = fieldPathsToSortBy.includes("_id")
-    ? fieldPathsToSortBy
-    : [...fieldPathsToSortBy, "_id"];
+  const { sortedDocs, filterFn, order, interval } = resolveSource(view, query);
+  const cursorFields = interval.fields;
   const cursorKeys = cursor !== "_end_cursor" ? parseCursor(cursor) : null;
   const hasEndBoundary = !!endCursor && endCursor !== "_end_cursor";
   const endCursorKeys = hasEndBoundary ? parseCursor(endCursor) : null;
+  const examined = view.read(interval, cursorKeys);
+  let reachedEnd = true;
 
   const page: Array<GenericDocument> = [];
   let isInPage = cursor === null;
@@ -309,6 +339,8 @@ export const paginate = (
     if (hasEndBoundary && endCursorKeys) {
       const cmp = compareToCursor(doc, endCursorKeys, cursorFields, order);
       if (cmp >= 0) {
+        reachedEnd = false;
+        examined(endCursorKeys);
         if (cmp === 0) {
           rowsRead += 1;
           bytesRead += getDocumentSize(doc);
@@ -322,20 +354,24 @@ export const paginate = (
     rowsRead += 1;
     bytesRead += getDocumentSize(doc);
     readDocCursors.push(encodeCursor(doc, cursorFields));
+    examined(ReadSet.keyOf(cursorFields, doc as StoredDocument));
     const hitLimit =
       (!!maximumRowsRead && rowsRead >= maximumRowsRead) ||
       (!!maximumBytesRead && bytesRead >= maximumBytesRead);
     if (filterFn(doc)) page.push(doc);
     if (hitLimit) {
+      reachedEnd = false;
       pageStatus = "SplitRequired";
       continueCursor = encodeCursor(doc, cursorFields);
       break;
     }
     if (!endCursor && page.length >= pageSize) {
+      reachedEnd = isLastDoc;
       if (!isLastDoc) continueCursor = encodeCursor(doc, cursorFields);
       break;
     }
   }
+  if (reachedEnd) examined("end");
 
   if (pageStatus === "SplitRequired" && readDocCursors.length >= 2) {
     splitCursor = readDocCursors[Math.floor((readDocCursors.length - 1) / 2)]!;

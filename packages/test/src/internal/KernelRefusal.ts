@@ -33,6 +33,47 @@ export class RegisteredAfterOpen extends Schema.TaggedError<RegisteredAfterOpen>
   { componentPath: Schema.String, message: Schema.String },
 ) {}
 
+/**
+ * Every attempt of a mutation read data a commit changed before it could
+ * publish. The kernel gives up on attempt 5.
+ */
+export class OptimisticConcurrencyControlFailure extends Schema.TaggedError<OptimisticConcurrencyControlFailure>()(
+  "OptimisticConcurrencyControlFailure",
+  { attempts: Schema.Int, message: Schema.String },
+) {}
+
+/**
+ * A syscall reached a mutation's attempt after the mutation returned and its
+ * syscalls drained, so the attempt was already held or published.
+ */
+export class ClosedAttempt extends Schema.TaggedError<ClosedAttempt>()(
+  "ClosedAttempt",
+  { operation: Schema.String, message: Schema.String },
+) {}
+
+/**
+ * `apply` named an attempt the kernel does not hold: it was already applied, or
+ * never prepared.
+ */
+export class StaleAttempt extends Schema.TaggedError<StaleAttempt>()(
+  "StaleAttempt",
+  { id: Schema.String, message: Schema.String },
+) {}
+
+/**
+ * The runtime answered a commit timestamp no greater than the previous
+ * commit's.
+ */
+export class CommitTsNotIncreasing extends Schema.TaggedError<CommitTsNotIncreasing>()(
+  "CommitTsNotIncreasing",
+  {
+    version: Schema.Int,
+    previous: Schema.BigInt,
+    commitTs: Schema.BigInt,
+    message: Schema.String,
+  },
+) {}
+
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
   new RequiresBinary({
     operation,
