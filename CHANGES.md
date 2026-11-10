@@ -41,6 +41,24 @@ cases that wait for a later row. This is row 2 of Frame's backend testing
 kernel (Frame ADR 0012). Changeset: `test-kernel-storage.md`. Upstream: fork
 only, as the kernel is fork-specific.
 
+## Test kernel read sets and held attempts
+
+Each kernel attempt records what it read: documents by ID, present or absent,
+and each query's ordered interval up to the prefix it examined. A top-level
+mutation runs to its commit point and is held. Applying it checks its reads
+against every commit since its snapshot, then publishes it, or runs exactly one
+next attempt and holds that, or gives up on attempt 5 with
+`OptimisticConcurrencyControlFailure`. The kernel has no retry loop. The
+convex-test shim applies each attempt at once, so concurrent mutations
+conflict and rerun instead of taking turns. A runtime supplies the clock and
+commit timestamps, which strictly increase, so a history replays byte for byte.
+A mutation's attempt takes writes until its function has returned and its
+syscalls have settled, so a detached fiber's late write commits, and a syscall
+after that is refused. Each attempt reaches the invocation bridge with its
+number, and a nested action gets a fresh invocation. This is row 3 of Frame's
+backend testing kernel (Frame ADR 0012). Changeset: `test-kernel-read-sets.md`.
+Upstream: fork only, as the kernel is fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
