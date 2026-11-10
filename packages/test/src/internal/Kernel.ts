@@ -1,3 +1,4 @@
+import * as Clock from "./Clock.js";
 import type { DocumentId, StoredDocument } from "./KernelValues.js";
 import { resolveCommittedValues, tableNameFromId } from "./KernelValues.js";
 import * as ReadSet from "./ReadSet.js";
@@ -174,8 +175,7 @@ export interface KernelRuntime {
 export const wallClock = (): KernelRuntime => {
   const stamps = new Map<Version, bigint>();
   let latest = 0n;
-  // oxlint-disable-next-line effecttsgo/global-date -- The default runtime is the wall clock. A driver that replays supplies its own.
-  const now = () => Date.now();
+  const now = Clock.hostNow;
   return {
     now,
     commitTs: (version) => {

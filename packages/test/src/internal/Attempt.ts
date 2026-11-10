@@ -29,6 +29,8 @@ type Overlay = Map<string, Map<DocumentId, StoredDocument | null>>;
 export class KernelAttempt {
   private readonly frames: Array<Overlay> = [new Map()];
   private readonly recorded: Array<ReadSet.Read> = [];
+  private identity = false;
+  private time: number | null = null;
   private running = 0;
   private started = 0;
   private open = true;
@@ -40,6 +42,28 @@ export class KernelAttempt {
 
   get reads(): ReadonlyArray<ReadSet.Read> {
     return this.recorded;
+  }
+
+  /**
+   * Whether the function asked for its caller's identity.
+   */
+  get observedIdentity(): boolean {
+    return this.identity;
+  }
+
+  /**
+   * The pinned time the function read, or `null` when it never read the time.
+   */
+  get observedTime(): number | null {
+    return this.time;
+  }
+
+  observeIdentity() {
+    this.identity = true;
+  }
+
+  observeTime(at: number) {
+    this.time = at;
   }
 
   get closed(): boolean {

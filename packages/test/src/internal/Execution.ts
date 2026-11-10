@@ -11,6 +11,7 @@ import {
 } from "convex/server";
 import { convexToJson, jsonToConvex, type Value } from "convex/values";
 import { KernelAttempt } from "./Attempt.js";
+import * as Clock from "./Clock.js";
 import * as Invocation from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
@@ -129,6 +130,47 @@ export type KernelApply =
     }
   | { readonly kind: "refused"; readonly tag: string; readonly error: unknown };
 
+/**
+ * One top-level query run and every dependency it took: the commit and reads it
+ * read, whether it asked for the caller's identity, the pinned time it read and
+ * the end of its paginated read.
+ */
+export interface QueryRun {
+  readonly outcome: Outcome;
+  readonly snapshot: Kernel.Version;
+  readonly reads: ReadonlyArray<ReadSet.Read>;
+  readonly observedIdentity: boolean;
+  /**
+   * The pinned time the query read, or `null` when it never read the time.
+   */
+  readonly time: number | null;
+  /**
+   * Where the query's paginated read ended, or `null` when it ran none. A rerun
+   * ends its page there, as the binary's query journal does.
+   */
+  readonly journal: string | null;
+}
+
+/**
+ * The one paginated read a query and its nested calls may run. `journal` is
+ * where a previous run's page ended, and `end` where this run's page ends.
+ */
+interface Pagination {
+  calls: number;
+  readonly journal: string | null;
+  end: string | null;
+}
+
+/**
+ * A top-level query whose attempt and page the caller keeps, at a pinned start
+ * time or the kernel's time now.
+ */
+interface TopQuery {
+  readonly attempt: KernelAttempt;
+  readonly pagination: Pagination;
+  readonly startTime: number | undefined;
+}
+
 interface Held {
   readonly view: HeldAttempt;
   readonly attempt: KernelAttempt;
@@ -160,7 +202,12 @@ interface Execution {
   readonly attempt: KernelAttempt | undefined;
   readonly identity: UserIdentity | null;
   readonly request: Request;
-  readonly pagination: { calls: number } | undefined;
+  /**
+   * The kernel's time when the outermost query or mutation began. Its nested
+   * calls share it, and `Date` answers it inside them.
+   */
+  readonly startTime: number;
+  readonly pagination: Pagination | undefined;
   readonly turn: Turn;
 }
 
@@ -182,6 +229,19 @@ class Turn {
 
 const executions = new AsyncLocalStorage<Execution>();
 const kernelBrand = Symbol.for("@confect/test/Kernel");
+
+/**
+ * The time `Date` answers inside a kernel invocation: a query's or mutation's
+ * start, or the clock as it runs in an action. Outside one, none. A query or
+ * mutation that reads it takes a dependency on that time.
+ */
+const pinnedTime = (): number | undefined => {
+  const execution = executions.getStore();
+  if (execution === undefined) return undefined;
+  if (execution.udfType === "action") return execution.world.now();
+  execution.attempt?.observeTime(execution.startTime);
+  return execution.startTime;
+};
 
 const current = (): Execution => {
   const execution = executions.getStore();
@@ -355,6 +415,7 @@ export class World {
     private readonly runtime: Kernel.KernelRuntime = Kernel.wallClock(),
   ) {
     installConvexGlobal();
+    Clock.install(pinnedTime);
     this.components.set(ROOT, makeComponent(ROOT, schema, modules));
   }
 
@@ -390,6 +451,13 @@ export class World {
       ),
     ).then(() => undefined);
     return this.opened;
+  }
+
+  /**
+   * The kernel's time, from the runtime.
+   */
+  now(): number {
+    return this.runtime.now();
   }
 
   private component(componentPath: string): Component {
@@ -536,6 +604,51 @@ export class World {
     return Array.from(this.holding.values(), (held) => held.view);
   }
 
+  // Subscribed queries.
+
+  /**
+   * Run a query at the latest commit as a subscription runs it, under `caller`,
+   * and return its answer with every dependency it took. `time` pins the time
+   * it reads, the kernel's time now by default. `journal` ends its paginated
+   * read where an earlier run's ended.
+   */
+  subscribed(
+    caller: Caller,
+    reference: any,
+    args: any,
+    pinned: { readonly time?: number; readonly journal: string | null },
+  ): Promise<QueryRun> {
+    return this.open().then(() => {
+      const functionPath = pathOfReference(reference, ROOT);
+      const resolved = this.resolve(functionPath, "query");
+      validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
+      const top: TopQuery = {
+        attempt: new KernelAttempt(this.state),
+        pagination: { calls: 0, journal: pinned.journal, end: null },
+        startTime: pinned.time,
+      };
+      const run = (outcome: Outcome): QueryRun => ({
+        outcome,
+        snapshot: top.attempt.snapshot.version,
+        reads: top.attempt.reads,
+        observedIdentity: top.attempt.observedIdentity,
+        time: top.attempt.observedTime,
+        journal: pinned.journal ?? top.pagination.end,
+      });
+      return this.runQuery(
+        functionPath,
+        resolved,
+        args,
+        { caller, request: newRequest(caller) },
+        false,
+        top,
+      ).then(
+        (value: Value) => run({ _tag: "returned", value }),
+        (error: unknown) => run({ _tag: "failed", error }),
+      );
+    });
+  }
+
   // Calls by address, from the test or from a running function.
 
   private queryAt(
@@ -578,7 +691,8 @@ export class World {
     udfType: UdfType,
     attempt: KernelAttempt | undefined,
     from: From,
-    pagination: { calls: number } | undefined,
+    pagination: Pagination | undefined,
+    startTime?: number,
   ): Execution {
     const parent = from.parent;
     // A component call carries no identity, as Convex gives a component no
@@ -596,6 +710,11 @@ export class World {
       attempt,
       identity,
       request: from.request,
+      startTime:
+        startTime ??
+        (parent !== undefined && parent.udfType !== "action"
+          ? parent.startTime
+          : this.now()),
       pagination,
       turn: new Turn(),
     };
@@ -614,22 +733,30 @@ export class World {
     args: any,
     from: From,
     snapshotOnly = false,
+    top?: TopQuery,
   ): Promise<any> {
     return this.nested(from, () => {
       const parentAttempt = from.parent?.attempt;
       const isNested = parentAttempt !== undefined;
       const attempt =
-        parentAttempt === undefined
+        top?.attempt ??
+        (parentAttempt === undefined
           ? new KernelAttempt(this.state)
           : snapshotOnly
             ? new KernelAttempt(parentAttempt.snapshot)
-            : parentAttempt;
+            : parentAttempt);
       const execution = this.execution(
         functionPath,
         "query",
         attempt,
         from,
-        (isNested && from.parent?.pagination) || { calls: 0 },
+        top?.pagination ??
+          ((isNested && from.parent?.pagination) || {
+            calls: 0,
+            journal: null,
+            end: null,
+          }),
+        top?.startTime,
       );
       const q = queryGeneric({
         handler: (ctx: any, a: any) =>
@@ -1038,9 +1165,12 @@ export class World {
             );
           }
         }
-        return JSON.stringify(
-          convexToJson(KernelQuery.paginate(this.view(execution), args) as any),
-        );
+        const page = KernelQuery.paginate(this.view(execution), {
+          ...args,
+          endCursor: args.endCursor ?? pagination?.journal ?? null,
+        });
+        if (pagination) pagination.end = page.continueCursor;
+        return JSON.stringify(convexToJson(page as any));
       }
       case "1.0/insert":
         return JSON.stringify({
@@ -1323,7 +1453,10 @@ const transaction = (execution: Execution): KernelAttempt => {
 };
 
 const queryAuth = (execution: Execution) => ({
-  getUserIdentity: () => Promise.resolve(execution.identity),
+  getUserIdentity: () => {
+    execution.attempt?.observeIdentity();
+    return Promise.resolve(execution.identity);
+  },
 });
 
 const mutationAuth = (execution: Execution) => ({
