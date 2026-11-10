@@ -20,7 +20,7 @@ services of the test invocation it belongs to, through `Effect.runPromiseWith`.
 joins it. A job convex-test starts from a timer gets a fresh record with its
 world's services and the job's request metadata. With no bound invocation, and
 always in production, handlers keep `Effect.runPromise`. This is row 1 of
-Frame's backend testing kernel (englever/frame#1286).
+Frame's backend testing kernel (Frame ADR 0012).
 `packages/test/RECHECK.md` records what each kernel part is on `main`.
 Changeset: `test-invocation-services.md`. Upstream: fork only, as the kernel is
 fork-specific.

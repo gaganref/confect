@@ -1,6 +1,6 @@
 # Kernel re-check record
 
-Frame's backend testing design (englever/frame#1286, ADR 0012) puts its
+Frame's backend testing design (Frame ADR 0012) puts its
 simulation kernel in `@confect/test`. The design read the fork at fork.57. Its
 kernel base is fork.77 or later plus fork PR #115, so build-order row 1 owes a
 re-check of each part the kernel builds on. This file records what each part is
