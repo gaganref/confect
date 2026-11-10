@@ -41,8 +41,8 @@ const TYPICAL_CONVEX_ID_LENGTH = 32;
 type Modules = Record<string, () => Promise<any>>;
 
 /**
- * One registered component: its schema and every module it registered, each
- * loaded once when the world opens.
+ * One registered component: its schema and its function modules, each loaded
+ * once when the world opens.
  */
 interface Component {
   readonly path: string;
@@ -161,17 +161,58 @@ const makeComponent = (
   modules: Modules,
 ): Component => {
   const root = findModulesRoot(Object.keys(modules));
+  const relative = Object.entries(modules)
+    .filter(([key]) => key.startsWith(root))
+    .map(([key, load]) => [key.slice(root.length), load] as const);
+  const nested = relative
+    .map(([file]) => file)
+    .filter((file) => file.endsWith("/convex.config.ts"))
+    .map((file) => file.slice(0, -"convex.config.ts".length));
   return {
     path,
     schema: KernelQuery.exportSchema(schema),
     loaders: new Map(
-      Object.entries(modules).map(([key, load]) => [
-        key.slice(root.length).replace(/\.[^.]+$/, ""),
-        load,
-      ]),
+      relative
+        .filter(
+          ([file]) =>
+            isFunctionModule(file) &&
+            !nested.some((dir) => file.startsWith(dir)),
+        )
+        .map(([file, load]) => [file.replace(/\.[^.]+$/, ""), load]),
     ),
     loaded: new Map(),
   };
+};
+
+const entryExtensions = [
+  ".js",
+  ".mjs",
+  ".cjs",
+  ".ts",
+  ".tsx",
+  ".mts",
+  ".cts",
+  ".jsx",
+];
+
+/**
+ * Whether Convex's bundler deploys this file as a function module, by the rule
+ * `entryPoints` applies in `convex/src/bundler/index.ts` (1.49). A test file, a
+ * schema, a config and `_generated` never reach the binary, so the kernel
+ * neither loads them nor resolves a function in them.
+ */
+const isFunctionModule = (file: string): boolean => {
+  const base = file.split("/").pop()!;
+  return (
+    entryExtensions.some((extension) => file.endsWith(extension)) &&
+    !file.startsWith("_generated/") &&
+    !base.startsWith(".") &&
+    !base.startsWith("#") &&
+    base !== "schema.ts" &&
+    base !== "schema.js" &&
+    (base.match(/\./g) ?? []).length <= 1 &&
+    !file.includes(" ")
+  );
 };
 
 const unregistered = (world: World, componentPath: string) => {

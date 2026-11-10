@@ -210,7 +210,7 @@ describe("cross-component atomicity", () => {
 
 describe("module loading", () => {
   it.effect(
-    "every registered module of every component loads before the first function runs",
+    "every function module of every component loads before the first function runs",
     () =>
       Effect.gen(function* () {
         const loads: Array<string> = [];
@@ -230,23 +230,49 @@ describe("module loading", () => {
             }),
           }),
           "second.ts": recorded("second", {}),
+          "schema.ts": recorded("schema", {}),
         });
         t.registerComponent("store", storeSchema, {
           "_generated/server.ts": recorded("store/_generated/server", {}),
           "rows.ts": recorded("store/rows", {}),
+          "nested/inner.ts": recorded("store/nested/inner", {}),
         });
         yield* Effect.promise(() =>
           t.query(makeFunctionReference<"query">("first:run"), {}),
         );
         expect(loads.slice(0, -1).toSorted()).toEqual([
-          "_generated/server",
           "first",
           "second",
-          "store/_generated/server",
+          "store/nested/inner",
           "store/rows",
         ]);
         expect(loads.at(-1)).toBe("handler");
       }),
+  );
+
+  // Convex's bundler deploys none of these, so the binary never loads them.
+  // The official Workflow kit registers its own `*.test.ts` files, which fail
+  // when imported inside a running test.
+  it.effect("a module the Convex bundler skips never loads", () =>
+    Effect.gen(function* () {
+      const loads: Array<string> = [];
+      const recorded = (name: string) => () => {
+        loads.push(name);
+        return Promise.resolve({});
+      };
+      const t = convexTest(hostSchema, {
+        "_generated/server.ts": recorded("_generated/server"),
+        "schema.ts": recorded("schema"),
+        "convex.config.ts": recorded("convex.config"),
+        "notes.test.ts": recorded("notes.test"),
+        ".hidden.ts": recorded(".hidden"),
+        "child/convex.config.ts": recorded("child/convex.config"),
+        "child/rows.ts": recorded("child/rows"),
+        "notes.ts": hostModules["notes.ts"],
+      });
+      yield* Effect.promise(() => t.query(notes.list, {}));
+      expect(loads).toEqual([]);
+    }),
   );
 
   // The official Workflow runner hides `process` while a handler runs. A
