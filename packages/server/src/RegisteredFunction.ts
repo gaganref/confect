@@ -404,7 +404,7 @@ export const runHandlerPromise =
         ? (self) => self
         : Effect.provideService(Clock.Clock, clock),
     );
-    const bound =
+    const started =
       meta === undefined
         ? undefined
         : (globalThis as { [testInvocation]?: TestInvocation })[
@@ -412,7 +412,7 @@ export const runHandlerPromise =
           ]?.start(meta, (services) =>
             Effect.runPromiseWith(services)(program, runOptions),
           );
-    return (bound ?? Effect.runPromise(program, runOptions)).then(
+    return (started ?? Effect.runPromise(program, runOptions)).then(
       Result.match({
         onFailure: (error) => {
           throw error;

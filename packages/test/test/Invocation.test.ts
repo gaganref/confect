@@ -2,6 +2,7 @@ import * as FunctionSpec from "@confect/core/FunctionSpec";
 import * as ActionCtx from "@confect/server/ActionCtx";
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as FunctionRegistryItem from "@confect/server/FunctionRegistryItem";
+import type * as Handler from "@confect/server/Handler";
 import * as MutationCtx from "@confect/server/MutationCtx";
 import * as RegisteredConvexFunction from "@confect/server/RegisteredConvexFunction";
 import { assert, describe, expect, it } from "@effect/vitest";
@@ -38,7 +39,7 @@ const database = DatabaseSchema.make({});
 
 const register = (
   functionSpec: FunctionSpec.AnyWithProps,
-  handler: () => Effect.Effect<unknown, never, any>,
+  handler: Handler.Any,
 ) => {
   const item = FunctionRegistryItem.make({
     functionSpec,

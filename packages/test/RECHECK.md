@@ -71,5 +71,5 @@ A call nested in the bound request joins its record at the callee's component
 path. A job convex-test starts from a timer inherits the async context of the
 handler that scheduled it. Convex gives it its own `scheduledFunctionId`, so the
 bridge gives it a fresh record with the world's services and the job's request
-metadata. The attempt is always 1 until row 3 adds attempts. A query still runs on its pinned `queryClock`, which the query base provides inside the handler effect, so an invocation's clock reaches mutations and actions only. The bridge does not
+metadata. The attempt is always 1 until row 3 adds attempts. A nested action joins its caller's record too. The design gives it a fresh one, which differs from the joined record only once an attempt can differ, so it lands with row 3. A query still runs on its pinned `queryClock`, which the query base provides inside the handler effect, so an invocation's clock reaches mutations and actions only. The bridge does not
 reach HTTP route handlers, `t.run` or mount `init`, as recorded above.

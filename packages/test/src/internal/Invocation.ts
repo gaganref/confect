@@ -51,24 +51,24 @@ const resolve = (
   bound: Invocation,
   componentPath: string,
   request: RequestMetadata | undefined,
-): Invocation =>
-  request === undefined ||
-  request.scheduledFunctionId === bound.request.scheduledFunctionId
-    ? componentPath === bound.componentPath
-      ? bound
-      : { ...bound, componentPath }
-    : {
-        world: bound.world,
-        componentPath,
-        attempt: 1,
-        request: {
-          ip: request.ip,
-          userAgent: request.userAgent,
-          requestId: request.requestId,
-          scheduledFunctionId: request.scheduledFunctionId,
-        },
-        services: bound.world.services,
-      };
+): Invocation => {
+  if (
+    request !== undefined &&
+    request.scheduledFunctionId !== bound.request.scheduledFunctionId
+  ) {
+    const { ip, userAgent, requestId, scheduledFunctionId } = request;
+    return {
+      world: bound.world,
+      componentPath,
+      attempt: 1,
+      request: { ip, userAgent, requestId, scheduledFunctionId },
+      services: bound.world.services,
+    };
+  }
+  return componentPath === bound.componentPath
+    ? bound
+    : { ...bound, componentPath };
+};
 
 const make = (): Bridge => {
   const storage = new AsyncLocalStorage<Invocation>();
