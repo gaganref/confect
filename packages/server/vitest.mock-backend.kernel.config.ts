@@ -3,8 +3,9 @@ import fs from "node:fs";
 import { createRequire } from "node:module";
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- Vitest config needs synchronous path resolution before an Effect runtime exists.
 import path from "node:path";
+import tsconfigPaths from "vite-tsconfig-paths";
 import { defineConfig, mergeConfig, type Plugin } from "vitest/config";
-import mockBackendConfig from "./vitest.mock-backend.config";
+import sharedConfig from "../../vitest.shared";
 
 const shim = path.resolve(
   import.meta.dirname,
@@ -46,14 +47,27 @@ const refuseConvexTest: Plugin = {
 // the kernel's shim, the real package is refused, and the cases the inventory
 // places in later rows are skipped by `kernelLane.ts`.
 export default mergeConfig(
-  mockBackendConfig,
+  sharedConfig,
   defineConfig({
-    plugins: [refuseConvexTest],
+    plugins: [tsconfigPaths(), refuseConvexTest],
     resolve: {
-      alias: [{ find: /^convex-test$/, replacement: shim }],
+      alias: [
+        { find: /^convex-test$/, replacement: shim },
+        {
+          find: /^@confect\/server$/,
+          replacement: path.resolve(import.meta.dirname, "./src/index.ts"),
+        },
+        {
+          find: /^@confect\/server\/(.*)$/,
+          replacement: path.resolve(import.meta.dirname, "./src/$1"),
+        },
+      ],
     },
     test: {
+      root: import.meta.dirname,
       name: "@confect/server (mock-backend, kernel)",
+      include: ["test/mock-backend/**/*.test.ts"],
+      globalSetup: ["./test/mock-backend/setup.ts"],
       setupFiles: ["./test/mock-backend/kernelLane.ts"],
       typecheck: { enabled: false },
       coverage: { enabled: false },
