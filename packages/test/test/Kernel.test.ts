@@ -1,4 +1,16 @@
-import { describe, expect, it } from "@effect/vitest";
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- The replay test compares the exact stdout of two fresh Node processes.
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
+import * as FunctionSpec from "@confect/core/FunctionSpec";
+import * as ActionCtx from "@confect/server/ActionCtx";
+import * as DatabaseSchema from "@confect/server/DatabaseSchema";
+import * as FunctionRegistryItem from "@confect/server/FunctionRegistryItem";
+import type * as Handler from "@confect/server/Handler";
+import * as MutationCtx from "@confect/server/MutationCtx";
+import * as RegisteredConvexFunction from "@confect/server/RegisteredConvexFunction";
+import { assert, describe, expect, it } from "@effect/vitest";
+import { vi } from "vitest";
 import {
   componentsGeneric,
   defineSchema,
@@ -7,10 +19,20 @@ import {
   mutationGeneric,
   queryGeneric,
   type FunctionReference,
+  type GenericDataModel,
+  type GenericMutationCtx,
 } from "convex/server";
-import { v } from "convex/values";
+import { jsonToConvex, v, type GenericId } from "convex/values";
+import * as Cause from "effect/Cause";
+import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
-import { convexTest } from "../src/internal/ConvexTest";
+import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
+import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
+import type * as Execution from "../src/internal/Execution";
+import * as Invocation from "../src/internal/Invocation";
 
 type Latch = { readonly promise: Promise<void>; readonly release: () => void };
 
@@ -331,5 +353,705 @@ describe("module loading", () => {
         t.registerComponent("late", storeSchema, storeModules),
       ).toThrow(expect.objectContaining({ _tag: "RegisteredAfterOpen" }));
     }),
+  );
+});
+
+const occSchema = defineSchema({
+  counters: defineTable({ n: v.number() }),
+  keys: defineTable({ key: v.string() }).index("by_key", ["key"]),
+  seen: defineTable({ what: v.string() }),
+  stamps: defineTable({ label: v.string(), at: v.commitTs() }),
+});
+
+const occModules = {
+  "_generated/server.ts": () => Promise.resolve({}),
+  "occ.ts": () =>
+    Promise.resolve({
+      create: mutationGeneric({
+        args: {},
+        handler: (ctx) => ctx.db.insert("counters", { n: 0 }),
+      }),
+      bump: mutationGeneric({
+        args: { id: v.id("counters") },
+        handler: (ctx, { id }) =>
+          ctx.db
+            .get(id)
+            .then((counter) => ctx.db.patch(id, { n: counter!.n + 1 }))
+            .then(() => null),
+      }),
+      counter: queryGeneric({
+        args: { id: v.id("counters") },
+        handler: (ctx, { id }) => ctx.db.get(id).then((counter) => counter!.n),
+      }),
+      add: mutationGeneric({
+        args: { key: v.string() },
+        handler: (ctx, { key }) => ctx.db.insert("keys", { key }),
+      }),
+      lookup: mutationGeneric({
+        args: { id: v.id("keys") },
+        handler: (ctx, { id }) =>
+          ctx.db
+            .get(id)
+            .then((row) =>
+              ctx.db.insert("seen", {
+                what: row === null ? "absent" : "present",
+              }),
+            )
+            .then(() => null),
+      }),
+      head: mutationGeneric({
+        args: {},
+        handler: (ctx) =>
+          ctx.db
+            .query("keys")
+            .withIndex("by_key")
+            .first()
+            .then((first) =>
+              ctx.db.insert("seen", { what: first?.key ?? "none" }),
+            )
+            .then(() => null),
+      }),
+      claim: mutationGeneric({
+        args: { key: v.string() },
+        handler: (ctx, { key }) =>
+          ctx.db
+            .query("keys")
+            .withIndex("by_key", (q) => q.eq("key", key))
+            .unique()
+            .then((row) =>
+              ctx.db.insert("seen", {
+                what: `${row === null ? "free" : "taken"} ${key}`,
+              }),
+            )
+            .then(() => null),
+      }),
+      seen: queryGeneric({
+        args: {},
+        handler: (ctx) =>
+          ctx.db
+            .query("seen")
+            .collect()
+            .then((rows) => rows.map((row) => row.what)),
+      }),
+      stamp: mutationGeneric({
+        args: { label: v.string() },
+        handler: (ctx, { label }) =>
+          ctx.db
+            .insert("stamps", { label, at: ctx.db.vars.commitTs })
+            .then(() => null),
+      }),
+      throughQuery: mutationGeneric({
+        args: { id: v.id("counters") },
+        handler: (ctx, { id }) =>
+          ctx
+            .runQuery(occ.counter, { id })
+            .then((n) => ctx.db.insert("seen", { what: `read ${n}` }))
+            .then(() => null),
+      }),
+      readThenFail: mutationGeneric({
+        args: { id: v.id("counters") },
+        handler: (ctx, { id }) =>
+          ctx.db.get(id).then(() => {
+            throw new Error("The nested mutation failed after its read.");
+          }),
+      }),
+      throughFailure: mutationGeneric({
+        args: { id: v.id("counters") },
+        handler: (ctx, { id }) =>
+          ctx
+            .runMutation(occ.readThenFail, { id })
+            .catch(() => null)
+            .then(() => ctx.db.insert("seen", { what: "after failure" }))
+            .then(() => null),
+      }),
+      stamps: queryGeneric({
+        args: {},
+        handler: (ctx) =>
+          ctx.db
+            .query("stamps")
+            .collect()
+            .then((rows) => rows.map(({ label, at }) => ({ label, at }))),
+      }),
+    }),
+};
+
+const occ = {
+  create: makeFunctionReference<"mutation", {}, GenericId<"counters">>(
+    "occ:create",
+  ),
+  bump: makeFunctionReference<"mutation", { id: GenericId<"counters"> }>(
+    "occ:bump",
+  ),
+  counter: makeFunctionReference<
+    "query",
+    { id: GenericId<"counters"> },
+    number
+  >("occ:counter"),
+  add: makeFunctionReference<"mutation", { key: string }, GenericId<"keys">>(
+    "occ:add",
+  ),
+  lookup: makeFunctionReference<"mutation", { id: GenericId<"keys"> }>(
+    "occ:lookup",
+  ),
+  head: makeFunctionReference<"mutation">("occ:head"),
+  claim: makeFunctionReference<"mutation", { key: string }>("occ:claim"),
+  seen: makeFunctionReference<"query", {}, Array<string>>("occ:seen"),
+  stamp: makeFunctionReference<"mutation", { label: string }>("occ:stamp"),
+  throughQuery: makeFunctionReference<
+    "mutation",
+    { id: GenericId<"counters"> }
+  >("occ:throughQuery"),
+  readThenFail: makeFunctionReference<
+    "mutation",
+    { id: GenericId<"counters"> }
+  >("occ:readThenFail"),
+  throughFailure: makeFunctionReference<
+    "mutation",
+    { id: GenericId<"counters"> }
+  >("occ:throughFailure"),
+  stamps: makeFunctionReference<
+    "query",
+    {},
+    Array<{ label: string; at: bigint }>
+  >("occ:stamps"),
+};
+
+const conflicted = (applied: Execution.KernelApply) => {
+  assert(applied.kind === "conflict");
+  return applied.next;
+};
+
+const occWorld = (runtime?: {
+  readonly now: () => number;
+  readonly commitTs: (version: number) => bigint;
+}): KernelControls =>
+  convexTest({
+    schema: occSchema,
+    modules: occModules,
+    ...(runtime === undefined ? {} : { runtime }),
+  });
+
+const call = <A>(thunk: () => Promise<A>) => Effect.promise(thunk);
+
+describe("read sets", () => {
+  it.effect(
+    "a lost update conflicts, and its next attempt reads the published counter",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld();
+        const id = yield* call(() => t.mutation(occ.create, {}));
+        const first = yield* call(() => t.prepare(occ.bump, { id }));
+        const second = yield* call(() => t.prepare(occ.bump, { id }));
+        const applied = yield* call(() => t.apply(first.id));
+        const next = conflicted(yield* call(() => t.apply(second.id)));
+        const retried = yield* call(() => t.apply(next.id));
+        expect([applied.kind, next.number, retried.kind]).toEqual([
+          "applied",
+          2,
+          "applied",
+        ]);
+        expect(yield* call(() => t.query(occ.counter, { id }))).toBe(2);
+      }),
+  );
+
+  it.effect(
+    "concurrent mutations each publish once, because a conflicting attempt runs again",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld();
+        const id = yield* call(() => t.mutation(occ.create, {}));
+        yield* call(() =>
+          Promise.all([1, 2, 3].map(() => t.mutation(occ.bump, { id }))),
+        );
+        expect(yield* call(() => t.query(occ.counter, { id }))).toBe(3);
+      }),
+  );
+
+  it.effect(
+    "a read of a missing document conflicts once a commit publishes it",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld();
+        const added = yield* call(() => t.prepare(occ.add, { key: "x" }));
+        const { outcome } = added;
+        assert(outcome._tag === "returned");
+        const lookup = yield* call(() =>
+          t.prepare(occ.lookup, { id: outcome.value }),
+        );
+        yield* call(() => t.apply(added.id));
+        const next = conflicted(yield* call(() => t.apply(lookup.id)));
+        yield* call(() => t.apply(next.id));
+        expect(yield* call(() => t.query(occ.seen, {}))).toEqual(["present"]);
+      }),
+  );
+
+  it.effect(
+    "`.first()` reads only the prefix it examined, so a write past it leaves the attempt valid and a write inside it conflicts",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld();
+        yield* call(() => t.mutation(occ.add, { key: "1" }));
+        yield* call(() => t.mutation(occ.add, { key: "3" }));
+        const past = yield* call(() => t.prepare(occ.head, {}));
+        yield* call(() => t.mutation(occ.add, { key: "2" }));
+        const valid = yield* call(() => t.apply(past.id));
+        const inside = yield* call(() => t.prepare(occ.head, {}));
+        yield* call(() => t.mutation(occ.add, { key: "0" }));
+        const next = conflicted(yield* call(() => t.apply(inside.id)));
+        yield* call(() => t.apply(next.id));
+        expect(valid.kind).toBe("applied");
+        expect(yield* call(() => t.query(occ.seen, {}))).toEqual(["1", "0"]);
+      }),
+  );
+
+  it.effect(
+    "an empty index range conflicts with an insert into it, and not with an insert beside it",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld();
+        const beside = yield* call(() => t.prepare(occ.claim, { key: "x" }));
+        yield* call(() => t.mutation(occ.add, { key: "y" }));
+        const valid = yield* call(() => t.apply(beside.id));
+        const phantom = yield* call(() => t.prepare(occ.claim, { key: "x" }));
+        yield* call(() => t.mutation(occ.add, { key: "x" }));
+        const next = conflicted(yield* call(() => t.apply(phantom.id)));
+        yield* call(() => t.apply(next.id));
+        expect(valid.kind).toBe("applied");
+        expect(yield* call(() => t.query(occ.seen, {}))).toEqual([
+          "free x",
+          "taken x",
+        ]);
+      }),
+  );
+
+  it.effect(
+    "a mutation whose every attempt conflicts is exhausted on attempt 5 and publishes nothing",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld();
+        const id = yield* call(() => t.mutation(occ.create, {}));
+        let attempt = yield* call(() => t.prepare(occ.bump, { id }));
+        const numbers: Array<number> = [];
+        for (const _ of [2, 3, 4, 5]) {
+          yield* call(() => t.mutation(occ.bump, { id }));
+          attempt = conflicted(yield* call(() => t.apply(attempt.id)));
+          numbers.push(attempt.number);
+        }
+        yield* call(() => t.mutation(occ.bump, { id }));
+        const exhausted = yield* call(() => t.apply(attempt.id));
+        expect(numbers).toEqual([2, 3, 4, 5]);
+        expect(exhausted).toMatchObject({
+          kind: "exhausted",
+          error: { _tag: "OptimisticConcurrencyControlFailure" },
+        });
+        expect(yield* call(() => t.query(occ.counter, { id }))).toBe(5);
+        expect(t.held()).toEqual([]);
+      }),
+  );
+});
+
+describe("nested reads", () => {
+  it.effect(
+    "a nested query's reads join its caller's, so a commit to what it read conflicts the caller",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld();
+        const id = yield* call(() => t.mutation(occ.create, {}));
+        const held = yield* call(() => t.prepare(occ.throughQuery, { id }));
+        yield* call(() => t.mutation(occ.bump, { id }));
+        const next = conflicted(yield* call(() => t.apply(held.id)));
+        yield* call(() => t.apply(next.id));
+        expect(yield* call(() => t.query(occ.seen, {}))).toEqual(["read 1"]);
+      }),
+  );
+
+  it.effect(
+    "a nested mutation that fails keeps its reads, so a commit to what it read conflicts the caller",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld();
+        const id = yield* call(() => t.mutation(occ.create, {}));
+        const held = yield* call(() => t.prepare(occ.throughFailure, { id }));
+        yield* call(() => t.mutation(occ.bump, { id }));
+        const next = conflicted(yield* call(() => t.apply(held.id)));
+        yield* call(() => t.apply(next.id));
+        expect(yield* call(() => t.query(occ.seen, {}))).toEqual([
+          "after failure",
+        ]);
+      }),
+  );
+});
+
+describe("commit timestamps", () => {
+  it.effect(
+    "a commit takes the runtime's timestamp for its version, and the rows it stamps read it back",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld({
+          now: () => 1_000,
+          commitTs: (version) => 5_000n + BigInt(version),
+        });
+        const a = yield* call(() => t.prepare(occ.stamp, { label: "a" }));
+        const b = yield* call(() => t.prepare(occ.stamp, { label: "b" }));
+        const c = yield* call(() => t.prepare(occ.stamp, { label: "c" }));
+        const applied: Array<{ version: number; commitTs: bigint }> = [];
+        for (const held of [c, a, b]) {
+          const result = yield* call(() => t.apply(held.id));
+          assert(result.kind === "applied");
+          applied.push({ version: result.version, commitTs: result.commitTs });
+        }
+        expect(applied).toEqual([
+          { version: 1, commitTs: 5_001n },
+          { version: 2, commitTs: 5_002n },
+          { version: 3, commitTs: 5_003n },
+        ]);
+        expect(yield* call(() => t.query(occ.stamps, {}))).toEqual([
+          { label: "a", at: 5_002n },
+          { label: "b", at: 5_003n },
+          { label: "c", at: 5_001n },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "commits on a wall clock that stands still never share a timestamp",
+    () =>
+      Effect.gen(function* () {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(1_000);
+        const t = occWorld();
+        for (const label of ["first", "second", "third"]) {
+          yield* call(() => t.mutation(occ.stamp, { label }));
+        }
+        expect(
+          (yield* call(() => t.query(occ.stamps, {}))).map(
+            (stamp: { readonly at: bigint }) => stamp.at,
+          ),
+        ).toEqual([1_000_000_000n, 1_000_000_001n, 1_000_000_002n]);
+      }).pipe(Effect.ensuring(Effect.sync(() => vi.useRealTimers()))),
+  );
+
+  it.effect("a runtime that repeats a commit timestamp is refused", () =>
+    Effect.gen(function* () {
+      const t = occWorld({ now: () => 1_000, commitTs: () => 7n });
+      yield* call(() => t.mutation(occ.stamp, { label: "first" }));
+      const refused = yield* call(() =>
+        t.mutation(occ.stamp, { label: "second" }).then(
+          () => null,
+          (error: unknown) => error,
+        ),
+      );
+      expect(refused).toMatchObject({ _tag: "CommitTsNotIncreasing" });
+      expect(yield* call(() => t.query(occ.stamps, {}))).toEqual([
+        { label: "first", at: 7n },
+      ]);
+    }),
+  );
+
+  it("two processes replaying one history print the same bytes", () => {
+    const loader = pathToFileURL(
+      createRequire(import.meta.url).resolve("tsx/esm"),
+    ).href;
+    const script = fileURLToPath(
+      new URL("fixtures/kernelReplay.ts", import.meta.url),
+    );
+    const replay = () =>
+      spawnSync(process.execPath, ["--import", loader, script], {
+        encoding: "utf8",
+      });
+    const [one, two] = [replay(), replay()];
+    expect([one.status, one.stderr, two.status, two.stderr]).toEqual([
+      0,
+      "",
+      0,
+      "",
+    ]);
+    expect(one.stdout).toBe(two.stdout);
+    const { steps, state } = jsonToConvex(
+      JSON.parse(one.stdout),
+    ) as unknown as {
+      steps: ReadonlyArray<unknown>;
+      state: { stamps: ReadonlyArray<{ at: bigint }> };
+    };
+    const at = (version: bigint) =>
+      1_767_225_600_000_000_000n + version * 1_000n;
+    expect(steps).toEqual([
+      { kind: "applied", version: 2, commitTs: at(2n) },
+      { kind: "conflict", next: 2 },
+      { kind: "applied", version: 3, commitTs: at(3n) },
+    ]);
+    expect(state.stamps.map((stamp) => stamp.at)).toEqual([at(4n), at(5n)]);
+  }, 60_000);
+});
+
+class Mail extends Context.Service<Mail, { readonly answer: string }>()(
+  "@confect/test/test/Kernel.test/Mail",
+) {}
+
+const mail = Effect.serviceOption(Mail).pipe(
+  Effect.map(Option.match({ onNone: () => null, onSome: (m) => m.answer })),
+);
+
+const register = (
+  functionSpec: FunctionSpec.AnyWithProps,
+  handler: Handler.Any,
+) => {
+  const item = FunctionRegistryItem.make({
+    functionSpec,
+    groupMiddlewareAttachments: [],
+    handler,
+  });
+  assert(item._tag === "Confect");
+  return RegisteredConvexFunction.make(DatabaseSchema.make({}), item);
+};
+
+// Set by each lifetime test before it calls `detached`.
+let gate = Deferred.makeUnsafe<void>();
+let exited = Deferred.makeUnsafe<Exit.Exit<void>>();
+const order: Array<string> = [];
+const attempts: Array<number | null> = [];
+
+const life = {
+  bed: makeFunctionReference<"mutation", {}, GenericId<"beds">>("life:bed"),
+  room: makeFunctionReference<"query", { id: GenericId<"beds"> }, string>(
+    "life:room",
+  ),
+  detached: makeFunctionReference<
+    "mutation",
+    { id: GenericId<"beds">; held: boolean }
+  >("life:detached"),
+  counter: makeFunctionReference<"mutation", {}, GenericId<"counters">>(
+    "life:counter",
+  ),
+  bump: makeFunctionReference<"mutation", { id: GenericId<"counters"> }>(
+    "life:bump",
+  ),
+  numbered: makeFunctionReference<"mutation", { id: GenericId<"counters"> }>(
+    "life:numbered",
+  ),
+  outer: makeFunctionReference<
+    "action",
+    {},
+    { outer: string | null; nested: string | null }
+  >("life:outer"),
+  inner: makeFunctionReference<"action", {}, string | null>("life:inner"),
+};
+
+const bumpCounter = (ctx: GenericMutationCtx<GenericDataModel>, id: string) =>
+  Effect.gen(function* () {
+    const counter = id as GenericId<"counters">;
+    const { n } = (yield* Effect.promise(() =>
+      ctx.db.get(counter),
+    )) as unknown as { n: number };
+    yield* Effect.promise(() => ctx.db.patch(counter, { n: n + 1 }));
+  });
+
+const lifeModule = {
+  bed: mutationGeneric({
+    args: {},
+    handler: (ctx) => ctx.db.insert("beds", { room: "1" }),
+  }),
+  room: queryGeneric({
+    args: { id: v.id("beds") },
+    handler: (ctx, { id }) => ctx.db.get(id).then((bed) => bed!.room),
+  }),
+  counter: mutationGeneric({
+    args: {},
+    handler: (ctx) => ctx.db.insert("counters", { n: 0 }),
+  }),
+  bump: mutationGeneric({
+    args: { id: v.id("counters") },
+    handler: (ctx, { id }) =>
+      ctx.db
+        .get(id)
+        .then((counter) => ctx.db.patch(id, { n: counter!.n + 1 }))
+        .then(() => null),
+  }),
+  // Frame's authz latch fixture `detached` without the door's seal. Its five
+  // reads stand where the door's writer reads the caller's reach before it
+  // writes, so the late write reaches the database after the handler settled.
+  detached: register(
+    FunctionSpec.publicMutation({
+      name: "detached",
+      args: () => ({ id: Schema.String, held: Schema.Boolean }),
+      returns: () => Schema.Null,
+    }),
+    ({ id, held }: { readonly id: string; readonly held: boolean }) =>
+      Effect.gen(function* () {
+        const ctx = yield* MutationCtx.MutationCtx<GenericDataModel>();
+        const bed = id as GenericId<"beds">;
+        yield* Effect.promise(() => ctx.db.patch(bed, { room: "moved" }));
+        const late = Effect.forEach(
+          [1, 2, 3, 4, 5],
+          () => Effect.promise(() => ctx.db.get(bed)),
+          { discard: true },
+        ).pipe(
+          Effect.andThen(
+            Effect.promise(() => ctx.db.patch(bed, { room: "detached" })),
+          ),
+          Effect.andThen(
+            Effect.sync(() => {
+              order.push("late write");
+            }),
+          ),
+          Effect.exit,
+          Effect.flatMap((exit) => Deferred.succeed(exited, exit)),
+        );
+        yield* Effect.forkDetach(
+          held ? Deferred.await(gate).pipe(Effect.andThen(late)) : late,
+        );
+        return null;
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => order.push("handler settled"))),
+      ),
+  ),
+  numbered: register(
+    FunctionSpec.publicMutation({
+      name: "numbered",
+      args: () => ({ id: Schema.String }),
+      returns: () => Schema.Null,
+    }),
+    ({ id }: { readonly id: string }) =>
+      Effect.gen(function* () {
+        attempts.push(Invocation.current()?.attempt ?? null);
+        const ctx = yield* MutationCtx.MutationCtx<GenericDataModel>();
+        yield* bumpCounter(ctx, id);
+        return null;
+      }),
+  ),
+  outer: register(
+    FunctionSpec.publicAction({
+      name: "outer",
+      args: () => ({}),
+      returns: () =>
+        Schema.Struct({
+          outer: Schema.NullOr(Schema.String),
+          nested: Schema.NullOr(Schema.String),
+        }),
+    }),
+    () =>
+      Effect.gen(function* () {
+        const outer = yield* mail;
+        const ctx = yield* ActionCtx.ActionCtx<GenericDataModel>();
+        const nested = yield* Effect.promise(() => ctx.runAction(life.inner));
+        return { outer, nested };
+      }),
+  ),
+  inner: register(
+    FunctionSpec.internalAction({
+      name: "inner",
+      args: () => ({}),
+      returns: () => Schema.NullOr(Schema.String),
+    }),
+    () => mail,
+  ),
+};
+
+const lifeWorld = (): KernelControls =>
+  convexTest(
+    defineSchema({
+      beds: defineTable({ room: v.string() }),
+      counters: defineTable({ n: v.number() }),
+    }),
+    {
+      "_generated/server.ts": () => Promise.resolve({}),
+      "life.ts": () => Promise.resolve(lifeModule),
+    },
+  );
+
+describe("lifetime", () => {
+  it.effect(
+    "a write a detached fiber makes after its handler settled commits with its mutation",
+    () =>
+      Effect.gen(function* () {
+        order.length = 0;
+        exited = Deferred.makeUnsafe();
+        const t = lifeWorld();
+        const id = yield* call(() => t.mutation(life.bed, {}));
+        yield* call(() => t.mutation(life.detached, { id, held: false }));
+        const exit = yield* Deferred.await(exited);
+        expect({
+          exit: exit._tag,
+          order,
+          room: yield* call(() => t.query(life.room, { id })),
+        }).toEqual({
+          exit: "Success",
+          order: ["handler settled", "late write"],
+          room: "detached",
+        });
+      }),
+  );
+
+  it.effect(
+    "a write that reaches a mutation after it returned is refused, and the mutation's own write commits",
+    () =>
+      Effect.gen(function* () {
+        gate = Deferred.makeUnsafe();
+        exited = Deferred.makeUnsafe();
+        const t = lifeWorld();
+        const id = yield* call(() => t.mutation(life.bed, {}));
+        yield* call(() => t.mutation(life.detached, { id, held: true }));
+        yield* Deferred.succeed(gate, undefined);
+        const exit = yield* Deferred.await(exited);
+        expect({
+          refusal: Exit.isFailure(exit)
+            ? String(Cause.squash(exit.cause))
+            : "none",
+          room: yield* call(() => t.query(life.room, { id })),
+        }).toEqual({
+          refusal: expect.stringContaining(
+            "reached mutation life:detached after it returned",
+          ),
+          room: "moved",
+        });
+      }),
+  );
+});
+
+describe("invocations", () => {
+  const home: Invocation.World = {
+    name: "world",
+    services: Context.make(Mail, { answer: "world mail" }),
+  };
+  const caller: Invocation.Invocation = {
+    world: home,
+    componentPath: "",
+    attempt: 1,
+    request: {
+      ip: null,
+      userAgent: null,
+      requestId: "caller-request",
+      scheduledFunctionId: null,
+    },
+    services: Context.make(Mail, { answer: "caller mail" }),
+  };
+
+  it.effect(
+    "each attempt of a held mutation starts its handler under its own attempt number",
+    () =>
+      Effect.gen(function* () {
+        attempts.length = 0;
+        const t = lifeWorld();
+        const id = yield* call(() => t.mutation(life.counter, {}));
+        const held = yield* call(() =>
+          Invocation.bind(caller, () => t.prepare(life.numbered, { id })),
+        );
+        yield* call(() => t.mutation(life.bump, { id }));
+        const next = conflicted(yield* call(() => t.apply(held.id)));
+        yield* call(() => t.apply(next.id));
+        expect(attempts).toEqual([1, 2]);
+      }),
+  );
+
+  it.effect(
+    "a nested action starts under a fresh invocation with its world's services",
+    () =>
+      Effect.gen(function* () {
+        const t = lifeWorld();
+        const seen = yield* call(() =>
+          Invocation.bind(caller, () => t.action(life.outer, {})),
+        );
+        expect(seen).toEqual({ outer: "caller mail", nested: "world mail" });
+      }),
   );
 });
