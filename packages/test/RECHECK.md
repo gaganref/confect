@@ -176,3 +176,46 @@ only for scheduled calls.
 
 No inventory case is placed in row 3, and no refusal named row 3, so the lane's
 placements are unchanged.
+
+## Subscriptions (row 4)
+
+`src/internal/Subscriptions.ts` keeps each client's query set. A `Subscriber`
+holds one caller and an identity version. Each subscription keeps its latest
+run: the value, the commit it read, its read set, whether it asked for the
+caller's identity, the pinned time it read and where its paginated read ended.
+
+A run is stale when a commit since its snapshot changed something it read,
+which is the check `apply` makes for an attempt (`Kernel.conflict`). It is also
+stale when it read the identity and `authenticate` has since bumped its
+subscriber's identity version. `refresh` reruns the stale runs at the latest
+commit and the kernel's time, oldest first, until none is stale. It lists each
+value that changed. `reference` is the full-rerun reference: it reruns every
+subscription from scratch and lists each one whose value differs.
+
+Three rules come from the binary's source and docs (Convex 1.49), not from
+convex-test, which has no subscriptions:
+
+- Time never makes a run stale. "The query is not re-run when `Date.now()`
+  changes" (`docs/understanding/best-practices/best-practices.mdx:571`). The
+  sync worker reruns a query only when its read set or the identity changes
+  (`crates/sync/src/worker.rs:948-962`). The binary's time dependency is its
+  query cache, which reuses a result that read the time only within
+  `MAX_CACHE_AGE` (`crates/application/src/cache/mod.rs:795-820`). The kernel
+  has no cache, so a rerun always reads the kernel's time now. The reference
+  reruns a query that read the time at the time its run read.
+- An identity change makes stale only the runs that read the identity, as the
+  design says. The binary reruns every query of the session and leaves the
+  narrower rule as a TODO, CX-737 (`crates/sync/src/worker.rs:953-962`). The
+  two differ only for a query that read the time but not the identity, once
+  its cached result is older than the cache window.
+- A rerun ends its page where the first run's page ended, as the binary's query
+  journal does (`crates/isolate/src/environment/udf/async_syscall.rs:2263-2266`
+  and `:2324`). So an insert inside the page grows it.
+
+`Date` inside a query or mutation answers its start time, and a query that
+reads it records that time. The wrapper, `src/internal/Clock.ts`, is the same
+file as row 5's, byte for byte: a time dependency needs the pinned query clock
+that row 5's scheduler also needs.
+
+No inventory case is placed in row 4, and no refusal named row 4, so the lane's
+placements are unchanged.
