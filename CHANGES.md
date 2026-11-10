@@ -12,6 +12,19 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Test invocation services
+
+`runHandlerPromise` starts a query, mutation or action handler with the
+services of the test invocation it belongs to, through `Effect.runPromiseWith`.
+`@confect/test` binds an invocation through async context, and a nested call
+joins it. A job convex-test starts from a timer gets a fresh record with its
+world's services and the job's request metadata. With no bound invocation, and
+always in production, handlers keep `Effect.runPromise`. This is row 1 of
+Frame's backend testing kernel (englever/frame#1286).
+`packages/test/RECHECK.md` records what each kernel part is on `main`.
+Changeset: `test-invocation-services.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
