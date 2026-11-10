@@ -80,6 +80,19 @@ mock-backend cases run on the kernel. This is row 5 of Frame's backend testing
 kernel (Frame ADR 0012). Changeset: `test-kernel-scheduler.md`. Upstream: fork
 only, as the kernel and its option are fork-specific.
 
+## TestConfect kernel target
+
+`TestConfect.layer` takes `{ target: "kernel" }` in each of its three forms. It
+builds the test backend on the kernel's convex-test shim instead of
+convex-test, so every module and component the layer registers runs on the
+kernel, with `registerComponent`'s `standing` honoured. The default stays
+`"convex-test"`, so no current test changes until it opts in. This is how
+Frame's generated test backend and its half of build-order row 5 reach the
+kernel without a new export path: the package keeps `./internal/*` unexported.
+The option is removed at promotion, when the kernel replaces convex-test.
+Changeset: `testconfect-kernel-target.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector

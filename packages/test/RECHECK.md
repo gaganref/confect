@@ -243,3 +243,10 @@ cases at `:768`, `:807`, `:819` and `:831`.
 Not simulated: Convex's own `crons.ts` schedules, which convex-test does not run
 either and which no inventory case or row-5 check uses. A raw host timer in a
 handler is row 6's I/O ban.
+
+`TestConfect.layer`'s `target: "kernel"` builds the layer's backend on this
+shim, in each of the layer's three forms, so a consumer reaches the kernel
+without importing `@confect/test/internal/*`, which stays unexported. A
+throwaway rerun of the crons spike through that option, with Frame's crons
+suite's fake-timer step, ticked at +1000 and +2000 with `public:rescheduler`
+standing and failed `DrainBudgetExceeded` without it.
