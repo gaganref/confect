@@ -12,6 +12,17 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Table info through Table's extractors
+
+`TableInfo` reads a table's name, schema, validator, scope and search and vector
+indexes through `Table`'s own extractors, not `infer`. An intersection with a
+`Table`, or an interface extending one, matched `Table<infer ...>` only
+structurally, so its document ID came back with the general `IdScope` and a
+widened name, and disagreed with `DataModel.Id`. Frame's aggregate engine binds
+its tables as `Table<...> & Aggregated<...>`. `Indexes` stays inferred, because
+a generic table's index names resolve only that way. Changeset:
+`tableinfo-extended-table-scope.md`. Upstream: unrecorded.
+
 ## Commit timestamps
 
 Add `CommitTs` in `@confect/core` and `vars.commitTs` on the database writer.
