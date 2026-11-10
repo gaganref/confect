@@ -7,7 +7,6 @@ import type {
 } from "convex-test";
 import { convexTest } from "convex-test";
 import type {
-  GenericDataModel,
   GenericMutationCtx,
   GenericSchema,
   SchemaDefinition,
@@ -23,12 +22,26 @@ import * as MountedHttp from "./internal/MountedHttp.js";
 declare const process: { env: Record<string, string | undefined> };
 
 /**
+ * How a kit registers a component beyond its schema and modules.
+ */
+export type RegisterOptions = {
+  /**
+   * The component's functions, as `module:export`, that schedule their own next
+   * run, such as the crons component's `public:rescheduler`. The test kernel
+   * never treats a job that runs one, or that one schedules, as work
+   * `finishAllScheduledFunctions` must finish. convex-test ignores it.
+   */
+  readonly standing?: ReadonlyArray<string>;
+};
+
+/**
  * Register a component's Convex schema and modules at its installation path.
  */
 export type RegisterComponent = (
-  ...args: Parameters<
-    TestConvexForDataModelAndIdentity<GenericDataModel>["registerComponent"]
-  >
+  componentPath: string,
+  schema: SchemaDefinition<GenericSchema, boolean>,
+  modules: Record<string, () => Promise<any>>,
+  options?: RegisterOptions,
 ) => void;
 
 /**
@@ -106,6 +119,7 @@ export type TestConfect<ConfectSchema extends DatabaseSchema.AnyWithProps> = {
     componentPath: string,
     schema: SchemaDefinition<GenericSchema, boolean>,
     modules: Record<string, () => Promise<any>>,
+    options?: RegisterOptions,
   ) => Effect.Effect<void>;
   withIdentity: (
     userIdentity: Partial<UserIdentity>,
@@ -261,9 +275,9 @@ class TestConfectImpl<
 
   readonly registerComponent: TestConfect<ConfectSchema>["registerComponent"] =
     Effect.fn("TestConfect.registerComponent")(
-      (componentPath, schema, modules) =>
+      (componentPath, schema, modules, options) =>
         Effect.sync(() =>
-          this.mountedHttp.register(componentPath, schema, modules),
+          this.mountedHttp.register(componentPath, schema, modules, options),
         ),
     );
 
@@ -453,8 +467,12 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
     process.env.CONVEX_CLOUD_URL ??= "https://some-deployment.convex.cloud";
     process.env.CONVEX_SITE_URL ??= "https://some.convex.site";
     const testConvex = convexTest(convexSchemaDefinition, modules);
+    // convex-test takes three arguments and ignores the options. The test
+    // kernel, which the fork's kernel lane aliases in, reads `standing`.
+    const registerComponent =
+      testConvex.registerComponent as unknown as RegisterComponent;
     const mountedHttp = MountedHttp.make(options.httpMounts ?? [], (...args) =>
-      testConvex.registerComponent(...args),
+      registerComponent(...args),
     );
     options.register?.(mountedHttp.register);
     return new TestConfectImpl(databaseSchema, testConvex as any, mountedHttp);

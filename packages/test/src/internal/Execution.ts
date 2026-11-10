@@ -11,11 +11,13 @@ import {
 } from "convex/server";
 import { convexToJson, jsonToConvex, type Value } from "convex/values";
 import { KernelAttempt } from "./Attempt.js";
+import * as Clock from "./Clock.js";
 import * as Invocation from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type * as ReadSet from "./ReadSet.js";
+import * as Scheduling from "./Scheduling.js";
 import type {
   DocumentId,
   FunctionPath,
@@ -43,14 +45,19 @@ const TYPICAL_CONVEX_ID_LENGTH = 32;
 type Modules = Record<string, () => Promise<any>>;
 
 /**
- * One registered component: its schema and its function modules, each loaded
- * once when the world opens.
+ * One registered component: its schema, its function modules, each loaded once
+ * when the world opens, and its standing sources.
  */
 interface Component {
   readonly path: string;
   readonly schema: KernelQuery.KernelSchema | null;
   readonly loaders: ReadonlyMap<string, () => Promise<any>>;
   readonly loaded: Map<string, any>;
+  /**
+   * The functions, as `module:export`, that schedule their own next run. A job
+   * that runs one, or that one schedules, is never drain work.
+   */
+  readonly standing: ReadonlySet<string>;
 }
 
 /**
@@ -160,6 +167,11 @@ interface Execution {
   readonly attempt: KernelAttempt | undefined;
   readonly identity: UserIdentity | null;
   readonly request: Request;
+  /**
+   * The kernel's time when the outermost query or mutation began. Its nested
+   * calls share it, and `Date` answers it inside them.
+   */
+  readonly startTime: number;
   readonly pagination: { calls: number } | undefined;
   readonly turn: Turn;
 }
@@ -183,6 +195,24 @@ class Turn {
 const executions = new AsyncLocalStorage<Execution>();
 const kernelBrand = Symbol.for("@confect/test/Kernel");
 
+/**
+ * The time `Date` answers inside a kernel invocation: a query's or mutation's
+ * start, or the clock as it runs in an action. Outside one, none.
+ */
+const pinnedTime = (): number | undefined => {
+  const execution = executions.getStore();
+  if (execution === undefined) return undefined;
+  return execution.udfType === "action"
+    ? execution.world.now()
+    : execution.startTime;
+};
+
+/**
+ * How many jobs one drain or advance runs before it gives up, as convex-test's
+ * `finishAllScheduledFunctions` defaults to.
+ */
+const defaultBudget = 100;
+
 const current = (): Execution => {
   const execution = executions.getStore();
   if (execution === undefined) {
@@ -202,6 +232,15 @@ const newRequest = (caller: Caller): Request => ({
   authToken: caller.token,
 });
 
+/**
+ * A scheduled call is a request of its own: no caller's attributes, and its
+ * job's ID.
+ */
+const jobRequest = (jobId: DocumentId): Request => ({
+  ...newRequest(anonymous),
+  scheduledFunctionId: jobId,
+});
+
 const findModulesRoot = (paths: ReadonlyArray<string>): string => {
   const generated = paths.find((path) => path.includes("_generated"));
   if (generated === undefined) {
@@ -218,6 +257,7 @@ const makeComponent = (
   path: string,
   schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
   modules: Modules,
+  standing: ReadonlyArray<string> = [],
 ): Component => {
   const root = findModulesRoot(Object.keys(modules));
   const relative = Object.entries(modules)
@@ -240,6 +280,7 @@ const makeComponent = (
         .map(([file, load]) => [file.replace(/\.[^.]+$/, ""), load]),
     ),
     loaded: new Map(),
+    standing: new Set(standing),
   };
 };
 
@@ -348,6 +389,12 @@ export class World {
   private readonly queries = new Map<number, Iterator<any>>();
   private readonly holding = new Map<string, Held>();
   private nextAttemptId = 1;
+  /**
+   * The latest deadline time has been advanced to. The clock never reads
+   * earlier.
+   */
+  private floor = Number.NEGATIVE_INFINITY;
+  private readonly targets = new Map<DocumentId, Scheduling.Target>();
 
   constructor(
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
@@ -355,6 +402,7 @@ export class World {
     private readonly runtime: Kernel.KernelRuntime = Kernel.wallClock(),
   ) {
     installConvexGlobal();
+    Clock.install(pinnedTime);
     this.components.set(ROOT, makeComponent(ROOT, schema, modules));
   }
 
@@ -362,6 +410,7 @@ export class World {
     componentPath: string,
     schema: SchemaDefinition<GenericSchema, boolean>,
     modules: Modules,
+    standing: ReadonlyArray<string> = [],
   ) {
     if (this.opened !== undefined) {
       throw new KernelRefusal.RegisteredAfterOpen({
@@ -371,13 +420,13 @@ export class World {
     }
     this.components.set(
       componentPath,
-      makeComponent(componentPath, schema, modules),
+      makeComponent(componentPath, schema, modules, standing),
     );
   }
 
   /**
    * Load every registered module of every component, once, before any function
-   * runs.
+   * runs, then check that each standing source names an exported function.
    */
   open(): Promise<void> {
     this.opened ??= Promise.all(
@@ -388,8 +437,35 @@ export class World {
           ),
         ),
       ),
-    ).then(() => undefined);
+    ).then(() => this.checkStanding());
     return this.opened;
+  }
+
+  /**
+   * Refuse a standing source no module of its component exports.
+   */
+  private checkStanding() {
+    for (const component of this.components.values()) {
+      for (const name of component.standing) {
+        const [modulePath, exportName = "default"] = name.split(":");
+        const func = component.loaded.get(modulePath!)?.[exportName];
+        if (func?.isMutation !== true && func?.isAction !== true) {
+          throw new KernelRefusal.UnknownStandingSource({
+            componentPath: component.path,
+            name,
+            message: `Component "${component.path}" declares "${name}" standing, but exports no mutation or action by that name. Name the self-rescheduling function as module:export.`,
+          });
+        }
+      }
+    }
+  }
+
+  /**
+   * The kernel's time: the runtime's, never earlier than the latest deadline
+   * time was advanced to.
+   */
+  now(): number {
+    return Math.max(this.runtime.now(), this.floor);
   }
 
   private component(componentPath: string): Component {
@@ -536,6 +612,226 @@ export class World {
     return Array.from(this.holding.values(), (held) => held.view);
   }
 
+  // Scheduled functions, on the kernel's clock.
+
+  /**
+   * The committed pending jobs, earliest deadline first.
+   */
+  jobs(): ReadonlyArray<Scheduling.Job> {
+    return Scheduling.pending(this.state, this.targets).map(
+      ({ id, componentPath, name, scheduledTime, standing }) => ({
+        id,
+        componentPath,
+        name,
+        scheduledTime,
+        standing,
+      }),
+    );
+  }
+
+  /**
+   * Move the clock forward `ms`, running every job whose deadline falls on the
+   * way, in deadline order, each starting at its deadline. Jobs those jobs
+   * schedule inside the window run too. `advance(0)` runs what is due now and
+   * crosses no future deadline.
+   */
+  advance(ms: number, budget = defaultBudget): Promise<void> {
+    return this.open().then(() => {
+      const until = this.now() + ms;
+      return this.walk(
+        (pending) => pending.filter((job) => job.scheduledTime <= until),
+        budget,
+      ).then(() => this.raiseFloor(until));
+    });
+  }
+
+  /**
+   * Run jobs, earliest deadline first and each at its deadline, until only
+   * standing jobs are pending. Every job run counts against `budget`.
+   */
+  drain(budget = defaultBudget): Promise<void> {
+    return this.open().then(() =>
+      this.walk((pending) => pending.filter((job) => !job.standing), budget),
+    );
+  }
+
+  /**
+   * Run the first of `select(pending)` until it is empty, moving the clock to
+   * each job's deadline as it starts.
+   */
+  private walk(
+    select: (pending: Array<Scheduling.Due>) => Array<Scheduling.Due>,
+    budget: number,
+  ): Promise<void> {
+    const step = (ran: number): Promise<void> => {
+      const left = select(Scheduling.pending(this.state, this.targets));
+      const next = left[0];
+      if (next === undefined) return Promise.resolve();
+      if (ran === budget) {
+        const pending = Scheduling.functions(left);
+        return Promise.reject(
+          new KernelRefusal.DrainBudgetExceeded({
+            budget,
+            pending,
+            message: `Scheduled functions ran ${budget} jobs and work remains: ${pending
+              .map(({ componentPath, name }) =>
+                componentPath === ROOT ? name : `${name} in "${componentPath}"`,
+              )
+              .join(
+                ", ",
+              )}. A function that schedules its own next run never lets the drain end, so its kit declares it with registerComponent's \`standing\` option.`,
+          }),
+        );
+      }
+      this.raiseFloor(next.scheduledTime);
+      return this.runJob(next).then(() => step(ran + 1));
+    };
+    return step(0);
+  }
+
+  private raiseFloor(to: number) {
+    this.floor = Math.max(this.floor, to);
+  }
+
+  /**
+   * Run one job as its own request, moving its row from pending through in
+   * progress to success or failed. A job canceled before it starts never runs.
+   */
+  private runJob(job: Scheduling.Due): Promise<void> {
+    const started = this.commitNow((attempt) => {
+      const doc = attempt.get(job.componentPath, job.id);
+      if (doc === null || Scheduling.stateOf(doc).kind !== "pending")
+        return false;
+      attempt.write(job.componentPath, job.id, {
+        ...doc,
+        state: { kind: "inProgress" },
+      });
+      return true;
+    });
+    if (!started) return Promise.resolve();
+    const from: From = { caller: anonymous, request: jobRequest(job.id) };
+    return Promise.resolve()
+      .then(() => {
+        const { func } = this.resolve(job.target, "any");
+        return func.isQuery
+          ? this.queryAt(job.target, job.args, from)
+          : func.isMutation
+            ? this.mutationAt(job.target, job.args, from)
+            : this.actionAt(job.target, job.args, from);
+      })
+      .then(
+        (): Scheduling.JobState => ({ kind: "success" }),
+        (error: unknown): Scheduling.JobState => ({
+          kind: "failed",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      )
+      .then((state) =>
+        this.commitNow((attempt) => {
+          const doc = attempt.get(job.componentPath, job.id);
+          if (doc === null || Scheduling.stateOf(doc).kind !== "inProgress")
+            return;
+          attempt.write(job.componentPath, job.id, {
+            ...doc,
+            state,
+            completedTime: this.now(),
+          });
+        }),
+      );
+  }
+
+  /**
+   * Write through a fresh attempt and publish it at once, as the scheduler does
+   * for an action's schedule and a job's state. Nothing runs between the
+   * snapshot and the commit, so no other commit can conflict with it.
+   */
+  private commitNow<A>(write: (attempt: KernelAttempt) => A): A {
+    const attempt = new KernelAttempt(this.state);
+    const result = write(attempt);
+    this.publishWrites(attempt.writes());
+    return result;
+  }
+
+  /**
+   * Publish `writes` as the next commit, at the runtime's timestamp for it.
+   */
+  private publishWrites(writes: ReadonlyArray<Kernel.Write>): bigint {
+    const commitTs = this.runtime.commitTs(this.state.version + 1);
+    if (writes.length > 0) {
+      if (commitTs <= this.state.commitTs) {
+        throw new KernelRefusal.CommitTsNotIncreasing({
+          version: this.state.version + 1,
+          previous: this.state.commitTs,
+          commitTs,
+          message: `The runtime answered commit timestamp ${commitTs} for version ${this.state.version + 1}, which is not greater than the previous commit's ${this.state.commitTs}.`,
+        });
+      }
+      this.state = Kernel.apply(this.state, writes, commitTs);
+    }
+    return commitTs;
+  }
+
+  /**
+   * Write a pending job into `attempt`, so the job exists only once that
+   * attempt publishes. A job that a standing function schedules, or that runs
+   * one, is standing.
+   */
+  private scheduleJob(
+    attempt: KernelAttempt,
+    execution: Execution,
+    args: any,
+  ): DocumentId {
+    const target = functionPathOf(args, execution.componentPath);
+    this.component(target.componentPath);
+    const jobArgs = jsonToConvex(args.args);
+    if (hasPendingValues(jobArgs)) {
+      throw new Error(
+        `Invalid arguments for "${target.udfPath}": a scheduled function cannot take an unresolved placeholder value.`,
+      );
+    }
+    const id = this.generateId(Scheduling.table);
+    attempt.write(
+      execution.componentPath,
+      id,
+      Scheduling.row(
+        id,
+        this.creationTime(execution.startTime),
+        target.udfPath,
+        jobArgs,
+        args.ts * 1000,
+      ),
+    );
+    this.targets.set(id, {
+      functionPath: target,
+      standing:
+        this.isStanding({
+          componentPath: execution.componentPath,
+          udfPath: execution.udfPath,
+        }) || this.isStanding(target),
+    });
+    return id;
+  }
+
+  /**
+   * Cancel a job that has not finished. A finished job stays as it ended.
+   */
+  private cancelJob(attempt: KernelAttempt, componentPath: string, id: any) {
+    validateId(Scheduling.table, id);
+    attempt.readDocument(componentPath, id);
+    const doc = attempt.get(componentPath, id);
+    if (doc === null) {
+      throw new Error(`Patch on non-existent document with ID "${id}"`);
+    }
+    const { kind } = Scheduling.stateOf(doc);
+    if (kind === "pending" || kind === "inProgress") {
+      attempt.write(componentPath, id, { ...doc, state: { kind: "canceled" } });
+    }
+  }
+
+  private isStanding({ componentPath, udfPath }: FunctionPath): boolean {
+    return this.components.get(componentPath)?.standing.has(udfPath) ?? false;
+  }
+
   // Calls by address, from the test or from a running function.
 
   private queryAt(
@@ -596,6 +892,10 @@ export class World {
       attempt,
       identity,
       request: from.request,
+      startTime:
+        parent !== undefined && parent.udfType !== "action"
+          ? parent.startTime
+          : this.now(),
       pagination,
       turn: new Turn(),
     };
@@ -815,26 +1115,14 @@ export class World {
         (next): KernelApply => ({ kind: "conflict", next: next.view }),
       );
     }
-    const commitTs = this.runtime.commitTs(this.state.version + 1);
-    if (writes.length > 0) {
-      if (commitTs <= this.state.commitTs) {
-        return Promise.reject(
-          new KernelRefusal.CommitTsNotIncreasing({
-            version: this.state.version + 1,
-            previous: this.state.commitTs,
-            commitTs,
-            message: `The runtime answered commit timestamp ${commitTs} for version ${this.state.version + 1}, which is not greater than the previous commit's ${this.state.commitTs}.`,
-          }),
-        );
-      }
-      this.state = Kernel.apply(this.state, writes, commitTs);
-    }
-    return Promise.resolve({
-      kind: "applied",
-      version: this.state.version,
-      commitTs,
-      result: resolveCommittedValues(outcome.value, commitTs),
-    });
+    return Promise.resolve()
+      .then(() => this.publishWrites(writes))
+      .then((commitTs): KernelApply => ({
+        kind: "applied",
+        version: this.state.version,
+        commitTs,
+        result: resolveCommittedValues(outcome.value, commitTs),
+      }));
   }
 
   /**
@@ -1137,10 +1425,31 @@ export class World {
       case "1.0/auditLog":
         return JSON.stringify(null);
       case "1.0/schedule":
+        return JSON.stringify(
+          convexToJson(
+            this.scheduleJob(transaction(execution), execution, args),
+          ),
+        );
       case "1.0/actions/schedule":
+        return JSON.stringify(
+          convexToJson(
+            this.commitNow((attempt) =>
+              this.scheduleJob(attempt, execution, args),
+            ),
+          ),
+        );
       case "1.0/cancel_job":
+        this.cancelJob(
+          transaction(execution),
+          execution.componentPath,
+          args.id,
+        );
+        return JSON.stringify({});
       case "1.0/actions/cancel_job":
-        throw KernelRefusal.rowPending("the scheduler", 5);
+        this.commitNow((attempt) =>
+          this.cancelJob(attempt, execution.componentPath, args.id),
+        );
+        return JSON.stringify({});
       case "1.0/storageDelete":
       case "1.0/storageGetUrl":
       case "1.0/storageGenerateUploadUrl":
@@ -1181,16 +1490,23 @@ export class World {
       value,
     );
     const _id = this.generateId(table);
-    const now = this.runtime.now();
-    const _creationTime =
-      now <= this.lastCreationTime ? this.lastCreationTime + 0.001 : now;
-    this.lastCreationTime = _creationTime;
     attempt.write(execution.componentPath, _id, {
       ...value,
       _id,
-      _creationTime,
+      _creationTime: this.creationTime(execution.startTime),
     });
     return _id;
+  }
+
+  /**
+   * A new document's creation time: `at`, or just past the latest one, so no
+   * two documents share one.
+   */
+  private creationTime(at: number): number {
+    const time =
+      at <= this.lastCreationTime ? this.lastCreationTime + 0.001 : at;
+    this.lastCreationTime = time;
+    return time;
   }
 
   private existing(
