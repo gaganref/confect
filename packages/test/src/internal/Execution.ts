@@ -694,21 +694,18 @@ export class World {
   }
 
   /**
-   * Run one job as its own request, moving its row from pending through in
-   * progress to success or failed. A job canceled before it starts never runs.
+   * Run one pending job as its own request, moving its row through in progress
+   * to success or failed. `walk` picks it from the committed pending jobs and
+   * starts it in the same turn, so no cancel can land in between.
    */
   private runJob(job: Scheduling.Due): Promise<void> {
-    const started = this.commitNow((attempt) => {
-      const doc = attempt.get(job.componentPath, job.id);
-      if (doc === null || Scheduling.stateOf(doc).kind !== "pending")
-        return false;
+    this.commitNow((attempt) => {
+      const doc = attempt.get(job.componentPath, job.id)!;
       attempt.write(job.componentPath, job.id, {
         ...doc,
         state: { kind: "inProgress" },
       });
-      return true;
     });
-    if (!started) return Promise.resolve();
     const from: From = { caller: anonymous, request: jobRequest(job.id) };
     return Promise.resolve()
       .then(() => {
