@@ -1,4 +1,5 @@
 import type { FunctionSpec, GroupSpec, ManifestSection } from "@confect/core";
+import * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -145,7 +146,9 @@ export const refuseSpecSections = (leaves: ReadonlyArray<Leaf>) =>
 
 /**
  * One registry entry per declared section, each describing every registered
- * function. A backend with no functions keeps every section, with none.
+ * function in code-unit order of its path, so a section's data never depends on
+ * the order the leaves loaded in. A backend with no functions keeps every
+ * section, with none.
  */
 export const collect = (
   entries: ReadonlyArray<ManifestSection.Entry>,
@@ -165,31 +168,40 @@ export const collect = (
         },
       ]),
     );
-    yield* visit(leaves, (spec, group, functionPath, source) =>
-      Result.gen(function* () {
-        for (const [key, { section, data, sources }] of registry) {
-          const invalid = (reason: string) =>
-            new InvalidDeclarationError({
-              declarationPath: `confect/${source}`,
-              reason: `Manifest section "${key}" (${functionPath}): ${reason}`,
-            });
-          const description = yield* Result.try({
-            try: () =>
-              section.describe({
-                path: functionPath,
-                spec,
-                middleware: [...group.middlewareSpecs, ...spec.middlewareSpecs],
-              }),
-            catch: (cause) => invalid(String(cause)),
+    const functions: Array<{
+      spec: FunctionSpec.AnyWithProps;
+      group: GroupSpec.AnyWithProps;
+      path: string;
+      source: string;
+    }> = [];
+    yield* visit(leaves, (spec, group, path, source) => {
+      functions.push({ spec, group, path, source });
+      return Result.void;
+    });
+    functions.sort(Order.mapInput(Order.String, ({ path }) => path));
+    for (const { spec, group, path, source } of functions) {
+      for (const [key, { section, data, sources }] of registry) {
+        const invalid = (reason: string) =>
+          new InvalidDeclarationError({
+            declarationPath: `confect/${source}`,
+            reason: `Manifest section "${key}" (${path}): ${reason}`,
           });
-          data.functions[functionPath] = yield* Result.mapError(
-            json(description),
-            (reason) => invalid(`could not describe as JSON: ${reason}`),
-          );
-          sources[functionPath] = source;
-        }
-      }),
-    );
+        const description = yield* Result.try({
+          try: () =>
+            section.describe({
+              path,
+              spec,
+              middleware: [...group.middlewareSpecs, ...spec.middlewareSpecs],
+            }),
+          catch: (cause) => invalid(String(cause)),
+        });
+        data.functions[path] = yield* Result.mapError(
+          json(description),
+          (reason) => invalid(`could not describe as JSON: ${reason}`),
+        );
+        sources[path] = source;
+      }
+    }
     return registry;
   });
 

@@ -32,7 +32,11 @@ import {
 } from "./CodegenError.js";
 import { ConfectDirectory } from "./ConfectDirectory.js";
 import { ImplModulePath } from "./ImplModulePath.js";
-import { removePathExtension, toPosixPath } from "./utils.js";
+import {
+  readDirectorySorted,
+  removePathExtension,
+  toPosixPath,
+} from "./utils.js";
 
 export interface LeafModule {
   readonly relativePath: string;
@@ -130,16 +134,13 @@ export const registeredFunctionsRelativePath = Effect.fnUntraced(function* (
 });
 
 export const discoverLeafSpecFiles = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
 
   const excludedDirs = HashSet.make("_generated", "tables", "middleware");
   const excludedFiles = HashSet.make("nodeSpec.ts", "spec.ts");
 
-  const allPaths = yield* fs.readDirectory(confectDirectory, {
-    recursive: true,
-  });
+  const allPaths = yield* readDirectorySorted(confectDirectory);
 
   return Array.filter(allPaths, (relativePath) => {
     if (!isLeafSpecPath(relativePath)) {
@@ -158,15 +159,12 @@ export const discoverLeafSpecFiles = Effect.gen(function* () {
 });
 
 export const discoverLeafImplFiles = Effect.gen(function* () {
-  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
 
   const excludedDirs = HashSet.make("_generated", "tables", "middleware");
 
-  const allPaths = yield* fs.readDirectory(confectDirectory, {
-    recursive: true,
-  });
+  const allPaths = yield* readDirectorySorted(confectDirectory);
 
   return Array.filter(
     Array.filterMap(allPaths, (relativePath) =>

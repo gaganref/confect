@@ -657,6 +657,22 @@ Upstream: planned; no linked proposal verified.
 
 ## CLI generation and recovery
 
+### Directory order
+
+Codegen's output no longer depends on the order Node lists a directory in. Node's
+recursive `readdir` order differs across versions, so one project gave a different
+manifest order and digest on Node 24 and Node 26, with whole module groups moving
+as blocks. Discovery of specs, implementations and tables sorts paths by code
+unit after converting them to POSIX separators, and each manifest section lists
+its functions sorted by function path, so a section's data never depends on load
+order. The digest of a project whose modules were listed out of order changes once.
+Codegen's cleanup reads, the Convex entrypoint scan and the section `generate`
+inputs are unchanged. The first two feed removals and a sorted error list only,
+and the third follows the sorted leaves.
+
+Changeset: `codegen-directory-order.md`.
+Upstream: unrecorded.
+
 ### Own generated entrypoints
 
 Reject Convex entrypoints that do not match Confect's generated output before
