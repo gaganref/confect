@@ -1,5 +1,5 @@
 import { App, Env, FunctionSpec, type ManifestSection } from "@confect/core";
-import { describe, expectTypeOf, it } from "@effect/vitest";
+import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 
 type Names = { readonly format: 2; readonly names: ReadonlyArray<string> };
 type Unformatted = Omit<Names, "format">;
@@ -58,8 +58,10 @@ describe("ManifestSection", () => {
       format: 1,
       describe: () => null,
     };
-    // @ts-expect-error—a backend declares its sections on App.make
-    FunctionSpec.extend()({ middleware: [], manifest: { names } });
+    expect(() =>
+      // @ts-expect-error—a backend declares its sections on App.make
+      FunctionSpec.extend()({ middleware: [], manifest: { names } }),
+    ).toThrow(/manifest/);
     expectTypeOf<
       "manifestSections" extends keyof FunctionSpec.AnyWithProps ? true : false
     >().toEqualTypeOf<false>();

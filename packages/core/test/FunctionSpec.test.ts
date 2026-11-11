@@ -914,6 +914,18 @@ describe("extend", () => {
     FunctionSpec.extend<LiteralDescription>()({ middleware: [] });
   });
 
+  it("refuses the manifest option at runtime, on a profile and on an extension", () => {
+    const untyped = { middleware: [], manifest: {} } as never;
+
+    expect(() => FunctionSpec.extend()(untyped)).toThrow(
+      /manifest.*App\.make\(\{ manifestSections \}\)/,
+    );
+    expect(() => Subjected.extend()(untyped)).toThrow(
+      /manifest.*App\.make\(\{ manifestSections \}\)/,
+    );
+    expect(() => FunctionSpec.extend()({ middleware: [] })).not.toThrow();
+  });
+
   it("refuses a field named after a builder option for the function it names", () => {
     interface Named extends Profile.Fields {
       readonly Type: this["Name"] extends "read"

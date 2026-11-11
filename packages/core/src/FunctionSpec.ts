@@ -947,6 +947,14 @@ type RuntimeWrappers = Partial<
   >
 >;
 
+const refuseManifest = (config: object) => {
+  if ("manifest" in config) {
+    throw new Error(
+      "The extend option `manifest` is gone: codegen reads a backend's manifest sections only from App.make({ manifestSections }).",
+    );
+  }
+};
+
 const makeExtended = (
   middleware: ReadonlyArray<ProfileMiddleware<any>>,
   schemas: ReadonlyArray<RuntimeWrappers> = [],
@@ -1015,12 +1023,14 @@ const makeExtended = (
         middleware: ReadonlyArray<ProfileMiddleware<any>>;
         schemas?: RuntimeWrappers;
         reservedArgument?: string;
-      }) =>
-        makeExtended(
+      }) => {
+        refuseManifest(config);
+        return makeExtended(
           [...middleware, ...config.middleware],
           [...schemas, config.schemas ?? {}],
           config.reservedArgument ?? reservedArgument,
-        ),
+        );
+      },
   };
 };
 
@@ -1042,12 +1052,14 @@ export const extend =
       readonly middleware: Middleware_;
     } & OptionFree<Fields_["Type"]> &
       Profile.SchemaConfig<Transforms, Profile.Apply<Fields_, string, any>>,
-  ) =>
-    makeExtended(
+  ) => {
+    refuseManifest(config);
+    return makeExtended(
       config.middleware,
       [config.schemas ?? {}],
       config.reservedArgument,
     ) as Extended<Fields_, SpecOf<Middleware_[number]>, [Transforms]>;
+  };
 
 type MatchingRegisteredFunction<
   RuntimeAndFunctionType_ extends RuntimeAndFunctionType.RuntimeAndFunctionType,
