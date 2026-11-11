@@ -6,6 +6,7 @@ import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as DateTime from "effect/DateTime";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
 import * as String from "effect/String";
 import { logFileAdded, logFileModified } from "./log.js";
 import { ConfectDirectory } from "./ConfectDirectory.js";
@@ -22,6 +23,26 @@ export const removePathExtension = Effect.fnUntraced(function* (
 
 export const toPosixPath = (path: Path.Path, pathStr: string): string =>
   pipe(String.split(pathStr, path.sep), Array.join("/"));
+
+/**
+ * Every path under `directory`, relative to it, in code-unit order of its POSIX
+ * form. Node's recursive `readdir` walks in an order that differs across Node
+ * versions, and codegen writes what it discovers in that order, so reading
+ * through here keeps the output the same on every Node and on every platform.
+ * The paths keep the host's separator.
+ */
+export const readDirectorySorted = Effect.fnUntraced(function* (
+  directory: string,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  return Array.sort(
+    yield* fs.readDirectory(directory, { recursive: true }),
+    Order.mapInput(Order.String, (relativePath: string) =>
+      toPosixPath(path, relativePath),
+    ),
+  );
+});
 
 /**
  * Ensures a relative path is a valid ESM/TS module specifier (e.g. `spec` →
