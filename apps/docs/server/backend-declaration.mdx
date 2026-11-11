@@ -285,7 +285,7 @@ Declared app codegen writes `tags: { format: 1, functions: { "notes:list": "note
 
 Section data contributes to the digest, so declaring, removing or changing a section changes it, and so does a function joining or leaving a section. Each section declares a stable `owner` string. Codegen refuses a key `App.make` declares twice and the keys `name`, `env`, `http`, `digest`, `__proto__`, `constructor` and `prototype`. Callbacks must preserve their inputs.
 
-A function spec that carries `manifestSections` fails codegen with `InvalidDeclarationError`. The error names the spec file and the function, and says to declare the sections on `App.make` instead. A profile's `extend` throws at the call when its config carries a `manifest` option, and `.middleware` throws on a spec that carries `manifestSections`, with the same advice.
+A function spec that carries `manifestSections` fails codegen with `InvalidDeclarationError`. The error names the spec file and the function, and says to declare the sections on `App.make` instead. A profile's `extend` throws at the call when its config carries a `manifest` option, and `.middleware` throws on a spec that carries `manifestSections`, with the same advice. An implementation that imports a `_generated` file no declared section writes fails with that file's name and the same advice, at the import.
 
 ### Generate a file from matched modules
 

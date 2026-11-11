@@ -408,6 +408,38 @@ export class Observe extends MiddlewareSpec.MiddlewareSpec<Observe>()("Observe",
       { timeout: 30000 },
     );
 
+    it.effect.each([
+      ["./_generated/observe.ts", true],
+      ["./_generated/observe", true],
+      ["../convex/_generated/observe", false],
+      ["./observe-helper", false],
+    ] as const)(
+      "names App.make when an implementation imports %s that no declared section writes (%s)",
+      ([specifier, names]) =>
+        Effect.gen(function* () {
+          const project = yield* manifestProject;
+          yield* project.write(
+            "confect/notes.impl.ts",
+            `import "${specifier}";\n${Project.impl}`,
+          );
+          const error = yield* Effect.flip(
+            project.provide(generateWithSnapshot),
+          );
+          assert(isCodegenError(error));
+          const rendered = renderCodegenError(error);
+          expect(rendered).toContain("notes.impl.ts");
+          if (names) {
+            expect(rendered).toContain(
+              "No manifest section this backend declares writes _generated/observe.ts. Declare its section on App.make({ manifestSections }) in confect/app.ts.",
+            );
+          } else {
+            expect(rendered).toContain(`Could not resolve "${specifier}"`);
+            expect(rendered).not.toContain("App.make");
+          }
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
     it.effect("refuses a manifest section key App.make declares twice", () =>
       Effect.gen(function* () {
         const project = yield* manifestProject;
