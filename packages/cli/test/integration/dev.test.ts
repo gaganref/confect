@@ -1042,24 +1042,14 @@ layer(NodeServices.layer, { excludeTestServices: true })(
         yield* fs.makeDirectory(`${project.root}/confect/billing`);
         yield* project.write(
           "confect/app.ts",
-          'import { App, Env } from "@confect/core";\nexport default App.make({ env: Env.make("host", {}) });\n',
+          'import { App, Env } from "@confect/core";\nimport { observe } from "./observe";\nexport default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "observe", section: observe }] });\n',
         );
         yield* project.write(
-          "confect/profile.ts",
-          `import { FunctionSpec } from "@confect/core";
-const render = ({ modules }) => ({ contents: "export {};\\n", errors: modules[0].exports.valid ? [] : ["refused"] });
-const observe = { owner: "test/observe", format: 1, describe: () => null, generate: { file: "observe.ts", match: (path) => path.endsWith("/log.ts"), render } };
-export const profile = FunctionSpec.extend()({ middleware: [], manifest: { observe } });`,
+          "confect/observe.ts",
+          `const render = ({ modules }) => ({ contents: "export {};\\n", errors: modules[0].exports.valid ? [] : ["refused"] });
+export const observe = { owner: "test/observe", format: 1, describe: () => null, generate: { file: "observe.ts", match: (path) => path.endsWith("/log.ts"), render } };`,
         );
-        yield* project.write(
-          "confect/notes.spec.ts",
-          Project.spec
-            .replace(
-              "export default",
-              'import { profile } from "./profile";\nexport default',
-            )
-            .replace("FunctionSpec.publicQuery", "profile.publicQuery"),
-        );
+        yield* project.write("confect/notes.spec.ts", Project.spec);
         yield* project.write("confect/billing/log.ts", log);
         yield* project.write("confect/billing/helper.ts", helper);
         return project;

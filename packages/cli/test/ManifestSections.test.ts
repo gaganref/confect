@@ -7,7 +7,12 @@ import {
   type ManifestSection,
 } from "@confect/core";
 import { describe, expect, it } from "@effect/vitest";
-import { collect, summarize } from "@confect/cli/ManifestSections";
+import {
+  collect,
+  declared,
+  refuseSpecSections,
+  summarize,
+} from "@confect/cli/ManifestSections";
 
 const section = {
   owner: "test/tags",
@@ -15,10 +20,9 @@ const section = {
   describe: ({ middleware }: { middleware: ReadonlyArray<{ key: string }> }) =>
     middleware.map(({ key }) => key),
 };
-const profile = FunctionSpec.extend()({
-  middleware: [],
-  manifest: { tags: section },
-});
+const tags = (tagsSection: ManifestSection.Any = section) => [
+  { key: "tags", section: tagsSection },
+];
 const leaf = (spec: GroupSpec.AnyWithProps) => [
   { relativePath: "notes.spec.ts", pathSegments: ["notes"] as const, spec },
 ];
@@ -26,12 +30,11 @@ const list = { name: "list", returns: () => Schema.Void } as const;
 const summarized = (
   summarizeTags: NonNullable<ManifestSection.Any["summarize"]>,
 ) => {
-  const p = FunctionSpec.extend()({
-    middleware: [],
-    manifest: { tags: { ...section, summarize: summarizeTags } },
-  });
   const modules = [{ relativePath: "billing/log.ts", exports: { level: 1 } }];
-  return collect(leaf(GroupSpec.make().addFunction(p.publicQuery(list)))).pipe(
+  return collect(
+    tags({ ...section, summarize: summarizeTags }),
+    leaf(GroupSpec.make().addFunction(FunctionSpec.publicQuery(list))),
+  ).pipe(
     Result.flatMap((registry) =>
       summarize(registry, new Map([["tags", modules]])),
     ),
@@ -50,27 +53,61 @@ describe("ManifestSections", () => {
     const group = GroupSpec.make()
       .middleware(Group)
       .addFunction(
-        profile
-          .publicMutation({ name: "save", returns: () => Schema.Void })
-          .middleware(Function),
+        FunctionSpec.publicMutation({
+          name: "save",
+          returns: () => Schema.Void,
+        }).middleware(Function),
       );
     const tree = GroupSpec.addGroupsAt(GroupSpec.make(), { child: group });
-    expect(Result.getOrThrow(collect(leaf(tree))).get("tags")?.data).toEqual({
+    expect(
+      Result.getOrThrow(collect(tags(), leaf(tree))).get("tags")?.data,
+    ).toEqual({
       format: 1,
       functions: { "notes/child:save": ["group", "function"] },
     });
   });
-  it("serializes shared objects without treating them as a cycle", () => {
-    const shared = { label: "shared" };
-    const p = FunctionSpec.extend()({
-      middleware: [],
-      manifest: {
-        tags: { ...section, describe: () => ({ left: shared, right: shared }) },
-      },
-    });
+  it("describes a function from every builder alike", () => {
+    const profile = FunctionSpec.extend()({ middleware: [] });
+    const group = GroupSpec.make()
+      .addFunction(FunctionSpec.publicQuery(list))
+      .addFunction(FunctionSpec.internalMutation({ ...list, name: "raw" }))
+      .addFunction(profile.publicMutation({ ...list, name: "profiled" }));
     expect(
       Result.getOrThrow(
-        collect(leaf(GroupSpec.make().addFunction(p.publicQuery(list)))),
+        collect(
+          tags({ ...section, describe: ({ spec }) => spec.name }),
+          leaf(group),
+        ),
+      ).get("tags")?.data,
+    ).toEqual({
+      format: 1,
+      functions: {
+        "notes:list": "list",
+        "notes:raw": "raw",
+        "notes:profiled": "profiled",
+      },
+    });
+  });
+  it("keeps every declared section when the backend has no functions", () => {
+    const registry = Result.getOrThrow(
+      collect([...tags(), { key: "other", section }], []),
+    );
+    expect([...registry].map(([key, { data }]) => [key, data])).toEqual([
+      ["tags", { format: 1, functions: {} }],
+      ["other", { format: 1, functions: {} }],
+    ]);
+  });
+  it("serializes shared objects without treating them as a cycle", () => {
+    const shared = { label: "shared" };
+    expect(
+      Result.getOrThrow(
+        collect(
+          tags({
+            ...section,
+            describe: () => ({ left: shared, right: shared }),
+          }),
+          leaf(GroupSpec.make().addFunction(FunctionSpec.publicQuery(list))),
+        ),
       ).get("tags")?.data,
     ).toEqual({
       format: 1,
@@ -79,72 +116,102 @@ describe("ManifestSections", () => {
       },
     });
   });
+  it("names the spec file and the function a describe refuses", () => {
+    expect(
+      collect(
+        tags({
+          ...section,
+          describe: () => {
+            throw new Error("refused");
+          },
+        }),
+        leaf(GroupSpec.make().addFunction(FunctionSpec.publicQuery(list))),
+      ),
+    ).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        _tag: "InvalidDeclarationError",
+        declarationPath: "confect/notes.spec.ts",
+        reason: 'Manifest section "tags" (notes:list): Error: refused',
+      },
+    });
+  });
   it.each("name env http digest __proto__ constructor prototype".split(" "))(
-    "refuses %s once",
+    "refuses the built-in key %s on App.make",
     (key) => {
-      const p = FunctionSpec.extend()({
-        middleware: [],
-        manifest: { [key]: section },
-      });
-      const group = GroupSpec.make()
-        .addFunction(p.publicQuery(list))
-        .addFunction(p.publicQuery({ ...list, name: "other" }));
-      expect(collect(leaf(group))).toMatchObject({
+      expect(declared([{ key, section }])).toMatchObject({
         _tag: "Failure",
         failure: {
-          declarationPath: "confect/notes.spec.ts",
-          reason: `Manifest section "${key}" (notes:list): shadows a built-in key.`,
+          _tag: "InvalidDeclarationError",
+          declarationPath: "confect/app.ts",
+          reason: `Manifest section "${key}" shadows a built-in key.`,
         },
       });
     },
   );
-  it.each([{ owner: "other/tags" }, { format: 2 }])(
-    "refuses conflicting definitions %j",
-    (difference) => {
-      const child = profile.extend()({
-        middleware: [],
-        manifest: { tags: { ...section, ...difference } },
-      });
-      expect(
-        collect(leaf(GroupSpec.make().addFunction(child.publicQuery(list)))),
-      ).toMatchObject({
-        _tag: "Failure",
-        failure: {
-          declarationPath: "confect/notes.spec.ts",
-          reason: `Manifest section "tags" (notes:list): conflicts between test/tags (format 1) and ${difference.owner ?? "test/tags"} (format ${difference.format ?? 1}).`,
-        },
-      });
-    },
-  );
+  it("refuses a key App.make declares twice", () => {
+    expect(declared([...tags(), ...tags()])).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        _tag: "InvalidDeclarationError",
+        declarationPath: "confect/app.ts",
+        reason: 'Manifest section "tags" is declared twice.',
+      },
+    });
+  });
+  it("accepts distinct keys on App.make", () => {
+    expect(
+      Result.isSuccess(declared([...tags(), { key: "other", section }])),
+    ).toBe(true);
+  });
+  it("refuses a function spec that carries manifest sections and points at App.make", () => {
+    const tagged = Object.assign(FunctionSpec.publicQuery(list), {
+      manifestSections: tags(),
+    });
+    const group = GroupSpec.addGroupsAt(
+      GroupSpec.make().addFunction(FunctionSpec.publicQuery(list)),
+      { child: GroupSpec.make().addFunction(tagged) },
+    );
+    expect(refuseSpecSections(leaf(group))).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        _tag: "InvalidDeclarationError",
+        declarationPath: "confect/notes.spec.ts",
+        reason:
+          "notes/child:list carries manifestSections, which codegen no longer reads from a function spec. Declare the backend's manifest sections once, on App.make({ manifestSections }) in confect/app.ts.",
+      },
+    });
+    expect(
+      Result.isSuccess(
+        refuseSpecSections(
+          leaf(GroupSpec.make().addFunction(FunctionSpec.publicQuery(list))),
+        ),
+      ),
+    ).toBe(true);
+  });
   it("replaces a section's data with what summarize builds from its modules and descriptions", () => {
-    const tags = Result.getOrThrow(
+    const summary = Result.getOrThrow(
       summarized(({ modules, functions }) => ({
         format: 1,
         levels: modules.map(({ exports }) => exports.level),
         functions,
       })),
     ).get("tags");
-    expect(tags?.data).toEqual({
+    expect(summary?.data).toEqual({
       format: 1,
       levels: [1],
       functions: { "notes:list": [] },
     });
   });
   it("hands summarize the spec file that declares each function", () => {
-    const p = FunctionSpec.extend()({
-      middleware: [],
-      manifest: {
-        tags: {
-          ...section,
-          summarize: ({ sources }) => ({ format: 1, sources }),
-        },
-      },
-    });
     const notes = GroupSpec.addGroupsAt(
-      GroupSpec.make().addFunction(p.publicQuery(list)),
+      GroupSpec.make().addFunction(FunctionSpec.publicQuery(list)),
       {
         child: GroupSpec.make().addFunction(
-          p.publicMutation({ name: "save", returns: () => Schema.Void }),
+          FunctionSpec.publicMutation({
+            name: "save",
+            returns: () => Schema.Void,
+          }),
         ),
       },
     );
@@ -152,15 +219,19 @@ describe("ManifestSections", () => {
       {
         relativePath: "inbox/inbox.spec.ts",
         pathSegments: ["inbox", "inbox"] as const,
-        spec: GroupSpec.make().addFunction(p.publicQuery(list)),
+        spec: GroupSpec.make().addFunction(FunctionSpec.publicQuery(list)),
       },
       ...leaf(notes),
     ];
     expect(
       Result.getOrThrow(
-        collect(leaves).pipe(
-          Result.flatMap((registry) => summarize(registry, new Map())),
-        ),
+        collect(
+          tags({
+            ...section,
+            summarize: ({ sources }) => ({ format: 1, sources }),
+          }),
+          leaves,
+        ).pipe(Result.flatMap((registry) => summarize(registry, new Map()))),
       ).get("tags")?.data,
     ).toEqual({
       format: 1,

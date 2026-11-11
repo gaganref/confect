@@ -261,6 +261,142 @@ const values: Manifest.Values<typeof manifest> = {
 
 `digest` changes whenever a file that `env.ts`, `app.ts` or `auth.ts` imports from your project changes, or the `convex` version or generator format does. Codegen writes the manifest before it validates anything else, and removes it when the declaration fails, so a stale manifest never outlives the declaration it came from.
 
+## Manifest sections
+
+A library takes part in a backend's codegen through a manifest section. `App.make` declares the backend's sections, once, as `manifestSections`. Codegen reads them from there and from nowhere else, so a backend has a section whatever builders made its functions.
+
+```ts confect/app.ts
+import { App, type ManifestSection } from "@confect/core";
+import env from "./env";
+
+const tags: ManifestSection.ManifestSection<string> = {
+  owner: "example/tags",
+  format: 1,
+  describe: ({ path }) => path,
+};
+
+export default App.make({
+  env,
+  manifestSections: [{ key: "tags", section: tags }],
+});
+```
+
+Declared app codegen writes `tags: { format: 1, functions: { "notes:list": "notes:list" } }` in `confect/_generated/manifest.ts`. `describe` runs on every registered function, whether a profile, a raw builder or a library's own builder made it. It receives the registered `path`, the `spec` and its group and function `middleware`. A backend with no functions still writes each declared section, with no functions. Callbacks run after specs load, including in `confect dev`, where spec edits update section data and the digest. Importing a spec never runs them. A component has no manifest, so it runs no `describe`, `summarize` or `check`; only `generate` and `verify` run for it.
+
+Section data contributes to the digest, so declaring, removing or changing a section changes it, and so does a function joining or leaving a section. Each section declares a stable `owner` string. Codegen refuses a key `App.make` declares twice and the keys `name`, `env`, `http`, `digest`, `__proto__`, `constructor` and `prototype`. Callbacks must preserve their inputs.
+
+A function spec that carries `manifestSections` fails codegen with `InvalidDeclarationError`. The error names the spec file and the function, and says to declare the sections on `App.make` instead.
+
+### Generate a file from matched modules
+
+An optional `generate` writes one file into `confect/_generated`.
+
+```ts
+const observe: ManifestSection.ManifestSection<null> = {
+  owner: "example/observe",
+  format: 1,
+  describe: () => null,
+  generate: {
+    file: "observe.ts",
+    match: (path) => /^[^/]+\/log\.ts$/.test(path),
+    render: ({ modules }) => ({
+      contents: modules
+        .map(
+          ({ relativePath }) =>
+            `import "../${relativePath.replace(/\.ts$/, ".js")}";\n`,
+        )
+        .join(""),
+      errors: [],
+    }),
+  },
+};
+```
+
+`match` receives each `.ts` file under `confect/` outside `_generated`, as a path relative to `confect/` such as `billing/log.ts`. Codegen bundles every file it accepts and calls `render` with four lists and two facts about the backend:
+
+- `modules`: each accepted file's `relativePath` and its `exports`.
+- `functions`: each registered function's `path`, such as `notes:list`, and the `source` spec file that declares it, such as `notes.spec.ts`.
+- `mounts`: each mounted component's `name` and `definition`, the specifier of its definition directory. That is a package specifier such as `@convex-dev/workpool`, or a path relative to `confect/_generated` for a component in the same repository.
+- `files`: every path `match` was offered, sorted, whether it accepted the file or not.
+- `target`: the backend being generated, `{ kind: "app" }` or `{ kind: "component", name }` with the name its `defineComponent` gives it, such as `ledger`.
+- `confectDirectory`: the absolute path of the backend's `confect/` folder, written with the platform's separators.
+
+`render` returns `{ contents, errors }`. Codegen writes `contents` under a two-line header that names the section and lists the accepted files. Each string in `errors` becomes an `InvalidManifestSectionError` under the section key. Every generating section renders before codegen fails with the first error, prints the rest from every section and writes no section file. A `match` or `render` that throws fails the same way, with the reason `generate failed: <message>`.
+
+Every registration file in `_generated/registeredFunctions` and the declared HTTP router in `convex/http.ts` import each section file before anything else, so the modules it imports load before any handler runs. Codegen still refuses a `convex/http.ts` that imports any other file, including one in `_generated` that no section wrote. It checks after it writes this run's section files, so a regeneration from an empty `_generated` accepts the router's imports of them. It removes a file no section claims only after rewriting these imports, so a failed run leaves no import of a removed file. Spec edits in `confect dev` render the file again, and a file that appears or goes updates every registration file. `confect dev` also regenerates when a file the section accepted, or a `confect/` file it imports, changes or is removed. Codegen records those files in `_generated/sectionInputs.json`, even when a section refuses or a module throws on load, so fixing the file regenerates. A file added to or removed from `confect/` triggers a full run, because every `render` sees `files`.
+
+Codegen refuses a name codegen writes itself, such as `spec.ts` or `manifest.ts`, a name that is not a `.ts` file directly in `_generated`, and a name two keys claim. It removes a file a section wrote once `App.make` no longer declares a section that claims it, and leaves other files in `_generated` alone. `generate` runs for a declared app and for a declared component, which `confect codegen --component-dir` generates. A component's registration files import the section file the same way, so its `confect/runtime.ts` needs no import of it. Without a section that generates, codegen output is unchanged.
+
+### Summarize a section's data
+
+An optional `summarize` replaces the section's `{ format, functions }` with data it builds. Added to the `observe` section above, it writes `observe: { format: 1, modules: ["billing/log.ts"] }` into the manifest.
+
+```ts
+const observe: ManifestSection.ManifestSection<
+  null,
+  { readonly format: number; readonly modules: ReadonlyArray<string> }
+> = {
+  // owner, format, describe and generate as above
+  summarize: ({ modules }) => ({
+    format: 1,
+    modules: modules.map(({ relativePath }) => relativePath),
+  }),
+};
+```
+
+`summarize` receives three inputs:
+
+- `modules`: the files the section's `generate` accepted, with their exports, as `render` receives them. Without `generate` the list is empty.
+- `functions`: each function's description, keyed by path.
+- `sources`: the spec file that declares each of those functions, keyed by path and relative to `confect/`, such as `"inbox/inbox:list": "inbox/inbox.spec.ts"`.
+
+The section's second type parameter types the result and `check`'s `next`. Codegen runs `summarize` after every `describe` and before `check` and the digest, so `check` judges what `summarize` returned and the digest covers it. The result must be JSON data, like a description, and carry the section's `format`. Otherwise codegen fails with `InvalidManifestSectionError` under the section key, and a `summarize` that throws fails with `summarize failed: <message>`. Spec edits in `confect dev` summarize again, and so does a change to a file the section accepted, because that change reruns codegen. Without `summarize`, the section's data and codegen output are unchanged.
+
+### Description values must be JSON
+
+Descriptions must contain only JSON data: plain objects, arrays, strings, finite numbers, booleans and `null`. JSON has no negative zero, so `-0` is written as `0`. BigInt, functions, undefined properties, non-finite numbers, cycles, symbol keys, and objects such as `Date`, `Map`, `Set` or class instances fail codegen with `InvalidDeclarationError`. Codegen never calls `toJSON` or a getter, so a value with either fails too, and so does a non-enumerable property or an array with properties besides its elements. The diagnostic names the section, function, declaring spec and JSON path, such as `$["nested"]["missing"]`. Empty property names remain in the path, for example `$[""]["missing"]`. Own `__proto__` properties are refused at their path because generated object literals cannot preserve them as data. A failing description removes the manifest through section failure cleanup.
+
+### Check sections against previous output
+
+An optional `check(next, previous)` returns `{ errors: string[], notes: string[] }`. `next` contains `format` and `functions`, or what `summarize` returned; `previous` is the old section as `unknown`, or `undefined` when no usable previous section exists. Validate its format before comparing. An unreadable, empty, missing-default or null previous manifest supplies no sections. Every note prints and any error fails codegen. Check errors and a thrown check fail with `InvalidManifestSectionError`, headed by the section key; errors from every failing section are reported. A `describe` that throws fails with its own message under the section, the function and the declaring spec. Only a failing section step removes the manifest; unrelated spec or implementation failures retain the manifest and its previous sections. The early declaration write carries previous sections forward while applying declaration edits. Files whose content is unchanged are not written or logged as modified.
+
+A section `App.make` no longer declares leaves the manifest with no note, because no callback remains to run.
+
+### Verify the backend after generation
+
+An optional `generate.verify` checks the backend once every `_generated` file exists. Its files may import any generated file, including the section's own, which a `render` input cannot.
+
+```ts
+const doors: ManifestSection.ManifestSection<null> = {
+  owner: "example/doors",
+  format: 1,
+  describe: () => null,
+  generate: {
+    file: "doors.ts",
+    match: () => false,
+    render: () => ({ contents: "export {};\n", errors: [] }),
+    verify: {
+      match: (path) => path.endsWith("door.ts"),
+      check: ({ modules, mounts }) =>
+        mounts
+          .filter(
+            ({ name }) =>
+              !modules.some(({ exports }) => exports.mount === name),
+          )
+          .map(({ name }) => `No door owns the mount ${name}.`),
+    },
+  },
+};
+```
+
+Codegen runs `verify` last, after it validates every implementation and writes every generated file, in full runs and on spec edits in `confect dev`. `verify.match` receives the same paths `generate.match` does. Codegen bundles each file it accepts the way it bundles `confect/app.ts`, so an import of a component's `convex.config` resolves. Then it calls `check` with three inputs:
+
+- `modules`: each accepted file's `relativePath` and its `exports`.
+- `mounts`: each mounted component's `name` and `definition`, as `render` receives them.
+- `target`: the backend being generated, as `render` receives it.
+
+Each string `check` returns becomes an `InvalidManifestSectionError` under the section key. Every verifying section checks before codegen fails with the first error and prints the rest. A `match` or `check` that throws fails the same way, with the reason `verify failed: <message>`. Codegen records the files `verify` loaded and their `confect/` imports in `_generated/verifyInputs.json`, so `confect dev` checks again when one changes. Without a section that verifies, codegen output is unchanged.
+
 ## Development
 
 Run `confect dev` alongside `convex dev`. Confect watches declaration inputs and their project imports, regenerates the Convex config, auth, HTTP entry point and manifest, and leaves deployment to Convex. Run component watchers separately with `confect dev --component-dir components/counter/convex` when developing a local component.

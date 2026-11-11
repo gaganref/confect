@@ -1,8 +1,10 @@
-import { FunctionSpec, type ManifestSection } from "@confect/core";
+import { App, Env, FunctionSpec, type ManifestSection } from "@confect/core";
 import { describe, expectTypeOf, it } from "@effect/vitest";
 
 type Names = { readonly format: 2; readonly names: ReadonlyArray<string> };
 type Unformatted = Omit<Names, "format">;
+
+const env = Env.make("host", {});
 
 describe("ManifestSection", () => {
   it("hands check the data summarize returns", () => {
@@ -19,7 +21,28 @@ describe("ManifestSection", () => {
         return { errors: [], notes: [] };
       },
     };
-    FunctionSpec.extend()({ middleware: [], manifest: { names } });
+    App.make({ env, manifestSections: [{ key: "names", section: names }] });
+  });
+
+  it("hands verify's check the matched modules, the mounts and the target", () => {
+    const section: ManifestSection.Any = {
+      owner: "test/doors",
+      format: 1,
+      describe: () => null,
+      generate: {
+        file: "doors.ts",
+        match: () => false,
+        render: () => ({ contents: "", errors: [] }),
+        verify: {
+          match: (relativePath) => relativePath.endsWith("door.ts"),
+          check: (input) => {
+            expectTypeOf(input).toEqualTypeOf<ManifestSection.VerifyInput>();
+            return input.mounts.map(({ name }) => name);
+          },
+        },
+      },
+    };
+    App.make({ env, manifestSections: [{ key: "doors", section }] });
   });
 
   it("refuses a data type without a format", () => {
@@ -27,5 +50,18 @@ describe("ManifestSection", () => {
       // @ts-expect-error—a section's data carries its format
       ManifestSection.ManifestSection<string, Unformatted>
     >().toBeObject();
+  });
+
+  it("refuses a section declared on a profile instead of App.make", () => {
+    const names: ManifestSection.Any = {
+      owner: "test/names",
+      format: 1,
+      describe: () => null,
+    };
+    // @ts-expect-error—a backend declares its sections on App.make
+    FunctionSpec.extend()({ middleware: [], manifest: { names } });
+    expectTypeOf<
+      "manifestSections" extends keyof FunctionSpec.AnyWithProps ? true : false
+    >().toEqualTypeOf<false>();
   });
 });

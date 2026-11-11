@@ -88,13 +88,17 @@ before checking the exported table. The local-backend consumer shares that table
 fixture. Changeset: `schema-bundle-imports.md`. Upstream: planned; no proposal
 submitted.
 
-## Profile manifest sections
+## Manifest sections
 
-Profiles describe app functions in import-free manifest sections, including their middleware. Codegen identifies definitions by key, owner and format, rejects reserved keys and conflicts, and includes sections in the digest. Incremental spec edits update and remove sections without a full rebuild. Changeset: `profile-manifest-sections.md`. Upstream: planned; no proposal submitted.
+Manifest sections describe app functions in import-free data, including their middleware. Codegen rejects reserved keys and includes sections in the digest. Incremental spec edits update sections without a full rebuild. Changeset: `profile-manifest-sections.md`. Upstream: planned; no proposal submitted.
+
+### Declare sections on App.make
+
+A backend declares its manifest sections once, in `App.make({ manifestSections })`, for an app or a component. Codegen takes the manifest's sections and the `_generated` files it claims from that list only, and seeds each section before it visits a function. A function-less backend, such as an HTTP-only receiver, still gets its files and manifest entries, and every registered function joins a section whatever builder made it. A spec that carries `manifestSections` fails codegen and points at `App.make`. The profile `manifest` option, `FunctionSpec.manifestSections`, the owner and format reconciliation across specs and the note for a section without participants are gone. Before, a component built with Frame's `/component` kit got no `_generated/observe.ts` and failed codegen, and Docket's observe catalogue missed 14 of its 66 functions, because only one of Frame's builders attached sections. Frame is the only caller and drops its spec tags in the release that takes this build. Changeset: `app-manifest-sections.md`. Upstream: not planned; `App` and sections are fork concepts.
 
 ### Validate sections against previous output
 
-Codegen checks previous section data, prints notes and removes the manifest only when the section step fails. Unreadable, empty, missing-default and null previous manifests act as empty history. The early declaration write preserves previous sections, so unrelated failures retain history. Unchanged runs write nothing; a spec-only section edit writes the manifest once. A section that loses its last participant gets one generic note naming its former functions, without running a callback. Full and incremental generation share this behavior. Declaration edits replace reserved fields rather than restoring them from history. Thrown checks become typed diagnostics and every failing section is reported. Changeset: `profile-manifest-checks.md`. Upstream: planned; no proposal submitted.
+Codegen checks previous section data, prints notes and removes the manifest only when the section step fails. Unreadable, empty, missing-default and null previous manifests act as empty history. The early declaration write preserves previous sections, so unrelated failures retain history. Unchanged runs write nothing; a spec-only section edit writes the manifest once. Full and incremental generation share this behavior. Declaration edits replace reserved fields rather than restoring them from history. Thrown checks become typed diagnostics and every failing section is reported. Changeset: `profile-manifest-checks.md`. Upstream: planned; no proposal submitted.
 
 ### Require JSON description values
 
@@ -133,6 +137,10 @@ A section's `summarize` also receives `sources`, the spec file under `confect/` 
 ### Generate section files for a component
 
 A declared component's codegen now runs each section's `generate`, so `confect codegen --component-dir` writes the section's file into the component's `confect/_generated` and its registration files import it. `describe`, `summarize` and `check` stay app-only, because a component has no manifest. `render` also receives `target`, `{ kind: "app" }` or `{ kind: "component", name }` with the component's `defineComponent` name, and `confectDirectory`, the absolute path of `confect/`. Sections that ignore the new fields render the same file. Frame's observe door needs this so a component's `confect/runtime.ts` stays one line with no hand-written registry import. Changeset: `manifest-section-component-generate.md`. Upstream: planned; no proposal submitted.
+
+### Verify the backend after generation
+
+A generating section's optional `verify` runs last, once every `_generated` file exists, in full runs and incremental spec edits. Codegen bundles the `confect/` files `verify.match` accepts as it bundles `confect/app.ts`, so they may import any generated file and a component's `convex.config`. It hands their exports, the mounts and the target to `check`, and fails with each string `check` returns under the section key. `confect dev` checks again when a loaded file changes, through `_generated/verifyInputs.json`. Frame's authz door needs this to refuse, at codegen, an app mount whose callback slots no door owns or two doors own; a `render` input cannot import `_generated/authz.ts`, which does not exist yet when sections bundle. Changeset: `manifest-section-verify.md`. Upstream: not planned; sections are fork concepts.
 
 ## Reserved arguments
 

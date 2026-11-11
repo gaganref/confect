@@ -1,4 +1,3 @@
-import type * as ManifestSection from "./ManifestSection.js";
 import type * as MiddlewareAttachment from "./MiddlewareAttachment.js";
 import type {
   DefaultFunctionArgs,
@@ -34,7 +33,6 @@ export interface FunctionSpec<
   readonly functionVisibility: FunctionVisibility_;
   readonly name: Name_;
   readonly reservedArgument?: string;
-  readonly manifestSections?: ReadonlyArray<ManifestSection.Entry>;
   readonly functionProvenance: FunctionProvenance_;
   readonly middlewareSpecs: ReadonlyArray<MiddlewareSpecs_>;
   readonly middlewareAttachments: ReadonlyArray<
@@ -405,9 +403,6 @@ const Proto = {
       runtimeAndFunctionType: this.runtimeAndFunctionType,
       functionVisibility: this.functionVisibility,
       name: this.name,
-      ...(this.manifestSections === undefined
-        ? {}
-        : { manifestSections: this.manifestSections }),
       ...(this.reservedArgument === undefined
         ? {}
         : { reservedArgument: this.reservedArgument }),
@@ -930,7 +925,6 @@ export type Extended<
     >,
   >(
     config: {
-      readonly manifest?: Readonly<Record<string, ManifestSection.Any>>;
       readonly reservedArgument?: string;
       readonly middleware: Middleware_ &
         NotInherited<Middleware_, MiddlewareSpecs_>;
@@ -957,7 +951,6 @@ const makeExtended = (
   middleware: ReadonlyArray<ProfileMiddleware<any>>,
   schemas: ReadonlyArray<RuntimeWrappers> = [],
   reservedArgument?: string,
-  manifestSections: ReadonlyArray<ManifestSection.Entry> = [],
 ): Extended<any, any> => {
   const extended =
     (
@@ -1003,7 +996,6 @@ const makeExtended = (
             : spec.middleware(entry.spec, entry.options(info)),
         Object.assign(makeSpec({ name, description, ...thunks } as never), {
           fields,
-          manifestSections,
           ...(reserves && reservedArgument !== undefined
             ? { reservedArgument }
             : {}),
@@ -1023,19 +1015,11 @@ const makeExtended = (
         middleware: ReadonlyArray<ProfileMiddleware<any>>;
         schemas?: RuntimeWrappers;
         reservedArgument?: string;
-        manifest?: Readonly<Record<string, ManifestSection.Any>>;
       }) =>
         makeExtended(
           [...middleware, ...config.middleware],
           [...schemas, config.schemas ?? {}],
           config.reservedArgument ?? reservedArgument,
-          [
-            ...manifestSections,
-            ...Object.entries(config.manifest ?? {}).map(([key, section]) => ({
-              key,
-              section,
-            })),
-          ],
         ),
   };
 };
@@ -1054,7 +1038,6 @@ export const extend =
     >,
   >(
     config: {
-      readonly manifest?: Readonly<Record<string, ManifestSection.Any>>;
       readonly reservedArgument?: string;
       readonly middleware: Middleware_;
     } & OptionFree<Fields_["Type"]> &
@@ -1064,10 +1047,6 @@ export const extend =
       config.middleware,
       [config.schemas ?? {}],
       config.reservedArgument,
-      Object.entries(config.manifest ?? {}).map(([key, section]) => ({
-        key,
-        section,
-      })),
     ) as Extended<Fields_, SpecOf<Middleware_[number]>, [Transforms]>;
 
 type MatchingRegisteredFunction<

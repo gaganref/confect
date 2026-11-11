@@ -23,7 +23,7 @@ const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
 layer(NodeServices.layer)("built confect codegen", (it) => {
   it.effect(
-    "checks previous sections, removes only a failed section manifest and notes vanished sections",
+    "checks previous sections, removes only a failed section manifest and drops undeclared sections",
     () =>
       Effect.gen(function* () {
         const project = yield* Project.make;
@@ -33,27 +33,27 @@ layer(NodeServices.layer)("built confect codegen", (it) => {
           "_generated",
           "manifest.ts",
         );
-        yield* project.write(
-          "confect/app.ts",
-          `import { App, Env } from "@confect/core";
-export default App.make({ env: Env.make("host", {}) });`,
+        const declare = (sections: string) =>
+          project.write(
+            "confect/app.ts",
+            `import { App, Env } from "@confect/core";
+import { tags, other } from "./tags";
+export default App.make({ env: Env.make("host", {}), manifestSections: [${sections}] });`,
+          );
+        yield* declare(
+          '{ key: "tags", section: tags }, { key: "other", section: other }',
         );
         yield* project.write(
-          "confect/profile.ts",
-          `import { FunctionSpec } from "@confect/core";
-const tags = { owner: "test/tags", format: 1, describe: ({ spec }) => spec.description,
+          "confect/tags.ts",
+          `export const tags = { owner: "test/tags", format: 1, describe: ({ spec }) => spec.description,
 check: (next, previous) => ({ errors: Object.values(next.functions).includes("bad") ? ["bad tags", "bad tags", "invalid entry"] : [], notes: [String(Object.keys(previous?.functions ?? {}).length) + " previous entries", "tags checked"] }) };
-const other = { ...tags, check: (next) => ({ errors: Object.values(next.functions).includes("bad") ? ["other failed"] : [], notes: [] }) };
-export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags, other } });`,
+export const other = { ...tags, check: (next) => ({ errors: Object.values(next.functions).includes("bad") ? ["other failed"] : [], notes: [] }) };`,
         );
         const spec = (label: string) =>
-          Project.spec
-            .replace(
-              "export default",
-              'import { profile } from "./profile";\nexport default',
-            )
-            .replace("FunctionSpec.publicQuery", "profile.publicQuery")
-            .replace('name: "list"', `name: "list", description: "${label}"`);
+          Project.spec.replace(
+            'name: "list"',
+            `name: "list", description: "${label}"`,
+          );
         const run = Effect.gen(function* () {
           const process = yield* project.start("codegen");
           return {
@@ -96,13 +96,15 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags,
         ).toBe(false);
         yield* project.write("confect/notes.spec.ts", spec("restored"));
         expect((yield* run).exit).toBe(0);
-        yield* project.write("confect/notes.spec.ts", Project.spec);
-        const vanished = yield* run;
-        expect(vanished.exit, vanished.output).toBe(0);
-        expect(vanished.output).toContain(
-          'Manifest section "tags" no longer has participants. Previous functions: notes:list.',
-        );
-        expect(vanished.output).not.toContain("tags checked");
+        yield* declare("");
+        const undeclared = yield* run;
+        expect(undeclared.exit, undeclared.output).toBe(0);
+        expect(undeclared.output).not.toContain("tags checked");
+        expect(
+          yield* fs.readFileString(
+            `${project.root}/confect/_generated/manifest.ts`,
+          ),
+        ).not.toContain('"tags"');
       }),
     { timeout: 30000 },
   );

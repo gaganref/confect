@@ -1,4 +1,4 @@
-import type { GroupSpec, ManifestSection } from "@confect/core";
+import type { FunctionSpec, GroupSpec, ManifestSection } from "@confect/core";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
@@ -77,73 +77,119 @@ type Summarized = {
   readonly data: { readonly format: number };
 };
 
-export const collect = (
-  leaves: ReadonlyArray<
-    Pick<LoadedLeafModule, "spec" | "pathSegments" | "relativePath">
-  >,
+type Leaf = Pick<LoadedLeafModule, "spec" | "pathSegments" | "relativePath">;
+
+const appDeclaration = (reason: string) =>
+  new InvalidDeclarationError({ declarationPath: "confect/app.ts", reason });
+
+/**
+ * Refuse a key `App.make` declares twice or that shadows one the manifest keeps
+ * for itself.
+ */
+export const declared = (entries: ReadonlyArray<ManifestSection.Entry>) =>
+  Result.gen(function* () {
+    const seen = new Set<string>();
+    for (const { key } of entries) {
+      if (reserved.has(key))
+        return yield* Result.fail(
+          appDeclaration(`Manifest section "${key}" shadows a built-in key.`),
+        );
+      if (seen.has(key))
+        return yield* Result.fail(
+          appDeclaration(`Manifest section "${key}" is declared twice.`),
+        );
+      seen.add(key);
+    }
+  });
+
+const visit = (
+  leaves: ReadonlyArray<Leaf>,
+  each: (
+    spec: FunctionSpec.AnyWithProps,
+    group: GroupSpec.AnyWithProps,
+    path: string,
+    source: string,
+  ) => Result.Result<void, InvalidDeclarationError>,
 ) =>
   Result.gen(function* () {
-    const registry: Registry = new Map();
-    const visit = (
+    const walk = (
       group: GroupSpec.AnyWithProps,
       path: string,
       source: string,
     ): Result.Result<void, InvalidDeclarationError> =>
       Result.gen(function* () {
-        for (const spec of Object.values(group.functions)) {
-          const functionPath = `${path}:${spec.name}`;
-          for (const { key, section } of spec.manifestSections ?? []) {
-            const invalid = (reason: string) =>
-              new InvalidDeclarationError({
-                declarationPath: `confect/${source}`,
-                reason: `Manifest section "${key}" (${functionPath}): ${reason}`,
-              });
-            if (reserved.has(key))
-              return yield* Result.fail(invalid("shadows a built-in key."));
-            const existing = registry.get(key);
-            if (
-              existing !== undefined &&
-              (existing.section.owner !== section.owner ||
-                existing.section.format !== section.format)
-            )
-              return yield* Result.fail(
-                invalid(
-                  `conflicts between ${existing.section.owner} (format ${existing.section.format}) and ${section.owner} (format ${section.format}).`,
-                ),
-              );
-            const entry = existing ?? {
-              section,
-              data: {
-                format: section.format,
-                functions: Object.create(null) as Record<string, unknown>,
-              },
-              sources: Object.create(null) as Record<string, string>,
-            };
-            registry.set(key, entry);
-            const description = yield* Result.try({
-              try: () =>
-                section.describe({
-                  path: functionPath,
-                  spec,
-                  middleware: [
-                    ...group.middlewareSpecs,
-                    ...spec.middlewareSpecs,
-                  ],
-                }),
-              catch: (cause) => invalid(String(cause)),
-            });
-            entry.data.functions[functionPath] = yield* Result.mapError(
-              json(description),
-              (reason) => invalid(`could not describe as JSON: ${reason}`),
-            );
-            entry.sources[functionPath] = source;
-          }
-        }
+        for (const spec of Object.values(group.functions))
+          yield* each(spec, group, `${path}:${spec.name}`, source);
         for (const [name, child] of Object.entries(group.groups))
-          yield* visit(child, `${path}/${name}`, source);
+          yield* walk(child, `${path}/${name}`, source);
       });
     for (const leaf of leaves)
-      yield* visit(leaf.spec, leaf.pathSegments.join("/"), leaf.relativePath);
+      yield* walk(leaf.spec, leaf.pathSegments.join("/"), leaf.relativePath);
+  });
+
+/**
+ * Refuse a function spec that still carries `manifestSections`: codegen reads a
+ * backend's sections only from `App.make`.
+ */
+export const refuseSpecSections = (leaves: ReadonlyArray<Leaf>) =>
+  visit(leaves, (spec, _, path, source) =>
+    Predicate.hasProperty(spec, "manifestSections")
+      ? Result.fail(
+          new InvalidDeclarationError({
+            declarationPath: `confect/${source}`,
+            reason: `${path} carries manifestSections, which codegen no longer reads from a function spec. Declare the backend's manifest sections once, on App.make({ manifestSections }) in confect/app.ts.`,
+          }),
+        )
+      : Result.void,
+  );
+
+/**
+ * One registry entry per declared section, each describing every registered
+ * function. A backend with no functions keeps every section, with none.
+ */
+export const collect = (
+  entries: ReadonlyArray<ManifestSection.Entry>,
+  leaves: ReadonlyArray<Leaf>,
+) =>
+  Result.gen(function* () {
+    const registry: Registry = new Map(
+      entries.map(({ key, section }) => [
+        key,
+        {
+          section,
+          data: {
+            format: section.format,
+            functions: Object.create(null) as Record<string, unknown>,
+          },
+          sources: Object.create(null) as Record<string, string>,
+        },
+      ]),
+    );
+    yield* visit(leaves, (spec, group, functionPath, source) =>
+      Result.gen(function* () {
+        for (const [key, { section, data, sources }] of registry) {
+          const invalid = (reason: string) =>
+            new InvalidDeclarationError({
+              declarationPath: `confect/${source}`,
+              reason: `Manifest section "${key}" (${functionPath}): ${reason}`,
+            });
+          const description = yield* Result.try({
+            try: () =>
+              section.describe({
+                path: functionPath,
+                spec,
+                middleware: [...group.middlewareSpecs, ...spec.middlewareSpecs],
+              }),
+            catch: (cause) => invalid(String(cause)),
+          });
+          data.functions[functionPath] = yield* Result.mapError(
+            json(description),
+            (reason) => invalid(`could not describe as JSON: ${reason}`),
+          );
+          sources[functionPath] = source;
+        }
+      }),
+    );
     return registry;
   });
 
@@ -208,18 +254,6 @@ export const check = (
         }),
       );
     }
-  }
-  for (const [key, value] of Object.entries(previous)) {
-    if (
-      !reserved.has(key) &&
-      !registry.has(key) &&
-      Predicate.isObjectOrArray(value) &&
-      "functions" in value &&
-      Predicate.isObjectOrArray(value.functions)
-    )
-      notes.push(
-        `Manifest section "${key}" no longer has participants. Previous functions: ${Object.keys(value.functions).join(", ")}.`,
-      );
   }
   return { errors, notes };
 };
