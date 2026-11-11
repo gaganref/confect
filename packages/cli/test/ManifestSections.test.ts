@@ -88,6 +88,41 @@ describe("ManifestSections", () => {
       },
     });
   });
+  it("collects each section's functions in path order whatever order the leaves load in", () => {
+    const group = GroupSpec.make()
+      .addFunction(FunctionSpec.publicQuery({ ...list, name: "b" }))
+      .addFunction(FunctionSpec.publicQuery({ ...list, name: "a" }));
+    const leaves = ["Z", "m", "m/n", "b"].map((name) => ({
+      relativePath: `${name}.spec.ts`,
+      pathSegments: name.split("/") as [string, ...string[]],
+      spec: group,
+    }));
+    const collected = (ordered: typeof leaves) => {
+      const entry = Result.getOrThrow(
+        collect(tags({ ...section, describe: ({ path }) => path }), ordered),
+      ).get("tags")!;
+      return {
+        bytes: JSON.stringify([entry.data, entry.sources]),
+        paths: Object.keys(entry.data.functions),
+      };
+    };
+    const forward = collected(leaves);
+    // `/` sorts before `:`, so a nested group's functions precede its parent's.
+    expect(forward.paths).toEqual([
+      "Z:a",
+      "Z:b",
+      "b:a",
+      "b:b",
+      "m/n:a",
+      "m/n:b",
+      "m:a",
+      "m:b",
+    ]);
+    expect(collected(leaves.toReversed())).toEqual(forward);
+    expect(collected([leaves[2]!, leaves[0]!, leaves[3]!, leaves[1]!])).toEqual(
+      forward,
+    );
+  });
   it("keeps every declared section when the backend has no functions", () => {
     const registry = Result.getOrThrow(
       collect([...tags(), { key: "other", section }], []),

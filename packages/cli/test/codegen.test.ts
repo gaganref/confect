@@ -294,6 +294,70 @@ export default App.make({ env: Env.make("other", {}), manifestSections: [{ key: 
     );
 
     it.effect(
+      "writes the same files, manifest and digest whatever order directories list in",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const generated = Effect.fnUntraced(function* (reversed: boolean) {
+            const project = yield* manifestProject;
+            for (const module of [
+              "shelf",
+              "stock",
+              "items/flows",
+              "landing/sweep",
+            ]) {
+              const name = module.split("/").pop()!;
+              yield* fs.makeDirectory(
+                `${project.root}/confect/${module.split("/").slice(0, -1).join("/")}`,
+                { recursive: true },
+              );
+              yield* project.write(`confect/${module}.spec.ts`, stockSpec);
+              yield* project.write(
+                `confect/${module}.impl.ts`,
+                stockImpl
+                  .replaceAll("stock", name)
+                  .replace(
+                    '"./_generated/schema"',
+                    `"${module.includes("/") ? "../" : "./"}_generated/schema"`,
+                  ),
+              );
+            }
+            const generate = project.provide(generateWithSnapshot);
+            yield* reversed
+              ? generate.pipe(
+                  Effect.provideService(FileSystem.FileSystem, {
+                    ...fs,
+                    readDirectory: (directory, options) =>
+                      fs
+                        .readDirectory(directory, options)
+                        .pipe(Effect.map(Array.reverse)),
+                  }),
+                )
+              : generate;
+            return {
+              manifest: yield* project.manifest,
+              files: yield* project.generatedFiles,
+            };
+          });
+          const forward = yield* generated(false);
+          const reversed = yield* generated(true);
+          expect(reversed.manifest.digest).toBe(forward.manifest.digest);
+          expect(reversed.files).toEqual(forward.files);
+          expect(Object.keys(forward.manifest.tags.functions)).toEqual([
+            "items/flows:profiled",
+            "items/flows:raw",
+            "landing/sweep:profiled",
+            "landing/sweep:raw",
+            "notes:list",
+            "shelf:profiled",
+            "shelf:raw",
+            "stock:profiled",
+            "stock:raw",
+          ]);
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect(
       "keeps a declared section in the manifest once the backend has no functions",
       () =>
         Effect.gen(function* () {
