@@ -362,6 +362,50 @@ export default App.make({ env: Env.make("other", {}), manifestSections: [{ key: 
       { timeout: 30000 },
     );
 
+    it.effect(
+      "refuses a function spec that carried manifest sections before middleware was attached",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* manifestProject;
+          yield* project.write(
+            "confect/observe.ts",
+            `import { MiddlewareSpec } from "@confect/core";
+export class Observe extends MiddlewareSpec.MiddlewareSpec<Observe>()("Observe", { functionTypes: { query: true } }) {}`,
+          );
+          yield* project.write(
+            "confect/notes.impl.ts",
+            'import { MiddlewareImpl } from "@confect/server";\nimport { Observe } from "./observe";\n' +
+              Project.impl.replace(
+                "GroupImpl.finalize);",
+                "Layer.provide(MiddlewareImpl.make(databaseSchema, Observe, effect => effect)), GroupImpl.finalize);",
+              ),
+          );
+          yield* project.write(
+            "confect/notes.spec.ts",
+            project
+              .sectionSpec("first")
+              .replace(
+                "export default",
+                'import { Observe } from "./observe";\nimport { tags } from "./tags";\nexport default',
+              )
+              .replace(
+                "FunctionSpec.publicQuery({",
+                "Object.assign(FunctionSpec.publicQuery({",
+              )
+              .replace(
+                "}));\n",
+                '}), { manifestSections: [{ key: "tags", section: tags }] }).middleware(Observe));\n',
+              ),
+          );
+          const error = yield* Effect.flip(project.provide(generateWithSnapshot));
+          assert(isCodegenError(error));
+          expect(renderCodegenError(error)).toContain(
+            'Function "list" carries manifestSections, which middleware would drop. Declare the backend\'s manifest sections once, on App.make({ manifestSections }) in confect/app.ts.',
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
     it.effect("refuses a manifest section key App.make declares twice", () =>
       Effect.gen(function* () {
         const project = yield* manifestProject;

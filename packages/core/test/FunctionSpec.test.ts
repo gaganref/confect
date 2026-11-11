@@ -441,6 +441,18 @@ describe("middleware options", () => {
     returns: () => Schema.String,
   });
 
+  it("refuses to attach middleware to a spec that carries manifestSections", () => {
+    const tagged = Object.assign(
+      FunctionSpec.publicQuery({ name: "get", returns: () => Schema.String }),
+      { manifestSections: [] },
+    );
+
+    expect(() => tagged.middleware(Observe)).toThrow(
+      /"get" carries manifestSections.*App\.make\(\{ manifestSections \}\)/,
+    );
+    expect(() => query.middleware(Observe)).not.toThrow();
+  });
+
   it("requires exactly the declared attachment options", () => {
     query.middleware(RequireRole, { roles: ["Internal"] });
     query.middleware(Observe);

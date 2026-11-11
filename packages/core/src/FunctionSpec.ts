@@ -382,6 +382,11 @@ const Proto = {
         `Plain Convex function "${this.name}" cannot have middleware`,
       );
     }
+    if ("manifestSections" in this) {
+      throw new Error(
+        `Function "${this.name}" carries manifestSections, which middleware would drop. Declare the backend's manifest sections once, on App.make({ manifestSections }) in confect/app.ts.`,
+      );
+    }
     const functionType = this.runtimeAndFunctionType.functionType;
     if (!middlewareSpec.functionTypes[functionType]) {
       throw new Error(
