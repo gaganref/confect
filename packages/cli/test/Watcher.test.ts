@@ -523,6 +523,34 @@ layer(NodeServices.layer, { excludeTestServices: true })(
     );
 
     test.effect(
+      "regenerates on an Update of an implementation a section recorded as an input",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const { watcher, project, events } = yield* controlledWatcher({
+            files: ["notes.impl.ts"],
+          });
+          yield* watcher.refresh;
+          yield* watcher.next;
+          yield* fs.makeDirectory(`${project.root}/confect/_generated`);
+          yield* project.write(
+            "confect/_generated/verifyInputs.json",
+            '["notes.impl.ts"]',
+          );
+          yield* project.write(
+            "confect/notes.impl.ts",
+            "export const value = 2;",
+          );
+          yield* Queue.offer(events, {
+            _tag: "Update",
+            path: `${project.root}/confect/notes.impl.ts`,
+          });
+          expect((yield* watcher.next).work._tag).toBe("Full");
+        }).pipe(Effect.scoped, Effect.timeout("10 seconds")),
+      { timeout: 15000 },
+    );
+
+    test.effect(
       "regenerates on a Remove of a confect/ file no section accepted, since every render sees the file list",
       () =>
         Effect.gen(function* () {

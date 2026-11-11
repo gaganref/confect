@@ -397,7 +397,9 @@ export class Observe extends MiddlewareSpec.MiddlewareSpec<Observe>()("Observe",
                 '}), { manifestSections: [{ key: "tags", section: tags }] }).middleware(Observe));\n',
               ),
           );
-          const error = yield* Effect.flip(project.provide(generateWithSnapshot));
+          const error = yield* Effect.flip(
+            project.provide(generateWithSnapshot),
+          );
           assert(isCodegenError(error));
           expect(renderCodegenError(error)).toContain(
             'Function "list" carries manifestSections, which middleware would drop. Declare the backend\'s manifest sections once, on App.make({ manifestSections }) in confect/app.ts.',

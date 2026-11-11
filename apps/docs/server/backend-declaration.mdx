@@ -395,7 +395,7 @@ Codegen runs `verify` last, after it validates every implementation and writes e
 - `mounts`: each mounted component's `name` and `definition`, as `render` receives them.
 - `target`: the backend being generated, as `render` receives it.
 
-Each string `check` returns becomes an `InvalidManifestSectionError` under the section key. Every verifying section checks before codegen fails with the first error and prints the rest. A `match` or `check` that throws fails the same way, with the reason `verify failed: <message>`. Codegen records the files `verify` loaded and their `confect/` imports in `_generated/verifyInputs.json`, so `confect dev` checks again when one changes. Without a section that verifies, codegen output is unchanged.
+Each string `check` returns becomes an `InvalidManifestSectionError` under the section key. Every verifying section checks before codegen fails with the first error and prints the rest. A `match` or `check` that throws fails the same way, with the reason `verify failed: <message>`. Codegen records the files `verify` loaded and their `confect/` imports in `_generated/verifyInputs.json`, so `confect dev` checks again when one changes, an implementation or spec file included. Without a section that verifies, codegen output is unchanged.
 
 ## Development
 
