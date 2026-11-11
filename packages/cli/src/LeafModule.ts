@@ -4,6 +4,7 @@ import * as GroupImpl from "@confect/server/GroupImpl";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import type { Context } from "effect";
+import type * as esbuild from "esbuild";
 import * as Array from "effect/Array";
 import * as Brand from "effect/Brand";
 import * as Effect from "effect/Effect";
@@ -13,7 +14,7 @@ import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as Schema from "effect/Schema";
 import * as String from "effect/String";
-import { fromBundlerError } from "./BuildError.js";
+import { BundleFailedError, fromBundlerError } from "./BuildError.js";
 import * as Bundler from "./Bundler.js";
 import {
   InvalidDeclarationError,
@@ -349,16 +350,63 @@ const buildImplLayer = Effect.fnUntraced(function* (
  * function declared by the spec. Return uncovered middleware requirements for
  * the caller to report across groups.
  */
+/**
+ * An implementation's unresolved import of a `confect/_generated` file is a
+ * section file that no declared section writes: every declared section's file
+ * is on disk before implementations validate. Say so, at the import.
+ */
+const nameUnwrittenSectionFiles = Effect.fnUntraced(function* (
+  error: BundleFailedError,
+  bundleDirectory: string,
+) {
+  const path = yield* Path.Path;
+  const generated = path.join(yield* ConfectDirectory.get, "_generated");
+  const errors = (error.errors as ReadonlyArray<esbuild.Message>).map(
+    (message) => {
+      const specifier = /^Could not resolve "(.+)"$/.exec(message.text)?.[1];
+      if (specifier === undefined || message.location === null) return message;
+      const file = path.relative(
+        generated,
+        path.resolve(
+          bundleDirectory,
+          path.dirname(message.location.file),
+          specifier,
+        ),
+      );
+      if (file.startsWith("..") || path.isAbsolute(file)) return message;
+      const extension = path.extname(file);
+      const name = toPosixPath(
+        path,
+        extension === ""
+          ? `${file}.ts`
+          : extension === ".js"
+            ? `${file.slice(0, -extension.length)}.ts`
+            : file,
+      );
+      return Object.assign({}, message, {
+        text: `No manifest section this backend declares writes _generated/${name}. Declare its section on App.make({ manifestSections }) in confect/app.ts.`,
+      });
+    },
+  );
+  return new BundleFailedError({ file: error.file, errors });
+});
+
 export const validateImpl = Effect.fn("LeafModule.validateImpl")(function* (
   leaf: LoadedLeafModule,
   required: ReadonlyArray<{ readonly key: string }> = [],
 ) {
+  const path = yield* Path.Path;
   const implRelativePath = yield* implPathForSpec(leaf.relativePath);
   const implAbsolutePath = yield* absoluteModulePath(implRelativePath);
   const specAbsolutePath = yield* absoluteModulePath(leaf.relativePath);
 
   const bundled = yield* Bundler.bundle(implAbsolutePath).pipe(
     Effect.mapError((error) => fromBundlerError(implRelativePath, error)),
+    Effect.catchTag("BundleFailedError", (error) =>
+      Effect.flip(
+        nameUnwrittenSectionFiles(error, path.dirname(implAbsolutePath)),
+      ),
+    ),
   );
 
   if (

@@ -62,6 +62,7 @@ export interface ReceivedValue {
   readonly value: unknown;
   readonly requestId: string;
   readonly deployment: string | undefined;
+  readonly visibility?: FunctionVisibility;
 }
 
 export const Received = Context.Reference<ReceivedValue | undefined>(
@@ -88,7 +89,14 @@ export const invocationMetadata = (
     );
     return {
       ...metadata,
-      received: { value: args[reservedArgument], requestId, deployment },
+      received: {
+        value: args[reservedArgument],
+        requestId,
+        deployment,
+        ...(metadata.visibility === undefined
+          ? {}
+          : { visibility: metadata.visibility }),
+      },
     };
   });
 
