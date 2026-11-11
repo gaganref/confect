@@ -411,6 +411,7 @@ export class Observe extends MiddlewareSpec.MiddlewareSpec<Observe>()("Observe",
     it.effect.each([
       ["./_generated/observe.ts", true],
       ["./_generated/observe", true],
+      ["./_generated/observe.js", true],
       ["../convex/_generated/observe", false],
       ["./observe-helper", false],
     ] as const)(

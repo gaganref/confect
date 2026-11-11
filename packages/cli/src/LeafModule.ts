@@ -374,9 +374,14 @@ const nameUnwrittenSectionFiles = Effect.fnUntraced(function* (
         ),
       );
       if (file.startsWith("..") || path.isAbsolute(file)) return message;
+      const extension = path.extname(file);
       const name = toPosixPath(
         path,
-        file.endsWith(".ts") ? file : `${file}.ts`,
+        extension === ""
+          ? `${file}.ts`
+          : extension === ".js"
+            ? `${file.slice(0, -extension.length)}.ts`
+            : file,
       );
       return Object.assign({}, message, {
         text: `No manifest section this backend declares writes _generated/${name}. Declare its section on App.make({ manifestSections }) in confect/app.ts.`,
