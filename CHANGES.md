@@ -148,6 +148,8 @@ Profiles and internal mutation, action and Node action constructors can reserve 
 
 Reserving invocations expose `{ value, requestId, deployment }` through `RegisteredFunction.Received` at root creation. The runner reads the cloud URL and passes only the request ID from private request metadata. Queries and unreserved functions have no received value; calls without a runtime layer add no metadata reads. Changeset: `received-argument.md`. Upstream: planned; no proposal submitted.
 
+Registered functions pass the function's visibility to the root span, as `visibility` on the received value, next to `value`, `requestId` and `deployment`. It is `"public"` or `"internal"` as Convex reports it, and absent when Convex gives none. Changeset: `received-visibility.md`. Upstream: unrecorded.
+
 `RegisteredFunction.Forward` supplies context from the active call boundary for reserving refs. Mutation/action runners, action-call profiles, mutation transaction calls and scheduling add it after encoding. An absent, undefined, throwing or unserialisable provider leaves the call unchanged. Queries and non-reserving component calls receive nothing. Each action-call profile call opens an `ActionCall.call` span. Scheduling opens named spans whose successful exit is the job ID; argument encoding now runs when the scheduling effect executes. Changeset: `forward-argument.md`. Upstream: planned; no proposal submitted.
 
 `OfficialComponent.encodeCall` requires `{ carrier: "forward" | "none" }` as its

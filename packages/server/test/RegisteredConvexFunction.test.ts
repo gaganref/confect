@@ -217,11 +217,13 @@ describe("invocation context", () => {
                     value: null,
                     requestId: "request-1",
                     deployment: "https://fixture.convex.cloud",
+                    visibility: "public",
                   },
                   {
                     value: undefined,
                     requestId: "request-1",
                     deployment: "https://fixture.convex.cloud",
+                    visibility: "public",
                   },
                 ],
           );
@@ -247,5 +249,130 @@ describe("invocation context", () => {
         })
         .finally(() => vi.unstubAllEnvs());
     },
+  );
+});
+
+describe("received visibility", () => {
+  const options = {
+    reservedArgument: "context",
+    name: "echo",
+    args: () => ({ value: Schema.String }),
+    returns: () => Schema.String,
+  };
+
+  const readReceived = (
+    spec: FunctionSpec.AnyWithProps,
+    functionMetadata: Record<string, unknown>,
+  ) => {
+    const roots: Array<unknown> = [];
+    let current: Fiber.Fiber<any, any> | undefined;
+    const runtime = Layer.succeed(
+      Tracer.Tracer,
+      Tracer.make({
+        context(effect, fiber) {
+          const previous = current;
+          current = fiber;
+          try {
+            return effect["~effect/Effect/evaluate"](fiber);
+          } finally {
+            current = previous;
+          }
+        },
+        span(spanOptions) {
+          roots.push(current?.getRef(RegisteredFunction.Received));
+          return new Tracer.NativeSpan(spanOptions);
+        },
+      }),
+    );
+    const item = FunctionRegistryItem.make({
+      functionSpec: spec,
+      groupMiddlewareAttachments: [],
+      handler: ({ value }) => Effect.succeed(value),
+    });
+    assert(item._tag === "Confect");
+    const prepared = RegisteredConvexFunction.prepare(
+      DatabaseSchema.make({}),
+      item,
+      [],
+      runtime,
+    );
+    const ctx = {
+      meta: {
+        getFunctionMetadata: () =>
+          Promise.resolve({
+            name: "items:echo",
+            componentPath: "",
+            ...functionMetadata,
+          }),
+        getRequestMetadata: () =>
+          Promise.resolve({ requestId: "request-1", authToken: "unused" }),
+      },
+      db: { system: {} },
+      auth: {},
+      storage: {},
+      scheduler: {},
+      runQuery: () => Promise.resolve(null),
+      runMutation: () => Promise.resolve(null),
+      runAction: () => Promise.resolve(null),
+      vectorSearch: () => Promise.resolve([]),
+    };
+    vi.stubEnv("CONVEX_CLOUD_URL", "https://fixture.convex.cloud");
+    return prepared
+      .handler(ctx as never, { value: "ok", context: null })
+      .then(() => roots)
+      .finally(() => vi.unstubAllEnvs());
+  };
+
+  it.each([
+    {
+      name: "public mutation",
+      spec: FunctionSpec.publicMutation(options),
+      type: "mutation",
+      visibility: "public",
+    },
+    {
+      name: "internal mutation",
+      spec: FunctionSpec.internalMutation(options),
+      type: "mutation",
+      visibility: "internal",
+    },
+    {
+      name: "public action",
+      spec: FunctionSpec.publicAction(options),
+      type: "action",
+      visibility: "public",
+    },
+    {
+      name: "internal action",
+      spec: FunctionSpec.internalAction(options),
+      type: "action",
+      visibility: "internal",
+    },
+  ] as const)(
+    "a $name sees its own visibility on the root span",
+    ({ spec, type, visibility }) =>
+      readReceived(spec, { type, visibility }).then(([received]) =>
+        expect(received).toEqual({
+          value: null,
+          requestId: "request-1",
+          deployment: "https://fixture.convex.cloud",
+          visibility,
+        }),
+      ),
+  );
+
+  it.each([
+    { name: "mutation", spec: FunctionSpec.publicMutation(options) },
+    { name: "action", spec: FunctionSpec.publicAction(options) },
+  ] as const)(
+    "a $name with no visibility from Convex has none on the root span",
+    ({ name, spec }) =>
+      readReceived(spec, { type: name }).then(([received]) =>
+        expect(received).toEqual({
+          value: null,
+          requestId: "request-1",
+          deployment: "https://fixture.convex.cloud",
+        }),
+      ),
   );
 });
