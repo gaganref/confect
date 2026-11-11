@@ -368,7 +368,7 @@ describe("received visibility", () => {
     "a $name with no visibility from Convex has none on the root span",
     ({ name, spec }) =>
       readReceived(spec, { type: name }).then(([received]) =>
-        expect(received).toEqual({
+        expect(received).toStrictEqual({
           value: null,
           requestId: "request-1",
           deployment: "https://fixture.convex.cloud",

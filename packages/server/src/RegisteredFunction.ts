@@ -93,7 +93,9 @@ export const invocationMetadata = (
         value: args[reservedArgument],
         requestId,
         deployment,
-        visibility: metadata.visibility,
+        ...(metadata.visibility === undefined
+          ? {}
+          : { visibility: metadata.visibility }),
       },
     };
   });
