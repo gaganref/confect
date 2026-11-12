@@ -109,10 +109,26 @@ and table, the latest version and commit timestamp, and the write log.
 version, across every component. `src/internal/Attempt.ts` is one frame of an
 attempt: the committed state it started from, its caller's frame and its own
 pending writes. Each nested mutation gets a frame of its own, which merges into
-its caller's when it returns and is dropped when it fails. Only the invocation
-that owns a frame writes to it, so a caller's write made while its nested
-mutation is in flight survives that mutation's failure. `src/internal/Execution.ts` answers Convex's syscalls
-for the function that made them and runs queries, mutations and actions. Its
+its caller's when it returns and is dropped when it fails. `src/internal/Execution.ts` answers Convex's syscalls
+for the function that made them and runs queries, mutations and actions.
+
+A query's or mutation's async syscalls, nested calls included, run one at a
+time in the order the function made them. Convex 1.49 does the same:
+`start_async_syscall` pushes each onto a queue, and `run_inner` runs the queue
+oldest first, awaiting each batch before it re-enters JavaScript
+(`crates/isolate/src/environment/udf/mod.rs:367-379`, `:1157-1231`). Only
+gets, stream reads and storage reads batch, so a write and a nested call each
+run alone (`async_syscall.rs:275-300`). A nested call takes the transaction,
+runs its function to the end, commits or rolls back its subtransaction and
+then gives the transaction back (`phase.rs:357-363`, `async_syscall.rs:703-776`).
+So a caller's write issued after its nested mutation runs after that mutation
+and wins on the same field, a nested call sees every write issued before it,
+and a caller's write issued beside a failing nested mutation survives its
+rollback. A query stream reads at its first `queryStreamNext`, which waits in
+the queue, so it sees each write issued before it. A function's invocation
+ends once its handler returned and its queue is empty, as `run_inner` keeps
+running the queue after the promise resolves. An action's calls run side by
+side, as they do on Convex. Its
 query, range, pagination and validator rules come from convex-test 0.0.65
 (`KernelValues.ts`, `KernelQuery.ts`, Apache-2.0, credited in each file). The
 kernel adds a `record` validator check, of every key and value, and refuses a

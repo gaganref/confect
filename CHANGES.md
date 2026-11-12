@@ -34,8 +34,10 @@ fork-specific.
 `@confect/test` has an internal kernel that runs Convex functions in process
 without convex-test. It keeps committed rows per component and a write log.
 Each query and mutation runs as an attempt over a snapshot and its own pending
-writes. A nested mutation's writes merge into its caller's or are dropped, and
-only the outermost mutation publishes, across every component at once. The
+writes. A function's async syscalls, nested calls included, run one at a time
+in the order it made them, as in Convex's syscall queue. A nested mutation's
+writes merge into its caller's or are dropped, and only the outermost mutation
+publishes, across every component at once. The
 kernel loads every module Convex's bundler would deploy before the first
 function runs, and Node actions run through the action path. Scheduling,
 storage, HTTP, JWT and transaction limits refuse until later kernel rows land.
