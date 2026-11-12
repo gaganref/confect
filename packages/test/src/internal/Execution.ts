@@ -580,14 +580,15 @@ export class World {
     from: From,
     pagination: { calls: number } | undefined,
   ): Execution {
-    const parent = from.parent;
-    // A component call carries no identity, as Convex gives a component no
-    // `ctx.auth` of the caller's.
+    // A function in a component runs with no identity, whoever called it, as
+    // Convex gives a component no `ctx.auth` of the caller's. A nested call in
+    // the host takes its parent's identity, even when that is none.
     const identity =
-      parent !== undefined &&
-      parent.componentPath !== functionPath.componentPath
+      functionPath.componentPath !== ROOT
         ? null
-        : (parent?.identity ?? from.caller.identity);
+        : from.parent !== undefined
+          ? from.parent.identity
+          : from.caller.identity;
     return {
       world: this,
       componentPath: functionPath.componentPath,
@@ -688,21 +689,20 @@ export class World {
     const parentAttempt = from.parent?.attempt;
     if (parentAttempt !== undefined) {
       return this.nested(from, () => {
-        parentAttempt.push();
+        const frame = parentAttempt.child();
         const execution = this.execution(
           functionPath,
           "mutation",
-          parentAttempt,
+          frame,
           from,
           undefined,
         );
         return this.invokeMutation(execution, resolved, args).then(
           (result) => {
-            parentAttempt.merge();
+            frame.merge();
             return result;
           },
           (error: unknown) => {
-            parentAttempt.drop();
             throw deserializeConvexErrorData(error);
           },
         );
@@ -873,11 +873,7 @@ export class World {
       from,
       undefined,
     );
-    const inner: From = {
-      caller: from.caller,
-      request: from.request,
-      parent: execution,
-    };
+    const inner: From = { request: from.request, parent: execution };
     const a = actionGeneric({
       handler: (ctx: any, innerArgs: any) =>
         resolved.handler(
@@ -916,7 +912,8 @@ export class World {
         ),
       );
     // An action another function calls is an invocation of its own, with its
-    // world's services, as a scheduled job is.
+    // world's services, a start time read from its world's clock and its
+    // world's random stream, as a scheduled job is.
     const bound = from.parent === undefined ? undefined : Invocation.current();
     const { ip, userAgent, requestId, scheduledFunctionId } = from.request;
     const started =
@@ -929,6 +926,8 @@ export class World {
               attempt: 1,
               request: { ip, userAgent, requestId, scheduledFunctionId },
               services: bound.world.services,
+              startedAt: bound.world.clock(),
+              random: bound.world.random,
             },
             run,
           );
@@ -1101,11 +1100,7 @@ export class World {
       case "1.0/actions/query":
       case "1.0/actions/mutation":
       case "1.0/actions/action": {
-        const from: From = {
-          caller: anonymous,
-          request: execution.request,
-          parent: execution,
-        };
+        const from: From = { request: execution.request, parent: execution };
         const functionPath = functionPathOf(args, execution.componentPath);
         const run =
           op === "1.0/actions/query"
@@ -1117,11 +1112,7 @@ export class World {
       }
       case "1.0/runUdf": {
         const { udfType, args: udfArgs } = args;
-        const from: From = {
-          caller: anonymous,
-          request: execution.request,
-          parent: execution,
-        };
+        const from: From = { request: execution.request, parent: execution };
         const functionPath = functionPathOf(args, execution.componentPath);
         const value = jsonToConvex(udfArgs);
         const run =
@@ -1310,11 +1301,13 @@ export class World {
  * Where a call comes from. A call from the test carries its accessor's caller.
  * A nested call carries its parent execution and takes its identity from it.
  */
-interface From {
-  readonly caller: Caller;
-  readonly request: Request;
-  readonly parent?: Execution;
-}
+type From =
+  | {
+      readonly caller: Caller;
+      readonly request: Request;
+      readonly parent?: undefined;
+    }
+  | { readonly parent: Execution; readonly request: Request };
 
 const closed = (execution: Execution, operation: string) =>
   new KernelRefusal.ClosedAttempt({

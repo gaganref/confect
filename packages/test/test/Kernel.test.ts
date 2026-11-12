@@ -9,9 +9,11 @@ import * as FunctionRegistryItem from "@confect/server/FunctionRegistryItem";
 import type * as Handler from "@confect/server/Handler";
 import * as MutationCtx from "@confect/server/MutationCtx";
 import * as RegisteredConvexFunction from "@confect/server/RegisteredConvexFunction";
+import { register as registerWorkflow } from "@convex-dev/workflow/test";
 import { assert, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import {
+  actionGeneric,
   componentsGeneric,
   defineSchema,
   defineTable,
@@ -46,6 +48,10 @@ const latch = (): Latch => {
 let reached = () => {};
 let hold: Promise<void> = Promise.resolve();
 
+// Set by a test before it starts `writeDuringNestedFailure`, so the parent
+// writes while its failing child is still in flight.
+let overlap = { childWrote: latch(), parentWrote: latch() };
+
 const store = (componentsGeneric() as any).store as {
   readonly rows: {
     readonly add: FunctionReference<"mutation", "internal", { text: string }>;
@@ -54,7 +60,19 @@ const store = (componentsGeneric() as any).store as {
       "internal",
       { text: string }
     >;
+    readonly addThenFailAfterParent: FunctionReference<
+      "mutation",
+      "internal",
+      { text: string }
+    >;
     readonly list: FunctionReference<"query", "internal", {}, Array<string>>;
+    readonly whoami: FunctionReference<"query", "internal", {}, string | null>;
+    readonly whoamiThroughQuery: FunctionReference<
+      "action",
+      "internal",
+      {},
+      string | null
+    >;
   };
 };
 
@@ -67,7 +85,23 @@ const notes = {
   writeBoth: makeFunctionReference<"mutation", { fail: boolean }>(
     "notes:writeBoth",
   ),
+  writeDuringNestedFailure: makeFunctionReference<"mutation">(
+    "notes:writeDuringNestedFailure",
+  ),
+  whoami: makeFunctionReference<"query", {}, string | null>("notes:whoami"),
+  whoamiThroughQuery: makeFunctionReference<"action", {}, string | null>(
+    "notes:whoamiThroughQuery",
+  ),
+  componentWhoami: makeFunctionReference<"action", {}, string | null>(
+    "notes:componentWhoami",
+  ),
 };
+
+const subjectOf = (ctx: {
+  readonly auth: {
+    getUserIdentity: () => Promise<{ subject: string } | null>;
+  };
+}) => ctx.auth.getUserIdentity().then((identity) => identity?.subject ?? null);
 
 const hostSchema = defineSchema({ notes: defineTable({ text: v.string() }) });
 const storeSchema = defineSchema({ rows: defineTable({ text: v.string() }) });
@@ -88,6 +122,21 @@ const storeModules = {
             throw new Error("The component call failed.");
           }),
       }),
+      addThenFailAfterParent: mutationGeneric({
+        args: { text: v.string() },
+        handler: (ctx, { text }) =>
+          ctx.db
+            .insert("rows", { text })
+            .then(() => {
+              overlap.childWrote.release();
+              return overlap.parentWrote.promise;
+            })
+            .then(() => {
+              throw new Error(
+                "The component call failed after its caller wrote.",
+              );
+            }),
+      }),
       list: queryGeneric({
         args: {},
         handler: (ctx) =>
@@ -95,6 +144,15 @@ const storeModules = {
             .query("rows")
             .collect()
             .then((rows) => rows.map((row) => row.text)),
+      }),
+      whoami: queryGeneric({ args: {}, handler: subjectOf }),
+      whoamiThroughQuery: actionGeneric({
+        args: {},
+        handler: (ctx): Promise<string | null> =>
+          ctx.runQuery(
+            makeFunctionReference<"query", {}, string | null>("rows:whoami"),
+            {},
+          ),
       }),
     }),
 };
@@ -145,6 +203,34 @@ const hostModules = {
               return null;
             }),
       }),
+      writeDuringNestedFailure: mutationGeneric({
+        args: {},
+        handler: (ctx) => {
+          const child = ctx
+            .runMutation(store.rows.addThenFailAfterParent, {
+              text: "dropped",
+            })
+            .catch(() => null);
+          return overlap.childWrote.promise
+            .then(() => ctx.db.insert("notes", { text: "during" }))
+            .then(() => {
+              overlap.parentWrote.release();
+              return child;
+            })
+            .then(() => null);
+        },
+      }),
+      whoami: queryGeneric({ args: {}, handler: subjectOf }),
+      whoamiThroughQuery: actionGeneric({
+        args: {},
+        handler: (ctx): Promise<string | null> =>
+          ctx.runQuery(notes.whoami, {}),
+      }),
+      componentWhoami: actionGeneric({
+        args: {},
+        handler: (ctx): Promise<string | null> =>
+          ctx.runAction(store.rows.whoamiThroughQuery, {}),
+      }),
     }),
 };
 
@@ -184,6 +270,182 @@ describe("rollback", () => {
         );
         expect(yield* contents(t)).toEqual([["kept"], []]);
       }),
+  );
+
+  it.effect(
+    "a caller's write made while its nested mutation is in flight survives that mutation's failure",
+    () =>
+      Effect.gen(function* () {
+        const t = world();
+        overlap = { childWrote: latch(), parentWrote: latch() };
+        yield* Effect.promise(() =>
+          t.mutation(notes.writeDuringNestedFailure, {}),
+        );
+        expect(yield* contents(t)).toEqual([["during"], []]);
+      }),
+  );
+});
+
+describe("identity", () => {
+  const signedIn = (t: ReturnType<typeof world>) =>
+    t.withIdentity({ subject: "host-user" });
+
+  it.effect("a host function and its nested host calls see the caller", () =>
+    Effect.gen(function* () {
+      const t = signedIn(world());
+      expect(yield* Effect.promise(() => t.query(notes.whoami, {}))).toBe(
+        "host-user",
+      );
+      expect(
+        yield* Effect.promise(() => t.action(notes.whoamiThroughQuery, {})),
+      ).toBe("host-user");
+    }),
+  );
+
+  it.effect(
+    "a component action's own nested query sees no identity from the host's caller",
+    () =>
+      Effect.gen(function* () {
+        const t = signedIn(world());
+        expect(
+          yield* Effect.promise(() => t.action(notes.componentWhoami, {})),
+        ).toBeNull();
+      }),
+  );
+
+  it.effect(
+    "a component function the test calls directly sees no identity",
+    () =>
+      Effect.gen(function* () {
+        const t = signedIn(world());
+        expect(
+          yield* Effect.promise(() => t.query(store.rows.whoami, {})),
+        ).toBeNull();
+      }),
+  );
+});
+
+describe("record validators", () => {
+  const scores = v.record(v.string(), v.number());
+  const recordSchema = defineSchema({
+    boards: defineTable({ scores }),
+  });
+  const boards = {
+    take: makeFunctionReference<"mutation", { scores: unknown }>("boards:take"),
+    give: makeFunctionReference<"query", { scores: unknown }>("boards:give"),
+    keyed: makeFunctionReference<"mutation", { scores: unknown }>(
+      "boards:keyed",
+    ),
+    future: makeFunctionReference<"query">("boards:future"),
+  };
+  const recordWorld = () =>
+    convexTest(recordSchema, {
+      "_generated/server.ts": () => Promise.resolve({}),
+      "boards.ts": () =>
+        Promise.resolve({
+          take: mutationGeneric({ args: { scores }, handler: () => null }),
+          give: queryGeneric({
+            args: { scores: v.any() },
+            returns: scores,
+            handler: (_ctx, args) => args.scores,
+          }),
+          keyed: mutationGeneric({
+            args: {
+              scores: v.record(
+                v.union(v.literal("home"), v.literal("away")),
+                v.number(),
+              ),
+            },
+            handler: () => null,
+          }),
+          // A validator kind this kernel does not know, as a newer Convex
+          // could export.
+          future: {
+            isQuery: true,
+            isPublic: true,
+            _handler: () => null,
+            exportArgs: () =>
+              JSON.stringify({
+                type: "object",
+                value: { x: { fieldType: { type: "future" }, optional: true } },
+              }),
+            exportReturns: () => "null",
+          },
+        }),
+    });
+  const outcome = (run: () => Promise<unknown>) =>
+    Effect.promise(() =>
+      run().then(
+        () => "accepted",
+        (error: Error) => error.message,
+      ),
+    );
+
+  it.effect("arguments are checked against a record's values", () =>
+    Effect.gen(function* () {
+      const t = recordWorld();
+      expect(
+        yield* outcome(() => t.mutation(boards.take, { scores: { a: 1 } })),
+      ).toBe("accepted");
+      for (const wrong of [{ a: "wrong" }, 42, null]) {
+        expect(
+          yield* outcome(() => t.mutation(boards.take, { scores: wrong })),
+        ).toContain("Validator error");
+      }
+    }),
+  );
+
+  it.effect("arguments are checked against a record's keys", () =>
+    Effect.gen(function* () {
+      const t = recordWorld();
+      expect(
+        yield* outcome(() => t.mutation(boards.keyed, { scores: { home: 1 } })),
+      ).toBe("accepted");
+      expect(
+        yield* outcome(() =>
+          t.mutation(boards.keyed, { scores: { elsewhere: 1 } }),
+        ),
+      ).toContain("Validator error");
+    }),
+  );
+
+  it.effect("a return value is checked against a record", () =>
+    Effect.gen(function* () {
+      const t = recordWorld();
+      expect(
+        yield* outcome(() => t.query(boards.give, { scores: { a: 1 } })),
+      ).toBe("accepted");
+      expect(
+        yield* outcome(() => t.query(boards.give, { scores: { a: "wrong" } })),
+      ).toContain("Return value validation failed");
+    }),
+  );
+
+  it.effect("a written row is checked against a record field", () =>
+    Effect.gen(function* () {
+      const t = recordWorld();
+      expect(
+        yield* outcome(() =>
+          t.run((ctx: any) => ctx.db.insert("boards", { scores: { a: 1 } })),
+        ),
+      ).toBe("accepted");
+      expect(
+        yield* outcome(() =>
+          t.run((ctx: any) =>
+            ctx.db.insert("boards", { scores: { a: "wrong" } }),
+          ),
+        ),
+      ).toContain("Validator error");
+    }),
+  );
+
+  it.effect("a validator kind the kernel does not know is refused", () =>
+    Effect.gen(function* () {
+      const t = recordWorld();
+      expect(yield* outcome(() => t.query(boards.future, { x: 1 }))).toContain(
+        "cannot check a validator of type `future`",
+      );
+    }),
   );
 });
 
@@ -343,6 +605,76 @@ describe("module loading", () => {
           }),
         ),
       ),
+  );
+
+  // The real kit at Frame's pin, through its own `register`, which also mounts
+  // Workpool and Batch Worker. Running workflows is row 5's.
+  it.effect(
+    "the official Workflow kit's modules load at open with no preload",
+    () =>
+      Effect.gen(function* () {
+        const loads: Array<string> = [];
+        const registered: Array<string> = [];
+        const t = convexTest(hostSchema, {
+          "_generated/server.ts": () => Promise.resolve({}),
+          "first.ts": () =>
+            Promise.resolve({
+              run: queryGeneric({
+                args: {},
+                handler: () => {
+                  loads.push("handler");
+                  return null;
+                },
+              }),
+            }),
+        });
+        const recording = {
+          ...t,
+          registerComponent: (
+            name: string,
+            schema: any,
+            modules: Record<string, () => Promise<unknown>>,
+          ) =>
+            t.registerComponent(
+              name,
+              schema,
+              Object.fromEntries(
+                Object.entries(modules).map(([path, load]) => {
+                  registered.push(`${name} ${path}`);
+                  return [
+                    path,
+                    () => {
+                      loads.push(`${name} ${path}`);
+                      return load();
+                    },
+                  ];
+                }),
+              ),
+            ),
+        };
+        registerWorkflow(recording as any, "workflow");
+        yield* Effect.promise(() =>
+          t.query(makeFunctionReference<"query">("first:run"), {}),
+        );
+        const deployable = registered.filter(
+          (module) =>
+            !/\/_generated\/|\/(schema|convex\.config)\.ts$|\.test\.ts$/.test(
+              module,
+            ),
+        );
+        expect(deployable).toHaveLength(27);
+        expect(loads.at(-1)).toBe("handler");
+        expect(loads.slice(0, -1).toSorted()).toEqual(deployable.toSorted());
+        expect(
+          new Set(deployable.map((module) => module.split(" ")[0])),
+        ).toEqual(
+          new Set([
+            "workflow",
+            "workflow/workpool",
+            "workflow/workpool/batchWorker",
+          ]),
+        );
+      }),
   );
 
   it.effect("a component registered after the first call is refused", () =>
@@ -1166,6 +1498,8 @@ describe("invocations", () => {
   const home: Invocation.World = {
     name: "world",
     services: Context.make(Mail, { answer: "world mail" }),
+    clock: () => 2_000,
+    random: () => 0.75,
   };
   const caller: Invocation.Invocation = {
     world: home,
@@ -1178,6 +1512,8 @@ describe("invocations", () => {
       scheduledFunctionId: null,
     },
     services: Context.make(Mail, { answer: "caller mail" }),
+    startedAt: 1_000,
+    random: () => 0.25,
   };
 
   it.effect(

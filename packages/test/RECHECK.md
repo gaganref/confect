@@ -61,31 +61,65 @@ each of them.
 
 `src/internal/Invocation.ts` binds a test invocation with `bind(invocation, start)`.
 The record holds the owning world, the component path, the attempt, request
-metadata and the Effect services. One store per test runtime lives on
-`globalThis` under `Symbol.for("@confect/test/Invocation")`, so every copy of the
-module that `vi.resetModules` reloads binds through the store `runHandlerPromise`
-reads. When an invocation is bound, `runHandlerPromise` starts the handler with
-`Effect.runPromiseWith(services)`. Otherwise it keeps `Effect.runPromise`.
+metadata, the Effect services, a start time and a random stream. One store per
+test runtime lives on `globalThis` under `Symbol.for("@confect/test/Invocation")`,
+so every copy of the module that `vi.resetModules` reloads binds through the
+store `runHandlerPromise` reads. When an invocation is bound, `runHandlerPromise`
+starts the handler with `Effect.runPromiseWith(services)`. Otherwise it keeps
+`Effect.runPromise`.
+
+Before the handler starts, the bridge points its `Date`, `Math` and `crypto`
+at the invocation. `Date.now()` and `new Date()` read the start time.
+`Math.random` and `crypto.getRandomValues` draw from the stream. convex-test
+0.0.65 gives every handler call its own copy of these globals, and an
+assignment inside a handler lands in that copy only (its `dist/index.js:1744`,
+`:1883-1905` and `:1927-1930`), so overlapping handlers and nested calls keep
+their own. A bound handler that runs without such a copy would change these
+globals for every caller. The bridge checks each assignment from the test's
+own async context, puts back any that reached it, and refuses the handler
+before it runs. Row 2's
+kernel owns its globals and replaces this reliance. Effect's default `Clock`
+and `Random` read these globals, so the kernel provides neither as a service,
+and a door-built handler that strips `effect/Random` still draws from the
+stream. A query keeps the query base's `queryClock`. Its effectful reads call
+`Date.now()` and so read the start time, and its unsafe reads stay constant and
+untracked. The pinned start time replaces convex-test's transaction time,
+which convex-test raises to the last commit. A document a bound handler
+inserts takes its `_creationTime` from the pinned `Date.now()` (`:105-107`),
+nudged up a microsecond past the previous one. Commit timestamps still come
+from convex-test's own clock (`:2062-2069`) until row 3. `crypto.randomUUID` and `performance.now`
+are not pinned, as the design names neither.
 
 A call nested in the bound request joins its record at the callee's component
-path. A job convex-test starts from a timer inherits the async context of the
-handler that scheduled it. Convex gives it its own `scheduledFunctionId`, so the
-bridge gives it a fresh record with the world's services and the job's request
-metadata. Row 3 gives each mutation attempt its number and a nested action a fresh record, as recorded below. A query still runs on its pinned `queryClock`, which the query base provides inside the handler effect, so an invocation's clock reaches mutations and actions only. The bridge does not
-reach HTTP route handlers, `t.run` or mount `init`, as recorded above.
+path, with its start time and stream. A job convex-test starts from a timer
+inherits the async context of the handler that scheduled it. Convex gives it its
+own `scheduledFunctionId`, so the bridge gives it a fresh record with the
+world's services, a start time read from the world's clock, the world's stream
+and the job's request metadata. Row 3 gives each mutation attempt its number and a
+nested action a fresh record, as recorded below. The bridge does not reach HTTP route handlers,
+`t.run` or mount `init`, as recorded above.
 
 ## Storage and attempts (row 2)
 
 `src/internal/Kernel.ts` holds the committed state: rows per component path
 and table, the latest version and commit timestamp, and the write log.
 `Kernel.apply` is its only writer. It publishes one attempt's writes as one
-version, across every component. `src/internal/Attempt.ts` is one attempt: the
-committed state it started from and a stack of pending-write frames. A nested
-mutation pushes a frame, which merges into its caller's when it returns and is
-dropped when it fails. `src/internal/Execution.ts` answers Convex's syscalls
+version, across every component. `src/internal/Attempt.ts` is one frame of an
+attempt: the committed state it started from, its caller's frame and its own
+pending writes. Each nested mutation gets a frame of its own, which merges into
+its caller's when it returns and is dropped when it fails. Only the invocation
+that owns a frame writes to it, so a caller's write made while its nested
+mutation is in flight survives that mutation's failure. `src/internal/Execution.ts` answers Convex's syscalls
 for the function that made them and runs queries, mutations and actions. Its
 query, range, pagination and validator rules come from convex-test 0.0.65
-(`KernelValues.ts`, `KernelQuery.ts`, Apache-2.0, credited in each file).
+(`KernelValues.ts`, `KernelQuery.ts`, Apache-2.0, credited in each file). The
+kernel adds a `record` validator check, of every key and value, and refuses a
+validator kind it does not know rather than accepting it.
+
+A function in a component runs with no identity, whoever called it, since
+Convex gives a component no `ctx.auth` of its caller's. A nested call in the
+host takes its parent's identity, even when that is none, and a test's caller
+reaches only the function the test called.
 
 Row 2 published one top-level mutation at a time. Row 3 replaced that with
 read-set validation and held attempts. Scheduling, storage, HTTP, JWT signing
@@ -106,16 +140,23 @@ convex-test lane and then this one.
 facts differ from it.
 
 - `integration.test.ts:394`, "uses the canonical Doc decoder across database
-  read paths", reads through a text search at `:429`. The inventory places it
-  in row 2. The kernel never simulates search, so no row supplies it. It is
-  placed `binary`. This contradicts lane 1's zero exceptions, as recorded in
-  the row 2 PR.
+  read paths", read through a text search beside its other read paths. The
+  inventory places it in row 2. The search read is now its own case, "uses the
+  canonical Doc decoder for a text search". The other nine read paths and the
+  writer run on the kernel. The new case is placed `binary`, the lane's one
+  permanent placement. The design sanctions it, since its kernel scope says
+  text search is not simulated and is `RequiresBinary`, the exception lane 1
+  allows for.
 - At open the kernel loads the modules Convex's bundler would deploy, by the
   rule in `convex/src/bundler/index.ts` (1.49). It skips `_generated`,
   `schema.ts`, any file with more than one dot, dotfiles and nested component
   directories. The official Workflow kit registers its packages' own
   `*.test.ts` files, and importing those inside a running test fails, so
-  loading every registered file would break that kit.
+  loading every registered file would break that kit. `test/Kernel.test.ts`
+  registers the real kit, `@convex-dev/workflow` 0.4.10 (Frame's pin), through
+  its own `register`. All 27 deployable modules of Workflow, Workpool and Batch
+  Worker load before the first handler runs, with no preload, and none of the
+  kit's test files loads.
 
 ## Read sets, held attempts and lifetime (row 3)
 
@@ -176,8 +217,9 @@ alone.
 
 Each attempt's handler starts under the invocation bound when the mutation was
 first called, with that attempt's number. A nested action starts under a fresh
-record with its world's services and attempt 1, as the design gives actions and
-scheduled functions. On convex-test, the second target, a nested action still
+record with its world's services, a start time read from its world's clock, its
+world's stream and attempt 1, as the design gives actions and scheduled
+functions. On convex-test, the second target, a nested action still
 joins its caller's record, since convex-test runs no attempts. The record
 carries no identity, so the design's "reset identity" does not reach it. The
 kernel's identity rule is row 2's. The request-metadata row resets identity

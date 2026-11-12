@@ -390,6 +390,53 @@ describe("Scheduler", () => {
   );
 });
 
+// A notes table built in the test, so a case can count how often its schema is
+// built and how often its Doc decoder runs.
+const countedNotes = Effect.gen(function* () {
+  const ctx = yield* MutationCtx;
+  const id = yield* Effect.promise(() =>
+    ctx.db.insert("notes", { text: "hello" }),
+  );
+  let evaluations = 0;
+  const table = Table.make(() => {
+    evaluations++;
+    return Schema.Struct({ text: Schema.String });
+  })
+    .index("by_text", ["text"])
+    .searchIndex("text", { searchField: "text" })("notes");
+  const schema = DatabaseSchema.make({ notes: table });
+  const reader = DatabaseReader_.make<typeof schema>(schema, ctx.db).table(
+    "notes",
+  );
+  const writer = DatabaseWriter_.make<typeof schema>(schema, ctx.db).table(
+    "notes",
+  );
+  // Reads the row before any decoder is counted, so nothing counted ran yet.
+  const counting = Effect.gen(function* () {
+    const encoded = yield* Effect.promise(() => ctx.db.get(id));
+    const doc = table.Doc;
+    const interpreted = SchemaParser.decodeUnknownEffect(doc);
+    yield* interpreted(encoded);
+    let calls = 0;
+    SchemaCompiler.set(doc.ast, {
+      decodeEffect: (input, options) => {
+        calls++;
+        return interpreted(input, options);
+      },
+    });
+    return { encoded, doc, calls: () => calls };
+  });
+  return {
+    ctx,
+    id,
+    table,
+    reader,
+    writer,
+    counting,
+    evaluations: () => evaluations,
+  };
+});
+
 describe("DatabaseReader", () => {
   it.effect("uses the canonical Doc decoder across database read paths", () =>
     Effect.gen(function* () {
@@ -397,26 +444,8 @@ describe("DatabaseReader", () => {
 
       yield* c.run(
         Effect.gen(function* () {
-          const ctx = yield* MutationCtx;
-          const id = yield* Effect.promise(() =>
-            ctx.db.insert("notes", { text: "hello" }),
-          );
-          let evaluations = 0;
-          const table = Table.make(() => {
-            evaluations++;
-            return Schema.Struct({ text: Schema.String });
-          })
-            .index("by_text", ["text"])
-            .searchIndex("text", { searchField: "text" })("notes");
-          const schema = DatabaseSchema.make({ notes: table });
-          const reader = DatabaseReader_.make<typeof schema>(
-            schema,
-            ctx.db,
-          ).table("notes");
-          const writer = DatabaseWriter_.make<typeof schema>(
-            schema,
-            ctx.db,
-          ).table("notes");
+          const { ctx, id, table, reader, writer, counting, evaluations } =
+            yield* countedNotes;
           const get = reader.get(id);
           const getByIndex = reader.get("by_text", "hello");
           const first = reader.index("by_text").first();
@@ -426,24 +455,11 @@ describe("DatabaseReader", () => {
           const paginate = reader
             .index("by_text")
             .paginate({ numItems: 1, cursor: null });
-          const search = reader.search("text", (q) =>
-            q.search("text", "hello"),
-          );
           const stream = reader.stream("by_text");
 
-          expect(evaluations).toBe(0);
+          expect(evaluations()).toBe(0);
 
-          const encoded = yield* Effect.promise(() => ctx.db.get(id));
-          const doc = table.Doc;
-          const interpreted = SchemaParser.decodeUnknownEffect(doc);
-          yield* interpreted(encoded);
-          let calls = 0;
-          SchemaCompiler.set(doc.ast, {
-            decodeEffect: (input, options) => {
-              calls++;
-              return interpreted(input, options);
-            },
-          });
+          const { encoded, doc, calls } = yield* counting;
 
           expect(yield* get).toEqual(encoded);
           expect(yield* getByIndex).toEqual(encoded);
@@ -452,22 +468,46 @@ describe("DatabaseReader", () => {
           expect(yield* collect).toEqual([encoded]);
           expect(yield* Stream.runCollect(orderedStream)).toEqual([encoded]);
           expect((yield* paginate).page).toEqual([encoded]);
-          expect(yield* search.collect()).toEqual([encoded]);
           expect(yield* Stream.runCollect(stream)).toEqual([encoded]);
           expect(
             (yield* QueryStream.paginate(stream, { numItems: 1, cursor: null }))
               .page,
           ).toEqual([encoded]);
-          expect(calls).toBe(10);
+          expect(calls()).toBe(9);
 
           yield* writer.patch(id, { text: "patched" });
-          expect(calls).toBe(11);
-          expect(evaluations).toBe(1);
+          expect(calls()).toBe(10);
+          expect(evaluations()).toBe(1);
           expect(table.Doc).toBe(doc);
           expect(encoded?.text).toBe("hello");
           expect((yield* Effect.promise(() => ctx.db.get(id)))?.text).toBe(
             "patched",
           );
+        }),
+      );
+    }).pipe(Effect.provide(TestConfect.layer)),
+  );
+
+  // Kept apart from the case above because the test kernel never simulates
+  // text search, so only this case waits for the binary.
+  it.effect("uses the canonical Doc decoder for a text search", () =>
+    Effect.gen(function* () {
+      const c = yield* TestConfect.TestConfect;
+
+      yield* c.run(
+        Effect.gen(function* () {
+          const { reader, counting, evaluations } = yield* countedNotes;
+          const search = reader.search("text", (q) =>
+            q.search("text", "hello"),
+          );
+
+          expect(evaluations()).toBe(0);
+
+          const { encoded, calls } = yield* counting;
+
+          expect(yield* search.collect()).toEqual([encoded]);
+          expect(calls()).toBe(1);
+          expect(evaluations()).toBe(1);
         }),
       );
     }).pipe(Effect.provide(TestConfect.layer)),
