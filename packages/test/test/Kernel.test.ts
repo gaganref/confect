@@ -49,19 +49,10 @@ const latch = (): Latch => {
 let reached = () => {};
 let hold: Promise<void> = Promise.resolve();
 
-// Set by a test before it starts `writeDuringNestedFailure`, so the parent
-// writes while its failing child is still in flight.
-let overlap = { childWrote: latch(), parentWrote: latch() };
-
 const store = (componentsGeneric() as any).store as {
   readonly rows: {
     readonly add: FunctionReference<"mutation", "internal", { text: string }>;
     readonly addThenFail: FunctionReference<
-      "mutation",
-      "internal",
-      { text: string }
-    >;
-    readonly addThenFailAfterParent: FunctionReference<
       "mutation",
       "internal",
       { text: string }
@@ -86,8 +77,25 @@ const notes = {
   writeBoth: makeFunctionReference<"mutation", { fail: boolean }>(
     "notes:writeBoth",
   ),
-  writeDuringNestedFailure: makeFunctionReference<"mutation">(
-    "notes:writeDuringNestedFailure",
+  writeBesideNestedFailure: makeFunctionReference<"mutation">(
+    "notes:writeBesideNestedFailure",
+  ),
+  rename: makeFunctionReference<"mutation", { id: string; text: string }>(
+    "notes:rename",
+  ),
+  renameAfterNested: makeFunctionReference<"mutation", { id: string }>(
+    "notes:renameAfterNested",
+  ),
+  renameBeforeNested: makeFunctionReference<
+    "mutation",
+    { id: string },
+    string | null
+  >("notes:renameBeforeNested"),
+  insertThenList: makeFunctionReference<"mutation", {}, Array<string>>(
+    "notes:insertThenList",
+  ),
+  textOf: makeFunctionReference<"query", { id: string }, string | null>(
+    "notes:textOf",
   ),
   whoami: makeFunctionReference<"query", {}, string | null>("notes:whoami"),
   whoamiThroughQuery: makeFunctionReference<"action", {}, string | null>(
@@ -122,21 +130,6 @@ const storeModules = {
           ctx.db.insert("rows", { text }).then(() => {
             throw new Error("The component call failed.");
           }),
-      }),
-      addThenFailAfterParent: mutationGeneric({
-        args: { text: v.string() },
-        handler: (ctx, { text }) =>
-          ctx.db
-            .insert("rows", { text })
-            .then(() => {
-              overlap.childWrote.release();
-              return overlap.parentWrote.promise;
-            })
-            .then(() => {
-              throw new Error(
-                "The component call failed after its caller wrote.",
-              );
-            }),
       }),
       list: queryGeneric({
         args: {},
@@ -204,22 +197,58 @@ const hostModules = {
               return null;
             }),
       }),
-      writeDuringNestedFailure: mutationGeneric({
+      writeBesideNestedFailure: mutationGeneric({
         args: {},
-        handler: (ctx) => {
-          const child = ctx
-            .runMutation(store.rows.addThenFailAfterParent, {
-              text: "dropped",
-            })
-            .catch(() => null);
-          return overlap.childWrote.promise
-            .then(() => ctx.db.insert("notes", { text: "during" }))
-            .then(() => {
-              overlap.parentWrote.release();
-              return child;
-            })
-            .then(() => null);
-        },
+        handler: (ctx) =>
+          Promise.all([
+            ctx
+              .runMutation(store.rows.addThenFail, { text: "dropped" })
+              .catch(() => null),
+            ctx.db.insert("notes", { text: "beside" }),
+          ]).then(() => null),
+      }),
+      rename: mutationGeneric({
+        args: { id: v.id("notes"), text: v.string() },
+        handler: (ctx, { id, text }) =>
+          ctx.db.patch(id, { text }).then(() => null),
+      }),
+      renameAfterNested: mutationGeneric({
+        args: { id: v.id("notes") },
+        handler: (ctx, { id }) =>
+          Promise.all([
+            ctx.runMutation(notes.rename, { id, text: "child" }),
+            ctx.db.patch(id, { text: "parent" }),
+          ]).then(() => null),
+      }),
+      renameBeforeNested: mutationGeneric({
+        args: { id: v.id("notes") },
+        handler: (ctx, { id }) =>
+          Promise.all([
+            ctx.db.patch(id, { text: "parent" }),
+            ctx
+              .runQuery(notes.textOf, { id })
+              .then((seen) =>
+                ctx
+                  .runMutation(notes.rename, { id, text: "child" })
+                  .then(() => seen),
+              ),
+          ]).then(([, seen]) => seen),
+      }),
+      textOf: queryGeneric({
+        args: { id: v.id("notes") },
+        handler: (ctx, { id }) =>
+          ctx.db.get(id).then((note) => note?.text ?? null),
+      }),
+      insertThenList: mutationGeneric({
+        args: {},
+        handler: (ctx) =>
+          Promise.all([
+            ctx.db.insert("notes", { text: "queued" }),
+            ctx.db
+              .query("notes")
+              .collect()
+              .then((rows) => rows.map((row) => row.text)),
+          ]).then(([, texts]) => texts),
       }),
       whoami: queryGeneric({ args: {}, handler: subjectOf }),
       whoamiThroughQuery: actionGeneric({
@@ -274,16 +303,67 @@ describe("rollback", () => {
   );
 
   it.effect(
-    "a caller's write made while its nested mutation is in flight survives that mutation's failure",
+    "a caller's write issued beside its nested mutation survives that mutation's failure",
     () =>
       Effect.gen(function* () {
         const t = world();
-        overlap = { childWrote: latch(), parentWrote: latch() };
         yield* Effect.promise(() =>
-          t.mutation(notes.writeDuringNestedFailure, {}),
+          t.mutation(notes.writeBesideNestedFailure, {}),
         );
-        expect(yield* contents(t)).toEqual([["during"], []]);
+        expect(yield* contents(t)).toEqual([["beside"], []]);
       }),
+  );
+});
+
+// Convex runs a query's or mutation's async syscalls one at a time in the
+// order they were made, a nested call included, so these cases issue their
+// syscalls together with `Promise.all` and need no latch.
+describe("syscall order", () => {
+  const note = (t: ReturnType<typeof world>) =>
+    Effect.promise((): Promise<string> =>
+      t.run((ctx: any) => ctx.db.insert("notes", { text: "initial" })),
+    );
+  const textOf = (t: ReturnType<typeof world>, id: string) =>
+    Effect.promise(() => t.run((ctx: any) => ctx.db.get(id))).pipe(
+      Effect.map((doc: any) => doc.text),
+    );
+
+  it.effect(
+    "a caller's write issued after its nested mutation runs after it",
+    () =>
+      Effect.gen(function* () {
+        const t = world();
+        const id = yield* note(t);
+        yield* Effect.promise(() =>
+          t.mutation(notes.renameAfterNested, { id }),
+        );
+        expect(yield* textOf(t, id)).toBe("parent");
+      }),
+  );
+
+  it.effect(
+    "a nested call sees its caller's write issued before it, and a nested mutation can replace it",
+    () =>
+      Effect.gen(function* () {
+        const t = world();
+        const id = yield* note(t);
+        const seen = yield* Effect.promise(() =>
+          t.mutation(notes.renameBeforeNested, { id }),
+        );
+        expect({ seen, text: yield* textOf(t, id) }).toEqual({
+          seen: "parent",
+          text: "child",
+        });
+      }),
+  );
+
+  it.effect("a query issued after a write reads that write", () =>
+    Effect.gen(function* () {
+      const t = world();
+      expect(
+        yield* Effect.promise(() => t.mutation(notes.insertThenList, {})),
+      ).toEqual(["queued"]);
+    }),
   );
 });
 
@@ -373,6 +453,20 @@ describe("function validators", () => {
           ),
         ).toContain("Expected a function handle");
       }),
+  );
+
+  it.effect.each([
+    ["the bare prefix", "function://"],
+    ["a prefix without a component separator", "function://not-a-valid-handle"],
+    ["a prefix with no function path", "function://;"],
+    ["a prefix with two separators", "function://;callbacks:target;extra"],
+  ])("a function validator refuses %s", ([, handle]) =>
+    Effect.gen(function* () {
+      const t = callbackWorld();
+      expect(
+        yield* outcome(() => t.mutation(callbacks.store, { handle })),
+      ).toContain("Expected a function handle");
+    }),
   );
 });
 
@@ -1368,6 +1462,8 @@ let gate = Deferred.makeUnsafe<void>();
 let exited = Deferred.makeUnsafe<Exit.Exit<void>>();
 const order: Array<string> = [];
 const attempts: Array<number | null> = [];
+// Runs inside `movingAction`, between its two readings of the time.
+let duringAction = () => {};
 
 const life = {
   bed: makeFunctionReference<"mutation", {}, GenericId<"beds">>("life:bed"),
@@ -1378,6 +1474,10 @@ const life = {
     "mutation",
     { id: GenericId<"beds">; held: boolean }
   >("life:detached"),
+  nestedDetached: makeFunctionReference<
+    "mutation",
+    { id: GenericId<"beds">; held: boolean }
+  >("life:nestedDetached"),
   counter: makeFunctionReference<"mutation", {}, GenericId<"counters">>(
     "life:counter",
   ),
@@ -1399,6 +1499,11 @@ const life = {
     { outer: Pinned; nested: Pinned; after: Pinned }
   >("life:pinnedOuter"),
   pinnedInner: makeFunctionReference<"action", {}, Pinned>("life:pinnedInner"),
+  movingAction: makeFunctionReference<
+    "action",
+    {},
+    { before: number; after: number; called: number }
+  >("life:movingAction"),
   stamped: makeFunctionReference<
     "mutation",
     {},
@@ -1489,6 +1594,11 @@ const lifeModule = {
         Effect.ensuring(Effect.sync(() => order.push("handler settled"))),
       ),
   ),
+  nestedDetached: mutationGeneric({
+    args: { id: v.id("beds"), held: v.boolean() },
+    handler: (ctx, args) =>
+      ctx.runMutation(life.detached, args).then(() => null),
+  }),
   numbered: register(
     FunctionSpec.publicMutation({
       name: "numbered",
@@ -1549,6 +1659,29 @@ const lifeModule = {
         );
         const after = yield* pinned;
         return { outer, nested, after };
+      }),
+  ),
+  movingAction: register(
+    FunctionSpec.publicAction({
+      name: "movingAction",
+      args: () => ({}),
+      returns: () =>
+        Schema.Struct({
+          before: Schema.Finite,
+          after: Schema.Finite,
+          called: Schema.Finite,
+        }),
+    }),
+    () =>
+      Effect.gen(function* () {
+        const before = (yield* pinned).now;
+        yield* Effect.sync(() => duringAction());
+        const after = (yield* pinned).now;
+        const ctx = yield* ActionCtx.ActionCtx<GenericDataModel>();
+        const { now: called } = yield* Effect.promise(() =>
+          ctx.runMutation(life.stamped, {}),
+        );
+        return { before, after, called };
       }),
   ),
   pinnedInner: register(
@@ -1648,6 +1781,53 @@ describe("lifetime", () => {
         });
       }),
   );
+
+  it.effect(
+    "a write a detached fiber makes after its nested mutation's handler settled commits with its caller",
+    () =>
+      Effect.gen(function* () {
+        order.length = 0;
+        exited = Deferred.makeUnsafe();
+        const t = lifeWorld();
+        const id = yield* call(() => t.mutation(life.bed, {}));
+        yield* call(() => t.mutation(life.nestedDetached, { id, held: false }));
+        const exit = yield* Deferred.await(exited);
+        expect({
+          exit: exit._tag,
+          order,
+          room: yield* call(() => t.query(life.room, { id })),
+        }).toEqual({
+          exit: "Success",
+          order: ["handler settled", "late write"],
+          room: "detached",
+        });
+      }),
+  );
+
+  it.effect(
+    "a write that reaches a nested mutation after it returned is refused, and its own write commits with its caller",
+    () =>
+      Effect.gen(function* () {
+        gate = Deferred.makeUnsafe();
+        exited = Deferred.makeUnsafe();
+        const t = lifeWorld();
+        const id = yield* call(() => t.mutation(life.bed, {}));
+        yield* call(() => t.mutation(life.nestedDetached, { id, held: true }));
+        yield* Deferred.succeed(gate, undefined);
+        const exit = yield* Deferred.await(exited);
+        expect({
+          refusal: Exit.isFailure(exit)
+            ? String(Cause.squash(exit.cause))
+            : "none",
+          room: yield* call(() => t.query(life.room, { id })),
+        }).toEqual({
+          refusal: expect.stringContaining(
+            "reached mutation life:detached after it returned",
+          ),
+          room: "moved",
+        });
+      }),
+  );
 });
 
 describe("invocations", () => {
@@ -1718,6 +1898,31 @@ describe("invocations", () => {
         expect({ Date: globalThis.Date, Math: globalThis.Math }).toEqual(host);
         // oxlint-disable-next-line effecttsgo/global-date-in-effect -- Test code reads the host's clock, which no handler's pin may reach.
         expect(Date.now()).toBeGreaterThan(5_000);
+      }),
+  );
+
+  it.effect(
+    "a bound action reads the kernel's clock as it runs, and a mutation it calls starts at the kernel's time then, whatever its world's clock says",
+    () =>
+      Effect.gen(function* () {
+        let now = 5_000;
+        const t = lifeWorld({
+          now: () => now,
+          commitTs: (version) => BigInt(version),
+        });
+        duringAction = () => {
+          now = 7_000;
+        };
+        const seen = yield* call(() =>
+          Invocation.bind(caller, () => t.action(life.movingAction, {})),
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              duringAction = () => {};
+            }),
+          ),
+        );
+        expect(seen).toEqual({ before: 5_000, after: 7_000, called: 7_000 });
       }),
   );
 

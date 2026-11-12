@@ -104,6 +104,14 @@ const contract = () => {
     full: crypto.getRandomValues(new Uint8Array(65_536)).length,
     quota: errorName(() => crypto.getRandomValues(new Uint8Array(65_537))),
     float: errorName(() => crypto.getRandomValues(new Float64Array(1))),
+    detached: errorName(() => {
+      // oxlint-disable-next-line typescript/unbound-method -- Called detached on purpose, as production code could.
+      const getRandomValues = crypto.getRandomValues;
+      return getRandomValues(new Uint8Array(1));
+    }),
+    rebound: errorName(() =>
+      crypto.getRandomValues.call({}, new Uint8Array(1)),
+    ),
     digest: typeof crypto.subtle.digest,
     wide: Array.from(new Uint8Array(words.buffer)),
   };
@@ -120,6 +128,8 @@ const Contract = Schema.Struct({
   full: Schema.Finite,
   quota: Schema.NullOr(Schema.String),
   float: Schema.NullOr(Schema.String),
+  detached: Schema.NullOr(Schema.String),
+  rebound: Schema.NullOr(Schema.String),
   digest: Schema.String,
   wide: Schema.Array(Schema.Finite),
 });
@@ -191,6 +201,25 @@ const schedule = makeFunctionReference<"mutation">("bridge:schedule");
 const job = makeFunctionReference<"mutation">("bridge:job");
 const keeps = makeFunctionReference<"action">("bridge:keeps");
 const fails = makeFunctionReference<"action">("bridge:fails");
+const holds = makeFunctionReference<"mutation">("bridge:holds");
+const drives = makeFunctionReference<"action">("bridge:drives");
+
+/**
+ * The time a handler reads three ways: `Date.now()`, `new Date()` and Effect's
+ * default `Clock`.
+ */
+const readTime = Effect.gen(function* () {
+  return [Date.now(), new Date().getTime(), yield* clockMillis];
+});
+
+const Times = Schema.Array(Schema.Finite);
+
+// Arrives at the world's gate, if it has one, which may move the world's clock.
+const arrive = Effect.serviceOption(Gate).pipe(
+  Effect.flatMap(
+    Option.match({ onNone: () => Effect.void, onSome: (g) => g.arrive }),
+  ),
+);
 
 const bridgeModule = {
   probe: register(
@@ -297,6 +326,41 @@ const bridgeModule = {
       Effect.sync(ambient).pipe(
         Effect.andThen(Effect.die(new Error("the handler fails"))),
       ),
+  ),
+  holds: register(
+    FunctionSpec.internalMutation({
+      name: "holds",
+      args: () => ({}),
+      returns: () => Schema.Struct({ before: Times, after: Times }),
+    }),
+    () =>
+      Effect.gen(function* () {
+        const before = yield* readTime;
+        yield* arrive;
+        return { before, after: yield* readTime };
+      }),
+  ),
+  drives: register(
+    FunctionSpec.publicAction({
+      name: "drives",
+      args: () => ({}),
+      returns: () =>
+        Schema.Struct({
+          before: Times,
+          after: Times,
+          held: Schema.Struct({ before: Times, after: Times }),
+          last: Times,
+        }),
+    }),
+    () =>
+      Effect.gen(function* () {
+        const before = yield* readTime;
+        yield* arrive;
+        const after = yield* readTime;
+        const ctx = yield* ActionCtx.ActionCtx<GenericDataModel>();
+        const held = yield* Effect.promise(() => ctx.runMutation(holds));
+        return { before, after, held, last: yield* readTime };
+      }),
   ),
 };
 
@@ -441,6 +505,83 @@ describe("bind", () => {
       }),
   );
 
+  /**
+   * A world whose gate moves its clock on by a million milliseconds at each
+   * arrival, as a test driver advancing time while a handler waits.
+   */
+  const moving = (name: string) => {
+    let now = 1_000_000;
+    return {
+      name,
+      services: Context.make(Gate, {
+        arrive: Effect.sync(() => {
+          now += 1_000_000;
+        }),
+      }),
+      clock: () => now,
+      random: stream(0),
+    };
+  };
+
+  const at = (millis: number) => [millis, millis, millis];
+
+  it.effect(
+    "a bound action's Date follows its world's clock, and a query or mutation it calls starts at the action's time then",
+    () =>
+      Effect.gen(function* () {
+        const world = moving("moving");
+        const seen = yield* Effect.promise(() =>
+          Invocation.bind(invocationIn(world), () =>
+            backend().action(observe, {}),
+          ),
+        );
+        const read = (r: { now: number; dated: number; clock: number }) => [
+          r.now,
+          r.dated,
+          r.clock,
+        ];
+        expect({
+          before: read(seen.before),
+          after: read(seen.after),
+          query: read(seen.nested),
+          mutation: read(seen.stamped),
+        }).toEqual({
+          before: at(1_000_000),
+          after: at(2_000_000),
+          query: at(2_000_000),
+          mutation: at(2_000_000),
+        });
+      }),
+  );
+
+  it.effect(
+    "a mutation a bound action calls keeps its own start time while the world's clock moves on, and the action sees the clock moved",
+    () =>
+      Effect.gen(function* () {
+        const world = moving("moving");
+        const seen = yield* Effect.promise(() =>
+          Invocation.bind(invocationIn(world), () =>
+            backend().action(drives, {}),
+          ),
+        );
+        expect(seen).toEqual({
+          before: at(1_000_000),
+          after: at(2_000_000),
+          held: { before: at(2_000_000), after: at(2_000_000) },
+          last: at(3_000_000),
+        });
+        // A bound mutation the test calls directly keeps its invocation's
+        // start time through its run too.
+        const direct = yield* Effect.promise(() =>
+          Invocation.bind(invocationIn(world, { startedAt: 500_000 }), () =>
+            backend().mutation(holds, {}),
+          ),
+        );
+        expect(direct).toEqual({ before: at(500_000), after: at(500_000) });
+        expect(world.clock()).toBe(4_000_000);
+      }),
+  );
+
   it.effect(
     "a bound handler's Date and crypto keep the host's contract, apart from the pinned time and stream",
     () =>
@@ -465,6 +606,8 @@ describe("bind", () => {
         expect(rest.same).toBe(true);
         expect(rest.quota).not.toBeNull();
         expect(rest.float).not.toBeNull();
+        expect(rest.detached).not.toBeNull();
+        expect(rest.rebound).not.toBeNull();
         expect(wide.filter(byteInBand(0.25))).toEqual(wide);
       }),
   );
@@ -519,6 +662,7 @@ describe("bind", () => {
                       }>;
                     },
                     run: () => Promise<void>,
+                    functionType: "query",
                   ) => Promise<void> | undefined;
                 };
               }
@@ -532,6 +676,7 @@ describe("bind", () => {
                 ran = true;
                 return Promise.resolve();
               },
+              "query",
             );
             return (started ?? Promise.resolve()).then(
               () => ({ refused: null, kept: hostKept() }),
