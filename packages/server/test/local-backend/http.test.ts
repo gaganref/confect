@@ -65,8 +65,7 @@ layer(
         const spawner = yield* ChildProcessSpawner;
         const logs = yield* spawner.spawn(
           ChildProcess.make(
-            "pnpm",
-            ["convex", "logs", "--history", "100", "--success", "--jsonl"],
+            "pnpm convex logs --history 100 --success --jsonl",
             {
               cwd: path.resolve(
                 import.meta.dirname,

@@ -12,6 +12,7 @@ import * as Schedule from "effect/Schedule";
 import * as Scope from "effect/Scope";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
+import * as CommandLine from "effect/process/CommandLine";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 
 class BackendNotReadyError extends Schema.TaggedError<
@@ -91,16 +92,22 @@ const make = Effect.fnUntraced(function* (options: {
     name: string,
     value: string,
   ) {
-    const code = yield* spawner
-      .exitCode(
-        ChildProcess.make("pnpm", ["convex", "env", "set", name, value], {
-          cwd: fixturesDir,
-          shell: process.platform === "win32",
-          extendEnv: true,
-          env: { CONVEX_AGENT_MODE: "anonymous" },
-        }),
-      )
-      .pipe(Effect.orDie);
+    const words = ["pnpm", "convex", "env", "set", name, value];
+    const spawnOptions = {
+      cwd: fixturesDir,
+      extendEnv: true,
+      env: { CONVEX_AGENT_MODE: "anonymous" },
+    };
+    // `pnpm` is a `.cmd` shim on Windows, which only a shell can run, and a
+    // shell takes the whole command line as one string.
+    const windowsLine = yield* Effect.fromResult(
+      CommandLine.join(words, { format: "windows" }),
+    ).pipe(Effect.orDie);
+    const command =
+      process.platform === "win32"
+        ? ChildProcess.make(windowsLine, { ...spawnOptions, shell: true })
+        : ChildProcess.make(words[0]!, words.slice(1), spawnOptions);
+    const code = yield* spawner.exitCode(command).pipe(Effect.orDie);
     if (code !== 0)
       return yield* new BackendEnvironmentSetupError({
         name,
@@ -159,15 +166,7 @@ const make = Effect.fnUntraced(function* (options: {
           const code = yield* spawner
             .exitCode(
               ChildProcess.make(
-                "pnpm",
-                [
-                  "convex",
-                  "run",
-                  "--push",
-                  "--typecheck=disable",
-                  "--codegen=disable",
-                  options.redeployFunction,
-                ],
+                `pnpm convex run --push --typecheck=disable --codegen=disable ${options.redeployFunction}`,
                 {
                   cwd: fixturesDir,
                   shell: true,
