@@ -98,3 +98,31 @@ it.effect.each([
       expect(yield* read(first)).toEqual(["outer"]);
     }).pipe(Effect.provide(layer(outer))),
 );
+
+// Both targets give each function call its own `Date`, `Math` and `crypto`
+// through an accessor on `globalThis`, and each installs its own again when
+// another is on top. Wrapping each other at every call would deepen every read
+// of these globals for as long as both layers are live.
+it.effect(
+  "calls alternating between a kernel and a convex-test layer keep each pinned global's accessor, instead of wrapping it again at every call",
+  () =>
+    Effect.gen(function* () {
+      const kernel = yield* Test;
+      yield* Effect.gen(function* () {
+        const other = yield* Test;
+        const tops = () =>
+          (["Date", "Math", "crypto"] as const).map(
+            // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
+            (name) => Object.getOwnPropertyDescriptor(globalThis, name)?.get,
+          );
+        yield* insert(kernel, "kernel");
+        yield* insert(other, "other");
+        const settled = tops();
+        for (let round = 0; round < 20; round++) {
+          yield* insert(kernel, "kernel");
+          yield* insert(other, "other");
+        }
+        expect(tops()).toEqual(settled);
+      }).pipe(Effect.provide(layer("convex-test")));
+    }).pipe(Effect.provide(layer("kernel"))),
+);

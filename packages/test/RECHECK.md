@@ -398,3 +398,12 @@ kernel, and any other to the backend that convex-test assigned. Nothing is
 restored when a layer ends. `test/TestConfectTargets.test.ts` resumes a live
 layer of each target beside and after a layer of the other, and holds a kernel
 function between two syscalls while convex-test makes its first assignment.
+
+Both targets also give each function call its own `Date`, `Math` and `crypto`
+through accessors on `globalThis`, and convex-test installs its own again
+whenever another is on top (`dist/index.js:1854-1866`). Row 3's
+`src/internal/Globals.ts` did the same, so with both layers live each call
+wrapped the other's accessor once more and every read of these globals went
+deeper. The kernel now leaves an accessor in place when it already reads
+through one of the kernel's, which a sentinel in a fresh copy shows, and the
+chain settles after the first call on each target.
