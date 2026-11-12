@@ -104,6 +104,14 @@ const contract = () => {
     full: crypto.getRandomValues(new Uint8Array(65_536)).length,
     quota: errorName(() => crypto.getRandomValues(new Uint8Array(65_537))),
     float: errorName(() => crypto.getRandomValues(new Float64Array(1))),
+    detached: errorName(() => {
+      // oxlint-disable-next-line typescript/unbound-method -- Called detached on purpose, as production code could.
+      const getRandomValues = crypto.getRandomValues;
+      return getRandomValues(new Uint8Array(1));
+    }),
+    rebound: errorName(() =>
+      crypto.getRandomValues.call({}, new Uint8Array(1)),
+    ),
     digest: typeof crypto.subtle.digest,
     wide: Array.from(new Uint8Array(words.buffer)),
   };
@@ -120,6 +128,8 @@ const Contract = Schema.Struct({
   full: Schema.Finite,
   quota: Schema.NullOr(Schema.String),
   float: Schema.NullOr(Schema.String),
+  detached: Schema.NullOr(Schema.String),
+  rebound: Schema.NullOr(Schema.String),
   digest: Schema.String,
   wide: Schema.Array(Schema.Finite),
 });
@@ -596,6 +606,8 @@ describe("bind", () => {
         expect(rest.same).toBe(true);
         expect(rest.quota).not.toBeNull();
         expect(rest.float).not.toBeNull();
+        expect(rest.detached).not.toBeNull();
+        expect(rest.rebound).not.toBeNull();
         expect(wide.filter(byteInBand(0.25))).toEqual(wide);
       }),
   );

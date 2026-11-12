@@ -74,7 +74,9 @@ the invocation's start time through the whole run. In an action they read the
 world's clock as it runs, so the action sees time move when the driver advances
 that clock, as Convex lets an action's clock advance. `runHandlerPromise` tells
 the bridge which kind of function it starts. `Math.random` and
-`crypto.getRandomValues` draw from the stream. convex-test
+`crypto.getRandomValues` draw from the stream. `getRandomValues` lets the host
+check its receiver and argument first, so a detached call throws the host's
+`TypeError`, as it does in production. convex-test
 0.0.65 gives every handler call its own copy of these globals, and an
 assignment inside a handler lands in that copy only (its `dist/index.js:1744`,
 `:1883-1905` and `:1927-1930`), so overlapping handlers and nested calls keep

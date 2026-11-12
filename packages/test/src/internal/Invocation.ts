@@ -152,11 +152,16 @@ const drawingMath = (base: Math, random: () => number): Math =>
   });
 
 const drawingCrypto = (base: Crypto, random: () => number): Crypto => {
-  const getRandomValues = <T extends Parameters<Crypto["getRandomValues"]>[0]>(
+  function getRandomValues<T extends Parameters<Crypto["getRandomValues"]>[0]>(
+    this: unknown,
     array: T,
-  ): T => {
-    // The host call checks the argument and throws the host's errors.
-    base.getRandomValues(array);
+  ): T {
+    // The host call checks the receiver and the argument and throws the host's
+    // errors, so a detached call fails as it does in production.
+    // oxlint-disable-next-line typescript/unbound-method -- Applied with the caller's receiver.
+    Reflect.apply(base.getRandomValues, this === drawing ? base : this, [
+      array,
+    ]);
     if (array === null) return array;
     const bytes = new Uint8Array(
       array.buffer,
@@ -167,8 +172,8 @@ const drawingCrypto = (base: Crypto, random: () => number): Crypto => {
       bytes[index] = Math.floor(random() * 256);
     }
     return array;
-  };
-  return new Proxy(base, {
+  }
+  const drawing: Crypto = new Proxy(base, {
     get: (target, property) => {
       if (property === "getRandomValues") return getRandomValues;
       // Crypto's methods and getters need the host object as `this`.
@@ -176,6 +181,7 @@ const drawingCrypto = (base: Crypto, random: () => number): Crypto => {
       return typeof value === "function" ? value.bind(target) : value;
     },
   });
+  return drawing;
 };
 
 /**
