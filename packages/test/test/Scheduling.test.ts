@@ -768,6 +768,8 @@ const bridgeModules = {
 const worldNamed = (name: string): Invocation.World => ({
   name,
   services: Context.make(Mail, { answer: `${name} mail` }),
+  clock: () => 0,
+  random: () => 0.5,
 });
 
 const invocationIn = (
@@ -784,6 +786,8 @@ const invocationIn = (
     scheduledFunctionId: null,
   },
   services,
+  startedAt: owner.clock(),
+  random: owner.random,
 });
 
 describe("registered handlers", () => {
