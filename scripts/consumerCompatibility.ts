@@ -31,7 +31,7 @@ export const profiles = {
   foldkit: {
     packages: ["core", "server", "cli", "js", "foldkit"],
     hosts: { foldkit: "^0.170.0", "@effect/platform-browser": "~4.1.0" },
-    baseline: { foldkit: "0.170.0", "@effect/platform-browser": "4.1.0" },
+    baseline: { foldkit: "0.170.0", "@effect/platform-browser": "4.1.4" },
   },
 } as const;
 export type Profile = keyof typeof profiles;
@@ -39,10 +39,10 @@ export type Lane = "baseline" | "fresh";
 export type Manager = "npm" | "pnpm";
 
 export const consumerDependencies = (profile: Profile, lane: Lane) => ({
-  effect: lane === "baseline" ? "4.1.0" : "~4.1.0",
+  effect: lane === "baseline" ? "4.1.4" : "~4.1.0",
   convex: lane === "baseline" ? "1.49.0" : "^1.49.0",
-  "@effect/platform-node": lane === "baseline" ? "4.1.0" : "~4.1.0",
-  ...(lane === "baseline" ? { "@effect/platform-node-shared": "4.1.0" } : {}),
+  "@effect/platform-node": lane === "baseline" ? "4.1.4" : "~4.1.0",
+  ...(lane === "baseline" ? { "@effect/platform-node-shared": "4.1.4" } : {}),
   ...(lane === "baseline"
     ? profiles[profile].baseline
     : profiles[profile].hosts),
