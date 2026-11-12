@@ -161,29 +161,27 @@ export interface KernelRuntime {
    */
   readonly now: () => number;
   /**
-   * The commit timestamp of `version`. Strictly increasing with it.
+   * The commit timestamp of `version`, asked once as it is published. The
+   * answers strictly increase. A mutation that wrote nothing publishes no
+   * version and asks nothing.
    */
   readonly commitTs: (version: Version) => bigint;
 }
 
 /**
- * The wall clock, as convex-test reads it. A version's commit timestamp is the
- * time in nanoseconds when it is first asked for, bumped past the previous
- * one's when the clock stands still.
+ * The wall clock, as convex-test reads it. Each answer is the time in
+ * nanoseconds when it is asked for, bumped past the previous answer when the
+ * clock stands still.
  */
 export const wallClock = (): KernelRuntime => {
-  const stamps = new Map<Version, bigint>();
   let latest = 0n;
   // oxlint-disable-next-line effecttsgo/global-date -- The default runtime is the wall clock. A driver that replays supplies its own.
   const now = () => Date.now();
   return {
     now,
-    commitTs: (version) => {
-      const known = stamps.get(version);
-      if (known !== undefined) return known;
+    commitTs: () => {
       const nanos = BigInt(now()) * 1_000_000n;
       latest = nanos > latest ? nanos : latest + 1n;
-      stamps.set(version, latest);
       return latest;
     },
   };

@@ -126,9 +126,12 @@ fields with the `_creationTime` and `_id` tie-breakers, the index range
 expression, a page's cursor as an exclusive start, and how far the query
 examined, inclusive. `.first()` and `.take(n)` read only the rows they
 examined, filtered rows included. An empty result reads the whole range, so an
-insert into it conflicts. A nested query reads into its caller's attempt. A
-nested mutation that fails drops its writes and keeps its reads. `count` reads
-the whole table.
+insert into it conflicts. A page reads from its cursor up to its end cursor,
+inclusive, and a page from the terminal cursor reads nothing, as the binary's
+`IndexRange::new` cuts the interval (`index_range.rs:111-127`). Writes outside
+what the page could hold leave it valid. A nested query reads into its
+caller's attempt. A nested mutation that fails drops its writes and keeps its
+reads. `count` reads the whole table.
 
 `World.prepare` runs a top-level mutation to its commit point and holds it as
 attempt 1. `World.apply` checks the attempt's reads against every commit since
@@ -149,8 +152,14 @@ conflict and run again.
 
 `Kernel.KernelRuntime` supplies the clock and commit timestamps. A commit takes
 `runtime.commitTs(version)`. One no greater than the previous commit's is
-refused with `CommitTsNotIncreasing`. The default runtime is the wall clock,
-bumped by a nanosecond when it stands still. A test passes its own runtime as
+refused with `CommitTsNotIncreasing`. A mutation that wrote nothing asks for
+no timestamp. As on the binary, it is serialized at its snapshot and answers
+the snapshot's commit timestamp (`committer.rs:1596-1600` and
+`application_function_runner/mod.rs:1117-1122` in convex-backend 1.49.0).
+convex-test 0.0.65 gives it a fresh one (`index.ts:3214-3231`). The kernel's
+snapshot moves only with commits, so empty mutations with no commit between
+them answer the same timestamp. The default runtime is the wall clock, bumped
+by a nanosecond when it stands still. A test passes its own runtime as
 `convexTest({ schema, modules, runtime })`, and two processes that replay one
 history with it print the same bytes. ID allocation and randomness stay with
 later rows.

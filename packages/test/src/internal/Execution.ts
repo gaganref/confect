@@ -785,7 +785,8 @@ export class World {
   /**
    * Validate a held attempt's reads against every commit since its snapshot,
    * then publish its writes or prepare its next attempt. An attempt that wrote
-   * nothing publishes nothing, so it has nothing to validate.
+   * nothing publishes nothing and has nothing to validate. It answers its
+   * snapshot's version and commit timestamp.
    */
   private applyHeld({ view, attempt, again }: Held): Promise<KernelApply> {
     this.holding.delete(view.id);
@@ -798,8 +799,18 @@ export class World {
       });
     }
     const writes = attempt.writes();
+    if (writes.length === 0) {
+      // As on the binary, a mutation that wrote nothing is serialized at its
+      // snapshot and allocates no timestamp for a later commit.
+      const { version, commitTs } = attempt.snapshot;
+      return Promise.resolve({
+        kind: "applied",
+        version,
+        commitTs,
+        result: resolveCommittedValues(outcome.value, commitTs),
+      });
+    }
     if (
-      writes.length > 0 &&
       Kernel.conflict(this.state, view.snapshot, attempt.reads) !== undefined
     ) {
       if (view.number === lastAttempt) {
@@ -816,19 +827,17 @@ export class World {
       );
     }
     const commitTs = this.runtime.commitTs(this.state.version + 1);
-    if (writes.length > 0) {
-      if (commitTs <= this.state.commitTs) {
-        return Promise.reject(
-          new KernelRefusal.CommitTsNotIncreasing({
-            version: this.state.version + 1,
-            previous: this.state.commitTs,
-            commitTs,
-            message: `The runtime answered commit timestamp ${commitTs} for version ${this.state.version + 1}, which is not greater than the previous commit's ${this.state.commitTs}.`,
-          }),
-        );
-      }
-      this.state = Kernel.apply(this.state, writes, commitTs);
+    if (commitTs <= this.state.commitTs) {
+      return Promise.reject(
+        new KernelRefusal.CommitTsNotIncreasing({
+          version: this.state.version + 1,
+          previous: this.state.commitTs,
+          commitTs,
+          message: `The runtime answered commit timestamp ${commitTs} for version ${this.state.version + 1}, which is not greater than the previous commit's ${this.state.commitTs}.`,
+        }),
+      );
     }
+    this.state = Kernel.apply(this.state, writes, commitTs);
     return Promise.resolve({
       kind: "applied",
       version: this.state.version,

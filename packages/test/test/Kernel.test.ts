@@ -472,6 +472,44 @@ const occModules = {
             .collect()
             .then((rows) => rows.map(({ label, at }) => ({ label, at }))),
       }),
+      remove: mutationGeneric({
+        args: { id: v.id("keys") },
+        handler: (ctx, { id }) => ctx.db.delete(id).then(() => null),
+      }),
+      writeNothing: mutationGeneric({
+        args: {},
+        handler: (ctx) => Promise.resolve(ctx.db.vars.commitTs),
+      }),
+      keyPage: queryGeneric({
+        args: { numItems: v.number() },
+        handler: (ctx, { numItems }) =>
+          ctx.db
+            .query("keys")
+            .withIndex("by_key")
+            .paginate({ cursor: null, numItems })
+            .then(({ continueCursor }) => continueCursor),
+      }),
+      notePage: mutationGeneric({
+        args: {
+          cursor: v.union(v.string(), v.null()),
+          endCursor: v.optional(v.string()),
+        },
+        handler: (ctx, { cursor, endCursor }) =>
+          ctx.db
+            .query("keys")
+            .withIndex("by_key")
+            .paginate({
+              cursor,
+              numItems: 10,
+              ...(endCursor === undefined ? {} : { endCursor }),
+            })
+            .then(({ page }) =>
+              ctx.db.insert("seen", {
+                what: `page ${page.map((row) => row.key).join(",")}`,
+              }),
+            )
+            .then(() => null),
+      }),
     }),
 };
 
@@ -514,6 +552,19 @@ const occ = {
     {},
     Array<{ label: string; at: bigint }>
   >("occ:stamps"),
+  remove: makeFunctionReference<"mutation", { id: GenericId<"keys"> }>(
+    "occ:remove",
+  ),
+  writeNothing: makeFunctionReference<"mutation", {}, bigint>(
+    "occ:writeNothing",
+  ),
+  keyPage: makeFunctionReference<"query", { numItems: number }, string>(
+    "occ:keyPage",
+  ),
+  notePage: makeFunctionReference<
+    "mutation",
+    { cursor: string | null; endCursor?: string }
+  >("occ:notePage"),
 };
 
 const conflicted = (applied: Execution.KernelApply) => {
@@ -625,6 +676,63 @@ describe("read sets", () => {
   );
 
   it.effect(
+    "a page from the terminal cursor reads nothing, so a write to its table leaves the attempt valid while a first page conflicts",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld();
+        yield* call(() => t.mutation(occ.add, { key: "1" }));
+        const cursor = yield* call(() =>
+          t.query(occ.keyPage, { numItems: 10 }),
+        );
+        const terminal = yield* call(() => t.prepare(occ.notePage, { cursor }));
+        const first = yield* call(() =>
+          t.prepare(occ.notePage, { cursor: null }),
+        );
+        yield* call(() => t.mutation(occ.add, { key: "2" }));
+        const valid = yield* call(() => t.apply(terminal.id));
+        const next = conflicted(yield* call(() => t.apply(first.id)));
+        yield* call(() => t.apply(next.id));
+        expect([cursor, valid.kind]).toEqual(["_end_cursor", "applied"]);
+        expect(yield* call(() => t.query(occ.seen, {}))).toEqual([
+          "page ",
+          "page 1,2",
+        ]);
+      }),
+  );
+
+  it.effect(
+    "a page bounded by an end cursor reads only up to it, so a write past it leaves the attempt valid and a write inside it conflicts",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld();
+        yield* call(() => t.mutation(occ.add, { key: "1" }));
+        const three = yield* call(() => t.mutation(occ.add, { key: "3" }));
+        const five = yield* call(() => t.mutation(occ.add, { key: "5" }));
+        const endCursor = yield* call(() =>
+          t.query(occ.keyPage, { numItems: 2 }),
+        );
+        yield* call(() => t.mutation(occ.remove, { id: three }));
+        yield* call(() => t.mutation(occ.remove, { id: five }));
+        const past = yield* call(() =>
+          t.prepare(occ.notePage, { cursor: null, endCursor }),
+        );
+        yield* call(() => t.mutation(occ.add, { key: "4" }));
+        const valid = yield* call(() => t.apply(past.id));
+        const inside = yield* call(() =>
+          t.prepare(occ.notePage, { cursor: null, endCursor }),
+        );
+        yield* call(() => t.mutation(occ.add, { key: "2" }));
+        const next = conflicted(yield* call(() => t.apply(inside.id)));
+        yield* call(() => t.apply(next.id));
+        expect(valid.kind).toBe("applied");
+        expect(yield* call(() => t.query(occ.seen, {}))).toEqual([
+          "page 1",
+          "page 1,2",
+        ]);
+      }),
+  );
+
+  it.effect(
     "a mutation whose every attempt conflicts is exhausted on attempt 5 and publishes nothing",
     () =>
       Effect.gen(function* () {
@@ -729,6 +837,52 @@ describe("commit timestamps", () => {
           ),
         ).toEqual([1_000_000_000n, 1_000_000_001n, 1_000_000_002n]);
       }).pipe(Effect.ensuring(Effect.sync(() => vi.useRealTimers()))),
+  );
+
+  it.effect(
+    "a mutation that writes nothing answers its snapshot's timestamp and leaves the next commit the time it commits at",
+    () =>
+      Effect.gen(function* () {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(1_000);
+        const t = occWorld();
+        yield* call(() => t.mutation(occ.stamp, { label: "first" }));
+        vi.setSystemTime(1_500);
+        const nothing = yield* call(() => t.mutation(occ.writeNothing, {}));
+        vi.setSystemTime(2_000);
+        yield* call(() => t.mutation(occ.stamp, { label: "later" }));
+        expect(yield* call(() => t.query(occ.stamps, {}))).toEqual([
+          { label: "first", at: 1_000_000_000n },
+          { label: "later", at: 2_000_000_000n },
+        ]);
+        expect(nothing).toBe(1_000_000_000n);
+      }).pipe(Effect.ensuring(Effect.sync(() => vi.useRealTimers()))),
+  );
+
+  it.effect(
+    "a mutation that writes nothing asks the runtime for no timestamp",
+    () =>
+      Effect.gen(function* () {
+        const asked: Array<number> = [];
+        const t = occWorld({
+          now: () => 1_000,
+          commitTs: (version) => {
+            asked.push(version);
+            return 5_000n + BigInt(version);
+          },
+        });
+        yield* call(() => t.mutation(occ.stamp, { label: "a" }));
+        const held = yield* call(() => t.prepare(occ.writeNothing, {}));
+        const applied = yield* call(() => t.apply(held.id));
+        yield* call(() => t.mutation(occ.stamp, { label: "b" }));
+        expect(asked).toEqual([1, 2]);
+        expect(applied).toMatchObject({
+          kind: "applied",
+          version: 1,
+          commitTs: 5_001n,
+          result: 5_001n,
+        });
+      }),
   );
 
   it.effect("a runtime that repeats a commit timestamp is refused", () =>
