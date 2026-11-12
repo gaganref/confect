@@ -98,7 +98,6 @@ export type MutationServices<
 > =
   | DatabaseReader.DatabaseReader<DatabaseSchema_>
   | DatabaseWriter.DatabaseWriter<DatabaseSchema_>
-  | Auth.MutationAuth
   | MutationAuth.MutationAuth
   | DocumentIds.DocumentIds<DatabaseSchema_>
   | (DatabaseSchema_["target"]["kind"] extends "component" ? never : Auth.Auth)

@@ -728,12 +728,13 @@ const servicesEffect = Effect.fnUntraced(function* ({
     Effect.gen(function* () {
       if (!component) yield* cbw.writeLine("ActionCtx as ActionCtx_,");
       yield* cbw.writeLine("ActionRunner as ActionRunner_,");
-      yield* cbw.writeLine("Auth as Auth_,");
+      if (!component) yield* cbw.writeLine("Auth as Auth_,");
       yield* cbw.writeLine("type DataModel,");
       yield* cbw.writeLine("DatabaseReader as DatabaseReader_,");
       yield* cbw.writeLine("DatabaseWriter as DatabaseWriter_,");
       yield* cbw.writeLine("DocumentIds as DocumentIds_,");
       yield* cbw.writeLine("ExecutionMetadata as ExecutionMetadata_,");
+      yield* cbw.writeLine("MutationAuth as MutationAuth_,");
       if (!component) yield* cbw.writeLine("MutationCtx as MutationCtx_,");
       yield* cbw.writeLine("MutationRunner as MutationRunner_,");
       yield* cbw.writeLine(
@@ -767,7 +768,9 @@ const servicesEffect = Effect.fnUntraced(function* ({
     yield* cbw.writeLine("export const Auth = Auth_.Auth;");
     yield* cbw.writeLine("export type Auth = typeof Auth.Identifier;");
   }
-  yield* cbw.writeLine("export const MutationAuth = Auth_.MutationAuth;");
+  yield* cbw.writeLine(
+    "export const MutationAuth = MutationAuth_.MutationAuth;",
+  );
   yield* cbw.writeLine(
     "export type MutationAuth = typeof MutationAuth.Identifier;",
   );

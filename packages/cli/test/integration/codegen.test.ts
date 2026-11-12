@@ -12,7 +12,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as Project from "./Project";
 import * as Bundler from "@confect/cli/Bundler";
-import { Auth, DatabaseSchema } from "@confect/server";
+import { DatabaseSchema, MutationAuth } from "@confect/server";
 import { TestConfect } from "../../../test/src";
 import { defineSchema } from "convex/server";
 import { vi } from "vitest";
@@ -220,7 +220,7 @@ export default Auth.make(app, { providers: [
           const provider = runtime.module.providers[0];
           const token = yield* test.run(
             Effect.gen(function* () {
-              const auth = yield* Auth.MutationAuth;
+              const auth = yield* MutationAuth.MutationAuth;
               return yield* auth.signJwt({
                 claims: { sub: "person", aud: provider.audience },
                 expiresInSeconds: 60,

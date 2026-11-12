@@ -38,7 +38,10 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const code = yield* templates.services({ schemaImportPath: "./schema" });
-      expect(code).toContain("export const MutationAuth = Auth_.MutationAuth;");
+      expect(code).toContain("MutationAuth as MutationAuth_,");
+      expect(code).toContain(
+        "export const MutationAuth = MutationAuth_.MutationAuth;",
+      );
       expect(code).toContain(
         "export type MutationAuth = typeof MutationAuth.Identifier;",
       );

@@ -64,7 +64,7 @@ it.effect(
       expect(services).not.toContain("export const Auth =");
       expect(services).not.toContain("export type Auth =");
       expect(services).toContain(
-        "export const MutationAuth = Auth_.MutationAuth;",
+        "export const MutationAuth = MutationAuth_.MutationAuth;",
       );
       expect(services).not.toContain("export const Storage =");
       expect(services).toContain(

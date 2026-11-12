@@ -16,7 +16,7 @@ import type { Ref } from "@confect/core";
 import { getFunctionReference } from "@confect/core/RefInternal";
 import { Component } from "@confect/core";
 import {
-  Auth,
+  MutationAuth,
   DatabaseSchema,
   MutationRunner,
   QueryRunner,
@@ -92,7 +92,7 @@ it.effect(
           // oxlint-disable-next-line effecttsgo/run-effect-inside-effect -- Convex invokes this callback in its transaction context, which supplies per-call services.
           Effect.runPromise(
             Effect.gen(function* () {
-              const auth = yield* Auth.MutationAuth;
+              const auth = yield* MutationAuth.MutationAuth;
               return yield* auth.signJwt({
                 claims: { sub: "outbox", aud: "https://hive.convex.site" },
                 expiresInSeconds: 3600,

@@ -37,10 +37,14 @@ Frame's audit rows declare their commit-order column with it. Changeset:
 
 ## Counted HTTP bodies
 
-Add `HttpRouter.withBodyLimit` for endpoint middleware. Count bytes while reading,
-return 413 at the cap and 415 for non-identity content encoding. Verification and
-payload decoding share one buffer. Effect 4.0.4's Web readers do not provide these
-guarantees. Changeset: `counted-http-body.md`. Upstream: planned; no proposal submitted.
+Add `HttpRouter.withBodyLimit` for endpoint middleware. It returns 415 for
+non-identity content encoding and 413 past the cap, and verification and
+payload decoding share one buffer. Effect 4.1.4 now counts buffered reads
+against `MaxBodySize` and derives `text` from `arrayBuffer`, so the limiter reads
+through Effect under the endpoint's cap and keeps only the 413/415 mapping and
+the shared buffer. A declared `Content-Length` over the cap is refused before
+any byte is read. Changeset: `counted-http-body.md`. Upstream: planned; no
+proposal submitted.
 
 ## OPTIONS middleware dispatch
 
@@ -203,8 +207,8 @@ Merge upstream 10.6.0, which runs on Effect 4.1, and carry the fork's patches
 onto it. Move Effect and every `@effect/*` package to 4.1.4 and Alchemy to
 2.0.0-beta.86. Combine upstream's lazy validators, `DocumentIds`, blob storage
 in mutations and `MutationAuth` with the fork's component targets, reserved
-arguments and invocation metadata in the function runner. Keep the fork's
-`Auth.MutationAuth` beside upstream's service for now; a follow-up replaces it.
+arguments and invocation metadata in the function runner. The fork's
+`Auth.MutationAuth` gives way to upstream's service.
 Fold upstream's watch groups into the fork's lock-free `refreshCurrent`. Move
 the fork's local-backend fixtures, component codegen and auth seeding into
 upstream's `tools/local-backend` harness. Native `take()` and `first()` stay
@@ -1116,14 +1120,12 @@ Upstream: planned; no linked proposal verified.
 
 ### Sign deployment JWTs from mutations
 
-Add mutation-only `Auth.MutationAuth.signJwt` in applications and components,
-with a generated service alias. Keep application identity out of components and
-signing out of query/action handlers. Verify generated component mutations and
-app mutations against convex-test 0.0.65 deployment JWKS in the component suite.
-Require convex-test 0.0.65 or later in `@confect/test` so signing support is available.
-Keep Confect's component registration callbacks void across the test-peer update.
-Generated provider descriptors match minted token issuers and audiences under
-test defaults and explicit deployment URL overrides.
+Upstream 10.6.0 ships `MutationAuth.signJwt` under `@confect/server/MutationAuth`,
+so the fork's `Auth.MutationAuth` (`@confect/server/Auth/MutationAuth`) is gone.
+What stays is the fork's component wiring: component mutations get upstream's
+service through the shared mutation layer, and generated component services
+export the same `MutationAuth` alias as applications. Application identity stays
+out of components and signing out of query and action handlers.
 
-Changeset: `mutation-auth-sign-jwt.md`.
-Upstream: planned; no linked proposal verified.
+Changesets: `mutation-auth-sign-jwt.md`, `mutation-auth-upstream.md`.
+Upstream: superseded by upstream 10.6.0 for applications; the component wiring is fork only.
