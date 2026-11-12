@@ -307,8 +307,19 @@ export const paginate = (
   }: PageRequest,
 ) => {
   const { sortedDocs, filterFn, order, interval } = resolveSource(view, query);
+  // A page from the terminal cursor reads the empty interval past the end, so
+  // it depends on nothing.
+  if (cursor === "_end_cursor") {
+    return {
+      page: [],
+      isDone: true,
+      continueCursor: "_end_cursor",
+      splitCursor: null,
+      pageStatus: null,
+    };
+  }
   const cursorFields = interval.fields;
-  const cursorKeys = cursor !== "_end_cursor" ? parseCursor(cursor) : null;
+  const cursorKeys = parseCursor(cursor);
   const hasEndBoundary = !!endCursor && endCursor !== "_end_cursor";
   const endCursorKeys = hasEndBoundary ? parseCursor(endCursor) : null;
   const examined = view.read(interval, cursorKeys);
@@ -327,7 +338,6 @@ export const paginate = (
     const doc = sortedDocs[i]!;
     const isLastDoc = i === sortedDocs.length - 1;
     if (!isInPage) {
-      if (cursor === "_end_cursor") continue;
       if (cursorKeys) {
         if (compareToCursor(doc, cursorKeys, cursorFields, order) > 0) {
           isInPage = true;
@@ -371,7 +381,8 @@ export const paginate = (
       break;
     }
   }
-  if (reachedEnd) examined("end");
+  // A page bounded by an end cursor examined the range only up to it.
+  if (reachedEnd) examined(endCursorKeys ?? "end");
 
   if (pageStatus === "SplitRequired" && readDocCursors.length >= 2) {
     splitCursor = readDocCursors[Math.floor((readDocCursors.length - 1) / 2)]!;

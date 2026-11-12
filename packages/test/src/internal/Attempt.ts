@@ -12,66 +12,86 @@ import type * as ReadSet from "./ReadSet.js";
 type Overlay = Map<string, Map<DocumentId, StoredDocument | null>>;
 
 /**
- * One attempt at a query or mutation: the committed state it started from, its
- * pending writes and what it read. The outermost frame belongs to the top-level
- * function. Each nested mutation pushes a frame, which merges into its caller's
- * frame when it returns and is dropped when it fails. Reads are never dropped:
- * a failed nested mutation's reads stay in the attempt.
+ * What every frame of one attempt shares: what the attempt read, including its
+ * caller's identity and the time, and how long it takes syscalls.
+ */
+interface Life {
+  readonly reads: Array<ReadSet.Read>;
+  identity: boolean;
+  time: number | null;
+  running: number;
+  started: number;
+  open: boolean;
+}
+
+/**
+ * One frame of an attempt at a query or mutation: the committed state the
+ * attempt started from, its caller's frame and its own pending writes. The
+ * outermost frame belongs to the top-level function. Each nested mutation opens
+ * a child frame, which merges into its caller's frame when it returns and is
+ * dropped when it fails. Reads belong to the whole attempt and are never
+ * dropped: a failed nested mutation's reads stay in the attempt.
+ *
+ * A frame belongs to one invocation, which alone writes to it, so a caller's
+ * write made while its nested mutation is in flight stays the caller's.
+ * `Kernel.apply` publishes the outermost frame's writes.
  *
  * An attempt takes reads and writes until it is closed. A mutation's attempt
  * closes once its function has returned and no syscall it started is still
  * running, so a write a detached fiber makes after the handler settled still
  * lands in it, as on the binary.
- *
- * Only the invocation that owns an attempt writes to it. `Kernel.apply`
- * publishes its writes.
  */
 export class KernelAttempt {
-  private readonly frames: Array<Overlay> = [new Map()];
-  private readonly recorded: Array<ReadSet.Read> = [];
-  private identity = false;
-  private time: number | null = null;
-  private running = 0;
-  private started = 0;
-  private open = true;
+  private readonly overlay: Overlay = new Map();
+  private readonly life: Life;
 
   constructor(
     readonly snapshot: Kernel.State,
     readonly number: AttemptNumber = 1,
-  ) {}
+    private readonly parent?: KernelAttempt,
+  ) {
+    this.life = parent?.life ?? {
+      reads: [],
+      identity: false,
+      time: null,
+      running: 0,
+      started: 0,
+      open: true,
+    };
+  }
 
   get reads(): ReadonlyArray<ReadSet.Read> {
-    return this.recorded;
+    return this.life.reads;
   }
 
   /**
    * Whether the function asked for its caller's identity.
    */
   get observedIdentity(): boolean {
-    return this.identity;
+    return this.life.identity;
   }
 
   /**
    * The pinned time the function read, or `null` when it never read the time.
    */
   get observedTime(): number | null {
-    return this.time;
+    return this.life.time;
   }
 
   observeIdentity() {
-    this.identity = true;
+    this.life.identity = true;
   }
 
   observeTime(at: number) {
-    this.time = at;
+    this.life.time = at;
   }
 
   get closed(): boolean {
-    return !this.open;
+    return !this.life.open;
   }
 
   readDocument(componentPath: string, id: DocumentId) {
-    this.recorded.push({ kind: "document", componentPath, id });
+    this.life.reads.push({ kind: "document", componentPath, id });
   }
 
   /**
@@ -82,7 +102,7 @@ export class KernelAttempt {
     read: Omit<ReadSet.IntervalRead, "through">,
   ): (through: ReadSet.Key | "end") => void {
     const interval: ReadSet.IntervalRead = { ...read, through: null };
-    this.recorded.push(interval);
+    this.life.reads.push(interval);
     return (through) => {
       interval.through = through;
     };
@@ -92,10 +112,11 @@ export class KernelAttempt {
    * A syscall began. `end` runs when it settles.
    */
   begin(): () => void {
-    this.running++;
-    this.started++;
+    const life = this.life;
+    life.running++;
+    life.started++;
     return () => {
-      this.running--;
+      life.running--;
     };
   }
 
@@ -104,39 +125,45 @@ export class KernelAttempt {
    * attempt running or started.
    */
   drained(): Promise<void> {
-    const before = this.started;
+    const before = this.life.started;
     return setImmediate().then(() =>
-      this.running === 0 && this.started === before
+      this.life.running === 0 && this.life.started === before
         ? undefined
         : this.drained(),
     );
   }
 
   close() {
-    this.open = false;
+    this.life.open = false;
   }
 
-  get depth(): number {
-    return this.frames.length;
+  /**
+   * The pending writes this frame sees, from the outermost frame to this one.
+   */
+  private overlays(): Array<Overlay> {
+    return this.parent === undefined
+      ? [this.overlay]
+      : [...this.parent.overlays(), this.overlay];
   }
 
   get(componentPath: string, id: DocumentId): StoredDocument | null {
-    for (let i = this.frames.length - 1; i >= 0; i--) {
-      const write = this.frames[i]!.get(componentPath)?.get(id);
+    for (const overlay of this.overlays().toReversed()) {
+      const write = overlay.get(componentPath)?.get(id);
       if (write !== undefined) return write;
     }
     return Kernel.get(this.snapshot, componentPath, id)?.doc ?? null;
   }
 
   /**
-   * The table as this attempt sees it, committed rows under pending writes.
+   * The table as this frame sees it, committed rows under every pending write
+   * from the outermost frame to this one.
    */
   scan(componentPath: string, tableName: string): Array<StoredDocument> {
     const ids = new Set<DocumentId>();
     for (const row of Kernel.rows(this.snapshot, componentPath, tableName))
       ids.add(row.doc._id);
-    for (const frame of this.frames)
-      for (const id of frame.get(componentPath)?.keys() ?? [])
+    for (const overlay of this.overlays())
+      for (const id of overlay.get(componentPath)?.keys() ?? [])
         if (tableNameFromId(id) === tableName) ids.add(id);
     const docs: Array<StoredDocument> = [];
     for (const id of ids) {
@@ -147,40 +174,35 @@ export class KernelAttempt {
   }
 
   write(componentPath: string, id: DocumentId, doc: StoredDocument | null) {
-    const frame = this.frames[this.frames.length - 1]!;
-    const writes = frame.get(componentPath) ?? new Map();
-    frame.set(componentPath, writes);
+    const writes = this.overlay.get(componentPath) ?? new Map();
+    this.overlay.set(componentPath, writes);
     writes.set(id, doc);
   }
 
   /**
-   * A nested mutation begins.
+   * A nested mutation begins, in a frame of its own. Dropping a failed one is
+   * forgetting it.
    */
-  push() {
-    this.frames.push(new Map());
+  child(): KernelAttempt {
+    return new KernelAttempt(this.snapshot, this.number, this);
   }
 
   /**
    * A nested mutation returned. Its writes become its caller's.
    */
   merge() {
-    const frame = this.frames.pop()!;
-    for (const [componentPath, writes] of frame)
-      for (const [id, doc] of writes) this.write(componentPath, id, doc);
-  }
-
-  /**
-   * A nested mutation failed. Its writes are gone.
-   */
-  drop() {
-    this.frames.pop();
+    if (this.parent === undefined) {
+      throw new Error("The outermost frame of an attempt has no caller.");
+    }
+    for (const [componentPath, writes] of this.overlay)
+      for (const [id, doc] of writes) this.parent.write(componentPath, id, doc);
   }
 
   /**
    * The outermost frame's writes, for `Kernel.apply`.
    */
   writes(): Array<Kernel.Write> {
-    return Array.from(this.frames[0]!, ([componentPath, writes]) =>
+    return Array.from(this.overlay, ([componentPath, writes]) =>
       Array.from(writes, ([id, doc]) => ({ componentPath, id, doc })),
     ).flat();
   }

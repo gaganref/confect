@@ -9,9 +9,11 @@ import * as FunctionRegistryItem from "@confect/server/FunctionRegistryItem";
 import type * as Handler from "@confect/server/Handler";
 import * as MutationCtx from "@confect/server/MutationCtx";
 import * as RegisteredConvexFunction from "@confect/server/RegisteredConvexFunction";
+import { register as registerWorkflow } from "@convex-dev/workflow/test";
 import { assert, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import {
+  actionGeneric,
   componentsGeneric,
   defineSchema,
   defineTable,
@@ -46,6 +48,10 @@ const latch = (): Latch => {
 let reached = () => {};
 let hold: Promise<void> = Promise.resolve();
 
+// Set by a test before it starts `writeDuringNestedFailure`, so the parent
+// writes while its failing child is still in flight.
+let overlap = { childWrote: latch(), parentWrote: latch() };
+
 const store = (componentsGeneric() as any).store as {
   readonly rows: {
     readonly add: FunctionReference<"mutation", "internal", { text: string }>;
@@ -54,7 +60,19 @@ const store = (componentsGeneric() as any).store as {
       "internal",
       { text: string }
     >;
+    readonly addThenFailAfterParent: FunctionReference<
+      "mutation",
+      "internal",
+      { text: string }
+    >;
     readonly list: FunctionReference<"query", "internal", {}, Array<string>>;
+    readonly whoami: FunctionReference<"query", "internal", {}, string | null>;
+    readonly whoamiThroughQuery: FunctionReference<
+      "action",
+      "internal",
+      {},
+      string | null
+    >;
   };
 };
 
@@ -67,7 +85,23 @@ const notes = {
   writeBoth: makeFunctionReference<"mutation", { fail: boolean }>(
     "notes:writeBoth",
   ),
+  writeDuringNestedFailure: makeFunctionReference<"mutation">(
+    "notes:writeDuringNestedFailure",
+  ),
+  whoami: makeFunctionReference<"query", {}, string | null>("notes:whoami"),
+  whoamiThroughQuery: makeFunctionReference<"action", {}, string | null>(
+    "notes:whoamiThroughQuery",
+  ),
+  componentWhoami: makeFunctionReference<"action", {}, string | null>(
+    "notes:componentWhoami",
+  ),
 };
+
+const subjectOf = (ctx: {
+  readonly auth: {
+    getUserIdentity: () => Promise<{ subject: string } | null>;
+  };
+}) => ctx.auth.getUserIdentity().then((identity) => identity?.subject ?? null);
 
 const hostSchema = defineSchema({ notes: defineTable({ text: v.string() }) });
 const storeSchema = defineSchema({ rows: defineTable({ text: v.string() }) });
@@ -88,6 +122,21 @@ const storeModules = {
             throw new Error("The component call failed.");
           }),
       }),
+      addThenFailAfterParent: mutationGeneric({
+        args: { text: v.string() },
+        handler: (ctx, { text }) =>
+          ctx.db
+            .insert("rows", { text })
+            .then(() => {
+              overlap.childWrote.release();
+              return overlap.parentWrote.promise;
+            })
+            .then(() => {
+              throw new Error(
+                "The component call failed after its caller wrote.",
+              );
+            }),
+      }),
       list: queryGeneric({
         args: {},
         handler: (ctx) =>
@@ -95,6 +144,15 @@ const storeModules = {
             .query("rows")
             .collect()
             .then((rows) => rows.map((row) => row.text)),
+      }),
+      whoami: queryGeneric({ args: {}, handler: subjectOf }),
+      whoamiThroughQuery: actionGeneric({
+        args: {},
+        handler: (ctx): Promise<string | null> =>
+          ctx.runQuery(
+            makeFunctionReference<"query", {}, string | null>("rows:whoami"),
+            {},
+          ),
       }),
     }),
 };
@@ -145,6 +203,34 @@ const hostModules = {
               return null;
             }),
       }),
+      writeDuringNestedFailure: mutationGeneric({
+        args: {},
+        handler: (ctx) => {
+          const child = ctx
+            .runMutation(store.rows.addThenFailAfterParent, {
+              text: "dropped",
+            })
+            .catch(() => null);
+          return overlap.childWrote.promise
+            .then(() => ctx.db.insert("notes", { text: "during" }))
+            .then(() => {
+              overlap.parentWrote.release();
+              return child;
+            })
+            .then(() => null);
+        },
+      }),
+      whoami: queryGeneric({ args: {}, handler: subjectOf }),
+      whoamiThroughQuery: actionGeneric({
+        args: {},
+        handler: (ctx): Promise<string | null> =>
+          ctx.runQuery(notes.whoami, {}),
+      }),
+      componentWhoami: actionGeneric({
+        args: {},
+        handler: (ctx): Promise<string | null> =>
+          ctx.runAction(store.rows.whoamiThroughQuery, {}),
+      }),
     }),
 };
 
@@ -184,6 +270,182 @@ describe("rollback", () => {
         );
         expect(yield* contents(t)).toEqual([["kept"], []]);
       }),
+  );
+
+  it.effect(
+    "a caller's write made while its nested mutation is in flight survives that mutation's failure",
+    () =>
+      Effect.gen(function* () {
+        const t = world();
+        overlap = { childWrote: latch(), parentWrote: latch() };
+        yield* Effect.promise(() =>
+          t.mutation(notes.writeDuringNestedFailure, {}),
+        );
+        expect(yield* contents(t)).toEqual([["during"], []]);
+      }),
+  );
+});
+
+describe("identity", () => {
+  const signedIn = (t: ReturnType<typeof world>) =>
+    t.withIdentity({ subject: "host-user" });
+
+  it.effect("a host function and its nested host calls see the caller", () =>
+    Effect.gen(function* () {
+      const t = signedIn(world());
+      expect(yield* Effect.promise(() => t.query(notes.whoami, {}))).toBe(
+        "host-user",
+      );
+      expect(
+        yield* Effect.promise(() => t.action(notes.whoamiThroughQuery, {})),
+      ).toBe("host-user");
+    }),
+  );
+
+  it.effect(
+    "a component action's own nested query sees no identity from the host's caller",
+    () =>
+      Effect.gen(function* () {
+        const t = signedIn(world());
+        expect(
+          yield* Effect.promise(() => t.action(notes.componentWhoami, {})),
+        ).toBeNull();
+      }),
+  );
+
+  it.effect(
+    "a component function the test calls directly sees no identity",
+    () =>
+      Effect.gen(function* () {
+        const t = signedIn(world());
+        expect(
+          yield* Effect.promise(() => t.query(store.rows.whoami, {})),
+        ).toBeNull();
+      }),
+  );
+});
+
+describe("record validators", () => {
+  const scores = v.record(v.string(), v.number());
+  const recordSchema = defineSchema({
+    boards: defineTable({ scores }),
+  });
+  const boards = {
+    take: makeFunctionReference<"mutation", { scores: unknown }>("boards:take"),
+    give: makeFunctionReference<"query", { scores: unknown }>("boards:give"),
+    keyed: makeFunctionReference<"mutation", { scores: unknown }>(
+      "boards:keyed",
+    ),
+    future: makeFunctionReference<"query">("boards:future"),
+  };
+  const recordWorld = () =>
+    convexTest(recordSchema, {
+      "_generated/server.ts": () => Promise.resolve({}),
+      "boards.ts": () =>
+        Promise.resolve({
+          take: mutationGeneric({ args: { scores }, handler: () => null }),
+          give: queryGeneric({
+            args: { scores: v.any() },
+            returns: scores,
+            handler: (_ctx, args) => args.scores,
+          }),
+          keyed: mutationGeneric({
+            args: {
+              scores: v.record(
+                v.union(v.literal("home"), v.literal("away")),
+                v.number(),
+              ),
+            },
+            handler: () => null,
+          }),
+          // A validator kind this kernel does not know, as a newer Convex
+          // could export.
+          future: {
+            isQuery: true,
+            isPublic: true,
+            _handler: () => null,
+            exportArgs: () =>
+              JSON.stringify({
+                type: "object",
+                value: { x: { fieldType: { type: "future" }, optional: true } },
+              }),
+            exportReturns: () => "null",
+          },
+        }),
+    });
+  const outcome = (run: () => Promise<unknown>) =>
+    Effect.promise(() =>
+      run().then(
+        () => "accepted",
+        (error: Error) => error.message,
+      ),
+    );
+
+  it.effect("arguments are checked against a record's values", () =>
+    Effect.gen(function* () {
+      const t = recordWorld();
+      expect(
+        yield* outcome(() => t.mutation(boards.take, { scores: { a: 1 } })),
+      ).toBe("accepted");
+      for (const wrong of [{ a: "wrong" }, 42, null]) {
+        expect(
+          yield* outcome(() => t.mutation(boards.take, { scores: wrong })),
+        ).toContain("Validator error");
+      }
+    }),
+  );
+
+  it.effect("arguments are checked against a record's keys", () =>
+    Effect.gen(function* () {
+      const t = recordWorld();
+      expect(
+        yield* outcome(() => t.mutation(boards.keyed, { scores: { home: 1 } })),
+      ).toBe("accepted");
+      expect(
+        yield* outcome(() =>
+          t.mutation(boards.keyed, { scores: { elsewhere: 1 } }),
+        ),
+      ).toContain("Validator error");
+    }),
+  );
+
+  it.effect("a return value is checked against a record", () =>
+    Effect.gen(function* () {
+      const t = recordWorld();
+      expect(
+        yield* outcome(() => t.query(boards.give, { scores: { a: 1 } })),
+      ).toBe("accepted");
+      expect(
+        yield* outcome(() => t.query(boards.give, { scores: { a: "wrong" } })),
+      ).toContain("Return value validation failed");
+    }),
+  );
+
+  it.effect("a written row is checked against a record field", () =>
+    Effect.gen(function* () {
+      const t = recordWorld();
+      expect(
+        yield* outcome(() =>
+          t.run((ctx: any) => ctx.db.insert("boards", { scores: { a: 1 } })),
+        ),
+      ).toBe("accepted");
+      expect(
+        yield* outcome(() =>
+          t.run((ctx: any) =>
+            ctx.db.insert("boards", { scores: { a: "wrong" } }),
+          ),
+        ),
+      ).toContain("Validator error");
+    }),
+  );
+
+  it.effect("a validator kind the kernel does not know is refused", () =>
+    Effect.gen(function* () {
+      const t = recordWorld();
+      expect(yield* outcome(() => t.query(boards.future, { x: 1 }))).toContain(
+        "cannot check a validator of type `future`",
+      );
+    }),
   );
 });
 
@@ -345,6 +607,76 @@ describe("module loading", () => {
       ),
   );
 
+  // The real kit at Frame's pin, through its own `register`, which also mounts
+  // Workpool and Batch Worker. Running workflows is row 5's.
+  it.effect(
+    "the official Workflow kit's modules load at open with no preload",
+    () =>
+      Effect.gen(function* () {
+        const loads: Array<string> = [];
+        const registered: Array<string> = [];
+        const t = convexTest(hostSchema, {
+          "_generated/server.ts": () => Promise.resolve({}),
+          "first.ts": () =>
+            Promise.resolve({
+              run: queryGeneric({
+                args: {},
+                handler: () => {
+                  loads.push("handler");
+                  return null;
+                },
+              }),
+            }),
+        });
+        const recording = {
+          ...t,
+          registerComponent: (
+            name: string,
+            schema: any,
+            modules: Record<string, () => Promise<unknown>>,
+          ) =>
+            t.registerComponent(
+              name,
+              schema,
+              Object.fromEntries(
+                Object.entries(modules).map(([path, load]) => {
+                  registered.push(`${name} ${path}`);
+                  return [
+                    path,
+                    () => {
+                      loads.push(`${name} ${path}`);
+                      return load();
+                    },
+                  ];
+                }),
+              ),
+            ),
+        };
+        registerWorkflow(recording as any, "workflow");
+        yield* Effect.promise(() =>
+          t.query(makeFunctionReference<"query">("first:run"), {}),
+        );
+        const deployable = registered.filter(
+          (module) =>
+            !/\/_generated\/|\/(schema|convex\.config)\.ts$|\.test\.ts$/.test(
+              module,
+            ),
+        );
+        expect(deployable).toHaveLength(27);
+        expect(loads.at(-1)).toBe("handler");
+        expect(loads.slice(0, -1).toSorted()).toEqual(deployable.toSorted());
+        expect(
+          new Set(deployable.map((module) => module.split(" ")[0])),
+        ).toEqual(
+          new Set([
+            "workflow",
+            "workflow/workpool",
+            "workflow/workpool/batchWorker",
+          ]),
+        );
+      }),
+  );
+
   it.effect("a component registered after the first call is refused", () =>
     Effect.gen(function* () {
       const t = world();
@@ -472,6 +804,44 @@ const occModules = {
             .collect()
             .then((rows) => rows.map(({ label, at }) => ({ label, at }))),
       }),
+      remove: mutationGeneric({
+        args: { id: v.id("keys") },
+        handler: (ctx, { id }) => ctx.db.delete(id).then(() => null),
+      }),
+      writeNothing: mutationGeneric({
+        args: {},
+        handler: (ctx) => Promise.resolve(ctx.db.vars.commitTs),
+      }),
+      keyPage: queryGeneric({
+        args: { numItems: v.number() },
+        handler: (ctx, { numItems }) =>
+          ctx.db
+            .query("keys")
+            .withIndex("by_key")
+            .paginate({ cursor: null, numItems })
+            .then(({ continueCursor }) => continueCursor),
+      }),
+      notePage: mutationGeneric({
+        args: {
+          cursor: v.union(v.string(), v.null()),
+          endCursor: v.optional(v.string()),
+        },
+        handler: (ctx, { cursor, endCursor }) =>
+          ctx.db
+            .query("keys")
+            .withIndex("by_key")
+            .paginate({
+              cursor,
+              numItems: 10,
+              ...(endCursor === undefined ? {} : { endCursor }),
+            })
+            .then(({ page }) =>
+              ctx.db.insert("seen", {
+                what: `page ${page.map((row) => row.key).join(",")}`,
+              }),
+            )
+            .then(() => null),
+      }),
     }),
 };
 
@@ -514,6 +884,19 @@ const occ = {
     {},
     Array<{ label: string; at: bigint }>
   >("occ:stamps"),
+  remove: makeFunctionReference<"mutation", { id: GenericId<"keys"> }>(
+    "occ:remove",
+  ),
+  writeNothing: makeFunctionReference<"mutation", {}, bigint>(
+    "occ:writeNothing",
+  ),
+  keyPage: makeFunctionReference<"query", { numItems: number }, string>(
+    "occ:keyPage",
+  ),
+  notePage: makeFunctionReference<
+    "mutation",
+    { cursor: string | null; endCursor?: string }
+  >("occ:notePage"),
 };
 
 const conflicted = (applied: Execution.KernelApply) => {
@@ -625,6 +1008,63 @@ describe("read sets", () => {
   );
 
   it.effect(
+    "a page from the terminal cursor reads nothing, so a write to its table leaves the attempt valid while a first page conflicts",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld();
+        yield* call(() => t.mutation(occ.add, { key: "1" }));
+        const cursor = yield* call(() =>
+          t.query(occ.keyPage, { numItems: 10 }),
+        );
+        const terminal = yield* call(() => t.prepare(occ.notePage, { cursor }));
+        const first = yield* call(() =>
+          t.prepare(occ.notePage, { cursor: null }),
+        );
+        yield* call(() => t.mutation(occ.add, { key: "2" }));
+        const valid = yield* call(() => t.apply(terminal.id));
+        const next = conflicted(yield* call(() => t.apply(first.id)));
+        yield* call(() => t.apply(next.id));
+        expect([cursor, valid.kind]).toEqual(["_end_cursor", "applied"]);
+        expect(yield* call(() => t.query(occ.seen, {}))).toEqual([
+          "page ",
+          "page 1,2",
+        ]);
+      }),
+  );
+
+  it.effect(
+    "a page bounded by an end cursor reads only up to it, so a write past it leaves the attempt valid and a write inside it conflicts",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld();
+        yield* call(() => t.mutation(occ.add, { key: "1" }));
+        const three = yield* call(() => t.mutation(occ.add, { key: "3" }));
+        const five = yield* call(() => t.mutation(occ.add, { key: "5" }));
+        const endCursor = yield* call(() =>
+          t.query(occ.keyPage, { numItems: 2 }),
+        );
+        yield* call(() => t.mutation(occ.remove, { id: three }));
+        yield* call(() => t.mutation(occ.remove, { id: five }));
+        const past = yield* call(() =>
+          t.prepare(occ.notePage, { cursor: null, endCursor }),
+        );
+        yield* call(() => t.mutation(occ.add, { key: "4" }));
+        const valid = yield* call(() => t.apply(past.id));
+        const inside = yield* call(() =>
+          t.prepare(occ.notePage, { cursor: null, endCursor }),
+        );
+        yield* call(() => t.mutation(occ.add, { key: "2" }));
+        const next = conflicted(yield* call(() => t.apply(inside.id)));
+        yield* call(() => t.apply(next.id));
+        expect(valid.kind).toBe("applied");
+        expect(yield* call(() => t.query(occ.seen, {}))).toEqual([
+          "page 1",
+          "page 1,2",
+        ]);
+      }),
+  );
+
+  it.effect(
     "a mutation whose every attempt conflicts is exhausted on attempt 5 and publishes nothing",
     () =>
       Effect.gen(function* () {
@@ -731,6 +1171,52 @@ describe("commit timestamps", () => {
       }).pipe(Effect.ensuring(Effect.sync(() => vi.useRealTimers()))),
   );
 
+  it.effect(
+    "a mutation that writes nothing answers its snapshot's timestamp and leaves the next commit the time it commits at",
+    () =>
+      Effect.gen(function* () {
+        vi.useFakeTimers({ toFake: ["Date"] });
+        vi.setSystemTime(1_000);
+        const t = occWorld();
+        yield* call(() => t.mutation(occ.stamp, { label: "first" }));
+        vi.setSystemTime(1_500);
+        const nothing = yield* call(() => t.mutation(occ.writeNothing, {}));
+        vi.setSystemTime(2_000);
+        yield* call(() => t.mutation(occ.stamp, { label: "later" }));
+        expect(yield* call(() => t.query(occ.stamps, {}))).toEqual([
+          { label: "first", at: 1_000_000_000n },
+          { label: "later", at: 2_000_000_000n },
+        ]);
+        expect(nothing).toBe(1_000_000_000n);
+      }).pipe(Effect.ensuring(Effect.sync(() => vi.useRealTimers()))),
+  );
+
+  it.effect(
+    "a mutation that writes nothing asks the runtime for no timestamp",
+    () =>
+      Effect.gen(function* () {
+        const asked: Array<number> = [];
+        const t = occWorld({
+          now: () => 1_000,
+          commitTs: (version) => {
+            asked.push(version);
+            return 5_000n + BigInt(version);
+          },
+        });
+        yield* call(() => t.mutation(occ.stamp, { label: "a" }));
+        const held = yield* call(() => t.prepare(occ.writeNothing, {}));
+        const applied = yield* call(() => t.apply(held.id));
+        yield* call(() => t.mutation(occ.stamp, { label: "b" }));
+        expect(asked).toEqual([1, 2]);
+        expect(applied).toMatchObject({
+          kind: "applied",
+          version: 1,
+          commitTs: 5_001n,
+          result: 5_001n,
+        });
+      }),
+  );
+
   it.effect("a runtime that repeats a commit timestamp is refused", () =>
     Effect.gen(function* () {
       const t = occWorld({ now: () => 1_000, commitTs: () => 7n });
@@ -835,7 +1321,33 @@ const life = {
     { outer: string | null; nested: string | null }
   >("life:outer"),
   inner: makeFunctionReference<"action", {}, string | null>("life:inner"),
+  pinnedOuter: makeFunctionReference<
+    "action",
+    {},
+    { outer: Pinned; nested: Pinned; after: Pinned }
+  >("life:pinnedOuter"),
+  pinnedInner: makeFunctionReference<"action", {}, Pinned>("life:pinnedInner"),
+  stamped: makeFunctionReference<
+    "mutation",
+    {},
+    { now: number; created: number }
+  >("life:stamped"),
 };
+
+interface Pinned {
+  readonly now: number;
+  readonly random: number;
+}
+
+const PinnedSchema = Schema.Struct({
+  now: Schema.Finite,
+  random: Schema.Finite,
+});
+
+const pinned = Effect.sync(
+  // oxlint-disable-next-line effecttsgo/global-date-in-effect, effecttsgo/global-random-in-effect -- The handler reads the ambient Date and Math.random the bridge pins.
+  (): Pinned => ({ now: Date.now(), random: Math.random() }),
+);
 
 const bumpCounter = (ctx: GenericMutationCtx<GenericDataModel>, id: string) =>
   Effect.gen(function* () {
@@ -945,6 +1457,54 @@ const lifeModule = {
     }),
     () => mail,
   ),
+  pinnedOuter: register(
+    FunctionSpec.publicAction({
+      name: "pinnedOuter",
+      args: () => ({}),
+      returns: () =>
+        Schema.Struct({
+          outer: PinnedSchema,
+          nested: PinnedSchema,
+          after: PinnedSchema,
+        }),
+    }),
+    () =>
+      Effect.gen(function* () {
+        const outer = yield* pinned;
+        const ctx = yield* ActionCtx.ActionCtx<GenericDataModel>();
+        const nested = yield* Effect.promise(() =>
+          ctx.runAction(life.pinnedInner),
+        );
+        const after = yield* pinned;
+        return { outer, nested, after };
+      }),
+  ),
+  pinnedInner: register(
+    FunctionSpec.internalAction({
+      name: "pinnedInner",
+      args: () => ({}),
+      returns: () => PinnedSchema,
+    }),
+    () => pinned,
+  ),
+  stamped: register(
+    FunctionSpec.publicMutation({
+      name: "stamped",
+      args: () => ({}),
+      returns: () =>
+        Schema.Struct({ now: Schema.Finite, created: Schema.Finite }),
+    }),
+    () =>
+      Effect.gen(function* () {
+        const ctx = yield* MutationCtx.MutationCtx<GenericDataModel>();
+        const id = yield* Effect.promise(() =>
+          ctx.db.insert("counters", { n: 0 }),
+        );
+        const doc = yield* Effect.promise(() => ctx.db.get(id));
+        const { now } = yield* pinned;
+        return { now, created: doc!._creationTime };
+      }),
+  ),
 };
 
 const lifeWorld = (): KernelControls =>
@@ -1012,6 +1572,8 @@ describe("invocations", () => {
   const home: Invocation.World = {
     name: "world",
     services: Context.make(Mail, { answer: "world mail" }),
+    clock: () => 2_000,
+    random: () => 0.75,
   };
   const caller: Invocation.Invocation = {
     world: home,
@@ -1024,6 +1586,8 @@ describe("invocations", () => {
       scheduledFunctionId: null,
     },
     services: Context.make(Mail, { answer: "caller mail" }),
+    startedAt: 1_000,
+    random: () => 0.25,
   };
 
   it.effect(
@@ -1052,6 +1616,41 @@ describe("invocations", () => {
           Invocation.bind(caller, () => t.action(life.outer, {})),
         );
         expect(seen).toEqual({ outer: "caller mail", nested: "world mail" });
+      }),
+  );
+
+  it.effect(
+    "a bound handler reads its invocation's time and stream, a nested action its world's, and test code the host's",
+    () =>
+      Effect.gen(function* () {
+        const t = lifeWorld();
+        const host = { Date: globalThis.Date, Math: globalThis.Math };
+        const seen = yield* call(() =>
+          Invocation.bind(caller, () => t.action(life.pinnedOuter, {})),
+        );
+        expect(seen).toEqual({
+          outer: { now: 1_000, random: 0.25 },
+          nested: { now: 2_000, random: 0.75 },
+          after: { now: 1_000, random: 0.25 },
+        });
+        expect({ Date: globalThis.Date, Math: globalThis.Math }).toEqual(host);
+        // oxlint-disable-next-line effecttsgo/global-date-in-effect -- Test code reads the host's clock, which no handler's pin may reach.
+        expect(Date.now()).toBeGreaterThan(2_000);
+      }),
+  );
+
+  it.effect(
+    "a bound mutation's document takes its creation time from the kernel's clock, not the pinned start time",
+    () =>
+      Effect.gen(function* () {
+        const t = lifeWorld();
+        // oxlint-disable-next-line effecttsgo/global-date-in-effect -- Test code reads the host's clock, which the kernel's wall clock follows.
+        const before = Date.now();
+        const seen = yield* call(() =>
+          Invocation.bind(caller, () => t.mutation(life.stamped, {})),
+        );
+        expect(seen.now).toBe(1_000);
+        expect(seen.created).toBeGreaterThanOrEqual(before);
       }),
   );
 });

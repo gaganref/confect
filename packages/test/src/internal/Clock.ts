@@ -5,6 +5,8 @@
  * everywhere else. It sets no host timer.
  */
 
+import * as Globals from "./Globals.js";
+
 type DateConstructor = typeof globalThis.Date;
 
 interface State {
@@ -65,10 +67,12 @@ export const install = (pinned: () => number | undefined) => {
 
 /**
  * The host's time in milliseconds, never a kernel invocation's: the real clock,
- * or a test's fake one while it is installed.
+ * or a test's fake one while it is installed. It reads the test environment's
+ * `Date`, never the copy a bound handler pinned.
  */
-export const hostNow = (): number => {
-  const global = globalThis as Global;
-  const current = global.Date;
-  return (global[key]?.bases.get(current) ?? current).now();
-};
+export const hostNow = (): number =>
+  Globals.host(() => {
+    const global = globalThis as Global;
+    const current = global.Date;
+    return (global[key]?.bases.get(current) ?? current).now();
+  });
