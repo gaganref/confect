@@ -789,6 +789,12 @@ it.effect(
           })
             .annotate(BodyLimit, ByteSize.bytes(64))
             .middleware(Guard),
+          HttpApiEndpoint.post("json", "/json", {
+            payload: Schema.Struct({ value: Schema.String }),
+            success: Schema.String,
+          })
+            .annotate(BodyLimit, ByteSize.bytes(64))
+            .middleware(Guard),
           HttpApiEndpoint.post("bytes", "/bytes", {
             payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
             success: Schema.String,
@@ -802,6 +808,7 @@ it.effect(
           HttpApiBuilder.group(bodyApi, "body", (h) =>
             h
               .handle("run", ({ payload }) => Effect.succeed(payload.value))
+              .handle("json", ({ payload }) => Effect.succeed(payload.value))
               .handle("bytes", ({ payload }) =>
                 Effect.succeed(new TextDecoder().decode(payload)),
               ),
@@ -815,7 +822,10 @@ it.effect(
                 // The bytes verifier consumes the stream before its decoder
                 // reads arrayBuffer.
                 let text: string;
-                if (endpoint.identifier === "bytes") {
+                if (
+                  endpoint.identifier === "bytes" ||
+                  endpoint.identifier === "json"
+                ) {
                   text = yield* request.stream.pipe(
                     Stream.decodeText(),
                     Stream.mkString,
@@ -847,6 +857,8 @@ it.effect(
         ["/body", '{"value":"changed"}', "identity", 401, ""],
         ["/body", '{"value":"signed"}', "gzip", 415, ""],
         ["/body", "x".repeat(65), "identity", 413, ""],
+        ["/json", '{"value":"signed"}', "identity", 200, '"signed"'],
+        ["/json", '{"value":"changed"}', "identity", 401, ""],
         [
           "/bytes",
           '{"value":"signed"}',
@@ -861,7 +873,7 @@ it.effect(
             method: "POST",
             headers: {
               "Content-Type":
-                path === "/body"
+                path === "/body" || path === "/json"
                   ? "application/json"
                   : "application/octet-stream",
               "Content-Encoding": encoding,
@@ -939,6 +951,38 @@ it.effect("stops a chunked body after the cap and one transport chunk", () =>
     );
     expect([encoded.status, pulled]).toEqual([415, 0]);
   }),
+);
+
+it.effect(
+  "refuses a declared length over the cap without reading the body",
+  () =>
+    Effect.gen(function* () {
+      let pulled = 0;
+      const source = new Request("http://localhost/body", {
+        method: "POST",
+        headers: { "Content-Length": String(ByteSize.mebibytes(2)) },
+        duplex: "half",
+        body: new ReadableStream<Uint8Array>(
+          {
+            pull(controller) {
+              pulled += 65536;
+              controller.enqueue(new Uint8Array(65536));
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+      } as RequestInit & { duplex: "half" });
+      const response = yield* ConfectHttpRouter.withBodyLimit(
+        Effect.succeed(HttpServerResponse.empty()),
+        { maxBytes: ByteSize.mebibytes(1) },
+      ).pipe(
+        Effect.provideService(
+          HttpServerRequest.HttpServerRequest,
+          HttpServerRequest.fromWeb(source),
+        ),
+      );
+      expect([response.status, pulled]).toEqual([413, 0]);
+    }),
 );
 
 it("requires a byte size and preserves the downstream error type", () => {
