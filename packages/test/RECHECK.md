@@ -215,6 +215,20 @@ commit point the attempt is closed, and any syscall on it fails with
 published. The drain waits on `node:timers/promises`, which fake timers leave
 alone.
 
+A nested mutation's frame has the same lifetime. It ends once its function has
+returned and its own syscalls have drained, then closes and merges into its
+caller's frame, so a detached fiber's write made after the nested handler
+settled merges with it. Convex 1.49 runs a nested function through the same
+`run_inner` loop as a top-level one (`execute_nested_udf` and `run_nested` in
+`crates/isolate/src/environment/udf/mod.rs:546-600`). The loop ends only when
+its promise settled and its syscall queue is empty (`:1125-1270`), and only
+then does the caller commit the subtransaction (`async_syscall.rs:703-776`).
+A syscall that reaches a closed nested frame fails with `ClosedAttempt`. Each
+frame shares its attempt's reads but has its own lifetime, since a nested call
+is a syscall of its caller until it ends, and a shared count would wait on
+itself. A failed nested mutation closes at once and is dropped, as the binary
+stops a function at its rejection.
+
 Each attempt's handler starts under the invocation bound when the mutation was
 first called, with that attempt's number. A nested action starts under a fresh
 record with its world's services, a start time read from its world's clock, its

@@ -702,12 +702,20 @@ export class World {
           from,
           undefined,
         );
+        // As at the top level, a nested mutation ends once its function has
+        // returned and every syscall it started has settled. Convex runs a
+        // nested function's syscall queue to the end before it commits its
+        // subtransaction, so a detached fiber's late write lands in this frame
+        // and merges with it. A failed one ends at once and rolls back.
         return this.invokeMutation(execution, resolved, args).then(
-          (result) => {
-            frame.merge();
-            return result;
-          },
+          (result) =>
+            frame.drained().then(() => {
+              frame.close();
+              frame.merge();
+              return result;
+            }),
           (error: unknown) => {
+            frame.close();
             throw deserializeConvexErrorData(error);
           },
         );

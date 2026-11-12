@@ -1306,6 +1306,10 @@ const life = {
     "mutation",
     { id: GenericId<"beds">; held: boolean }
   >("life:detached"),
+  nestedDetached: makeFunctionReference<
+    "mutation",
+    { id: GenericId<"beds">; held: boolean }
+  >("life:nestedDetached"),
   counter: makeFunctionReference<"mutation", {}, GenericId<"counters">>(
     "life:counter",
   ),
@@ -1417,6 +1421,11 @@ const lifeModule = {
         Effect.ensuring(Effect.sync(() => order.push("handler settled"))),
       ),
   ),
+  nestedDetached: mutationGeneric({
+    args: { id: v.id("beds"), held: v.boolean() },
+    handler: (ctx, args) =>
+      ctx.runMutation(life.detached, args).then(() => null),
+  }),
   numbered: register(
     FunctionSpec.publicMutation({
       name: "numbered",
@@ -1551,6 +1560,53 @@ describe("lifetime", () => {
         const t = lifeWorld();
         const id = yield* call(() => t.mutation(life.bed, {}));
         yield* call(() => t.mutation(life.detached, { id, held: true }));
+        yield* Deferred.succeed(gate, undefined);
+        const exit = yield* Deferred.await(exited);
+        expect({
+          refusal: Exit.isFailure(exit)
+            ? String(Cause.squash(exit.cause))
+            : "none",
+          room: yield* call(() => t.query(life.room, { id })),
+        }).toEqual({
+          refusal: expect.stringContaining(
+            "reached mutation life:detached after it returned",
+          ),
+          room: "moved",
+        });
+      }),
+  );
+
+  it.effect(
+    "a write a detached fiber makes after its nested mutation's handler settled commits with its caller",
+    () =>
+      Effect.gen(function* () {
+        order.length = 0;
+        exited = Deferred.makeUnsafe();
+        const t = lifeWorld();
+        const id = yield* call(() => t.mutation(life.bed, {}));
+        yield* call(() => t.mutation(life.nestedDetached, { id, held: false }));
+        const exit = yield* Deferred.await(exited);
+        expect({
+          exit: exit._tag,
+          order,
+          room: yield* call(() => t.query(life.room, { id })),
+        }).toEqual({
+          exit: "Success",
+          order: ["handler settled", "late write"],
+          room: "detached",
+        });
+      }),
+  );
+
+  it.effect(
+    "a write that reaches a nested mutation after it returned is refused, and its own write commits with its caller",
+    () =>
+      Effect.gen(function* () {
+        gate = Deferred.makeUnsafe();
+        exited = Deferred.makeUnsafe();
+        const t = lifeWorld();
+        const id = yield* call(() => t.mutation(life.bed, {}));
+        yield* call(() => t.mutation(life.nestedDetached, { id, held: true }));
         yield* Deferred.succeed(gate, undefined);
         const exit = yield* Deferred.await(exited);
         expect({
