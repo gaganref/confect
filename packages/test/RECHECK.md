@@ -341,3 +341,13 @@ without importing `@confect/test/internal/*`, which stays unexported. A
 throwaway rerun of the crons spike through that option, with Frame's crons
 suite's fake-timer step, ticked at +1000 and +2000 with `public:rescheduler`
 standing and failed `DrainBudgetExceeded` without it.
+
+Both targets reach Convex's server library through the one `globalThis.Convex`.
+convex-test assigns its own the first time it builds a world, so before this fix
+whichever target was built last answered every syscall, and a live layer on the
+other target failed its next one. The kernel now keeps the global as an accessor
+that always reads its dispatcher. A syscall inside a kernel function goes to the
+kernel, and any other to the backend that convex-test assigned. Nothing is
+restored when a layer ends. `test/TestConfectTargets.test.ts` resumes a live
+layer of each target beside and after a layer of the other, and holds a kernel
+function between two syscalls while convex-test makes its first assignment.

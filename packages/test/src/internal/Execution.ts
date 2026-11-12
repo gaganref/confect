@@ -199,8 +199,10 @@ const executions = new AsyncLocalStorage<Execution>();
  * Run a function's code as `execution`, with its own copy of the globals a test
  * invocation pins.
  */
-const enter = <A>(execution: Execution, run: () => A): A =>
-  Globals.own(() => executions.run(execution, run));
+const enter = <A>(execution: Execution, run: () => A): A => {
+  installConvexGlobal();
+  return Globals.own(() => executions.run(execution, run));
+};
 const kernelBrand = Symbol.for("@confect/test/Kernel");
 
 /**
@@ -1695,26 +1697,60 @@ function validateId(
   }
 }
 
+interface Syscalls {
+  readonly syscall: (op: string, args: string) => string;
+  readonly asyncSyscall: (op: string, args: string) => Promise<string>;
+  readonly jsSyscall: (op: string, args: unknown) => unknown;
+}
+
+type Branded = { readonly [kernelBrand]?: true };
+
 /**
- * Convex's server library reaches the backend through `globalThis.Convex`. The
- * kernel answers each syscall for the function that made it.
+ * The backend another library installed as `globalThis.Convex`, which answers
+ * every syscall made outside a kernel function.
  */
-const installConvexGlobal = () => {
-  const global = globalThis as { Convex?: { [kernelBrand]?: true } };
-  if (global.Convex?.[kernelBrand] === true) return;
-  global.Convex = {
-    [kernelBrand]: true,
-    syscall: (op: string, args: string) => current().world.syscall(op, args),
-    asyncSyscall: (op: string, args: string) =>
-      current().world.asyncSyscall(op, args),
-    jsSyscall: (op: string) => current().world.jsSyscall(op),
-  } as any;
+let forwarded: Syscalls | undefined;
+
+// With neither, `current` refuses the syscall.
+const backend = (): Syscalls =>
+  executions.getStore()?.world ?? forwarded ?? current().world;
+
+const dispatcher: Syscalls & Branded = {
+  [kernelBrand]: true,
+  syscall: (op, args) => backend().syscall(op, args),
+  asyncSyscall: (op, args) => backend().asyncSyscall(op, args),
+  jsSyscall: (op, args) => backend().jsSyscall(op, args),
 };
 
 /**
- * Whether `globalThis.Convex` is the kernel's, so no other backend answered.
+ * Convex's server library reaches the backend through `globalThis.Convex`, one
+ * global for the whole test runtime. convex-test 0.0.65 assigns its own the
+ * first time it builds a world (its `dist/index.js:1936-1951`), whenever that
+ * is. The kernel keeps the global an accessor that always reads its dispatcher,
+ * and takes an assignment, or the global it found, as the backend for syscalls
+ * made outside a kernel function. So a kernel world and a convex-test world
+ * stay live together, whichever was built first, and no world restores the
+ * global when it ends. A test that redefines the global removes the accessor,
+ * so every kernel function installs it again over what the test left.
+ */
+const installConvexGlobal = () => {
+  const found = (globalThis as { Convex?: Syscalls & Branded }).Convex;
+  if (found?.[kernelBrand] === true) return;
+  forwarded = found;
+  Object.defineProperty(globalThis, "Convex", {
+    get: () => dispatcher,
+    set: (value: (Syscalls & Branded) | undefined) => {
+      if (value?.[kernelBrand] !== true) forwarded = value;
+    },
+    configurable: true,
+    enumerable: true,
+  });
+};
+
+/**
+ * Whether `globalThis.Convex` is the kernel's, and no other backend installed
+ * one behind it.
  */
 export const ownsConvexGlobal = (): boolean =>
-  (globalThis as { Convex?: { [kernelBrand]?: true } }).Convex?.[
-    kernelBrand
-  ] === true;
+  (globalThis as { Convex?: Branded }).Convex?.[kernelBrand] === true &&
+  forwarded === undefined;

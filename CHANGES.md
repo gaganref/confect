@@ -101,7 +101,9 @@ only, as the kernel and its option are fork-specific.
 `TestConfect.layer` takes `{ target: "kernel" }` in each of its three forms. It
 builds the test backend on the kernel's convex-test shim instead of
 convex-test, so every module and component the layer registers runs on the
-kernel, with `registerComponent`'s `standing` honoured. The default stays
+kernel, with `registerComponent`'s `standing` honoured. Layers on the two
+targets stay live together: the kernel answers `globalThis.Convex` only inside
+its own functions and hands every other syscall to convex-test. The default stays
 `"convex-test"`, so no current test changes until it opts in. This is how
 Frame's generated test backend and its half of build-order row 5 reach the
 kernel without a new export path: the package keeps `./internal/*` unexported.
