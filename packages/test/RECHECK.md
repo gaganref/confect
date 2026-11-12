@@ -340,7 +340,8 @@ realm's `Date` is the kernel's wrapper and a kernel invocation is running, the
 bridge leaves `Date` to it and pins only `Math` and `crypto`
 (`Clock.answersInvocation`). A bound handler on the kernel reads the kernel's
 clock as an unbound one does, an action's running clock included, and draws
-from its invocation's stream. A record's own start time and its world's clock
+from its invocation's stream. A query or mutation a bound action calls starts
+at the kernel's time when it is called, the kernel's form of row 1's rule. A record's own start time and its world's clock
 apply only on convex-test.
 
 `finishAllScheduledFunctions` runs non-standing jobs, earliest first, each at
