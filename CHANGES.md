@@ -175,7 +175,7 @@ Upstream: unrecorded; submission goes through the maintainer.
 
 ### Refuse domain collisions in codegen
 
-Full and incremental codegen reject a domain argument reserved by its profile before loading its implementation. The diagnostic names the spec file, function and argument. Registration retains its load-time backstop. Changeset: `reserved-argument-fence.md`. Upstream: planned; no proposal submitted.
+Full and incremental codegen reject a domain argument reserved by its profile before loading its implementation. The diagnostic names the spec file, function and argument. Registration retains a backstop when its validator compiles, which Convex forces when it analyzes a push. Changeset: `reserved-argument-fence.md`. Upstream: planned; no proposal submitted.
 
 ### Forward context through callback handles
 
@@ -215,9 +215,13 @@ upstream's `tools/local-backend` harness. Native `take()` and `first()` stay
 outside the stream read budget, as the fork's `OrderedQuery` always was.
 
 Upstream's "Enable every Effect lint rule" turns on rules the fork's code was
-never checked against. A per-rule baseline in `.oxlintrc.json` silences them
-for the files that fail today, and `scripts/effectLint.test.ts` lets that
-baseline shrink but not grow. New files meet the full rule set.
+never checked against. One override per rule in `.oxlintrc.json` exempts the
+files that failed it at the merge, by literal path.
+`scripts/effectLintBaseline.json` records how many diagnostics each exempt file
+had, and `scripts/effectLint.test.ts` lints the repository without the
+overrides and requires exactly those counts. New files meet the full rule set,
+new code in an exempt file fails the test, and a fix must lower the recorded
+count, so the baseline only shrinks.
 
 Changeset: `effect-4-1.md`.
 Upstream: fork only.

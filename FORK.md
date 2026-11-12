@@ -20,9 +20,16 @@ Choose a green [Packages run](https://github.com/gaganref/confect/actions/workfl
 pnpm add --strict-peer-dependencies '@confect/core@npm:@gaganref/confect-core@<version>' '@confect/server@npm:@gaganref/confect-server@<version>' '@confect/test@npm:@gaganref/confect-test@<version>' '@confect/cli@npm:@gaganref/confect-cli@<version>'
 ```
 
-The package set runs on Effect 4.1. The server and CLI peer `effect` and
-`@effect/platform-node` at `~4.1.0`, as upstream does, because they use APIs
-that may change between minor releases.
+The package set runs on Effect 4.1. The server, CLI and Alchemy packages peer
+`effect`, and the server and CLI `@effect/platform-node`, at `~4.1.4`. The tilde
+keeps them within the verified minor, because they use APIs that may change
+between minor releases. The floor is 4.1.4 because the server's
+`@effect/ai-*` 4.1.4 dependencies, `@effect/platform-node` 4.1.4 and Alchemy
+beta.86 all peer `effect ^4.1.4`. `@confect/test` peers `^4.1.4` for the
+server it requires. Foldkit stays on `~4.1.0` with its Foldkit 0.170 pair, and
+core, JS and React keep `^4.0.0`. `scripts/effectPeerFloor.test.ts` fails when
+a package's Effect peer floor is below one its required packages need, or when
+the baseline consumer lane stops installing the advertised floor.
 
 PRs exercise all eight staged tarballs in a fresh strict-peer consumer before publication.
 Every public declaration entry typechecks with NodeNext and `skipLibCheck: false`.
