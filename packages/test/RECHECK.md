@@ -79,13 +79,22 @@ reach HTTP route handlers, `t.run` or mount `init`, as recorded above.
 `src/internal/Kernel.ts` holds the committed state: rows per component path
 and table, the latest version and commit timestamp, and the write log.
 `Kernel.apply` is its only writer. It publishes one attempt's writes as one
-version, across every component. `src/internal/Attempt.ts` is one attempt: the
-committed state it started from and a stack of pending-write frames. A nested
-mutation pushes a frame, which merges into its caller's when it returns and is
-dropped when it fails. `src/internal/Execution.ts` answers Convex's syscalls
+version, across every component. `src/internal/Attempt.ts` is one frame of an
+attempt: the committed state it started from, its caller's frame and its own
+pending writes. Each nested mutation gets a frame of its own, which merges into
+its caller's when it returns and is dropped when it fails. Only the invocation
+that owns a frame writes to it, so a caller's write made while its nested
+mutation is in flight survives that mutation's failure. `src/internal/Execution.ts` answers Convex's syscalls
 for the function that made them and runs queries, mutations and actions. Its
 query, range, pagination and validator rules come from convex-test 0.0.65
-(`KernelValues.ts`, `KernelQuery.ts`, Apache-2.0, credited in each file).
+(`KernelValues.ts`, `KernelQuery.ts`, Apache-2.0, credited in each file). The
+kernel adds a `record` validator check, of every key and value, and refuses a
+validator kind it does not know rather than accepting it.
+
+A function in a component runs with no identity, whoever called it, since
+Convex gives a component no `ctx.auth` of its caller's. A nested call in the
+host takes its parent's identity, even when that is none, and a test's caller
+reaches only the function the test called.
 
 Row 2 publishes one top-level mutation at a time. Row 3 replaces that with
 read-set validation and held attempts. Scheduling, storage, HTTP, JWT signing
@@ -106,13 +115,20 @@ convex-test lane and then this one.
 facts differ from it.
 
 - `integration.test.ts:394`, "uses the canonical Doc decoder across database
-  read paths", reads through a text search at `:429`. The inventory places it
-  in row 2. The kernel never simulates search, so no row supplies it. It is
-  placed `binary`. This contradicts lane 1's zero exceptions, as recorded in
-  the row 2 PR.
+  read paths", read through a text search beside its other read paths. The
+  inventory places it in row 2. The search read is now its own case, "uses the
+  canonical Doc decoder for a text search". The other nine read paths and the
+  writer run on the kernel. The new case is placed `binary`, the lane's one
+  permanent placement. The design sanctions it, since its kernel scope says
+  text search is not simulated and is `RequiresBinary`, the exception lane 1
+  allows for.
 - At open the kernel loads the modules Convex's bundler would deploy, by the
   rule in `convex/src/bundler/index.ts` (1.49). It skips `_generated`,
   `schema.ts`, any file with more than one dot, dotfiles and nested component
   directories. The official Workflow kit registers its packages' own
   `*.test.ts` files, and importing those inside a running test fails, so
-  loading every registered file would break that kit.
+  loading every registered file would break that kit. `test/Kernel.test.ts`
+  registers the real kit, `@convex-dev/workflow` 0.4.10 (Frame's pin), through
+  its own `register`. All 27 deployable modules of Workflow, Workpool and Batch
+  Worker load before the first handler runs, with no preload, and none of the
+  kit's test files loads.
