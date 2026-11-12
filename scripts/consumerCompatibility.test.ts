@@ -88,8 +88,8 @@ test("both advertised profiles include the whole backend and CLI graph", () => {
   ]);
   expect(consumerDependencies("foldkit", "baseline")).toMatchObject({
     foldkit: "0.170.0",
-    effect: "4.1.0",
-    "@effect/platform-browser": "4.1.0",
+    effect: "4.1.4",
+    "@effect/platform-browser": "4.1.4",
   });
   expect(consumerDependencies("foldkit", "fresh")).toMatchObject({
     foldkit: "^0.170.0",
@@ -137,9 +137,9 @@ test.each([
 
 test("fresh resolution follows the CLI compatibility ranges without exact pins", () => {
   expect(consumerDependencies("react", "baseline")).toMatchObject({
-    effect: "4.1.0",
-    "@effect/platform-node": "4.1.0",
-    "@effect/platform-node-shared": "4.1.0",
+    effect: "4.1.4",
+    "@effect/platform-node": "4.1.4",
+    "@effect/platform-node-shared": "4.1.4",
   });
   expect(consumerDependencies("react", "fresh")).toMatchObject({
     effect: "~4.1.0",
