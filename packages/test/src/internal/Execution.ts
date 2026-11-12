@@ -423,7 +423,7 @@ export class World {
     private readonly runtime: Kernel.KernelRuntime = Kernel.wallClock(),
   ) {
     installConvexGlobal();
-    Clock.install(pinnedTime);
+    Clock.install(pinnedTime, () => executions.getStore() !== undefined);
     this.components.set(ROOT, makeComponent(ROOT, schema, modules));
   }
 

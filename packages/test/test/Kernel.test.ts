@@ -1327,6 +1327,7 @@ const life = {
     { outer: Pinned; nested: Pinned; after: Pinned }
   >("life:pinnedOuter"),
   pinnedInner: makeFunctionReference<"action", {}, Pinned>("life:pinnedInner"),
+  pinnedQuery: makeFunctionReference<"query", {}, Pinned>("life:pinnedQuery"),
   stamped: makeFunctionReference<
     "mutation",
     {},
@@ -1487,6 +1488,14 @@ const lifeModule = {
     }),
     () => pinned,
   ),
+  pinnedQuery: register(
+    FunctionSpec.publicQuery({
+      name: "pinnedQuery",
+      args: () => ({}),
+      returns: () => PinnedSchema,
+    }),
+    () => pinned,
+  ),
   stamped: register(
     FunctionSpec.publicMutation({
       name: "stamped",
@@ -1507,17 +1516,27 @@ const lifeModule = {
   ),
 };
 
-const lifeWorld = (): KernelControls =>
-  convexTest(
-    defineSchema({
+const lifeWorld = (runtime?: {
+  readonly now: () => number;
+  readonly commitTs: (version: number) => bigint;
+}): KernelControls =>
+  convexTest({
+    schema: defineSchema({
       beds: defineTable({ room: v.string() }),
       counters: defineTable({ n: v.number() }),
     }),
-    {
+    modules: {
       "_generated/server.ts": () => Promise.resolve({}),
       "life.ts": () => Promise.resolve(lifeModule),
     },
-  );
+    ...(runtime === undefined ? {} : { runtime }),
+  });
+
+// The kernel's clock stands at 5000, apart from every invocation's start time.
+const kernelAt5000 = {
+  now: () => 5_000,
+  commitTs: (version: number) => BigInt(version),
+};
 
 describe("lifetime", () => {
   it.effect(
@@ -1620,37 +1639,59 @@ describe("invocations", () => {
   );
 
   it.effect(
-    "a bound handler reads its invocation's time and stream, a nested action its world's, and test code the host's",
+    "a bound handler reads the kernel's clock and its invocation's stream, a nested action its world's stream, and test code the host's",
     () =>
       Effect.gen(function* () {
-        const t = lifeWorld();
+        const t = lifeWorld(kernelAt5000);
         const host = { Date: globalThis.Date, Math: globalThis.Math };
         const seen = yield* call(() =>
           Invocation.bind(caller, () => t.action(life.pinnedOuter, {})),
         );
         expect(seen).toEqual({
-          outer: { now: 1_000, random: 0.25 },
-          nested: { now: 2_000, random: 0.75 },
-          after: { now: 1_000, random: 0.25 },
+          outer: { now: 5_000, random: 0.25 },
+          nested: { now: 5_000, random: 0.75 },
+          after: { now: 5_000, random: 0.25 },
         });
         expect({ Date: globalThis.Date, Math: globalThis.Math }).toEqual(host);
         // oxlint-disable-next-line effecttsgo/global-date-in-effect -- Test code reads the host's clock, which no handler's pin may reach.
-        expect(Date.now()).toBeGreaterThan(2_000);
+        expect(Date.now()).toBeGreaterThan(5_000);
       }),
   );
 
   it.effect(
-    "a bound mutation's document takes its creation time from the kernel's clock, not the pinned start time",
+    "a bound mutation reads the kernel's clock, not its invocation's start time, and its document's creation time follows it",
     () =>
       Effect.gen(function* () {
-        const t = lifeWorld();
-        // oxlint-disable-next-line effecttsgo/global-date-in-effect -- Test code reads the host's clock, which the kernel's wall clock follows.
-        const before = Date.now();
+        const t = lifeWorld(kernelAt5000);
         const seen = yield* call(() =>
           Invocation.bind(caller, () => t.mutation(life.stamped, {})),
         );
-        expect(seen.now).toBe(1_000);
-        expect(seen.created).toBeGreaterThanOrEqual(before);
+        expect(seen).toEqual({ now: 5_000, created: 5_000 });
+      }),
+  );
+
+  it.effect(
+    "a bound subscription's query reads the kernel's clock and records the read, so the clock moving alone changes nothing",
+    () =>
+      Effect.gen(function* () {
+        let now = 5_000;
+        const t = lifeWorld({
+          now: () => now,
+          commitTs: (version) => BigInt(version),
+        });
+        const subscription = yield* call(() =>
+          Invocation.bind(caller, () =>
+            t.subscriber().subscribe(life.pinnedQuery, {}),
+          ),
+        );
+        expect(subscription.current()).toMatchObject({
+          outcome: { _tag: "returned", value: { now: 5_000, random: 0.25 } },
+          time: 5_000,
+        });
+        now = 6_000;
+        expect(
+          yield* call(() => Invocation.bind(caller, () => t.reference())),
+        ).toEqual([]);
       }),
   );
 });

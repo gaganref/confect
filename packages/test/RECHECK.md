@@ -230,8 +230,9 @@ Row 1's pins rely on each handler call having its own `Date`, `Math` and
 handler the kernel started under a bound invocation. `src/internal/Globals.ts`
 gives each query, mutation and action the kernel starts its own copy, as
 convex-test does, and a nested call starts from the test environment's. A
-bound handler on the kernel then reads its invocation's start time and stream,
-a nested action its world's, and test code keeps the host's. The kernel's
+bound handler on the kernel then reads its invocation's stream, a nested action
+its world's, and test code keeps the host's. The start time it reads is the
+kernel's, as recorded under row 4. The kernel's
 default wall clock reads the host's `Date`, never a handler's copy, so a
 document a bound mutation inserts takes its `_creationTime` from the kernel's
 clock, as every commit timestamp does. On convex-test it takes the pinned
@@ -286,6 +287,16 @@ convex-test, which has no subscriptions:
 reads it records that time. The wrapper, `src/internal/Clock.ts`, is the same
 file as row 5's, byte for byte: a time dependency needs the pinned query clock
 that row 5's scheduler also needs.
+
+Inside a bound handler, row 1's pin of the invocation's start time would hide
+the wrapper. A bound query would then read that start time, and its read would
+go unrecorded, so a subscription would lose its time dependency. So when the
+realm's `Date` is the kernel's wrapper and a kernel invocation is running, the
+bridge leaves `Date` to it and pins only `Math` and `crypto`
+(`Clock.answersInvocation`, row 5's rule too). A bound handler on the kernel
+reads the kernel's clock as an unbound one does, and a bound query's read of it
+is recorded. A record's own start time and its world's clock apply only on
+convex-test.
 
 No inventory case is placed in row 4, and no refusal named row 4, so the lane's
 placements are unchanged.
