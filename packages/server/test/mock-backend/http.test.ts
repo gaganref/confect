@@ -14,6 +14,7 @@ import { Id } from "./fixtures/confect/_generated/id";
 import fixtureHttp, { NotesApi } from "./fixtures/confect/http";
 import * as TestConfect from "./TestConfect";
 import convexSchema from "./fixtures/confect/_generated/convexSchema";
+import databaseSchema from "./fixtures/confect/_generated/schema";
 
 it.layer(TestConfect.layer, { buildPerTest: true })("HttpRouter", (test) => {
   test.effect(
@@ -21,6 +22,7 @@ it.layer(TestConfect.layer, { buildPerTest: true })("HttpRouter", (test) => {
     () =>
       Effect.gen(function* () {
         const http = ConfectHttpRouter.make(
+          databaseSchema,
           HttpRouter.add(
             "GET",
             "/storage",
@@ -213,7 +215,7 @@ describe("HttpRouter.make type-level guarantees", () => {
     const _missingGroupLayerIsRejected = () =>
       // @ts-expect-error
       // @effect-diagnostics-next-line missingLayerContext:off
-      ConfectHttpRouter.make(HttpApiBuilder.layer(NotesApi));
+      ConfectHttpRouter.make(databaseSchema, HttpApiBuilder.layer(NotesApi));
 
     expect(_missingGroupLayerIsRejected).toBeDefined();
   });

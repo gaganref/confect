@@ -339,6 +339,10 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
     ],
     [
       "http.ts",
+      "import { HttpRouter } from '@confect/server'\nimport schema from '../confect/_generated/schema'\nimport http from '../confect/http.js'\nexport default HttpRouter.make(schema, \n http.routes, { api: http.api, },\n)\n",
+    ],
+    [
+      "http.ts",
       "import { HttpRouter } from '@confect/server'\nimport schema from '../confect/_generated/schema'\nimport http from '../confect/http.js'\nexport default HttpRouter.forSchema(schema)(\n http.routes, { api: http.api, },\n)\n",
     ],
     [

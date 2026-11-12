@@ -4,4 +4,4 @@ import schema from "../confect/_generated/schema.js";
 import http from "../confect/http.js";
 import observability from "../confect/runtime.js";
 
-export default HttpRouter.forSchema(schema)(http.routes, { api: http.api, observability });
+export default HttpRouter.make(schema, http.routes, { api: http.api, observability });

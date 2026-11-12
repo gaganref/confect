@@ -611,6 +611,19 @@ Changesets: `backend-declaration.md`, `app-mounts-list.md`,
 `first-codegen-registry.md`.
 Upstream: planned; no linked proposal verified.
 
+### Take the schema first in HttpRouter.make
+
+Adopt upstream `main`'s router shape (c3ee2b3, 6a145ab): `HttpRouter.make(schema,
+routes, options?)` is the only constructor. The schema types the routes'
+services, including `VectorSearch`, and `schema.target.kind` selects application
+or component routing, as `forSchema` did. The fork keeps `{ api, observability }`
+as the third argument. `forSchema` and the schema-less `make` are gone. Codegen
+emits the new call and still owns a generated `convex/http.ts` in the old
+`forSchema` shape, so `confect codegen` rewrites it.
+
+Changeset: `http-router-schema-first.md`.
+Upstream: converges with upstream `main`, unreleased at 10.6.0.
+
 ### Label reflected HTTP routes
 
 Accept `{ api }` on application and component HTTP routers so completion logs and

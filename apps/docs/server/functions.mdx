@@ -284,7 +284,7 @@ The layer context builds once per layer identity, including concurrent first use
 
 ## HTTP invocation instrumentation
 
-Generated declared HTTP entries pass `confect/runtime.ts` to `HttpRouter.forSchema(schema)` for you. A hand-built router must pass `{ observability }` explicitly to `HttpRouter.make` or `HttpRouter.forSchema(schema)`; codegen does not wire its runtime layer. The same layer instance shares one build across registered functions and HTTP, and is never released.
+Generated declared HTTP entries pass `confect/runtime.ts` to `HttpRouter.make` for you. A hand-built router must pass `{ observability }` explicitly as `HttpRouter.make`'s third argument; codegen does not wire its runtime layer. The same layer instance shares one build across registered functions and HTTP, and is never released.
 
 HTTP reuses Effect's request span, named by the reflected route label, with `kind: "httpAction"`. A `traceparent` header continues the caller's trace. Identify the HTTP invocation span by its `kind`, even when it has an external parent.
 

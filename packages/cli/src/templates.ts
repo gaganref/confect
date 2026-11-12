@@ -332,7 +332,7 @@ export const declaredHttp = Effect.fnUntraced(function* ({
     yield* cbw.writeLine(`import observability from "${runtimeImportPath}";`);
   yield* cbw.newLine();
   yield* cbw.writeLine(
-    `export default HttpRouter.forSchema(schema)(http.routes, { api: http.api${runtimeImportPath === undefined ? "" : ", observability"} });`,
+    `export default HttpRouter.make(schema, http.routes, { api: http.api${runtimeImportPath === undefined ? "" : ", observability"} });`,
   );
 
   return yield* cbw.toString();

@@ -321,7 +321,7 @@ export const register = (
 };
 ```
 
-`makeHttp` must construct `HttpRouter.forSchema(componentSchema)(routes)` and any configuration-dependent route layers on each call. The production `confect/http.ts` can export `makeHttp()` as its default. TestConfect caches each mount's resulting router, including construction failures. A plain dynamic import of an already constructed router cannot provide separate construction-time configuration for two mounts.
+`makeHttp` must construct `HttpRouter.make(componentSchema, routes)` and any configuration-dependent route layers on each call. The production `confect/http.ts` can export `makeHttp()` as its default. TestConfect caches each mount's resulting router, including construction failures. A plain dynamic import of an already constructed router cannot provide separate construction-time configuration for two mounts.
 
 <Warning>
   Mounted HTTP tests share the process environment. Fetches through one layer,

@@ -189,8 +189,9 @@ describe("component capabilities", () => {
       Auth.Auth.pipe(Effect.as(HttpServerResponse.text("OK"))),
     );
     // @ts-expect-error Component HTTP handlers also cannot require application Auth.
-    HttpRouter.forSchema(databaseSchema)(routes);
-    HttpRouter.forSchema(databaseSchema)(
+    HttpRouter.make(databaseSchema, routes);
+    HttpRouter.make(
+      databaseSchema,
       Router.add("GET", "/", HttpServerResponse.text("OK")),
     );
   });

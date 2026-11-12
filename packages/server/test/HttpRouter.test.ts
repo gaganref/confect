@@ -1,6 +1,8 @@
 import { recording } from "./internal/recording";
 import * as IdScope from "@confect/core/IdScope";
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
+import type * as DataModel from "@confect/server/DataModel";
+import type * as VectorSearch from "@confect/server/VectorSearch";
 import * as ConfectHttpRouter from "@confect/server/HttpRouter";
 import { assert, describe, expect, expectTypeOf, it } from "@effect/vitest";
 import { vi } from "vitest";
@@ -57,9 +59,23 @@ const matchLabel = (
   method: "GET" | "POST" | "HEAD" = "GET",
 ) => router.lookup(path, method)?.slice(1);
 
+it("requires a database schema and types vector search by it", () => {
+  const health = HttpRouter.add("GET", "/", HttpServerResponse.text("ok"));
+  const schemaless = () =>
+    // @ts-expect-error A router takes its database schema first.
+    ConfectHttpRouter.make(health);
+  void schemaless;
+  const empty = DatabaseSchema.make({});
+  expectTypeOf<
+    VectorSearch.VectorSearch<DataModel.FromSchema<typeof empty>>
+  >().toExtend<ConfectHttpRouter.Services<typeof empty>>();
+});
+
 describe("HttpRouter", () => {
   it("lists reflected endpoint methods and patterns without catch-all rows", () => {
-    const router = ConfectHttpRouter.make(routes, { api });
+    const router = ConfectHttpRouter.make(DatabaseSchema.make({}), routes, {
+      api,
+    });
     expect(labels(router)).toEqual([
       ["POST", "/users"],
       ["GET", "/users/:id"],
@@ -67,11 +83,15 @@ describe("HttpRouter", () => {
   });
 
   it("labels matching requests and keeps the catch-all for unmatched requests", () => {
-    const router = ConfectHttpRouter.make(routes, { api });
-    expect(matchLabel(ConfectHttpRouter.make(routes), "/nope")).toEqual([
-      "GET",
-      "/*",
-    ]);
+    const router = ConfectHttpRouter.make(DatabaseSchema.make({}), routes, {
+      api,
+    });
+    expect(
+      matchLabel(
+        ConfectHttpRouter.make(DatabaseSchema.make({}), routes),
+        "/nope",
+      ),
+    ).toEqual(["GET", "/*"]);
     expect([
       matchLabel(router, "/users/42"),
       matchLabel(router, "/users", "POST"),
@@ -88,7 +108,9 @@ describe("HttpRouter", () => {
   });
 
   it("keeps explicit Convex routes ahead of reflected routes", () => {
-    const router = ConfectHttpRouter.make(routes, { api });
+    const router = ConfectHttpRouter.make(DatabaseSchema.make({}), routes, {
+      api,
+    });
     const exact = httpActionGeneric(() =>
       Promise.resolve(new Response("exact")),
     );
@@ -117,6 +139,7 @@ describe("HttpRouter", () => {
 
   it("keeps catch-all labels for plain Effect routes beside an API", () => {
     const router = ConfectHttpRouter.make(
+      DatabaseSchema.make({}),
       Layer.mergeAll(
         routes,
         HttpRouter.add("GET", "/health", HttpServerResponse.text("ok")),
@@ -136,7 +159,7 @@ it("labels component routes relative to the component, with the same reflected A
       scope: IdScope.component("users"),
     },
   );
-  const router = ConfectHttpRouter.forSchema(schema)(routes, { api });
+  const router = ConfectHttpRouter.make(schema, routes, { api });
   expect(labels(router)).toEqual([
     ["POST", "/users"],
     ["GET", "/users/:id"],
@@ -160,13 +183,13 @@ it("keeps unmatched component labels relative to a prefixed API", () => {
       ),
     ),
   );
-  const router = ConfectHttpRouter.forSchema(schema)(prefixedRoutes, {
+  const router = ConfectHttpRouter.make(schema, prefixedRoutes, {
     api: prefixedApi,
   });
   expect(matchLabel(router, "/v1/users/42")).toEqual(["GET", "/v1/users/:id"]);
   expect(router.lookup("/nope", "GET")?.slice(1)).toEqual(["GET", "/*"]);
   expect(
-    ConfectHttpRouter.forSchema(schema)(prefixedRoutes)
+    ConfectHttpRouter.make(schema, prefixedRoutes)
       .lookup("/nope", "GET")
       ?.slice(1),
   ).toEqual(["GET", "/*"]);
@@ -187,7 +210,9 @@ it("labels prefixed wildcard routes at their base path and descendants", () => {
       ),
     ),
   );
-  const router = ConfectHttpRouter.make(assetsRoutes, { api: assetsApi });
+  const router = ConfectHttpRouter.make(DatabaseSchema.make({}), assetsRoutes, {
+    api: assetsApi,
+  });
   expect(labels(router)).toEqual([["GET", "/v1/assets/*"]]);
   expect([
     matchLabel(router, "/v1/assets"),
@@ -226,7 +251,11 @@ it("distinguishes declared parameters from literal colons in API paths", () => {
       ),
     ),
   );
-  const router = ConfectHttpRouter.make(actionsRoutes, { api: actionsApi });
+  const router = ConfectHttpRouter.make(
+    DatabaseSchema.make({}),
+    actionsRoutes,
+    { api: actionsApi },
+  );
   expect([
     matchLabel(router, "/items/42:cancel", "POST"),
     matchLabel(router, "/items/42:archive", "POST"),
@@ -248,7 +277,8 @@ it("keeps a component mountable when its label API has no routable endpoints", (
       scope: IdScope.component("health"),
     },
   );
-  const router = ConfectHttpRouter.forSchema(schema)(
+  const router = ConfectHttpRouter.make(
+    schema,
     HttpRouter.add("GET", "/health", HttpServerResponse.text("ok")),
     { api: HttpApi.make("empty") },
   );
@@ -271,7 +301,7 @@ it.effect("uses one labeled request span and the supplied logger", () =>
       {},
       { kind: "component", scope: IdScope.component("users") },
     );
-    const router = ConfectHttpRouter.forSchema(schema)(routes, {
+    const router = ConfectHttpRouter.make(schema, routes, {
       api,
       observability,
     });
@@ -365,10 +395,14 @@ it.effect.each([
           ),
         ),
       );
-      const router = ConfectHttpRouter.make(outcomeRoutes, {
-        api: outcomeApi,
-        observability,
-      });
+      const router = ConfectHttpRouter.make(
+        DatabaseSchema.make({}),
+        outcomeRoutes,
+        {
+          api: outcomeApi,
+          observability,
+        },
+      );
       const t = convexTest(undefined, {
         ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
         "./mock-backend/fixtures/convex/http.ts": () =>
@@ -394,7 +428,11 @@ it.effect.each([
         ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
         "./mock-backend/fixtures/convex/http.ts": () =>
           Promise.resolve({
-            default: ConfectHttpRouter.make(outcomeRoutes, { api: outcomeApi }),
+            default: ConfectHttpRouter.make(
+              DatabaseSchema.make({}),
+              outcomeRoutes,
+              { api: outcomeApi },
+            ),
           }),
       });
       const unobserved = yield* Effect.promise(() =>
@@ -487,6 +525,7 @@ it.effect("keeps ConvexLogger for HTTP without a runtime layer", () =>
     const info = vi.spyOn(globalThis.console, "info");
     try {
       const router = ConfectHttpRouter.make(
+        DatabaseSchema.make({}),
         HttpRouter.add(
           "GET",
           "/log",
@@ -586,6 +625,7 @@ it.effect(
         );
       const send = fetcher(
         ConfectHttpRouter.make(
+          DatabaseSchema.make({}),
           HttpApiBuilder.layer(optionsApi).pipe(
             Layer.provide([
               HttpApiBuilder.group(optionsApi, "endpoints", (handlers) =>
@@ -762,7 +802,9 @@ it.effect.each([
   "dispatches OPTIONS on router-equivalent paths $paths",
   ({ layer, request, preflights }) =>
     Effect.gen(function* () {
-      const send = fetcher(ConfectHttpRouter.make(layer));
+      const send = fetcher(
+        ConfectHttpRouter.make(DatabaseSchema.make({}), layer),
+      );
       const [method, path, body] = request;
       expect(yield* send(path, method)).toEqual([200, body]);
       for (const [preflightPath, requested, ...expected] of preflights)
@@ -846,7 +888,11 @@ it.effect(
           ),
         ),
       );
-      const router = ConfectHttpRouter.make(bodyRoutes, { api: bodyApi });
+      const router = ConfectHttpRouter.make(
+        DatabaseSchema.make({}),
+        bodyRoutes,
+        { api: bodyApi },
+      );
       const t = convexTest(undefined, {
         ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
         "./mock-backend/fixtures/convex/http.ts": () =>

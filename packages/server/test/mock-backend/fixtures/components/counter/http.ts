@@ -13,7 +13,8 @@ import schema from "../../../../../../cli/test/fixtures/authored-component/confe
 import refs from "../../../../../../cli/test/fixtures/authored-component/confect/_generated/refs";
 
 export const makeHttp = () =>
-  ConfectHttpRouter.forSchema(schema)(
+  ConfectHttpRouter.make(
+    schema,
     Layer.unwrap(
       Effect.gen(function* () {
         const siteUrl = yield* Config.schema(Schema.String, "CONVEX_SITE_URL");

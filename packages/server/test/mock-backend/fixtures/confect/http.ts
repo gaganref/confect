@@ -15,6 +15,7 @@ import * as HttpApiScalar from "effect/http-api/HttpApiScalar";
 import refs from "./_generated/refs";
 import { QueryRunner } from "./_generated/services";
 import notes from "./_generated/tables/notes";
+import databaseSchema from "./_generated/schema";
 
 class NotesGroup extends HttpApiGroup.make("notes").add(
   HttpApiEndpoint.get("listNotes", "/notes", {
@@ -79,6 +80,7 @@ const withTestHeader: HttpMiddleware.HttpMiddleware = (httpApp) =>
   );
 
 const http = ConfectHttpRouter.make(
+  databaseSchema,
   Layer.mergeAll(
     HttpApiBuilder.layer(NotesApi).pipe(Layer.provide(NotesApiLive)),
     HttpApiBuilder.layer(MetaApi).pipe(Layer.provide(MetaApiLive)),

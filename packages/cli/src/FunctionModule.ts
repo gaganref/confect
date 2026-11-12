@@ -109,6 +109,14 @@ const matchesShape = (
   return index === actual.length;
 };
 
+// Before the schema-first HttpRouter.make, codegen emitted forSchema; codegen
+// owns that output so it can rewrite it.
+const legacyRouter = (template: string) =>
+  template.replace(
+    "HttpRouter.make(schema, http.routes, ",
+    "HttpRouter.forSchema(schema)(http.routes, ",
+  );
+
 export const assertOwnedEntrypoints = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -133,7 +141,7 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
           httpImportPath: yield* importFromConvex("http.ts"),
           runtimeImportPath: yield* importFromConvex("runtime.ts"),
         }),
-      ],
+      ].flatMap((template) => [template, legacyRouter(template)]),
     ],
     [
       "crons.ts",
