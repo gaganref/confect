@@ -190,7 +190,10 @@ stale when it read the identity and `authenticate` has since bumped its
 subscriber's identity version. `refresh` reruns the stale runs at the latest
 commit and the kernel's time, oldest first, until none is stale. It lists each
 value that changed. `reference` is the full-rerun reference: it reruns every
-subscription from scratch and lists each one whose value differs.
+subscription from scratch and lists each one whose value differs. Two failures
+show the same thing when their errors share a name, message and data, or when
+they threw equal bare values of the same type, so a query that throws `"a"`
+and then `"b"` changes.
 
 Three rules come from the binary's source and docs (Convex 1.49), not from
 convex-test, which has no subscriptions:
@@ -202,7 +205,11 @@ convex-test, which has no subscriptions:
   query cache, which reuses a result that read the time only within
   `MAX_CACHE_AGE` (`crates/application/src/cache/mod.rs:795-820`). The kernel
   has no cache, so a rerun always reads the kernel's time now. The reference
-  reruns a query that read the time at the time its run read.
+  reruns a query that read the time at the time its run read, and again at the
+  kernel's time now when that rerun's own reads show a rerun was owed: a commit
+  since the run changed something it read, or it read an identity that has
+  changed. It reads neither the run's recorded reads nor `invalidation`, so a
+  missed invalidation disagrees even when the query's value is only the time.
 - An identity change makes stale only the runs that read the identity, as the
   design says. The binary reruns every query of the session and leaves the
   narrower rule as a TODO, CX-737 (`crates/sync/src/worker.rs:953-962`). The

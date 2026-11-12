@@ -42,22 +42,34 @@ export const invalidation = (
   return undefined;
 };
 
-const errorKey = (error: unknown): string => {
-  const { name, message, data } = (error ?? {}) as {
-    readonly name?: unknown;
-    readonly message?: unknown;
-    readonly data?: unknown;
-  };
-  return JSON.stringify([
-    String(name),
-    String(message),
-    data === undefined ? null : convexToJson(data as Value),
-  ]);
+/**
+ * A thrown value as JSON: a Convex value as Convex writes it, and anything else
+ * as its string, beside its type so `"1"` and `1` differ.
+ */
+const thrownKey = (thrown: unknown): unknown => {
+  try {
+    return [typeof thrown, convexToJson(thrown as Value)];
+  } catch {
+    return [typeof thrown, String(thrown)];
+  }
 };
 
+const errorKey = (error: unknown): string =>
+  JSON.stringify(
+    error instanceof Error
+      ? [
+          "error",
+          error.name,
+          error.message,
+          thrownKey((error as { readonly data?: unknown }).data),
+        ]
+      : ["thrown", thrownKey(error)],
+  );
+
 /**
- * Whether two outcomes show a client the same thing: equal values, or failures
- * with the same name, message and data.
+ * Whether two outcomes show a client the same thing: equal values, failures
+ * with errors of the same name, message and data, or failures that threw equal
+ * bare values.
  */
 export const sameOutcome = (
   a: Execution.Outcome,
@@ -231,15 +243,11 @@ export class Registry {
   /**
    * Rerun every subscription's query from scratch, at the latest commit and
    * under its subscriber's identity now, and list each whose value differs. A
-   * run that read the time reruns at that time, since the clock alone never
-   * invalidates it. A paginated run keeps its page end.
+   * paginated run keeps its page end.
    */
   reference(): Promise<ReadonlyArray<Disagreement>> {
     return inTurn(Array.from(this.live.values()), (live) =>
-      this.run(live.subscriber, live.reference, live.args, {
-        journal: live.run.journal,
-        ...(live.run.time === null ? {} : { time: live.run.time }),
-      }).then(({ outcome }): Disagreement | undefined =>
+      this.rerun(live).then(({ outcome }): Disagreement | undefined =>
         sameOutcome(live.run.outcome, outcome)
           ? undefined
           : {
@@ -248,6 +256,35 @@ export class Registry {
               reference: outcome,
             },
       ),
+    );
+  }
+
+  /**
+   * A full rerun of `live`'s query. A run that read the time first reruns at
+   * that time, since the clock alone never invalidates it. When that rerun's
+   * own reads show the run was owed a rerun, it reruns again at the kernel's
+   * time now, as `refresh` would. The rerun was owed when a commit since the
+   * run changed something the rerun read, or the rerun read an identity that
+   * has changed since. The check reads neither the run's recorded reads nor
+   * `invalidation`, so a dependency `refresh` missed still disagrees.
+   */
+  private rerun(live: Live): Promise<Run> {
+    const { run } = live;
+    const now = () =>
+      this.run(live.subscriber, live.reference, live.args, {
+        journal: run.journal,
+      });
+    if (run.time === null) return now();
+    return this.run(live.subscriber, live.reference, live.args, {
+      journal: run.journal,
+      time: run.time,
+    }).then((atRunTime) =>
+      Kernel.conflict(this.world.state, run.snapshot, atRunTime.reads) !==
+        undefined ||
+      (atRunTime.observedIdentity &&
+        atRunTime.identityVersion !== run.identityVersion)
+        ? now()
+        : atRunTime,
     );
   }
 

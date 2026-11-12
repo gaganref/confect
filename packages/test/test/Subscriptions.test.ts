@@ -14,6 +14,7 @@ import { v, type GenericId, type Value } from "convex/values";
 import * as Effect from "effect/Effect";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import type * as Execution from "../src/internal/Execution";
+import * as Subscriptions from "../src/internal/Subscriptions";
 
 type TaskId = GenericId<"tasks">;
 type Task = { title: string; owner: string; due: number };
@@ -44,6 +45,9 @@ const tasks = {
   >("tasks:page"),
   only: makeFunctionReference<"query", {}, string>("tasks:only"),
   stored: makeFunctionReference<"query", {}, Array<string>>("tasks:stored"),
+  stamp: makeFunctionReference<"query", { id: TaskId }, number>("tasks:stamp"),
+  signedAt: makeFunctionReference<"query", {}, number>("tasks:signedAt"),
+  refuse: makeFunctionReference<"query", { id: TaskId }, never>("tasks:refuse"),
 };
 
 const store = (componentsGeneric() as any).store as {
@@ -154,6 +158,24 @@ const modules = {
       stored: queryGeneric({
         args: {},
         handler: (ctx) => ctx.runQuery(store.rows.list, {}),
+      }),
+      // Reads a task, and answers only the time.
+      stamp: queryGeneric({
+        args: { id: v.id("tasks") },
+        handler: (ctx, { id }) => ctx.db.get(id).then(() => Date.now()),
+      }),
+      // Reads the identity, and answers only the time.
+      signedAt: queryGeneric({
+        args: {},
+        handler: (ctx) => ctx.auth.getUserIdentity().then(() => Date.now()),
+      }),
+      // Throws its task's owner, a bare string rather than an `Error`.
+      refuse: queryGeneric({
+        args: { id: v.id("tasks") },
+        handler: (ctx, { id }) =>
+          ctx.db.get(id).then((task) => {
+            throw task?.owner;
+          }),
       }),
     }),
 };
@@ -297,6 +319,129 @@ describe("full-rerun reference", () => {
         expect(after).toEqual([]);
       }),
   );
+
+  it.effect(
+    "a commit that changes a read of a query whose value is only the time disagrees with the reference until it is refreshed",
+    () =>
+      Effect.gen(function* () {
+        const time = clock(100);
+        const t = world(time.runtime);
+        const id = yield* call(() =>
+          t.mutation(tasks.add, { title: "a", owner: "ada", due: 10 }),
+        );
+        const subscription = yield* call(() =>
+          t.subscriber().subscribe(tasks.stamp, { id }),
+        );
+        time.set(200);
+        const moved = yield* call(() => t.reference());
+        yield* call(() => t.mutation(tasks.move, { id, due: 20 }));
+        const before = yield* call(() => t.reference());
+        yield* call(() => t.refresh());
+        const after = yield* call(() => t.reference());
+        expect(moved).toEqual([]);
+        expect(before).toEqual([
+          {
+            subscription: subscription.id,
+            incremental: returned(100),
+            reference: returned(200),
+          },
+        ]);
+        expect(subscription.current().outcome).toEqual(returned(200));
+        expect(after).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "an identity change to a query whose value is only the time disagrees with the reference until it is refreshed",
+    () =>
+      Effect.gen(function* () {
+        const time = clock(100);
+        const t = world(time.runtime);
+        const client = t.withIdentity({ subject: "ada" }).subscriber();
+        const subscription = yield* call(() =>
+          client.subscribe(tasks.signedAt, {}),
+        );
+        time.set(200);
+        const moved = yield* call(() => t.reference());
+        client.authenticate({ subject: "bob" });
+        const before = yield* call(() => t.reference());
+        yield* call(() => t.refresh());
+        const after = yield* call(() => t.reference());
+        expect(moved).toEqual([]);
+        expect(before).toEqual([
+          {
+            subscription: subscription.id,
+            incremental: returned(100),
+            reference: returned(200),
+          },
+        ]);
+        expect(subscription.current().outcome).toEqual(returned(200));
+        expect(after).toEqual([]);
+      }),
+  );
+});
+
+describe("failures", () => {
+  it.effect(
+    "a query that throws a different bare value after a commit changes, and one that throws the same value stays",
+    () =>
+      Effect.gen(function* () {
+        const t = world();
+        const id = yield* call(() =>
+          t.mutation(tasks.add, { title: "a", owner: "ada", due: 10 }),
+        );
+        const subscription = yield* call(() =>
+          t.subscriber().subscribe(tasks.refuse, { id }),
+        );
+        yield* call(() => t.mutation(tasks.move, { id, due: 20 }));
+        const same = yield* call(() => t.refresh());
+        yield* call(() => t.mutation(tasks.give, { id, owner: "bob" }));
+        const before = yield* call(() => t.reference());
+        const changed = yield* call(() => t.refresh());
+        expect(same).toEqual([]);
+        expect(before).toEqual([
+          {
+            subscription: subscription.id,
+            incremental: { _tag: "failed", error: "ada" },
+            reference: { _tag: "failed", error: "bob" },
+          },
+        ]);
+        expect(changed).toMatchObject([
+          {
+            subscription: subscription.id,
+            from: { _tag: "failed", error: "ada" },
+            to: { _tag: "failed", error: "bob" },
+            because: { kind: "commit" },
+          },
+        ]);
+        expect(yield* call(() => t.reference())).toEqual([]);
+      }),
+  );
+
+  it("bare thrown values compare by value and type, and errors by name, message and data", () => {
+    const failed = (error: unknown): Execution.Outcome => ({
+      _tag: "failed",
+      error,
+    });
+    expect(Subscriptions.sameOutcome(failed("a"), failed("a"))).toBe(true);
+    expect(Subscriptions.sameOutcome(failed("a"), failed("b"))).toBe(false);
+    expect(Subscriptions.sameOutcome(failed(1), failed("1"))).toBe(false);
+    expect(
+      Subscriptions.sameOutcome(failed(undefined), failed("undefined")),
+    ).toBe(false);
+    expect(Subscriptions.sameOutcome(failed(null), failed(undefined))).toBe(
+      false,
+    );
+    expect(
+      Subscriptions.sameOutcome(failed({ code: 1 }), failed({ code: 2 })),
+    ).toBe(false);
+    expect(
+      Subscriptions.sameOutcome(failed(new Error("x")), failed(new Error("x"))),
+    ).toBe(true);
+    expect(
+      Subscriptions.sameOutcome(failed(new Error("x")), failed(new Error("y"))),
+    ).toBe(false);
+  });
 });
 
 describe("read sets", () => {

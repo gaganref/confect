@@ -69,10 +69,13 @@ makes it stale, by the same check an attempt's commit makes, and so does an
 identity change when the run read the identity. The clock moving never does, as
 on the Convex binary. `refresh` reruns the stale subscriptions and lists the
 values that changed. A full-rerun reference reruns every subscription from
-scratch, so a missed invalidation shows up as a disagreement. `Date` inside a
-query or mutation answers the kernel's time at its start. This is row 4 of
-Frame's backend testing kernel (Frame ADR 0012). Changeset:
-`test-kernel-subscriptions.md`. Upstream: fork only, as the kernel is
+scratch, so a missed invalidation shows up as a disagreement. It decides from
+its own rerun's reads whether a rerun was owed, and then reruns at the kernel's
+time, so a missed invalidation of a query whose value is only the time shows
+too. Failures compare by error name, message and data, or by the bare value a
+query threw. `Date` inside a query or mutation answers the kernel's time at its
+start. This is row 4 of Frame's backend testing kernel (Frame ADR 0012).
+Changeset: `test-kernel-subscriptions.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
 ## Table info through Table's extractors
