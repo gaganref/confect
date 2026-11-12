@@ -555,6 +555,27 @@ describe("read sets", () => {
   );
 
   it.effect(
+    "two held attempts applied together publish one at its own version and conflict the other",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld();
+        const id = yield* call(() => t.mutation(occ.create, {}));
+        const first = yield* call(() => t.prepare(occ.bump, { id }));
+        const second = yield* call(() => t.prepare(occ.bump, { id }));
+        const [applied, conflict] = yield* call(() =>
+          Promise.all([t.apply(first.id), t.apply(second.id)]),
+        );
+        expect(applied).toMatchObject({ kind: "applied", version: 2 });
+        const next = conflicted(conflict);
+        expect(yield* call(() => t.apply(next.id))).toMatchObject({
+          kind: "applied",
+          version: 3,
+        });
+        expect(yield* call(() => t.query(occ.counter, { id }))).toBe(2);
+      }),
+  );
+
+  it.effect(
     "concurrent mutations each publish once, because a conflicting attempt runs again",
     () =>
       Effect.gen(function* () {

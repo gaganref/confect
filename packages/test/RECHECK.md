@@ -143,6 +143,9 @@ its snapshot (`Kernel.conflict`). It answers one of four results:
 - `refused`, when the function failed. Nothing is published.
 
 An attempt that wrote nothing publishes nothing, so it is not checked. The
+check, the publication and the version `applied` reports run in one synchronous
+turn, so two attempts applied together cannot both pass the check, and a job's
+state commit cannot land between them. The
 kernel has no retry loop. The shim's convex-test `mutation` applies each
 attempt as soon as it is prepared and prepares the next on a conflict, as the
 binary retries. Top-level mutations no longer take turns, so concurrent calls
@@ -183,7 +186,8 @@ placements are unchanged.
 `src/internal/Scheduling.ts` is the job model. A job is a row in its
 component's `_scheduled_functions` table with the fields Convex's system table
 has. Beside it the kernel keeps the job's target, which a stored handle may put
-in another component, and whether the job is standing. `1.0/schedule` writes
+in another component, whether the job is standing, and the world of the
+invocation bound when it was scheduled. `1.0/schedule` writes
 the row through the scheduling attempt, so a job exists only once that mutation
 commits. `1.0/actions/schedule` and `1.0/actions/cancel_job` commit at once.
 Cancel marks a pending or running job `canceled`, and a canceled job never
@@ -195,9 +199,13 @@ window in deadline order, jobs those jobs schedule included, and moves the
 clock to each deadline as the job starts. `finishInProgressScheduledFunctions`
 is `advance(0)`, so it crosses no future deadline. A job runs as its own
 request: no identity, no IP or user agent, a fresh request ID and its job ID
-as `scheduledFunctionId`. The bridge sees that ID differ from the bound
-invocation's, so a job gets a fresh record with the world's services, as row 1
-recorded for convex-test's timers. A job's row goes from `pending` through
+as `scheduledFunctionId`. It starts under a fresh record of the world that
+scheduled it, with that world's services and attempt 1, whatever the drain is
+bound to. A job scheduled with no invocation bound starts unbound, so its
+handler keeps the production runtime. On convex-test a job inherits its
+scheduler's async context through the host timer, which gives the same records
+(row 1). The kernel has no timer to carry that context, so it keeps the world
+beside the job. A job's row goes from `pending` through
 `inProgress` to `success` or `failed`, in separate commits as in convex-test.
 
 Convex 1.49's `runAfter` computes the job's time from `Date.now()` inside the
@@ -222,8 +230,12 @@ runs one of them or one of them scheduled it. The crons component's
 standing. A standing job runs only when `advance` reaches its deadline. A name
 the component does not export is refused at open with `UnknownStandingSource`.
 
-A throwaway spike ran the official kits at Frame's pins (`@convex-dev/crons`
-0.2.3, `@convex-dev/workflow` 0.4.10 with workpool 0.4.14) on the kernel. With
+Open: no committed test runs the official crons or Workflow kits, or their
+suites, on the kernel. `Scheduling.test.ts` covers the same behaviour with
+hand-built beat and workflow components. A throwaway spike outside this
+repository, which nothing here reproduces, ran the official kits at Frame's pins
+(`@convex-dev/crons` 0.2.3, `@convex-dev/workflow` 0.4.10 with workpool 0.4.14)
+on the kernel. With
 `public:rescheduler` declared, the drain ended with the rescheduler pending and
 two one-second `advance` calls ran the target at +1000 and +2000. Without the
 entry the drain failed `DrainBudgetExceeded` naming `crons` `public:rescheduler`.
@@ -240,6 +252,7 @@ The six row-5 cases now run in the kernel lane: `integration.test.ts:360`
 `Scheduler`, `components.test.ts:408` job cancellation, and the stored-handle
 cases at `:768`, `:807`, `:819` and `:831`.
 
-Not simulated: Convex's own `crons.ts` schedules, which convex-test does not run
-either and which no inventory case or row-5 check uses. A raw host timer in a
-handler is row 6's I/O ban.
+Open: Convex's own `crons.ts` schedules are not simulated, though the design's
+kernel scope lists declared schedules. convex-test does not run them either, and
+no inventory case or row-5 check uses them. A raw host timer in a handler is row
+6's I/O ban.

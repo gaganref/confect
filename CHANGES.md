@@ -68,12 +68,15 @@ schedule and cancel commit at once. `advance(ms)` runs every job whose deadline
 falls in the window, in deadline order, jobs those jobs schedule included, and
 starts each one at its deadline. `Date` inside a query or mutation reads its
 start time, which Convex's `runAfter` uses. A scheduled call has no identity
-and fresh request metadata carrying its job ID. `finishAllScheduledFunctions`
-runs jobs until only standing ones remain, and fails with `DrainBudgetExceeded`
-after 100. `registerComponent` takes `{ standing }`, the self-rescheduling
-functions of a component, so a kit can declare the crons component's
-`public:rescheduler`. A job that runs one, or that one schedules, is never
-drain work. A standing name the component does not export is refused at open.
+and fresh request metadata carrying its job ID. It runs as a fresh invocation
+of the test world that scheduled it, with that world's services, or unbound
+when none was bound, whatever invocation the drain runs under.
+`finishAllScheduledFunctions` runs jobs until only standing ones remain, and
+fails with `DrainBudgetExceeded` after 100. `registerComponent` takes
+`{ standing }`, the self-rescheduling functions of a component, so a kit can
+declare the crons component's `public:rescheduler`. A job that runs one, or that
+one schedules, is never drain work. A standing name the component does not
+export is refused at open. Convex's own `crons.ts` schedules are not simulated.
 A lint fence refuses host timers in the kernel's modules. Row 2's
 `KernelRowPending` refusals for the scheduler are lifted, and the six row-5
 mock-backend cases run on the kernel. This is row 5 of Frame's backend testing

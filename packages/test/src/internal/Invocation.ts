@@ -42,6 +42,22 @@ interface Bridge {
 const key = Symbol.for("@confect/test/Invocation");
 
 /**
+ * A fresh invocation of `world` for a request of its own, as an action or a
+ * scheduled job starts: attempt 1 and the world's services.
+ */
+export const fresh = (
+  world: World,
+  componentPath: string,
+  { ip, userAgent, requestId, scheduledFunctionId }: Invocation["request"],
+): Invocation => ({
+  world,
+  componentPath,
+  attempt: 1,
+  request: { ip, userAgent, requestId, scheduledFunctionId },
+  services: world.services,
+});
+
+/**
  * The invocation a handler runs under. A call nested in the bound request joins
  * it at the callee's component path. A job Convex started from a timer set
  * inside the bound request is a request of its own: its scheduled function ID
@@ -56,14 +72,7 @@ const resolve = (
     request !== undefined &&
     request.scheduledFunctionId !== bound.request.scheduledFunctionId
   ) {
-    const { ip, userAgent, requestId, scheduledFunctionId } = request;
-    return {
-      world: bound.world,
-      componentPath,
-      attempt: 1,
-      request: { ip, userAgent, requestId, scheduledFunctionId },
-      services: bound.world.services,
-    };
+    return fresh(bound.world, componentPath, request);
   }
   return componentPath === bound.componentPath
     ? bound
@@ -101,6 +110,13 @@ export const bind = <A>(
   invocation: Invocation,
   start: () => Promise<A>,
 ): Promise<A> => bridge().storage.run(invocation, start);
+
+/**
+ * Run `start` with no invocation bound, so every registered handler it reaches
+ * keeps its production runtime, whatever the caller has bound.
+ */
+export const unbound = <A>(start: () => Promise<A>): Promise<A> =>
+  bridge().storage.exit(start);
 
 /**
  * The invocation the calling handler runs under, if one is bound.

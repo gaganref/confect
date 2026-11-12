@@ -696,7 +696,9 @@ export class World {
   /**
    * Run one pending job as its own request, moving its row through in progress
    * to success or failed. `walk` picks it from the committed pending jobs and
-   * starts it in the same turn, so no cancel can land in between.
+   * starts it in the same turn, so no cancel can land in between. The job runs
+   * as a fresh invocation of the world that scheduled it, whatever invocation
+   * the drain itself runs under.
    */
   private runJob(job: Scheduling.Due): Promise<void> {
     this.commitNow((attempt) => {
@@ -706,16 +708,25 @@ export class World {
         state: { kind: "inProgress" },
       });
     });
-    const from: From = { caller: anonymous, request: jobRequest(job.id) };
-    return Promise.resolve()
-      .then(() => {
+    const request = jobRequest(job.id);
+    const from: From = { caller: anonymous, request };
+    const run = () =>
+      Promise.resolve().then(() => {
         const { func } = this.resolve(job.target, "any");
         return func.isQuery
           ? this.queryAt(job.target, job.args, from)
           : func.isMutation
             ? this.mutationAt(job.target, job.args, from)
             : this.actionAt(job.target, job.args, from);
-      })
+      });
+    return (
+      job.world === undefined
+        ? Invocation.unbound(run)
+        : Invocation.bind(
+            Invocation.fresh(job.world, job.target.componentPath, request),
+            run,
+          )
+    )
       .then(
         (): Scheduling.JobState => ({ kind: "success" }),
         (error: unknown): Scheduling.JobState => ({
@@ -805,6 +816,7 @@ export class World {
           componentPath: execution.componentPath,
           udfPath: execution.udfPath,
         }) || this.isStanding(target),
+      world: Invocation.current()?.world,
     });
     return id;
   }
@@ -1112,14 +1124,20 @@ export class World {
         (next): KernelApply => ({ kind: "conflict", next: next.view }),
       );
     }
-    return Promise.resolve()
-      .then(() => this.publishWrites(writes))
-      .then((commitTs): KernelApply => ({
-        kind: "applied",
-        version: this.state.version,
-        commitTs,
-        result: resolveCommittedValues(outcome.value, commitTs),
-      }));
+    // Validation, publication and the version read share one synchronous turn,
+    // so no other commit lands between them.
+    let commitTs: bigint;
+    try {
+      commitTs = this.publishWrites(writes);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return Promise.resolve({
+      kind: "applied",
+      version: this.state.version,
+      commitTs,
+      result: resolveCommittedValues(outcome.value, commitTs),
+    });
   }
 
   /**
@@ -1194,18 +1212,15 @@ export class World {
     // An action another function calls is an invocation of its own, with its
     // world's services, as a scheduled job is.
     const bound = from.parent === undefined ? undefined : Invocation.current();
-    const { ip, userAgent, requestId, scheduledFunctionId } = from.request;
     const started =
       bound === undefined
         ? run()
         : Invocation.bind(
-            {
-              world: bound.world,
-              componentPath: functionPath.componentPath,
-              attempt: 1,
-              request: { ip, userAgent, requestId, scheduledFunctionId },
-              services: bound.world.services,
-            },
+            Invocation.fresh(
+              bound.world,
+              functionPath.componentPath,
+              from.request,
+            ),
             run,
           );
     return started
