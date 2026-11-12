@@ -16,7 +16,8 @@ export interface World {
   readonly services: Context.Context<never>;
   /**
    * The world's controlled clock in epoch milliseconds. An invocation the world
-   * starts on its own pins its start time from one reading.
+   * starts on its own pins its start time from one reading. A bound action's
+   * `Date` reads it live.
    */
   readonly clock: () => number;
   /**
@@ -33,9 +34,11 @@ export interface Invocation {
   readonly request: Omit<RequestMetadata, "authToken">;
   readonly services: Context.Context<never>;
   /**
-   * The start time in epoch milliseconds. Every handler of the invocation reads
-   * it from `Date.now()` and `new Date()`, so Effect's default `Clock` reads it
-   * too.
+   * The start time in epoch milliseconds. Every query or mutation of the
+   * invocation reads it from `Date.now()` and `new Date()`, so Effect's default
+   * `Clock` reads it too. An action reads its world's clock instead, as it
+   * runs, and a query or mutation an action calls starts at the action's time
+   * then.
    */
   readonly startedAt: number;
   /**
@@ -46,22 +49,45 @@ export interface Invocation {
   readonly random: () => number;
 }
 
+type FunctionType = "query" | "mutation" | "action";
+
+/**
+ * The invocation a handler runs under, and the type of the function it runs.
+ * Test code that binds an invocation runs no function, so it has no type.
+ */
+interface Running {
+  readonly invocation: Invocation;
+  readonly functionType: FunctionType | undefined;
+}
+
 /**
  * What `runHandlerPromise` in `@confect/server` reads from `globalThis` under
  * the same key. `start` answers `undefined` when no invocation is bound.
  */
 interface Bridge {
-  readonly storage: AsyncLocalStorage<Invocation>;
+  readonly storage: AsyncLocalStorage<Running>;
   readonly start: <A>(
     meta: {
       readonly getFunctionMetadata: () => Promise<FunctionMetadata>;
       readonly getRequestMetadata?: () => Promise<RequestMetadata>;
     },
     run: (services: Context.Context<never>) => Promise<A>,
+    functionType: FunctionType,
   ) => Promise<A> | undefined;
 }
 
 const key = Symbol.for("@confect/test/Invocation");
+
+/**
+ * The invocation a function of `functionType` called from `running` joins. A
+ * query or mutation an action calls is a transaction of its own, so it starts
+ * at the world's time when it begins. Any other call shares its caller's
+ * start.
+ */
+const caller = (running: Running, functionType: FunctionType): Invocation =>
+  running.functionType === "action" && functionType !== "action"
+    ? { ...running.invocation, startedAt: running.invocation.world.clock() }
+    : running.invocation;
 
 /**
  * The invocation a handler runs under. A call nested in the bound request joins
@@ -95,16 +121,29 @@ const resolve = (
     : { ...bound, componentPath };
 };
 
-const pinnedDate = (base: DateConstructor, millis: number): DateConstructor => {
-  const now = () => millis;
-  return new Proxy(base, {
+/**
+ * What `Date` answers for a function of `functionType` under `invocation`: a
+ * query's or mutation's start, or the world's clock as it runs in an action.
+ */
+const clockOf = (
+  invocation: Invocation,
+  functionType: FunctionType,
+): (() => number) =>
+  functionType === "action"
+    ? invocation.world.clock
+    : () => invocation.startedAt;
+
+const pinnedDate = (
+  base: DateConstructor,
+  now: () => number,
+): DateConstructor =>
+  new Proxy(base, {
     get: (target, property, receiver) =>
       property === "now" ? now : Reflect.get(target, property, receiver),
     construct: (target, args, newTarget) =>
-      Reflect.construct(target, args.length === 0 ? [millis] : args, newTarget),
-    apply: () => new base(millis).toString(),
+      Reflect.construct(target, args.length === 0 ? [now()] : args, newTarget),
+    apply: () => new base(now()).toString(),
   });
-};
 
 const drawingMath = (base: Math, random: () => number): Math =>
   new Proxy(base, {
@@ -140,10 +179,11 @@ const drawingCrypto = (base: Crypto, random: () => number): Crypto => {
 };
 
 /**
- * Point the calling handler's `Date`, `Math` and `crypto` at `invocation`.
- * convex-test gives each handler call its own copy of these globals, and an
- * assignment inside a handler lands in that copy only, so overlapping handlers
- * and the handler's own nested calls keep theirs.
+ * Point the calling handler's `Date`, `Math` and `crypto` at `invocation`, its
+ * `Date` through {@link clockOf}. convex-test gives each handler call its own
+ * copy of these globals, and an assignment inside a handler lands in that copy
+ * only, so overlapping handlers and the handler's own nested calls keep
+ * theirs.
  *
  * `outside` reads in the test's own async context. Where the handler has no
  * copy, an assignment either throws or reaches test code, so `pin` puts back
@@ -151,12 +191,13 @@ const drawingCrypto = (base: Crypto, random: () => number): Crypto => {
  */
 const pin = (
   invocation: Invocation,
+  functionType: FunctionType,
   outside: <R>(read: () => R) => R,
 ): void => {
   const host = globalThis;
   const previous = { Date: host.Date, Math: host.Math, crypto: host.crypto };
   const pinned = {
-    Date: pinnedDate(previous.Date, invocation.startedAt),
+    Date: pinnedDate(previous.Date, clockOf(invocation, functionType)),
     Math: drawingMath(previous.Math, invocation.random),
     crypto: drawingCrypto(previous.crypto, invocation.random),
   };
@@ -192,22 +233,28 @@ const pin = (
 };
 
 const make = (): Bridge => {
-  const storage = new AsyncLocalStorage<Invocation>();
+  const storage = new AsyncLocalStorage<Running>();
   // Taken at the first `bind`, which test code calls outside any handler, so
   // it reads the test environment's globals.
   const outside = AsyncLocalStorage.snapshot();
   return {
     storage,
-    start: (meta, run) => {
-      const bound = storage.getStore();
-      if (bound === undefined) return undefined;
+    start: (meta, run, functionType) => {
+      const running = storage.getStore();
+      if (running === undefined) return undefined;
       return Promise.all([
         meta.getFunctionMetadata(),
         meta.getRequestMetadata?.(),
       ]).then(([{ componentPath }, request]) => {
-        const invocation = resolve(bound, componentPath, request);
-        pin(invocation, outside);
-        return storage.run(invocation, () => run(invocation.services));
+        const invocation = resolve(
+          caller(running, functionType),
+          componentPath,
+          request,
+        );
+        pin(invocation, functionType, outside);
+        return storage.run({ invocation, functionType }, () =>
+          run(invocation.services),
+        );
       });
     },
   };
@@ -219,16 +266,20 @@ const installed = globalThis as { [key]?: Bridge };
 
 /**
  * Run `start` with `invocation` bound. Every registered handler it reaches
- * through convex-test runs with the invocation's services, start time and
- * random stream.
+ * through convex-test runs with the invocation's services, clock and random
+ * stream.
  */
 export const bind = <A>(
   invocation: Invocation,
   start: () => Promise<A>,
-): Promise<A> => (installed[key] ??= make()).storage.run(invocation, start);
+): Promise<A> =>
+  (installed[key] ??= make()).storage.run(
+    { invocation, functionType: undefined },
+    start,
+  );
 
 /**
  * The invocation the calling handler runs under, if one is bound.
  */
 export const current = (): Invocation | undefined =>
-  installed[key]?.storage.getStore();
+  installed[key]?.storage.getStore()?.invocation;

@@ -17,10 +17,12 @@ until the fork adopts a release containing it.
 `runHandlerPromise` starts a query, mutation or action handler with the
 services of the test invocation it belongs to, through `Effect.runPromiseWith`.
 `@confect/test` binds an invocation through async context, and a nested call
-joins it. The handler's `Date` reads the invocation's start time, and its
-`Math.random` and `crypto.getRandomValues` draw from the invocation's random
-stream. These pins rely on convex-test's per-handler copies of those globals,
-and a bound handler without one is refused before it runs. A job convex-test
+joins it. A query's or mutation's `Date` reads its start time through its
+run. An action's reads the world's clock as it runs, and a query or mutation it
+calls starts at the action's time then. The handler's `Math.random` and
+`crypto.getRandomValues` draw from the invocation's random stream. These pins
+rely on convex-test's per-handler copies of those globals, and a bound handler
+without one is refused before it runs. A job convex-test
 starts from a timer gets a fresh record with its world's services, clock and
 random stream and the job's request metadata. With no bound invocation, and
 always in production, handlers keep `Effect.runPromise`. This is row 1 of
