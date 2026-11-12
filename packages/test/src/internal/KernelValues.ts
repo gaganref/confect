@@ -418,6 +418,13 @@ export type ValidatorJSON =
   | { type: "id"; tableName: string }
   | { type: "array"; value: ValidatorJSON }
   | { type: "object"; value: Record<string, ObjectFieldType> }
+  | { type: "record"; keys: ValidatorJSON; values: ObjectFieldType }
+  | {
+      type: "function";
+      fnType?: string;
+      args?: ValidatorJSON;
+      returns?: ValidatorJSON;
+    }
   | { type: "union"; value: ValidatorJSON[] };
 
 export function validateValidator(validator: ValidatorJSON, value: any) {
@@ -566,6 +573,41 @@ export function validateValidator(validator: ValidatorJSON, value: any) {
         }
       }
       return;
+    }
+    case "function": {
+      // A function handle is a string with the handle prefix, as the binary
+      // checks it (`common/src/schemas/validator.rs:156-164` in convex-backend
+      // 1.49.0). The kernel mints convex-test's handle format after the prefix.
+      if (typeof value !== "string" || !value.startsWith("function://")) {
+        throw new Error(
+          `Validator error: Expected a function handle, got \`${value}\``,
+        );
+      }
+      return;
+    }
+    case "record": {
+      if (
+        value === null ||
+        typeof value !== "object" ||
+        !isSimpleObject(value)
+      ) {
+        throw new Error(
+          `Validator error: Expected a plain old JavaScript \`object\` for a record, got \`${value}\``,
+        );
+      }
+      for (const [k, fieldValue] of Object.entries(value)) {
+        validateValidator(validator.keys, k);
+        if (fieldValue !== undefined) {
+          validateValidator(validator.values.fieldType, fieldValue);
+        }
+      }
+      return;
+    }
+    default: {
+      const unknown: never = validator;
+      throw new Error(
+        `The test kernel cannot check a validator of type \`${(unknown as { type: string }).type}\`.`,
+      );
     }
   }
 }

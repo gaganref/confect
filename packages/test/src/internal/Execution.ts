@@ -12,6 +12,7 @@ import {
 import { convexToJson, jsonToConvex, type Value } from "convex/values";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
+import * as Globals from "./Globals.js";
 import * as Invocation from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
@@ -193,6 +194,13 @@ class Turn {
 }
 
 const executions = new AsyncLocalStorage<Execution>();
+
+/**
+ * Run a function's code as `execution`, with its own copy of the globals a test
+ * invocation pins.
+ */
+const enter = <A>(execution: Execution, run: () => A): A =>
+  Globals.own(() => executions.run(execution, run));
 const kernelBrand = Symbol.for("@confect/test/Kernel");
 
 /**
@@ -402,7 +410,7 @@ export class World {
     private readonly runtime: Kernel.KernelRuntime = Kernel.wallClock(),
   ) {
     installConvexGlobal();
-    Clock.install(pinnedTime);
+    Clock.install(pinnedTime, () => executions.getStore() !== undefined);
     this.components.set(ROOT, makeComponent(ROOT, schema, modules));
   }
 
@@ -696,7 +704,9 @@ export class World {
   /**
    * Run one pending job as its own request, moving its row through in progress
    * to success or failed. `walk` picks it from the committed pending jobs and
-   * starts it in the same turn, so no cancel can land in between.
+   * starts it in the same turn, so no cancel can land in between. The job runs
+   * as a fresh invocation of the world that scheduled it, whatever invocation
+   * the drain itself runs under.
    */
   private runJob(job: Scheduling.Due): Promise<void> {
     this.commitNow((attempt) => {
@@ -706,16 +716,25 @@ export class World {
         state: { kind: "inProgress" },
       });
     });
-    const from: From = { caller: anonymous, request: jobRequest(job.id) };
-    return Promise.resolve()
-      .then(() => {
+    const request = jobRequest(job.id);
+    const from: From = { caller: anonymous, request };
+    const run = () =>
+      Promise.resolve().then(() => {
         const { func } = this.resolve(job.target, "any");
         return func.isQuery
           ? this.queryAt(job.target, job.args, from)
           : func.isMutation
             ? this.mutationAt(job.target, job.args, from)
             : this.actionAt(job.target, job.args, from);
-      })
+      });
+    return (
+      job.world === undefined
+        ? Invocation.unbound(run)
+        : Invocation.bind(
+            Invocation.fresh(job.world, job.target.componentPath, request),
+            run,
+          )
+    )
       .then(
         (): Scheduling.JobState => ({ kind: "success" }),
         (error: unknown): Scheduling.JobState => ({
@@ -750,21 +769,22 @@ export class World {
   }
 
   /**
-   * Publish `writes` as the next commit, at the runtime's timestamp for it.
+   * Publish `writes` as the next commit, at the runtime's timestamp for it. No
+   * writes publish nothing and ask the runtime for no timestamp, which answers
+   * the latest commit's.
    */
   private publishWrites(writes: ReadonlyArray<Kernel.Write>): bigint {
+    if (writes.length === 0) return this.state.commitTs;
     const commitTs = this.runtime.commitTs(this.state.version + 1);
-    if (writes.length > 0) {
-      if (commitTs <= this.state.commitTs) {
-        throw new KernelRefusal.CommitTsNotIncreasing({
-          version: this.state.version + 1,
-          previous: this.state.commitTs,
-          commitTs,
-          message: `The runtime answered commit timestamp ${commitTs} for version ${this.state.version + 1}, which is not greater than the previous commit's ${this.state.commitTs}.`,
-        });
-      }
-      this.state = Kernel.apply(this.state, writes, commitTs);
+    if (commitTs <= this.state.commitTs) {
+      throw new KernelRefusal.CommitTsNotIncreasing({
+        version: this.state.version + 1,
+        previous: this.state.commitTs,
+        commitTs,
+        message: `The runtime answered commit timestamp ${commitTs} for version ${this.state.version + 1}, which is not greater than the previous commit's ${this.state.commitTs}.`,
+      });
     }
+    this.state = Kernel.apply(this.state, writes, commitTs);
     return commitTs;
   }
 
@@ -805,6 +825,7 @@ export class World {
           componentPath: execution.componentPath,
           udfPath: execution.udfPath,
         }) || this.isStanding(target),
+      world: Invocation.current()?.world,
     });
     return id;
   }
@@ -873,14 +894,15 @@ export class World {
     from: From,
     pagination: { calls: number } | undefined,
   ): Execution {
-    const parent = from.parent;
-    // A component call carries no identity, as Convex gives a component no
-    // `ctx.auth` of the caller's.
+    // A function in a component runs with no identity, whoever called it, as
+    // Convex gives a component no `ctx.auth` of the caller's. A nested call in
+    // the host takes its parent's identity, even when that is none.
     const identity =
-      parent !== undefined &&
-      parent.componentPath !== functionPath.componentPath
+      functionPath.componentPath !== ROOT
         ? null
-        : (parent?.identity ?? from.caller.identity);
+        : from.parent !== undefined
+          ? from.parent.identity
+          : from.caller.identity;
     return {
       world: this,
       componentPath: functionPath.componentPath,
@@ -890,8 +912,8 @@ export class World {
       identity,
       request: from.request,
       startTime:
-        parent !== undefined && parent.udfType !== "action"
-          ? parent.startTime
+        from.parent !== undefined && from.parent.udfType !== "action"
+          ? from.parent.startTime
           : this.now(),
       pagination,
       turn: new Turn(),
@@ -932,10 +954,9 @@ export class World {
         handler: (ctx: any, a: any) =>
           resolved.handler({ ...ctx, auth: queryAuth(execution) }, a),
       }) as unknown as { invokeQuery: (args: string) => Promise<string> };
-      return executions
-        .run(execution, () =>
-          q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
-        )
+      return enter(execution, () =>
+        q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
+      )
         .then((raw) => {
           const result = jsonToConvex(JSON.parse(raw));
           if (!isNested && hasPendingValues(result)) {
@@ -962,18 +983,16 @@ export class World {
       handler: (ctx: any, a: any) =>
         resolved.handler({ ...ctx, auth: mutationAuth(execution) }, a),
     }) as unknown as { invokeMutation: (args: string) => Promise<string> };
-    return executions
-      .run(execution, () =>
-        m.invokeMutation(JSON.stringify(convexToJson([parseArgs(args)]))),
-      )
-      .then((raw) => {
-        const result = jsonToConvex(JSON.parse(raw));
-        validateReturnValue(resolved.returns, result, "mutation", {
-          componentPath: execution.componentPath,
-          udfPath: execution.udfPath,
-        });
-        return result;
+    return enter(execution, () =>
+      m.invokeMutation(JSON.stringify(convexToJson([parseArgs(args)]))),
+    ).then((raw) => {
+      const result = jsonToConvex(JSON.parse(raw));
+      validateReturnValue(resolved.returns, result, "mutation", {
+        componentPath: execution.componentPath,
+        udfPath: execution.udfPath,
       });
+      return result;
+    });
   }
 
   private runMutation(
@@ -985,21 +1004,20 @@ export class World {
     const parentAttempt = from.parent?.attempt;
     if (parentAttempt !== undefined) {
       return this.nested(from, () => {
-        parentAttempt.push();
+        const frame = parentAttempt.child();
         const execution = this.execution(
           functionPath,
           "mutation",
-          parentAttempt,
+          frame,
           from,
           undefined,
         );
         return this.invokeMutation(execution, resolved, args).then(
           (result) => {
-            parentAttempt.merge();
+            frame.merge();
             return result;
           },
           (error: unknown) => {
-            parentAttempt.drop();
             throw deserializeConvexErrorData(error);
           },
         );
@@ -1082,7 +1100,8 @@ export class World {
   /**
    * Validate a held attempt's reads against every commit since its snapshot,
    * then publish its writes or prepare its next attempt. An attempt that wrote
-   * nothing publishes nothing, so it has nothing to validate.
+   * nothing publishes nothing and has nothing to validate. It answers its
+   * snapshot's version and commit timestamp.
    */
   private applyHeld({ view, attempt, again }: Held): Promise<KernelApply> {
     this.holding.delete(view.id);
@@ -1095,8 +1114,18 @@ export class World {
       });
     }
     const writes = attempt.writes();
+    if (writes.length === 0) {
+      // As on the binary, a mutation that wrote nothing is serialized at its
+      // snapshot and allocates no timestamp for a later commit.
+      const { version, commitTs } = attempt.snapshot;
+      return Promise.resolve({
+        kind: "applied",
+        version,
+        commitTs,
+        result: resolveCommittedValues(outcome.value, commitTs),
+      });
+    }
     if (
-      writes.length > 0 &&
       Kernel.conflict(this.state, view.snapshot, attempt.reads) !== undefined
     ) {
       if (view.number === lastAttempt) {
@@ -1112,14 +1141,20 @@ export class World {
         (next): KernelApply => ({ kind: "conflict", next: next.view }),
       );
     }
-    return Promise.resolve()
-      .then(() => this.publishWrites(writes))
-      .then((commitTs): KernelApply => ({
-        kind: "applied",
-        version: this.state.version,
-        commitTs,
-        result: resolveCommittedValues(outcome.value, commitTs),
-      }));
+    // Validation, publication and the version read share one synchronous turn,
+    // so no other commit lands between them.
+    let commitTs: bigint;
+    try {
+      commitTs = this.publishWrites(writes);
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    return Promise.resolve({
+      kind: "applied",
+      version: this.state.version,
+      commitTs,
+      result: resolveCommittedValues(outcome.value, commitTs),
+    });
   }
 
   /**
@@ -1149,11 +1184,7 @@ export class World {
       from,
       undefined,
     );
-    const inner: From = {
-      caller: from.caller,
-      request: from.request,
-      parent: execution,
-    };
+    const inner: From = { request: from.request, parent: execution };
     const a = actionGeneric({
       handler: (ctx: any, innerArgs: any) =>
         resolved.handler(
@@ -1185,27 +1216,25 @@ export class World {
       invokeAction: (requestId: string, args: string) => Promise<string>;
     };
     const run = () =>
-      executions.run(execution, () =>
+      enter(execution, () =>
         a.invokeAction(
           from.request.requestId,
           JSON.stringify(convexToJson([parseArgs(args)])),
         ),
       );
     // An action another function calls is an invocation of its own, with its
-    // world's services, as a scheduled job is.
+    // world's services, a start time read from its world's clock and its
+    // world's random stream, as a scheduled job is.
     const bound = from.parent === undefined ? undefined : Invocation.current();
-    const { ip, userAgent, requestId, scheduledFunctionId } = from.request;
     const started =
       bound === undefined
         ? run()
         : Invocation.bind(
-            {
-              world: bound.world,
-              componentPath: functionPath.componentPath,
-              attempt: 1,
-              request: { ip, userAgent, requestId, scheduledFunctionId },
-              services: bound.world.services,
-            },
+            Invocation.fresh(
+              bound.world,
+              functionPath.componentPath,
+              from.request,
+            ),
             run,
           );
     return started
@@ -1377,11 +1406,7 @@ export class World {
       case "1.0/actions/query":
       case "1.0/actions/mutation":
       case "1.0/actions/action": {
-        const from: From = {
-          caller: anonymous,
-          request: execution.request,
-          parent: execution,
-        };
+        const from: From = { request: execution.request, parent: execution };
         const functionPath = functionPathOf(args, execution.componentPath);
         const run =
           op === "1.0/actions/query"
@@ -1393,11 +1418,7 @@ export class World {
       }
       case "1.0/runUdf": {
         const { udfType, args: udfArgs } = args;
-        const from: From = {
-          caller: anonymous,
-          request: execution.request,
-          parent: execution,
-        };
+        const from: From = { request: execution.request, parent: execution };
         const functionPath = functionPathOf(args, execution.componentPath);
         const value = jsonToConvex(udfArgs);
         const run =
@@ -1614,11 +1635,13 @@ export class World {
  * Where a call comes from. A call from the test carries its accessor's caller.
  * A nested call carries its parent execution and takes its identity from it.
  */
-interface From {
-  readonly caller: Caller;
-  readonly request: Request;
-  readonly parent?: Execution;
-}
+type From =
+  | {
+      readonly caller: Caller;
+      readonly request: Request;
+      readonly parent?: undefined;
+    }
+  | { readonly parent: Execution; readonly request: Request };
 
 const closed = (execution: Execution, operation: string) =>
   new KernelRefusal.ClosedAttempt({

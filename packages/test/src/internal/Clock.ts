@@ -5,6 +5,8 @@
  * everywhere else. It sets no host timer.
  */
 
+import * as Globals from "./Globals.js";
+
 type DateConstructor = typeof globalThis.Date;
 
 interface State {
@@ -13,6 +15,10 @@ interface State {
    */
   readonly bases: WeakMap<DateConstructor, DateConstructor>;
   readonly pinned: () => number | undefined;
+  /**
+   * Whether a kernel invocation is running, without reading its time.
+   */
+  readonly inside: () => boolean;
 }
 
 const key = Symbol.for("@confect/test/Clock");
@@ -48,14 +54,18 @@ const wrap = (
 
 /**
  * Wrap the realm's current `Date`, unless the kernel already did. `pinned`
- * answers the running invocation's time, or `undefined` outside one; the first
- * install's answers for every later one, as with `globalThis.Convex`. A test
- * that fakes `Date` replaces the wrapper while the fake is installed, and the
- * next install wraps the `Date` the test restores.
+ * answers the running invocation's time, or `undefined` outside one, and
+ * `inside` says whether one is running. The first install's callbacks answer
+ * for every later one, as with `globalThis.Convex`. A test that fakes `Date`
+ * replaces the wrapper while the fake is installed, and the next install wraps
+ * the `Date` the test restores.
  */
-export const install = (pinned: () => number | undefined) => {
+export const install = (
+  pinned: () => number | undefined,
+  inside: () => boolean,
+) => {
   const global = globalThis as Global;
-  const state = (global[key] ??= { bases: new WeakMap(), pinned });
+  const state = (global[key] ??= { bases: new WeakMap(), pinned, inside });
   const current = global.Date;
   if (state.bases.has(current)) return;
   const wrapper = wrap(current, () => state.pinned());
@@ -64,11 +74,22 @@ export const install = (pinned: () => number | undefined) => {
 };
 
 /**
- * The host's time in milliseconds, never a kernel invocation's: the real clock,
- * or a test's fake one while it is installed.
+ * Whether `date` is the kernel's wrapper inside a running kernel invocation, so
+ * it already answers that invocation's time on the kernel's clock.
  */
-export const hostNow = (): number => {
-  const global = globalThis as Global;
-  const current = global.Date;
-  return (global[key]?.bases.get(current) ?? current).now();
+export const answersInvocation = (date: DateConstructor): boolean => {
+  const state = (globalThis as Global)[key];
+  return state !== undefined && state.bases.has(date) && state.inside();
 };
+
+/**
+ * The host's time in milliseconds, never a kernel invocation's: the real clock,
+ * or a test's fake one while it is installed. It reads the test environment's
+ * `Date`, never the copy a bound handler pinned.
+ */
+export const hostNow = (): number =>
+  Globals.host(() => {
+    const global = globalThis as Global;
+    const current = global.Date;
+    return (global[key]?.bases.get(current) ?? current).now();
+  });

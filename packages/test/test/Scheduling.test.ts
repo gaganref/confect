@@ -1,5 +1,12 @@
 // oxlint-disable effecttsgo/async-function, effecttsgo/global-date -- The fixtures are plain Convex functions, which are async and read the pinned `Date` as product code does.
-import { describe, expect, it } from "@effect/vitest";
+import * as FunctionSpec from "@confect/core/FunctionSpec";
+import * as ActionCtx from "@confect/server/ActionCtx";
+import * as DatabaseSchema from "@confect/server/DatabaseSchema";
+import * as FunctionRegistryItem from "@confect/server/FunctionRegistryItem";
+import type * as Handler from "@confect/server/Handler";
+import * as MutationCtx from "@confect/server/MutationCtx";
+import * as RegisteredConvexFunction from "@confect/server/RegisteredConvexFunction";
+import { assert, describe, expect, it } from "@effect/vitest";
 import {
   actionGeneric,
   componentsGeneric,
@@ -11,10 +18,15 @@ import {
   queryGeneric,
   type FunctionHandle,
   type FunctionReference,
+  type GenericDataModel,
 } from "convex/server";
 import { v, type GenericId } from "convex/values";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
+import * as Invocation from "../src/internal/Invocation";
 
 const start = 1_000_000;
 const runtime = {
@@ -654,6 +666,268 @@ describe("standing sources", () => {
           componentPath: "beat",
           name: "public:rescheduler",
         });
+      }),
+  );
+});
+
+class Mail extends Context.Service<Mail, { readonly answer: string }>()(
+  "@confect/test/test/Scheduling.test/Mail",
+) {}
+
+const register = (
+  functionSpec: FunctionSpec.AnyWithProps,
+  handler: Handler.Any,
+) => {
+  const item = FunctionRegistryItem.make({
+    functionSpec,
+    groupMiddlewareAttachments: [],
+    handler,
+  });
+  assert(item._tag === "Confect");
+  return RegisteredConvexFunction.make(DatabaseSchema.make({}), item);
+};
+
+// What each registered job saw, cleared by each test.
+const seenByJobs: Array<{
+  readonly mail: string | null;
+  readonly scheduledFunctionId: string | null | undefined;
+}> = [];
+
+const timedByJobs: Array<{ readonly now: number; readonly random: number }> =
+  [];
+
+const bridged = {
+  schedule: makeFunctionReference<"mutation", {}, Job>("bridge:schedule"),
+  scheduleTimed: makeFunctionReference<"mutation", {}, number>(
+    "bridge:scheduleTimed",
+  ),
+  timedJob: makeFunctionReference<"mutation">("bridge:timedJob"),
+  job: makeFunctionReference<"mutation">("bridge:job"),
+  scheduleFromAction: makeFunctionReference<"action", {}, Job>(
+    "bridge:scheduleFromAction",
+  ),
+  actionJob: makeFunctionReference<"action">("bridge:actionJob"),
+};
+
+const recordJob = Effect.gen(function* () {
+  const mail = yield* Effect.serviceOption(Mail);
+  seenByJobs.push({
+    mail: Option.match(mail, {
+      onNone: () => null,
+      onSome: ({ answer }) => answer,
+    }),
+    scheduledFunctionId: Invocation.current()?.request.scheduledFunctionId,
+  });
+  return null;
+});
+
+const bridgeModules = {
+  "_generated/server.ts": () => Promise.resolve({}),
+  "bridge.ts": () =>
+    Promise.resolve({
+      schedule: register(
+        FunctionSpec.publicMutation({
+          name: "schedule",
+          args: () => ({}),
+          returns: () => Schema.String,
+        }),
+        () =>
+          Effect.gen(function* () {
+            const ctx = yield* MutationCtx.MutationCtx<GenericDataModel>();
+            return yield* Effect.promise(() =>
+              ctx.scheduler.runAfter(0, bridged.job, {}),
+            );
+          }),
+      ),
+      scheduleTimed: register(
+        FunctionSpec.publicMutation({
+          name: "scheduleTimed",
+          args: () => ({}),
+          returns: () => Schema.Finite,
+        }),
+        () =>
+          Effect.gen(function* () {
+            const ctx = yield* MutationCtx.MutationCtx<GenericDataModel>();
+            yield* Effect.promise(() =>
+              ctx.scheduler.runAfter(500, bridged.timedJob, {}),
+            );
+            // oxlint-disable-next-line effecttsgo/global-date-in-effect -- The handler reads the ambient Date that `runAfter` reads.
+            return Date.now();
+          }),
+      ),
+      timedJob: register(
+        FunctionSpec.internalMutation({
+          name: "timedJob",
+          args: () => ({}),
+          returns: () => Schema.Null,
+        }),
+        () =>
+          Effect.sync(() => {
+            // oxlint-disable-next-line effecttsgo/global-date-in-effect, effecttsgo/global-random-in-effect -- The job reads the ambient Date and Math.random the bridge pins.
+            timedByJobs.push({ now: Date.now(), random: Math.random() });
+            return null;
+          }),
+      ),
+      job: register(
+        FunctionSpec.internalMutation({
+          name: "job",
+          args: () => ({}),
+          returns: () => Schema.Null,
+        }),
+        () => recordJob,
+      ),
+      scheduleFromAction: register(
+        FunctionSpec.publicAction({
+          name: "scheduleFromAction",
+          args: () => ({}),
+          returns: () => Schema.String,
+        }),
+        () =>
+          Effect.gen(function* () {
+            const ctx = yield* ActionCtx.ActionCtx<GenericDataModel>();
+            return yield* Effect.promise(() =>
+              ctx.scheduler.runAfter(0, bridged.actionJob, {}),
+            );
+          }),
+      ),
+      actionJob: register(
+        FunctionSpec.internalAction({
+          name: "actionJob",
+          args: () => ({}),
+          returns: () => Schema.Null,
+        }),
+        () => recordJob,
+      ),
+    }),
+};
+
+const worldNamed = (name: string): Invocation.World => ({
+  name,
+  services: Context.make(Mail, { answer: `${name} mail` }),
+  clock: () => 0,
+  random: () => 0.5,
+});
+
+const invocationIn = (
+  owner: Invocation.World,
+  services = owner.services,
+): Invocation.Invocation => ({
+  world: owner,
+  componentPath: "",
+  attempt: 1,
+  request: {
+    ip: null,
+    userAgent: null,
+    requestId: `${owner.name}-request`,
+    scheduledFunctionId: null,
+  },
+  services,
+  startedAt: owner.clock(),
+  random: owner.random,
+});
+
+describe("registered handlers", () => {
+  // The caller's own services differ from its world's, so a job that reused
+  // the caller's invocation would see the caller's mail.
+  const asCallerIn = <A>(owner: Invocation.World, run: () => Promise<A>) =>
+    Invocation.bind(
+      invocationIn(owner, Context.make(Mail, { answer: "caller mail" })),
+      run,
+    );
+  const scheduleIn = (t: KernelControls, owner: Invocation.World) =>
+    asCallerIn(owner, () => t.mutation(bridged.schedule, {}));
+
+  it.effect(
+    "a job a bound mutation schedules runs as a fresh invocation of its world, though the drain runs unbound",
+    () =>
+      Effect.gen(function* () {
+        seenByJobs.length = 0;
+        const t = convexTest({ modules: bridgeModules, runtime });
+        const id = yield* call(() => scheduleIn(t, worldNamed("owner")));
+        yield* call(() => t.finishAllScheduledFunctions());
+        expect(seenByJobs).toEqual([
+          { mail: "owner mail", scheduledFunctionId: id },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "a bound mutation and its job read the kernel's clock, whatever start time the invocation carries, so the job runs at its deadline",
+    () =>
+      Effect.gen(function* () {
+        timedByJobs.length = 0;
+        const t: KernelControls = convexTest({
+          modules: bridgeModules,
+          runtime,
+        });
+        const owner = worldNamed("owner");
+        const now = yield* call(() =>
+          asCallerIn(owner, () => t.mutation(bridged.scheduleTimed, {})),
+        );
+        expect(now).toBe(start);
+        expect(t.jobs().map((job) => job.scheduledTime)).toEqual([start + 500]);
+        yield* call(() => t.advance(499));
+        expect(timedByJobs).toEqual([]);
+        yield* call(() => t.advance(1));
+        expect(timedByJobs).toEqual([{ now: start + 500, random: 0.5 }]);
+      }),
+  );
+
+  it.effect(
+    "a drain bound to another world still runs each job in the world that scheduled it",
+    () =>
+      Effect.gen(function* () {
+        seenByJobs.length = 0;
+        const t = convexTest({ modules: bridgeModules, runtime });
+        const id = yield* call(() => scheduleIn(t, worldNamed("owner")));
+        yield* call(() =>
+          Invocation.bind(invocationIn(worldNamed("other")), () =>
+            t.finishAllScheduledFunctions(),
+          ),
+        );
+        expect(seenByJobs).toEqual([
+          { mail: "owner mail", scheduledFunctionId: id },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "an action job a bound action schedules runs as a fresh invocation of its world",
+    () =>
+      Effect.gen(function* () {
+        seenByJobs.length = 0;
+        const t = convexTest({ modules: bridgeModules, runtime });
+        const id = yield* call(() =>
+          asCallerIn(worldNamed("owner"), () =>
+            t.action(bridged.scheduleFromAction, {}),
+          ),
+        );
+        yield* call(() =>
+          Invocation.bind(invocationIn(worldNamed("other")), () =>
+            t.finishAllScheduledFunctions(),
+          ),
+        );
+        expect(seenByJobs).toEqual([
+          { mail: "owner mail", scheduledFunctionId: id },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "a job scheduled with no invocation bound keeps the production runtime under a bound drain",
+    () =>
+      Effect.gen(function* () {
+        seenByJobs.length = 0;
+        const t = convexTest({ modules: bridgeModules, runtime });
+        yield* call(() => t.mutation(bridged.schedule, {}));
+        yield* call(() =>
+          Invocation.bind(invocationIn(worldNamed("other")), () =>
+            t.finishAllScheduledFunctions(),
+          ),
+        );
+        expect(seenByJobs).toEqual([
+          { mail: null, scheduledFunctionId: undefined },
+        ]);
       }),
   );
 });

@@ -1,4 +1,5 @@
 import type { Value } from "convex/values";
+import type * as Invocation from "./Invocation.js";
 import type * as Kernel from "./Kernel.js";
 import type {
   DocumentId,
@@ -20,12 +21,18 @@ export type JobState =
 
 /**
  * What the kernel keeps beside a job's row: the function it calls, which a
- * handle may place in another component, and whether a standing source owns the
- * job. The row holds only what Convex's system table holds.
+ * handle may place in another component, whether a standing source owns the
+ * job, and the test world whose invocation scheduled it. The row holds only
+ * what Convex's system table holds.
  */
 export interface Target {
   readonly functionPath: FunctionPath;
   readonly standing: boolean;
+  /**
+   * The job runs as a fresh invocation of this world, with its services, or
+   * unbound when no invocation was bound as it was scheduled.
+   */
+  readonly world: Invocation.World | undefined;
 }
 
 /**
@@ -48,6 +55,7 @@ export interface Job {
 export interface Due extends Job {
   readonly target: FunctionPath;
   readonly args: Value;
+  readonly world: Invocation.World | undefined;
 }
 
 export const row = (
@@ -87,6 +95,7 @@ export const pending = (
       const target = targets.get(doc._id) ?? {
         functionPath: { componentPath, udfPath: name },
         standing: false,
+        world: undefined,
       };
       due.push({
         id: doc._id,
@@ -96,6 +105,7 @@ export const pending = (
         standing: target.standing,
         target: target.functionPath,
         args: (doc["args"] as ReadonlyArray<Value>)[0]!,
+        world: target.world,
       });
     }
   }
