@@ -193,7 +193,8 @@ const tagOf = (error: unknown): string => {
 
 /**
  * One running function. Queries and mutations read and write through their
- * attempt. Calls nested in a query or a mutation take turns on `turn`.
+ * attempt. Every async syscall of a query or a mutation, nested calls included,
+ * takes its turn on `turn` in the order the function made it.
  */
 interface Execution {
   readonly world: World;
@@ -213,12 +214,12 @@ interface Execution {
 }
 
 /**
- * A queue that runs one task at a time.
+ * A queue that runs one task at a time, in the order they were taken.
  */
 class Turn {
   private tail: Promise<unknown> = Promise.resolve();
 
-  take<A>(task: () => Promise<A>): Promise<A> {
+  take<A>(task: () => A | Promise<A>): Promise<A> {
     const result = this.tail.then(task);
     this.tail = result.then(
       () => undefined,
@@ -226,7 +227,26 @@ class Turn {
     );
     return result;
   }
+
+  /**
+   * Resolves once every task taken so far has settled, including the tasks
+   * taken while waiting.
+   */
+  idle(): Promise<void> {
+    const tail = this.tail;
+    return tail.then(() => (this.tail === tail ? undefined : this.idle()));
+  }
 }
+
+/**
+ * A function's invocation finishes once its handler returned and every syscall
+ * it started has run. On the binary a query or mutation keeps running the
+ * syscalls in its queue after its promise resolves, then returns (`run_inner`
+ * in `crates/isolate/src/environment/udf/mod.rs`, 1.49), so an unawaited write
+ * still lands in its own transaction.
+ */
+const settled = <A>(execution: Execution, result: A): Promise<A> =>
+  execution.turn.idle().then(() => result);
 
 const executions = new AsyncLocalStorage<Execution>();
 
@@ -729,13 +749,6 @@ export class World {
     };
   }
 
-  // Calls nested in one query or mutation run one at a time, as in convex-test.
-  private nested<A>(from: From, task: () => Promise<A>): Promise<A> {
-    return from.parent?.attempt === undefined
-      ? task()
-      : from.parent.turn.take(task);
-  }
-
   private runQuery(
     functionPath: FunctionPath,
     resolved: Pick<Resolved, "handler" | "args" | "returns">,
@@ -744,51 +757,50 @@ export class World {
     snapshotOnly = false,
     top?: TopQuery,
   ): Promise<any> {
-    return this.nested(from, () => {
-      const parentAttempt = from.parent?.attempt;
-      const isNested = parentAttempt !== undefined;
-      const attempt =
-        top?.attempt ??
-        (parentAttempt === undefined
-          ? new KernelAttempt(this.state)
-          : snapshotOnly
-            ? new KernelAttempt(parentAttempt.snapshot)
-            : parentAttempt);
-      const execution = this.execution(
-        functionPath,
-        "query",
-        attempt,
-        from,
-        top?.pagination ??
-          ((isNested && from.parent?.pagination) || {
-            calls: 0,
-            journal: null,
-            end: null,
-          }),
-        top?.startTime,
-      );
-      const q = queryGeneric({
-        handler: (ctx: any, a: any) =>
-          resolved.handler({ ...ctx, auth: queryAuth(execution) }, a),
-      }) as unknown as { invokeQuery: (args: string) => Promise<string> };
-      return enter(execution, () =>
-        q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
-      )
-        .then((raw) => {
-          const result = jsonToConvex(JSON.parse(raw));
-          if (!isNested && hasPendingValues(result)) {
-            throw new Error(
-              `Function ${functionPath.udfPath} return value invalid: queries ` +
-                `cannot return an unresolved placeholder value.`,
-            );
-          }
-          validateReturnValue(resolved.returns, result, "query", functionPath);
-          return result;
-        })
-        .catch((error: unknown) => {
-          throw deserializeConvexErrorData(error);
-        });
-    });
+    const parentAttempt = from.parent?.attempt;
+    const isNested = parentAttempt !== undefined;
+    const attempt =
+      top?.attempt ??
+      (parentAttempt === undefined
+        ? new KernelAttempt(this.state)
+        : snapshotOnly
+          ? new KernelAttempt(parentAttempt.snapshot)
+          : parentAttempt);
+    const execution = this.execution(
+      functionPath,
+      "query",
+      attempt,
+      from,
+      top?.pagination ??
+        ((isNested && from.parent?.pagination) || {
+          calls: 0,
+          journal: null,
+          end: null,
+        }),
+      top?.startTime,
+    );
+    const q = queryGeneric({
+      handler: (ctx: any, a: any) =>
+        resolved.handler({ ...ctx, auth: queryAuth(execution) }, a),
+    }) as unknown as { invokeQuery: (args: string) => Promise<string> };
+    return enter(execution, () =>
+      q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
+    )
+      .then((raw) => settled(execution, raw))
+      .then((raw) => {
+        const result = jsonToConvex(JSON.parse(raw));
+        if (!isNested && hasPendingValues(result)) {
+          throw new Error(
+            `Function ${functionPath.udfPath} return value invalid: queries ` +
+              `cannot return an unresolved placeholder value.`,
+          );
+        }
+        validateReturnValue(resolved.returns, result, "query", functionPath);
+        return result;
+      })
+      .catch((error: unknown) => {
+        throw deserializeConvexErrorData(error);
+      });
   }
 
   private invokeMutation(
@@ -802,14 +814,16 @@ export class World {
     }) as unknown as { invokeMutation: (args: string) => Promise<string> };
     return enter(execution, () =>
       m.invokeMutation(JSON.stringify(convexToJson([parseArgs(args)]))),
-    ).then((raw) => {
-      const result = jsonToConvex(JSON.parse(raw));
-      validateReturnValue(resolved.returns, result, "mutation", {
-        componentPath: execution.componentPath,
-        udfPath: execution.udfPath,
+    )
+      .then((raw) => settled(execution, raw))
+      .then((raw) => {
+        const result = jsonToConvex(JSON.parse(raw));
+        validateReturnValue(resolved.returns, result, "mutation", {
+          componentPath: execution.componentPath,
+          udfPath: execution.udfPath,
+        });
+        return result;
       });
-      return result;
-    });
   }
 
   private runMutation(
@@ -820,25 +834,31 @@ export class World {
   ): Promise<any> {
     const parentAttempt = from.parent?.attempt;
     if (parentAttempt !== undefined) {
-      return this.nested(from, () => {
-        const frame = parentAttempt.child();
-        const execution = this.execution(
-          functionPath,
-          "mutation",
-          frame,
-          from,
-          undefined,
-        );
-        return this.invokeMutation(execution, resolved, args).then(
-          (result) => {
+      const frame = parentAttempt.child();
+      const execution = this.execution(
+        functionPath,
+        "mutation",
+        frame,
+        from,
+        undefined,
+      );
+      // As at the top level, a nested mutation ends once its function has
+      // returned and every syscall it started has settled. Convex runs a
+      // nested function's syscall queue to the end before it commits its
+      // subtransaction, so a detached fiber's late write lands in this frame
+      // and merges with it. A failed one ends at once and rolls back.
+      return this.invokeMutation(execution, resolved, args).then(
+        (result) =>
+          frame.drained().then(() => {
+            frame.close();
             frame.merge();
             return result;
-          },
-          (error: unknown) => {
-            throw deserializeConvexErrorData(error);
-          },
-        );
-      });
+          }),
+        (error: unknown) => {
+          frame.close();
+          throw deserializeConvexErrorData(error);
+        },
+      );
     }
     return this.prepareMutation(
       functionPath,
@@ -1112,11 +1132,15 @@ export class World {
           convexToJson(transaction(execution).snapshot.commitTs),
         );
       case "1.0/queryStream": {
+        // The binary reads a query at each `1.0/queryStreamNext`, which waits
+        // its turn in the queue, so the stream opens at its first read and sees
+        // every write made before it.
         const queryId = this.nextQueryId++;
-        this.queries.set(
-          queryId,
-          KernelQuery.stream(this.view(execution), args.query),
-        );
+        const view = this.view(execution);
+        let results: Iterator<any> | undefined;
+        this.queries.set(queryId, {
+          next: () => (results ??= KernelQuery.stream(view, args.query)).next(),
+        });
         return JSON.stringify({ queryId });
       }
       case "1.0/queryCleanup":
@@ -1133,17 +1157,32 @@ export class World {
     }
   }
 
+  /**
+   * The binary queues a query's or mutation's async syscalls and runs them one
+   * at a time, oldest first (`start_async_syscall` and `run_inner` in
+   * `crates/isolate/src/environment/udf/mod.rs`, 1.49). A write and a nested
+   * call never share a batch (`AsyncSyscallBatch::can_push` in
+   * `async_syscall.rs`), and a nested call holds the queue until it has
+   * committed or rolled back its subtransaction (`run_udf` in
+   * `async_syscall.rs`). So a caller's write made after its nested call runs
+   * after that call, and a nested mutation sees every write made before it. An
+   * action's calls run side by side.
+   */
   asyncSyscall(op: string, jsonArgs: string): Promise<string> {
     const execution = current();
     const attempt = execution.attempt;
-    if (attempt?.closed === true) {
-      return Promise.reject(closed(execution, op));
+    if (attempt === undefined) {
+      return Promise.resolve().then(() =>
+        this.dispatchAsync(op, JSON.parse(jsonArgs), execution),
+      );
     }
-    const end = attempt?.begin();
-    const result = Promise.resolve().then(() =>
-      this.dispatchAsync(op, JSON.parse(jsonArgs), execution),
-    );
-    return end === undefined ? result : result.finally(end);
+    if (attempt.closed) return Promise.reject(closed(execution, op));
+    // A syscall counts toward its frame's lifetime from the moment it is
+    // queued, so a frame never closes with a write still waiting its turn.
+    const end = attempt.begin();
+    return execution.turn
+      .take(() => this.dispatchAsync(op, JSON.parse(jsonArgs), execution))
+      .finally(end);
   }
 
   private dispatchAsync(

@@ -17,10 +17,12 @@ until the fork adopts a release containing it.
 `runHandlerPromise` starts a query, mutation or action handler with the
 services of the test invocation it belongs to, through `Effect.runPromiseWith`.
 `@confect/test` binds an invocation through async context, and a nested call
-joins it. The handler's `Date` reads the invocation's start time, and its
-`Math.random` and `crypto.getRandomValues` draw from the invocation's random
-stream. These pins rely on convex-test's per-handler copies of those globals,
-and a bound handler without one is refused before it runs. A job convex-test
+joins it. A query's or mutation's `Date` reads its start time through its
+run. An action's reads the world's clock as it runs, and a query or mutation it
+calls starts at the action's time then. The handler's `Math.random` and
+`crypto.getRandomValues` draw from the invocation's random stream. These pins
+rely on convex-test's per-handler copies of those globals, and a bound handler
+without one is refused before it runs. A job convex-test
 starts from a timer gets a fresh record with its world's services, clock and
 random stream and the job's request metadata. With no bound invocation, and
 always in production, handlers keep `Effect.runPromise`. This is row 1 of
@@ -34,8 +36,10 @@ fork-specific.
 `@confect/test` has an internal kernel that runs Convex functions in process
 without convex-test. It keeps committed rows per component and a write log.
 Each query and mutation runs as an attempt over a snapshot and its own pending
-writes. A nested mutation's writes merge into its caller's or are dropped, and
-only the outermost mutation publishes, across every component at once. The
+writes. A function's async syscalls, nested calls included, run one at a time
+in the order it made them, as in Convex's syscall queue. A nested mutation's
+writes merge into its caller's or are dropped, and only the outermost mutation
+publishes, across every component at once. The
 kernel loads every module Convex's bundler would deploy before the first
 function runs, and Node actions run through the action path. Scheduling,
 storage, HTTP, JWT and transaction limits refuse until later kernel rows land.
@@ -60,7 +64,8 @@ timestamps, which strictly increase, so a history replays byte for byte. A
 mutation that writes nothing takes no timestamp and answers its snapshot's, as
 on Convex. A mutation's attempt takes writes until its function has returned
 and its syscalls have settled, so a detached fiber's late write commits, and a
-syscall after that is refused. Each attempt reaches the invocation bridge with
+syscall after that is refused. A nested mutation's frame merges into its
+caller's only after its own syscalls settle, so the same holds inside it. Each attempt reaches the invocation bridge with
 its number, and a nested action gets a fresh invocation. Each function call
 the kernel starts has its own `Date`, `Math` and `crypto`, so the bridge's
 pins hold there, and the kernel's wall clock reads the host's time, never a

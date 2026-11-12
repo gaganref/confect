@@ -69,8 +69,14 @@ starts the handler with `Effect.runPromiseWith(services)`. Otherwise it keeps
 `Effect.runPromise`.
 
 Before the handler starts, the bridge points its `Date`, `Math` and `crypto`
-at the invocation. `Date.now()` and `new Date()` read the start time.
-`Math.random` and `crypto.getRandomValues` draw from the stream. convex-test
+at the invocation. In a query or mutation, `Date.now()` and `new Date()` read
+the invocation's start time through the whole run. In an action they read the
+world's clock as it runs, so the action sees time move when the driver advances
+that clock, as Convex lets an action's clock advance. `runHandlerPromise` tells
+the bridge which kind of function it starts. `Math.random` and
+`crypto.getRandomValues` draw from the stream. `getRandomValues` lets the host
+check its receiver and argument first, so a detached call throws the host's
+`TypeError`, as it does in production. convex-test
 0.0.65 gives every handler call its own copy of these globals, and an
 assignment inside a handler lands in that copy only (its `dist/index.js:1744`,
 `:1883-1905` and `:1927-1930`), so overlapping handlers and nested calls keep
@@ -83,15 +89,19 @@ and `Random` read these globals, so the kernel provides neither as a service,
 and a door-built handler that strips `effect/Random` still draws from the
 stream. A query keeps the query base's `queryClock`. Its effectful reads call
 `Date.now()` and so read the start time, and its unsafe reads stay constant and
-untracked. The pinned start time replaces convex-test's transaction time,
-which convex-test raises to the last commit. A document a bound handler
-inserts takes its `_creationTime` from the pinned `Date.now()` (`:105-107`),
+untracked. A query's or mutation's pinned start time replaces convex-test's
+transaction time, which convex-test raises to the last commit. An action's
+world clock replaces the host clock convex-test leaves an action. A document a
+bound handler inserts takes its `_creationTime` from the pinned `Date.now()` (`:105-107`),
 nudged up a microsecond past the previous one. Commit timestamps still come
 from convex-test's own clock (`:2062-2069`) until row 3. `crypto.randomUUID` and `performance.now`
 are not pinned, as the design names neither.
 
 A call nested in the bound request joins its record at the callee's component
-path, with its start time and stream. A job convex-test starts from a timer
+path, with its stream. A query or mutation nested in a query or mutation
+shares its caller's start time. One an action calls is a transaction of its
+own, so it starts at the world's clock reading when it begins and keeps that
+time through its run. A job convex-test starts from a timer
 inherits the async context of the handler that scheduled it. Convex gives it its
 own `scheduledFunctionId`, so the bridge gives it a fresh record with the
 world's services, a start time read from the world's clock, the world's stream
@@ -107,10 +117,26 @@ and table, the latest version and commit timestamp, and the write log.
 version, across every component. `src/internal/Attempt.ts` is one frame of an
 attempt: the committed state it started from, its caller's frame and its own
 pending writes. Each nested mutation gets a frame of its own, which merges into
-its caller's when it returns and is dropped when it fails. Only the invocation
-that owns a frame writes to it, so a caller's write made while its nested
-mutation is in flight survives that mutation's failure. `src/internal/Execution.ts` answers Convex's syscalls
-for the function that made them and runs queries, mutations and actions. Its
+its caller's when it returns and is dropped when it fails. `src/internal/Execution.ts` answers Convex's syscalls
+for the function that made them and runs queries, mutations and actions.
+
+A query's or mutation's async syscalls, nested calls included, run one at a
+time in the order the function made them. Convex 1.49 does the same:
+`start_async_syscall` pushes each onto a queue, and `run_inner` runs the queue
+oldest first, awaiting each batch before it re-enters JavaScript
+(`crates/isolate/src/environment/udf/mod.rs:367-379`, `:1157-1231`). Only
+gets, stream reads and storage reads batch, so a write and a nested call each
+run alone (`async_syscall.rs:275-300`). A nested call takes the transaction,
+runs its function to the end, commits or rolls back its subtransaction and
+then gives the transaction back (`phase.rs:357-363`, `async_syscall.rs:703-776`).
+So a caller's write issued after its nested mutation runs after that mutation
+and wins on the same field, a nested call sees every write issued before it,
+and a caller's write issued beside a failing nested mutation survives its
+rollback. A query stream reads at its first `queryStreamNext`, which waits in
+the queue, so it sees each write issued before it. A function's invocation
+ends once its handler returned and its queue is empty, as `run_inner` keeps
+running the queue after the promise resolves. An action's calls run side by
+side, as they do on Convex. Its
 query, range, pagination and validator rules come from convex-test 0.0.65
 (`KernelValues.ts`, `KernelQuery.ts`, Apache-2.0, credited in each file). The
 kernel adds a `record` validator check, of every key and value, and refuses a
@@ -214,6 +240,20 @@ commit point the attempt is closed, and any syscall on it fails with
 `ClosedAttempt` instead of writing to an attempt that is already held or
 published. The drain waits on `node:timers/promises`, which fake timers leave
 alone.
+
+A nested mutation's frame has the same lifetime. It ends once its function has
+returned and its own syscalls have drained, then closes and merges into its
+caller's frame, so a detached fiber's write made after the nested handler
+settled merges with it. Convex 1.49 runs a nested function through the same
+`run_inner` loop as a top-level one (`execute_nested_udf` and `run_nested` in
+`crates/isolate/src/environment/udf/mod.rs:546-600`). The loop ends only when
+its promise settled and its syscall queue is empty (`:1125-1270`), and only
+then does the caller commit the subtransaction (`async_syscall.rs:703-776`).
+A syscall that reaches a closed nested frame fails with `ClosedAttempt`. Each
+frame shares its attempt's reads but has its own lifetime, since a nested call
+is a syscall of its caller until it ends, and a shared count would wait on
+itself. A failed nested mutation closes at once and is dropped, as the binary
+stops a function at its rejection.
 
 Each attempt's handler starts under the invocation bound when the mutation was
 first called, with that attempt's number. A nested action starts under a fresh

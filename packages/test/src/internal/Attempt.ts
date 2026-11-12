@@ -12,13 +12,10 @@ import type * as ReadSet from "./ReadSet.js";
 type Overlay = Map<string, Map<DocumentId, StoredDocument | null>>;
 
 /**
- * What every frame of one attempt shares: what the attempt read, including its
- * caller's identity and the time, and how long it takes syscalls.
+ * How long one frame takes syscalls: those it has running, those it has
+ * started, and whether it still takes them.
  */
 interface Life {
-  readonly reads: Array<ReadSet.Read>;
-  identity: boolean;
-  time: number | null;
   running: number;
   started: number;
   open: boolean;
@@ -32,58 +29,60 @@ interface Life {
  * dropped when it fails. Reads belong to the whole attempt and are never
  * dropped: a failed nested mutation's reads stay in the attempt.
  *
+ * Each frame has its own lifetime. A frame takes reads and writes until it is
+ * closed. A mutation's frame closes once its function has returned and no
+ * syscall it started is still running, so a write a detached fiber makes after
+ * the handler settled still lands in it, as on the binary. A nested mutation's
+ * frame closes before it merges into its caller's, so no write reaches it after
+ * its writes became its caller's.
+ *
  * A frame belongs to one invocation, which alone writes to it, so a caller's
  * write made while its nested mutation is in flight stays the caller's.
  * `Kernel.apply` publishes the outermost frame's writes.
- *
- * An attempt takes reads and writes until it is closed. A mutation's attempt
- * closes once its function has returned and no syscall it started is still
- * running, so a write a detached fiber makes after the handler settled still
- * lands in it, as on the binary.
  */
 export class KernelAttempt {
   private readonly overlay: Overlay = new Map();
-  private readonly life: Life;
+  private readonly life: Life = { running: 0, started: 0, open: true };
+  private readonly allReads: Array<ReadSet.Read>;
+  /**
+   * Whether the attempt asked for its caller's identity, and the time it read.
+   * Every frame of the attempt shares them, as it shares the reads.
+   */
+  private readonly observed: { identity: boolean; time: number | null };
 
   constructor(
     readonly snapshot: Kernel.State,
     readonly number: AttemptNumber = 1,
     private readonly parent?: KernelAttempt,
   ) {
-    this.life = parent?.life ?? {
-      reads: [],
-      identity: false,
-      time: null,
-      running: 0,
-      started: 0,
-      open: true,
-    };
+    this.allReads = parent?.allReads ?? [];
+    this.observed = parent?.observed ?? { identity: false, time: null };
   }
 
   get reads(): ReadonlyArray<ReadSet.Read> {
-    return this.life.reads;
+    return this.allReads;
   }
 
   /**
    * Whether the function asked for its caller's identity.
    */
   get observedIdentity(): boolean {
-    return this.life.identity;
+    return this.observed.identity;
   }
 
   /**
    * The pinned time the function read, or `null` when it never read the time.
    */
   get observedTime(): number | null {
-    return this.life.time;
+    return this.observed.time;
   }
 
   observeIdentity() {
-    this.life.identity = true;
+    this.observed.identity = true;
   }
 
   observeTime(at: number) {
-    this.life.time = at;
+    this.observed.time = at;
   }
 
   get closed(): boolean {
@@ -91,7 +90,7 @@ export class KernelAttempt {
   }
 
   readDocument(componentPath: string, id: DocumentId) {
-    this.life.reads.push({ kind: "document", componentPath, id });
+    this.allReads.push({ kind: "document", componentPath, id });
   }
 
   /**
@@ -102,7 +101,7 @@ export class KernelAttempt {
     read: Omit<ReadSet.IntervalRead, "through">,
   ): (through: ReadSet.Key | "end") => void {
     const interval: ReadSet.IntervalRead = { ...read, through: null };
-    this.life.reads.push(interval);
+    this.allReads.push(interval);
     return (through) => {
       interval.through = through;
     };
@@ -122,7 +121,8 @@ export class KernelAttempt {
 
   /**
    * Resolves once a whole turn of the event loop passes with no syscall of this
-   * attempt running or started.
+   * frame running or started. A nested call is a syscall of its caller's frame
+   * until it has drained.
    */
   drained(): Promise<void> {
     const before = this.life.started;
@@ -188,11 +188,15 @@ export class KernelAttempt {
   }
 
   /**
-   * A nested mutation returned. Its writes become its caller's.
+   * A nested mutation returned and its frame closed. Its writes become its
+   * caller's.
    */
   merge() {
     if (this.parent === undefined) {
       throw new Error("The outermost frame of an attempt has no caller.");
+    }
+    if (this.life.open) {
+      throw new Error("A nested mutation's frame merges only once closed.");
     }
     for (const [componentPath, writes] of this.overlay)
       for (const [id, doc] of writes) this.parent.write(componentPath, id, doc);
