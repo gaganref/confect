@@ -69,8 +69,14 @@ starts the handler with `Effect.runPromiseWith(services)`. Otherwise it keeps
 `Effect.runPromise`.
 
 Before the handler starts, the bridge points its `Date`, `Math` and `crypto`
-at the invocation. `Date.now()` and `new Date()` read the start time.
-`Math.random` and `crypto.getRandomValues` draw from the stream. convex-test
+at the invocation. In a query or mutation, `Date.now()` and `new Date()` read
+the invocation's start time through the whole run. In an action they read the
+world's clock as it runs, so the action sees time move when the driver advances
+that clock, as Convex lets an action's clock advance. `runHandlerPromise` tells
+the bridge which kind of function it starts. `Math.random` and
+`crypto.getRandomValues` draw from the stream. `getRandomValues` lets the host
+check its receiver and argument first, so a detached call throws the host's
+`TypeError`, as it does in production. convex-test
 0.0.65 gives every handler call its own copy of these globals, and an
 assignment inside a handler lands in that copy only (its `dist/index.js:1744`,
 `:1883-1905` and `:1927-1930`), so overlapping handlers and nested calls keep
@@ -83,15 +89,19 @@ and `Random` read these globals, so the kernel provides neither as a service,
 and a door-built handler that strips `effect/Random` still draws from the
 stream. A query keeps the query base's `queryClock`. Its effectful reads call
 `Date.now()` and so read the start time, and its unsafe reads stay constant and
-untracked. The pinned start time replaces convex-test's transaction time,
-which convex-test raises to the last commit. A document a bound handler
-inserts takes its `_creationTime` from the pinned `Date.now()` (`:105-107`),
+untracked. A query's or mutation's pinned start time replaces convex-test's
+transaction time, which convex-test raises to the last commit. An action's
+world clock replaces the host clock convex-test leaves an action. A document a
+bound handler inserts takes its `_creationTime` from the pinned `Date.now()` (`:105-107`),
 nudged up a microsecond past the previous one. Commit timestamps still come
 from convex-test's own clock (`:2062-2069`) until row 3. `crypto.randomUUID` and `performance.now`
 are not pinned, as the design names neither.
 
 A call nested in the bound request joins its record at the callee's component
-path, with its start time and stream. A job convex-test starts from a timer
+path, with its stream. A query or mutation nested in a query or mutation
+shares its caller's start time. One an action calls is a transaction of its
+own, so it starts at the world's clock reading when it begins and keeps that
+time through its run. A job convex-test starts from a timer
 inherits the async context of the handler that scheduled it. Convex gives it its
 own `scheduledFunctionId`, so the bridge gives it a fresh record with the
 world's services, a start time read from the world's clock, the world's stream

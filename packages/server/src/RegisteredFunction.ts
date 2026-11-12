@@ -239,17 +239,22 @@ export const combineErrorSchemas = (
 type InvocationMeta = Pick<QueryMeta, "getFunctionMetadata"> &
   Partial<Pick<MutationMeta, "getRequestMetadata">>;
 
+type InvocationFunctionType = "query" | "mutation" | "action";
+
 /**
  * What `@confect/test` installs on `globalThis` under {@link testInvocation}.
  * `start` runs `run` with the services of the test invocation the handler
  * belongs to, with the handler's `Date`, `Math.random` and
  * `crypto.getRandomValues` pinned to that invocation, or answers `undefined`
- * when none is bound. Production never installs it.
+ * when none is bound. `functionType` decides how `Date` reads: a query or
+ * mutation keeps its start time, an action follows the clock. Production never
+ * installs it.
  */
 type TestInvocation = {
   readonly start: <A>(
     meta: InvocationMeta,
     run: (services: Context.Context<never>) => Promise<A>,
+    functionType: InvocationFunctionType,
   ) => Promise<A> | undefined;
 };
 
@@ -296,10 +301,12 @@ export const runHandlerPromise =
         | undefined;
       readonly observability?: Layer.Layer<never> | undefined;
       readonly meta?: InvocationMeta | undefined;
+      readonly functionType?: InvocationFunctionType | undefined;
     },
   ) =>
   <A, E>(effect: Effect.Effect<A, E>): Promise<A> => {
-    const { observability, invocation, clock, meta } = runOptions ?? {};
+    const { observability, invocation, clock, meta, functionType } =
+      runOptions ?? {};
     let encodedError: Exit.Exit<any, any> | undefined;
     let undeclared: { readonly error: unknown } | undefined;
     const observed = Effect.tapCause(effect, (cause) =>
@@ -406,12 +413,14 @@ export const runHandlerPromise =
         : Effect.provideService(Clock.Clock, clock),
     );
     const started =
-      meta === undefined
+      meta === undefined || functionType === undefined
         ? undefined
         : (globalThis as { [testInvocation]?: TestInvocation })[
             testInvocation
-          ]?.start(meta, (services) =>
-            Effect.runPromiseWith(services)(program, runOptions),
+          ]?.start(
+            meta,
+            (services) => Effect.runPromiseWith(services)(program, runOptions),
+            functionType,
           );
     return (started ?? Effect.runPromise(program, runOptions)).then(
       Result.match({
@@ -508,6 +517,7 @@ export const actionFunctionBase = <
         invocation: invocationMetadata(ctx.meta, actualArgs, reservedArgument),
         observability,
         meta: ctx.meta,
+        functionType: "action",
       }),
     ),
 });
