@@ -347,7 +347,7 @@ const functionPathOf = (
   from: string,
 ): FunctionPath => {
   if (address.functionHandle !== undefined) {
-    return parseFunctionHandle(address.functionHandle) as FunctionPath;
+    return parseFunctionHandle(address.functionHandle);
   }
   if (address.name !== undefined) {
     return { udfPath: address.name, componentPath: from };

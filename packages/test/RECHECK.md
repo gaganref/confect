@@ -255,9 +255,15 @@ invocation bound when it was scheduled. `1.0/schedule` writes
 the row through the scheduling attempt, so a job exists only once that mutation
 commits. `1.0/actions/schedule` and `1.0/actions/cancel_job` commit at once.
 A stored handle passes a `v.function()` validator, which row 2's refusal of an
-unknown kind turned away. The kernel checks it as the binary does
-(`common/src/schemas/validator.rs:156-164` in convex-backend 1.49.0): a string
-with the `function://` prefix, followed here by convex-test's handle format.
+unknown kind turned away. The pinned binary,
+`precompiled-2026-10-28-cccbade`, accepts a string that parses as a function
+handle (`common/src/schemas/validator.rs:156-164`). Its parser strips the
+`function://` prefix and parses the rest as a document id, with an optional
+`#` function name (`common/src/bootstrap_model/components/handles.rs:100-112`).
+The kernel mints convex-test's format instead, `function://<component>;<path>`,
+so it accepts a string that parses as that: one `;` and a function path after
+it. It refuses `function://` and `function://not-a-valid-handle`, which the
+binary refuses too.
 Cancel marks a pending or running job `canceled`, and a canceled job never
 starts.
 

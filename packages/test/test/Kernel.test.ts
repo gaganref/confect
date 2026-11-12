@@ -374,6 +374,20 @@ describe("function validators", () => {
         ).toContain("Expected a function handle");
       }),
   );
+
+  it.effect.each([
+    ["the bare prefix", "function://"],
+    ["a prefix without a component separator", "function://not-a-valid-handle"],
+    ["a prefix with no function path", "function://;"],
+    ["a prefix with two separators", "function://;callbacks:target;extra"],
+  ])("a function validator refuses %s", ([, handle]) =>
+    Effect.gen(function* () {
+      const t = callbackWorld();
+      expect(
+        yield* outcome(() => t.mutation(callbacks.store, { handle })),
+      ).toContain("Expected a function handle");
+    }),
+  );
 });
 
 describe("record validators", () => {
