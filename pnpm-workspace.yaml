@@ -38,6 +38,7 @@ minimumReleaseAgeExclude:
   - "@effect/tsgo-win32-arm64@0.67.5"
   - "@effect/tsgo-win32-x64@0.67.5"
   - "@effect/tsgo@0.67.5"
+  - "@alchemy.run/node-utils@2.0.0-beta.86"
   - "@es-joy/escodegen@5.0.1"
   - "@mintlify/cli@4.1.6"
   - "@mintlify/common@1.0.1350"
@@ -106,6 +107,7 @@ minimumReleaseAgeExclude:
   - "@tsrs/linux-x64-gnu@0.23.0-ts7.1.0-beta"
   - "@tsrs/linux-x64-musl@0.23.0-ts7.1.0-beta"
   - "@tsrs/win32-x64@0.23.0-ts7.1.0-beta"
+  - alchemy@2.0.0-beta.86
   - concurrently@10.0.7
   - eslint-plugin-jsdoc@65.4.5
   - jose@6.2.16
@@ -116,11 +118,6 @@ minimumReleaseAgeExclude:
   - rolldown@1.3.0
   - tsdown@0.23.7
   - tsrs@0.23.0-ts7.1.0-beta
-  # WORKAROUND: alchemy 2.0.0-beta.86 and its @alchemy.run/node-utils are under a day old, so the release-age gate
-  # rejects them. Remove these two entries before merge, once beta.86 is a day old (after 2026-11-13 09:34 UTC),
-  # and list the versions the lockfile resolves as exact entries above, as for the rest of the pinned toolchain.
-  - alchemy
-  - "@alchemy.run/*"
 
 overrides:
   convex: 1.49.0
