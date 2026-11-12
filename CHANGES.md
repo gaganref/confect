@@ -61,7 +61,10 @@ mutation that writes nothing takes no timestamp and answers its snapshot's, as
 on Convex. A mutation's attempt takes writes until its function has returned
 and its syscalls have settled, so a detached fiber's late write commits, and a
 syscall after that is refused. Each attempt reaches the invocation bridge with
-its number, and a nested action gets a fresh invocation. This is row 3 of
+its number, and a nested action gets a fresh invocation. Each function call
+the kernel starts has its own `Date`, `Math` and `crypto`, so the bridge's
+pins hold there, and the kernel's wall clock reads the host's time, never a
+handler's pinned one. This is row 3 of
 Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-read-sets.md`. Upstream: fork only, as the kernel is
 fork-specific.

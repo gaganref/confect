@@ -1321,7 +1321,33 @@ const life = {
     { outer: string | null; nested: string | null }
   >("life:outer"),
   inner: makeFunctionReference<"action", {}, string | null>("life:inner"),
+  pinnedOuter: makeFunctionReference<
+    "action",
+    {},
+    { outer: Pinned; nested: Pinned; after: Pinned }
+  >("life:pinnedOuter"),
+  pinnedInner: makeFunctionReference<"action", {}, Pinned>("life:pinnedInner"),
+  stamped: makeFunctionReference<
+    "mutation",
+    {},
+    { now: number; created: number }
+  >("life:stamped"),
 };
+
+interface Pinned {
+  readonly now: number;
+  readonly random: number;
+}
+
+const PinnedSchema = Schema.Struct({
+  now: Schema.Finite,
+  random: Schema.Finite,
+});
+
+const pinned = Effect.sync(
+  // oxlint-disable-next-line effecttsgo/global-date-in-effect, effecttsgo/global-random-in-effect -- The handler reads the ambient Date and Math.random the bridge pins.
+  (): Pinned => ({ now: Date.now(), random: Math.random() }),
+);
 
 const bumpCounter = (ctx: GenericMutationCtx<GenericDataModel>, id: string) =>
   Effect.gen(function* () {
@@ -1430,6 +1456,54 @@ const lifeModule = {
       returns: () => Schema.NullOr(Schema.String),
     }),
     () => mail,
+  ),
+  pinnedOuter: register(
+    FunctionSpec.publicAction({
+      name: "pinnedOuter",
+      args: () => ({}),
+      returns: () =>
+        Schema.Struct({
+          outer: PinnedSchema,
+          nested: PinnedSchema,
+          after: PinnedSchema,
+        }),
+    }),
+    () =>
+      Effect.gen(function* () {
+        const outer = yield* pinned;
+        const ctx = yield* ActionCtx.ActionCtx<GenericDataModel>();
+        const nested = yield* Effect.promise(() =>
+          ctx.runAction(life.pinnedInner),
+        );
+        const after = yield* pinned;
+        return { outer, nested, after };
+      }),
+  ),
+  pinnedInner: register(
+    FunctionSpec.internalAction({
+      name: "pinnedInner",
+      args: () => ({}),
+      returns: () => PinnedSchema,
+    }),
+    () => pinned,
+  ),
+  stamped: register(
+    FunctionSpec.publicMutation({
+      name: "stamped",
+      args: () => ({}),
+      returns: () =>
+        Schema.Struct({ now: Schema.Finite, created: Schema.Finite }),
+    }),
+    () =>
+      Effect.gen(function* () {
+        const ctx = yield* MutationCtx.MutationCtx<GenericDataModel>();
+        const id = yield* Effect.promise(() =>
+          ctx.db.insert("counters", { n: 0 }),
+        );
+        const doc = yield* Effect.promise(() => ctx.db.get(id));
+        const { now } = yield* pinned;
+        return { now, created: doc!._creationTime };
+      }),
   ),
 };
 
@@ -1542,6 +1616,41 @@ describe("invocations", () => {
           Invocation.bind(caller, () => t.action(life.outer, {})),
         );
         expect(seen).toEqual({ outer: "caller mail", nested: "world mail" });
+      }),
+  );
+
+  it.effect(
+    "a bound handler reads its invocation's time and stream, a nested action its world's, and test code the host's",
+    () =>
+      Effect.gen(function* () {
+        const t = lifeWorld();
+        const host = { Date: globalThis.Date, Math: globalThis.Math };
+        const seen = yield* call(() =>
+          Invocation.bind(caller, () => t.action(life.pinnedOuter, {})),
+        );
+        expect(seen).toEqual({
+          outer: { now: 1_000, random: 0.25 },
+          nested: { now: 2_000, random: 0.75 },
+          after: { now: 1_000, random: 0.25 },
+        });
+        expect({ Date: globalThis.Date, Math: globalThis.Math }).toEqual(host);
+        // oxlint-disable-next-line effecttsgo/global-date-in-effect -- Test code reads the host's clock, which no handler's pin may reach.
+        expect(Date.now()).toBeGreaterThan(2_000);
+      }),
+  );
+
+  it.effect(
+    "a bound mutation's document takes its creation time from the kernel's clock, not the pinned start time",
+    () =>
+      Effect.gen(function* () {
+        const t = lifeWorld();
+        // oxlint-disable-next-line effecttsgo/global-date-in-effect -- Test code reads the host's clock, which the kernel's wall clock follows.
+        const before = Date.now();
+        const seen = yield* call(() =>
+          Invocation.bind(caller, () => t.mutation(life.stamped, {})),
+        );
+        expect(seen.now).toBe(1_000);
+        expect(seen.created).toBeGreaterThanOrEqual(before);
       }),
   );
 });

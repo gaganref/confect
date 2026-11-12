@@ -77,8 +77,8 @@ assignment inside a handler lands in that copy only (its `dist/index.js:1744`,
 their own. A bound handler that runs without such a copy would change these
 globals for every caller. The bridge checks each assignment from the test's
 own async context, puts back any that reached it, and refuses the handler
-before it runs. Row 2's
-kernel owns its globals and replaces this reliance. Effect's default `Clock`
+before it runs. The kernel gives each function call it starts such a copy
+too, as recorded under row 3. Effect's default `Clock`
 and `Random` read these globals, so the kernel provides neither as a service,
 and a door-built handler that strips `effect/Random` still draws from the
 stream. A query keeps the query base's `queryClock`. Its effectful reads call
@@ -224,6 +224,18 @@ joins its caller's record, since convex-test runs no attempts. The record
 carries no identity, so the design's "reset identity" does not reach it. The
 kernel's identity rule is row 2's. The request-metadata row resets identity
 only for scheduled calls.
+
+Row 1's pins rely on each handler call having its own `Date`, `Math` and
+`crypto`, and the kernel gave a handler none, so the bridge refused every
+handler the kernel started under a bound invocation. `src/internal/Globals.ts`
+gives each query, mutation and action the kernel starts its own copy, as
+convex-test does, and a nested call starts from the test environment's. A
+bound handler on the kernel then reads its invocation's start time and stream,
+a nested action its world's, and test code keeps the host's. The kernel's
+default wall clock reads the host's `Date`, never a handler's copy, so a
+document a bound mutation inserts takes its `_creationTime` from the kernel's
+clock, as every commit timestamp does. On convex-test it takes the pinned
+start time, as recorded under row 1.
 
 No inventory case is placed in row 3, and no refusal named row 3, so the lane's
 placements are unchanged.

@@ -11,6 +11,7 @@ import {
 } from "convex/server";
 import { convexToJson, jsonToConvex, type Value } from "convex/values";
 import { KernelAttempt } from "./Attempt.js";
+import * as Globals from "./Globals.js";
 import * as Invocation from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
@@ -181,6 +182,13 @@ class Turn {
 }
 
 const executions = new AsyncLocalStorage<Execution>();
+
+/**
+ * Run a function's code as `execution`, with its own copy of the globals a test
+ * invocation pins.
+ */
+const enter = <A>(execution: Execution, run: () => A): A =>
+  Globals.own(() => executions.run(execution, run));
 const kernelBrand = Symbol.for("@confect/test/Kernel");
 
 const current = (): Execution => {
@@ -636,10 +644,9 @@ export class World {
         handler: (ctx: any, a: any) =>
           resolved.handler({ ...ctx, auth: queryAuth(execution) }, a),
       }) as unknown as { invokeQuery: (args: string) => Promise<string> };
-      return executions
-        .run(execution, () =>
-          q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
-        )
+      return enter(execution, () =>
+        q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
+      )
         .then((raw) => {
           const result = jsonToConvex(JSON.parse(raw));
           if (!isNested && hasPendingValues(result)) {
@@ -666,18 +673,16 @@ export class World {
       handler: (ctx: any, a: any) =>
         resolved.handler({ ...ctx, auth: mutationAuth(execution) }, a),
     }) as unknown as { invokeMutation: (args: string) => Promise<string> };
-    return executions
-      .run(execution, () =>
-        m.invokeMutation(JSON.stringify(convexToJson([parseArgs(args)]))),
-      )
-      .then((raw) => {
-        const result = jsonToConvex(JSON.parse(raw));
-        validateReturnValue(resolved.returns, result, "mutation", {
-          componentPath: execution.componentPath,
-          udfPath: execution.udfPath,
-        });
-        return result;
+    return enter(execution, () =>
+      m.invokeMutation(JSON.stringify(convexToJson([parseArgs(args)]))),
+    ).then((raw) => {
+      const result = jsonToConvex(JSON.parse(raw));
+      validateReturnValue(resolved.returns, result, "mutation", {
+        componentPath: execution.componentPath,
+        udfPath: execution.udfPath,
       });
+      return result;
+    });
   }
 
   private runMutation(
@@ -905,7 +910,7 @@ export class World {
       invokeAction: (requestId: string, args: string) => Promise<string>;
     };
     const run = () =>
-      executions.run(execution, () =>
+      enter(execution, () =>
         a.invokeAction(
           from.request.requestId,
           JSON.stringify(convexToJson([parseArgs(args)])),

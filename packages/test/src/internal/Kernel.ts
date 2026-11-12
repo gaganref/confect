@@ -1,3 +1,4 @@
+import * as Globals from "./Globals.js";
 import type { DocumentId, StoredDocument } from "./KernelValues.js";
 import { resolveCommittedValues, tableNameFromId } from "./KernelValues.js";
 import * as ReadSet from "./ReadSet.js";
@@ -175,8 +176,9 @@ export interface KernelRuntime {
  */
 export const wallClock = (): KernelRuntime => {
   let latest = 0n;
+  // The host's clock, never the copy a bound handler pinned.
   // oxlint-disable-next-line effecttsgo/global-date -- The default runtime is the wall clock. A driver that replays supplies its own.
-  const now = () => Date.now();
+  const now = () => Globals.host(() => Date.now());
   return {
     now,
     commitTs: () => {
