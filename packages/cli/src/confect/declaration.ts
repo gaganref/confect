@@ -45,6 +45,8 @@ const confectPath = Effect.fnUntraced(function* (file: string) {
 
 /**
  * A backend opts in to the declaration by writing `confect/app.ts`.
+ *
+ * @internal
  */
 export const isDeclared = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -235,6 +237,9 @@ const readManifest = Effect.gen(function* () {
   return Predicate.isObject(data) ? data : {};
 });
 
+/**
+ * @internal
+ */
 export const readPrevious = readManifest.pipe(
   Effect.orElseSucceed(() => ({}) as Record<string, unknown>),
 );
@@ -251,6 +256,9 @@ const sectionDigest = (
         sections,
       });
 
+/**
+ * @internal
+ */
 export const syncManifestSections = Effect.fnUntraced(
   function* (
     declared: ReadonlyArray<ManifestSection.Entry>,
@@ -418,6 +426,8 @@ const writeDeclaration = Effect.fnUntraced(function* (
  * `confect/env.ts` and `confect/auth.ts`, before anything else is validated. On
  * any failure the previous manifest is removed, so a stale manifest never
  * outlives a declaration that no longer produces it.
+ *
+ * @internal
  */
 export const syncDeclaration = Effect.fnUntraced(function* (
   previous: Readonly<Record<string, unknown>>,
@@ -442,6 +452,8 @@ export const syncDeclaration = Effect.fnUntraced(function* (
  * Check every HTTP route the backend serves and write `convex/http.ts` from
  * `confect/http.ts`. Runs after generation, because `http.ts` imports its
  * handlers, which import generated services.
+ *
+ * @internal
  */
 export const syncDeclaredHttp = (
   app: App.Any,
@@ -579,6 +591,8 @@ const mountExport = Effect.fnUntraced(function* (name: string) {
  * steps it runs at each mount: every mount whose component declares `init` or
  * has a deploy module of its own, in declaration order. Remove it when there
  * are none.
+ *
+ * @internal
  */
 export const syncDeployModule = Effect.fnUntraced(function* (
   app: Option.Option<App.Any>,
