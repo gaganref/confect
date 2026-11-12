@@ -61,18 +61,45 @@ each of them.
 
 `src/internal/Invocation.ts` binds a test invocation with `bind(invocation, start)`.
 The record holds the owning world, the component path, the attempt, request
-metadata and the Effect services. One store per test runtime lives on
-`globalThis` under `Symbol.for("@confect/test/Invocation")`, so every copy of the
-module that `vi.resetModules` reloads binds through the store `runHandlerPromise`
-reads. When an invocation is bound, `runHandlerPromise` starts the handler with
-`Effect.runPromiseWith(services)`. Otherwise it keeps `Effect.runPromise`.
+metadata, the Effect services, a start time and a random stream. One store per
+test runtime lives on `globalThis` under `Symbol.for("@confect/test/Invocation")`,
+so every copy of the module that `vi.resetModules` reloads binds through the
+store `runHandlerPromise` reads. When an invocation is bound, `runHandlerPromise`
+starts the handler with `Effect.runPromiseWith(services)`. Otherwise it keeps
+`Effect.runPromise`.
+
+Before the handler starts, the bridge points its `Date`, `Math` and `crypto`
+at the invocation. `Date.now()` and `new Date()` read the start time.
+`Math.random` and `crypto.getRandomValues` draw from the stream. convex-test
+0.0.65 gives every handler call its own copy of these globals, and an
+assignment inside a handler lands in that copy only (its `dist/index.js:1744`,
+`:1883-1905` and `:1927-1930`), so overlapping handlers and nested calls keep
+their own. A bound handler that runs without such a copy would change these
+globals for every caller. The bridge checks each assignment from the test's
+own async context, puts back any that reached it, and refuses the handler
+before it runs. Row 2's
+kernel owns its globals and replaces this reliance. Effect's default `Clock`
+and `Random` read these globals, so the kernel provides neither as a service,
+and a door-built handler that strips `effect/Random` still draws from the
+stream. A query keeps the query base's `queryClock`. Its effectful reads call
+`Date.now()` and so read the start time, and its unsafe reads stay constant and
+untracked. The pinned start time replaces convex-test's transaction time,
+which convex-test raises to the last commit. A document a bound handler
+inserts takes its `_creationTime` from the pinned `Date.now()` (`:105-107`),
+nudged up a microsecond past the previous one. Commit timestamps still come
+from convex-test's own clock (`:2062-2069`) until row 3. `crypto.randomUUID` and `performance.now`
+are not pinned, as the design names neither.
 
 A call nested in the bound request joins its record at the callee's component
-path. A job convex-test starts from a timer inherits the async context of the
-handler that scheduled it. Convex gives it its own `scheduledFunctionId`, so the
-bridge gives it a fresh record with the world's services and the job's request
-metadata. The attempt is always 1 until row 3 adds attempts. A nested action joins its caller's record too. The design gives it a fresh one, which differs from the joined record only once an attempt can differ, so it lands with row 3. A query still runs on its pinned `queryClock`, which the query base provides inside the handler effect, so an invocation's clock reaches mutations and actions only. The bridge does not
-reach HTTP route handlers, `t.run` or mount `init`, as recorded above.
+path, with its start time and stream. A job convex-test starts from a timer
+inherits the async context of the handler that scheduled it. Convex gives it its
+own `scheduledFunctionId`, so the bridge gives it a fresh record with the
+world's services, a start time read from the world's clock, the world's stream
+and the job's request metadata. The attempt is always 1 until row 3 adds
+attempts. A nested action joins its caller's record too. The design gives it a
+fresh one, which differs from the joined record only once an attempt can
+differ, so it lands with row 3. The bridge does not reach HTTP route handlers,
+`t.run` or mount `init`, as recorded above.
 
 ## Storage and attempts (row 2)
 
