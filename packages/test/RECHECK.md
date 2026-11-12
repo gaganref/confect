@@ -335,7 +335,9 @@ realm's `Date` is the kernel's wrapper and a kernel invocation is running, the
 bridge leaves `Date` to it and pins only `Math` and `crypto`
 (`Clock.answersInvocation`, row 5's rule too). A bound handler on the kernel
 reads the kernel's clock as an unbound one does, and a bound query's read of it
-is recorded. A record's own start time and its world's clock apply only on
+is recorded. A bound action reads the running clock, and a query or mutation it
+calls starts at the kernel's time when it is called, the kernel's form of row
+1's rule. A record's own start time and its world's clock apply only on
 convex-test.
 
 No inventory case is placed in row 4, and no refusal named row 4, so the lane's

@@ -1376,6 +1376,8 @@ let gate = Deferred.makeUnsafe<void>();
 let exited = Deferred.makeUnsafe<Exit.Exit<void>>();
 const order: Array<string> = [];
 const attempts: Array<number | null> = [];
+// Runs inside `movingAction`, between its two readings of the time.
+let duringAction = () => {};
 
 const life = {
   bed: makeFunctionReference<"mutation", {}, GenericId<"beds">>("life:bed"),
@@ -1411,6 +1413,11 @@ const life = {
     { outer: Pinned; nested: Pinned; after: Pinned }
   >("life:pinnedOuter"),
   pinnedInner: makeFunctionReference<"action", {}, Pinned>("life:pinnedInner"),
+  movingAction: makeFunctionReference<
+    "action",
+    {},
+    { before: number; after: number; called: number }
+  >("life:movingAction"),
   pinnedQuery: makeFunctionReference<"query", {}, Pinned>("life:pinnedQuery"),
   stamped: makeFunctionReference<
     "mutation",
@@ -1567,6 +1574,29 @@ const lifeModule = {
         );
         const after = yield* pinned;
         return { outer, nested, after };
+      }),
+  ),
+  movingAction: register(
+    FunctionSpec.publicAction({
+      name: "movingAction",
+      args: () => ({}),
+      returns: () =>
+        Schema.Struct({
+          before: Schema.Finite,
+          after: Schema.Finite,
+          called: Schema.Finite,
+        }),
+    }),
+    () =>
+      Effect.gen(function* () {
+        const before = (yield* pinned).now;
+        yield* Effect.sync(() => duringAction());
+        const after = (yield* pinned).now;
+        const ctx = yield* ActionCtx.ActionCtx<GenericDataModel>();
+        const { now: called } = yield* Effect.promise(() =>
+          ctx.runMutation(life.stamped, {}),
+        );
+        return { before, after, called };
       }),
   ),
   pinnedInner: register(
@@ -1791,6 +1821,31 @@ describe("invocations", () => {
         expect({ Date: globalThis.Date, Math: globalThis.Math }).toEqual(host);
         // oxlint-disable-next-line effecttsgo/global-date-in-effect -- Test code reads the host's clock, which no handler's pin may reach.
         expect(Date.now()).toBeGreaterThan(5_000);
+      }),
+  );
+
+  it.effect(
+    "a bound action reads the kernel's clock as it runs, and a mutation it calls starts at the kernel's time then, whatever its world's clock says",
+    () =>
+      Effect.gen(function* () {
+        let now = 5_000;
+        const t = lifeWorld({
+          now: () => now,
+          commitTs: (version) => BigInt(version),
+        });
+        duringAction = () => {
+          now = 7_000;
+        };
+        const seen = yield* call(() =>
+          Invocation.bind(caller, () => t.action(life.movingAction, {})),
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              duringAction = () => {};
+            }),
+          ),
+        );
+        expect(seen).toEqual({ before: 5_000, after: 7_000, called: 7_000 });
       }),
   );
 
