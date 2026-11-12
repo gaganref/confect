@@ -501,7 +501,6 @@
         "packages/server/test/RegisteredFunction.test.ts",
         "packages/server/test/internal/observability.test.ts",
         "packages/server/test/mock-backend/actionCall.test.ts",
-        "packages/server/test/mock-backend/fixtures/components/counter/http.ts",
         "packages/server/test/mock-backend/integration.test.ts",
         "scripts/forkConsumer.test.ts",
         "scripts/mergeUpstreamRelease.test.ts",

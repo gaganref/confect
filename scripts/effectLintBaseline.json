@@ -99,7 +99,6 @@
     "packages/server/test/RegisteredFunction.test.ts": 5,
     "packages/server/test/internal/observability.test.ts": 1,
     "packages/server/test/mock-backend/actionCall.test.ts": 6,
-    "packages/server/test/mock-backend/fixtures/components/counter/http.ts": 1,
     "packages/server/test/mock-backend/integration.test.ts": 2,
     "scripts/forkConsumer.test.ts": 1,
     "scripts/mergeUpstreamRelease.test.ts": 1,

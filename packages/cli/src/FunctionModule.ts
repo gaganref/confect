@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as HashSet from "effect/HashSet";
 import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
+import * as String from "effect/String";
 import { UnownedConvexEntrypointError } from "./CodegenError.js";
 import * as Declaration from "./Declaration.js";
 import * as SectionFiles from "./SectionFiles.js";
@@ -111,11 +112,10 @@ const matchesShape = (
 
 // Before the schema-first HttpRouter.make, codegen emitted forSchema; codegen
 // owns that output so it can rewrite it.
-const legacyRouter = (template: string) =>
-  template.replace(
-    "HttpRouter.make(schema, http.routes, ",
-    "HttpRouter.forSchema(schema)(http.routes, ",
-  );
+const legacyRouter = String.replace(
+  "HttpRouter.make(schema, http.routes, ",
+  "HttpRouter.forSchema(schema)(http.routes, ",
+);
 
 export const assertOwnedEntrypoints = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -125,23 +125,27 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
   const projectRoot = yield* ProjectRoot.get;
   const importFromConvex = (file: string) =>
     toModuleImportPath(path.relative(convex, path.join(confect, file)));
+  const httpTemplates = [
+    yield* templates.http({
+      httpImportPath: yield* importFromConvex("http.ts"),
+    }),
+    yield* templates.declaredHttp({
+      schemaImportPath: yield* importFromConvex("_generated/schema.ts"),
+      httpImportPath: yield* importFromConvex("http.ts"),
+    }),
+    yield* templates.declaredHttp({
+      schemaImportPath: yield* importFromConvex("_generated/schema.ts"),
+      httpImportPath: yield* importFromConvex("http.ts"),
+      runtimeImportPath: yield* importFromConvex("runtime.ts"),
+    }),
+  ];
   const optional = new Map([
     [
       "http.ts",
-      [
-        yield* templates.http({
-          httpImportPath: yield* importFromConvex("http.ts"),
-        }),
-        yield* templates.declaredHttp({
-          schemaImportPath: yield* importFromConvex("_generated/schema.ts"),
-          httpImportPath: yield* importFromConvex("http.ts"),
-        }),
-        yield* templates.declaredHttp({
-          schemaImportPath: yield* importFromConvex("_generated/schema.ts"),
-          httpImportPath: yield* importFromConvex("http.ts"),
-          runtimeImportPath: yield* importFromConvex("runtime.ts"),
-        }),
-      ].flatMap((template) => [template, legacyRouter(template)]),
+      Array.flatMap(httpTemplates, (template) => [
+        template,
+        legacyRouter(template),
+      ]),
     ],
     [
       "crons.ts",
