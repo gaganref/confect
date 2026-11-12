@@ -1,4 +1,5 @@
-import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as CommandArgs from "./fixtures/CommandArgs";
+import * as NodeServices from "./fixtures/NodeTestServices";
 import { assert, describe, expect, it } from "@effect/vitest";
 import {
   provider as codeProvider,
@@ -247,7 +248,7 @@ describe("Code command boundary", () => {
                 expect(command._tag).toBe("StandardCommand");
                 if (command._tag !== "StandardCommand")
                   return ChildProcessSpawner.ExitCode(1);
-                calls.push(command.args[1]);
+                calls.push(CommandArgs.plain(command.args)[1]);
                 expect(command.options.env?.PATH).toBe("C:\\node");
                 expect(command.options.env?.SystemRoot).toBe("C:\\Windows");
                 expect(command.options.extendEnv).toBe(false);
@@ -322,7 +323,7 @@ describe("Code command boundary", () => {
               expect(command._tag).toBe("StandardCommand");
               if (command._tag !== "StandardCommand")
                 return ChildProcessSpawner.ExitCode(1);
-              calls.push(command.args[1]);
+              calls.push(CommandArgs.plain(command.args)[1]);
               expect(command.command).toBe(process.execPath);
               expect(command.options.cwd).toBe(cwd);
               expect(command.options.extendEnv).toBe(false);
@@ -337,13 +338,15 @@ describe("Code command boundary", () => {
                 "CONVEX_DEPLOYMENT",
               );
               expect(command.options.env).not.toHaveProperty("NODE_OPTIONS");
-              if (command.args[1] === "deploy") {
-                expect(command.args[0]).toBe(
+              if (CommandArgs.plain(command.args)[1] === "deploy") {
+                expect(CommandArgs.plain(command.args)[0]).toBe(
                   path.join(cwd, "node_modules", "convex", "cli.js"),
                 );
-                const index = command.args.indexOf("--env-file");
+                const index = CommandArgs.plain(command.args).indexOf(
+                  "--env-file",
+                );
                 expect(index).toBeGreaterThan(0);
-                envFile = command.args[index + 1];
+                envFile = CommandArgs.plain(command.args)[index + 1];
                 expect(command.options.env?.HOME).toBe(path.dirname(envFile));
                 expect(command.options.env?.USERPROFILE).toBe(
                   command.options.env?.HOME,
@@ -355,7 +358,7 @@ describe("Code command boundary", () => {
                   expect((yield* fs.stat(envFile)).mode & 0o777).toBe(0o600);
                 }
               } else {
-                expect(command.args[0]).toBe(
+                expect(CommandArgs.plain(command.args)[0]).toBe(
                   path.join(cwd, "node_modules", "@confect", "cli", "cli.js"),
                 );
               }
@@ -392,7 +395,9 @@ describe("Code command boundary", () => {
           exitCode: (command) =>
             Effect.sync(() => {
               if (command._tag === "StandardCommand")
-                envFile = command.args[command.args.indexOf("--env-file") + 1];
+                envFile = CommandArgs.plain(command.args)[
+                  CommandArgs.plain(command.args).indexOf("--env-file") + 1
+                ];
               return ChildProcessSpawner.ExitCode(7);
             }),
         });
@@ -429,7 +434,9 @@ describe("Code command boundary", () => {
             if (command._tag === "StandardCommand")
               yield* Deferred.succeed(
                 started,
-                command.args[command.args.indexOf("--env-file") + 1],
+                CommandArgs.plain(command.args)[
+                  CommandArgs.plain(command.args).indexOf("--env-file") + 1
+                ],
               );
             return yield* Effect.never;
           }),
@@ -569,7 +576,9 @@ describe("Code local target", () => {
               if (command._tag !== "StandardCommand")
                 return ChildProcessSpawner.ExitCode(1);
               selection = yield* fs.readFileString(
-                command.args[command.args.indexOf("--env-file") + 1],
+                CommandArgs.plain(command.args)[
+                  CommandArgs.plain(command.args).indexOf("--env-file") + 1
+                ],
               );
               return ChildProcessSpawner.ExitCode(0);
             }),

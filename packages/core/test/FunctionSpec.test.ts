@@ -1,5 +1,7 @@
 import type * as FunctionProvenance from "@confect/core/FunctionProvenance";
 import type * as RuntimeAndFunctionType from "@confect/core/RuntimeAndFunctionType";
+import * as Record from "effect/Record";
+import * as Array from "effect/Array";
 import type * as MiddlewareAttachment from "@confect/core/MiddlewareAttachment";
 import type * as Profile from "@confect/core/Profile";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
@@ -339,7 +341,7 @@ describe("paginated queries", () => {
       });
 
       const args = spec.functionProvenance.args;
-      expect(Object.keys(args.fields)).toEqual(["author", "paginationOpts"]);
+      expect(Record.keys(args.fields)).toEqual(["author", "paginationOpts"]);
     });
 
     it("defaults to paginationOpts-only args when `args` is omitted", () => {
@@ -349,7 +351,7 @@ describe("paginated queries", () => {
       });
 
       const args = spec.functionProvenance.args;
-      expect(Object.keys(args.fields)).toEqual(["paginationOpts"]);
+      expect(Record.keys(args.fields)).toEqual(["paginationOpts"]);
     });
 
     it("composes the returns schema as a PaginationResult of the item", () => {
@@ -359,7 +361,7 @@ describe("paginated queries", () => {
       });
 
       const returns = spec.functionProvenance.returns;
-      expect(Object.keys(returns.fields)).toEqual([
+      expect(Record.keys(returns.fields)).toEqual([
         "page",
         "isDone",
         "continueCursor",
@@ -415,7 +417,7 @@ describe("paginated queries", () => {
 });
 
 describe("middleware options", () => {
-  class AccessDenied extends Schema.TaggedError<AccessDenied>()(
+  class AccessDenied extends Schema.TaggedError<AccessDenied, {}>()(
     "AccessDenied",
     {},
   ) {}
@@ -494,10 +496,9 @@ describe("middleware options", () => {
     expectTypeOf<
       (typeof mixed.middlewareAttachments)[number]["options"]
     >().toEqualTypeOf<MiddlewareSpec.Options<typeof RequireRole> | undefined>();
-    expect(mixed.middlewareAttachments.map(({ options }) => options)).toEqual([
-      undefined,
-      { roles: ["Internal"] },
-    ]);
+    expect(
+      Array.map(mixed.middlewareAttachments, ({ options }) => options),
+    ).toEqual([undefined, { roles: ["Internal"] }]);
   });
 
   it("derives middleware specs without storing a parallel array", () => {
@@ -507,7 +508,7 @@ describe("middleware options", () => {
 
     expect(covered.middlewareSpecs).toEqual([RequireRole, Observe]);
     expect(covered.middlewareSpecs).toEqual(
-      covered.middlewareAttachments.map(({ spec }) => spec),
+      Array.map(covered.middlewareAttachments, ({ spec }) => spec),
     );
     expect(Object.hasOwn(covered, "middlewareSpecs")).toBe(false);
     expect(Object.hasOwn(query, "middlewareSpecs")).toBe(false);
@@ -667,7 +668,7 @@ describe("public function descriptions", () => {
       ),
     ];
     expect(explicit.map((spec) => spec.description)).toEqual(
-      Array(5).fill("Read a value."),
+      globalThis.Array(5).fill("Read a value."),
     );
   });
 
@@ -857,7 +858,7 @@ describe("extend", () => {
       Required.publicPaginatedQuery(options),
     ] as const;
     expect(specs.map((spec) => [spec.description, spec.fields])).toEqual(
-      Array.from({ length: 5 }, () => ["Read notes.", {}]),
+      globalThis.Array.from({ length: 5 }, () => ["Read notes.", {}]),
     );
     expectTypeOf(specs[0].fields).toEqualTypeOf<{}>();
     expect(specs[0].middleware(observe("described")).description).toBe(
@@ -1178,7 +1179,7 @@ describe("profile schema wrappers", () => {
             _tag: "ProfileFailure",
           })._tag,
       ),
-    ).toEqual(Array(10).fill("ProfileFailure"));
+    ).toEqual(globalThis.Array(10).fill("ProfileFailure"));
     const refused = Traced.publicPaginatedQuery({
       ...options,
       // @ts-expect-error A wrapper must keep ForbidPaginationOpts.

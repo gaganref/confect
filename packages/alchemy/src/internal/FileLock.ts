@@ -1,4 +1,4 @@
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import type * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -49,11 +49,9 @@ export const acquire = Effect.fn("FileLock.acquire")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const failed = () => new FileLockError({ reason: "filesystem" });
-  const token = Buffer.from(
-    yield* crypto.randomBytes(16).pipe(Effect.mapError(failed)),
-  ).toString("hex");
+  const token = Buffer.from(yield* random.randomBytes(16)).toString("hex");
   const holder = yield* Schema.encodeEffect(Holder)({
     pid: process.pid,
     token,

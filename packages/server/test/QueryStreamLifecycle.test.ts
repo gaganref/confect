@@ -1,3 +1,4 @@
+import * as Arr from "effect/Array";
 import * as Table from "@confect/server/Table";
 import * as QueryStreamIndexRange from "@confect/server/QueryStreamIndexRange";
 import type * as QueryStreamKeyValues from "@confect/server/QueryStreamKeyValues";
@@ -88,8 +89,8 @@ const makeReader = (
               };
               runs.push(run);
               events.push(`${id}:open:${order}`);
-              const matching = rows.filter((document) =>
-                operations.every(({ _tag, field, value }) => {
+              const matching = Arr.filter(rows, (document) =>
+                Arr.every(operations, ({ _tag, field, value }) => {
                   if (
                     field !== "group" &&
                     field !== "_creationTime" &&
@@ -128,13 +129,13 @@ const makeReader = (
                   events.push(`${id}:next`);
                   if (pending?.iterator === id) {
                     Deferred.doneUnsafe(pending.entered, Effect.void);
-                    return Effect.runPromise(
-                      Deferred.await(pending.release),
-                    ).then(() => {
-                      const value = result();
-                      Deferred.doneUnsafe(pending.settled, Effect.void);
-                      return value;
-                    });
+                    return pending.release
+                      .pipe(Deferred.await, Effect.runPromise)
+                      .then(() => {
+                        const value = result();
+                        Deferred.doneUnsafe(pending.settled, Effect.void);
+                        return value;
+                      });
                   }
                   return Promise.resolve(result());
                 },
@@ -186,9 +187,13 @@ describe("QueryStream iterator lifecycle", () => {
             numItems: 10,
             [field]: value,
           }).pipe(Effect.exit);
-          assert(Exit.isFailure(exit));
-          const error = Result.getOrThrow(Cause.findDefect(exit.cause));
-          assert(error instanceof QueryStream.InvalidReadLimitError);
+          const isFailure2 = Exit.isFailure(exit);
+          assert(isFailure2);
+          const error = exit.cause.pipe(Cause.findDefect, Result.getOrThrow);
+          const isInvalidReadLimit = Schema.is(
+            QueryStream.InvalidReadLimitError,
+          )(error);
+          assert(isInvalidReadLimit);
           expect(Schema.isSchemaError(error.cause)).toBe(true);
           expect(error.message).toContain(field);
           expect(reader.runs).toEqual([]);
@@ -227,13 +232,10 @@ describe("QueryStream iterator lifecycle", () => {
         expect(inner.runs).toEqual([
           { order: "asc", next: 2, returned: 1, settled: 2 },
         ]);
-        expect(
-          Option.isNone(
-            yield* Effect.serviceOption(
-              QueryStreamReadBudget.QueryStreamReadBudget,
-            ),
-          ),
-        ).toBe(true);
+        const serviceOptionResult = yield* Effect.serviceOption(
+          QueryStreamReadBudget.QueryStreamReadBudget,
+        );
+        expect(Option.isNone(serviceOptionResult)).toBe(true);
       }),
   );
 
@@ -241,11 +243,12 @@ describe("QueryStream iterator lifecycle", () => {
     "restores the enclosing budget after successful and failed pagination",
     () =>
       Effect.gen(function* () {
-        const enclosing = yield* QueryStreamReadBudget.make(
-          yield* Schema.decodeEffect(QueryStreamReadBudget.Limits)({
+        const value2 = yield* Schema.decodeEffect(QueryStreamReadBudget.Limits)(
+          {
             maximumRowsRead: 10,
-          }),
+          },
         );
+        const enclosing = yield* QueryStreamReadBudget.make(value2);
         const reader = makeReader();
 
         yield* Effect.gen(function* () {
@@ -255,9 +258,9 @@ describe("QueryStream iterator lifecycle", () => {
             maximumRowsRead: 1,
           });
           expect(page.page).toEqual([documents[0]]);
-          expect(yield* QueryStreamReadBudget.QueryStreamReadBudget).toBe(
-            enclosing,
-          );
+          const QueryStreamReadBudgetResult =
+            yield* QueryStreamReadBudget.QueryStreamReadBudget;
+          expect(QueryStreamReadBudgetResult).toBe(enclosing);
 
           const error = yield* QueryStream.paginate(reader.stream, {
             cursor: null,
@@ -265,9 +268,9 @@ describe("QueryStream iterator lifecycle", () => {
             maximumRowsRead: 0,
           }).pipe(Effect.flip);
           expect(error).toBeInstanceOf(QueryStream.ReadBudgetExceededError);
-          expect(yield* QueryStreamReadBudget.QueryStreamReadBudget).toBe(
-            enclosing,
-          );
+          const QueryStreamReadBudgetResult2 =
+            yield* QueryStreamReadBudget.QueryStreamReadBudget;
+          expect(QueryStreamReadBudgetResult2).toBe(enclosing);
         }).pipe(
           Effect.provideService(
             QueryStreamReadBudget.QueryStreamReadBudget,
@@ -276,13 +279,10 @@ describe("QueryStream iterator lifecycle", () => {
         );
 
         expect((yield* enclosing.getReadCounts).rowsRead).toBe(0);
-        expect(
-          Option.isNone(
-            yield* Effect.serviceOption(
-              QueryStreamReadBudget.QueryStreamReadBudget,
-            ),
-          ),
-        ).toBe(true);
+        const serviceOptionResult2 = yield* Effect.serviceOption(
+          QueryStreamReadBudget.QueryStreamReadBudget,
+        );
+        expect(Option.isNone(serviceOptionResult2)).toBe(true);
       }),
   );
 
@@ -616,7 +616,8 @@ describe("QueryStream iterator lifecycle", () => {
           settled: 0,
         });
         yield* Fiber.interrupt(fiber);
-        expect(Exit.hasInterrupts(yield* Fiber.await(fiber))).toBe(true);
+        const awaitResult = yield* Fiber.await(fiber);
+        expect(Exit.hasInterrupts(awaitResult)).toBe(true);
         expect(reader.runs).toHaveLength(iterator + 1);
         for (const run of reader.runs) expect(run.returned).toBe(1);
         expect(reader.runs[iterator]?.settled).toBe(0);

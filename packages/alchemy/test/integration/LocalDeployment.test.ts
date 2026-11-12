@@ -1,4 +1,4 @@
-import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeServices from "../fixtures/NodeTestServices";
 import { describe, expect, it } from "@effect/vitest";
 import { Convex } from "@confect/alchemy";
 import { AlchemyContext } from "alchemy/AlchemyContext";

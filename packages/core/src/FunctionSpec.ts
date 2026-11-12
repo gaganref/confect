@@ -1,3 +1,4 @@
+import * as Array from "effect/Array";
 import type * as MiddlewareAttachment from "./MiddlewareAttachment.js";
 import type {
   DefaultFunctionArgs,
@@ -369,7 +370,7 @@ const Proto = {
   [TypeId]: TypeId,
 
   get middlewareSpecs() {
-    return this.middlewareAttachments.map(({ spec }) => spec);
+    return Array.map(this.middlewareAttachments, ({ spec }) => spec);
   },
 
   middleware(
@@ -395,7 +396,8 @@ const Proto = {
     }
     if (
       !("options" in middlewareSpec) &&
-      this.middlewareAttachments.some(
+      Array.some(
+        this.middlewareAttachments,
         ({ spec }) => spec.key === middlewareSpec.key,
       )
     ) {

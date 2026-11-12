@@ -68,7 +68,7 @@ const evaluate = <A, E, R>(
         )
           return Effect.fail(failure.value);
         return Effect.fail(
-          new EvaluationError({
+          EvaluationError.make({
             diagnostic:
               Option.isSome(failure) &&
               CodegenError.isCodegenError(failure.value)

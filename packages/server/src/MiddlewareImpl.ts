@@ -1,3 +1,5 @@
+import * as Record from "effect/Record";
+import * as Array from "effect/Array";
 import type * as FunctionSpec from "@confect/core/FunctionSpec";
 import type * as GroupSpec from "@confect/core/GroupSpec";
 import * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
@@ -9,6 +11,7 @@ import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import type * as Auth from "./Auth.js";
 import type * as DatabaseReader from "./DatabaseReader.js";
+import type * as DocumentIds from "./DocumentIds.js";
 import type * as DatabaseSchema from "./DatabaseSchema.js";
 import type * as Handler from "./Handler.js";
 import type { ExecutionMetadata } from "./ExecutionMetadata.js";
@@ -19,6 +22,7 @@ import type * as QueryRunner from "./QueryRunner.js";
 import type { QueryTransactionContext } from "./QueryTransactionContext.js";
 import type * as Scheduler from "./Scheduler.js";
 import type { Storage } from "./Storage.js";
+import type * as StorageActionWriter from "./StorageActionWriter.js";
 import type * as StorageReader from "./StorageReader.js";
 import type * as StorageWriter from "./StorageWriter.js";
 import * as MiddlewareRegistryItem from "./MiddlewareRegistryItem.js";
@@ -93,6 +97,7 @@ type QueryMutationCommonServices<
   DatabaseSchema_ extends DatabaseSchema.AnyWithProps,
 > =
   | DatabaseReader.DatabaseReader<DatabaseSchema_>
+  | DocumentIds.DocumentIds<DatabaseSchema_>
   | Auth.Auth
   | ExecutionMetadata
   | TransactionMetadata
@@ -109,6 +114,7 @@ type MutationActionCommonServices =
   | Storage
   | StorageReader.StorageReader
   | StorageWriter.StorageWriter
+  | StorageActionWriter.StorageActionWriter
   | QueryRunner.QueryRunner
   | MutationRunner.MutationRunner;
 
@@ -179,13 +185,15 @@ export const make = <
 ): Layer.Layer<MiddlewareImpl<MiddlewareSpec.Key<MiddlewareSpec_>>> =>
   layerFromImpls(
     middlewareSpec,
-    Object.fromEntries(
-      MiddlewareSpec.allFunctionTypes
-        .filter((functionType) => middlewareSpec.functionTypes[functionType])
-        .map((functionType) => [
-          functionType,
-          impl as MiddlewareSpec.AnyMiddlewareImpl,
-        ]),
+    Record.fromEntries(
+      Array.map(
+        Array.filter(
+          MiddlewareSpec.allFunctionTypes,
+          (functionType) => middlewareSpec.functionTypes[functionType],
+        ),
+        (functionType) =>
+          [functionType, impl as MiddlewareSpec.AnyMiddlewareImpl] as const,
+      ),
     ),
   );
 

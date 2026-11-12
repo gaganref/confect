@@ -4,8 +4,8 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Random from "effect/Random";
 import * as Deferred from "effect/Deferred";
-import { api } from "./fixtures/convex/_generated/api";
-import * as LocalBackend from "./LocalBackend";
+import { api } from "../../../../tools/local-backend/fixtures/convex/_generated/api";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 layer(LocalBackend.layer, {
   timeout: "120 seconds",

@@ -190,12 +190,33 @@ HTTP accepts the same layer explicitly on hand-built routers and receives `runti
 
 ## Base
 
-`main` tracks upstream 10.3.1
-([`eaa5da76`](https://github.com/rjdellecese/confect/commit/eaa5da76881455fe38d8d633eedbf79ebc5af01a)).
-The move from 10.2.0 (`1f75cb80`) landed by merge, and each later release lands
-the same way. Fork builds on this base use `10.3.1-fork.N`. The 10.3.1
+`main` tracks upstream 10.6.0
+([`278d68f8`](https://github.com/rjdellecese/confect/commit/278d68f877cd923bcea1fd53a215446eaf4db086)).
+The move from 10.3.1 (`eaa5da76`) landed by merge, and each later release lands
+the same way. Fork builds on this base use `10.6.0-fork.N`. The 10.6.0
 generator changes generated output, so consumers run `confect codegen` after
 upgrading.
+
+### Move to upstream 10.6.0
+
+Merge upstream 10.6.0, which runs on Effect 4.1, and carry the fork's patches
+onto it. Move Effect and every `@effect/*` package to 4.1.4 and Alchemy to
+2.0.0-beta.86. Combine upstream's lazy validators, `DocumentIds`, blob storage
+in mutations and `MutationAuth` with the fork's component targets, reserved
+arguments and invocation metadata in the function runner. Keep the fork's
+`Auth.MutationAuth` beside upstream's service for now; a follow-up replaces it.
+Fold upstream's watch groups into the fork's lock-free `refreshCurrent`. Move
+the fork's local-backend fixtures, component codegen and auth seeding into
+upstream's `tools/local-backend` harness. Native `take()` and `first()` stay
+outside the stream read budget, as the fork's `OrderedQuery` always was.
+
+Upstream's "Enable every Effect lint rule" turns on rules the fork's code was
+never checked against. A per-rule baseline in `.oxlintrc.json` silences them
+for the files that fail today, and `scripts/effectLint.test.ts` lets that
+baseline shrink but not grow. New files meet the full rule set.
+
+Changeset: `effect-4-1.md`.
+Upstream: fork only.
 
 ### Move to upstream 10.3.1
 
@@ -224,18 +245,13 @@ Raise the Convex peer floor to 1.49.0. Workspace and baseline consumer pins use 
 
 ### Bound the supported crypto API
 
-Cap the package set's Effect peers below 4.1, and cap the Node platform
-companions to the same minor. Effect 4.1 removes `effect/Crypto`, which the CLI,
-Alchemy providers and Alchemy's stack types still use. Remove the caps when
-Alchemy ships a release without `effect/Crypto` and the fork's CLI and Alchemy
-call sites move. An application that installs the CLI lists
-`@effect/platform-node-shared` directly, or pnpm resolves a 4.1 copy for
-`@effect/platform-node`.
-Fresh consumer checks request the CLI's published ranges and resolve their
-newest compatible releases without a lockfile or version override.
+Retired by the move to upstream 10.6.0. Upstream migrated the CLI off
+`effect/Crypto`, the fork's Alchemy package now uses
+`effect/crypto/SecureRandom`, and Alchemy 2.0.0-beta.86 runs on Effect 4.1. The
+`<4.1.0` caps and the `@effect/platform-node-shared` CLI peer are gone.
 
-Changeset: `effect-crypto-compatibility.md`.
-Upstream: planned; no proposal submitted.
+Changeset: `effect-4-1.md`.
+Upstream: superseded by upstream 10.5.0.
 
 ### Resolve declarations under NodeNext
 

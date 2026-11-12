@@ -4,11 +4,31 @@ import {
   isCodegenError,
   renderCodegenError,
   UnownedConvexEntrypointError,
+  catchAndLog,
+  InvalidContextReuseError,
 } from "@confect/cli/CodegenError";
 import { SnapshotError } from "@confect/cli/SnapshotError";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
+import * as Option from "effect/Option";
+
+it.each([
+  ["InvalidOption", "must be a boolean"],
+  ["NodeRuntime", "only supported for Convex-runtime groups"],
+  ["ReservedFunctionName", "Rename the function experimental_reuseContext"],
+] as const)("renders context reuse validation: %s", (reason, message) => {
+  const error = InvalidContextReuseError.make({
+    specPath: "notes.spec.ts",
+    groupPath: "notes",
+    reason,
+  });
+  expect(isCodegenError(error)).toBe(true);
+  expect(renderCodegenError(error)).toContain(message);
+  expect(renderCodegenError(error)).toContain("notes");
+});
 
 it("recognizes and renders structured snapshot failures without dumping their cause", () => {
-  const error = new SnapshotError({
+  const error = SnapshotError.make({
     reason: "NoncanonicalPath",
     relativePath: "notes.spec.ts",
     pathSegments: ["other"],
@@ -23,7 +43,7 @@ it("recognizes and renders structured snapshot failures without dumping their ca
 });
 
 it("renders malformed snapshot input without inventing a source location", () => {
-  const error = new SnapshotError({
+  const error = SnapshotError.make({
     reason: "InvalidShape",
     relativePath: "",
     pathSegments: [],
@@ -47,3 +67,28 @@ it("renders every refused path with recovery instructions", () => {
   expect(rendered).toContain("put authored code outside convex/.");
   expect(rendered).toContain("delete it and run codegen again.");
 });
+
+it.effect("recovers only modeled codegen failures", () =>
+  Effect.gen(function* () {
+    const codegenError = SnapshotError.make({
+      reason: "InvalidShape",
+      relativePath: "",
+      pathSegments: [],
+    });
+    const otherError = { _tag: "OtherFailure" as const, detail: "unhandled" };
+    const recovered: Effect.Effect<
+      Option.Option<never>,
+      typeof otherError
+    > = catchAndLog(Effect.fail<SnapshotError | typeof otherError>(otherError));
+    const actual = yield* recovered.pipe(Effect.exit);
+    expect(actual).toEqual(Exit.fail(otherError));
+    const actual2 = yield* codegenError.pipe(Effect.fail, catchAndLog);
+    expect(actual2).toEqual(Option.none());
+    const actual3 = yield* catchAndLog(Effect.succeed(42));
+    expect(actual3).toEqual(Option.some(42));
+    const actual4 = yield* catchAndLog(Effect.die(otherError)).pipe(
+      Effect.exit,
+    );
+    expect(actual4).toEqual(Exit.die(otherError));
+  }),
+);

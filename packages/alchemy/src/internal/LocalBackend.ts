@@ -2,7 +2,7 @@ import { createServer, type Server } from "node:net";
 import { dotAlchemyDirectory } from "alchemy/AlchemyContext";
 import { Stack } from "alchemy/Stack";
 import * as Config from "effect/Config";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -272,7 +272,7 @@ export const boot = Effect.fn("LocalBackend.boot")(function* (
   const fs = yield* FileSystem.FileSystem;
   const http = yield* HttpClient.HttpClient;
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-  const crypto = yield* Crypto.Crypto;
+  const random = yield* SecureRandom.SecureRandom;
   const fail = (reason: LocalBackendError["reason"], exitCode?: number) =>
     new LocalBackendError({
       deploymentName,
@@ -329,7 +329,7 @@ export const boot = Effect.fn("LocalBackend.boot")(function* (
   const generate = (binary: string) =>
     Effect.gen(function* () {
       const instanceSecret = Buffer.from(
-        yield* crypto.randomBytes(32),
+        yield* random.randomBytes(32),
       ).toString("hex");
       const output = yield* spawner.string(
         ChildProcess.make(

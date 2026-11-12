@@ -4,11 +4,11 @@ import { vi } from "vitest";
 import * as Effect from "effect/Effect";
 import { App, Mount } from "@confect/core";
 import { defineSchema } from "convex/server";
-import Counter from "../../server/test/local-backend/fixtures/components/counter/client";
-import counter from "../../server/test/local-backend/fixtures/components/counter/convex/convex.config";
-import env from "../../server/test/local-backend/fixtures/confect/env";
-import registry from "../../server/test/local-backend/fixtures/confect/_generated/testing";
-import refs from "../../server/test/local-backend/fixtures/confect/_generated/refs";
+import Counter from "../../../tools/local-backend/fixtures/components/counter/client";
+import counter from "../../../tools/local-backend/fixtures/components/counter/convex/convex.config";
+import env from "../../../tools/local-backend/fixtures/confect/env";
+import registry from "../../../tools/local-backend/fixtures/confect/_generated/testing";
+import refs from "../../../tools/local-backend/fixtures/confect/_generated/refs";
 
 beforeEach(() => vi.resetModules());
 

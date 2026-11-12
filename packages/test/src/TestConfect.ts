@@ -2,6 +2,7 @@ import { App, type Mount, Ref } from "@confect/core";
 import type { DatabaseSchema, DataModel } from "@confect/server";
 import { RegisteredConvexFunction } from "@confect/server";
 import type {
+  DeploymentJwks,
   TestConvexForDataModel,
   TestConvexForDataModelAndIdentity,
 } from "convex-test";
@@ -50,9 +51,12 @@ export type LayerOptions = {
   readonly httpMounts?: ReadonlyArray<HttpMount>;
 };
 
+export type { DeploymentJwk, DeploymentJwks } from "convex-test";
+
 export type TestConfectWithoutIdentity<
   ConfectSchema extends DatabaseSchema.AnyWithProps,
 > = {
+  jwks: () => Effect.Effect<DeploymentJwks>;
   query: <QueryRef extends Ref.AnyQuery>(
     queryRef: QueryRef,
     ...args: Ref.OptionalArgs<QueryRef>
@@ -126,6 +130,10 @@ class TestConfectImplWithoutIdentity<
     >,
     private mountedHttp: ReturnType<typeof MountedHttp.make>,
   ) {}
+
+  readonly jwks = Effect.fn("TestConfect.jwks")(() =>
+    Effect.promise(() => this.testConvex.jwks()),
+  );
 
   readonly query = <QueryRef extends Ref.AnyQuery>(
     queryRef: QueryRef,
@@ -266,6 +274,8 @@ class TestConfectImpl<
           this.mountedHttp.register(componentPath, schema, modules),
         ),
     );
+
+  readonly jwks = () => this.testConfectImplWithoutIdentity.jwks();
 
   readonly query = <QueryRef extends Ref.AnyQuery>(
     queryRef: QueryRef,

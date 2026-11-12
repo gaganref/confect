@@ -300,10 +300,8 @@ it.effect(
             }),
           ),
       });
-    // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Alchemy's provider input type erases the delete error channel.
     const remove = Effect.gen(function* () {
       const provider = yield* EnvironmentVariables.localProvider;
-      // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- as above.
       return yield* provider.delete({
         ...lifecycle,
         olds: { ...props, url: "http://127.0.0.1:3300" },
@@ -318,10 +316,8 @@ it.effect(
     });
     return Effect.gen(function* () {
       expect(
-        // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- as above.
         yield* remove.pipe(failure("TransportError"), Effect.result),
       ).toEqual(Result.succeed(undefined));
-      // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- as above.
       expect(yield* remove.pipe(failure("HttpError"), Effect.result)).toEqual(
         Result.fail(
           new ConvexApiError({

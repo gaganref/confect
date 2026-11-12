@@ -1,3 +1,6 @@
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
+import * as Str from "effect/String";
 import * as GenerationSnapshot from "@confect/cli/GenerationSnapshot";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -19,6 +22,8 @@ import {
   assertOwnedEntrypoints,
   generateFunctions,
   removeGroups,
+  render,
+  generateGroupModule,
 } from "@confect/cli/FunctionModule";
 
 const fixtureRoot = `${import.meta.dirname}/../../server/test/mock-backend/fixtures`;
@@ -47,9 +52,11 @@ layer(RemoveGroupsLayer)("removeGroups", (it) => {
       );
       const modulePath = path.join(fixtureConvex, "does/not/exist.ts");
 
-      expect(yield* fs.exists(modulePath)).toBe(false);
+      const actual = yield* fs.exists(modulePath);
+      expect(actual).toBe(false);
       yield* removeGroups(missingGroup);
-      expect(yield* fs.exists(modulePath)).toBe(false);
+      const actual2 = yield* fs.exists(modulePath);
+      expect(actual2).toBe(false);
     }),
   );
 });
@@ -108,12 +115,15 @@ const runGenerateForNodeGroupEffect = Effect.fnUntraced(function* ({
     ),
   );
 
-  yield* generateFunctions(snapshot).pipe(Effect.provide(TempDirsLayer));
+  const services = yield* Layer.build(TempDirsLayer);
+  yield* generateFunctions(snapshot).pipe(Effect.provideContext(services));
 
   const modulePath = path.join(convexDir, moduleRelativePath);
   const contents = yield* fs.readFileString(modulePath);
 
-  const importMatch = contents.match(/from "([^"]+)"/);
+  const importMatch = Option.getOrNull(
+    pipe(contents, Str.match(/from "([^"]+)"/)),
+  );
   assert(importMatch !== null, "expected a registry import in the module");
   const resolved = path.resolve(
     path.dirname(modulePath),
@@ -125,6 +135,99 @@ const runGenerateForNodeGroupEffect = Effect.fnUntraced(function* ({
 }, Effect.scoped);
 
 layer(GenerateFunctionsLayer)("generateFunctions", (it) => {
+  it.effect(
+    "emits reuse only when enabled and keeps the group-local import",
+    () =>
+      Effect.gen(function* () {
+        for (const enabled of [undefined, false, true]) {
+          const contents = yield* render({
+            functionNames: ["list", "create"],
+            registeredFunctionsImportPath:
+              "../confect/_generated/registeredFunctions/notes",
+            ...(enabled === undefined
+              ? {}
+              : { experimental_reuseContext: enabled }),
+          });
+          expect(
+            pipe(
+              contents,
+              Str.includes("export const experimental_reuseContext = true;"),
+            ),
+          ).toBe(enabled === true);
+          expect(
+            pipe(contents, Str.match(/import /g), Option.getOrThrow),
+          ).toHaveLength(1);
+          expect(contents).toContain(
+            'from "../confect/_generated/registeredFunctions/notes"',
+          );
+          expect(contents).toContain(
+            "export const list = registeredFunctions.list;",
+          );
+        }
+      }),
+  );
+
+  it.effect("writes and removes the reuse export on flag-only changes", () =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const root = yield* fs.makeTempDirectoryScoped();
+      const options = {
+        groupPath: GroupPath.make(["notes"]),
+        functionNames: ["list"],
+        registeredFunctionsImportPath:
+          "../confect/_generated/registeredFunctions/notes",
+      };
+      const write = (enabled: boolean) =>
+        generateGroupModule({
+          ...options,
+          experimental_reuseContext: enabled,
+        }).pipe(
+          Effect.provideService(ConvexDirectory, { get: Effect.succeed(root) }),
+        );
+      const added = yield* write(false);
+      expect(added).toBe("Added");
+      const baseline = yield* fs.readFileString(`${root}/notes.ts`);
+      const enabled = yield* write(true);
+      expect(enabled).toBe("Modified");
+      const enabledContents = yield* fs.readFileString(`${root}/notes.ts`);
+      expect(enabledContents).toContain("experimental_reuseContext = true");
+      const disabled = yield* write(false);
+      expect(disabled).toBe("Modified");
+      const disabledContents = yield* fs.readFileString(`${root}/notes.ts`);
+      expect(disabledContents).toBe(baseline);
+      const unchanged = yield* write(false);
+      expect(unchanged).toBe("Unchanged");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "carries context reuse from a generation snapshot to the entry point",
+    () =>
+      Effect.gen(function* () {
+        const snapshot = yield* Effect.fromResult(
+          GenerationSnapshot.parse([
+            [
+              "notes.spec.ts",
+              {
+                runtime: "Convex",
+                experimental_reuseContext: true,
+                functionNames: ["list"],
+                groups: {},
+              },
+            ],
+          ]),
+        );
+        const { contents, resolves } = yield* runGenerateForNodeGroup({
+          snapshot,
+          moduleRelativePath: "notes.ts",
+          registryRelativePath: "notes.ts",
+        });
+        expect(contents).toContain(
+          "export const experimental_reuseContext = true;",
+        );
+        expect(resolves).toBe(true);
+      }),
+  );
   // A Node group declared with `GroupSpec.makeNode()` generates `convex/<path>.ts`
   // carrying the `"use node"` directive and importing its registry at the matching
   // path. Exercised from a clean tree, so it also guards the `writeGroups` path.

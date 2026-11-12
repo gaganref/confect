@@ -6,7 +6,7 @@ Alchemy resources for Convex cloud projects, deployments, deploy keys, environme
 import { Confect, Convex } from "@confect/alchemy";
 ```
 
-Use `Convex.providers()` in your Alchemy stack. The integration targets Alchemy `2.0.0-beta.82` and Effect v4; it does not add Alchemy dependencies to Confect's runtime packages. Plain Convex applications can use `Convex.Code` without the Confect CLI.
+Use `Convex.providers()` in your Alchemy stack. The integration targets Alchemy `2.0.0-beta.86` and Effect v4; it does not add Alchemy dependencies to Confect's runtime packages. Plain Convex applications can use `Convex.Code` without the Confect CLI.
 
 See the [deployment guide](https://confect.dev/guides/alchemy) for complete examples, credentials, ownership, and deletion policies.
 

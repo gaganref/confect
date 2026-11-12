@@ -125,6 +125,9 @@ const logFunctionPathDiff = Effect.fnUntraced(function* (
   );
 });
 
+/**
+ * @internal
+ */
 export const devHandler = Effect.gen(function* () {
   yield* logPending("Performing initial sync…");
   const previousFunctionPaths = yield* Evaluation.loadPreviousFunctionPaths;
@@ -391,7 +394,8 @@ const syncLoop = Effect.fnUntraced(function* (
       if (SyncState.needsDeploymentNotification(phase))
         yield* touchConvexSchema;
 
-      if (!SyncState.isDirty(yield* watcher.pending)) {
+      const remaining = yield* watcher.pending;
+      if (!SyncState.isDirty(remaining)) {
         yield* logSuccess("Generated files are up-to-date");
       }
     }),

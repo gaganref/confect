@@ -229,7 +229,6 @@ export const localProvider = Effect.map(
     ({
       ...service,
       delete: (input) =>
-        // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Alchemy's provider input type erases the delete error channel.
         service.delete(input).pipe(
           Effect.catchIf(
             (error) =>

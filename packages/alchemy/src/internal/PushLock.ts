@@ -1,5 +1,5 @@
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -57,7 +57,7 @@ export const layer = (options?: { readonly timeout?: Duration.Input }) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const crypto = yield* Crypto.Crypto;
+      const random = yield* SecureRandom.SecureRandom;
       const timeout = options?.timeout ?? Duration.minutes(10);
       const lock = Effect.fn("PushLock.lock")(
         function* (deploymentName: string, scope: Scope.Scope) {
@@ -85,7 +85,7 @@ export const layer = (options?: { readonly timeout?: Duration.Input }) =>
         },
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provideService(Path.Path, path),
-        Effect.provideService(Crypto.Crypto, crypto),
+        Effect.provideService(SecureRandom.SecureRandom, random),
       );
       return PushLock.of({
         withLock: (deploymentName, effect) =>

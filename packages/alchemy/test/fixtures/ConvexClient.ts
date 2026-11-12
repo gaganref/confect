@@ -21,8 +21,6 @@ export const lifecycle = {
   instanceId: "0123456789abcdef",
   bindings: [],
   session: {
-    emit: () => Effect.void,
-    done: () => Effect.void,
     note: () => Effect.void,
   } satisfies ScopedPlanStatusSession,
 };

@@ -56,15 +56,22 @@
       "pinVersion": "workspace:*"
     },
     {
-      "label": "The bench harness deliberately lags TypeScript, see tools/bench-harness/README.md",
-      "packages": ["confect-bench-harness"],
-      "dependencies": ["typescript"],
-      "dependencyTypes": ["dev"],
-      "isIgnored": true
-    },
-    {
       "label": "devDependencies must use the same version across the workspace",
       "dependencyTypes": ["dev"]
+    },
+    {
+      "label": "CLI, server, and Foldkit Effect integrations stay within the verified minor release",
+      "packages": ["@confect/cli", "@confect/server", "@confect/foldkit"],
+      "dependencies": ["effect", "@effect/platform-node"],
+      "dependencyTypes": ["prod", "peer"],
+      "pinVersion": "~4.1.0"
+    },
+    {
+      "label": "The Foldkit adapter supports patches within the verified pre-1.0 minor",
+      "packages": ["@confect/foldkit"],
+      "dependencies": ["foldkit"],
+      "dependencyTypes": ["peer"],
+      "pinVersion": "^0.170.0"
     },
     {
       "label": "External dependencies shared across @confect/* packages must use the same range in prod/peer",

@@ -1,9 +1,11 @@
 export { Forward } from "./internal/reservedArgument.js";
 import * as ActionCallSpec from "@confect/core/ActionCall";
 import * as ActionCall from "./ActionCall.js";
+import * as Array from "effect/Array";
 import type { FunctionSpec, RuntimeAndFunctionType } from "@confect/core";
 import * as IdScope from "@confect/core/IdScope";
 import type * as FunctionProvenance from "@confect/core/FunctionProvenance";
+import * as Lazy from "@confect/core/Lazy";
 import * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
 import {
   compileArgsSchema,
@@ -21,7 +23,7 @@ import {
   type RegisteredMutation,
   type RegisteredQuery,
 } from "convex/server";
-import type { Value } from "convex/values";
+import type { PropertyValidators, Validator, Value } from "convex/values";
 import { ConvexError } from "convex/values";
 import { pipe } from "effect/Function";
 import * as Config from "effect/Config";
@@ -192,6 +194,21 @@ export type RegisteredFunction<
       ? ConfectRegisteredFunction<FunctionSpec_>
       : never;
 
+export const toConvexDefinition = <
+  Args extends PropertyValidators,
+  Returns extends Validator<any, any, any>,
+  Handler,
+>(prepared: {
+  readonly args: () => Args;
+  readonly returns: () => Returns;
+  readonly handler: Handler;
+}): { args: Args; returns: Returns; handler: Handler } => {
+  const definition = { handler: prepared.handler };
+  Lazy.defineProperty(definition, "args", prepared.args);
+  Lazy.defineProperty(definition, "returns", prepared.returns);
+  return definition as { args: Args; returns: Returns; handler: Handler };
+};
+
 /**
  * Wrap a function's handler effect in its resolved middleware chain, per
  * invocation, after args decode. Iterated innermost-first so that the
@@ -205,10 +222,11 @@ export const applyMiddleware = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
   resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware>,
   invocation: MiddlewareSpec.MiddlewareOptions["invocation"],
-): Effect.Effect<A, any, R> => {
-  return resolvedMiddlewares.reduceRight<Effect.Effect<any, any, any>>(
-    // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- The erased middleware error remains intact so runHandlerPromise can validate it against the combined error schema.
-    (wrapped, middleware) => {
+): Effect.Effect<A, any, R> =>
+  Array.reduceRight(
+    resolvedMiddlewares,
+    effect,
+    (wrapped: Effect.Effect<any, any, any>, middleware) => {
       const context =
         "options" in middleware.middlewareSpec
           ? { options: middleware.options, invocation }
@@ -216,9 +234,7 @@ export const applyMiddleware = <A, E, R>(
       // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Resolved middleware is type-erased after its public implementation boundary; its error and service channels are restored by the surrounding function contract.
       return middleware.middlewareImpl(wrapped, context);
     },
-    effect,
   );
-};
 
 /**
  * The error-schema allowlist for a function with middleware: the function's own
@@ -233,7 +249,7 @@ export const combineErrorSchemas = (
   const schemas = [
     ...(error !== undefined ? [error] : []),
     ...MiddlewareSpec.errorSchemas(
-      resolvedMiddlewares.map(({ middlewareSpec }) => middlewareSpec),
+      Array.map(resolvedMiddlewares, ({ middlewareSpec }) => middlewareSpec),
     ),
   ];
   return schemas.length === 0
@@ -445,8 +461,8 @@ export const actionFunctionBase = <
   scope?: IdScope.IdScope;
   observability?: Layer.Layer<never> | undefined;
 }) => ({
-  args: compileArgsSchema(args, scope, reservedArgument, name),
-  returns: compileReturnsSchema(returns, scope),
+  args: () => compileArgsSchema(args, scope, reservedArgument, name),
+  returns: () => compileReturnsSchema(returns, scope),
   handler: (
     ctx: GenericActionCtx<DataModel.ToConvex<DataModel.FromSchema<Schema>>>,
     actualArgs: ConvexArgs,

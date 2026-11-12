@@ -2,8 +2,8 @@ import { Ref } from "@confect/core";
 import { expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Random from "effect/Random";
-import refs from "./fixtures/confect/_generated/refs";
-import * as LocalBackend from "./LocalBackend";
+import refs from "confect-local-backend/refs";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 const mounts = refs.public.groups.mounts;
 

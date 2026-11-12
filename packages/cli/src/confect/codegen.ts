@@ -120,6 +120,9 @@ const LEGACY_PATHS = Effect.gen(function* () {
   ];
 });
 
+/**
+ * @internal
+ */
 export const codegen = Command.make("codegen", DirectoryOptions.flags, () =>
   Effect.gen(function* () {
     yield* logPending("Performing initial sync…");
@@ -243,16 +246,40 @@ const runCodegen = Effect.gen(function* () {
   yield* syncDeployModule(declared);
   if (Option.isSome(declared)) yield* generateTesting(declared.value);
   yield* SectionFiles.verify(backend, mounts);
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const optionalFiles = yield* Effect.filter(
+    ["http.ts", "crons.ts", "auth.ts"],
+    (file) => fs.exists(path.join(confectDirectory, file)),
+  );
+  yield* Bundler.withBatch(
+    Array.map(optionalFiles, (file) => path.join(confectDirectory, file)),
+    Effect.forEach(
+      optionalFiles,
+      (file) =>
+        Bundler.check(path.join(confectDirectory, file)).pipe(
+          Effect.mapError((error) => fromBundlerError(file, error)),
+        ),
+      { discard: true },
+    ),
+  );
   return {
     functionPaths,
     snapshot,
   };
 });
 
+/**
+ * @internal
+ */
 export const generateWithSnapshot = runCodegen.pipe(
   Effect.withSpan("Cli.codegen"),
 );
 
+/**
+ * @internal
+ */
 export const makeCodegenHandler = (
   duringRestore?: Effect.Effect<void, never, Scope.Scope>,
 ) =>
@@ -263,6 +290,9 @@ export const makeCodegenHandler = (
 
 export const codegenHandler = makeCodegenHandler();
 
+/**
+ * @internal
+ */
 export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
   function* (
     snapshot: GenerationSnapshot.GenerationSnapshot,
@@ -573,11 +603,10 @@ const removeObsoleteRegisteredFunctions = Effect.fnUntraced(function* (
     return;
   }
 
-  const expected = new Set(
-    yield* Effect.forEach(leaves, (leaf) =>
-      registeredFunctionsRelativePath(leaf),
-    ),
+  const expectedPaths = yield* Effect.forEach(leaves, (leaf) =>
+    registeredFunctionsRelativePath(leaf),
   );
+  const expected = new Set(expectedPaths);
 
   const existing = yield* fs.readDirectory(registryRoot, { recursive: true });
   yield* Effect.forEach(existing, (relativePath) => {
@@ -621,6 +650,9 @@ const loadGeneratedSpec = Effect.gen(function* () {
 
 const emptyFunctionPaths = FunctionPaths.FunctionPaths.make(HashSet.empty());
 
+/**
+ * @internal
+ */
 export const loadPreviousFunctionPaths = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const specPath = yield* getGeneratedSpecPath;
@@ -678,7 +710,7 @@ const rejectLegacySchemaFile = Effect.gen(function* () {
   const legacyPath = path.join(confectDirectory, "schema.ts");
 
   if (yield* fs.exists(legacyPath)) {
-    return yield* new LegacySchemaFileError({ schemaPath: "schema.ts" });
+    return yield* LegacySchemaFileError.make({ schemaPath: "schema.ts" });
   }
 });
 
@@ -704,9 +736,7 @@ const rejectDeployModuleGroup = Effect.gen(function* () {
  * legal—but the warning catches the much more common case of a typoed directory
  * or files placed under the wrong root.
  */
-const warnIfNoTables = (
-  tableModules: ReadonlyArray<TableModule.TableModule>,
-) =>
+const warnIfNoTables = (tableModules: ReadonlyArray<TableModule.TableModule>) =>
   tableModules.length === 0
     ? logWarn(
         `No tables discovered in \`confect/${TableModule.TABLES_DIRNAME}/\`. ` +
@@ -948,7 +978,7 @@ const validateNoDocNameCollisions = Effect.fnUntraced(function* (
   );
 
   if (Array.isReadonlyArrayNonEmpty(collisions)) {
-    return yield* new CodegenError.ConflictingDocNameError({ collisions });
+    return yield* CodegenError.ConflictingDocNameError.make({ collisions });
   }
 });
 

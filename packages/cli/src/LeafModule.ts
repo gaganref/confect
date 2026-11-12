@@ -1,3 +1,4 @@
+import * as Record from "effect/Record";
 import { GroupSpec, MiddlewareAttachment } from "@confect/core";
 import { Registry, RegistryItems } from "@confect/server";
 import * as GroupImpl from "@confect/server/GroupImpl";
@@ -9,9 +10,12 @@ import * as Array from "effect/Array";
 import * as Brand from "effect/Brand";
 import * as Effect from "effect/Effect";
 import * as HashSet from "effect/HashSet";
+import * as Iterable from "effect/Iterable";
+import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as String from "effect/String";
 import { BundleFailedError, fromBundlerError } from "./BuildError.js";
@@ -27,6 +31,7 @@ import {
   ImplMissingSpecImportError,
   ImplNotFinalizedError,
   InvalidMiddlewareAttachmentError,
+  InvalidContextReuseError,
   SpecImportsServerError,
   SpecMissingDefaultGroupSpecError,
 } from "./CodegenError.js";
@@ -37,6 +42,7 @@ import {
   removePathExtension,
   toPosixPath,
 } from "./utils.js";
+import { logWarn } from "./log.js";
 
 export interface LeafModule {
   readonly relativePath: string;
@@ -64,20 +70,29 @@ const swapModuleSuffix = Effect.fnUntraced(function* (
 ) {
   const path = yield* Path.Path;
   const { dir, name, ext } = path.parse(relativePath);
-  if (ext !== ".ts" || !name.endsWith(fromSuffix.slice(0, -".ts".length))) {
+  if (
+    ext !== ".ts" ||
+    !String.endsWith(String.slice(0, -".ts".length)(fromSuffix))(name)
+  ) {
     return relativePath;
   }
 
-  const stem = name.slice(0, -fromSuffix.slice(0, -".ts".length).length);
-  const nextName = `${stem}${toSuffix.slice(0, -".ts".length)}`;
+  const stem = String.slice(
+    0,
+    -String.slice(0, -".ts".length)(fromSuffix).length,
+  )(name);
+  const nextName = `${stem}${String.slice(0, -".ts".length)(toSuffix)}`;
   return dir.length > 0
     ? path.join(dir, `${nextName}${ext}`)
     : `${nextName}${ext}`;
 });
 
 export const isLeafSpecPath = (relativePath: string) =>
-  relativePath.endsWith(SPEC_SUFFIX);
+  String.endsWith(SPEC_SUFFIX)(relativePath);
 
+/**
+ * @internal
+ */
 export const exportNameFromModulePath = Effect.fnUntraced(function* (
   relativePath: string,
 ) {
@@ -86,17 +101,22 @@ export const exportNameFromModulePath = Effect.fnUntraced(function* (
   if (ext !== ".ts") {
     return name;
   }
-  return name.endsWith(".spec") ? name.slice(0, -".spec".length) : name;
+  return String.endsWith(".spec")(name)
+    ? String.slice(0, -".spec".length)(name)
+    : name;
 });
 
+/**
+ * @internal
+ */
 export const groupPathFromRelativeModulePath = Effect.fnUntraced(function* (
   relativePath: string,
 ) {
   const path = yield* Path.Path;
   const { dir, name, ext } = path.parse(relativePath);
   const stem =
-    ext === ".ts" && name.endsWith(".spec")
-      ? name.slice(0, -".spec".length)
+    ext === ".ts" && String.endsWith(".spec")(name)
+      ? String.slice(0, -".spec".length)(name)
       : name;
   const dirSegments = Array.filter(
     String.split(dir, path.sep),
@@ -109,20 +129,27 @@ export const groupPathFromRelativeModulePath = Effect.fnUntraced(function* (
   };
 });
 
+/**
+ * @internal
+ */
 export const specImportPathFromGenerated = Effect.fnUntraced(function* (
   specRelativePath: string,
 ) {
   const path = yield* Path.Path;
-  const withoutExt = toPosixPath(
-    path,
-    yield* removePathExtension(specRelativePath),
-  );
+  const pathWithoutExtension = yield* removePathExtension(specRelativePath);
+  const withoutExt = toPosixPath(path, pathWithoutExtension);
   return `../${withoutExt}.js`;
 });
 
+/**
+ * @internal
+ */
 export const specPathForImpl = (implRelativePath: string) =>
   swapModuleSuffix(implRelativePath, IMPL_SUFFIX, SPEC_SUFFIX);
 
+/**
+ * @internal
+ */
 export const implPathForSpec = (specRelativePath: string) =>
   swapModuleSuffix(specRelativePath, SPEC_SUFFIX, IMPL_SUFFIX);
 
@@ -133,6 +160,9 @@ export const registeredFunctionsRelativePath = Effect.fnUntraced(function* (
   return path.join("registeredFunctions", ...leaf.pathSegments) + ".ts";
 });
 
+/**
+ * @internal
+ */
 export const discoverLeafSpecFiles = Effect.gen(function* () {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
@@ -158,6 +188,9 @@ export const discoverLeafSpecFiles = Effect.gen(function* () {
   });
 });
 
+/**
+ * @internal
+ */
 export const discoverLeafImplFiles = Effect.gen(function* () {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
@@ -179,6 +212,9 @@ export const discoverLeafImplFiles = Effect.gen(function* () {
   );
 });
 
+/**
+ * @internal
+ */
 export const toLeafModule = Effect.fnUntraced(function* (
   specRelativePath: string,
 ) {
@@ -224,11 +260,12 @@ const validateClientSafety = Effect.fnUntraced(function* (
   bundled: Bundler.Bundled,
 ) {
   const path = yield* Path.Path;
-  const confectDirectory = path.resolve(yield* ConfectDirectory.get);
+  const directory = yield* ConfectDirectory.get;
+  const confectDirectory = path.resolve(directory);
 
   const isCheckedUserModule = (absolutePath: string) => {
     const relative = path.relative(confectDirectory, absolutePath);
-    return !relative.startsWith("..") && !path.isAbsolute(relative);
+    return !String.startsWith("..")(relative) && !path.isAbsolute(relative);
   };
 
   const importers = Bundler.importersOfPackage(
@@ -238,7 +275,7 @@ const validateClientSafety = Effect.fnUntraced(function* (
   );
 
   if (importers.length > 0) {
-    return yield* new SpecImportsServerError({
+    return yield* SpecImportsServerError.make({
       specPath: leaf.relativePath,
       importerPaths: Array.map(importers, (absolutePath) =>
         toPosixPath(path, path.relative(confectDirectory, absolutePath)),
@@ -277,6 +314,8 @@ const validateReservedArguments = Effect.fnUntraced(function* (
  * {@link validateClientSafety}). Returns the leaf paired with its validated
  * spec, so subsequent operations reuse that association without re-bundling.
  * The runtime is declared by the spec, not its file location.
+ *
+ * @internal
  */
 export const loadSpec = Effect.fn("LeafModule.loadSpec")(function* (
   leaf: LeafModule,
@@ -289,7 +328,7 @@ export const loadSpec = Effect.fn("LeafModule.loadSpec")(function* (
   const groupSpec = bundled.module.default;
 
   if (!GroupSpec.isGroupSpec(groupSpec)) {
-    return yield* new SpecMissingDefaultGroupSpecError({
+    return yield* SpecMissingDefaultGroupSpecError.make({
       specPath: leaf.relativePath,
     });
   }
@@ -301,13 +340,21 @@ export const loadSpec = Effect.fn("LeafModule.loadSpec")(function* (
     leaf.pathSegments.join("/"),
   );
 
+  const warnings = yield* Effect.fromResult(
+    validateContextReuse(groupSpec, leaf.relativePath, leaf.groupPathDot),
+  );
+  for (const groupPath of warnings) {
+    yield* logWarn(
+      `${leaf.relativePath}, group ${groupPath}: experimental_reuseContext has no effect on actions; this group contains only actions.`,
+    );
+  }
+
   yield* Effect.fromResult(GroupSpec.validateMiddleware(groupSpec)).pipe(
-    Effect.mapError(
-      (error) =>
-        new InvalidMiddlewareAttachmentError({
-          specPath: leaf.relativePath,
-          message: MiddlewareAttachment.formatValidationError(error),
-        }),
+    Effect.mapError((error) =>
+      InvalidMiddlewareAttachmentError.make({
+        specPath: leaf.relativePath,
+        message: MiddlewareAttachment.formatValidationError(error),
+      }),
     ),
   );
 
@@ -316,6 +363,63 @@ export const loadSpec = Effect.fn("LeafModule.loadSpec")(function* (
     spec: groupSpec,
   });
 });
+
+const validateContextReuse = (
+  group: GroupSpec.AnyWithProps,
+  specPath: string,
+  groupPath: string,
+): Result.Result<ReadonlyArray<string>, InvalidContextReuseError> =>
+  Result.gen(function* () {
+    const isEnabled = group.experimental_reuseContext;
+    if (isEnabled !== undefined && typeof isEnabled !== "boolean") {
+      return yield* Result.fail(
+        InvalidContextReuseError.make({
+          specPath,
+          groupPath,
+          reason: "InvalidOption",
+        }),
+      );
+    }
+    if (isEnabled) {
+      if (group.runtime === "Node") {
+        return yield* Result.fail(
+          InvalidContextReuseError.make({
+            specPath,
+            groupPath,
+            reason: "NodeRuntime",
+          }),
+        );
+      }
+      if (Record.has(group.functions, "experimental_reuseContext")) {
+        return yield* Result.fail(
+          InvalidContextReuseError.make({
+            specPath,
+            groupPath,
+            reason: "ReservedFunctionName",
+          }),
+        );
+      }
+    }
+    const functions = Record.values(group.functions);
+    const warnings =
+      isEnabled &&
+      functions.length > 0 &&
+      Array.every(
+        functions,
+        (fn) => fn.runtimeAndFunctionType.functionType === "action",
+      )
+        ? [groupPath]
+        : [];
+    const childWarnings = yield* pipe(
+      group.groups,
+      Record.toEntries,
+      Iterable.map(([name, child]) =>
+        validateContextReuse(child, specPath, `${groupPath}.${name}`),
+      ),
+      Result.all,
+    );
+    return [...warnings, ...Array.flatten(childWarnings)];
+  });
 
 /**
  * Walk the built `Context` for a `Finalized` `GroupImpl` service value. The
@@ -347,6 +451,8 @@ const buildImplLayer = Effect.fnUntraced(function* (
  * a finalized `GroupImpl` layer, and provides a `FunctionImpl` for every
  * function declared by the spec. Return uncovered middleware requirements for
  * the caller to report across groups.
+ *
+ * @internal
  */
 /**
  * An implementation's unresolved import of a `confect/_generated` file is a
@@ -414,20 +520,20 @@ export const validateImpl = Effect.fn("LeafModule.validateImpl")(function* (
       specAbsolutePath,
     ))
   ) {
-    return yield* new ImplMissingSpecImportError({
+    return yield* ImplMissingSpecImportError.make({
       implPath: implRelativePath,
       expectedSpecPath: leaf.relativePath,
     });
   }
 
   if (!Layer.isLayer(bundled.module.default)) {
-    return yield* new ImplMissingDefaultLayerError({
+    return yield* ImplMissingDefaultLayerError.make({
       implPath: implRelativePath,
     });
   }
 
   const groupSpec = leaf.spec;
-  const expectedFunctionNames = Object.keys(groupSpec.functions);
+  const expectedFunctionNames = Record.keys(groupSpec.functions);
 
   const { context, items } = yield* buildImplLayer(
     bundled.module.default as Layer.Layer<unknown>,
@@ -435,7 +541,7 @@ export const validateImpl = Effect.fn("LeafModule.validateImpl")(function* (
   const finalizedGroupImpl = yield* Option.match(
     findFinalizedGroupImpl(context),
     {
-      onNone: () => new ImplNotFinalizedError({ implPath: implRelativePath }),
+      onNone: () => ImplNotFinalizedError.make({ implPath: implRelativePath }),
       onSome: Effect.succeed,
     },
   );
@@ -443,12 +549,13 @@ export const validateImpl = Effect.fn("LeafModule.validateImpl")(function* (
   const registeredSet = HashSet.fromIterable(
     finalizedGroupImpl.registeredFunctionNames,
   );
-  const missing = expectedFunctionNames.filter(
+  const missing = Array.filter(
+    expectedFunctionNames,
     (name) => !HashSet.has(registeredSet, name),
   );
 
   if (missing.length > 0) {
-    return yield* new ImplMissingFunctionsError({
+    return yield* ImplMissingFunctionsError.make({
       implPath: implRelativePath,
       groupPath: leaf.groupPathDot,
       missingFunctionNames: missing,
@@ -456,11 +563,13 @@ export const validateImpl = Effect.fn("LeafModule.validateImpl")(function* (
   }
 
   const expectedMiddlewareKeys = Array.dedupe([
-    ...(groupSpec.middlewareSpecs ?? []).map(
+    ...Array.map(
+      groupSpec.middlewareSpecs ?? [],
       (middlewareSpec) => middlewareSpec.key,
     ),
-    ...Object.values(groupSpec.functions).flatMap((function_) =>
-      (function_.middlewareSpecs ?? []).map(
+    ...Array.flatMap(Record.values(groupSpec.functions), (function_) =>
+      Array.map(
+        function_.middlewareSpecs ?? [],
         (middlewareSpec) => middlewareSpec.key,
       ),
     ),
@@ -474,7 +583,7 @@ export const validateImpl = Effect.fn("LeafModule.validateImpl")(function* (
   );
 
   if (missingMiddleware.length > 0) {
-    return yield* new ImplMissingMiddlewareError({
+    return yield* ImplMissingMiddlewareError.make({
       implPath: implRelativePath,
       groupPath: leaf.groupPathDot,
       missingMiddlewareKeys: missingMiddleware,
@@ -484,6 +593,9 @@ export const validateImpl = Effect.fn("LeafModule.validateImpl")(function* (
   return RegistryItems.missingRequired(items, required, leaf.groupPathDot);
 });
 
+/**
+ * @internal
+ */
 export const withImplFiles = Effect.fnUntraced(function* <A, E, R>(
   relativePaths: ReadonlyArray<ImplModulePath>,
   use: (leaves: ReadonlyArray<LoadedLeafModule>) => Effect.Effect<A, E, R>,
@@ -501,7 +613,7 @@ export const withImplFiles = Effect.fnUntraced(function* <A, E, R>(
   );
 
   return yield* Bundler.withBatch(
-    pairs.flatMap(({ implRelativePath, specRelativePath }) => [
+    Array.flatMap(pairs, ({ implRelativePath, specRelativePath }) => [
       path.resolve(confectDirectory, implRelativePath),
       path.resolve(confectDirectory, specRelativePath),
     ]),
@@ -512,7 +624,7 @@ export const withImplFiles = Effect.fnUntraced(function* <A, E, R>(
           if (
             !(yield* fs.exists(path.join(confectDirectory, specRelativePath)))
           ) {
-            return yield* new MissingSpecFileError({
+            return yield* MissingSpecFileError.make({
               implPath: implRelativePath,
               expectedSpecPath: specRelativePath,
             });
@@ -520,12 +632,13 @@ export const withImplFiles = Effect.fnUntraced(function* <A, E, R>(
           if (
             !(yield* fs.exists(path.join(confectDirectory, implRelativePath)))
           ) {
-            return yield* new MissingImplFileError({
+            return yield* MissingImplFileError.make({
               specPath: specRelativePath,
               expectedImplPath: implRelativePath,
             });
           }
-          const leaf = yield* loadSpec(yield* toLeafModule(specRelativePath));
+          const leafModule = yield* toLeafModule(specRelativePath);
+          const leaf = yield* loadSpec(leafModule);
           return leaf;
         }),
         { concurrency: VALIDATION_CONCURRENCY },
@@ -540,6 +653,9 @@ export const validateImplFiles = Effect.fn("LeafModule.validateImplFiles")(
     withImplFiles(relativePaths, validateAllImpls),
 );
 
+/**
+ * @internal
+ */
 export const validateAllImpls = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<LoadedLeafModule>,
   required: ReadonlyArray<{ readonly key: string }> = [],
@@ -566,6 +682,9 @@ export const validateAllImpls = Effect.fnUntraced(function* (
   }
 });
 
+/**
+ * @internal
+ */
 export const loadAll = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -573,7 +692,7 @@ export const loadAll = Effect.gen(function* () {
   const specFiles = yield* discoverLeafSpecFiles;
 
   const results = yield* Bundler.withBatch(
-    specFiles.map((relativePath) =>
+    Array.map(specFiles, (relativePath) =>
       path.resolve(confectDirectory, relativePath),
     ),
     Effect.forEach(
@@ -585,7 +704,7 @@ export const loadAll = Effect.gen(function* () {
         const implRelativePath = yield* implPathForSpec(specRelativePath);
         const implAbsolutePath = path.join(confectDirectory, implRelativePath);
         if (!(yield* fs.exists(implAbsolutePath))) {
-          return yield* new MissingImplFileError({
+          return yield* MissingImplFileError.make({
             specPath: specRelativePath,
             expectedImplPath: implRelativePath,
           });
@@ -629,7 +748,7 @@ const validateOrphanImpls = Effect.fnUntraced(function* (
 
       const specAbsolutePath = path.join(confectDirectory, specRelativePath);
       if (!(yield* fs.exists(specAbsolutePath))) {
-        return yield* new MissingSpecFileError({
+        return yield* MissingSpecFileError.make({
           implPath: implRelativePath,
           expectedSpecPath: specRelativePath,
         });

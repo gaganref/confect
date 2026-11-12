@@ -2,15 +2,27 @@ import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import type * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Tracer from "effect/Tracer";
+import * as Result from "effect/Result";
+import * as Str from "effect/String";
 import * as FunctionSpec from "@confect/core/FunctionSpec";
+import * as SchemaToValidator from "@confect/core/SchemaToValidator";
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as FunctionRegistryItem from "@confect/server/FunctionRegistryItem";
 import * as RegisteredConvexFunction from "@confect/server/RegisteredConvexFunction";
-import { assert, describe, expect, expectTypeOf, it } from "@effect/vitest";
+import {
+  afterEach,
+  assert,
+  describe,
+  expect,
+  expectTypeOf,
+  it,
+} from "@effect/vitest";
 import * as Convex from "convex/server";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { vi } from "vitest";
+
+afterEach(() => vi.restoreAllMocks());
 
 vi.mock("convex/server", (importOriginal) =>
   importOriginal<typeof Convex>().then((original) => ({
@@ -87,18 +99,66 @@ describe("make", () => {
       });
       assert(item._tag === "Confect");
       const database = DatabaseSchema.make({});
+      const compileArgs = vi.spyOn(SchemaToValidator, "compileArgsSchema");
+      const compileReturns = vi.spyOn(
+        SchemaToValidator,
+        "compileReturnsSchema",
+      );
       const registration = vi.mocked(register);
       registration.mockClear();
       const prepared = RegisteredConvexFunction.prepare(database, item);
       expect(registration).not.toHaveBeenCalled();
-      expect(prepared._tag.toLowerCase()).toBe(
+      expect(Str.toLowerCase(prepared._tag)).toBe(
         `${spec.functionVisibility}${spec.runtimeAndFunctionType.functionType}`,
       );
-      RegisteredConvexFunction.register(prepared);
-      expect(registration).toHaveBeenCalledExactlyOnceWith(prepared);
+      const forwardedHandler = () => Promise.resolve("forwarded");
+      const registered = RegisteredConvexFunction.register({
+        ...prepared,
+        handler: forwardedHandler,
+      });
+      expect(compileArgs).not.toHaveBeenCalled();
+      expect(compileReturns).not.toHaveBeenCalled();
+      expect(registration).toHaveBeenCalledOnce();
       const [preparedCall] = registration.mock.calls;
       assert(preparedCall);
-      expect(preparedCall[0]).toBe(prepared);
+      const boundary = preparedCall[0];
+      assert(typeof boundary !== "function");
+      expect(Object.is(boundary, prepared)).toBe(false);
+      expect(boundary.handler).toBe(forwardedHandler);
+      expect(Object.getOwnPropertyDescriptor(boundary, "args")).toMatchObject({
+        get: expect.any(Function),
+      });
+      expect(
+        Object.getOwnPropertyDescriptor(boundary, "returns"),
+      ).toMatchObject({
+        get: expect.any(Function),
+      });
+      const exported = registered as unknown as {
+        exportArgs: () => string;
+        exportReturns: () => string;
+      };
+      const argsJson = exported.exportArgs();
+      expect(compileArgs).toHaveBeenCalledOnce();
+      expect(compileReturns).not.toHaveBeenCalled();
+      const returnsJson = exported.exportReturns();
+      expect(compileReturns).toHaveBeenCalledOnce();
+      expect(exported.exportArgs()).toBe(argsJson);
+      expect(exported.exportReturns()).toBe(returnsJson);
+      expect(compileArgs).toHaveBeenCalledOnce();
+      expect(compileReturns).toHaveBeenCalledOnce();
+      expect(
+        Schema.decodeResult(Schema.fromJsonString(Schema.Unknown))(
+          argsJson,
+        ).pipe(Result.getOrThrow),
+      ).toEqual({
+        type: "object",
+        value: { value: { fieldType: { type: "string" }, optional: false } },
+      });
+      expect(
+        Schema.decodeResult(Schema.fromJsonString(Schema.Unknown))(
+          returnsJson,
+        ).pipe(Result.getOrThrow),
+      ).toEqual({ type: "string" });
       registration.mockClear();
       RegisteredConvexFunction.make(database, item);
       expect(registration).toHaveBeenCalledOnce();
@@ -106,8 +166,8 @@ describe("make", () => {
       assert(call);
       const [definition] = call;
       assert(typeof definition !== "function");
-      expect(definition.args).toEqual(prepared.args);
-      expect(definition.returns).toEqual(prepared.returns);
+      expect(definition.args).toEqual(prepared.args());
+      expect(definition.returns).toEqual(prepared.returns());
       expect(item.handler).toBe(handler);
     },
   );

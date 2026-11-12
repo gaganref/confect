@@ -84,6 +84,8 @@ export type Services =
  * Layers are built with Confect's Convex-aware `ConfigProvider` in context, so
  * `Config` reads (e.g. in `Layer.unwrap`) resolve against Convex environment
  * variables.
+ *
+ * @stability unstable
  */
 export type Routes<Services_ = Services> = Layer.Layer<
   never,
@@ -117,6 +119,8 @@ export type Routes<Services_ = Services> = Layer.Layer<
  * Plain Convex routes can still be added to the returned router—Convex matches
  * exact paths first and longer path prefixes before the catch-all, so they take
  * precedence.
+ *
+ * @stability unstable
  */
 export const make = <Id extends string, Groups extends HttpApiGroup.Constraint>(
   routes: Routes,
@@ -262,10 +266,10 @@ const makeWithLayer = <
     // so the scope can close as soon as the context is built.
     // Convex's HTTP registration erases the data model. The supplied generated
     // schema restores it; this does not change the runtime context or services.
-    const services = Effect.runSync(
-      Effect.scoped(
-        Layer.build(layer(ctx as unknown as GenericActionCtx<DataModel_>)),
-      ),
+    const services = layer(ctx as unknown as GenericActionCtx<DataModel_>).pipe(
+      Layer.build,
+      Effect.scoped,
+      Effect.runSync,
     );
     return handler(
       request,

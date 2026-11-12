@@ -1,17 +1,17 @@
 /// <reference types="vite/client" />
 
 import * as componentTesting from "./fixtures/componentTesting";
-import * as mounts from "../local-backend/fixtures/confect/componentBindings";
-import counterConvexSchema from "../local-backend/fixtures/components/counter/convex/schema";
-import innerConvexSchema from "../local-backend/fixtures/components/inner/convex/schema";
-import middleConvexSchema from "../local-backend/fixtures/components/middle/convex/schema";
-import parentConvexSchema from "../local-backend/fixtures/components/parent/convex/schema";
-import type { ClassProbe } from "../local-backend/fixtures/components/counter/confect/authoring.spec";
-import hostRefs from "../local-backend/fixtures/confect/_generated/refs";
-import { Rejected as CounterRejected } from "../local-backend/fixtures/components/counter/confect/counter.spec";
-import localConvexSchema from "../local-backend/fixtures/confect/_generated/convexSchema";
-import localRefs from "../local-backend/fixtures/confect/_generated/refs";
-import localSchema from "../local-backend/fixtures/confect/_generated/schema";
+import * as mounts from "../../../../tools/local-backend/fixtures/confect/componentBindings";
+import counterConvexSchema from "../../../../tools/local-backend/fixtures/components/counter/convex/schema";
+import innerConvexSchema from "../../../../tools/local-backend/fixtures/components/inner/convex/schema";
+import middleConvexSchema from "../../../../tools/local-backend/fixtures/components/middle/convex/schema";
+import parentConvexSchema from "../../../../tools/local-backend/fixtures/components/parent/convex/schema";
+import type { ClassProbe } from "../../../../tools/local-backend/fixtures/components/counter/confect/authoring.spec";
+import hostRefs from "../../../../tools/local-backend/fixtures/confect/_generated/refs";
+import { Rejected as CounterRejected } from "../../../../tools/local-backend/fixtures/components/counter/confect/counter.spec";
+import localConvexSchema from "../../../../tools/local-backend/fixtures/confect/_generated/convexSchema";
+import localRefs from "../../../../tools/local-backend/fixtures/confect/_generated/refs";
+import localSchema from "../../../../tools/local-backend/fixtures/confect/_generated/schema";
 import type { Ref } from "@confect/core";
 import { getFunctionReference } from "@confect/core/RefInternal";
 import { Component } from "@confect/core";
@@ -73,7 +73,7 @@ const hostConvexSchema = defineSchema({});
 const hostModules = {
   "_generated/server.ts": () => Promise.resolve({}),
   "groups/componentAuthoring.ts": () =>
-    import("../local-backend/fixtures/convex/groups/componentAuthoring"),
+    import("../../../../tools/local-backend/fixtures/convex/groups/componentAuthoring"),
 };
 const componentModules = {
   "_generated/server.ts": () => Promise.resolve({}),
@@ -263,20 +263,20 @@ it.effect("registers components with TestConfect", () =>
 );
 
 const counterModules = import.meta.glob([
-  "../local-backend/fixtures/components/counter/convex/**/*.ts",
-  "!../local-backend/fixtures/components/counter/convex/**/*.*.*",
+  "../../../../tools/local-backend/fixtures/components/counter/convex/**/*.ts",
+  "!../../../../tools/local-backend/fixtures/components/counter/convex/**/*.*.*",
 ]);
 const innerModules = import.meta.glob([
-  "../local-backend/fixtures/components/inner/convex/**/*.ts",
-  "!../local-backend/fixtures/components/inner/convex/**/*.*.*",
+  "../../../../tools/local-backend/fixtures/components/inner/convex/**/*.ts",
+  "!../../../../tools/local-backend/fixtures/components/inner/convex/**/*.*.*",
 ]);
 const middleModules = import.meta.glob([
-  "../local-backend/fixtures/components/middle/convex/**/*.ts",
-  "!../local-backend/fixtures/components/middle/convex/**/*.*.*",
+  "../../../../tools/local-backend/fixtures/components/middle/convex/**/*.ts",
+  "!../../../../tools/local-backend/fixtures/components/middle/convex/**/*.*.*",
 ]);
 const parentModules = import.meta.glob([
-  "../local-backend/fixtures/components/parent/convex/**/*.ts",
-  "!../local-backend/fixtures/components/parent/convex/**/*.*.*",
+  "../../../../tools/local-backend/fixtures/components/parent/convex/**/*.ts",
+  "!../../../../tools/local-backend/fixtures/components/parent/convex/**/*.*.*",
 ]);
 
 const registerGraph = Effect.gen(function* () {
@@ -589,7 +589,7 @@ it.effect("keeps query strings and headers at the exact mount path", () =>
     expect(response.status).toBe(200);
     expect(yield* Effect.promise(() => response.json())).toEqual({
       siteUrl: "https://some.convex.site/other",
-      url: "?key=value",
+      url: "/?key=value",
       originalUrl: "https://some.convex.site/other?key=value",
       header: "present",
     });
@@ -753,9 +753,9 @@ it.effect("fetches an installation mounted at the root prefix", () =>
 );
 
 const localHostModules = import.meta.glob([
-  "../local-backend/fixtures/convex/**/*.ts",
-  "../local-backend/fixtures/convex/**/*.js",
-  "!../local-backend/fixtures/convex/**/*.*.*",
+  "../../../../tools/local-backend/fixtures/convex/**/*.ts",
+  "../../../../tools/local-backend/fixtures/convex/**/*.js",
+  "!../../../../tools/local-backend/fixtures/convex/**/*.*.*",
 ]);
 const LocalHost = TestConfect.TestConfect<typeof localSchema>();
 const callbacks = localRefs.public.groups.callbacks;

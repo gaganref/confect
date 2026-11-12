@@ -1,7 +1,19 @@
 export * as ActionCall from "./ActionCall.js";
+/**
+ * @stability unstable
+ */
 export * as AiGatewayDecisionClient from "./AiGatewayDecisionClient.js";
+/**
+ * @stability unstable
+ */
 export * as AiGatewayDecisionModel from "./AiGatewayDecisionModel.js";
+/**
+ * @stability unstable
+ */
 export * as AiGatewayLanguageClient from "./AiGatewayLanguageClient.js";
+/**
+ * @stability unstable
+ */
 export * as AiGatewayLanguageModel from "./AiGatewayLanguageModel.js";
 export * as ActionCtx from "./ActionCtx.js";
 export * as ActionRunner from "./ActionRunner.js";
@@ -14,6 +26,7 @@ export * as ConvexLogger from "./ConvexLogger.js";
 export * as CronJob from "./CronJob.js";
 export * as CronJobs from "./CronJobs.js";
 export * as DatabaseReader from "./DatabaseReader.js";
+export * as DocumentIds from "./DocumentIds.js";
 export * as DatabaseSchema from "./DatabaseSchema.js";
 export * as DatabaseWriter from "./DatabaseWriter.js";
 export * as DataModel from "./DataModel.js";
@@ -22,11 +35,18 @@ export * as ExecutionMetadata from "./ExecutionMetadata.js";
 export * as FunctionImpl from "./FunctionImpl.js";
 export * as FunctionRegistryItem from "./FunctionRegistryItem.js";
 export * as GroupImpl from "./GroupImpl.js";
+/**
+ * @stability unstable
+ */
 export * as Handler from "./Handler.js";
+/**
+ * @stability unstable
+ */
 export * as HttpRouter from "./HttpRouter.js";
 export * as MiddlewareImpl from "./MiddlewareImpl.js";
 export * as MiddlewareRegistryItem from "./MiddlewareRegistryItem.js";
 export * as MountInit from "./MountInit.js";
+export * as MutationAuth from "./MutationAuth.js";
 export * as MutationCtx from "./MutationCtx.js";
 export * as MutationRunner from "./MutationRunner.js";
 export * as MutationTransactionContext from "./MutationTransactionContext.js";

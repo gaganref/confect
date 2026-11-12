@@ -25,14 +25,14 @@ test("pins all eight public aliases to the requested fork build", () => {
       "@confect/server": "npm:@gaganref/confect-server@10.2.0-fork.7",
       "@confect/test": "npm:@gaganref/confect-test@10.2.0-fork.7",
       "@confect/cli": "npm:@gaganref/confect-cli@10.2.0-fork.7",
-      alchemy: "2.0.0-beta.82",
-      foldkit: "0.165.0",
-      react: "19.3.0",
+      alchemy: "2.0.0-beta.86",
+      foldkit: "0.170.0",
+      react: "19.3.1",
       convex: "1.49.0",
-      "convex-test": "0.0.65",
+      "convex-test": "0.0.67",
       "counter-kit": "link:./kits/counter-kit",
-      effect: "4.0.6",
-      "@effect/platform-node": "4.0.4",
+      effect: "4.1.4",
+      "@effect/platform-node": "4.1.4",
     },
     devDependencies: {
       "@types/node": "26.6.5",
@@ -109,10 +109,10 @@ test("writes and refreshes a consumer with aligned peers", () =>
   - "@gaganref/confect-cli@10.2.0-fork.0"
 
 overrides:
-  effect: 4.0.6
+  effect: 4.1.4
   convex: 1.49.0
-  "@effect/platform-node": 4.0.4
-  "@effect/platform-node-shared": 4.0.4
+  "@effect/platform-node": 4.1.4
+  "@effect/platform-node-shared": 4.1.4
 allowBuilds:
   esbuild: false
   workerd: false

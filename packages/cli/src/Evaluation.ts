@@ -1,4 +1,5 @@
 import * as NodeWorker from "@effect/platform-node/NodeWorker";
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- Process isolation and advanced IPC require native fork; Effect's process handle cannot back NodeWorker.
 import { fork } from "node:child_process";
 import * as Console from "effect/Console";
 import * as Context from "effect/Context";
@@ -42,14 +43,17 @@ export const RequestContext = Schema.Struct({
 });
 export type RequestContext = typeof RequestContext.Type;
 
-export class EvaluationError extends Schema.TaggedError<EvaluationError>()(
-  "EvaluationError",
-  { diagnostic: Schema.String },
-) {}
+export class EvaluationError extends Schema.TaggedError<
+  EvaluationError,
+  { readonly brand: unique symbol }
+>()("EvaluationError", { diagnostic: Schema.String }) {}
 
 // A rejected Node group stays typed so the caller can restore component output.
 const Failure = Schema.Union([EvaluationError, ComponentNodeGroupError]);
 
+/**
+ * @internal
+ */
 export const requests = RpcGroup.make(
   Rpc.make("Ready", { success: Schema.Void }),
   Rpc.make("Previous", {
@@ -181,13 +185,16 @@ const withWorker = Effect.fn("Evaluation.withWorker")(function* <A>(
   ).pipe(
     Effect.catchTags({
       WorkerError: (error) =>
-        Effect.fail(new EvaluationError({ diagnostic: error.message })),
+        Effect.fail(EvaluationError.make({ diagnostic: error.message })),
       RpcClientError: (error) =>
-        Effect.fail(new EvaluationError({ diagnostic: error.message })),
+        Effect.fail(EvaluationError.make({ diagnostic: error.message })),
     }),
   );
 });
 
+/**
+ * @internal
+ */
 export const loadPreviousFunctionPaths = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;

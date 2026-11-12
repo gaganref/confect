@@ -5,8 +5,8 @@ import * as Effect from "effect/Effect";
 import * as Random from "effect/Random";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
-import refs from "./fixtures/confect/_generated/refs";
-import * as LocalBackend from "./LocalBackend";
+import refs from "confect-local-backend/refs";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 const Hop = Schema.Struct({ hop: Schema.String });
 const hop = (value: unknown) => Schema.decodeUnknownSync(Hop)(value).hop;

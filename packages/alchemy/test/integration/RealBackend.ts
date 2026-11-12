@@ -1,4 +1,4 @@
-import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeServices from "../fixtures/NodeTestServices";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import { apply } from "alchemy/Apply";
 import { provideFreshArtifactStore } from "alchemy/Artifacts";

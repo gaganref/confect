@@ -1,4 +1,4 @@
-import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeServices from "./fixtures/NodeTestServices";
 import { it } from "@effect/vitest";
 import { Convex } from "@confect/alchemy";
 import { Providers } from "@confect/alchemy/Providers";
@@ -79,7 +79,6 @@ describe("providers", () => {
         const result = yield* Effect.flatMap(
           Effect.fromNullishOr(project),
           (provider) =>
-            // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- the registry erases provider error types
             provider.reconcile({
               id: "Project",
               fqn: "Project",
@@ -89,8 +88,6 @@ describe("providers", () => {
               output: undefined,
               bindings: [],
               session: {
-                emit: () => Effect.void,
-                done: () => Effect.void,
                 note: () => Effect.void,
               },
             }),

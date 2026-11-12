@@ -1,6 +1,7 @@
 import * as RegisteredFunction from "./RegisteredFunction.js";
+import * as Record from "effect/Record";
 import * as Effect from "effect/Effect";
-import type * as Layer from "effect/Layer";
+import * as Layer from "effect/Layer";
 import * as Ref from "effect/Ref";
 import * as Registry from "./Registry.js";
 import type * as RegistryItems from "./RegistryItems.js";
@@ -17,10 +18,15 @@ export const make = (
       observability: yield* RegisteredFunction.Observability,
     };
   }).pipe(
-    Effect.provide(groupLayer),
-    Effect.provideService(
-      Registry.Registry,
-      Ref.makeUnsafe<RegistryItems.RegistryItems>({}),
+    Effect.provide(
+      groupLayer.pipe(
+        Layer.provideMerge(
+          Layer.succeed(
+            Registry.Registry,
+            Ref.makeUnsafe<RegistryItems.RegistryItems>({}),
+          ),
+        ),
+      ),
     ),
     Effect.runSync,
   );
@@ -34,7 +40,7 @@ const partitionRegistryItems = (registryItems: RegistryItems.RegistryItems) => {
     MiddlewareRegistryItem.MiddlewareRegistryItem
   >();
   const functionRegistryItems: Record<string, unknown> = {};
-  for (const [key, value] of Object.entries(registryItems)) {
+  for (const [key, value] of Record.toEntries(registryItems)) {
     if (MiddlewareRegistryItem.isMiddlewareRegistryItem(value)) {
       middlewareRegistryItems.set(value.middlewareSpec.key, value);
     } else {

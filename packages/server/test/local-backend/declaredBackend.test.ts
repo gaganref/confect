@@ -4,7 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
-import * as LocalBackend from "./LocalBackend";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 layer(Layer.merge(LocalBackend.consumerLayer, FetchHttpClient.layer), {
   timeout: "120 seconds",

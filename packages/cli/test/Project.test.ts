@@ -15,6 +15,10 @@ it.effect("retries project cleanup without advancing the test clock", () =>
       makeTempDirectory: () => Effect.succeed("consumer"),
       makeDirectory: () => Effect.void,
       writeFileString: () => Effect.void,
+      writeFile: () => Effect.void,
+      copyFile: () => Effect.void,
+      copy: () => Effect.void,
+      symlink: () => Effect.void,
       remove: () =>
         Effect.suspend(() => {
           attempts++;

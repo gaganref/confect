@@ -50,11 +50,12 @@ export type Limits = typeof Limits.Type;
 /**
  * @experimental
  */
-export class InvalidReadLimitError extends Data.TaggedError(
-  "InvalidReadLimitError",
-)<{
-  readonly cause: Schema.SchemaError;
-}> {
+export class InvalidReadLimitError extends Schema.TaggedError<
+  InvalidReadLimitError,
+  {}
+>()("InvalidReadLimitError", {
+  cause: Schema.declare<Schema.SchemaError>(Schema.isSchemaError),
+}) {
   override get message(): string {
     return `Invalid read limits: ${this.cause.message}`;
   }
@@ -78,9 +79,11 @@ const State = Data.taggedEnum<State>();
 /**
  * @experimental
  */
-export const QueryStreamReadBudget = Context.Service<QueryStreamReadBudget>(
-  "@confect/server/QueryStreamReadBudget",
-);
+export const QueryStreamReadBudget =
+  // oxlint-disable-next-line effecttsgo/service-not-as-class -- Preserve the public structural Identifier and Effect requirement types; class identifiers would change those contracts.
+  Context.Service<QueryStreamReadBudget>(
+    "@confect/server/QueryStreamReadBudget",
+  );
 
 const isExhausted = (state: State, limits: Limits): boolean =>
   State.$match(state, {
@@ -124,9 +127,11 @@ export const make = Effect.fnUntraced(function* (
   ) => Pull.Pull<Array.NonEmptyReadonlyArray<unknown>> = unlimited
     ? (pull) =>
         Effect.uninterruptibleMask((restore) =>
-          Effect.tap(restore(pull), (documents) =>
-            SynchronizedRef.update(stateRef, (state) =>
-              State.Active(record(state, documents)),
+          restore(pull).pipe(
+            Effect.tap((documents) =>
+              SynchronizedRef.update(stateRef, (state) =>
+                State.Active(record(state, documents)),
+              ),
             ),
           ),
         )
@@ -174,7 +179,7 @@ export const make = Effect.fnUntraced(function* (
     getReadCounts: Effect.map(SynchronizedRef.get(stateRef), readCounts),
     accountFor: (encodedDocuments) =>
       Stream.transformPull(encodedDocuments, (pull) =>
-        Effect.succeed(accountForPull(pull)),
+        pull.pipe(accountForPull, Effect.succeed),
       ).pipe(Stream.scoped),
   });
 });

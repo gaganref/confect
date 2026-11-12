@@ -34,14 +34,19 @@ export const GenericId = <
 >(
   tableName: TableName,
   scope?: Scope,
-): Schema.Codec<GenericId<TableName, Scope>> =>
+): Schema.toType<Schema.refine<GenericId<TableName, Scope>, Schema.String>> =>
   Schema.String.annotate({
     [ConvexId]: tableName,
     [ConvexIdScope]: scope ?? IdScope.app,
-  }) as unknown as Schema.Codec<GenericId<TableName, Scope>>;
+  }).pipe(
+    Schema.refine((_value): _value is GenericId<TableName, Scope> => true),
+    Schema.toType,
+  );
 
 export const scope = (ast: SchemaAST.AST): IdScope.IdScope =>
-  SchemaAST.resolveAt<IdScope.IdScope>(ConvexIdScope)(ast) ?? IdScope.app;
+  SchemaAST.resolveAt<IdScope.IdScope>(ConvexIdScope)(ast) ??
+  (ast.annotations?.[ConvexIdScope] as IdScope.IdScope | undefined) ??
+  IdScope.app;
 
 /**
  * Rebind only IDs owned by `From`; IDs belonging to other scopes survive. A ref
@@ -336,4 +341,7 @@ export const rebase = <
 export const tableName = <TableName extends string>(
   ast: SchemaAST.AST,
 ): Option.Option<TableName> =>
-  Option.fromNullishOr(SchemaAST.resolveAt<TableName>(ConvexId)(ast));
+  Option.fromNullishOr(
+    (ast.annotations?.[ConvexId] as TableName | undefined) ??
+      SchemaAST.resolveAt<TableName>(ConvexId)(ast),
+  );

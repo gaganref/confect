@@ -184,15 +184,20 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
             : [],
         );
         const group = yield* GroupPath.fromGroupModulePath(relative);
+        const reusesContext = names.includes("experimental_reuseContext");
+        const functionNames = names.filter(
+          (name) => name !== "experimental_reuseContext",
+        );
         const template = yield* render({
-          functionNames: names,
+          functionNames,
           registeredFunctionsImportPath:
             yield* registeredFunctionsImportPathForGroup(group, absolute),
           useNode: tokens[0] === '"use node"',
+          experimental_reuseContext: reusesContext,
         });
         if (
-          names.length > 0 &&
-          new Set(names).size === names.length &&
+          functionNames.length > 0 &&
+          new Set(functionNames).size === functionNames.length &&
           matchesShape(tokens, tokenize(template, absolute, path)!)
         )
           continue;
@@ -210,17 +215,25 @@ export const render = ({
   functionNames,
   registeredFunctionsImportPath,
   useNode = false,
+  experimental_reuseContext = false,
 }: Parameters<typeof renderEffect>[0]) =>
-  renderEffect({ functionNames, registeredFunctionsImportPath, useNode });
+  renderEffect({
+    functionNames,
+    registeredFunctionsImportPath,
+    useNode,
+    experimental_reuseContext,
+  });
 
 const renderEffect = Effect.fnUntraced(function* ({
   functionNames,
   registeredFunctionsImportPath,
   useNode = false,
+  experimental_reuseContext = false,
 }: {
   functionNames: ReadonlyArray<string>;
   registeredFunctionsImportPath: string;
   useNode?: boolean;
+  experimental_reuseContext?: boolean;
 }) {
   const cbw = new CodeBlockWriter({ indentNumberOfSpaces: 2 });
 
@@ -233,6 +246,10 @@ const renderEffect = Effect.fnUntraced(function* ({
     `import registeredFunctions from "${registeredFunctionsImportPath}";`,
   );
   yield* cbw.newLine();
+  if (experimental_reuseContext) {
+    yield* cbw.writeLine("export const experimental_reuseContext = true;");
+    yield* cbw.newLine();
+  }
   yield* Effect.forEach(functionNames, (name) =>
     cbw.writeLine(`export const ${name} = registeredFunctions.${name};`),
   );
@@ -240,17 +257,22 @@ const renderEffect = Effect.fnUntraced(function* ({
   return yield* cbw.toString();
 });
 
+/**
+ * @internal
+ */
 export const generateGroupModule = ({
   groupPath,
   functionNames,
   registeredFunctionsImportPath,
   useNode = false,
+  experimental_reuseContext = false,
 }: Parameters<typeof generateGroupModuleEffect>[0]) =>
   generateGroupModuleEffect({
     groupPath,
     functionNames,
     registeredFunctionsImportPath,
     useNode,
+    experimental_reuseContext,
   });
 
 const generateGroupModuleEffect = Effect.fnUntraced(function* ({
@@ -258,11 +280,13 @@ const generateGroupModuleEffect = Effect.fnUntraced(function* ({
   functionNames,
   registeredFunctionsImportPath,
   useNode = false,
+  experimental_reuseContext = false,
 }: {
   groupPath: GroupPath.GroupPath;
   functionNames: ReadonlyArray<string>;
   registeredFunctionsImportPath: string;
   useNode?: boolean;
+  experimental_reuseContext?: boolean;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -280,6 +304,7 @@ const generateGroupModuleEffect = Effect.fnUntraced(function* ({
     functionNames,
     registeredFunctionsImportPath,
     useNode,
+    experimental_reuseContext,
   });
 
   if (!(yield* fs.exists(modulePath))) {
@@ -300,6 +325,8 @@ const generateGroupModuleEffect = Effect.fnUntraced(function* ({
  * path mirrors the group's path one-to-one (see
  * `registeredFunctionsRelativePath` in `LeafModule.ts`) for both Convex and
  * Node groups.
+ *
+ * @internal
  */
 export const registeredFunctionsImportPathForGroup = Effect.fnUntraced(
   function* (groupPath: GroupPath.GroupPath, modulePath: string) {
@@ -336,6 +363,9 @@ const logGroupPaths = Effect.fnUntraced(function* <R>(
   );
 });
 
+/**
+ * @internal
+ */
 export const generateFunctions = Effect.fnUntraced(function* (
   snapshot: GenerationSnapshot.GenerationSnapshot,
 ) {
@@ -344,6 +374,9 @@ export const generateFunctions = Effect.fnUntraced(function* (
   return GenerationSnapshot.functionPaths(snapshot);
 });
 
+/**
+ * @internal
+ */
 export const applyFunctionPlan = Effect.fnUntraced(function* (
   plan: GenerationSnapshot.ModulePlan,
 ) {
@@ -373,6 +406,9 @@ const getGroupPathsFromFs = Effect.gen(function* () {
   return GroupPaths.GroupPaths.make(HashSet.fromIterable(groupPathArray));
 });
 
+/**
+ * @internal
+ */
 export const removeGroups = Effect.fnUntraced(function* (
   groupPaths: GroupPaths.GroupPaths,
 ) {
@@ -395,6 +431,9 @@ export const removeGroups = Effect.fnUntraced(function* (
   );
 });
 
+/**
+ * @internal
+ */
 export const writeGroups = (
   groups: ReadonlyArray<GenerationSnapshot.GroupSummary>,
 ) =>
@@ -412,6 +451,7 @@ export const writeGroups = (
         functionNames: group.functionNames,
         registeredFunctionsImportPath,
         useNode: group.runtime === "Node",
+        experimental_reuseContext: group.experimental_reuseContext === true,
       });
       yield* Match.value(change).pipe(
         Match.when("Added", () => logFileAdded(modulePath)),

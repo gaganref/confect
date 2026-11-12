@@ -11,6 +11,8 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type { ExecutionMetadata } from "@confect/server/ExecutionMetadata";
 import type * as Handler from "@confect/server/Handler";
+import type * as MutationAuth from "@confect/server/MutationAuth";
+import type * as DocumentIds from "@confect/server/DocumentIds";
 import type * as HttpRouter from "@confect/server/HttpRouter";
 import type { RequestMetadata } from "@confect/server/RequestMetadata";
 import type { TransactionMetadata } from "@confect/server/TransactionMetadata";
@@ -39,6 +41,42 @@ type ExtractActionReturns<F> =
   F extends RegisteredAction<any, any, infer R> ? R : never;
 
 describe("Handler", () => {
+  it("provides JWT signing only in mutation handlers", () => {
+    type Signing = MutationAuth.MutationAuth;
+    expectTypeOf<Signing>().toExtend<Handler.MutationServices<typeof schema>>();
+    expectTypeOf<Signing>().not.toExtend<
+      Handler.QueryServices<typeof schema>
+    >();
+    expectTypeOf<Signing>().not.toExtend<
+      Handler.ActionServices<typeof schema>
+    >();
+    expectTypeOf<Signing>().not.toExtend<HttpRouter.Services>();
+    const nodeAction = FunctionSpec.publicNodeAction({
+      name: "sign",
+      returns: () => Schema.String,
+    });
+    type NodeServices = Effect.Services<
+      ReturnType<Handler.Handler<typeof schema, typeof nodeAction>>
+    >;
+    expectTypeOf<Signing>().not.toExtend<NodeServices>();
+  });
+
+  it("provides DocumentIds only in query and mutation contexts", () => {
+    type Ids = DocumentIds.DocumentIds<typeof schema>;
+    expectTypeOf<Ids>().toExtend<Handler.QueryServices<typeof schema>>();
+    expectTypeOf<Ids>().toExtend<Handler.MutationServices<typeof schema>>();
+    expectTypeOf<Ids>().not.toExtend<Handler.ActionServices<typeof schema>>();
+    expectTypeOf<Ids>().not.toExtend<HttpRouter.Services>();
+    const nodeAction = FunctionSpec.publicNodeAction({
+      name: "ids",
+      returns: () => Schema.Null,
+    });
+    type NodeServices = Effect.Services<
+      ReturnType<Handler.Handler<typeof schema, typeof nodeAction>>
+    >;
+    expectTypeOf<Ids>().not.toExtend<NodeServices>();
+  });
+
   describe("transaction-control service availability", () => {
     type Controls = QueryTransactionContext | MutationTransactionContext;
 
@@ -105,7 +143,7 @@ describe("Handler", () => {
       >().toEqualTypeOf<Storage.Storage | StorageReader>();
       expectTypeOf<
         Extract<Handler.MutationServices<typeof schema>, StorageServices>
-      >().toEqualTypeOf<Storage.Storage | StorageReader | StorageWriter>();
+      >().toEqualTypeOf<StorageServices>();
       expectTypeOf<
         Extract<Handler.ActionServices<typeof schema>, StorageServices>
       >().toEqualTypeOf<StorageServices>();
@@ -190,10 +228,10 @@ describe("Handler", () => {
       expectTypeOf<Effect.Services<typeof upload | typeof remove>>().toExtend<
         Handler.MutationServices<typeof schema>
       >();
-      expectTypeOf<Effect.Services<typeof get>>().not.toExtend<
+      expectTypeOf<Effect.Services<typeof get>>().toExtend<
         Handler.MutationServices<typeof schema>
       >();
-      expectTypeOf<Effect.Services<typeof store>>().not.toExtend<
+      expectTypeOf<Effect.Services<typeof store>>().toExtend<
         Handler.MutationServices<typeof schema>
       >();
       expectTypeOf<

@@ -1,7 +1,10 @@
 import type * as IdScope from "@confect/core/IdScope";
+import * as Record from "effect/Record";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import type * as GroupSpec from "@confect/core/GroupSpec";
+import type * as FunctionSpec from "@confect/core/FunctionSpec";
 import { CodeBlockWriter } from "./CodeBlockWriter.js";
 import {
   render as renderSpecAssembly,
@@ -226,7 +229,10 @@ const idEffect = Effect.fnUntraced(function* ({
   const union =
     tableNames.length === 0
       ? "never"
-      : tableNames.map((n) => `"${n}"`).join(" | ");
+      : Array.join(
+          Array.map(tableNames, (n) => `"${n}"`),
+          " | ",
+        );
   yield* cbw.writeLine(`export type TableNames = ${union};`);
   yield* cbw.blankLine();
 
@@ -602,9 +608,10 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
   const useNode = spec.runtime === "Node";
 
   const hasConfectFunctions = (group: GroupSpec.AnyWithProps): boolean =>
-    Object.values(group.functions).some(
+    Array.some(
+      Record.values(group.functions),
       (functionSpec) => functionSpec.functionProvenance._tag === "Confect",
-    ) || Object.values(group.groups).some(hasConfectFunctions);
+    ) || Array.some(Record.values(group.groups), hasConfectFunctions);
   const forwarding = !useNode && hasConfectFunctions(spec);
 
   if (useNode) {
@@ -651,29 +658,50 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
       `export default RegisteredFunctions.buildForGroup<${specType}>(databaseSchema, ${groupLayer});`,
     );
   } else {
-    const bindings = (group: GroupSpec.AnyWithProps, path: string): string =>
-      `{
-${[
-  ...Object.entries(group.functions).map(([name, functionSpec]) => {
-    const key = JSON.stringify(name);
-    const definition = `${path}[${key}]`;
-    return `[${key}]: ${
-      functionSpec.functionProvenance._tag === "Convex"
-        ? `${definition}.handler`
-        : `RegisteredConvexFunction.register({ ...${definition}, handler: forward(${definition}.handler) })`
-    },`;
-  }),
-  ...Object.entries(group.groups).map(([name, child]) => {
-    const key = JSON.stringify(name);
-    return `[${key}]: ${bindings(child, `${path}[${key}]`)},`;
-  }),
-].join("\n")}
-}`;
+    const JsonString = Schema.fromJsonString(Schema.String);
+    const bindings = (
+      group: GroupSpec.AnyWithProps,
+      path: string,
+    ): Effect.Effect<string> =>
+      Effect.gen(function* () {
+        const functions = yield* Effect.forEach(
+          Record.toEntries(group.functions),
+          Effect.fnUntraced(function* ([name, functionSpec]: readonly [
+            string,
+            FunctionSpec.AnyWithProps,
+          ]) {
+            const key = yield* Schema.encodeEffect(JsonString)(name).pipe(
+              Effect.orDie,
+            );
+            const definition = `${path}[${key}]`;
+            return `[${key}]: ${
+              functionSpec.functionProvenance._tag === "Convex"
+                ? `${definition}.handler`
+                : `RegisteredConvexFunction.register({ ...${definition}, handler: forward(${definition}.handler) })`
+            },`;
+          }),
+        );
+        const groups = yield* Effect.forEach(
+          Record.toEntries(group.groups),
+          Effect.fnUntraced(function* ([name, child]: readonly [
+            string,
+            GroupSpec.AnyWithProps,
+          ]) {
+            const key = yield* Schema.encodeEffect(JsonString)(name).pipe(
+              Effect.orDie,
+            );
+            const childBindings = yield* bindings(child, `${path}[${key}]`);
+            return `[${key}]: ${childBindings},`;
+          }),
+        );
+        return `{\n${Array.join([...functions, ...groups], "\n")}\n}`;
+      });
+    const registered = yield* bindings(spec, "definitions");
     yield* cbw.writeLine(`const forward = <Ctx, Args, Returns>(handler: (ctx: Ctx, args: Args) => Promise<Returns>) => (ctx: Ctx, args: Args) => handler(ctx, args);
 
 const definitions = ConvexFunctionDefinitions.buildForGroup<${specType}>(databaseSchema, ${groupLayer});
 
-export default ${bindings(spec, "definitions")} as RegisteredFunctions.RegisteredFunctionsForGroupSpec<${specType}>;`);
+export default ${registered} as RegisteredFunctions.RegisteredFunctionsForGroupSpec<${specType}>;`);
   }
 
   return yield* cbw.toString();
@@ -704,6 +732,7 @@ const servicesEffect = Effect.fnUntraced(function* ({
       yield* cbw.writeLine("type DataModel,");
       yield* cbw.writeLine("DatabaseReader as DatabaseReader_,");
       yield* cbw.writeLine("DatabaseWriter as DatabaseWriter_,");
+      yield* cbw.writeLine("DocumentIds as DocumentIds_,");
       yield* cbw.writeLine("ExecutionMetadata as ExecutionMetadata_,");
       if (!component) yield* cbw.writeLine("MutationCtx as MutationCtx_,");
       yield* cbw.writeLine("MutationRunner as MutationRunner_,");
@@ -822,6 +851,14 @@ const servicesEffect = Effect.fnUntraced(function* ({
   );
   yield* cbw.writeLine(
     "export type VectorSearch = typeof VectorSearch.Identifier;",
+  );
+  yield* cbw.blankLine();
+
+  yield* cbw.writeLine(
+    "export const DocumentIds: DocumentIds_.DocumentIdsTag<typeof schemaDefinition> = DocumentIds_.DocumentIds<typeof schemaDefinition>();",
+  );
+  yield* cbw.writeLine(
+    "export type DocumentIds = typeof DocumentIds.Identifier;",
   );
   yield* cbw.blankLine();
 

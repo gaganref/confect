@@ -27,8 +27,14 @@ describe("DatabaseSchema", () => {
     expectTypeOf<DatabaseSchema.Tables<typeof schema>>().toEqualTypeOf<
       typeof notes | typeof users
     >();
+    expectTypeOf<DatabaseSchema.SystemTableNames>().toEqualTypeOf<
+      "_storage" | "_scheduled_functions"
+    >();
     expectTypeOf<DatabaseSchema.TableNames<typeof schema>>().toEqualTypeOf<
       "notes" | "users"
+    >();
+    expectTypeOf<DatabaseSchema.AllTableNames<typeof schema>>().toEqualTypeOf<
+      "notes" | "users" | "_storage" | "_scheduled_functions"
     >();
     expectTypeOf<
       DatabaseSchema.TableWithName<typeof schema, "notes">
@@ -41,6 +47,9 @@ describe("DatabaseSchema", () => {
     expect(DatabaseSchema.tables(schema)).toEqual({});
     expectTypeOf<DatabaseSchema.Tables<typeof schema>>().toBeNever();
     expectTypeOf<DatabaseSchema.TableNames<typeof schema>>().toBeNever();
+    expectTypeOf<DatabaseSchema.AllTableNames<typeof schema>>().toEqualTypeOf<
+      "_storage" | "_scheduled_functions"
+    >();
   });
 
   it("retains component scope alongside the precise lazy table record", () => {

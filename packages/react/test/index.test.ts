@@ -41,7 +41,10 @@ vi.mock("convex/react", () => ({
     useConvexPaginatedQueryInternalMock(...args),
 }));
 
-class NotFound extends Schema.TaggedError<NotFound>()("NotFound", {
+class NotFound extends Schema.TaggedError<
+  NotFound,
+  { readonly brand: unique symbol }
+>()("NotFound", {
   id: Schema.String,
 }) {}
 
@@ -295,7 +298,9 @@ describe("useMutation", () => {
           result.current({ id: "abc" }),
         );
 
-        assert(Result.isSuccess(result_));
+        const result_IsSuccess = Result.isSuccess(result_);
+
+        assert(result_IsSuccess);
         expect(result_.success).toBeNull();
       }),
   );
@@ -314,8 +319,11 @@ describe("useMutation", () => {
           result.current({ id: "abc" }),
         );
 
-        assert(Result.isFailure(result_));
-        assert(Schema.is(NotFound)(result_.failure));
+        const result_IsFailure = Result.isFailure(result_);
+
+        assert(result_IsFailure);
+        const isNotFound = Schema.is(NotFound)(result_.failure);
+        assert(isNotFound);
         expect(result_.failure.id).toBe("abc");
       }),
   );
@@ -397,7 +405,9 @@ describe("useAction", () => {
           result.current({ id: "abc" }),
         );
 
-        assert(Result.isSuccess(result_));
+        const result_IsSuccess = Result.isSuccess(result_);
+
+        assert(result_IsSuccess);
         expect(result_.success).toBeNull();
       }),
   );
@@ -416,8 +426,11 @@ describe("useAction", () => {
           result.current({ id: "abc" }),
         );
 
-        assert(Result.isFailure(result_));
-        assert(Schema.is(NotFound)(result_.failure));
+        const result_IsFailure = Result.isFailure(result_);
+
+        assert(result_IsFailure);
+        const isNotFound = Schema.is(NotFound)(result_.failure);
+        assert(isNotFound);
         expect(result_.failure.id).toBe("abc");
       }),
   );
@@ -469,10 +482,10 @@ describe("usePaginatedQuery", () => {
     }),
   );
 
-  class PaginationFailed extends Schema.TaggedError<PaginationFailed>()(
-    "PaginationFailed",
-    { reason: Schema.String },
-  ) {}
+  class PaginationFailed extends Schema.TaggedError<
+    PaginationFailed,
+    { readonly brand: unique symbol }
+  >()("PaginationFailed", { reason: Schema.String }) {}
 
   const paginatedQueryWithError = Ref.make(
     "notes",

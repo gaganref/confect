@@ -11,7 +11,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
-import * as LocalBackend from "./LocalBackend";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -28,6 +28,27 @@ layer(
   Layer.mergeAll(LocalBackend.layer, NodeServices.layer, FetchHttpClient.layer),
   { timeout: "120 seconds", excludeTestServices: true },
 )("HTTP routes on a real backend", (it) => {
+  it.effect("streams a 100 MiB response through the Effect router", () =>
+    Effect.gen(function* () {
+      const response = yield* HttpClient.get(
+        "http://127.0.0.1:3211/large-stream",
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers["content-type"]).toBe("application/octet-stream");
+      const bytes = yield* response.stream.pipe(
+        Stream.runFold(
+          () => 0,
+          (total, chunk) => {
+            expect(chunk.every((byte) => byte === 120)).toBe(true);
+            return total + chunk.byteLength;
+          },
+        ),
+      );
+      expect(bytes).toBe(100 * 1024 * 1024);
+    }),
+  );
+
   it.effect(
     "logs reflected patterns for application and mounted component completions",
     () =>
@@ -47,7 +68,10 @@ layer(
             "pnpm",
             ["convex", "logs", "--history", "100", "--success", "--jsonl"],
             {
-              cwd: path.resolve(import.meta.dirname, "./fixtures"),
+              cwd: path.resolve(
+                import.meta.dirname,
+                "../../../../tools/local-backend/fixtures",
+              ),
               shell: true,
               extendEnv: true,
               env: { CONVEX_AGENT_MODE: "anonymous" },

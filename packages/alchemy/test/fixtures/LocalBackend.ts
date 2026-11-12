@@ -1,3 +1,4 @@
+import * as CommandArgs from "./CommandArgs";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -68,7 +69,7 @@ export const fakeBackend = (options?: Partial<FakeBehaviour>) => {
         Effect.gen(function* () {
           if (command._tag !== "StandardCommand")
             return yield* Effect.die("unexpected piped command");
-          const args = command.args;
+          const args = CommandArgs.plain(command.args);
           const exited = yield* Deferred.make<ChildProcessSpawner.ExitCode>();
           let stdout = Stream.empty as Stream.Stream<Uint8Array>;
           let stop = Effect.void;

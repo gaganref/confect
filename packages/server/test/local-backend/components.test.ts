@@ -1,6 +1,6 @@
 import { Ref } from "@confect/core";
-import type { ClassProbe } from "./fixtures/components/counter/confect/authoring.spec";
-import refs from "./fixtures/confect/_generated/refs";
+import type { ClassProbe } from "../../../../tools/local-backend/fixtures/components/counter/confect/authoring.spec";
+import refs from "confect-local-backend/refs";
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import { expect, expectTypeOf, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -16,9 +16,9 @@ import type {
   second,
   left,
   right,
-} from "./fixtures/confect/componentBindings";
-import { api } from "./fixtures/convex/_generated/api";
-import * as LocalBackend from "./LocalBackend";
+} from "../../../../tools/local-backend/fixtures/confect/componentBindings";
+import { api } from "../../../../tools/local-backend/fixtures/convex/_generated/api";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 // These identities come from Convex's generated ComponentApi<MountName>,
 // including the nested child's scope carried by the parent's contract.
