@@ -63,7 +63,8 @@ whole applications, not independently installable client and backend snippets.
 ### Supported Foldkit graph
 
 The Foldkit profile selects `foldkit: ^0.170.0` and
-`@effect/platform-browser: ~4.1.0` in the fresh lane, alongside Effect `~4.1.0`.
+`@effect/platform-browser: ~4.1.0` in the fresh lane, alongside Effect `~4.1.4`,
+the floor the server and CLI advertise.
 These ranges admit patch releases within the verified minor versions. The
 adapter, Foldkit, server, and CLI can share one Effect installation without
 overrides.
