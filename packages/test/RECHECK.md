@@ -253,6 +253,10 @@ in another component, whether the job is standing, and the world of the
 invocation bound when it was scheduled. `1.0/schedule` writes
 the row through the scheduling attempt, so a job exists only once that mutation
 commits. `1.0/actions/schedule` and `1.0/actions/cancel_job` commit at once.
+A stored handle passes a `v.function()` validator, which row 2's refusal of an
+unknown kind turned away. The kernel checks it as the binary does
+(`common/src/schemas/validator.rs:156-164` in convex-backend 1.49.0): a string
+with the `function://` prefix, followed here by convex-test's handle format.
 Cancel marks a pending or running job `canceled`, and a canceled job never
 starts.
 

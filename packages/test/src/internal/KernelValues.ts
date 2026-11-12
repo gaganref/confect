@@ -419,6 +419,12 @@ export type ValidatorJSON =
   | { type: "array"; value: ValidatorJSON }
   | { type: "object"; value: Record<string, ObjectFieldType> }
   | { type: "record"; keys: ValidatorJSON; values: ObjectFieldType }
+  | {
+      type: "function";
+      fnType?: string;
+      args?: ValidatorJSON;
+      returns?: ValidatorJSON;
+    }
   | { type: "union"; value: ValidatorJSON[] };
 
 export function validateValidator(validator: ValidatorJSON, value: any) {
@@ -565,6 +571,17 @@ export function validateValidator(validator: ValidatorJSON, value: any) {
             `Validator error: Unexpected field \`${k}\` in object`,
           );
         }
+      }
+      return;
+    }
+    case "function": {
+      // A function handle is a string with the handle prefix, as the binary
+      // checks it (`common/src/schemas/validator.rs:156-164` in convex-backend
+      // 1.49.0). The kernel mints convex-test's handle format after the prefix.
+      if (typeof value !== "string" || !value.startsWith("function://")) {
+        throw new Error(
+          `Validator error: Expected a function handle, got \`${value}\``,
+        );
       }
       return;
     }

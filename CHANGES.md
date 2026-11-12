@@ -88,7 +88,8 @@ declare the crons component's `public:rescheduler`. A job that runs one, or that
 one schedules, is never drain work. A standing name the component does not
 export is refused at open. Convex's own `crons.ts` schedules are not simulated.
 A lint fence refuses host timers in the kernel's modules. Row 2's
-`KernelRowPending` refusals for the scheduler are lifted, and the six row-5
+`KernelRowPending` refusals for the scheduler are lifted, a `v.function()`
+validator accepts a function handle and refuses any other value, and the six row-5
 mock-backend cases run on the kernel. This is row 5 of Frame's backend testing
 kernel (Frame ADR 0012). Changeset: `test-kernel-scheduler.md`. Upstream: fork
 only, as the kernel and its option are fork-specific.

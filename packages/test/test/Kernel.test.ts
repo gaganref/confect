@@ -15,6 +15,7 @@ import { vi } from "vitest";
 import {
   actionGeneric,
   componentsGeneric,
+  createFunctionHandle,
   defineSchema,
   defineTable,
   makeFunctionReference,
@@ -321,6 +322,56 @@ describe("identity", () => {
         expect(
           yield* Effect.promise(() => t.query(store.rows.whoami, {})),
         ).toBeNull();
+      }),
+  );
+});
+
+describe("function validators", () => {
+  const callbacks = {
+    target: makeFunctionReference<"query">("callbacks:target"),
+    mint: makeFunctionReference<"mutation", {}, string>("callbacks:mint"),
+    store: makeFunctionReference<"mutation", { handle: unknown }>(
+      "callbacks:store",
+    ),
+  };
+  const callbackWorld = () =>
+    convexTest(defineSchema({}), {
+      "_generated/server.ts": () => Promise.resolve({}),
+      "callbacks.ts": () =>
+        Promise.resolve({
+          target: queryGeneric({ args: {}, handler: () => null }),
+          mint: mutationGeneric({
+            args: {},
+            handler: () => createFunctionHandle(callbacks.target),
+          }),
+          store: mutationGeneric({
+            args: { handle: v.function() },
+            handler: () => null,
+          }),
+        }),
+    });
+  const outcome = (run: () => Promise<unknown>) =>
+    Effect.promise(() =>
+      run().then(
+        () => "accepted",
+        (error: Error) => error.message,
+      ),
+    );
+
+  it.effect(
+    "a function validator accepts a handle the kernel minted and refuses a string that is no handle",
+    () =>
+      Effect.gen(function* () {
+        const t = callbackWorld();
+        const handle = yield* call(() => t.mutation(callbacks.mint, {}));
+        expect(
+          yield* outcome(() => t.mutation(callbacks.store, { handle })),
+        ).toBe("accepted");
+        expect(
+          yield* outcome(() =>
+            t.mutation(callbacks.store, { handle: "callbacks:target" }),
+          ),
+        ).toContain("Expected a function handle");
       }),
   );
 });
