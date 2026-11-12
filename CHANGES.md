@@ -77,7 +77,9 @@ scheduling attempt, so it exists only once that mutation commits. An action's
 schedule and cancel commit at once. `advance(ms)` runs every job whose deadline
 falls in the window, in deadline order, jobs those jobs schedule included, and
 starts each one at its deadline. `Date` inside a query or mutation reads its
-start time, which Convex's `runAfter` uses. A scheduled call has no identity
+start time, which Convex's `runAfter` uses. On the kernel the invocation bridge
+leaves `Date` to this clock, so a bound handler reads it too, whatever start
+time its invocation carries, and draws from its invocation's random stream. A scheduled call has no identity
 and fresh request metadata carrying its job ID. It runs as a fresh invocation
 of the test world that scheduled it, with that world's services, or unbound
 when none was bound, whatever invocation the drain runs under.

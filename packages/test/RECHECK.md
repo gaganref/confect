@@ -234,8 +234,9 @@ Row 1's pins rely on each handler call having its own `Date`, `Math` and
 handler the kernel started under a bound invocation. `src/internal/Globals.ts`
 gives each query, mutation and action the kernel starts its own copy, as
 convex-test does, and a nested call starts from the test environment's. A
-bound handler on the kernel then reads its invocation's start time and stream,
-a nested action its world's, and test code keeps the host's. The kernel's
+bound handler on the kernel then reads its invocation's stream, a nested action
+its world's, and test code keeps the host's. The start time it reads is the
+kernel's, as recorded under row 5. The kernel's
 default wall clock reads the host's `Date`, never a handler's copy, so a
 document a bound mutation inserts takes its `_creationTime` from the kernel's
 clock, as every commit timestamp does. On convex-test it takes the pinned
@@ -285,6 +286,16 @@ handlers then read the fake. The default wall-clock runtime reads the host
 calls `finishInProgressScheduledFunctions` moves the kernel's clock. A
 document's `_creationTime` is its invocation's start time, bumped past the
 previous one.
+
+Inside a bound handler, row 1's pin of the invocation's start time would hide
+the wrapper. A mutation bound with a start time of its own would then schedule
+a job at that time plus its delay, not on the kernel's clock. So when the
+realm's `Date` is the kernel's wrapper and a kernel invocation is running, the
+bridge leaves `Date` to it and pins only `Math` and `crypto`
+(`Clock.answersInvocation`). A bound handler on the kernel reads the kernel's
+clock as an unbound one does, an action's running clock included, and draws
+from its invocation's stream. A record's own start time and its world's clock
+apply only on convex-test.
 
 `finishAllScheduledFunctions` runs non-standing jobs, earliest first, each at
 its deadline, until only standing jobs are pending. It does not call

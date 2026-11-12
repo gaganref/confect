@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { FunctionMetadata, RequestMetadata } from "convex/server";
 import type * as Context from "effect/Context";
+import * as Clock from "./Clock.js";
 
 /**
  * Four re-executions after the first try. A conflict on attempt 5 exhausts.
@@ -165,13 +166,18 @@ const pin = (
 ): void => {
   const host = globalThis;
   const previous = { Date: host.Date, Math: host.Math, crypto: host.crypto };
+  // On the kernel, `Date` already answers the running function's time on the
+  // kernel's clock, so `runAfter` schedules on it. The bridge leaves it there.
+  const kernelDate = Clock.answersInvocation(previous.Date);
   const pinned = {
-    Date: pinnedDate(previous.Date, invocation.startedAt),
+    Date: kernelDate
+      ? previous.Date
+      : pinnedDate(previous.Date, invocation.startedAt),
     Math: drawingMath(previous.Math, invocation.random),
     crypto: drawingCrypto(previous.crypto, invocation.random),
   };
   try {
-    host.Date = pinned.Date;
+    if (!kernelDate) host.Date = pinned.Date;
     host.Math = pinned.Math;
     host.crypto = pinned.crypto;
   } catch {
@@ -179,7 +185,7 @@ const pin = (
     // refuses the handler.
   }
   const reached = outside(() => ({
-    Date: host.Date === pinned.Date,
+    Date: !kernelDate && host.Date === pinned.Date,
     Math: host.Math === pinned.Math,
     crypto: host.crypto === pinned.crypto,
   }));

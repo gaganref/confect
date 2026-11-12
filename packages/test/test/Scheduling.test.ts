@@ -693,8 +693,15 @@ const seenByJobs: Array<{
   readonly scheduledFunctionId: string | null | undefined;
 }> = [];
 
+const timedByJobs: Array<{ readonly now: number; readonly random: number }> =
+  [];
+
 const bridged = {
   schedule: makeFunctionReference<"mutation", {}, Job>("bridge:schedule"),
+  scheduleTimed: makeFunctionReference<"mutation", {}, number>(
+    "bridge:scheduleTimed",
+  ),
+  timedJob: makeFunctionReference<"mutation">("bridge:timedJob"),
   job: makeFunctionReference<"mutation">("bridge:job"),
   scheduleFromAction: makeFunctionReference<"action", {}, Job>(
     "bridge:scheduleFromAction",
@@ -730,6 +737,35 @@ const bridgeModules = {
             return yield* Effect.promise(() =>
               ctx.scheduler.runAfter(0, bridged.job, {}),
             );
+          }),
+      ),
+      scheduleTimed: register(
+        FunctionSpec.publicMutation({
+          name: "scheduleTimed",
+          args: () => ({}),
+          returns: () => Schema.Finite,
+        }),
+        () =>
+          Effect.gen(function* () {
+            const ctx = yield* MutationCtx.MutationCtx<GenericDataModel>();
+            yield* Effect.promise(() =>
+              ctx.scheduler.runAfter(500, bridged.timedJob, {}),
+            );
+            // oxlint-disable-next-line effecttsgo/global-date-in-effect -- The handler reads the ambient Date that `runAfter` reads.
+            return Date.now();
+          }),
+      ),
+      timedJob: register(
+        FunctionSpec.internalMutation({
+          name: "timedJob",
+          args: () => ({}),
+          returns: () => Schema.Null,
+        }),
+        () =>
+          Effect.sync(() => {
+            // oxlint-disable-next-line effecttsgo/global-date-in-effect, effecttsgo/global-random-in-effect -- The job reads the ambient Date and Math.random the bridge pins.
+            timedByJobs.push({ now: Date.now(), random: Math.random() });
+            return null;
           }),
       ),
       job: register(
@@ -812,6 +848,28 @@ describe("registered handlers", () => {
         expect(seenByJobs).toEqual([
           { mail: "owner mail", scheduledFunctionId: id },
         ]);
+      }),
+  );
+
+  it.effect(
+    "a bound mutation and its job read the kernel's clock, whatever start time the invocation carries, so the job runs at its deadline",
+    () =>
+      Effect.gen(function* () {
+        timedByJobs.length = 0;
+        const t: KernelControls = convexTest({
+          modules: bridgeModules,
+          runtime,
+        });
+        const owner = worldNamed("owner");
+        const now = yield* call(() =>
+          asCallerIn(owner, () => t.mutation(bridged.scheduleTimed, {})),
+        );
+        expect(now).toBe(start);
+        expect(t.jobs().map((job) => job.scheduledTime)).toEqual([start + 500]);
+        yield* call(() => t.advance(499));
+        expect(timedByJobs).toEqual([]);
+        yield* call(() => t.advance(1));
+        expect(timedByJobs).toEqual([{ now: start + 500, random: 0.5 }]);
       }),
   );
 
