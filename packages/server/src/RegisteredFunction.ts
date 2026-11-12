@@ -242,8 +242,9 @@ type InvocationMeta = Pick<QueryMeta, "getFunctionMetadata"> &
 /**
  * What `@confect/test` installs on `globalThis` under {@link testInvocation}.
  * `start` runs `run` with the services of the test invocation the handler
- * belongs to, or answers `undefined` when none is bound. Production never
- * installs it.
+ * belongs to, with the handler's `Date`, `Math.random` and
+ * `crypto.getRandomValues` pinned to that invocation, or answers `undefined`
+ * when none is bound. Production never installs it.
  */
 type TestInvocation = {
   readonly start: <A>(

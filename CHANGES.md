@@ -17,8 +17,12 @@ until the fork adopts a release containing it.
 `runHandlerPromise` starts a query, mutation or action handler with the
 services of the test invocation it belongs to, through `Effect.runPromiseWith`.
 `@confect/test` binds an invocation through async context, and a nested call
-joins it. A job convex-test starts from a timer gets a fresh record with its
-world's services and the job's request metadata. With no bound invocation, and
+joins it. The handler's `Date` reads the invocation's start time, and its
+`Math.random` and `crypto.getRandomValues` draw from the invocation's random
+stream. These pins rely on convex-test's per-handler copies of those globals,
+and a bound handler without one is refused before it runs. A job convex-test
+starts from a timer gets a fresh record with its world's services, clock and
+random stream and the job's request metadata. With no bound invocation, and
 always in production, handlers keep `Effect.runPromise`. This is row 1 of
 Frame's backend testing kernel (Frame ADR 0012).
 `packages/test/RECHECK.md` records what each kernel part is on `main`.
