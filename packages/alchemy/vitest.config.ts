@@ -11,10 +11,8 @@ export default mergeConfig(
       alias: [
         {
           find: /^@confect\/core\/MountSteps$/,
-          replacement: new URL(
-            "../core/dist/MountSteps.js",
-            import.meta.url,
-          ).pathname,
+          replacement: new URL("../core/dist/MountSteps.js", import.meta.url)
+            .pathname,
         },
       ],
     },
