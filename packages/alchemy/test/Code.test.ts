@@ -498,6 +498,54 @@ describe("Code command boundary", () => {
         );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
+
+  it.effect.each([
+    { operation: "prepare", input: props },
+    {
+      operation: "deploy",
+      input: { deployment: props.deployment, deployKey: props.deployKey },
+    },
+  ] as const)(
+    "fails locally when the installed CLI's manifest names no $operation binary",
+    ({ operation, input }) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* fs.makeTempDirectoryScoped({
+          prefix: "confect-no-bin-test-",
+        });
+        for (const name of ["convex", "@confect/cli"]) {
+          const directory = path.join(cwd, "node_modules", name);
+          yield* fs.makeDirectory(directory, { recursive: true });
+          yield* fs.writeFileString(
+            path.join(directory, "package.json"),
+            serialize({ name, bin: {} }),
+          );
+        }
+        const result = yield* deploy({ ...input, cwd }).pipe(
+          Effect.provide([
+            runnerLayer.pipe(
+              Layer.provide(
+                Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {
+                  exitCode: (command) =>
+                    Effect.sync(() => {
+                      expect(command).toBeUndefined();
+                      return ChildProcessSpawner.ExitCode(1);
+                    }),
+                }),
+              ),
+            ),
+            unlocked,
+          ]),
+          Effect.result,
+        );
+        expect(result).toEqual(
+          Result.fail(
+            CommandError.make({ operation, reason: "configuration" }),
+          ),
+        );
+      }).pipe(Effect.provide(NodeServices.layer)),
+  );
 });
 
 describe("Code push lock", () => {
