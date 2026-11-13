@@ -56,13 +56,13 @@ export const boundaries: ReadonlyArray<KernelBoundary> = [
     metric: "databaseQueries",
     refusal: "Too many reads in a single function execution (limit: 4096).",
     binary:
-      "The binary counts, in databaseQueries, the system-table intervals it reads to run a function: the backend state and info, the function's module, its UDF config and its component. They depend on the deployment's modules, components and environment. On the local-backend fixture a root mutation starts at 19 before its first read, and its first nested call adds 2. A stale-snapshot query runs on a clone whose read set starts empty, so it starts at 19 again.",
+      "The binary counts, in databaseQueries, the system-table intervals it reads to run a function: the backend state and info, the function's module, its UDF config and its component. They depend on the deployment's modules, components and environment. On the local-backend fixture a root mutation starts at 18 before its first read, and its first nested call adds 2. A stale-snapshot query runs on a clone whose read set starts empty, so it starts at 18 again. The storage group's probe functions moved the root share from 19 to 18 on the same binary.",
     kernel:
-      "The kernel counts only the intervals of the function's own reads, by the binary's rule, starting from zero. Each read maps a total x to max(0, x - before) + after, which never decreases and never moves two totals apart, so the binary's count stays between the kernel's and the kernel's plus the system share. While neither count saturates it is exactly the kernel's plus the share, and the binary refuses TooManyReads that many reads sooner. A read that covers inserted IDs can saturate only the kernel's lower count, and the gap shrinks: one insert and a read of its ID answer 19 on the binary and 1 on the kernel. Once both saturate they agree: 100 inserts and a read of one answer 100 on both. The binary refuses no later than the kernel, and at most the system share sooner.",
+      "The kernel counts only the intervals of the function's own reads, by the binary's rule, starting from zero. Each read maps a total x to max(0, x - before) + after, which never decreases and never moves two totals apart, so the binary's count stays between the kernel's and the kernel's plus the system share. While neither count saturates it is exactly the kernel's plus the share, and the binary refuses TooManyReads that many reads sooner. A read that covers inserted IDs can saturate only the kernel's lower count, and the gap shrinks: one insert and a read of its ID answer 18 on the binary and 1 on the kernel. Once both saturate they agree: 100 inserts and a read of one answer 100 on both. The binary refuses no later than the kernel, and at most the system share sooner.",
     measured: {
-      rootMutationStart: 19,
+      rootMutationStart: 18,
       firstNestedCall: 2,
-      staleSnapshotQueryStart: 19,
+      staleSnapshotQueryStart: 18,
     },
     backend: "precompiled-2026-10-28-cccbade",
     owner: "@confect/test kernel, build-order row 6 (transaction limits)",
