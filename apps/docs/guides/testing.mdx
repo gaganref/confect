@@ -363,3 +363,7 @@ TestConfect.layer(schema, convexSchema, modules, {
 ```
 
 On the kernel, scheduled functions run on the kernel's own clock and never on a host timer, so `finishAllScheduledFunctions` does not call its `advanceTimers` callback. The default kernel clock follows the test's `Date`, fake timers included, so advancing fake timers and then calling `finishInProgressScheduledFunctions` runs the jobs that came due. As on Convex, a query or mutation on the kernel cannot use `fetch` or host timers: `fetch` rejects with the error Convex gives, and `setTimeout` or `setInterval` fails the function. Move that work to an action. A layer on one target can be provided inside a layer on the other, and each keeps its own backend while both are live. The option goes away once the kernel replaces convex-test.
+
+#### Reach the network from an action
+
+Convex lets an action call `fetch`, but the kernel does not: a raw `fetch` in an action, a Node action included, fails the action with `BackendRefusal` `UndeclaredFetch`, which names the action and the host. The request never leaves the test, so the test cannot depend on the network and a run replays. Reach a provider through a provider port instead. On the kernel each port call waits as a held command until the test answers it with the provider's outcome. Provider ports are internal to `@confect/test` until the kernel is promoted.

@@ -464,3 +464,46 @@ Effect picks its scheduler's timer from the host realm when it loads, so its
 default scheduler finds `setImmediate` where the binary's would use
 `setTimeout`. Confect's queries and mutations run on Effect's `"sync"`
 scheduler (`RegisteredConvexFunction.ts:268`, `:385`), which sets no timer.
+
+## Action egress (row 6)
+
+The binary performs a raw `fetch` in an action. An action's `start_async_op`
+starts it as a task (`crates/isolate/src/environment/action/mod.rs:1639-1645`),
+which `task_executor.rs:151` hands to `run_fetch` (`action/fetch.rs:34`). Only a
+cloud proxy's 407 refuses a host (`crates/http_client/src/lib.rs:131-134`), and
+a local backend has none. A Node action runs in Node, where `fetch` is Node's.
+`packages/server/test/local-backend/egress.test.ts` shows both on the pinned
+binary: an action and a Node action each reach a loopback server.
+
+The kernel departs from this on purpose, its one deliberate departure. A raw
+`fetch` in an action, a Node action included, dies with `BackendRefusal`
+`UndeclaredFetch` (`src/internal/KernelRefusal.ts`). It names the action's
+component path, its `module:export` and the URL's host, with `failed`,
+`because`, `instead` and a `docs` anchor. The call rejects with it, and the
+action fails with it whatever its handler catches and runs no later syscall or
+`ctx.runQuery`, `ctx.runMutation` or `ctx.runAction`. The fetch never leaves the
+process.
+
+Egress goes through a provider port (`src/internal/Egress.ts`). Inside a kernel
+action a port's call is held as a `{ kind: "provider", port, input }` command,
+listed by the shim's `commands()` and settled by `answer(id, output)`. An
+answer to a command no longer held is refused with `StaleCommand`. In a query or
+mutation, outside the kernel and in production, a port calls its live provider,
+whose own `fetch` the I/O bans then answer as the binary does. The kernel finds
+ports through `Symbol.for("@confect/test/Egress")` on `globalThis`, as
+`@confect/server` finds the invocation bridge, so a port defined outside this
+package holds the same way.
+
+`test/mock-backend/egress.test.ts` asserts the refusal for a Confect action and
+a Confect Node action. It passes in the kernel lane. In the convex-test lane,
+where convex-test performs the fetch as the binary does, it is the lane's one
+conformance exception (`test/mock-backend/conformance.ts`): one exact case, the
+binary behaviour, the text its failure shows there (`reached /ping`), an owner,
+the convex-test version and the evidence above. `convexTestLane.ts` refuses an
+entry that names a describe block, a pattern, no case, a missing file or another
+convex-test version. An excepted case that passes on convex-test fails the lane
+("Expect test to fail"), and one that fails without its observed text keeps its
+own failure.
+
+Not covered: Node's `http`, `https`, `net` and `tls` modules in a Node action
+are not intercepted. The row names `fetch`.
