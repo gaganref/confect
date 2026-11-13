@@ -242,6 +242,11 @@ describe("cron expressions", () => {
       "2026-03-13T00:00:00.000Z",
       "2026-03-20T00:00:00.000Z",
     ]);
+    // Friday the 13th is no Monday, but its day matches, so it runs that noon.
+    // The first day is tested with `contains_date` (`saffron/src/lib.rs:992-1003`).
+    expect(at("0 12 13 * MON", "2026-03-13T00:00:00")).toEqual([
+      "2026-03-13T12:00:00.000Z",
+    ]);
   });
 
   it("month names and lists select months, and a lone L is Saturday", () => {
