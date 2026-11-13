@@ -347,9 +347,12 @@ describe("provider ports", () => {
   });
 
   describe("a function that settled", () => {
-    it.effect.each(["action", "query"] as const)(
-      "an %s logs nothing from a continuation released after it returned",
-      (kind) =>
+    it.effect.each([
+      { article: "an", kind: "action" },
+      { article: "a", kind: "query" },
+    ] as const)(
+      "$article $kind logs nothing from a continuation released after it returned",
+      ({ kind }) =>
         Effect.gen(function* () {
           const t = convexTest(schema, modules);
           const { promise, resolve } = Promise.withResolvers<void>();
