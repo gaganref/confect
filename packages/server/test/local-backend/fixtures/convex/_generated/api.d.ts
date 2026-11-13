@@ -483,6 +483,15 @@ export declare const api: {
         { caseId: string; limit: number },
         null
       >;
+      metrics: FunctionReference<
+        "mutation",
+        "public",
+        { caseId: string },
+        {
+          end: Record<string, { remaining: number; used: number }>;
+          start: Record<string, { remaining: number; used: number }>;
+        }
+      >;
       rollback: FunctionReference<
         "mutation",
         "public",
