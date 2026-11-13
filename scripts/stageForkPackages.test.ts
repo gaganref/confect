@@ -118,22 +118,22 @@ test("rewrites all internal dependency maps and retains external ranges and meta
 });
 
 test("starts at one and advances past the highest published build for this base", () => {
-  expect(Result.getOrThrow(chooseBuildVersion("10.2.0", []))).toBe(
+  expect(chooseBuildVersion("10.2.0", []).pipe(Result.getOrThrow)).toBe(
     "10.2.0-fork.1",
   );
   expect(
-    Result.getOrThrow(
-      chooseBuildVersion("10.2.0", [
-        "10.2.0-fork.2",
-        "10.2.0-fork.10",
-        "10.3.0-fork.99",
-        "10.2.0-next.90",
-        "10.2.0-fork.11.extra",
-      ]),
-    ),
+    chooseBuildVersion("10.2.0", [
+      "10.2.0-fork.2",
+      "10.2.0-fork.10",
+      "10.3.0-fork.99",
+      "10.2.0-next.90",
+      "10.2.0-fork.11.extra",
+    ]).pipe(Result.getOrThrow),
   ).toBe("10.2.0-fork.11");
   expect(
-    Result.getOrThrow(chooseBuildVersion("10.2.0", ["10.2.0-fork.10"], "30")),
+    chooseBuildVersion("10.2.0", ["10.2.0-fork.10"], "30").pipe(
+      Result.getOrThrow,
+    ),
   ).toBe("10.2.0-fork.30");
 });
 
@@ -144,7 +144,7 @@ test("plans from fresh registry state after the previous publish finishes", () =
   expect([first, stale]).toEqual(["10.2.0-fork.7", "10.2.0-fork.7"]);
 
   const published = [...versions, first];
-  expect(Result.getOrThrow(chooseBuildVersion("10.2.0", published))).toBe(
+  expect(chooseBuildVersion("10.2.0", published).pipe(Result.getOrThrow)).toBe(
     "10.2.0-fork.8",
   );
   const override = chooseBuildVersion("10.2.0", published, "7");
@@ -195,12 +195,10 @@ test("never accepts dry-run as a build number", () => {
 test("requires all source packages to share the core base version", () => {
   const core = { name: "@confect/core", version: "10.2.0" };
   expect(
-    Result.getOrThrow(
-      packageBaseVersion([
-        core,
-        { name: "@confect/server", version: "10.2.0" },
-      ]),
-    ),
+    packageBaseVersion([
+      core,
+      { name: "@confect/server", version: "10.2.0" },
+    ]).pipe(Result.getOrThrow),
   ).toBe("10.2.0");
   const mismatch = packageBaseVersion([
     core,
@@ -268,7 +266,7 @@ test.each([{ gaganref: "10.2.0-fork.1" }, {}])(
             "10.1.0-fork.99",
           ]);
           expect(
-            Result.getOrThrow(chooseBuildVersion("10.2.0", versions)),
+            chooseBuildVersion("10.2.0", versions).pipe(Result.getOrThrow),
           ).toBe("10.2.0-fork.5");
         }),
       ),

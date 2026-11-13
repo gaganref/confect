@@ -322,8 +322,9 @@ const withMemberHandles = <E, R>(
   create: Create<E, R>,
 ): Effect.Effect<unknown, E, R> => {
   const fitting = Array.filter(members, (member) =>
-    Schema.is(member)(
-      Effect.runSync(withHandles(member, value, placeholderHandle)),
+    withHandles(member, value, placeholderHandle).pipe(
+      Effect.runSync,
+      Schema.is(member),
     ),
   );
   return fitting.length === 0

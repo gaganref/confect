@@ -12,7 +12,7 @@ import {
 } from "./forkConsumer";
 
 test("pins all eight public aliases to the requested fork build", () => {
-  expect(Result.getOrThrow(consumerManifest("10.2.0-fork.7"))).toEqual({
+  expect(consumerManifest("10.2.0-fork.7").pipe(Result.getOrThrow)).toEqual({
     name: "confect-install-check",
     private: true,
     type: "module",

@@ -100,10 +100,12 @@ describe("runHandlerPromise", () => {
     "keeps a defect alongside a typed failure $schemaLabel an error schema",
     ({ errorSchema }) =>
       Effect.promise(() => {
-        const result = RegisteredFunction.runHandlerPromise(errorSchema)(
-          Effect.failCause(
-            Cause.combine(Cause.fail("rejected"), Cause.die(new Error("bug"))),
-          ),
+        const result = Cause.combine(
+          Cause.fail("rejected"),
+          Cause.die(new Error("bug")),
+        ).pipe(
+          Effect.failCause,
+          RegisteredFunction.runHandlerPromise(errorSchema),
         );
         return Promise.all([
           expect(result).rejects.toBeInstanceOf(Error),
@@ -207,8 +209,9 @@ describe("runHandlerPromise", () => {
     },
   ])("treats $label as a defect", ({ cause, message, reasons }) =>
     Effect.promise(() => {
-      const result = RegisteredFunction.runHandlerPromise(Schema.String)(
-        Effect.failCause(cause),
+      const result = cause.pipe(
+        Effect.failCause,
+        RegisteredFunction.runHandlerPromise(Schema.String),
       );
       return Promise.all([
         expect(result).rejects.toBeInstanceOf(Error),
@@ -290,8 +293,9 @@ describe("runHandlerPromise", () => {
     Effect.promise(() => {
       const bug = new Error("bug");
       const cause = Cause.die(bug);
-      const result = RegisteredFunction.runHandlerPromise(Schema.String)(
-        Effect.failCause(cause),
+      const result = cause.pipe(
+        Effect.failCause,
+        RegisteredFunction.runHandlerPromise(Schema.String),
       );
       return Promise.all([
         expect(result).rejects.toThrow("bug"),
@@ -560,10 +564,9 @@ it.each([false, true])(
     expect(await run(Effect.fail(undeclared))).toBe(undeclared);
     expect(await run(Effect.fail(signal))).toBe(signal);
     expect(
-      await run(
-        Effect.failCause(
-          Cause.combine(Cause.fail(signal), Cause.fail(undeclared)),
-        ),
+      await Cause.combine(Cause.fail(signal), Cause.fail(undeclared)).pipe(
+        Effect.failCause,
+        run,
       ),
     ).toBe(signal);
     if (!instrumented) return;
@@ -617,10 +620,15 @@ it.each([
     const undeclared = new Error("undeclared");
     const cause = Cause.combine(Cause.fail(undeclared), other);
     const run = (instrumented: boolean) =>
-      RegisteredFunction.runHandlerPromise(undefined, {
-        invocation: instrumented ? invocation : Effect.die("unused"),
-        observability: instrumented ? observability : undefined,
-      })(Effect.failCause(cause)).catch((error: unknown) => error);
+      cause
+        .pipe(
+          Effect.failCause,
+          RegisteredFunction.runHandlerPromise(undefined, {
+            invocation: instrumented ? invocation : Effect.die("unused"),
+            observability: instrumented ? observability : undefined,
+          }),
+        )
+        .catch((error: unknown) => error);
     const [plain, instrumented] = [await run(false), await run(true)];
     expect(instrumented).toEqual(plain);
     const status = spans[0]!.status;

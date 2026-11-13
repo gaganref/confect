@@ -297,7 +297,7 @@ describe("published component contracts", () => {
         .addFunction(
           FunctionSpec.publicQuery({
             name: "list",
-            returns: () => Schema.toCodecJson(Schema.ReadonlySet(ItemId)),
+            returns: () => ItemId.pipe(Schema.ReadonlySet, Schema.toCodecJson),
           }),
         )
         .addFunction(

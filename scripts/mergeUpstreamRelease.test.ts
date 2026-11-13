@@ -15,16 +15,14 @@ import * as Arr from "effect/Array";
 
 test("selects the newest stable core release numerically", () => {
   expect(
-    Result.getOrThrow(
-      selectReleaseTag([
-        "@confect/core@10.2.0",
-        "@confect/server@99.0.0",
-        "@confect/core@11.0.0-next.9",
-        "@confect/core@10.10.0",
-        "@confect/core@10.9.99",
-        "@confect/core@010.20.0",
-      ]),
-    ),
+    selectReleaseTag([
+      "@confect/core@10.2.0",
+      "@confect/server@99.0.0",
+      "@confect/core@11.0.0-next.9",
+      "@confect/core@10.10.0",
+      "@confect/core@10.9.99",
+      "@confect/core@010.20.0",
+    ]).pipe(Result.getOrThrow),
   ).toBe("@confect/core@10.10.0");
 });
 

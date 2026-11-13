@@ -195,13 +195,11 @@ const compileArgs = (ast: SchemaAST.Objects): ReturnType<typeof compileAst> =>
 
 const compileSchema = (schema: Schema.Top, side?: "args" | "returns") => {
   const ast = Schema.toEncoded(schema).ast;
-  return Effect.runSync(
-    Effect.result(
-      side === "args" && SchemaAST.isObjects(ast)
-        ? compileArgs(ast)
-        : compileAst(ast),
-    ),
-  );
+  return (
+    side === "args" && SchemaAST.isObjects(ast)
+      ? compileArgs(ast)
+      : compileAst(ast)
+  ).pipe(Effect.result, Effect.runSync);
 };
 
 const describeCompiled = (

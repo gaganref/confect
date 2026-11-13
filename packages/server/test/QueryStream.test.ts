@@ -1171,8 +1171,9 @@ it("QueryStream.paginate preserves envelope service requirements in both call fo
     open: Effect.succeedSome,
     seal: Effect.succeed,
   };
-  const source = QueryStream.empty<number>()(
-    Result.getOrThrow(QueryStreamKeyLayout.fromIndex([])),
+  const source = QueryStreamKeyLayout.fromIndex([]).pipe(
+    Result.getOrThrow,
+    QueryStream.empty<number>(),
   );
   const options = { cursor: null, numItems: 1, cursorEnvelope } as const;
   const direct = QueryStream.paginate(source, options);

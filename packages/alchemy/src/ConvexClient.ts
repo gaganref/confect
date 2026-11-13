@@ -121,16 +121,16 @@ const ProjectSchema = Schema.Struct({
   teamId: Schema.Finite,
   teamSlug: Schema.String,
   createTime: Schema.Finite,
-  prodDeploymentName: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  devDeploymentName: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  prodDeploymentName: Schema.String.pipe(Schema.NullOr, Schema.optionalKey),
+  devDeploymentName: Schema.String.pipe(Schema.NullOr, Schema.optionalKey),
 }) satisfies Schema.Schema<Project>;
 
 const CreatedProjectSchema = Schema.Struct({
   id: Schema.Finite,
   projectId: Schema.Finite,
   slug: Schema.String,
-  deploymentName: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  deploymentUrl: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  deploymentName: Schema.String.pipe(Schema.NullOr, Schema.optionalKey),
+  deploymentUrl: Schema.String.pipe(Schema.NullOr, Schema.optionalKey),
 }) satisfies Schema.Schema<CreatedProject>;
 
 const deploymentFields = {
@@ -138,7 +138,7 @@ const deploymentFields = {
   createTime: Schema.Finite,
   deploymentType: Schema.Literals(["dev", "prod", "preview", "custom"]),
   projectId: Schema.Finite,
-  previewIdentifier: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  previewIdentifier: Schema.String.pipe(Schema.NullOr, Schema.optionalKey),
 };
 
 const DeploymentSchema = Schema.Union([
@@ -146,8 +146,8 @@ const DeploymentSchema = Schema.Union([
     ...deploymentFields,
     kind: Schema.Literal("cloud"),
     id: Schema.Finite,
-    lastDeployTime: Schema.optionalKey(Schema.NullOr(Schema.Finite)),
-    creator: Schema.optionalKey(Schema.NullOr(Schema.Finite)),
+    lastDeployTime: Schema.Finite.pipe(Schema.NullOr, Schema.optionalKey),
+    creator: Schema.Finite.pipe(Schema.NullOr, Schema.optionalKey),
     region: Schema.Literals([
       "aws-us-east-1",
       "aws-eu-west-1",
@@ -156,13 +156,14 @@ const DeploymentSchema = Schema.Union([
     ]),
     isDefault: Schema.Boolean,
     reference: Schema.String,
-    dashboardEditConfirmation: Schema.optionalKey(
-      Schema.NullOr(Schema.Boolean),
+    dashboardEditConfirmation: Schema.Boolean.pipe(
+      Schema.NullOr,
+      Schema.optionalKey,
     ),
     deploymentUrl: Schema.String,
-    expiresAt: Schema.optionalKey(Schema.NullOr(Schema.Finite)),
+    expiresAt: Schema.Finite.pipe(Schema.NullOr, Schema.optionalKey),
     class: Schema.String,
-    sendLogsToClient: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+    sendLogsToClient: Schema.Boolean.pipe(Schema.NullOr, Schema.optionalKey),
   }),
   Schema.Struct({
     ...deploymentFields,
@@ -178,17 +179,13 @@ const DeployKeySchema = Schema.Struct({
   id: Schema.Finite,
   name: Schema.String,
   creationTime: Schema.Finite,
-  lastUsedTime: Schema.optionalKey(Schema.NullOr(Schema.Finite)),
-  expiresAt: Schema.optionalKey(Schema.NullOr(Schema.Finite)),
-  creator: Schema.optionalKey(Schema.NullOr(Schema.Finite)),
-  managedBy: Schema.optionalKey(
-    Schema.NullOr(
-      Schema.Union([
-        Schema.Literal("vercel"),
-        Schema.Struct({ oauthApp: Schema.String }),
-      ]),
-    ),
-  ),
+  lastUsedTime: Schema.Finite.pipe(Schema.NullOr, Schema.optionalKey),
+  expiresAt: Schema.Finite.pipe(Schema.NullOr, Schema.optionalKey),
+  creator: Schema.Finite.pipe(Schema.NullOr, Schema.optionalKey),
+  managedBy: Schema.Union([
+    Schema.Literal("vercel"),
+    Schema.Struct({ oauthApp: Schema.String }),
+  ]).pipe(Schema.NullOr, Schema.optionalKey),
   allowedActions: Schema.Array(Schema.String),
 }) satisfies Schema.Schema<DeployKey>;
 
@@ -196,7 +193,7 @@ const ProjectsPageSchema = Schema.Struct({
   items: Schema.Array(ProjectSchema),
   pagination: Schema.Struct({
     hasMore: Schema.Boolean,
-    nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    nextCursor: Schema.String.pipe(Schema.NullOr, Schema.optionalKey),
   }),
 });
 

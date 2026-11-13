@@ -42,33 +42,16 @@
     "packages/cli/src/templates.ts": 2
   },
   "effecttsgo/missed-pipeable-opportunity": {
-    "packages/alchemy/src/ConvexClient.ts": 15,
     "packages/alchemy/test/Code.test.ts": 2,
     "packages/alchemy/test/integration/MountInit.test.ts": 3,
-    "packages/cli/src/SectionFiles.ts": 1,
-    "packages/cli/src/Watcher.ts": 1,
-    "packages/cli/src/confect/dev.ts": 2,
     "packages/cli/test/ComponentCodegen.test.ts": 6,
     "packages/cli/test/Declaration.test.ts": 7,
     "packages/cli/test/Evaluation.test.ts": 1,
     "packages/cli/test/FunctionModule.test.ts": 2,
     "packages/cli/test/RestoreWatcher.test.ts": 2,
     "packages/cli/test/codegen.test.ts": 4,
-    "packages/core/src/Mount.ts": 1,
-    "packages/core/test/Component.test.ts": 1,
-    "packages/core/test/FunctionSpec.test.ts": 1,
-    "packages/core/test/IdScope.test.ts": 1,
-    "packages/server/src/Callback.ts": 1,
-    "packages/server/test/OfficialComponent.test.ts": 1,
-    "packages/server/test/QueryStream.test.ts": 1,
-    "packages/server/test/QueryStreamLifecycle.test.ts": 1,
-    "packages/server/test/RegisteredFunction.test.ts": 5,
-    "packages/server/test/internal/observability.test.ts": 1,
     "packages/server/test/mock-backend/actionCall.test.ts": 6,
-    "packages/server/test/mock-backend/integration.test.ts": 2,
-    "scripts/forkConsumer.test.ts": 1,
-    "scripts/mergeUpstreamRelease.test.ts": 1,
-    "scripts/stageForkPackages.test.ts": 6
+    "packages/server/test/mock-backend/integration.test.ts": 2
   },
   "effecttsgo/prefer-effect-string": {
     "packages/core/src/Http.ts": 1

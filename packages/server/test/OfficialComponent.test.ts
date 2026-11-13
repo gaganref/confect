@@ -70,7 +70,7 @@ const handler = {
 
 const defectOf = <A, E>(exit: Exit.Exit<A, E>) =>
   Exit.isFailure(exit)
-    ? Result.getOrThrow(Cause.findDefect(exit.cause))
+    ? exit.cause.pipe(Cause.findDefect, Result.getOrThrow)
     : undefined;
 
 class Counter {

@@ -1036,8 +1036,9 @@ it.effect.each(["asc", "desc"] as const)(
             : rows.slice(0, count);
         expect(collected).toEqual(expected);
         expect(new Set(Arr.map(collected, (doc) => doc._id)).size).toBe(count);
-        const collected3 = yield* Stream.runCollect(
-          QueryStream.reverse(merged),
+        const collected3 = yield* merged.pipe(
+          QueryStream.reverse,
+          Stream.runCollect,
         );
         expect(collected3).toEqual(Arr.reverse(expected));
       }

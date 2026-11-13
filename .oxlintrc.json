@@ -436,33 +436,16 @@
     },
     {
       "files": [
-        "packages/alchemy/src/ConvexClient.ts",
         "packages/alchemy/test/Code.test.ts",
         "packages/alchemy/test/integration/MountInit.test.ts",
-        "packages/cli/src/SectionFiles.ts",
-        "packages/cli/src/Watcher.ts",
-        "packages/cli/src/confect/dev.ts",
         "packages/cli/test/ComponentCodegen.test.ts",
         "packages/cli/test/Declaration.test.ts",
         "packages/cli/test/Evaluation.test.ts",
         "packages/cli/test/FunctionModule.test.ts",
         "packages/cli/test/RestoreWatcher.test.ts",
         "packages/cli/test/codegen.test.ts",
-        "packages/core/src/Mount.ts",
-        "packages/core/test/Component.test.ts",
-        "packages/core/test/FunctionSpec.test.ts",
-        "packages/core/test/IdScope.test.ts",
-        "packages/server/src/Callback.ts",
-        "packages/server/test/OfficialComponent.test.ts",
-        "packages/server/test/QueryStream.test.ts",
-        "packages/server/test/QueryStreamLifecycle.test.ts",
-        "packages/server/test/RegisteredFunction.test.ts",
-        "packages/server/test/internal/observability.test.ts",
         "packages/server/test/mock-backend/actionCall.test.ts",
-        "packages/server/test/mock-backend/integration.test.ts",
-        "scripts/forkConsumer.test.ts",
-        "scripts/mergeUpstreamRelease.test.ts",
-        "scripts/stageForkPackages.test.ts"
+        "packages/server/test/mock-backend/integration.test.ts"
       ],
       "rules": {
         "effecttsgo/missed-pipeable-opportunity": "off"

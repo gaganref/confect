@@ -362,13 +362,12 @@ const syncLoop = Effect.fnUntraced(function* (
           return SyncState.Outcome.Succeeded({ snapshot });
         });
       const outcome = yield* SyncState.Operation.$match(operation, {
-        Generate: () => regenerate(preserved(Evaluation.generateSnapshot)),
+        Generate: () => Evaluation.generateSnapshot.pipe(preserved, regenerate),
         Validate: ({ paths, snapshot }) => validate(paths, snapshot),
         Update: ({ snapshot, declarations, paths }) =>
-          regenerate(
-            preserved(
-              Evaluation.updateDeclarations(snapshot, declarations, paths),
-            ),
+          Evaluation.updateDeclarations(snapshot, declarations, paths).pipe(
+            preserved,
+            regenerate,
           ),
       });
       yield* Ref.set(phaseRef, SyncState.transition(outcome));

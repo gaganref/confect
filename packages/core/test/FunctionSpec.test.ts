@@ -1047,7 +1047,8 @@ describe("profile schema wrappers", () => {
     expect(decoded).toBeInstanceOf(error);
     expect(decoded).toBeInstanceOf(Error);
     expect(
-      Effect.runSync(Effect.flip<never, typeof decoded, never>(decoded))._tag,
+      decoded.pipe(Effect.flip<never, typeof decoded, never>, Effect.runSync)
+        ._tag,
     ).toBe(wire._tag);
     expect(Schema.encodeSync(schema)(decoded)).toEqual(wire);
     expect(

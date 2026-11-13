@@ -342,10 +342,9 @@ describe("ID scopes", () => {
       const [id] = item.propertySignatures;
       assert(id !== undefined);
       expect(GenericId.scope(id.type)).toBe(first);
-      const invalid = yield* Effect.result(
-        Schema.decodeUnknownEffect(bound)(
-          Option.some({ id: "one", count: "-1" }),
-        ),
+      const invalid = yield* Option.some({ id: "one", count: "-1" }).pipe(
+        Schema.decodeUnknownEffect(bound),
+        Effect.result,
       );
       expect(Result.isFailure(invalid)).toBe(true);
     }),

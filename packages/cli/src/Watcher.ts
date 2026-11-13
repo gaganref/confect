@@ -177,7 +177,7 @@ export const make = Effect.fnUntraced(function* () {
         { concurrency: "unbounded" },
       );
     }).pipe(Effect.scoped),
-    duringRestore: Effect.flatten(Ref.get(duringRestoreRef)),
+    duringRestore: duringRestoreRef.pipe(Ref.get, Effect.flatten),
     // Restored output makes esbuild rebuild; observe that, then drop the work
     // it queued so the restore does not trigger another generation.
     discardRestoreEchoes: refresh(state).pipe(
