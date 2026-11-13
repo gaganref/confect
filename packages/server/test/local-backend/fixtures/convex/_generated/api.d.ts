@@ -230,6 +230,18 @@ export declare const api: {
       uploadUrl: FunctionReference<"mutation", "public", {}, string>;
     };
     ioBans: {
+      awaitedTimerInMutation: FunctionReference<
+        "mutation",
+        "public",
+        { name: "setTimeout" | "setInterval" },
+        string
+      >;
+      awaitedTimerInQuery: FunctionReference<
+        "query",
+        "public",
+        { name: "setTimeout" | "setInterval" },
+        string
+      >;
       clearInQuery: FunctionReference<"query", "public", {}, string>;
       fetchInAction: FunctionReference<
         "action",
@@ -249,7 +261,36 @@ export declare const api: {
         { url: string },
         { message: string; name: string }
       >;
-      immediateInQuery: FunctionReference<"query", "public", {}, string>;
+      formDataInAction: FunctionReference<
+        "action",
+        "public",
+        { body: "multipart" | "urlencoded" | "multipartWithoutBoundary" },
+        { returned: string | null } | { message: string; name: string }
+      >;
+      formDataInMutation: FunctionReference<
+        "mutation",
+        "public",
+        { body: "multipart" | "urlencoded" | "multipartWithoutBoundary" },
+        { returned: string | null } | { message: string; name: string }
+      >;
+      formDataInQuery: FunctionReference<
+        "query",
+        "public",
+        { body: "multipart" | "urlencoded" | "multipartWithoutBoundary" },
+        { returned: string | null } | { message: string; name: string }
+      >;
+      surfaceInAction: FunctionReference<
+        "action",
+        "public",
+        {},
+        { queueMicrotask: string; setImmediate: string }
+      >;
+      surfaceInQuery: FunctionReference<
+        "query",
+        "public",
+        {},
+        { queueMicrotask: string; setImmediate: string }
+      >;
       timerInMutation: FunctionReference<
         "mutation",
         "public",
@@ -545,6 +586,14 @@ export declare const api: {
         Array<string>
       >;
     };
+  };
+  ioBansNode: {
+    surfaceNode: FunctionReference<
+      "action",
+      "public",
+      {},
+      { queueMicrotask: string; setImmediate: string }
+    >;
   };
   metadataNode: {
     metadata: FunctionReference<

@@ -225,6 +225,7 @@ interface Execution {
   readonly componentPath: string;
   readonly udfPath: string;
   readonly udfType: UdfType;
+  readonly runtime: IoBans.Runtime;
   readonly attempt: KernelAttempt | undefined;
   readonly identity: UserIdentity | null;
   readonly request: Request;
@@ -276,24 +277,55 @@ const executions = new AsyncLocalStorage<Execution>();
 
 /**
  * The error a host API ended each function with, such as a timer a query
- * started. On the binary that function stops at its next microtask checkpoint
- * and fails with the error, whatever its handler caught, and runs no later
- * syscall. An action that made a raw fetch ends the same way.
+ * started or a raw fetch an action made, and the signal that ends it. On the
+ * binary that function stops at its next microtask checkpoint and fails with
+ * the error, whatever its handler caught and whether or not the handler ever
+ * settles, and none of its JavaScript runs again.
  */
-const endings = new WeakMap<Execution, unknown>();
+interface Ending {
+  readonly ended: Promise<never>;
+  readonly reject: (error: unknown) => void;
+  error: { readonly value: unknown } | undefined;
+}
+
+const endings = new WeakMap<Execution, Ending>();
+
+const endingOf = (execution: Execution): Ending => {
+  let ending = endings.get(execution);
+  if (ending === undefined) {
+    const { promise, reject } = Promise.withResolvers<never>();
+    // Read only through `unlessEnded`, so an ending nothing awaits is no
+    // unhandled rejection.
+    promise.catch(() => undefined);
+    ending = { ended: promise, reject, error: undefined };
+    endings.set(execution, ending);
+  }
+  return ending;
+};
+
+/**
+ * End `execution` with `error`, once. Its provider commands close with it.
+ */
+const endExecution = (execution: Execution, error: unknown) => {
+  const ending = endingOf(execution);
+  if (ending.error !== undefined) return;
+  ending.error = { value: error };
+  ending.reject(error);
+  execution.world.closeCommands(execution, error);
+};
 
 const ioHooks: IoBans.Hooks = {
   running: () => executions.getStore(),
   end: (error) => {
     const execution = executions.getStore();
-    if (execution !== undefined && !endings.has(execution)) {
-      endings.set(execution, error);
-    }
+    if (execution !== undefined) endExecution(execution, error);
   },
-};
-
-const refuseIfEnded = (execution: Execution) => {
-  if (endings.has(execution)) throw endings.get(execution);
+  ended: () => {
+    const execution = executions.getStore();
+    return (
+      execution !== undefined && endings.get(execution)?.error !== undefined
+    );
+  },
 };
 
 /**
@@ -313,24 +345,33 @@ const egressHolder: Egress.Holder = {
  * Make the call `start` makes for `execution`, unless a host API ended it, as
  * the binary runs no syscall of a function it terminated.
  */
-const whileRunning = <A>(execution: Execution, start: () => Promise<A>) =>
-  endings.has(execution) ? Promise.reject(endings.get(execution)) : start();
+const whileRunning = <A>(execution: Execution, start: () => Promise<A>) => {
+  const error = endings.get(execution)?.error;
+  return error === undefined ? start() : Promise.reject(error.value);
+};
 
 /**
- * `outcome`, or the error a host API ended `execution` with, which wins over
- * whatever the handler returned or threw.
+ * `outcome`, unless a host API ended `execution` first, in which case its
+ * ending, without waiting for the handler to settle.
  */
 const unlessEnded = <A>(execution: Execution, outcome: Promise<A>) =>
-  outcome.then(
-    (value) => {
-      refuseIfEnded(execution);
-      return value;
-    },
-    (error: unknown) => {
-      refuseIfEnded(execution);
-      throw error;
-    },
-  );
+  Promise.race([outcome, endingOf(execution).ended]);
+
+/**
+ * Whether a Confect function is a Node action, which runs in Node rather than
+ * the isolate. `RegisteredNodeFunction.make` in `@confect/server` marks it.
+ */
+const nodeAction = Symbol.for("@confect/server/NodeAction");
+
+const runtimeOf = (func: unknown): IoBans.Runtime =>
+  (func as { [nodeAction]?: boolean } | undefined)?.[nodeAction] === true
+    ? "node"
+    : "isolate";
+
+const installIoBans = () => {
+  IoBans.install();
+  IoBans.bind(ioHooks);
+};
 
 /**
  * Run a function's code as `execution`, with its own copy of the globals a test
@@ -338,7 +379,7 @@ const unlessEnded = <A>(execution: Execution, outcome: Promise<A>) =>
  */
 const enter = <A>(execution: Execution, run: () => A): A => {
   installConvexGlobal();
-  IoBans.install(ioHooks);
+  installIoBans();
   return Globals.own(() => executions.run(execution, run));
 };
 const kernelBrand = Symbol.for("@confect/test/Kernel");
@@ -542,10 +583,22 @@ export class World {
     string,
     {
       readonly view: HeldCommand;
+      readonly action: Execution;
       readonly answer: (output: unknown) => void;
     }
   >();
   private nextCommandId = 1;
+  /**
+   * The commands cancelled when their action ended, which no answer reaches.
+   */
+  private readonly cancelled = new Set<string>();
+  /**
+   * The actions that ended, and why a port call they make now is refused.
+   */
+  private readonly closedActions = new WeakMap<
+    Execution,
+    { readonly refusal: unknown }
+  >();
   /**
    * The latest deadline time has been advanced to. The clock never reads
    * earlier.
@@ -560,7 +613,7 @@ export class World {
   ) {
     installConvexGlobal();
     Clock.install(pinnedTime, () => executions.getStore() !== undefined);
-    IoBans.install(ioHooks);
+    installIoBans();
     Egress.install(egressHolder);
     this.components.set(ROOT, makeComponent(ROOT, schema, modules));
   }
@@ -775,9 +828,11 @@ export class World {
 
   /**
    * Hold a provider port's call from the action `execution` until the test
-   * answers it.
+   * answers it. Once the action has ended, the call is refused instead.
    */
   hold(execution: Execution, port: string, input: unknown): Promise<unknown> {
+    const closed = this.closedActions.get(execution);
+    if (closed !== undefined) return Promise.reject(closed.refusal);
     const { promise, resolve } = Promise.withResolvers<unknown>();
     const view: HeldCommand = {
       id: `command-${this.nextCommandId++}`,
@@ -788,8 +843,34 @@ export class World {
       functionName: execution.udfPath,
       request: execution.request.requestId,
     };
-    this.pending.set(view.id, { view, answer: resolve });
+    this.pending.set(view.id, { view, action: execution, answer: resolve });
     return promise;
+  }
+
+  /**
+   * End the action `execution`'s commands: a port call it makes now is refused
+   * with `refusal`, and its held commands are cancelled. A cancelled call never
+   * settles, as an ended function runs no more JavaScript. Without a `refusal`
+   * the action settled on its own, and a later call is refused with
+   * `ActionEnded`.
+   */
+  closeCommands(execution: Execution, refusal?: unknown): void {
+    if (this.closedActions.has(execution)) return;
+    this.closedActions.set(execution, {
+      refusal:
+        refusal ??
+        new KernelRefusal.ActionEnded({
+          componentPath: execution.componentPath,
+          functionName: execution.udfPath,
+          message: `The action ${execution.udfPath} already ended, so the test kernel refused its provider port call.`,
+        }),
+    });
+    for (const [id, command] of this.pending) {
+      if (command.action === execution) {
+        this.pending.delete(id);
+        this.cancelled.add(id);
+      }
+    }
   }
 
   /**
@@ -800,14 +881,20 @@ export class World {
   }
 
   /**
-   * Answer a held command: its port call returns `output`.
+   * Answer a held command: its port call returns `output`. A command already
+   * answered, never held, or cancelled when its action ended is refused with
+   * `StaleCommand`.
    */
   answer(id: string, output: unknown): void {
     const command = this.pending.get(id);
     if (command === undefined) {
+      const cancelled = this.cancelled.has(id);
       throw new KernelRefusal.StaleCommand({
         id,
-        message: `The test kernel holds no command "${id}". It was already answered, or never held.`,
+        reason: cancelled ? "cancelled" : "notHeld",
+        message: cancelled
+          ? `The test kernel cancelled command "${id}" when its action ended, so no answer reaches it.`
+          : `The test kernel holds no command "${id}". It was already answered, or never held.`,
       });
     }
     this.pending.delete(id);
@@ -1133,6 +1220,7 @@ export class World {
     from: From,
     pagination: Pagination | undefined,
     startTime?: number,
+    runtime: IoBans.Runtime = "isolate",
   ): Execution {
     // A function in a component runs with no identity, whoever called it, as
     // Convex gives a component no `ctx.auth` of the caller's. A nested call in
@@ -1148,6 +1236,7 @@ export class World {
       componentPath: functionPath.componentPath,
       udfPath: functionPath.udfPath,
       udfType,
+      runtime,
       attempt,
       identity,
       request: from.request,
@@ -1425,7 +1514,8 @@ export class World {
 
   private runAction(
     functionPath: FunctionPath,
-    resolved: Pick<Resolved, "handler" | "args" | "returns">,
+    resolved: Pick<Resolved, "handler" | "args" | "returns"> &
+      Partial<Pick<Resolved, "func">>,
     args: any,
     from: From,
   ): Promise<any> {
@@ -1435,6 +1525,8 @@ export class World {
       undefined,
       from,
       undefined,
+      undefined,
+      runtimeOf(resolved.func),
     );
     const inner: From = { request: from.request, parent: execution };
     const a = actionGeneric({
@@ -1496,6 +1588,7 @@ export class World {
             run,
           );
     return unlessEnded(execution, started)
+      .finally(() => this.closeCommands(execution))
       .then((raw) => {
         const result = jsonToConvex(JSON.parse(raw));
         validateReturnValue(resolved.returns, result, "action", functionPath);

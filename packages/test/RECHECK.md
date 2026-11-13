@@ -503,37 +503,87 @@ JavaScript as a plain, catchable `Error` with that message
   (`run_inner`'s unhandled rejection check, `udf/mod.rs:1121-1137`), whatever
   the handler catches. `clearTimeout` and `clearInterval` are plain map
   deletes and are allowed.
-- The runtime defines no `setImmediate`.
+- `formData()` on a multipart body with a boundary goes through
+  `parseFormData`'s `form/parseMultiPart` op, refused as `NoFormParse…`: the
+  call rejects with a plain `Error`, "Can't use formData() in queries and
+  mutations. …", after the body is read (`21_formdata.ts:126-150`,
+  `23_request.ts:220-224`, `23_response.ts:203-207`). A multipart type without
+  a boundary is a `TypeError`, "Missing boundary parameter in mime type of
+  multipart formdata.", and a urlencoded body parses in JavaScript and is
+  allowed. A handler reaches this with the runtime's own `Request` and
+  `Response`, so the kernel guards it.
+- The isolate defines no `setImmediate` and no `queueMicrotask`
+  (`npm-packages/udf-runtime/src/setup.ts:32-66` installs neither, and V8
+  provides neither), in queries, mutations and actions alike. A Node action
+  runs in Node and has both.
 
-The kernel's `src/internal/IoBans.ts` wraps `fetch`, `setTimeout` and
-`setInterval` and hides `setImmediate`, and each call checks the kernel
-function running it. So a reference a module kept when it loaded, a nested
-query or mutation, and a global a test replaced after the backend opened are
-all refused inside a query or mutation, and every wrapper calls the host's
-function anywhere else. The wrappers are installed when a world is built and
-again whenever a kernel function starts. A timer ends its function through
-`Execution.ts`'s `endings`, so the function fails with the binary's message
-after its handler returns, and a mutation publishes none of its writes.
+The kernel's `src/internal/IoBans.ts` makes each of `fetch`, `setTimeout`,
+`setInterval`, `setImmediate` and `queueMicrotask` an accessor on `globalThis`,
+as `Globals.ts` does for `Date`, `Math` and `crypto`. It reads as a guard of the
+implementation beneath, one guard per implementation, and a guard checks the
+kernel function running in the caller's async context at every call. An
+assignment stores the new implementation beneath, so a stub or a handler that
+assigns the global mid-invocation is still guarded, and assigning a guard back,
+as fake timers do when they uninstall, stores the implementation it guards. A
+reference keeps the implementation it was read with, as a kept reference to
+the host's function would: convex-test keeps the real `setTimeout` when it
+loads (`dist/index.js:2205`) and yields on it beside fake timers, so a single
+guard that followed the fakes made its drain loop forever. `formData()` is guarded on `Request`'s
+and `Response`'s prototypes. `@confect/test/setup` (`src/setup.ts`), a Vitest
+setup file, installs the guards before any test module loads, so a reference a
+module takes when it is imported is the guard. The kernel installs them again
+when a world opens and whenever a function starts, which guards again a global
+a test redefined with `Object.defineProperty`, as `vi.stubGlobal` does.
+
+- In a query or mutation: `fetch` rejects with the binary's `TypeError`; a
+  timer returns an ID and ends its function; multipart `formData()` rejects
+  with the binary's error.
+- In a query, a mutation or an isolate action, `setImmediate` and
+  `queueMicrotask` read `undefined`, and a reference to either taken earlier
+  throws `ReferenceError: <name> is not defined`. Node's own modules still find
+  them: its `fetch` and web streams read and call `queueMicrotask` while doing a
+  function's work, where the binary's built-ins need neither, so the guard
+  checks whether the calling frame is a `node:` module.
+- A Node action has Node's globals. `RegisteredNodeFunction.make` in
+  `@confect/server` marks the function it registers with
+  `Symbol.for("@confect/server/NodeAction")`, which the kernel reads, since a
+  module's `"use node"` directive is gone once it loads. A plain Convex action
+  in a `"use node"` file carries no mark and gets the isolate's globals.
+
+A timer ends its function through `Execution.ts`'s `endings`. Each running
+function has an ending signal, and its invocation settles with the ending as
+soon as it fires, so a handler that awaits its timer fails promptly with the
+binary's message instead of hanging, and a mutation publishes none of its
+writes.
 
 `test/IoBans.test.ts` runs each call on the kernel, and
 `packages/server/test/local-backend/ioBans.test.ts` runs the same calls on the
-binary through `LocalBackend.ts`, with a loopback server for the action's
-fetch.
+binary through `LocalBackend.ts`: the fetch, timer and awaited-timer
+refusals, both globals' absence in a query and an isolate action and their
+presence in a Node action, the clears, the multipart, boundaryless and
+urlencoded `formData()` cases, and an action's fetch and timers.
 
 convex-test 0.0.65 disagrees with the binary here and the kernel follows the
 binary: its `disallowedInTransaction` throws "`fetch` is not supported in Convex
 queries or mutations…" synchronously, and it also refuses `clearTimeout` and
 `clearInterval` (`index.ts:2929-2968`).
 
-Not covered: `formData()`'s multipart parse (`FormParse`) and storage and
-stream ops are also refused in a query or mutation, but no kernel query or
-mutation reaches them through a host API, and their rows are storage and HTTP.
-Cryptographic randomness (`crypto.subtle.generateKey` and the algorithms that
-draw from `crypto_rng`, `udf/mod.rs:290-292`) belongs to the randomness row.
-Effect picks its scheduler's timer from the host realm when it loads, so its
-default scheduler finds `setImmediate` where the binary's would use
-`setTimeout`. Confect's queries and mutations run on Effect's `"sync"`
-scheduler (`RegisteredConvexFunction.ts:268`, `:385`), which sets no timer.
+Open: a reference to one of these globals taken before `@confect/test/setup`
+runs, by an earlier setup file or a global setup, stays the host's. The test
+project's Vitest config owns the order, and for Frame that is the generated
+test backend's preset (row 8), which lists the setup file first. A test that
+does not list it still gets the guards from the first world that opens, so only
+a reference taken before then escapes.
+
+Not covered: storage and stream ops are also refused in a query or mutation;
+their rows are storage and HTTP. Cryptographic randomness
+(`crypto.subtle.generateKey` and the algorithms that draw from `crypto_rng`,
+`udf/mod.rs:290-292`) belongs to the randomness row. Effect picks its
+scheduler's timer from the host realm when it loads, and its scheduler falls
+back to a microtask when `setImmediate` reads `undefined`, where the binary's
+would use `setTimeout`. Confect's queries and mutations run on Effect's
+`"sync"` scheduler (`RegisteredConvexFunction.ts:268`, `:385`), which sets no
+timer.
 
 ## Action egress (row 6)
 

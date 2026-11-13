@@ -68,7 +68,9 @@ export default mergeConfig(
       name: "@confect/server (mock-backend, kernel)",
       include: ["test/mock-backend/**/*.test.ts"],
       globalSetup: ["./test/mock-backend/setup.ts"],
-      setupFiles: ["./test/mock-backend/kernelLane.ts"],
+      // `@confect/test/setup` first, so the kernel's host API guards are in
+      // place before any test module loads.
+      setupFiles: ["../test/src/setup.ts", "./test/mock-backend/kernelLane.ts"],
       typecheck: { enabled: false },
       coverage: { enabled: false },
     },

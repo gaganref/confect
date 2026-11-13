@@ -362,7 +362,15 @@ TestConfect.layer(schema, convexSchema, modules, {
 });
 ```
 
-On the kernel, scheduled functions run on the kernel's own clock and never on a host timer, so `finishAllScheduledFunctions` does not call its `advanceTimers` callback. The default kernel clock follows the test's `Date`, fake timers included, so advancing fake timers and then calling `finishInProgressScheduledFunctions` runs the jobs that came due. As on Convex, a query or mutation on the kernel cannot use `fetch` or host timers: `fetch` rejects with the error Convex gives, and `setTimeout` or `setInterval` fails the function. Move that work to an action. A layer on one target can be provided inside a layer on the other, and each keeps its own backend while both are live. The option goes away once the kernel replaces convex-test.
+On the kernel, scheduled functions run on the kernel's own clock and never on a host timer, so `finishAllScheduledFunctions` does not call its `advanceTimers` callback. The default kernel clock follows the test's `Date`, fake timers included, so advancing fake timers and then calling `finishInProgressScheduledFunctions` runs the jobs that came due. A layer on one target can be provided inside a layer on the other, and each keeps its own backend while both are live. The option goes away once the kernel replaces convex-test.
+
+As on Convex, a query or mutation on the kernel cannot use `fetch` or host timers: `fetch` and a multipart `formData()` reject with the errors Convex gives, and `setTimeout` or `setInterval` fails the function at once, even while it awaits the timer. Move that work to an action. Queries, mutations and actions other than Node actions also find no `setImmediate` or `queueMicrotask`, as in Convex's runtime. List `@confect/test/setup` first in your Vitest `setupFiles`, so a module that keeps `fetch` or a timer when it is imported is checked too:
+
+```ts
+export default defineConfig({
+  test: { setupFiles: ["@confect/test/setup"] },
+});
+```
 
 #### Reach the network from an action
 

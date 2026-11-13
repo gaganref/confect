@@ -158,11 +158,32 @@ export const undeclaredFetch = (
 
 /**
  * `answer` named a command the kernel does not hold: it was already answered,
- * or never held.
+ * never held, or cancelled when its action ended.
  */
 export class StaleCommand extends Schema.TaggedError<StaleCommand>()(
   "StaleCommand",
-  { id: Schema.String, message: Schema.String },
+  {
+    id: Schema.String,
+    /**
+     * `cancelled` when the command's action ended before an answer, `notHeld`
+     * when it was already answered or never held.
+     */
+    reason: Schema.Literals(["notHeld", "cancelled"]),
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * An action that already ended made a provider port call. An ended function
+ * runs no more JavaScript on the binary, so the kernel holds nothing for it.
+ */
+export class ActionEnded extends Schema.TaggedError<ActionEnded>()(
+  "ActionEnded",
+  {
+    componentPath: Schema.String,
+    functionName: Schema.String,
+    message: Schema.String,
+  },
 ) {}
 
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
