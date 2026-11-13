@@ -37,6 +37,11 @@ export const kernelApp = (
   options: {
     readonly redaction?: Redaction.Policy;
     readonly runtime?: Kernel.KernelRuntime;
+    /**
+     * Settles before the app's functions load, so a test can hold the backend's
+     * first run open.
+     */
+    readonly loaded?: Promise<void>;
   } = {},
 ): KernelControls =>
   convexTest({
@@ -44,7 +49,10 @@ export const kernelApp = (
     modules: {
       "_generated/server.ts": () => Promise.resolve({}),
       "sync.ts": () =>
-        import("../../../server/test/local-backend/fixtures/sync/convex/sync"),
+        (options.loaded ?? Promise.resolve()).then(
+          () =>
+            import("../../../server/test/local-backend/fixtures/sync/convex/sync"),
+        ),
       "auth.config.ts": () =>
         Promise.resolve({ default: { providers: [{ ...provider, jwks }] } }),
     },

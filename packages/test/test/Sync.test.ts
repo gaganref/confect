@@ -406,7 +406,11 @@ describe("Sync's artifacts", () => {
     "a query a socket added just before it closed leaves no subscription behind, so a later commit leaves the full rerun in agreement",
     () =>
       Effect.gen(function* () {
-        const t = kernelApp("");
+        let release = () => {};
+        const loaded = new Promise<void>((resolve) => {
+          release = resolve;
+        });
+        const t = kernelApp("", { loaded });
         const ws = new (t.sync().WebSocket)("ws://kernel.invalid");
         yield* Effect.promise(
           () =>
@@ -430,12 +434,13 @@ describe("Sync's artifacts", () => {
             ],
           }),
         );
-        // The update has started and the world is still loading the app's
-        // modules for the query's first run.
+        // The update has started, and the query's first run waits for the
+        // app's modules, which load only once the socket has closed.
         yield* Effect.promise(
-          () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+          () => new Promise<void>((resolve) => setTimeout(resolve, 20)),
         );
         ws.close();
+        release();
         yield* Effect.promise(
           () => new Promise<void>((resolve) => setTimeout(resolve, 100)),
         );
