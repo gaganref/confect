@@ -75,10 +75,19 @@ beforeAll(({}, suite) => {
   }
 });
 
+/**
+ * Vitest's `test.fails`, which its runner reads after the case and its hooks
+ * have run. The type marks it read-only because `it.fails` sets it at
+ * collection.
+ */
+const expectFailure = (task: Task, fails: boolean) => {
+  (task as { fails?: boolean }).fails = fails;
+};
+
 // An excepted case must fail. Vitest reports one that passes as "Expect test
 // to fail", which fails the lane.
 beforeEach(({ task }) => {
-  if (entryFor(task) !== undefined) task.fails = true;
+  if (entryFor(task) !== undefined) expectFailure(task, true);
 });
 
 // A case that fails for another reason than the binary behaviour its entry
@@ -87,6 +96,6 @@ afterEach(({ task }) => {
   const entry = entryFor(task);
   if (entry === undefined || task.result?.state !== "fail") return;
   if (!JSON.stringify(task.result.errors ?? []).includes(entry.observed)) {
-    task.fails = false;
+    expectFailure(task, false);
   }
 });
