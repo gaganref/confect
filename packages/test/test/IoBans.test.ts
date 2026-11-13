@@ -199,6 +199,9 @@ const io = {
   addNote: makeFunctionReference<"mutation", { text: string }>("io:addNote"),
 };
 
+// The writes an action made after its raw fetch, so a test waits for them.
+const lateWrites: Array<Promise<unknown>> = [];
+
 const schema = defineSchema({ notes: defineTable({ text: v.string() }) });
 
 const modules = {
@@ -338,10 +341,12 @@ const modules = {
       }),
       fetchThenWrite: actionGeneric({
         args: { url: v.string() },
-        handler: (ctx, { url }) =>
-          fetch(url)
-            .catch(() => null)
-            .then(() => ctx.runMutation(io.addNote, { text: "after" })),
+        handler: async (ctx, { url }) => {
+          await fetch(url).catch(() => null);
+          const write = ctx.runMutation(io.addNote, { text: "after" });
+          lateWrites.push(write);
+          return write;
+        },
       }),
       addNote: mutationGeneric({
         args: { text: v.string() },
@@ -522,11 +527,19 @@ describe("I/O bans", () => {
 
     it.effect("an action that made a raw fetch runs no later syscall", () =>
       Effect.gen(function* () {
+        lateWrites.length = 0;
         const server = yield* loopback;
         const t = convexTest(schema, modules);
         expect(
           yield* refusalOf(t.action(io.fetchThenWrite, { url: server.url })),
         ).toMatchObject({ reason: "UndeclaredFetch" });
+        // The action settled at once, so the write its handler went on to make
+        // is awaited before the table is read.
+        expect(
+          yield* Effect.promise(() => Promise.allSettled(lateWrites)),
+        ).toMatchObject([
+          { status: "rejected", reason: { reason: "UndeclaredFetch" } },
+        ]);
         expect(yield* Effect.promise(() => t.query(io.notes, {}))).toEqual([]);
       }).pipe(Effect.scoped),
     );
