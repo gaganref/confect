@@ -121,6 +121,23 @@ mock-backend cases run on the kernel. This is row 5 of Frame's backend testing
 kernel (Frame ADR 0012). Changeset: `test-kernel-scheduler.md`. Upstream: fork
 only, as the kernel and its option are fork-specific.
 
+## Test kernel transaction limits
+
+The kernel meters each attempt against Convex's transaction limits: documents
+and bytes read, disjoint index intervals, documents and bytes written, and
+scheduled functions with their argument bytes. The defaults, the counting rules
+and the messages are convex-backend's, so a function crossing a limit gets the
+binary's catchable error. A failed nested mutation's writes leave the count and
+its reads and schedules stay. A nested call's `transactionLimits` budget
+tightens only that call. A patch or replace that changes nothing writes
+nothing. `TransactionMetadata.getMetrics` reads the same counters, so the
+mock-backend `TransactionMetadata` case runs on the kernel. A local-backend case
+compares `getMetrics` for one workload on both targets. The binary's
+`databaseQueries` also counts its own system-table reads, which stay on the
+binary. File storage counters stay at zero until the storage row. This is the
+limits row of Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-limits.md`. Upstream: fork only, as the kernel is fork-specific.
+
 ## TestConfect kernel target
 
 `TestConfect.layer` takes `{ target: "kernel" }` in each of its three forms. It

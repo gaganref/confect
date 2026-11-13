@@ -150,7 +150,8 @@ reaches only the function the test called.
 Row 2 published one top-level mutation at a time. Row 3 replaced that with
 read-set validation and held attempts. Scheduling, storage, HTTP, JWT signing
 and transaction limits refuse with `KernelRowPending`, naming the row that
-supplies them. Row 5 lifts the scheduling refusals. Text and vector search
+supplies them. Row 5 lifts the scheduling refusals, and the limits row lifts
+the transaction limits refusal. Text and vector search
 refuse with `RequiresBinary`.
 
 `src/internal/ConvexTest.ts` gives the kernel convex-test's `convexTest`
@@ -477,3 +478,51 @@ wrapped the other's accessor once more and every read of these globals went
 deeper. The kernel now leaves an accessor in place when it already reads
 through one of the kernel's, which a sentinel in a fresh copy shows, and the
 chain settles after the first call on each target.
+
+## Transaction limits (row 6)
+
+`src/internal/Metering.ts` is the kernel's one record of what an attempt has
+used, and `1.0/getTransactionMetrics` reads it, so `TransactionMetadata` and
+the limit checks share a single writer. The limits, the counting rules and the
+messages are convex-backend's at the local backend's pin,
+`precompiled-2026-10-28-cccbade`:
+
+| Metric                                                         | Default                                     | Counted when                                                                                                         | Message on crossing                                                                                         |
+| -------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `documentsRead`, `bytesRead`                                   | 32000, 16 MiB (`knobs.rs:641-647`)          | a get, patch, replace, delete or query reads a user document, sized as `getConvexSize` sizes it (`reads.rs:365-445`) | `Too many documents read …`, `Too many bytes read … (limit: N bytes)`, each with the binary's help sentence |
+| `databaseQueries`                                              | 4096 (`knobs.rs:657-658`)                   | a read adds a disjoint interval to its index's merged set (`reads.rs:447-480`, `interval_set.rs:150-230`)            | `Too many reads …` with the help sentence                                                                   |
+| `documentsWritten`, `bytesWritten`                             | 16000, 16 MiB (`knobs.rs:406-412`)          | each user write, a delete with no bytes (`writes.rs:241-310`)                                                        | `Too many writes …`, `Too many bytes written … (limit: 16 MiB)`                                             |
+| `functionsScheduled`, `scheduledFunctionArgsBytes`             | 1000, 16 MiB (`knobs.rs:514-536`)           | a schedule, checked before it counts, its arguments sized as `[args]` (`scheduled_jobs/mod.rs:162-196`)              | `Too many functions scheduled by this mutation …`, `Too large total size of the arguments …`                |
+| `filesWritten`, `fileWriteBytes`, `filesRead`, `fileReadBytes` | 10, 16 MiB, 10, 16 MiB (`knobs.rs:539-556`) | never yet: the storage row counts them                                                                               | none yet                                                                                                    |
+
+A failed nested mutation's writes leave the count with its frame; its reads,
+intervals and schedules stay, as the binary keeps them outside its
+subtransaction token (`transaction.rs:418-454`). A stale-snapshot query counts
+into a copy the caller drops (`transaction.rs:1460-1485`). A nested call's
+`transactionLimits` budget tightens only that call, from what the transaction
+has used, never above its caller's ceiling (`execution_size.rs:97-160`,
+`async_syscall.rs:700-706`). A patch or replace that changes nothing reads the
+document and writes nothing (`transaction.rs:713-790`). Each retried attempt
+counts from zero. A limit refuses inside the function with a catchable error,
+as on the binary.
+
+### What stays on the binary
+
+The binary's `databaseQueries` also counts the system-table intervals it reads
+to run a function: the backend state, modules, UDF config, components and
+environment. On the local-backend fixture a root mutation starts at 19 before
+its first read, and its first nested call into a module adds 2. That share
+depends on the deployment, so the kernel does not simulate it. The kernel
+counts the function's own intervals, which is the binary's count minus that
+share, and so it refuses `TooManyReads` later than the binary by that share.
+CPU, heap and duration stay on the binary, as the design says.
+
+### Boundary check
+
+`packages/server/test/local-backend/transactionControls.test.ts` runs one
+fixed workload, `groups/transactions:metrics`, on the local backend and on
+`TestConfect.layer(registry, { target: "kernel" })`. The workload makes a nested
+call into its module before its first measurement, then writes, writes nothing,
+deletes, reads by ID and by index, reads through nested queries, calls a nested
+mutation that fails and one that commits, and schedules. Every metric must be
+equal at the end, and `databaseQueries` must have grown by the same amount.
