@@ -696,7 +696,26 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
               ? {}
               : { componentRuntimes: options.componentRuntimes }),
           })
-        : convexTest(convexSchemaDefinition, modules);
+        : // convex-test takes two arguments and ignores a third. The kernel
+          // lane's shim, which stands in for convex-test, reads the module
+          // sources and component runtimes from it.
+          (
+            convexTest as unknown as (
+              schema: SchemaDefinition<GenericSchema, true>,
+              modules: Record<string, () => Promise<any>>,
+              kernelOptions: Pick<
+                LayerOptions,
+                "sources" | "componentRuntimes"
+              >,
+            ) => ReturnType<typeof convexTest>
+          )(convexSchemaDefinition, modules, {
+            ...(options.sources === undefined
+              ? {}
+              : { sources: options.sources }),
+            ...(options.componentRuntimes === undefined
+              ? {}
+              : { componentRuntimes: options.componentRuntimes }),
+          });
     // convex-test takes three arguments and ignores the options. The kernel
     // reads `standing`.
     const registerComponent =

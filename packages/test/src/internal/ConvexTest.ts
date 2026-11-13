@@ -294,6 +294,15 @@ export function convexTest(
         readonly world?: Invocation.World;
       },
   modules?: Modules,
+  /**
+   * The module sources and component runtimes a `TestConfect.layer` on the
+   * default target passes beside convex-test's two arguments, which convex-test
+   * ignores and the kernel lane's shim reads.
+   */
+  layerOptions?: {
+    readonly sources?: Record<string, () => Promise<string>>;
+    readonly componentRuntimes?: Execution.ComponentRuntimes;
+  },
 ): any {
   let schema: SchemaDefinition<GenericSchema, boolean> | undefined;
   let runtime: Kernel.KernelRuntime | undefined;
@@ -303,6 +312,8 @@ export function convexTest(
   let own: Invocation.World | undefined;
   if (isSchemaDefinition(schemaOrOptions)) {
     schema = schemaOrOptions;
+    sources = layerOptions?.sources;
+    componentRuntimes = layerOptions?.componentRuntimes;
   } else if (schemaOrOptions !== undefined) {
     if (schemaOrOptions.transactionLimits !== undefined) {
       throw KernelRefusal.rowPending("transaction limits", 6);
