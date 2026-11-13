@@ -38,7 +38,7 @@ layer(
         // A client's query request, as `ConvexHttpClient` sends it, so the
         // status of a refusal is visible.
         const ask = (token: string) =>
-          HttpClientRequest.post("http://127.0.0.1:3210/api/query").pipe(
+          HttpClientRequest.post(`${LocalBackend.cloudUrl()}/api/query`).pipe(
             HttpClientRequest.bearerToken(token),
             HttpClientRequest.bodyJsonUnsafe({
               path: "groups/components:identity",
