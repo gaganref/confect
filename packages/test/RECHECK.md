@@ -497,32 +497,56 @@ messages are convex-backend's at the local backend's pin,
 
 A failed nested mutation's writes leave the count with its frame; its reads,
 intervals and schedules stay, as the binary keeps them outside its
-subtransaction token (`transaction.rs:418-454`). A stale-snapshot query counts
-into a copy the caller drops (`transaction.rs:1460-1485`). A nested call's
-`transactionLimits` budget tightens only that call, from what the transaction
-has used, never above its caller's ceiling (`execution_size.rs:97-160`,
-`async_syscall.rs:700-706`). A patch or replace that changes nothing reads the
-document and writes nothing (`transaction.rs:713-790`). Each retried attempt
+subtransaction token (`transaction.rs:418-454`). A stale-snapshot query meters
+on a clone that keeps the caller's scheduling counters and starts reads and
+writes from zero, and the caller drops it (`clone_for_snapshot_query`,
+`transaction.rs:1460-1485`). A nested call's `transactionLimits` budget
+tightens only that call, from what the transaction has used, never above its
+caller's ceiling (`execution_size.rs:97-160`, `async_syscall.rs:700-706`). A
+patch or replace that changes nothing reads the document and writes nothing
+(`transaction.rs:713-790`). Whether it changed anything is structural, so a
+pending commit timestamp equals only another pending timestamp, at any depth
+(`PendingValue` derives `PartialEq`, `pending.rs:56-75`). Each retried attempt
 counts from zero. A limit refuses inside the function with a catchable error,
 as on the binary.
 
+`databaseQueries` follows `record_indexed_directly` (`reads.rs:447-480`): a
+read drops the total by its index's interval count before the read, saturating
+at zero, and adds the count after. An inserted ID joins its table's `by_id`
+intervals without counting (`register_new_id`, `writes.rs:426-441`;
+`record_indexed_derived`, `reads.rs:333-344`), so a later read of that index
+can saturate the total. After 100 inserts, reading one inserted ID answers 100
+on both targets, and a `by_id` scan then answers 1. The total is never
+negative: `Metering.ts` asserts it.
+
 ### What stays on the binary
 
-The binary's `databaseQueries` also counts the system-table intervals it reads
-to run a function: the backend state, modules, UDF config, components and
-environment. On the local-backend fixture a root mutation starts at 19 before
-its first read, and its first nested call into a module adds 2. That share
-depends on the deployment, so the kernel does not simulate it. The kernel
-counts the function's own intervals, which is the binary's count minus that
-share, and so it refuses `TooManyReads` later than the binary by that share.
-CPU, heap and duration stay on the binary, as the design says.
+`packages/server/test/mock-backend/kernelBoundaries.ts` records each accepted
+difference by name. `SystemTableReadIntervals` is the one this row adds. The
+binary's `databaseQueries` also counts the system-table intervals it reads to
+run a function: the backend state, the module, the UDF config and the
+component. On the local-backend fixture a root mutation starts at 19, its first
+nested call adds 2, and a stale-snapshot query starts at 19 again. That share
+depends on the deployment, so the kernel does not simulate it. The kernel's
+count is the binary's minus that share until a read saturates both, and it
+refuses `TooManyReads` later by that share. CPU, heap and duration stay on the
+binary, as the design says.
 
 ### Boundary check
 
-`packages/server/test/local-backend/transactionControls.test.ts` runs one
-fixed workload, `groups/transactions:metrics`, on the local backend and on
-`TestConfect.layer(registry, { target: "kernel" })`. The workload makes a nested
-call into its module before its first measurement, then writes, writes nothing,
-deletes, reads by ID and by index, reads through nested queries, calls a nested
-mutation that fails and one that commits, and schedules. Every metric must be
-equal at the end, and `databaseQueries` must have grown by the same amount.
+`packages/server/test/local-backend/transactionControls.test.ts` runs each case
+on the local backend and on `TestConfect.layer(registry, { target: "kernel" })`.
+
+- `groups/transactions:metrics` runs one fixed workload over three seeded
+  notes: an index read, a read by ID, a write, a write that changes nothing, a
+  delete, a nested query, a nested mutation that fails and one that commits, an
+  insert and a schedule. Every metric but `databaseQueries` is equal at the
+  start and the end. `databaseQueries` on the binary is the kernel's plus the
+  boundary's `rootMutationStart` at the start, and plus `firstNestedCall` too at
+  the end. The case reads both amounts from the entry, and its name is the
+  entry's `probe`.
+- `groups/transactions:insertedIntervals` pins the saturating count above.
+- `groups/transactions:staleMetrics` pins a stale-snapshot query's scheduling
+  counters, 1 function and 4 bytes.
+- `groups/commitTs:maxAfterPending` pins that a pending timestamp patched to
+  `9223372036854775807n` is a second write that stores the integer.
