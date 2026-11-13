@@ -348,6 +348,21 @@ its tables as `Table<...> & Aggregated<...>`. `Indexes` stays inferred, because
 a generic table's index names resolve only that way. Changeset:
 `tableinfo-extended-table-scope.md`. Upstream: unrecorded.
 
+## Exact JSON Schema for IDs
+
+A `GenericId` ends in an always-true refinement that narrows only the
+TypeScript type. On Effect 4.1 a filter without a `toJsonSchema` annotation
+makes the JSON Schema approximate, so a reader that admits only checks their
+JSON Schema states refused every ID. Frame's dev admission is one such reader,
+and it cannot compare the refinement's predicate, because Effect wraps it in a
+fresh closure. The refinement now states `toJsonSchema: () => ({})`, an exact
+schema that adds nothing to the string. A plain ID still exports as
+`{ "type": "string" }`. A `oneOf` union that holds an ID, in JSON Schema or an
+OpenAPI document, now stays `oneOf` instead of falling back to `anyOf`. This
+replaces Frame's patch of `@gaganref/confect-core@10.6.0-fork.1`. Changeset:
+`generic-id-exact-json-schema.md`. Upstream: unrecorded; upstream's `GenericId`
+has the same refinement.
+
 ## Commit timestamps
 
 Add `CommitTs` in `@confect/core` and `vars.commitTs` on the database writer.
