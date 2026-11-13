@@ -20,6 +20,7 @@ import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
+import * as Json from "./Json.js";
 
 /**
  * A function address inside one test backend: its component and its
@@ -103,7 +104,7 @@ export function deserializeConvexErrorData(thrown: unknown) {
   ) {
     try {
       (thrown as { data: unknown }).data = jsonToConvex(
-        JSON.parse((thrown as { data: string }).data),
+        Json.parse((thrown as { data: string }).data),
       );
     } catch {
       // Data wasn't a serialized JSON string — leave it untouched.
@@ -280,7 +281,7 @@ export function evaluateFilter(
   if (filter.$literal !== undefined) {
     return evaluateQueryValue(filter.$literal);
   }
-  throw new Error(`not implemented: ${JSON.stringify(filter)}`);
+  throw new Error(`not implemented: ${Json.stringify(filter)}`);
 }
 
 export function evaluateRangeFilter(
@@ -385,7 +386,7 @@ export function validateIndexRangeExpression(
 }
 
 export function printIndexOperator(filter: SerializedRangeExpression) {
-  return `.${pipe(filter.type, Str.toLowerCase)}(${filter.fieldPath}, ${JSON.stringify(filter.value)})`;
+  return `.${pipe(filter.type, Str.toLowerCase)}(${filter.fieldPath}, ${Json.stringify(filter.value)})`;
 }
 
 export function validateFieldNames(validator: ValidatorJSON) {
@@ -550,7 +551,7 @@ export function validateValidator(validator: ValidatorJSON, value: any) {
             validator.value,
             Arr.map((v) => v.type),
             Arr.join(", "),
-          )}, got \`${JSON.stringify(convexToJson(value))}\``,
+          )}, got \`${Json.stringify(convexToJson(value))}\``,
         );
       }
       return;
@@ -690,8 +691,8 @@ export function createTestJwt(identity: Record<string, any>) {
   // The identity provider always determines who the user is.
   claims.iss = identity.issuer;
   claims.sub = identity.subject;
-  const header = base64UrlEncode(JSON.stringify({ alg: "none", typ: "JWT" }));
-  const payload = base64UrlEncode(JSON.stringify(claims));
+  const header = base64UrlEncode(Json.stringify({ alg: "none", typ: "JWT" }));
+  const payload = base64UrlEncode(Json.stringify(claims));
   return `${header}.${payload}.`;
 }
 

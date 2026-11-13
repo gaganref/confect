@@ -16,6 +16,9 @@ import * as Effect from "effect/Effect";
 import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
 import * as Invocation from "../../src/internal/Invocation";
 import * as Array from "effect/Array";
+import * as Schema from "effect/Schema";
+
+const jsonText = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const schema = defineSchema({
   ticks: defineTable({ name: v.string(), at: v.number() }),
@@ -113,8 +116,8 @@ const history = Effect.gen(function* () {
     name,
     nextRun,
   }));
-  // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The bytes compared are the deadlines as plain JSON.
-  process.stdout.write(JSON.stringify({ opened, ticks, crons: after }));
+  const output = yield* jsonText({ opened, ticks, crons: after });
+  process.stdout.write(output);
 });
 
 void Effect.runPromise(history);

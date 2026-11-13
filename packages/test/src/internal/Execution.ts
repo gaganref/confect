@@ -57,6 +57,7 @@ import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
+import * as Json from "./Json.js";
 
 const ROOT = "";
 
@@ -165,7 +166,7 @@ export const withIdentity = (
   caller: Caller,
   identity: Partial<UserIdentity>,
 ): Caller => {
-  const subject = identity.subject ?? "" + simpleHash(JSON.stringify(identity));
+  const subject = identity.subject ?? "" + simpleHash(Json.stringify(identity));
   const issuer = identity.issuer ?? "https://convex.test";
   const tokenIdentifier = identity.tokenIdentifier ?? `${issuer}|${subject}`;
   const full = { ...identity, subject, issuer, tokenIdentifier };
@@ -761,7 +762,7 @@ export class World {
           "The default export of `convex/crons.js` is not a Crons object.",
         );
       }
-      const exported = JSON.parse(declared.export()) as Record<string, unknown>;
+      const exported = Json.parse(declared.export()) as Record<string, unknown>;
       for (const name of Rec.keys(exported).sort()) {
         const parsed = Crons.parseSpec(component.path, name, exported[name]);
         if (Result.isFailure(parsed)) throw parsed.failure;
@@ -938,14 +939,14 @@ export class World {
         `Expected a ${kind} function, but the function exported from module "${modulePath}" as \`${exportName}\` is not a ${kind}.`,
       );
     }
-    const args = JSON.parse(func.exportArgs()) as ValidatorJSON;
+    const args = Json.parse(func.exportArgs()) as ValidatorJSON;
     if (args.type !== "object" && args.type !== "any") {
       throw new Error(
         `Invalid JSON returned from ${modulePath}.js:${exportName}.exportArgs(): ` +
           `Args validator must be an object or any`,
       );
     }
-    return { func, handler, args, returns: JSON.parse(func.exportReturns()) };
+    return { func, handler, args, returns: Json.parse(func.exportReturns()) };
   }
 
   // Calls from the test.
@@ -1413,8 +1414,8 @@ export class World {
       };
       const ours = declarationJson(job, (json) => json);
       if (
-        JSON.stringify(ours) !==
-        JSON.stringify({
+        Json.stringify(ours) !==
+        Json.stringify({
           name: image.name,
           udfPath: image.udfPath,
           args: image.args,
@@ -2036,11 +2037,11 @@ export class World {
           resolved.handler({ ...ctx, auth: queryAuth(execution) }, a),
       }) as unknown as { invokeQuery: (args: string) => Promise<string> };
       return enter(execution, () =>
-        q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
+        q.invokeQuery(Json.stringify(convexToJson([parseArgs(args)]))),
       )
         .then((raw) => settled(execution, raw))
         .then((raw) => {
-          const result = jsonToConvex(JSON.parse(raw));
+          const result = jsonToConvex(Json.parse(raw));
           if (!isNested && hasPendingValues(result)) {
             throw new Error(
               `Function ${functionPath.udfPath} return value invalid: queries ` +
@@ -2067,11 +2068,11 @@ export class World {
         resolved.handler({ ...ctx, auth: mutationAuth(execution) }, a),
     }) as unknown as { invokeMutation: (args: string) => Promise<string> };
     return enter(execution, () =>
-      m.invokeMutation(JSON.stringify(convexToJson([parseArgs(args)]))),
+      m.invokeMutation(Json.stringify(convexToJson([parseArgs(args)]))),
     )
       .then((raw) => settled(execution, raw))
       .then((raw) => {
-        const result = jsonToConvex(JSON.parse(raw));
+        const result = jsonToConvex(Json.parse(raw));
         const functionPath = {
           componentPath: execution.componentPath,
           udfPath: execution.udfPath,
@@ -2320,7 +2321,7 @@ export class World {
         enter(execution, () =>
           a.invokeAction(
             from.request.requestId,
-            JSON.stringify(convexToJson([parseArgs(args)])),
+            Json.stringify(convexToJson([parseArgs(args)])),
           ),
         );
       // An action another function calls is an invocation of its own, with its
@@ -2341,7 +2342,7 @@ export class World {
             );
       return started
         .then((raw) => {
-          const result = jsonToConvex(JSON.parse(raw));
+          const result = jsonToConvex(Json.parse(raw));
           this.keepReturns(functionPath, result);
           validateReturnValue(resolved.returns, result, "action", functionPath);
           return result;
@@ -2666,12 +2667,12 @@ export class World {
   }
 
   syscall(op: string, jsonArgs: string): string {
-    const args = JSON.parse(jsonArgs);
+    const args = Json.parse(jsonArgs);
     const execution = current();
     if (execution.attempt?.closed === true) throw closed(execution, op);
     switch (op) {
       case "1.0/getSnapshotTs":
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson(transaction(execution).snapshot.commitTs),
         );
       case "1.0/queryStream": {
@@ -2684,14 +2685,14 @@ export class World {
         this.queries.set(queryId, {
           next: () => (results ??= KernelQuery.stream(view, args.query)).next(),
         });
-        return JSON.stringify({ queryId });
+        return Json.stringify({ queryId });
       }
       case "1.0/queryCleanup":
         this.queries.delete(args.queryId);
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/db/normalizeId": {
         const tableName = tableNameFromId(args.idString);
-        return JSON.stringify({
+        return Json.stringify({
           id: tableName === args.table ? args.idString : null,
         });
       }
@@ -2716,7 +2717,7 @@ export class World {
     const attempt = execution.attempt;
     if (attempt === undefined) {
       return Promise.resolve().then(() =>
-        this.dispatchAsync(op, JSON.parse(jsonArgs), execution),
+        this.dispatchAsync(op, Json.parse(jsonArgs), execution),
       );
     }
     if (attempt.closed) return Promise.reject(closed(execution, op));
@@ -2724,7 +2725,7 @@ export class World {
     // queued, so a frame never closes with a write still waiting its turn.
     const end = attempt.begin();
     return execution.turn
-      .take(() => this.dispatchAsync(op, JSON.parse(jsonArgs), execution))
+      .take(() => this.dispatchAsync(op, Json.parse(jsonArgs), execution))
       .finally(end);
   }
 
@@ -2736,13 +2737,13 @@ export class World {
     switch (op) {
       case "1.0/get": {
         const { table, id } = args;
-        return JSON.stringify(convexToJson(this.get(execution, table, id)));
+        return Json.stringify(convexToJson(this.get(execution, table, id)));
       }
       case "1.0/queryStreamNext": {
         const results = this.queries.get(args.queryId);
         if (results === undefined) throw new Error("Bad queryId");
         const { value, done } = results.next();
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson(
             done ? { value: null, done: true } : { value, done: false },
           ),
@@ -2765,21 +2766,21 @@ export class World {
           endCursor: args.endCursor ?? pagination?.journal ?? null,
         });
         if (pagination) pagination.end = page.continueCursor;
-        return JSON.stringify(convexToJson(page as any));
+        return Json.stringify(convexToJson(page as any));
       }
       case "1.0/insert":
-        return JSON.stringify({
+        return Json.stringify({
           _id: this.insert(execution, args.table, jsonToConvex(args.value)),
         });
       case "1.0/shallowMerge":
         this.patch(execution, args.table, args.id, args.value);
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/replace":
         this.replace(execution, args.table, args.id, args.value);
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/remove":
         this.remove(execution, args.table, args.id);
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/count": {
         const attempt = transaction(execution);
         // The binary counts a table by reading its whole `by_id` index, and no
@@ -2800,12 +2801,12 @@ export class World {
           range: [],
           after: null,
         })("end");
-        return JSON.stringify(
+        return Json.stringify(
           attempt.scan(execution.componentPath, args.table).length,
         );
       }
       case "1.0/getFunctionMetadata":
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson({
             name: execution.udfPath,
             componentPath: execution.componentPath,
@@ -2818,9 +2819,9 @@ export class World {
               "or HTTP action. It is not available in queries.",
           );
         }
-        return JSON.stringify(convexToJson(execution.request as any));
+        return Json.stringify(convexToJson(execution.request as any));
       case "1.0/getDeploymentMetadata":
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson({ name: "test", region: null, class: "s16" }),
         );
       case "1.0/actions/query":
@@ -2834,7 +2835,7 @@ export class World {
             : op === "1.0/actions/mutation"
               ? this.mutationAt(functionPath, args.args, from)
               : this.actionAt(functionPath, args.args, from);
-        return run.then((value) => JSON.stringify(convexToJson(value)));
+        return run.then((value) => Json.stringify(convexToJson(value)));
       }
       case "1.0/runUdf": {
         const { udfType, args: udfArgs, transactionLimits } = args;
@@ -2857,23 +2858,23 @@ export class World {
                       `The test kernel does not support udf type: "${udfType}"`,
                     ),
                   );
-        return run.then((result) => JSON.stringify(convexToJson(result)));
+        return run.then((result) => Json.stringify(convexToJson(result)));
       }
       case "1.0/createFunctionHandle": {
         const functionPath = functionPathOf(args, execution.componentPath);
         this.component(functionPath.componentPath);
-        return JSON.stringify(createFunctionHandle(functionPath));
+        return Json.stringify(createFunctionHandle(functionPath));
       }
       case "1.0/auditLog":
-        return JSON.stringify(null);
+        return Json.stringify(null);
       case "1.0/schedule":
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson(
             this.scheduleJob(transaction(execution), execution, args),
           ),
         );
       case "1.0/actions/schedule":
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson(
             this.commitNow((attempt) =>
               this.scheduleJob(attempt, execution, args),
@@ -2882,12 +2883,12 @@ export class World {
         );
       case "1.0/cancel_job":
         this.cancelJob(transaction(execution), execution, args.id);
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/actions/cancel_job":
         this.commitNow((attempt) =>
           this.cancelJob(attempt, execution, args.id),
         );
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/storageDelete":
       case "1.0/storageGetUrl":
       case "1.0/storageGenerateUploadUrl":
@@ -2898,7 +2899,7 @@ export class World {
         if (execution.attempt === undefined) {
           throw new Error(`Unknown async operation ${op}`);
         }
-        return JSON.stringify(
+        return Json.stringify(
           execution.attempt.meter.metrics(execution.limits),
         );
       case "1.0/actions/vectorSearch":
@@ -3162,7 +3163,7 @@ const budgetOf = (limits: unknown): Metering.Budget | undefined => {
     if (value === undefined) continue;
     if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
       throw new Error(
-        `Invalid arguments for \`runUdf\`: transactionLimits.${metric} must be a non-negative integer, got ${JSON.stringify(value)}`,
+        `Invalid arguments for \`runUdf\`: transactionLimits.${metric} must be a non-negative integer, got ${Json.stringify(value)}`,
       );
     }
     budget[metric] = value;

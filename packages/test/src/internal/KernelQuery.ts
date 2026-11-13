@@ -41,6 +41,7 @@ import * as Option from "effect/Option";
 import * as Rec from "effect/Record";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Json from "./Json.js";
 
 /**
  * A component's tables as its schema declares them.
@@ -278,17 +279,17 @@ const encodeCursor = (
   doc: GenericDocument,
   fieldPaths: ReadonlyArray<string>,
 ): string =>
-  JSON.stringify(
+  Json.stringify(
     Arr.map(fieldPaths, (fp) => {
       const k = evaluateFieldPath(fp, doc);
-      return k === undefined ? null : JSON.stringify(convexToJson(k));
+      return k === undefined ? null : Json.stringify(convexToJson(k));
     }),
   );
 
 const parseCursor = (c: string | null | undefined) =>
   c
-    ? Arr.map(JSON.parse(c) as Array<string | null>, (k) =>
-        k === null ? undefined : jsonToConvex(JSON.parse(k)),
+    ? Arr.map(Json.parse(c) as Array<string | null>, (k) =>
+        k === null ? undefined : jsonToConvex(Json.parse(k)),
       )
     : null;
 

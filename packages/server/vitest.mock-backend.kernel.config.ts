@@ -36,6 +36,7 @@ const refuseConvexTest: Plugin = {
       (resolved) => {
         if (resolved !== null && withinConvexTest(resolved.id)) {
           throw new Error(
+            // oxlint-disable-next-line effecttsgo/global-json -- Vitest config quotes a specifier in a sync resolver error before an Effect runtime exists.
             `The kernel lane refuses convex-test: ${JSON.stringify(source)} from ${importer ?? "the test runner"} resolved to ${resolved.id}.`,
           );
         }

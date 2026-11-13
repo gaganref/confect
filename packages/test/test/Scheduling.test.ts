@@ -33,6 +33,7 @@ import * as Schema from "effect/Schema";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Invocation from "../src/internal/Invocation";
 import * as Arr from "effect/Array";
+import * as Json from "../src/internal/Json";
 
 const start = 1_000_000;
 const runtime = {
@@ -1171,7 +1172,7 @@ describe("declared cron jobs", () => {
       "",
     ]);
     expect(one.stdout).toBe(two.stdout);
-    expect(JSON.parse(one.stdout)).toMatchObject({
+    expect(Json.parse(one.stdout)).toMatchObject({
       crons: expect.arrayContaining([
         expect.objectContaining({ name: "hourly" }),
       ]),

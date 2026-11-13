@@ -30,6 +30,7 @@ import registry from "../../../tools/local-backend/fixtures/confect/_generated/t
 import refs from "../../../tools/local-backend/fixtures/confect/_generated/refs";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
+import * as Json from "../src/internal/Json";
 
 beforeEach(() => vi.resetModules());
 
@@ -440,7 +441,7 @@ it("on the kernel target, an app with an hourly cron opens, two processes with o
   expect(one.stdout).toBe(two.stdout);
   const hourly = (stdout: string) =>
     pipe(
-      JSON.parse(stdout) as Array<{ name: string; at: number }>,
+      Json.parse(stdout) as Array<{ name: string; at: number }>,
       Arr.filter(({ name }) => name === "hourly"),
       Arr.map(({ at }) => at),
     );

@@ -3,6 +3,7 @@ import { compareValues, convexToJson, type Value } from "convex/values";
 import * as Execution from "./Execution.js";
 import * as Kernel from "./Kernel.js";
 import * as Arr from "effect/Array";
+import * as Json from "./Json.js";
 
 /**
  * One run of a subscribed query, and the identity version its subscriber had
@@ -56,7 +57,7 @@ const thrownKey = (thrown: unknown): unknown => {
 };
 
 const errorKey = (error: unknown): string =>
-  JSON.stringify(
+  Json.stringify(
     error instanceof Error
       ? [
           "error",

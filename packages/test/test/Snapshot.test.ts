@@ -27,6 +27,10 @@ import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Schema from "effect/Schema";
+import * as Json from "../src/internal/Json";
+
+const jsonText = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 const start = 1_767_225_600_000;
 
@@ -629,8 +633,7 @@ describe("snapshot restore", () => {
           _tag: "SnapshotMalformed",
           reason: "header",
         });
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The forged body is raw bytes, as a tampering writer would make them.
-        const body = JSON.stringify({ components: [""], version: "one" });
+        const body = yield* jsonText({ components: [""], version: "one" });
         const forged = `confect-kernel-snapshot 2 sha256:${createHash("sha256")
           .update(body)
           .digest("hex")}\n${body}`;
@@ -699,9 +702,9 @@ const rehash = (bytes: Uint8Array, edit: (body: any) => void): Uint8Array => {
       String.indexOf("\n"),
       Option.getOrElse(() => -1),
     ) + 1;
-  const body = JSON.parse(pipe(snapshot, String.slice(bodyStart)));
+  const body = Json.parse(pipe(snapshot, String.slice(bodyStart)));
   edit(body);
-  const edited = JSON.stringify(body);
+  const edited = Json.stringify(body);
   return bytesOf(
     `confect-kernel-snapshot 2 sha256:${createHash("sha256")
       .update(edited)
@@ -1230,10 +1233,11 @@ describe("snapshot cron state", () => {
         const snapshot = t.exportSnapshot();
         const atSnapshot = t.crons();
         yield* call(() => t.advance(hours(40)));
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The run's state is compared as the bytes it prints.
-        const straight = JSON.stringify({
-          crons: t.crons(),
-          ticks: yield* call(() => t.query(cronTicks.list, {})),
+        const straightCrons = t.crons();
+        const straightTicks = yield* call(() => t.query(cronTicks.list, {}));
+        const straight = yield* jsonText({
+          crons: straightCrons,
+          ticks: straightTicks,
         });
 
         const restoring = counted();
@@ -1242,10 +1246,13 @@ describe("snapshot cron state", () => {
         expect(restoring.draws()).toBe(0);
         expect(restored.crons()).toEqual(atSnapshot);
         yield* call(() => restored.advance(hours(40)));
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The run's state is compared as the bytes it prints.
-        const replayed = JSON.stringify({
-          crons: restored.crons(),
-          ticks: yield* call(() => restored.query(cronTicks.list, {})),
+        const replayedCrons = restored.crons();
+        const replayedTicks = yield* call(() =>
+          restored.query(cronTicks.list, {}),
+        );
+        const replayed = yield* jsonText({
+          crons: replayedCrons,
+          ticks: replayedTicks,
         });
 
         expect(replayed).toBe(straight);

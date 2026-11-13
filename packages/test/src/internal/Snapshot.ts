@@ -21,6 +21,7 @@ import {
 import * as Arr from "effect/Array";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
+import * as Json from "./Json.js";
 
 /**
  * The counters the kernel allocates identities from: the next document ID, the
@@ -441,7 +442,7 @@ export const encode = (image: Image, redact: Redact = asIs): Uint8Array => {
       })),
     })),
   };
-  const bodyBytes = new TextEncoder().encode(JSON.stringify(body));
+  const bodyBytes = new TextEncoder().encode(Json.stringify(body));
   const head = new TextEncoder().encode(`${header}${digestOf(bodyBytes)}\n`);
   const bytes = new Uint8Array(head.length + bodyBytes.length);
   bytes.set(head);
@@ -738,7 +739,7 @@ export type Inconsistency =
   | KernelRefusal.SnapshotJobInconsistent;
 
 const documentText = (doc: StoredDocument | null): string =>
-  doc === null ? "null" : JSON.stringify(convexToJson(doc as Value));
+  doc === null ? "null" : Json.stringify(convexToJson(doc as Value));
 
 /**
  * The counter a kernel-minted document ID carries, or `undefined` for an ID the
@@ -1044,7 +1045,7 @@ export const decode = (
   }
   let json: unknown;
   try {
-    json = JSON.parse(
+    json = Json.parse(
       new TextDecoder("utf-8", { fatal: true }).decode(bodyBytes),
     );
   } catch (error) {

@@ -7,6 +7,7 @@ import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Json from "../../../test/src/internal/Json";
 
 type Task = RunnerTestSuite["tasks"][number];
 
@@ -54,7 +55,7 @@ beforeAll(({}, suite) => {
     throw new Error(
       `kernelPlacement.ts places cases ${fileName(file)} no longer has: ${pipe(
         stale,
-        Arr.map((placement) => JSON.stringify(placement.name)),
+        Arr.map((placement) => Json.stringify(placement.name)),
         Arr.join(", "),
       )}`,
     );

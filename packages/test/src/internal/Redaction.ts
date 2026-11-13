@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
+import * as Json from "./Json.js";
 
 /**
  * What a marker writes in place of a secret in text and in values: a failure
@@ -475,7 +476,7 @@ export class Secrets {
    * position.
    */
   keep(value: JSONValue): number {
-    const key = JSON.stringify(value);
+    const key = Json.stringify(value);
     const known = this.refs.get(key);
     if (known !== undefined) return known;
     this.values.push(value);
@@ -638,8 +639,8 @@ export const unmark = (
     ? Result.succeed(unmarked)
     : Result.fail(
         new KernelRefusal.SnapshotSecretMissing({
-          ref: JSON.stringify(missing),
-          message: `The snapshot marks a secret at ${JSON.stringify(missing)}, which the secrets passed to restore do not hold. Restore with the secrets of the backend that exported it.`,
+          ref: Json.stringify(missing),
+          message: `The snapshot marks a secret at ${Json.stringify(missing)}, which the secrets passed to restore do not hold. Restore with the secrets of the backend that exported it.`,
         }),
       );
 };
@@ -650,7 +651,7 @@ export const unmark = (
  */
 export const scrubText = (text: string, secrets: Secrets): string =>
   Arr.reduce(secrets.searchable(), text, (scrubbed, secret) => {
-    const escaped = pipe(JSON.stringify(secret), Str.slice(1, -1));
+    const escaped = pipe(Json.stringify(secret), Str.slice(1, -1));
     return pipe(
       scrubbed,
       Str.split(secret),

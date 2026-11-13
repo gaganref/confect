@@ -12,6 +12,9 @@ import {
 import { v } from "convex/values";
 import * as Effect from "effect/Effect";
 import * as TestConfect from "../../src/TestConfect";
+import * as Schema from "effect/Schema";
+
+const jsonText = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
 
 let now = Date.UTC(2026, 0, 14, 22, 15, 0);
 const RealDate = globalThis.Date;
@@ -57,8 +60,8 @@ const history = Effect.gen(function* () {
     now += 1000;
     yield* test.finishInProgressScheduledFunctions();
   }
-  // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The bytes compared are the run times as plain JSON.
-  process.stdout.write(JSON.stringify(ticks));
+  const output = yield* jsonText(ticks);
+  process.stdout.write(output);
 }).pipe(
   Effect.provide(
     TestConfect.layer(schema, defineSchema({}), modules, {

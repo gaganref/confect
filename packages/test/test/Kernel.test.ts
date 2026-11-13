@@ -40,6 +40,7 @@ import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
+import * as Json from "../src/internal/Json";
 
 type Latch = { readonly promise: Promise<void>; readonly release: () => void };
 
@@ -522,7 +523,7 @@ describe("record validators", () => {
             isPublic: true,
             _handler: () => null,
             exportArgs: () =>
-              JSON.stringify({
+              Json.stringify({
                 type: "object",
                 value: { x: { fieldType: { type: "future" }, optional: true } },
               }),
@@ -1459,7 +1460,7 @@ describe("commit timestamps", () => {
     ]);
     expect(one.stdout).toBe(two.stdout);
     const { steps, state } = jsonToConvex(
-      JSON.parse(one.stdout),
+      Json.parse(one.stdout),
     ) as unknown as {
       steps: ReadonlyArray<unknown>;
       state: { stamps: ReadonlyArray<{ at: bigint }> };

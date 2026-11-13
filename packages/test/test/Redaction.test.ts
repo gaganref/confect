@@ -29,6 +29,9 @@ import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 
+const jsonText = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+import * as Json from "../src/internal/Json";
+
 // Each canary reaches the kernel by one route: a handler argument it never
 // stores, a stored row, a test provider's answer.
 const argumentCanary = "canary-argument-7f3a9c2e";
@@ -398,7 +401,7 @@ const report = (error: unknown): string => {
     stack?: string;
     data?: Value;
   };
-  return `${message}\n${stack ?? ""}\n${JSON.stringify(convexToJson(data ?? null))}`;
+  return `${message}\n${stack ?? ""}\n${Json.stringify(convexToJson(data ?? null))}`;
 };
 
 /**
@@ -411,18 +414,18 @@ const thrownText = (thrown: unknown): string =>
 
 const causeText = (because: Subscriptions.Invalidation): string =>
   because.kind === "commit"
-    ? JSON.stringify(
+    ? Json.stringify(
         convexToJson({
           ...because.change,
           before: because.change.before as Value,
           after: because.change.after as Value,
         } as unknown as Value),
       )
-    : JSON.stringify(because);
+    : Json.stringify(because);
 
 const outcomeText = (outcome: Execution.Outcome): string =>
   outcome._tag === "returned"
-    ? JSON.stringify(convexToJson(outcome.value))
+    ? Json.stringify(convexToJson(outcome.value))
     : report(outcome.error);
 
 /**
@@ -767,8 +770,7 @@ describe("redaction routes", () => {
         const subscription = yield* call(() =>
           t.subscriber().subscribe(app.byToken, { token: indexCanary }),
         );
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The records are printed as a report would print them.
-        const records = JSON.stringify([
+        const records = yield* jsonText([
           prepared.reads,
           Arr.map(t.held(), ({ reads }) => reads),
           subscription.current().reads,
@@ -857,8 +859,7 @@ describe("redaction routes", () => {
         const prepared = yield* call(() =>
           t.prepare(app.findDeep, { token: deepIndexCanary }),
         );
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The records are printed as a report would print them.
-        const records = JSON.stringify(prepared.reads);
+        const records = yield* jsonText(prepared.reads);
         expect(records).not.toContain(deepIndexCanary);
         expect(records).toContain(Redaction.marker);
       }),
@@ -937,16 +938,16 @@ describe("redaction routes", () => {
             Str.indexOf("\n"),
             Option.getOrElse(() => -1),
           ) + 1;
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The edit works on the body's raw JSON, as a writer of marked snapshots would.
-        const body = JSON.parse(pipe(snapshot, Str.slice(bodyStart)));
+        const body = yield* Schema.decodeEffect(
+          Schema.fromJsonString(Schema.Any),
+        )(pipe(snapshot, Str.slice(bodyStart)));
         for (const entry of body.tables)
           for (const row of entry.rows)
             if (row.doc._id === id) row.doc._id = marker;
         for (const commit of body.log)
           for (const change of commit.changes)
             if (change.after?._id === id) change.after._id = marker;
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The marked body is written as raw bytes.
-        const edited = JSON.stringify(body);
+        const edited = yield* jsonText(body);
         const marked = new TextEncoder().encode(
           `confect-kernel-snapshot 2 sha256:${createHash("sha256")
             .update(edited)
@@ -1030,15 +1031,15 @@ describe("cron outcomes", () => {
           kind: "failed",
           error: expect.stringContaining(`failed with ${Redaction.marker}`),
         });
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The canary is searched for in the text a runner would print.
-        expect(JSON.stringify(t.crons())).not.toContain(cronCanary);
+        const cronsText = yield* jsonText(t.crons());
+        expect(cronsText).not.toContain(cronCanary);
         const bytes = t.exportSnapshot();
         const exported = new TextDecoder().decode(bytes);
         expect(exported).not.toContain(cronCanary);
         expect(exported).toContain('"error":{"$redacted":');
         const after = t.crons();
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The canary is searched for in the text a runner would print.
-        expect(JSON.stringify(after)).not.toContain(cronCanary);
+        const afterText = yield* jsonText(after);
+        expect(afterText).not.toContain(cronCanary);
 
         const restored = cronBackend();
         yield* call(() =>
