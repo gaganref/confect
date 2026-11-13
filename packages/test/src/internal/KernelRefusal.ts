@@ -131,6 +131,39 @@ export class InvalidCron extends Schema.TaggedError<
 }) {}
 
 /**
+ * The token a test presented was refused before any function ran, as the binary
+ * answers a client's request with 401. `code` is the binary's: `NoAuthProvider`
+ * when no provider's issuer and audience match the token, and
+ * `InvalidAuthHeader` for every other failure.
+ */
+export class InvalidToken extends Schema.TaggedError<
+  InvalidToken,
+  { readonly brand: unique symbol }
+>()("InvalidToken", {
+  code: Schema.Literals(["NoAuthProvider", "InvalidAuthHeader"]),
+  message: Schema.String,
+}) {}
+
+/**
+ * The app's `auth.config` declares a provider the binary would refuse at push.
+ * `index` is the provider's position, or -1 for the config itself.
+ */
+export class InvalidAuthConfig extends Schema.TaggedError<
+  InvalidAuthConfig,
+  { readonly brand: unique symbol }
+>()("InvalidAuthConfig", { index: Schema.Int, message: Schema.String }) {}
+
+/**
+ * The deployment's signing key is drawn on first use from a test world's random
+ * stream, and neither an invocation was bound nor the backend was given a world
+ * to draw it from. The kernel holds no generator of its own.
+ */
+export class SigningKeyRandomUnavailable extends Schema.TaggedError<
+  SigningKeyRandomUnavailable,
+  { readonly brand: unique symbol }
+>()("SigningKeyRandomUnavailable", { message: Schema.String }) {}
+
+/**
  * A cron job runs on a clock schedule, which Convex delays by a random draw,
  * and no test world was bound when the backend opened to draw it from. The
  * kernel holds no generator of its own.
@@ -173,29 +206,6 @@ export class SnapshotCronMismatch extends Schema.TaggedError<
   reason: Schema.Literals(["undeclared", "missing", "changed"]),
   message: Schema.String,
 }) {}
-
-/**
- * The token a test presented was refused before any function ran, as the binary
- * answers a client's request with 401. `code` is the binary's: `NoAuthProvider`
- * when no provider's issuer and audience match the token, and
- * `InvalidAuthHeader` for every other failure.
- */
-export class InvalidToken extends Schema.TaggedError<
-  InvalidToken,
-  { readonly brand: unique symbol }
->()("InvalidToken", {
-  code: Schema.Literals(["NoAuthProvider", "InvalidAuthHeader"]),
-  message: Schema.String,
-}) {}
-
-/**
- * The app's `auth.config` declares a provider the binary would refuse at push.
- * `index` is the provider's position, or -1 for the config itself.
- */
-export class InvalidAuthConfig extends Schema.TaggedError<
-  InvalidAuthConfig,
-  { readonly brand: unique symbol }
->()("InvalidAuthConfig", { index: Schema.Int, message: Schema.String }) {}
 
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
   RequiresBinary.make({
@@ -269,19 +279,6 @@ export class SnapshotWorldBusy extends Schema.TaggedError<
 >()("SnapshotWorldBusy", {
   version: Schema.Int,
   held: Schema.Array(Schema.String),
-  message: Schema.String,
-}) {}
-
-/**
- * A world drew its deployment signing key, which a snapshot does not carry yet.
- * Exporting would lose the key that verifies the tokens in its tables, and
- * restoring would keep a key the source never had.
- */
-export class SnapshotSigningKey extends Schema.TaggedError<
-  SnapshotSigningKey,
-  { readonly brand: unique symbol }
->()("SnapshotSigningKey", {
-  operation: Schema.Literals(["export", "restore"]),
   message: Schema.String,
 }) {}
 

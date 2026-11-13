@@ -266,13 +266,20 @@ const accessor = (
       ),
     // An upload to a URL from `generateUploadUrl`, or a download from one
     // `getUrl` answered, streams through the binary's storage endpoints, which
-    // the kernel does not simulate.
+    // the kernel does not simulate. An HTTP action reads a presented token's
+    // identity without refusing the request, which the kernel does not do yet.
     fetch: (path: unknown, init?: RequestInit) => {
       const endpoint =
         typeof path === "string" ? Storage.endpoint(path) : undefined;
-      return endpoint === undefined
-        ? reported(() => world.fetch(caller, path, init))
-        : Promise.reject(KernelRefusal.requiresBinary(endpoint));
+      if (endpoint !== undefined) {
+        return Promise.reject(KernelRefusal.requiresBinary(endpoint));
+      }
+      if (token !== undefined) {
+        return Promise.reject(
+          KernelRefusal.rowPending("an HTTP request that presents a token", 6),
+        );
+      }
+      return reported(() => world.fetch(caller, path, init));
     },
     jwks: () => world.deploymentKey.jwks(),
     advance: (ms: number) => reported(() => world.advance(ms)),

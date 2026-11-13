@@ -10,6 +10,7 @@ import {
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Execution from "./Execution.js";
+import { isSeed, type Seed } from "./Identity.js";
 import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type * as Scheduling from "./Scheduling.js";
@@ -105,6 +106,12 @@ export interface Image {
    * Every declared cron job with its run state, by component and name.
    */
   readonly crons: ReadonlyArray<CronImage>;
+  /**
+   * The seed of the deployment's signing key, or `null` before it was drawn. An
+   * export writes it as a secret marker, and a decoded image holds the seed the
+   * restore's secrets put back.
+   */
+  readonly signingKey: JSONValue | null;
 }
 
 /**
@@ -140,9 +147,8 @@ export type Participation =
  * the restoring app declares the same jobs.
  *
  * Owed by later rows, which add their state here when they land on `main`:
- * component init markers, and the deployment signing key's drawn seed as a
- * secret marker (#134). A row whose state comes from a declaration or a random
- * draw exports what was declared or drawn.
+ * component init markers. A row whose state comes from a declaration or a
+ * random draw exports what was declared or drawn.
  */
 export const contract = {
   state: {
@@ -251,8 +257,8 @@ export const contract = {
         "Commit listeners of `Sync`'s open sockets, live client state counted under `live.sockets`.",
     },
     deploymentKey: {
-      excluded:
-        "Drawn from the runtime's random stream on first use and not carried yet. A world that drew it refuses to export or restore (`SnapshotSigningKey`), so a signed token never outlives its key.",
+      exported:
+        "signingKey, its seed as a secret marker. A restore installs the seed from the source's `secrets()` and never draws.",
     },
   } satisfies Readonly<Record<string, Participation>>,
   /**
@@ -315,7 +321,7 @@ export const contract = {
   } satisfies Readonly<Record<string, Participation>>,
 } as const;
 
-const header = "confect-kernel-snapshot 3 sha256:";
+const header = "confect-kernel-snapshot 4 sha256:";
 
 const FunctionPathJson = Schema.Struct({
   componentPath: Schema.String,
@@ -381,6 +387,7 @@ const Body = Schema.Struct({
       world: Schema.NullOr(Schema.String),
     }),
   ),
+  signingKey: Schema.NullOr(Schema.Unknown),
   log: Schema.Array(
     Schema.Struct({
       version: Schema.Int,
@@ -517,6 +524,7 @@ export const encode = (
       image.crons,
       ({ componentPath, name }) => `${componentPath}\u0000${name}`,
     ) as Array<Body["crons"][number]>,
+    signingKey: image.signingKey,
     log: Arr.map(state.log, (commit) => ({
       version: commit.version,
       commitTs: commit.commitTs.toString(),
@@ -741,6 +749,7 @@ const unredactBody = (
         after: document(change.after),
       })),
     })),
+    signingKey: document(body.signingKey),
     files: Arr.map(body.files, (file) => {
       if (refusal !== undefined) return file;
       const bytes = unredact(file.bytes as JSONValue);
@@ -840,7 +849,16 @@ const imageOf = (body: Body, unredact: Unredact): Image => {
         last: cron.last as CronImage["last"],
       };
     }),
+    signingKey: signingKeyOf(body.signingKey),
   };
+};
+
+const signingKeyOf = (json: unknown): Seed | null => {
+  if (json === null) return null;
+  if (!isSeed(json)) {
+    throw new Error("the signing key's seed is not 64 hex digits");
+  }
+  return json;
 };
 
 /**

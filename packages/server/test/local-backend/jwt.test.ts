@@ -7,7 +7,10 @@ import * as Schema from "effect/Schema";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
-import { mint, type VerifierOutcome } from "../../../test/test/fixtures/minted";
+import {
+  mint,
+  type VerifierOutcome,
+} from "../../../../tools/local-backend/fixtures/minted";
 import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 const Answer = Schema.Struct({
@@ -35,7 +38,7 @@ layer(
         // A client's query request, as `ConvexHttpClient` sends it, so the
         // status of a refusal is visible.
         const ask = (token: string) =>
-          HttpClientRequest.post(`${LocalBackend.cloudUrl()}/api/query`).pipe(
+          HttpClientRequest.post("http://127.0.0.1:3210/api/query").pipe(
             HttpClientRequest.bearerToken(token),
             HttpClientRequest.bodyJsonUnsafe({
               path: "groups/components:identity",

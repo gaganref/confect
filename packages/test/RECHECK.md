@@ -768,7 +768,7 @@ bodies, and edge limits.
 ## Snapshots (row 6)
 
 `src/internal/Snapshot.ts` encodes the kernel's committed state and reads it
-back. A snapshot is a header line, `confect-kernel-snapshot 3 sha256:<digest>`,
+back. A snapshot is a header line, `confect-kernel-snapshot 4 sha256:<digest>`,
 then the body as JSON. The body holds the registered component paths, the
 version and latest commit timestamp, the clock's floor, the identity counters
 (the next document ID, the latest creation time handed out, the next held
@@ -1062,6 +1062,39 @@ subscription, a compound secret, a reused suspension, a recursive value, two
 union members sharing a field, and an index read on a secret field. None
 reaches the snapshot, a failure report, a diff or a read record.
 
+## Upstream 10.6.0 on the kernel lane
+
+The fork moved to upstream Confect 10.6.0 and Effect 4.1.4 after row 6's
+first parts landed. Upstream's release adds mock-backend cases that the
+inventory above never placed, so the lane met them on the merge.
+
+- `TestConfect JWT signing` waits for row 6's JWT signing and verification.
+- `TestConfect Blob storage` runs on the kernel since the storage row landed,
+  and so do two `mutation Blob transactions` cases. Of the rest, the four that
+  pass a deployment-wide `transactionLimits` option to `convexTest` wait for
+  row 6, which refuses that option. The two that store a file with no content
+  type are placed `binary`: the binary and the kernel store a `null`
+  `contentType`, which Confect's `_storage` schema refuses, where convex-test
+  stores none.
+- `mock search compatibility` and the search case of `mock query
+  compatibility` read through a text search, so they are placed `binary`
+  beside the Doc decoder's search case.
+- `mock query compatibility > pins the Effect clock inside TestConfect.run`
+  fakes `Date` after its layer built the backend. The kernel wrapped the realm's
+  `Date` only when the backend opened, so the test's fake replaced the wrapper
+  and the run read the moved host time. Each kernel function now wraps the
+  realm's `Date` again as it enters, as it installs `globalThis.Convex` again,
+  and the case runs on the kernel.
+- The local-backend fixture moved to `tools/local-backend` and deploys more
+  modules and components, so `SystemTableReadIntervals` was measured again on
+  the same binary. A root mutation and a stale-snapshot query now start at 21,
+  where `main`'s fixture measured 18 once the storage row's probe functions
+  joined it. The first nested call still adds 2.
+- The convex-test lane's two HTTP route error exceptions were checked on
+  convex-test 0.0.65. Upstream's release moves the lane to 0.0.67, which still
+  rejects the fetch with the thrown error, so both exceptions hold and name
+  0.0.67.
+
 ## JWT verification and signing (row 6)
 
 `src/internal/Identity.ts` holds the kernel's verifier and its deployment
@@ -1126,23 +1159,32 @@ binary's `mint` (`keybroker/src/deployment_jwt.rs`,
 time, as the binary signs at the function's timestamp
 (`isolate/src/environment/udf/async_syscall.rs:1149-1179`).
 
-A token can reach committed state, so no host randomness goes into it. The key
-is derived on first use from 32 bytes drawn from `KernelRuntime.random`, as the
-binary derives its key from the deployment's root secret: an HMAC of a label
-and an attempt counter, retried while the scalar is out of range
-(`keybroker/src/deployment_jwt.rs:162-176`). A runtime without `random` draws
-from a fixed seed, so a runtime that pins the clock and commit timestamps still
-replays, and `wallClock` draws from the host. The signature is
+A token can reach committed state, so no host randomness goes into it. On first
+use the key's seed is 32 values from the random stream of the invocation's world
+bound then, or else the backend's own world, the stream a cron delay draws from
+(row 5). The key is derived from the seed as the binary derives its key from
+the deployment's root secret: an HMAC of a label and an attempt counter,
+retried while the scalar is out of range
+(`keybroker/src/deployment_jwt.rs:162-176`). A backend with neither world
+refuses with `SigningKeyRandomUnavailable`, as a clock cron refuses with
+`CronRandomUnavailable`. `TestConfect.layer`'s kernel target gives its backend a
+world seeded by its `seed` option, so one seed draws one key. The signature is
 `@noble/curves` 2.4.0's ES256, whose nonce is RFC 6979's. The binary's signer
 draws a random nonce (`:308`), which no verifier can tell from a deterministic
-one. `test/fixtures/signedReplay.ts` stores signed tokens through a held and an
-applied attempt, and two processes print the same bytes.
+one. `test/fixtures/signedReplay.ts` stores signed tokens through
+`TestConfect.layer`, two processes with the default seed print the same bytes,
+and a process with another seed signs under another key.
+`components.test.ts:84` gives its backend a world through `convexTest`'s
+options, which convex-test ignores.
 
-Snapshots do not carry the deployment key yet. A world that drew it, by signing
-or serving its JWKS, refuses `exportSnapshot` and `restoreSnapshot` with
-`SnapshotSigningKey`, so a token in its tables never outlives the key that
-verifies it. The snapshot contract lists `deploymentKey`, `authConfig` and
-`providers` as excluded and owes the drawn seed as a secret marker.
+A snapshot carries the key. The seed is kept as a secret when it is drawn, so an
+export writes `signingKey` as a marker and no artifact shows the seed raw. A
+restore puts the seed back from the source's `secrets()` and installs it without
+drawing, so the restored backend verifies the tokens in its tables and signs
+under the same key. A restore without the secrets refuses with
+`SnapshotSecretMissing`. The field took the format to version 4. The snapshot
+contract lists `deploymentKey` as exported, and `authConfig` and `providers` as
+excluded, since the restoring backend loads its own `auth.config`.
 
 `test/fixtures/minted.ts` mints five tokens with keys the test makes: a valid
 control, a wrong issuer, a wrong audience, a foreign key under the declared
@@ -1360,36 +1402,3 @@ without it:
 | The narrower identity invalidation was visible: a time query past the cache age changes on the binary after an auth update | Every query of a socket reruns on an identity change, through the cache model                   | leg 1 on both targets and on the kernel; the narrower rule, and no cache                                                                              |
 | The probe failed instead of skipping off Linux                                                                             | Skipped with its reason before any backend starts                                               | a run with `process.platform` set to `darwin` and `win32`                                                                                             |
 | A rejected transition could leave a leg waiting and an earlier `agree` record standing                                     | Deadlines on every step and side, an `incomplete` record first, partial observations on failure | `syncProbeRecord.test.ts`; no incomplete record first, a failure left unrecorded, no side deadline; and the probe under the wrong start-version plant |
-
-## Upstream 10.6.0 on the kernel lane
-
-The fork moved to upstream Confect 10.6.0 and Effect 4.1.4 after row 6's
-first parts landed. Upstream's release adds mock-backend cases that the
-inventory above never placed, so the lane met them on the merge.
-
-- `TestConfect JWT signing` waits for row 6's JWT signing and verification.
-- `TestConfect Blob storage` runs on the kernel since the storage row landed,
-  and so do two `mutation Blob transactions` cases. Of the rest, the four that
-  pass a deployment-wide `transactionLimits` option to `convexTest` wait for
-  row 6, which refuses that option. The two that store a file with no content
-  type are placed `binary`: the binary and the kernel store a `null`
-  `contentType`, which Confect's `_storage` schema refuses, where convex-test
-  stores none.
-- `mock search compatibility` and the search case of `mock query
-  compatibility` read through a text search, so they are placed `binary`
-  beside the Doc decoder's search case.
-- `mock query compatibility > pins the Effect clock inside TestConfect.run`
-  fakes `Date` after its layer built the backend. The kernel wrapped the realm's
-  `Date` only when the backend opened, so the test's fake replaced the wrapper
-  and the run read the moved host time. Each kernel function now wraps the
-  realm's `Date` again as it enters, as it installs `globalThis.Convex` again,
-  and the case runs on the kernel.
-- The local-backend fixture moved to `tools/local-backend` and deploys more
-  modules and components, so `SystemTableReadIntervals` was measured again on
-  the same binary. A root mutation and a stale-snapshot query now start at 21,
-  where `main`'s fixture measured 18 once the storage row's probe functions
-  joined it. The first nested call still adds 2.
-- The convex-test lane's two HTTP route error exceptions were checked on
-  convex-test 0.0.65. Upstream's release moves the lane to 0.0.67, which still
-  rejects the fetch with the thrown error, so both exceptions hold and name
-  0.0.67.

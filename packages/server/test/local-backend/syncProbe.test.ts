@@ -19,7 +19,7 @@ import * as Duration from "effect/Duration";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
-import { mint } from "../../../test/test/fixtures/minted";
+import { mint } from "../../../../tools/local-backend/fixtures/minted";
 import { kernelApp, kernelTarget } from "../../../test/test/fixtures/syncApp";
 import * as Legs from "../../../test/test/fixtures/syncLegs";
 import * as SyncProbe from "./SyncProbe";

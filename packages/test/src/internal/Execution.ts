@@ -24,8 +24,8 @@ import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
 import * as Crons from "./Crons.js";
 import * as Globals from "./Globals.js";
-import * as Http from "./Http.js";
 import * as Identity from "./Identity.js";
+import * as Http from "./Http.js";
 import * as Invocation from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
@@ -87,11 +87,6 @@ const cronKey = (componentPath: string, name: string) =>
   `${componentPath}\u0000${name}`;
 
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
-
-/**
- * The stream a runtime without one draws from, so its draws replay.
- */
-const fixedSeed = () => 0;
 const TYPICAL_CONVEX_ID_LENGTH = 32;
 
 type Modules = Record<string, () => Promise<any>>;
@@ -667,12 +662,6 @@ export class World {
    */
   private cronsScheduled = false;
   /**
-   * The default export of the app's `auth.config`, loaded at open.
-   */
-  private authConfig: Promise<unknown> = Promise.resolve(undefined);
-  private providers: ReadonlyArray<Identity.Provider> | undefined;
-  readonly deploymentKey: Identity.DeploymentKey;
-  /**
    * The raw secrets this world has seen under a secret schema node. Replay
    * state, kept in memory and never written to an artifact.
    */
@@ -701,6 +690,14 @@ export class World {
    * restored world never hands out a version its source already used.
    */
   private identityEpoch = 0;
+  /**
+   * The default export of the app's `auth.config`, loaded at open.
+   */
+  private authConfig: Promise<unknown> = Promise.resolve(undefined);
+  private providers: ReadonlyArray<Identity.Provider> | undefined;
+  readonly deploymentKey = new Identity.DeploymentKey(() =>
+    this.drawSigningSeed(),
+  );
 
   constructor(
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
@@ -716,9 +713,6 @@ export class World {
     installConvexGlobal();
     installDate();
     this.components.set(ROOT, makeComponent(ROOT, schema, modules));
-    this.deploymentKey = new Identity.DeploymentKey(
-      runtime.random ?? fixedSeed,
-    );
   }
 
   register(
@@ -755,11 +749,10 @@ export class World {
   }
 
   /**
-   * Load every registered module of every component and the app's
-   * `auth.config`, once, before any function runs, check that each standing
-   * source names an exported function, and read each component's cron
-   * declarations. Nothing here draws a random value, so a restore can load
-   * without one.
+   * Load every registered module of every component, once, before any function
+   * runs, check that each standing source names an exported function, and read
+   * each component's cron declarations. Nothing here draws a random value, so a
+   * restore can load without one.
    */
   private load(): Promise<void> {
     if (this.opened === undefined) {
@@ -782,6 +775,49 @@ export class World {
         .then(() => this.readDeclarations());
     }
     return this.opened;
+  }
+
+  /**
+   * The caller a presented token makes, verified against the app's
+   * `auth.config` providers at the kernel's time, before anything runs. The
+   * binary verifies a client's token on every request, so a token that expires
+   * fails the next call after it does.
+   */
+  authenticate(caller: Caller, token: string): Promise<Caller> {
+    return this.open()
+      .then(() => this.authConfig)
+      .then((config) => {
+        this.providers ??= Identity.readProviders(config);
+        return Identity.verify(token, this.providers, this.now());
+      })
+      .then((identity) => ({ ...caller, identity, token }));
+  }
+
+  /**
+   * The deployment signing key's seed: 32 values from the random stream of the
+   * invocation's world bound now, or else the backend's own, as a cron delay
+   * draws. The seed is kept as a secret, so a snapshot writes it as a marker
+   * and no artifact shows it raw.
+   */
+  private drawSigningSeed(): Identity.Seed {
+    const world = Invocation.current()?.world ?? this.own;
+    if (world === undefined) {
+      throw KernelRefusal.SigningKeyRandomUnavailable.make({
+        message:
+          "The deployment's signing key is drawn from a test world's random stream, and no invocation is bound and this backend was given no world to draw it from. The kernel holds no generator. Pass `world` to `convexTest`, or use `TestConfect.layer`'s kernel target, whose world is seeded.",
+      });
+    }
+    const seed = pipe(
+      Arr.makeBy(32, () =>
+        pipe(
+          Math.floor(world.random() * 256).toString(16),
+          Str.padStart(2, "0"),
+        ),
+      ),
+      Arr.join(""),
+    );
+    this.secrets.keep(seed);
+    return seed;
   }
 
   private readDeclarations() {
@@ -931,22 +967,6 @@ export class World {
       : new Error(
           `Cron job "${name}" has no next run, though its schedule passed saffron's \`any\` when it was read.`,
         );
-  }
-
-  /**
-   * The caller a presented token makes, verified against the app's
-   * `auth.config` providers at the kernel's time, before anything runs. The
-   * binary verifies a client's token on every request, so a token that expires
-   * fails the next call after it does.
-   */
-  authenticate(caller: Caller, token: string): Promise<Caller> {
-    return this.open()
-      .then(() => this.authConfig)
-      .then((config) => {
-        this.providers ??= Identity.readProviders(config);
-        return Identity.verify(token, this.providers, this.now());
-      })
-      .then((identity) => ({ ...caller, identity, token }));
   }
 
   /**
@@ -1358,7 +1378,6 @@ export class World {
    */
   exportSnapshot(): Uint8Array {
     this.refuseBusy(0, "export");
-    this.refuseSigningKey("export");
     const names = new Map<string, Invocation.World>();
     const jobs = new Map<DocumentId, Snapshot.JobTarget>();
     for (const byTable of this.state.tables.values()) {
@@ -1437,6 +1456,14 @@ export class World {
         jobs,
         files,
         crons,
+        signingKey:
+          this.deploymentKey.seed === undefined
+            ? null
+            : {
+                [Redaction.markerKey]: this.secrets.keep(
+                  this.deploymentKey.seed,
+                ),
+              },
       },
       (componentPath, table, json) =>
         Redaction.mark(
@@ -1481,7 +1508,6 @@ export class World {
     secrets: Redaction.Secrets,
   ) {
     this.refuseBusy(this.state.version, "restore");
-    this.refuseSigningKey("restore");
     const decoded = Snapshot.decode(bytes, (json) =>
       Redaction.unmark(json, secrets),
     );
@@ -1558,6 +1584,13 @@ export class World {
     for (const [key, cron] of cronJobs) this.cronJobs.set(key, cron);
     this.cronsScheduled = true;
     this.secrets = secrets.copy();
+    // The snapshot's key, put back from the secrets, never a fresh draw.
+    // `Snapshot.decode` checked that it is a seed.
+    this.deploymentKey.install(
+      image.signingKey === null
+        ? undefined
+        : (image.signingKey as Identity.Seed),
+    );
   }
 
   /**
@@ -1662,21 +1695,6 @@ export class World {
       }
     }
     return restored;
-  }
-
-  /**
-   * Refuse a snapshot once the deployment key was drawn, since the snapshot
-   * does not carry it.
-   */
-  private refuseSigningKey(operation: "export" | "restore") {
-    if (!this.deploymentKey.drawn) return;
-    throw KernelRefusal.SnapshotSigningKey.make({
-      operation,
-      message:
-        operation === "export"
-          ? "This test backend drew its deployment signing key, which a snapshot does not carry yet, so the tokens it signed could not be verified after a restore. Export before the first `ctx.auth.signJwt` or `jwks()`."
-          : "This test backend drew its deployment signing key, which the snapshot would not replace. Restore into a backend that has not signed or served its JWKS.",
-    });
   }
 
   /**

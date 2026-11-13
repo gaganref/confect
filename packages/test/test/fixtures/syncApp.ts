@@ -8,7 +8,7 @@ import schema from "../../../../tools/local-backend/fixtures/sync/convex/schema"
 import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
 import type * as Kernel from "../../src/internal/Kernel";
 import * as Redaction from "../../src/internal/Redaction";
-import { provider } from "./minted";
+import { provider } from "../../../../tools/local-backend/fixtures/minted";
 import type { Target } from "./syncLegs";
 
 const secretArgs = (fields: Record<string, Schema.Top>) => () =>

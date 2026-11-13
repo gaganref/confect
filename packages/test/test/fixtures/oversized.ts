@@ -1,6 +1,6 @@
-/* oxlint-disable effecttsgo/prefer-effect-array, effecttsgo/strict-boolean-expressions -- #134 (the JWT row) wrote this file before main moved to the Effect 4.1 lint rules. #134 brings it to those rules when it merges main, so row 7 leaves its code as #134 has it rather than rewrite it twice. */
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- Web Crypto generates no primes, and a 16,384-bit key from it takes minutes.
 import { checkPrimeSync, generatePrimeSync, randomBytes } from "node:crypto";
+import * as Arr from "effect/Array";
 
 const e = 65537n;
 
@@ -16,7 +16,7 @@ const modPow = (base: bigint, exponent: bigint, modulus: bigint) => {
   let result = 1n;
   let square = base % modulus;
   for (let rest = exponent; rest > 0n; rest >>= 1n) {
-    if (rest & 1n) result = (result * square) % modulus;
+    if ((rest & 1n) === 1n) result = (result * square) % modulus;
     square = (square * square) % modulus;
   }
   return result;
@@ -67,7 +67,7 @@ export const oversizedRsa = (bits: number) => {
       if (usable(prime)) return prime;
     }
   });
-  const partial = primes.reduce((product, prime) => product * prime, 1n);
+  const partial = Arr.reduce(primes, 1n, (product, prime) => product * prime);
   const last = primeBetween(
     (1n << BigInt(bits - 1)) / partial + 1n,
     ((1n << BigInt(bits)) - 1n) / partial,
@@ -75,7 +75,7 @@ export const oversizedRsa = (bits: number) => {
   const factors = [...primes, last];
   const n = partial * last;
   // The signature by the CRT, one small exponentiation per factor.
-  const parts = factors.map((prime) => {
+  const parts = Arr.map(factors, (prime) => {
     const rest = n / prime;
     return {
       prime,
@@ -84,10 +84,11 @@ export const oversizedRsa = (bits: number) => {
     };
   });
   const root = (value: bigint) =>
-    parts.reduce(
+    Arr.reduce(
+      parts,
+      0n,
       (sum, { prime, exponent, weight }) =>
         sum + modPow(value % prime, exponent, prime) * weight,
-      0n,
     ) % n;
   const length = bits / 8;
   return {

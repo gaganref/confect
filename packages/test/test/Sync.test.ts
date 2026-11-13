@@ -12,7 +12,7 @@ import * as Str from "effect/String";
 import type { KernelControls } from "../src/internal/ConvexTest";
 import * as Json from "../src/internal/Json";
 import * as Redaction from "../src/internal/Redaction";
-import { mint } from "./fixtures/minted";
+import { mint } from "../../../tools/local-backend/fixtures/minted";
 import { kernelApp, kernelTarget } from "./fixtures/syncApp";
 import * as Legs from "./fixtures/syncLegs";
 

@@ -6,6 +6,10 @@
   "bugs": {
     "url": "https://github.com/rjdellecese/confect/issues"
   },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0"
+  },
   "devDependencies": {
     "@convex-dev/workflow": "0.4.10",
     "@effect/vitest": "4.1.4",
@@ -72,9 +76,5 @@
   },
   "sideEffects": false,
   "type": "module",
-  "types": "./dist/index.d.ts",
-  "dependencies": {
-    "@noble/curves": "2.4.0",
-    "@noble/hashes": "2.4.0"
-  }
+  "types": "./dist/index.d.ts"
 }
