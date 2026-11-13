@@ -371,3 +371,15 @@ export default defineConfig({
   test: { setupFiles: ["@confect/test/setup"] },
 });
 ```
+
+A Node action runs with Node's globals. On the kernel a Confect Node action is one by its registration. For a plain Convex module, pass the modules' sources so the kernel reads its `"use node"` directive as Convex's bundler does:
+
+```ts
+TestConfect.layer(schema, convexSchema, modules, {
+  target: "kernel",
+  sources: import.meta.glob("../convex/**/*.ts", {
+    query: "?raw",
+    import: "default",
+  }),
+});
+```

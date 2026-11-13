@@ -536,6 +536,38 @@ module takes when it is imported is the guard. The kernel installs them again
 when a world opens and whenever a function starts, which guards again a global
 a test redefined with `Object.defineProperty`, as `vi.stubGlobal` does.
 
+Whenever a kernel function starts, the kernel checks each guarded global's
+descriptor. A replacement a test made, by `Object.defineProperty`, by `delete`
+and a fresh assignment, or by `vi.stubGlobal`, becomes the implementation
+beneath a fresh guard, so a stub keeps working outside a function and stays
+refused inside one. A replacement the kernel cannot redefine, a non-configurable
+one, refuses the function before it runs with `UnguardableGlobal` naming the
+global. A timer's promisified form (`util.promisify(setTimeout)`, which reads
+`util.promisify.custom`) is guarded too, and ends a query or mutation as the
+timer does.
+
+The exemption for Node's own modules reads the caller with `util.getCallSites`
+(Node 22.9 and later), kept when `IoBans.ts` loads, which does not go through
+`Error.prepareStackTrace`, so a user's override cannot fake it. The caller is
+the first frame outside `IoBans.ts`, and it must be one of the exact `node:`
+URLs the kernel's suites showed reading these globals: only
+`node:internal/deps/undici/undici`, Node's `fetch`, `Request` and `Response`. A
+script that names itself after a Node module does not pass.
+
+A module's runtime comes from its `"use node"` directive, read from its source
+when the world opens, as the bundler's `determineEnvironment` decides
+(`npm-packages/convex/src/bundler/index.ts:558-588`, with the directive from
+Babel's `program.directives` at `:508-548`). The test supplies the sources as a
+`?raw` glob of the same files, through the kernel shim's `sources`,
+`registerComponent`'s `{ sources }` or `TestConfect.layer`'s schema form. With
+sources, every function module needs one, `"use node"` in `http`, `crons`,
+`schema` or `auth.config` is refused with the bundler's message
+(`mustBeIsolate`, `:551-574`), and Confect's Node mark is a cross-check: a
+marked function in a module without the directive is refused with
+`ModuleRuntime`. Without sources, as convex-test's two-argument signature and
+the `DeclaredApp` and `App` forms give, whose modules are all Confect's, the
+mark decides. The fork's mock-backend layer passes sources.
+
 - In a query or mutation: `fetch` rejects with the binary's `TypeError`; a
   timer returns an ID and ends its function; multipart `formData()` rejects
   with the binary's error.
@@ -632,11 +664,14 @@ negative: `Metering.ts` asserts it.
 difference by name. `SystemTableReadIntervals` is the one this row adds. The
 binary's `databaseQueries` also counts the system-table intervals it reads to
 run a function: the backend state, the module, the UDF config and the
-component. On the local-backend fixture a root mutation starts at 20, its first
-nested call adds 2, and a stale-snapshot query starts at 20 again. That share
-depends on the deployment, so the kernel does not simulate it: adding the I/O
-bans group (`groups/ioBans`) to the fixture moved both starts from 19, and
-removing it again restores 19.
+component. That share depends on the deployment's modules: adding the I/O bans
+group (`groups/ioBans`) to the local-backend fixture moved a root mutation's
+start from 19 to 20, and removing it restored 19. So the kernel does not
+simulate it, and the probes no longer pin it. `groups/transactions:systemShare`,
+a mutation that touches no user table, measures it on the binary at run time:
+a root mutation's count at its start, what its first nested call adds, and a
+stale-snapshot query's count at its start. The kernel answers 0 for each, and
+each probe compares the binary less the measured share with the kernel.
 
 Each read maps a total `x` to `max(0, x - before) + after`, which never
 decreases and never moves two totals apart. So the binary's count stays between
@@ -645,8 +680,10 @@ the kernel's and the kernel's plus the system share:
 - While neither count saturates, the binary's is exactly the kernel's plus the
   share, and the binary refuses `TooManyReads` that many reads sooner.
 - A read that covers inserted IDs can saturate only the kernel's lower count,
-  and the gap shrinks. One insert and a read of its ID answer 20 on the binary
-  and 1 on the kernel, a gap of 19.
+  and the gap shrinks. One insert and a read of its ID answer the root share on
+  the binary and 1 on the kernel, a gap of the share less 1. These saturation
+  checks stay separate from the additive ones, since there the share is no
+  constant offset.
 - Once a read saturates both, they agree. 100 inserts and a read of one answer
   100 on both.
 

@@ -165,9 +165,14 @@ multipart `formData()` rejects with the binary's error. Queries, mutations and
 isolate actions find no `setImmediate` or `queueMicrotask`, as the binary's
 isolate defines neither, while a Node action has Node's. `RegisteredNodeFunction`
 in `@confect/server` marks a Node action so the kernel can tell. Each of these
-globals is an accessor that returns one guard, installed by the new
+globals is an accessor that returns a guard, installed by the new
 `@confect/test/setup` before any test module loads, so a reference a module
-kept, a nested call, a stub and a handler's own assignment are all checked. The
+kept, a nested call, a stub and a handler's own assignment are all checked. A
+replaced global is guarded again when the next function starts, a
+non-configurable one refuses the function with `UnguardableGlobal`, and a
+promisified timer is guarded too. A module's runtime comes from its
+`"use node"` directive when the test passes its sources (`sources`, a `?raw`
+glob), with Confect's mark as a cross-check. The
 clears stay allowed and actions keep the host's `fetch` and timers. The
 local-backend suite pins each behaviour on the binary. This is the I/O bans row
 of Frame's backend testing kernel (Frame ADR 0012, row 6). Changeset:
