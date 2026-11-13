@@ -1,4 +1,3 @@
-// oxlint-disable effecttsgo/global-fetch, effecttsgo/global-console, effecttsgo/new-promise, effecttsgo/async-function -- The ports' live providers make the raw fetch a port replaces, and the handlers log and wait as an action's code does.
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import {
@@ -15,6 +14,7 @@ import { inlineSources } from "./fixtures/inlineSources";
 import { loopback } from "./fixtures/loopback";
 
 const live = vi.fn((input: { readonly url: string }) =>
+  // oxlint-disable-next-line effecttsgo/global-fetch -- The port's live provider makes the raw fetch the port replaces.
   fetch(input.url).then((response) => response.text()),
 );
 
@@ -58,10 +58,12 @@ const continued: Array<Promise<void>> = [];
 const logLater = (label: string) => {
   continued.push(
     afterReturn.then(() => {
+      // oxlint-disable-next-line effecttsgo/global-console -- The handler logs through the runtime's console, as an action's code does.
       console.log(`${label} after it returned`);
       return undefined;
     }),
   );
+  // oxlint-disable-next-line effecttsgo/global-console -- The handler logs through the runtime's console, as an action's code does.
   console.log(`${label} before it returned`);
   return label;
 };
@@ -85,7 +87,9 @@ const modules = {
       }),
       chargeAfterRefusal: actionGeneric({
         args: { url: v.string() },
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
         handler: async (_ctx, { url }) => {
+          // oxlint-disable-next-line effecttsgo/global-fetch -- The action makes the raw fetch the test kernel refuses and the binary performs.
           await fetch(url).catch(() => null);
           const call = charges.call({ url });
           late.push(
@@ -99,26 +103,35 @@ const modules = {
       }),
       chargeThenFetch: actionGeneric({
         args: { url: v.string() },
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
         handler: async (_ctx, { url }) => {
           // Held, never awaited.
           void charges.call({ url });
           await gate;
+          // oxlint-disable-next-line effecttsgo/global-fetch -- The action makes the raw fetch the test kernel refuses and the binary performs.
           return fetch(url).then((response) => response.text());
         },
       }),
       hangAfterRefusal: actionGeneric({
         args: { url: v.string() },
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
         handler: async (_ctx, { url }) => {
+          // oxlint-disable-next-line effecttsgo/global-fetch -- The action makes the raw fetch the test kernel refuses and the binary performs.
           await fetch(url).catch(() => null);
           // The handler never settles, and the action ends anyway.
+          // oxlint-disable-next-line effecttsgo/new-promise -- A promise that never settles, as the case's handler never does.
           return new Promise<never>(() => {});
         },
       }),
       logAroundRefusal: actionGeneric({
         args: { url: v.string() },
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
         handler: async (_ctx, { url }) => {
+          // oxlint-disable-next-line effecttsgo/global-console -- The handler logs through the runtime's console, as an action's code does.
           console.log("before the refusal");
+          // oxlint-disable-next-line effecttsgo/global-fetch -- The action makes the raw fetch the test kernel refuses and the binary performs.
           await fetch(url).catch(() => null);
+          // oxlint-disable-next-line effecttsgo/global-console -- The handler logs through the runtime's console, as an action's code does.
           console.log("after the refusal");
           return null;
         },

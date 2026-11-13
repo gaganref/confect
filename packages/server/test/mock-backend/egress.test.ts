@@ -1,4 +1,3 @@
-// oxlint-disable effecttsgo/new-promise -- The loopback server's callbacks are Node's.
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The case counts requests on a real loopback server.
 import { createServer, type Server } from "node:http";
 import { describe, expect, it } from "@effect/vitest";
@@ -18,6 +17,7 @@ import * as TestConfect from "./TestConfect";
 const loopback = Effect.acquireRelease(
   Effect.promise(
     () =>
+      // oxlint-disable-next-line effecttsgo/new-promise -- Node's http server reports listening and closing through callbacks.
       new Promise<{ readonly server: Server; readonly port: number }>(
         (resolve) => {
           const server = createServer((request, response) =>
@@ -34,6 +34,7 @@ const loopback = Effect.acquireRelease(
   ),
   ({ server }) =>
     Effect.promise(
+      // oxlint-disable-next-line effecttsgo/new-promise -- Node's http server reports listening and closing through callbacks.
       () => new Promise<void>((resolve) => server.close(() => resolve())),
     ),
 );
