@@ -14,6 +14,7 @@ import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import type * as PlatformError from "effect/PlatformError";
+import type * as Schema from "effect/Schema";
 import type { BuildError } from "../BuildError.js";
 import { pipe } from "effect/Function";
 import * as HashSet from "effect/HashSet";
@@ -1334,13 +1335,16 @@ const generateTesting = Effect.fnUntraced(function* (
   yield* visit(convexDirectory, "", (yield* ConvexDirectory.target).kind, "");
   const secrets = yield* secretsOf(input.leaves, sources, relative);
   imports.push(...secrets.imports);
-  // A component's subject is row 9's component profile, with no groups. An
-  // app without @confect/test keeps the registry alone, so it still compiles.
-  const subject =
-    (yield* ConvexDirectory.target).kind === "app" &&
-    Bundler.canImport("@confect/test", path.join(generated, "testing.ts"))
+  // A backend without @confect/test keeps the registry alone, so it still
+  // compiles. A component's subject has no groups.
+  const subject = !Bundler.canImport(
+    "@confect/test",
+    path.join(generated, "testing.ts"),
+  )
+    ? { imports: [], declaration: "" }
+    : (yield* ConvexDirectory.target).kind === "app"
       ? yield* testBackend(app, input, mounts)
-      : { imports: [], declaration: "" };
+      : yield* testComponent(app, input, mounts);
   imports.push(...subject.imports.filter((line) => !imports.includes(line)));
   const registry = `{ httpMounts: [${httpMounts.join(",")}], schema, convexSchema, modules: ${yield* moduleMap(convexDirectory)}, components: {${components.join("\n")}}${secrets.policy === undefined ? "" : `, secrets: ${secrets.policy}`} }`;
   yield* writeFileStringAndLog(
@@ -1395,21 +1399,8 @@ const testBackend = Effect.fnUntraced(function* (
     'import { TestBackend as $TestBackend } from "@confect/test";',
     'import refs from "./refs.js";',
   ];
-  const ports: Array<string> = [];
-  for (const [index, port] of planned.ports.entries()) {
-    const [file = "", exportName = ""] = port.input.split("#");
-    if (!(yield* fs.exists(path.join(confectDirectory, file))))
-      return yield* new CodegenError.InvalidDeclarationError({
-        declarationPath: `confect/${file}`,
-        reason: `the port ${quote(port.name)} takes its input codec from this file, which does not exist.`,
-      });
-    imports.push(
-      `import * as $port${index} from ${quote(`../${file.replace(/\.ts$/, ".js")}`)};`,
-    );
-    ports.push(
-      `${quote(port.name)}: $TestBackend.port({ name: ${quote(port.name)}, input: $port${index}[${quote(exportName)}], outcomes: ${literal(port.outcomes)} }),`,
-    );
-  }
+  const { imports: portImports, lines: ports } = yield* portsOf(planned.ports);
+  imports.push(...portImports);
   const groupLines = planned.groups.map(
     ({ path: groupPath, segments, owner, functions, open }) =>
       `${quote(groupPath)}: $TestBackend.group({ path: ${quote(groupPath)}, owner: ${quote(owner)}, functions: { ${functions
@@ -1419,12 +1410,7 @@ const testBackend = Effect.fnUntraced(function* (
         )
         .join(", ")} }, open: ${literal(open)} }),`,
   );
-  const owner = Env.name(App.env(app));
-  const settings = Env.descriptors(App.env(app)).map(([name, descriptor]) => ({
-    name,
-    owner,
-    optional: descriptor.optional,
-  }));
+  const settings = settingsOf(app);
   return {
     imports,
     declaration: [
@@ -1440,6 +1426,179 @@ const testBackend = Effect.fnUntraced(function* (
       "});",
     ].join("\n"),
   };
+});
+
+/**
+ * The backend's settings, each with the env that declares it.
+ */
+const settingsOf = (app: App.Any) => {
+  const owner = Env.name(App.env(app));
+  return Env.descriptors(App.env(app)).map(([name, descriptor]) => ({
+    name,
+    owner,
+    optional: descriptor.optional,
+  }));
+};
+
+/**
+ * Each declared port's line in the subject, with the import of its input codec.
+ * A port whose codec file does not exist stops codegen.
+ */
+const portsOf = Effect.fnUntraced(function* (
+  declared: ReadonlyArray<ManifestSection.DeclaredPort>,
+) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const imports: Array<string> = [];
+  const lines: Array<string> = [];
+  for (const [index, port] of declared.entries()) {
+    const [file = "", exportName = ""] = port.input.split("#");
+    if (!(yield* fs.exists(path.join(confectDirectory, file))))
+      return yield* new CodegenError.InvalidDeclarationError({
+        declarationPath: `confect/${file}`,
+        reason: `the port ${quote(port.name)} takes its input codec from this file, which does not exist.`,
+      });
+    imports.push(
+      `import * as $port${index} from ${quote(`../${file.replace(/\.ts$/, ".js")}`)};`,
+    );
+    lines.push(
+      `${quote(port.name)}: $TestBackend.port({ name: ${quote(port.name)}, input: $port${index}[${quote(exportName)}], outcomes: ${literal(port.outcomes)} }),`,
+    );
+  }
+  return { imports, lines };
+});
+
+/**
+ * Write a component's `TestBackend` export: its exported functions, provider
+ * ports, callback slots, laws and the three kinds of proof it owes. A section
+ * may add laws and ports, but no owner, open function or access obligation,
+ * since a component owes no access proof.
+ */
+const testComponent = Effect.fnUntraced(function* (
+  app: App.Any,
+  input: TestingInput,
+  mounts: ReadonlyArray<{ readonly path: string; readonly kit: string }>,
+) {
+  const groups = TestingManifest.groupsOf(input.leaves);
+  const registry = yield* Effect.fromResult(
+    ManifestSections.collect(input.sections, input.leaves),
+  );
+  const facts = yield* Effect.fromResult(
+    TestingManifest.collectFacts(registry, input.modules, groups),
+  );
+  for (const { key, facts: each } of facts) {
+    const access = [
+      ...Object.keys(each.owners ?? {}),
+      ...(each.open ?? []),
+      ...(each.obligations ?? []).map(({ kind }) => kind),
+    ];
+    if (access.length > 0)
+      return yield* new CodegenError.InvalidManifestSectionError({
+        sectionKey: key,
+        reason: `testing declares ${access.join(", ")} for a component, which owes no access proof; a component's section may declare laws and ports only.`,
+      });
+  }
+  const planned = yield* Effect.fromResult(
+    TestingManifest.plan({ groups, facts, tables: input.tables, realm: false }),
+  );
+  const slots = yield* callbackSlots(input.leaves);
+  const imports = [
+    'import { TestComponent as $TestComponent } from "@confect/test";',
+    'import refs from "./refs.js";',
+    ...(slots.length === 0
+      ? []
+      : ['import * as $callbacks from "../callbacks.js";']),
+  ];
+  const { imports: portImports, lines: ports } = yield* portsOf(planned.ports);
+  if (ports.length > 0)
+    imports.push(
+      'import { TestBackend as $TestBackend } from "@confect/test";',
+      ...portImports,
+    );
+  const functions = planned.groups.flatMap(
+    ({ path: groupPath, segments, functions: names }) =>
+      names.map((name) => ({
+        ref: `${groupPath}:${name}`,
+        access: `refs.public${access(segments)}${access([name])}`,
+      })),
+  );
+  const settings = settingsOf(app);
+  const obligations = [
+    ...functions.map(({ ref }) => ({ kind: "export", ref })),
+    { kind: "laws" },
+    ...slots.map(({ id }) => ({ kind: "callback", slot: id })),
+  ];
+  return {
+    imports,
+    declaration: [
+      "export const TestBackend = $TestComponent.make(backend, {",
+      "  refs,",
+      `  functions: {${functions.map(({ ref, access: at }) => `\n    ${quote(ref)}: ${at},`).join("")}${functions.length === 0 ? "" : "\n  "}},`,
+      `  ports: {${ports.map((line) => `\n    ${line}`).join("")}${ports.length === 0 ? "" : "\n  "}},`,
+      `  slots: {${slots.map(({ id, exportName }) => `\n    ${quote(id)}: $TestComponent.slot($callbacks[${quote(exportName)}]),`).join("")}${slots.length === 0 ? "" : "\n  "}},`,
+      `  laws: ${literal(planned.laws)},`,
+      `  obligations: ${literal(obligations)},`,
+      `  mounts: ${literal(mounts)},`,
+      `  settings: ${literal(settings)},`,
+      "});",
+    ].join("\n"),
+  };
+});
+
+/**
+ * The component's callback slots: each contract a handle in one of its function
+ * arguments or tables names, by contract id, with the export of
+ * `confect/callbacks.ts` that declares it. A handle whose contract that file
+ * does not export stops codegen.
+ */
+const callbackSlots = Effect.fnUntraced(function* (
+  leaves: ReadonlyArray<LoadedLeafModule>,
+) {
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const held = new Map<string, string>();
+  const hold = (schema: Schema.Top, heldBy: string) => {
+    for (const contract of TestingManifest.callbackContracts(schema))
+      if (!held.has(contract.id)) held.set(contract.id, heldBy);
+  };
+  for (const fn of leaves.flatMap((leaf) =>
+    TestingManifest.confectFunctions(
+      { [leaf.pathSegments.at(-1)!]: leaf.spec },
+      leaf.pathSegments.slice(0, -1),
+    ),
+  ))
+    hold(fn.args, `the args of ${fn.segments.join("/")}:${fn.name}`);
+  const schema = yield* bundledDefault(
+    path.join(confectDirectory, GENERATED_DIRNAME, "schema.ts"),
+  );
+  if (DatabaseSchema.isDatabaseSchema(schema))
+    for (const table of Object.values(
+      DatabaseSchema.tables(schema as DatabaseSchema.AnyWithProps),
+    ))
+      hold(table.Fields, `the table ${table.tableName}`);
+  if (held.size === 0) return [];
+  const declared = new Map<string, string>();
+  const module = yield* bundledModule(
+    path.join(confectDirectory, "callbacks.ts"),
+  );
+  for (const [exportName, value] of Object.entries(module ?? {}))
+    if (Callback.isContract(value) && !declared.has(value.id))
+      declared.set(value.id, exportName);
+  const slots: Array<{ readonly id: string; readonly exportName: string }> = [];
+  for (const [id, heldBy] of [...held].sort(([a], [b]) =>
+    a < b ? -1 : Number(a > b),
+  )) {
+    const exportName = declared.get(id);
+    if (exportName === undefined)
+      return yield* new CodegenError.UndeclaredCallbackSlotError({
+        declarationPath: "confect/callbacks.ts",
+        contractId: id,
+        heldBy,
+      });
+    slots.push({ id, exportName });
+  }
+  return slots;
 });
 
 /**
@@ -1463,14 +1622,17 @@ interface SecretSource {
   readonly confect: string;
 }
 
-const bundledDefault = Effect.fnUntraced(function* (file: string) {
+const bundledModule = Effect.fnUntraced(function* (file: string) {
   const fs = yield* FileSystem.FileSystem;
   if (!(yield* fs.exists(file))) return undefined;
   const { module } = yield* Bundler.bundle(file).pipe(
     Effect.mapError((error) => fromBundlerError(file, error)),
   );
-  return module.default as unknown;
+  return module as Readonly<Record<string, unknown>>;
 });
+
+const bundledDefault = (file: string) =>
+  Effect.map(bundledModule(file), (module) => module?.["default"]);
 
 /**
  * A thunk of each Confect function codec of `functions` that holds a secret.

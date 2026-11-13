@@ -427,3 +427,45 @@ it.effect("assigns a task", () =>
 ### Configuration
 
 A session takes every app setting from `config`, and a required one is required by type. Codegen never reads `.env` or deployment state. A missing setting fails `TestConfigMissing` with the setting, the backend that declares it and this section's link. The session sets the values for its lifetime and restores the previous ones when it closes.
+
+## The generated component subject
+
+For a component (`App.make({ kind: "component" })`) that can import `@confect/test`, codegen writes the same `TestBackend` export, built by `TestComponent.make`. Its `kind` is `"component"`. It has no groups and no manifest digest, and it holds:
+
+- `functions`: every public function, keyed by `group:name`, such as `mail:send`.
+- `slots`: every callback contract a handle in the component's function args or tables names, keyed by contract id. Each slot has its `contract`, the `handle` a test stores where the component keeps one, and its `outcomes`: `"returned"` and each declared error tag.
+- `obligations`: an `export` proof per function, one `laws` proof, and a `callback` proof per slot. A component owes no access or realm proof, so its obligations cannot name either.
+- `laws`, `ports`, `mounts` and `settings`, as an app's subject has them.
+
+A slot's contract must be exported from `confect/callbacks.ts`. A handle whose contract it does not export stops codegen with `UndeclaredCallbackSlotError`. A manifest section may add laws and ports to a component, but no owner, open function or access obligation.
+
+`TestBackend.layer` opens the component as an app's subject opens: every module loads, each mount's `init` runs, then `seed`. The session's runtime is `TestComponent.ComponentRuntime`, which has no `withIdentity`, since a component never sees its caller's identity. The test adds no backend function. A slot's handle names the session's sink. Each call to it is held as a `callback` command and answered with the slot's planned outcome. The default is `returned`, with a value drawn from the contract's return codec under the session's `draws` seed. `TestComponent.answer(subject, slot, outcome)` plans a declared error instead, and `TestComponent.held` lists every held call.
+
+```ts
+import { TestBackend } from "../confect/_generated/testing";
+
+const onEvent = TestBackend.slots["mailer/onEvent"].handle;
+
+const exported = TestComponent.exports(TestBackend, {
+  "mail:count": [{ name: "empty", returns: 0, postimage: {} }],
+});
+
+const answered = TestComponent.callbacks(TestBackend, {
+  "mailer/onEvent": {
+    returned: {
+      name: "delivers",
+      call: "mail:send",
+      args: { message: "hi", onEvent },
+      postimage: { sent: [{ message: "hi", status: "delivered" }] },
+    },
+    Bounced: {
+      name: "records the bounce",
+      call: "mail:send",
+      args: { message: "hi", onEvent },
+      postimage: { sent: [{ message: "hi", status: "bounced" }] },
+    },
+  },
+});
+```
+
+`TestComponent.exports` takes at least one case per function, and `TestComponent.callbacks` takes one case per slot per outcome, so a missing function or outcome does not compile. Each case pays its obligation and runs on a fresh session through `run({ config, seed })`. An export case states a literal return and the postimage, or one of the function's declared errors. A callback case makes one exported call, checks the component called the slot with the planned outcome, and states the postimage. A postimage lists each table's documents without system fields, and a table it leaves out is empty. `TestComponent.laws(subject, seed)` pays `laws` and hands the laws to Frame's testing door, which checks them.

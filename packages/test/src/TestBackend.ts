@@ -1,19 +1,12 @@
 import type { ManifestSection, Ref } from "@confect/core";
 import type { DatabaseSchema, RegisteredConvexFunction } from "@confect/server";
-import { makeFunctionReference } from "convex/server";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Schema from "effect/Schema";
-import { open, registerKit } from "./internal/Session.js";
-import {
-  TestConfect,
-  type ComponentKit,
-  type DeclaredApp,
-  type RegisterComponent,
-} from "./TestConfect.js";
-
-declare const process: { env: Record<string, string | undefined> };
+import type * as Schema from "effect/Schema";
+import { openSession } from "./internal/Backend.js";
+import type { TestConfigMissing } from "./internal/Backend.js";
+import { TestConfect, type DeclaredApp } from "./TestConfect.js";
 
 /**
  * Who answers for a group's access proof: the product, or the Frame door that
@@ -113,20 +106,7 @@ export type Config<S extends ReadonlyArray<Setting>> = {
   ]?: string;
 };
 
-/**
- * A session needs an app setting the test did not pass. Codegen never reads
- * `.env` or deployment state, so a test names each value.
- */
-export class TestConfigMissing extends Schema.TaggedError<TestConfigMissing>()(
-  "TestConfigMissing",
-  { setting: Schema.String, owner: Schema.String, docs: Schema.String },
-) {
-  override get message() {
-    return `The test backend needs the setting ${this.setting}, which ${this.owner} declares. Pass it in layer({ config }). See ${this.docs}.`;
-  }
-}
-
-const docs = "https://confect.dev/guides/testing#configuration";
+export { TestConfigMissing } from "./internal/Backend.js";
 
 /**
  * What a session opened: each registered component's standing sources, as its
@@ -180,6 +160,10 @@ export interface GeneratedBackend<
   L extends ReadonlyArray<Law> = ReadonlyArray<Law>,
   B extends ReadonlyArray<Obligation> = ReadonlyArray<Obligation>,
 > {
+  /**
+   * An app's subject. A component's is `TestComponent.GeneratedComponent`.
+   */
+  readonly kind: "app";
   readonly refs: F;
   readonly groups: T;
   readonly ports: P;
@@ -233,94 +217,6 @@ export const port = <N extends string, I, const O extends string>(
   value: ProviderPort<N, I, O>,
 ): ProviderPort<N, I, O> => value;
 
-const Steps = Schema.Array(
-  Schema.Union([
-    Schema.Struct({
-      componentPath: Schema.String,
-      nested: Schema.Boolean,
-      init: Schema.NullOr(
-        Schema.Struct({ functionName: Schema.String, args: Schema.Unknown }),
-      ),
-    }),
-    Schema.Struct({ componentPath: Schema.String, failure: Schema.String }),
-  ]),
-);
-
-const STEPS = "confectDeploy:steps";
-
-const hasDeployModule = (modules: Readonly<Record<string, unknown>>) =>
-  "confectDeploy.ts" in modules || "confectDeploy.js" in modules;
-
-/**
- * Run the inits a push runs, through the deploy modules production registers,
- * with each nested component's steps before its own `init`.
- */
-const initialize = (
-  raw: any,
-  hasSteps: (componentPath: string) => boolean,
-  initialized: Array<string>,
-) => {
-  const call = (componentPath: string, functionName: string, args: unknown) =>
-    Effect.promise<unknown>(() =>
-      raw.runInComponent(componentPath, (ctx: any) =>
-        ctx.runMutation(makeFunctionReference<"mutation">(functionName), args),
-      ),
-    );
-  const visit = (prefix: string): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      if (!hasSteps(prefix)) return;
-      const steps = yield* Schema.decodeUnknownEffect(Steps)(
-        yield* call(prefix, STEPS, {}),
-      ).pipe(Effect.orDie);
-      for (const step of steps) {
-        const path =
-          prefix === ""
-            ? step.componentPath
-            : `${prefix}/${step.componentPath}`;
-        if ("failure" in step)
-          return yield* Effect.die(
-            new Error(`${path}: init failed: ${step.failure}`),
-          );
-        if (step.nested) yield* visit(path);
-        if (step.init === null) continue;
-        yield* call(path, step.init.functionName, step.init.args);
-        initialized.push(path);
-      }
-    });
-  return visit("");
-};
-
-const withSettings = (
-  settings: ReadonlyArray<Setting>,
-  config: Readonly<Record<string, string | undefined>>,
-) =>
-  Effect.gen(function* () {
-    for (const { name, owner, optional } of settings) {
-      if (!optional && config[name] === undefined)
-        return yield* new TestConfigMissing({ setting: name, owner, docs });
-    }
-    yield* Effect.acquireRelease(
-      Effect.sync(() => {
-        const previous = settings.map(
-          ({ name }) => [name, process.env[name]] as const,
-        );
-        for (const { name } of settings) {
-          const value = config[name];
-          if (value === undefined) delete process.env[name];
-          else process.env[name] = value;
-        }
-        return previous;
-      }),
-      (previous) =>
-        Effect.sync(() => {
-          for (const [name, value] of previous) {
-            if (value === undefined) delete process.env[name];
-            else process.env[name] = value;
-          }
-        }),
-    );
-  });
-
 /**
  * Assemble the generated subject. Only `_generated/testing.ts` calls this.
  */
@@ -346,69 +242,16 @@ export const make = <
   },
 ): GeneratedBackend<F, T, P, S, C, L, B> => ({
   ...declaration,
+  kind: "app",
   app,
   layer: ({ config, seed }) => {
     const service = TestConfect<S>();
     return Layer.effectContext(
-      Effect.gen(function* () {
-        yield* withSettings(declaration.settings, config);
-        const standing: Record<string, ReadonlyArray<string>> = {};
-        const record =
-          (register: RegisterComponent): RegisterComponent =>
-          (componentPath, schema, modules, options) => {
-            standing[componentPath] = options?.standing ?? [];
-            register(componentPath, schema, modules, options);
-          };
-        const deployModules = new Set<string>(
-          hasDeployModule(app.modules) ? [""] : [],
-        );
-        const opened = open(app.schema, app.convexSchema, app.modules, {
-          target: "kernel",
-          httpMounts: app.httpMounts,
-          ...(app.secrets === undefined ? {} : { secrets: app.secrets }),
-          register: (registerComponent) => {
-            const recording = record(registerComponent);
-            const seen: RegisterComponent = (
-              path,
-              schema,
-              modules,
-              options,
-            ) => {
-              if (hasDeployModule(modules)) deployModules.add(path);
-              recording(path, schema, modules, options);
-            };
-            for (const [name, kit] of Object.entries(app.components)) {
-              registerKit(seen, name, kit as ComponentKit);
-            }
-          },
-        });
-        const initialized: Array<string> = [];
-        yield* initialize(
-          opened.raw,
-          (path) => deployModules.has(path),
-          initialized,
-        );
-        if (seed !== undefined) yield* opened.service.run(seed);
-        return Context.make(service, opened.service).pipe(
-          Context.add(Session, {
-            standing,
-            crons: opened.raw
-              .crons()
-              .map(
-                ({
-                  componentPath,
-                  name,
-                  udfPath,
-                }: {
-                  readonly componentPath: string;
-                  readonly name: string;
-                  readonly udfPath: string;
-                }) => ({ componentPath, name, udfPath }),
-              ),
-            initialized,
-          }),
-        );
-      }),
+      Effect.map(
+        openSession(app, declaration.settings, config, seed),
+        ({ service: opened, session }) =>
+          Context.make(service, opened).pipe(Context.add(Session, session)),
+      ),
     );
   },
 });

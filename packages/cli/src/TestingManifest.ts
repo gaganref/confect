@@ -1,4 +1,4 @@
-import type { GroupSpec, ManifestSection } from "@confect/core";
+import { Callback, type GroupSpec, type ManifestSection } from "@confect/core";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
@@ -355,6 +355,49 @@ export const hasSecret = (schema: Schema.Top): boolean => {
     }
   };
   return walk(schema.ast);
+};
+
+/**
+ * Every callback contract a handle in `schema` names, through structs, records,
+ * arrays, tuples, unions, declarations' type parameters and suspended schemas.
+ * A handle's contract sits on its encoded string.
+ */
+export const callbackContracts = (schema: Schema.Top): Array<Callback.Any> => {
+  const found: Array<Callback.Any> = [];
+  const seen = new Set<SchemaAST.AST>();
+  const walk = (ast: SchemaAST.AST): void => {
+    if (seen.has(ast)) return;
+    seen.add(ast);
+    const contract = Object.values(SchemaAST.resolve(ast) ?? {}).find(
+      Callback.isContract,
+    );
+    if (contract !== undefined) {
+      found.push(contract);
+      return;
+    }
+    switch (ast._tag) {
+      case "Objects":
+        for (const property of ast.propertySignatures) walk(property.type);
+        for (const index of ast.indexSignatures) walk(index.type);
+        return;
+      case "Arrays":
+        for (const element of [...ast.elements, ...ast.rest]) walk(element);
+        return;
+      case "Union":
+        for (const member of ast.types) walk(member);
+        return;
+      case "Declaration":
+        for (const parameter of ast.typeParameters) walk(parameter);
+        return;
+      case "Suspend":
+        walk(ast.thunk());
+        return;
+      default:
+        return;
+    }
+  };
+  walk(Schema.toEncoded(schema).ast);
+  return found;
 };
 
 /**

@@ -60,6 +60,23 @@ import {
 const ROOT = "";
 
 /**
+ * The component path a callback sink's handles name. No registered component
+ * can take it, since a component name is an identifier.
+ */
+export const SINK = "~sink";
+
+/**
+ * Answers a call to a handle under {@link SINK}, in place of a registered
+ * function: `udfPath` is the slot the handle names. The answer is the call's
+ * encoded return, or a rejection the caller receives as the function's.
+ */
+export type Sink = (command: {
+  readonly slot: string;
+  readonly functionType: "query" | "mutation" | "action";
+  readonly args: unknown;
+}) => Promise<unknown>;
+
+/**
  * A cron job's declaration as a snapshot writes it and a restore compares it:
  * its name, function, arguments as Convex JSON through `args`, and schedule, a
  * cron expression by its text.
@@ -647,6 +664,11 @@ export class World {
      * with no invocation bound declares its cron jobs in.
      */
     private readonly own?: Invocation.World,
+    /**
+     * What answers a call to a handle under {@link SINK}. A world without one
+     * refuses it as an unregistered component.
+     */
+    private readonly sink?: Sink,
   ) {
     installConvexGlobal();
     Clock.install(pinnedTime, () => executions.getStore() !== undefined);
@@ -1968,12 +1990,28 @@ export class World {
 
   // Calls by address, from the test or from a running function.
 
+  /**
+   * The sink's answer to a call under {@link SINK}, or `undefined` for any other
+   * address or a world with no sink.
+   */
+  private sunk(
+    functionPath: FunctionPath,
+    functionType: UdfType,
+    args: any,
+  ): Promise<any> | undefined {
+    if (functionPath.componentPath !== SINK || this.sink === undefined)
+      return undefined;
+    return this.sink({ slot: functionPath.udfPath, functionType, args });
+  }
+
   private queryAt(
     functionPath: FunctionPath,
     args: any,
     from: From,
     snapshotOnly = false,
   ) {
+    const sunk = this.sunk(functionPath, "query", args);
+    if (sunk !== undefined) return sunk;
     const resolved = this.resolve(functionPath, "query");
     this.keepArgs(functionPath, args);
     validateFunctionArgs(
@@ -1986,6 +2024,8 @@ export class World {
   }
 
   private mutationAt(functionPath: FunctionPath, args: any, from: From) {
+    const sunk = this.sunk(functionPath, "mutation", args);
+    if (sunk !== undefined) return sunk;
     const resolved = this.resolve(functionPath, "mutation");
     this.keepArgs(functionPath, args);
     validateFunctionArgs(
@@ -1998,6 +2038,8 @@ export class World {
   }
 
   private actionAt(functionPath: FunctionPath, args: any, from: From) {
+    const sunk = this.sunk(functionPath, "action", args);
+    if (sunk !== undefined) return sunk;
     const resolved = this.resolve(functionPath, "action");
     this.keepArgs(functionPath, args);
     validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);

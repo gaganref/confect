@@ -269,6 +269,10 @@ export function convexTest(
          * stream.
          */
         readonly world?: Invocation.World;
+        /**
+         * What answers a call to a handle under `Execution.SINK`.
+         */
+        readonly sink?: Execution.Sink;
       },
   modules?: Modules,
 ): any {
@@ -276,6 +280,7 @@ export function convexTest(
   let runtime: Kernel.KernelRuntime | undefined;
   let redaction: Redaction.Policy | undefined;
   let own: Invocation.World | undefined;
+  let sink: Execution.Sink | undefined;
   if (isSchemaDefinition(schemaOrOptions)) {
     schema = schemaOrOptions;
   } else if (schemaOrOptions !== undefined) {
@@ -287,13 +292,21 @@ export function convexTest(
     runtime = schemaOrOptions.runtime;
     redaction = schemaOrOptions.redaction;
     own = schemaOrOptions.world;
+    sink = schemaOrOptions.sink;
   }
   if (modules === undefined) {
     throw new Error(
       "The test kernel needs the modules map: pass `import.meta.glob(...)` as the second argument.",
     );
   }
-  const world = new Execution.World(schema, modules, runtime, redaction, own);
+  const world = new Execution.World(
+    schema,
+    modules,
+    runtime,
+    redaction,
+    own,
+    sink,
+  );
   return {
     ...accessor(world, new Subscriptions.Registry(world), Execution.anonymous),
     registerComponent: (

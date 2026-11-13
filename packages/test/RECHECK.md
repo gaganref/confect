@@ -1076,3 +1076,15 @@ reaches the snapshot, a failure report, a diff or a read record.
 - Codegen writes the registry's `secrets` as thunks of the Confect codecs that
   hold a `Schema.Redacted` node, so the kernel's redaction (row 6) builds each
   schema only when it first needs it. A package mount carries none.
+
+## Generated component subject (row 9)
+
+- A handle under `~sink` reaches no registered function. The kernel hands its
+  query, mutation or action call to the session's sink, which answers with an
+  encoded return or rejects with a `ConvexError` holding an encoded declared
+  error. The binary has no such path: a real handle names a host function.
+- The sink answers runner calls only. Scheduling a sink handle refuses, since
+  `~sink` is no registered component.
+- A drawn `returned` value comes from `Arbitrary.schema` of the contract's
+  return codec, seeded by the session's `draws`, the slot and the call's index,
+  so the same session draws the same values.
