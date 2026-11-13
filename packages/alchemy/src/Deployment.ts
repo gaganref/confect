@@ -50,25 +50,28 @@ export const Deployment = Resource<Deployment>("Convex.Deployment", {
   defaultRemovalPolicy: "retain",
 });
 
-export class DeploymentIdentityChange extends Schema.TaggedError<DeploymentIdentityChange>()(
-  "DeploymentIdentityChange",
-  {
-    deploymentName: Schema.String,
-    field: Schema.String,
-    current: Schema.String,
-    requested: Schema.String,
-  },
-) {}
+export class DeploymentIdentityChange extends Schema.TaggedError<
+  DeploymentIdentityChange,
+  { readonly brand: unique symbol }
+>()("DeploymentIdentityChange", {
+  deploymentName: Schema.String,
+  field: Schema.String,
+  current: Schema.String,
+  requested: Schema.String,
+}) {}
 
-export class UnsupportedLocalDeployment extends Schema.TaggedError<UnsupportedLocalDeployment>()(
-  "UnsupportedLocalDeployment",
-  { deploymentName: Schema.String },
-) {}
+export class UnsupportedLocalDeployment extends Schema.TaggedError<
+  UnsupportedLocalDeployment,
+  { readonly brand: unique symbol }
+>()("UnsupportedLocalDeployment", { deploymentName: Schema.String }) {}
 
-export class AmbiguousDeployment extends Schema.TaggedError<AmbiguousDeployment>()(
-  "AmbiguousDeployment",
-  { projectId: Schema.Finite, reference: Schema.String },
-) {}
+export class AmbiguousDeployment extends Schema.TaggedError<
+  AmbiguousDeployment,
+  { readonly brand: unique symbol }
+>()("AmbiguousDeployment", {
+  projectId: Schema.Finite,
+  reference: Schema.String,
+}) {}
 
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient;

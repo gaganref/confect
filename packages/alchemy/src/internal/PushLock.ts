@@ -11,13 +11,13 @@ import * as Scope from "effect/Scope";
 import * as FileLock from "./FileLock.js";
 import { userCache } from "./UserCache.js";
 
-export class PushLockError extends Schema.TaggedError<PushLockError>()(
-  "PushLockError",
-  {
-    deploymentName: Schema.String,
-    reason: Schema.Literals(["configuration", "timeout", "filesystem"]),
-  },
-) {
+export class PushLockError extends Schema.TaggedError<
+  PushLockError,
+  { readonly brand: unique symbol }
+>()("PushLockError", {
+  deploymentName: Schema.String,
+  reason: Schema.Literals(["configuration", "timeout", "filesystem"]),
+}) {
   override get message() {
     switch (this.reason) {
       case "configuration":

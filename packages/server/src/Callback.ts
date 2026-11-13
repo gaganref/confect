@@ -25,15 +25,15 @@ import * as Rec from "effect/Record";
  * `actual` describe the contract's and the host's validators, with union
  * members in a fixed order, or the reason a schema is unsupported.
  */
-export class CallbackContractMismatch extends Schema.TaggedError<CallbackContractMismatch>()(
-  "CallbackContractMismatch",
-  {
-    contract: Schema.String,
-    side: Schema.Literals(["args", "returns", "error"]),
-    expected: Schema.Json,
-    actual: Schema.Json,
-  },
-) {
+export class CallbackContractMismatch extends Schema.TaggedError<
+  CallbackContractMismatch,
+  { readonly brand: unique symbol }
+>()("CallbackContractMismatch", {
+  contract: Schema.String,
+  side: Schema.Literals(["args", "returns", "error"]),
+  expected: Schema.Json,
+  actual: Schema.Json,
+}) {
   override get message(): string {
     return `The host function does not satisfy callback contract "${this.contract}": its ${this.side === "error" ? "errors" : this.side} compile to ${JSON.stringify(this.actual)}, the contract's to ${JSON.stringify(this.expected)}.`;
   }

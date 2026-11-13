@@ -43,19 +43,23 @@ export type DeployKey = Resource<
 >;
 export const DeployKey = Resource<DeployKey>("Convex.DeployKey");
 
-export class DeployKeyRecoveryRequired extends Schema.TaggedError<DeployKeyRecoveryRequired>()(
-  "DeployKeyRecoveryRequired",
-  {
-    deploymentName: Schema.String,
-    keyName: Schema.String,
-    keyIds: Schema.Array(Schema.Finite),
-  },
-) {}
+export class DeployKeyRecoveryRequired extends Schema.TaggedError<
+  DeployKeyRecoveryRequired,
+  { readonly brand: unique symbol }
+>()("DeployKeyRecoveryRequired", {
+  deploymentName: Schema.String,
+  keyName: Schema.String,
+  keyIds: Schema.Array(Schema.Finite),
+}) {}
 
-export class DeployKeyChangeRequiresNewResource extends Schema.TaggedError<DeployKeyChangeRequiresNewResource>()(
-  "DeployKeyChangeRequiresNewResource",
-  { deploymentName: Schema.String, keyId: Schema.Finite, field: Schema.String },
-) {}
+export class DeployKeyChangeRequiresNewResource extends Schema.TaggedError<
+  DeployKeyChangeRequiresNewResource,
+  { readonly brand: unique symbol }
+>()("DeployKeyChangeRequiresNewResource", {
+  deploymentName: Schema.String,
+  keyId: Schema.Finite,
+  field: Schema.String,
+}) {}
 
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient;

@@ -6,10 +6,10 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-export class LifecycleStateError extends Schema.TaggedError<LifecycleStateError>()(
-  "LifecycleStateError",
-  { fqn: Schema.String },
-) {}
+export class LifecycleStateError extends Schema.TaggedError<
+  LifecycleStateError,
+  { readonly brand: unique symbol }
+>()("LifecycleStateError", { fqn: Schema.String }) {}
 
 export const checkpointCreate = Effect.fn("Lifecycle.checkpointCreate")(
   function* (fqn: string, instanceId: string, props: object, output?: object) {

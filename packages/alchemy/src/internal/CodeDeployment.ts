@@ -10,10 +10,12 @@ import * as Loopback from "./Loopback.js";
 import * as MountInit from "./MountInit.js";
 import { PushLock } from "./PushLock.js";
 
-export class InvalidDeploymentTarget extends Schema.TaggedError<InvalidDeploymentTarget>()(
-  "InvalidDeploymentTarget",
-  { reason: Schema.Literals(["deployment", "deployKey"]) },
-) {}
+export class InvalidDeploymentTarget extends Schema.TaggedError<
+  InvalidDeploymentTarget,
+  { readonly brand: unique symbol }
+>()("InvalidDeploymentTarget", {
+  reason: Schema.Literals(["deployment", "deployKey"]),
+}) {}
 
 const deploymentName = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 

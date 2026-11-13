@@ -41,10 +41,10 @@ export const EnvironmentVariables = Resource<EnvironmentVariables>(
   "Convex.EnvironmentVariables",
 );
 
-export class EnvironmentTargetChange extends Schema.TaggedError<EnvironmentTargetChange>()(
-  "EnvironmentTargetChange",
-  { url: Schema.String },
-) {}
+export class EnvironmentTargetChange extends Schema.TaggedError<
+  EnvironmentTargetChange,
+  { readonly brand: unique symbol }
+>()("EnvironmentTargetChange", { url: Schema.String }) {}
 
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient.ConvexClient;

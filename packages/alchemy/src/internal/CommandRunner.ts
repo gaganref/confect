@@ -35,14 +35,14 @@ const selection = (target: PushTarget) =>
     ? `CONVEX_DEPLOY_KEY=${Redacted.value(target.deployKey)}\n`
     : `CONVEX_SELF_HOSTED_URL=${target.url}\nCONVEX_SELF_HOSTED_ADMIN_KEY=${Redacted.value(target.adminKey)}\n`;
 
-export class CommandError extends Schema.TaggedError<CommandError>()(
-  "CommandError",
-  {
-    operation: Schema.Literals(["prepare", "deploy"]),
-    reason: Schema.Literals(["configuration", "spawn", "exit"]),
-    exitCode: Schema.optionalKey(Schema.Finite),
-  },
-) {}
+export class CommandError extends Schema.TaggedError<
+  CommandError,
+  { readonly brand: unique symbol }
+>()("CommandError", {
+  operation: Schema.Literals(["prepare", "deploy"]),
+  reason: Schema.Literals(["configuration", "spawn", "exit"]),
+  exitCode: Schema.optionalKey(Schema.Finite),
+}) {}
 
 export class CommandRunner extends Context.Service<
   CommandRunner,

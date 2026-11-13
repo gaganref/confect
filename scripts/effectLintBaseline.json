@@ -53,23 +53,6 @@
   "effecttsgo/prefer-schema-over-json": {
     "packages/cli/src/ConvexConfig.ts": 2
   },
-  "effecttsgo/schema-class-missing-brand": {
-    "packages/alchemy/src/ConvexClient.ts": 4,
-    "packages/alchemy/src/DeployKey.ts": 2,
-    "packages/alchemy/src/Deployment.ts": 3,
-    "packages/alchemy/src/EnvironmentVariables.ts": 1,
-    "packages/alchemy/src/Project.ts": 2,
-    "packages/alchemy/src/internal/CodeDeployment.ts": 1,
-    "packages/alchemy/src/internal/CommandRunner.ts": 1,
-    "packages/alchemy/src/internal/Lifecycle.ts": 1,
-    "packages/alchemy/src/internal/LocalBackend.ts": 1,
-    "packages/alchemy/src/internal/MountInit.ts": 1,
-    "packages/alchemy/src/internal/PushLock.ts": 1,
-    "packages/server/src/Callback.ts": 1,
-    "packages/server/src/OfficialComponent.ts": 1,
-    "packages/server/test/Callback.test.ts": 2,
-    "tools/local-backend/fixtures/components/counter/confect/authoring.spec.ts": 1
-  },
   "effecttsgo/schema-sync": {
     "packages/alchemy/test/Code.test.ts": 1,
     "packages/alchemy/test/FileLock.test.ts": 1,

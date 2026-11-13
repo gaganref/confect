@@ -33,24 +33,24 @@ import * as Array from "effect/Array";
  */
 export const backendVersion = "precompiled-2026-10-28-cccbade";
 
-export class LocalBackendError extends Schema.TaggedError<LocalBackendError>()(
-  "LocalBackendError",
-  {
-    deploymentName: Schema.String,
-    reason: Schema.Literals([
-      "configuration",
-      "filesystem",
-      "install",
-      "identity",
-      "ports",
-      "running",
-      "spawn",
-      "exit",
-      "timeout",
-    ]),
-    exitCode: Schema.optionalKey(Schema.Finite),
-  },
-) {
+export class LocalBackendError extends Schema.TaggedError<
+  LocalBackendError,
+  { readonly brand: unique symbol }
+>()("LocalBackendError", {
+  deploymentName: Schema.String,
+  reason: Schema.Literals([
+    "configuration",
+    "filesystem",
+    "install",
+    "identity",
+    "ports",
+    "running",
+    "spawn",
+    "exit",
+    "timeout",
+  ]),
+  exitCode: Schema.optionalKey(Schema.Finite),
+}) {
   override get message() {
     const subject = `Local backend for ${this.deploymentName}`;
     switch (this.reason) {

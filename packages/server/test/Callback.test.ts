@@ -31,6 +31,7 @@ import * as Schema from "effect/Schema";
 import { vi } from "vitest";
 import * as Arr from "effect/Array";
 
+// oxlint-disable-next-line effecttsgo/schema-class-missing-brand -- Structural on purpose: Rebuilt below copies this tag and fields, and the test proves Callback.create accepts the copy, which a brand would reject at compile time.
 class EventRejected extends Schema.TaggedError<EventRejected>()(
   "EventRejected",
   { reason: Schema.String },
@@ -512,6 +513,7 @@ describe("create checks the host's validators", () => {
     "accepts errors rebuilt with the contract's validators, or shared even when Convex cannot compile them",
     () =>
       Effect.gen(function* () {
+        // oxlint-disable-next-line effecttsgo/schema-class-missing-brand -- Structural on purpose: this copy of EventRejected must match it by shape, which a brand would prevent.
         class Rebuilt extends Schema.TaggedError<Rebuilt>()("EventRejected", {
           reason: Schema.String,
         }) {}

@@ -34,23 +34,23 @@ export const Project = Resource<Project>("Convex.Project", {
   defaultRemovalPolicy: "retain",
 });
 
-export class ProjectTeamChange extends Schema.TaggedError<ProjectTeamChange>()(
-  "ProjectTeamChange",
-  {
-    projectId: Schema.Finite,
-    teamId: Schema.Finite,
-    requestedTeamId: Schema.Finite,
-  },
-) {}
+export class ProjectTeamChange extends Schema.TaggedError<
+  ProjectTeamChange,
+  { readonly brand: unique symbol }
+>()("ProjectTeamChange", {
+  projectId: Schema.Finite,
+  teamId: Schema.Finite,
+  requestedTeamId: Schema.Finite,
+}) {}
 
-export class AmbiguousProject extends Schema.TaggedError<AmbiguousProject>()(
-  "AmbiguousProject",
-  {
-    teamId: Schema.Finite,
-    projectName: Schema.String,
-    projectIds: Schema.Array(Schema.Finite),
-  },
-) {}
+export class AmbiguousProject extends Schema.TaggedError<
+  AmbiguousProject,
+  { readonly brand: unique symbol }
+>()("AmbiguousProject", {
+  teamId: Schema.Finite,
+  projectName: Schema.String,
+  projectIds: Schema.Array(Schema.Finite),
+}) {}
 
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient;

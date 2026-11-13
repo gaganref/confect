@@ -78,28 +78,31 @@ const errorFields = {
   ]),
 };
 
-export class ConvexApiError extends Schema.TaggedError<ConvexApiError>()(
-  "ConvexApiError",
-  errorFields,
-) {}
+export class ConvexApiError extends Schema.TaggedError<
+  ConvexApiError,
+  { readonly brand: unique symbol }
+>()("ConvexApiError", errorFields) {}
 
-export class ConvexNotFound extends Schema.TaggedError<ConvexNotFound>()(
-  "ConvexNotFound",
-  errorFields,
-) {}
+export class ConvexNotFound extends Schema.TaggedError<
+  ConvexNotFound,
+  { readonly brand: unique symbol }
+>()("ConvexNotFound", errorFields) {}
 
-export class ConvexConflict extends Schema.TaggedError<ConvexConflict>()(
-  "ConvexConflict",
-  errorFields,
-) {}
+export class ConvexConflict extends Schema.TaggedError<
+  ConvexConflict,
+  { readonly brand: unique symbol }
+>()("ConvexConflict", errorFields) {}
 
 /**
  * A function the deployment ran failed, with the message Convex reports.
  */
-export class ConvexFunctionError extends Schema.TaggedError<ConvexFunctionError>()(
-  "ConvexFunctionError",
-  { functionPath: Schema.String, errorMessage: Schema.String },
-) {}
+export class ConvexFunctionError extends Schema.TaggedError<
+  ConvexFunctionError,
+  { readonly brand: unique symbol }
+>()("ConvexFunctionError", {
+  functionPath: Schema.String,
+  errorMessage: Schema.String,
+}) {}
 
 const FunctionResponse = Schema.Union([
   Schema.Struct({ status: Schema.Literal("success"), value: Schema.Unknown }),

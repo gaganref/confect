@@ -5,10 +5,10 @@ import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { ConvexClient, ConvexFunctionError } from "../ConvexClient.js";
 
-export class MountInitFailed extends Schema.TaggedError<MountInitFailed>()(
-  "MountInitFailed",
-  { mount: Schema.String, detail: Schema.String },
-) {
+export class MountInitFailed extends Schema.TaggedError<
+  MountInitFailed,
+  { readonly brand: unique symbol }
+>()("MountInitFailed", { mount: Schema.String, detail: Schema.String }) {
   override get message() {
     return `${this.mount}: init failed; earlier mounts are applied, and the next push retries`;
   }
