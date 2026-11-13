@@ -373,7 +373,8 @@ traversal Alchemy's push runs, parent before child, then the seed runs in one
 mutation. Each component reads only the settings its mount binds. A missing app
 or mount setting fails `TestConfigMissing`. A kit passes its component's
 secret policy to `registerComponent`, and a packaged Confect component whose
-kit exports none fails `TestKitSecretsMissingError`. The registry now lists
+kit exports none fails `TestKitSecretsMissingError`, or `TestKitExportsUnknownError`
+when codegen cannot list the kit's exports. The registry now lists
 only the modules a push registers, and a package mount with no test kit fails
 `MissingTestKitError`. This is row 8 of Frame's backend testing kernel (Frame
 ADR 0012). Changeset: `generated-test-backend.md`. Upstream: fork only, as the

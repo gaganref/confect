@@ -771,10 +771,14 @@ export class World {
    */
   private load(): Promise<void> {
     this.opened ??= Promise.all(
+      // A component's module code reads that component's environment, as it
+      // does on a deployment.
       Array.from(this.components.values(), (component) =>
-        Promise.all(
-          Array.from(component.loaders, ([path, load]) =>
-            load().then((module) => component.loaded.set(path, module)),
+        Environment.loading(this.environments.get(component.path), () =>
+          Promise.all(
+            Array.from(component.loaders, ([path, load]) =>
+              load().then((module) => component.loaded.set(path, module)),
+            ),
           ),
         ),
       ),

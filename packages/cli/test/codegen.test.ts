@@ -44,6 +44,7 @@ import {
   InvalidDeclarationError,
   isCodegenError,
   MissingTestKitError,
+  TestKitExportsUnknownError,
   TestKitSecretsMissingError,
   UnownedConvexEntrypointError,
   renderCodegenError,
@@ -2837,15 +2838,33 @@ export default Refs.make(spec);
     );
 
     it.effect.each([
-      { secrets: false, refused: true },
-      { secrets: true, refused: false },
+      {
+        kit: "an ES module kit without secrets",
+        files: { "testing.js": "export function register() {}\n" },
+        refusal: "missing",
+      },
+      {
+        kit: "a CommonJS kit",
+        files: {
+          "package.json":
+            '{ "name": "pool-kit", "type": "module", "exports": { "./testing": "./testing.cjs" } }',
+          "testing.cjs": "module.exports = { register() {}, secrets: {} };\n",
+        },
+        refusal: "unknown",
+      },
+      {
+        kit: "an ES module kit that exports secrets",
+        files: {
+          "testing.js":
+            "export function register() {}\nexport const secrets = {};\n",
+        },
+        refusal: "none",
+      },
     ])(
-      "refuses a packaged Confect component whose kit exports no secret policy (exports secrets: $secrets)",
-      ({ secrets, refused }) =>
+      "checks that a packaged Confect component's kit passes its secret policy: $kit",
+      ({ files, refusal }) =>
         Effect.gen(function* () {
-          const project = yield* kitProject({
-            "testing.js": `export function register() {}\n${secrets ? "export const secrets = {};\n" : ""}`,
-          });
+          const project = yield* kitProject(files);
           const app = yield* project.read("confect/app.ts");
           yield* project.write(
             "confect/app.ts",
@@ -2862,16 +2881,128 @@ export default Refs.make(spec);
             ),
           );
           const exit = yield* Effect.exit(project.run);
-          expect(Exit.isFailure(exit)).toBe(refused);
-          if (refused) {
-            const error = yield* Effect.flip(project.run);
-            expect(error).toEqual(
-              TestKitSecretsMissingError.make({
-                mount: "pool",
-                kit: "pool-kit/testing",
-              }),
+          expect(Exit.isFailure(exit)).toBe(refusal !== "none");
+          if (refusal === "none") return;
+          const error = yield* Effect.flip(project.run);
+          const expected = { mount: "pool", kit: "pool-kit/testing" };
+          expect(error).toEqual(
+            refusal === "missing"
+              ? TestKitSecretsMissingError.make(expected)
+              : TestKitExportsUnknownError.make(expected),
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect.each([{ subject: true }, { subject: false }])(
+      "generates for components nested four deep, app to a to b to c (subject: $subject)",
+      ({ subject }) =>
+        Effect.gen(function* () {
+          const project = yield* subjectProject;
+          const fs = yield* FileSystem.FileSystem;
+          for (const directory of [
+            "components/a/convex",
+            "components/a/confect",
+            "components/b/convex",
+            "components/b/confect",
+            "components/c/convex",
+          ])
+            yield* fs.makeDirectory(`${project.root}/${directory}`, {
+              recursive: true,
+            });
+          const config = (name: string, child: string | undefined) =>
+            child === undefined
+              ? `import { defineComponent } from "convex/server";\nexport default defineComponent("${name}");\n`
+              : `import { defineComponent } from "convex/server";\nimport ${child} from "../../${child}/convex/convex.config";\nconst component = defineComponent("${name}");\ncomponent.use(${child});\nexport default component;\n`;
+          const declaration = (name: string, child: string, env: string) =>
+            `import { App, Component, Env, Mount } from "@confect/core";
+import * as Schema from "effect/Schema";
+import ${child} from "../../${child}/convex/convex.config";
+const client = (native: unknown) => native;
+export default App.make({
+  kind: "component",
+  env: Env.make("${name}", {}),
+  components: [${child}],
+  mounts: [Mount.make(Component.make("${child}", { client, env: { LEVEL: Schema.String } }), { name: "${child}", env: { LEVEL: "${env}" } })],
+});
+`;
+          yield* project.write(
+            "components/a/convex/convex.config.ts",
+            config("a", "b"),
+          );
+          yield* project.write(
+            "components/b/convex/convex.config.ts",
+            config("b", "c"),
+          );
+          yield* project.write(
+            "components/c/convex/convex.config.ts",
+            config("c", undefined),
+          );
+          for (const name of ["a", "b", "c"])
+            yield* project.write(
+              `components/${name}/convex/schema.ts`,
+              emptySchema,
+            );
+          yield* project.write(
+            "components/a/confect/app.ts",
+            declaration("a", "b", "two"),
+          );
+          yield* project.write(
+            "components/b/confect/app.ts",
+            declaration("b", "c", "three"),
+          );
+          const app = yield* project.read("confect/app.ts");
+          yield* project.write(
+            "confect/app.ts",
+            withMount(
+              app,
+              "a",
+              "../components/a/convex/convex.config",
+              'Mount.make(Component.make("a", { client }), { name: "a" })',
+            ),
+          );
+          if (!subject) {
+            // A package that exports nothing is one the app cannot import.
+            yield* fs.makeDirectory(
+              `${project.root}/node_modules/@confect/test`,
+              { recursive: true },
+            );
+            yield* project.write(
+              "node_modules/@confect/test/package.json",
+              '{ "name": "@confect/test", "exports": {} }',
             );
           }
+          yield* project.run;
+          const generated = yield* project.read(
+            "confect/_generated/testing.ts",
+          );
+          expect(generated).toContain('"a/b/c": a_b_cKit,');
+          const declares = pipe(
+            generated,
+            String.includes("export const TestBackend"),
+          );
+          expect(declares).toBe(subject);
+          if (!subject) return;
+          const backend = yield* testBackendOf(project);
+          expect(
+            Array.filter(backend.mounts, ({ path }) =>
+              pipe(path, String.startsWith("a")),
+            ),
+          ).toEqual([
+            { path: "a", kit: "local", env: {}, required: [] },
+            {
+              path: "a/b",
+              kit: "local",
+              env: { LEVEL: { value: "two" } },
+              required: ["LEVEL"],
+            },
+            {
+              path: "a/b/c",
+              kit: "local",
+              env: { LEVEL: { value: "three" } },
+              required: ["LEVEL"],
+            },
+          ]);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

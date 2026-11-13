@@ -278,7 +278,21 @@ export class TestKitSecretsMissingError extends Schema.TaggedError<
   kit: Schema.String,
 }) {}
 
+/**
+ * A packaged Confect component whose test kit codegen cannot list without
+ * running it, such as a CommonJS kit, so it cannot see whether the kit passes
+ * its component's secret policy.
+ */
+export class TestKitExportsUnknownError extends Schema.TaggedError<
+  TestKitExportsUnknownError,
+  { readonly brand: unique symbol }
+>()("TestKitExportsUnknownError", {
+  mount: Schema.String,
+  kit: Schema.String,
+}) {}
+
 export const CodegenError = Schema.Union([
+  TestKitExportsUnknownError,
   TestKitSecretsMissingError,
   MissingTestKitError,
   SnapshotError,
@@ -576,6 +590,11 @@ export const renderCodegenError = (error: CodegenError): string => {
       `The mount "${error.mount}" in `,
       formatPath(error.configPath),
       ` installs the component package "${error.component}", which exports no test kit at ${pipe(error.entries, Array.map(quote), Array.join(" or "))}. The generated test backend registers every mount through its kit's \`register(t, name)\`; name one with the component descriptor's \`testing\` option.`,
+    );
+  }
+  if (error._tag === "TestKitExportsUnknownError") {
+    return singleLine(
+      `The mount "${error.mount}" installs a packaged Confect component whose test kit "${error.kit}" codegen cannot read without running it, as with a CommonJS kit or one that re-exports with \`export *\`. So codegen cannot see whether it exports the component's \`secrets\`. Make the kit an ES module that exports \`secrets\` by name, \`{}\` when the component holds none.`,
     );
   }
   if (error._tag === "TestKitSecretsMissingError") {

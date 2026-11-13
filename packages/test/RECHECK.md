@@ -1149,8 +1149,11 @@ kernel under `withIdentity`.
   init, so parent-first is what a deployment does today. ADR 0012's
   nested-before-parent text is corrected to it.
 - A component's environment: inside a function of a component with a bound
-  environment, `process.env` answers that environment and Convex's system
-  URLs only (`internal/Environment.ts`). Elsewhere it answers the host's.
+  environment, and while its modules load, `process.env` answers that
+  environment and Convex's system URLs only, as a plain object for reads,
+  spreads, keys and `in` (`internal/Environment.ts`). Elsewhere it answers the
+  host's. Node caches an imported module, so a module two mounts share loads
+  once per process; its module-level reads see the first mount's settings.
 - Codegen writes the registry's `secrets` as thunks of the Confect codecs that
   hold a `Schema.Redacted` node, so the kernel's redaction (row 6) builds each
   schema only when it first needs it. A kit adds its component's policy at

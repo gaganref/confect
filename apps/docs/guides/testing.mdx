@@ -422,7 +422,7 @@ For an app that can import `@confect/test`, `confect codegen` writes `TestBacken
 
 `TestBackend.layer` passes the registry's `secrets` to the kernel, as `TestConfect.layer` does.
 
-A manifest section adds what Confect cannot know through `testing`, which returns owners, open functions, obligations, laws and ports. Codegen refuses a fact that names no such group, public function, table, field, index or mount, before it writes anything. In an app an `aggregate` law names the mount that keeps the aggregate.
+A manifest section adds what Confect cannot know through `testing`, which returns owners, open functions, obligations, laws and ports. Codegen refuses a fact that names no such group, public function, table, field, index or mount, before it writes `testing.ts`. In an app an `aggregate` law names the mount that keeps the aggregate.
 
 ```ts
 import { TestBackend } from "../confect/_generated/testing";
@@ -444,7 +444,7 @@ it.effect("assigns a task", () =>
 
 A session takes every app setting from `config`, and a required one is required by type. Codegen never reads `.env` or deployment state. A missing setting fails `TestConfigMissing` with the setting, the backend that declares it and this section's link. The session sets the values for its lifetime and restores the previous ones when it closes.
 
-Each mount gets the settings it binds, as on Convex: a literal, or a setting of the backend that mounts it, the app's from `config` and a parent component's from what its own mount bound. A component's functions read only their own settings, beside `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL`, and the app never reads a component's. A required component setting left without a value fails `TestConfigMissing` naming the mount.
+Each mount gets the settings it binds, as on Convex: a literal, or a setting of the backend that mounts it, the app's from `config` and a parent component's from what its own mount bound. A component's module code and functions read only their own settings, beside `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL`, and the app never reads a component's. There `process.env` is a plain object of those settings, so a spread, `Object.keys` and `in` see exactly them. A required component setting left without a value fails `TestConfigMissing` naming the mount.
 
 ### Packaged components keep their secrets
 
@@ -458,4 +458,4 @@ export const register = (t, name) =>
   t.registerComponent(name, schema, modules, { secrets });
 ```
 
-When a mount's descriptor carries a Confect `contract`, codegen refuses a kit that exports no `secrets` with `TestKitSecretsMissingError`. Export `{}` when the component holds no secret.
+When a mount's descriptor carries a Confect `contract`, codegen refuses a kit that exports no `secrets` with `TestKitSecretsMissingError`, and a kit whose exports it cannot list without running it, such as a CommonJS kit, with `TestKitExportsUnknownError`. Write the kit as an ES module that exports `secrets` by name, `{}` when the component holds no secret.

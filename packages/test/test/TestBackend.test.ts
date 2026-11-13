@@ -22,6 +22,7 @@ import * as Exit from "effect/Exit";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
+import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import { assertIs } from "./internal/assertIs";
 
@@ -38,6 +39,8 @@ type Mutation<A extends Record<string, string>> = FunctionReference<
 interface StateApi {
   readonly log: Query<Array<string>>;
   readonly env: Query<string>;
+  readonly boot: Query<string>;
+  readonly view: Query<string>;
   readonly put: Mutation<{ entry: string }>;
   readonly leak: Mutation<{}>;
 }
@@ -115,8 +118,28 @@ const component = (child: boolean) => ({
           ),
       }),
     }),
-  "state.ts": () =>
-    Promise.resolve({
+  "state.ts": () => {
+    // Module code runs as the component's modules load, before any function.
+    const booted = process.env["REQUIRED"] ?? "missing";
+    return Promise.resolve({
+      boot: queryGeneric({ args: {}, handler: () => Promise.resolve(booted) }),
+      view: queryGeneric({
+        args: {},
+        handler: () => {
+          const spread = { ...process.env };
+          return Promise.resolve(
+            Arr.join(
+              [
+                `spread=${Arr.join(Rec.keys(spread).sort(), ",")}`,
+                `keys=${Arr.join(Rec.keys(process.env).sort(), ",")}`,
+                `in=${"REQUIRED" in process.env}`,
+                `host=${"FIXTURE_ORIGIN" in process.env}`,
+              ],
+              " ",
+            ),
+          );
+        },
+      }),
       log: queryGeneric({
         args: {},
         handler: (ctx) =>
@@ -172,7 +195,8 @@ const component = (child: boolean) => ({
             }),
           }
         : {}),
-    }),
+    });
+  },
 });
 
 const host = DatabaseSchema.make({});
@@ -376,6 +400,69 @@ describe("TestBackend.layer", () => {
               env: { REQUIRED: { from: "KEY" } },
               required: ["REQUIRED"],
             },
+          ]).layer({ config }),
+          body,
+        ),
+      ),
+  );
+
+  it.effect(
+    "binds a mount's settings while its modules load, as a deployment does",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestConfect.TestConfect<typeof host>();
+        const booted = yield* query(test, components.parent.state.boot);
+        expect(booted).toBe("component-value");
+        const read = yield* query(test, components.parent.state.env);
+        expect(read).toBe("component-value|missing");
+      }).pipe((body) =>
+        Effect.acquireUseRelease(
+          Effect.sync(() => {
+            process.env["REQUIRED"] = "app-value";
+          }),
+          () =>
+            within(
+              backendOf(appOf(), [
+                {
+                  path: "parent",
+                  kit: "local",
+                  env: { REQUIRED: { value: "component-value" } },
+                  required: ["REQUIRED"],
+                },
+                unbound[1]!,
+              ]).layer({ config }),
+              body,
+            ),
+          () =>
+            Effect.sync(() => {
+              delete process.env["REQUIRED"];
+            }),
+        ),
+      ),
+  );
+
+  it.effect(
+    "enumerates a component's settings as a plain object of them, mount-only ones included",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestConfect.TestConfect<typeof host>();
+        const view = yield* query(test, components.parent.state.view);
+        expect(view).toBe(
+          "spread=CONVEX_CLOUD_URL,CONVEX_SITE_URL,KEY,REQUIRED keys=CONVEX_CLOUD_URL,CONVEX_SITE_URL,KEY,REQUIRED in=true host=false",
+        );
+      }).pipe((body) =>
+        within(
+          backendOf(appOf(), [
+            {
+              path: "parent",
+              kit: "local",
+              env: {
+                REQUIRED: { value: "mount-only" },
+                KEY: { from: "FIXTURE_ORIGIN" },
+              },
+              required: ["REQUIRED"],
+            },
+            unbound[1]!,
           ]).layer({ config }),
           body,
         ),
