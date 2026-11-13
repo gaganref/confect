@@ -1,4 +1,3 @@
-// oxlint-disable effecttsgo/global-date -- The fixture pins `Date`, which the kernel target's clock follows, so a signed token's times replay.
 // One history that stores signed tokens through `TestConfect.layer` on the
 // kernel target, printed as bytes. `Identity.test.ts` runs this file in several
 // processes and compares their output. `process.argv[2]`, when given, is the
@@ -14,6 +13,8 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as TestConfect from "../../src/TestConfect";
 
+// `Date` is pinned, and the kernel target's clock follows it, so a signed
+// token's times replay.
 const now = Date.UTC(2026, 0, 14, 22, 15, 0);
 const RealDate = globalThis.Date;
 class PinnedDate extends RealDate {

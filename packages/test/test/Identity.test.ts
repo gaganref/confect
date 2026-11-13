@@ -317,17 +317,15 @@ describe("key constraints", () => {
 
 /**
  * A test world whose stream is mulberry32 from `seed`, as `TestConfect.layer`'s
- * kernel target makes, counting its draws.
+ * kernel target makes.
  */
 const worldOf = (seed: number) => {
   let state = seed >>> 0;
-  const world = {
+  const stream = {
     name: `seed ${seed}`,
     services: Context.empty(),
     clock: () => start,
-    draws: 0,
     random: () => {
-      world.draws++;
       state = (state + 0x6d2b79f5) >>> 0;
       let t = state;
       t = Math.imul(t ^ (t >>> 15), t | 1);
@@ -335,7 +333,7 @@ const worldOf = (seed: number) => {
       return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
     },
   };
-  return world;
+  return stream;
 };
 
 const tokens = {
@@ -346,7 +344,7 @@ const tokens = {
 /**
  * A backend that signs and stores tokens, opened in `world` or in none.
  */
-const signer = (world?: ReturnType<typeof worldOf>) =>
+const signer = (own?: ReturnType<typeof worldOf>) =>
   convexTest({
     schema: defineSchema({ tokens: defineTable({ token: v.string() }) }),
     modules: {
@@ -377,7 +375,7 @@ const signer = (world?: ReturnType<typeof worldOf>) =>
         }),
     },
     runtime: { now: () => start, commitTs: (version) => BigInt(version) },
-    ...(world === undefined ? {} : { world }),
+    ...(own === undefined ? {} : { world: own }),
   }) as KernelControls;
 
 const verifies = (key: JsonWebKey, token: string) => {
@@ -488,9 +486,11 @@ describe("deployment signing", () => {
             .padStart(2, "0"),
         ).join("");
         expect(text).not.toContain(seed);
-        expect(
-          JSON.parse(text.slice(text.indexOf("\n") + 1)).signingKey,
-        ).toEqual({ [Redaction.markerKey]: expect.any(Number) });
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The check reads the body's raw JSON, as a reader of the artifact would.
+        const body = JSON.parse(text.slice(text.indexOf("\n") + 1));
+        expect(body.signingKey).toEqual({
+          [Redaction.markerKey]: expect.any(Number),
+        });
 
         const restored = signer();
         yield* Effect.promise(() =>
