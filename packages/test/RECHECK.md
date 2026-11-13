@@ -477,3 +477,51 @@ wrapped the other's accessor once more and every read of these globals went
 deeper. The kernel now leaves an accessor in place when it already reads
 through one of the kernel's, which a sentinel in a fresh copy shows, and the
 chain settles after the first call on each target.
+
+## Snapshots (row 6)
+
+`src/internal/Snapshot.ts` encodes the kernel's committed state and reads it
+back. A snapshot is a header line, `confect-kernel-snapshot 1 sha256:<digest>`,
+then the body as JSON. The body holds the registered component paths, the
+version and latest commit timestamp, the clock's floor, the identity counters
+(the next document ID, the latest creation time handed out, the next held
+attempt's ID), every component's rows with the version that wrote each, every
+committed job's target, standing and world name, and the write log with each
+change's before and after values. Components, tables, rows and jobs are sorted,
+so the bytes do not depend on the order a world met them. Each document keeps
+its own field order, which a query on the kernel returns, so a restored world
+answers the same bytes. The binary keeps an object's fields sorted
+(`ConvexObject.fields` is a `BTreeMap`, `crates/value/src/object.rs:51` at
+`precompiled-2026-10-28-cccbade`), which the kernel, like convex-test, does not.
+
+Values use Convex's encoded JSON (`convexToJson`), the binary's
+`ConvexEncodedJSON`, which the websocket and the HTTP API's
+`format: "convex_encoded_json"` return (`crates/value/src/export.rs:20-24`,
+`:45-50`, `crates/local_backend/src/public_api.rs:75-81`). An int64 is
+`{"$integer": <base64, little-endian>}`, bytes are `{"$bytes": …}`, and a
+negative zero, an infinity or a NaN is `{"$float": …}`
+(`crates/value/src/json/mod.rs:103-127`). A throwaway probe through
+`packages/server/test/local-backend/LocalBackend.ts` stamped a `commitStamps`
+row on the binary, read it back through `/api/query` in that format, and
+stamped the same row on the kernel with the binary's commit timestamp: both
+encode the row's `at` and `label` as
+`{"at":{"$integer":"zWXE04qE5xg="},"label":"probe é"}`.
+
+The write log is carried whole. `Kernel.conflict` finds the commits after a
+snapshot version by position in the log, so a restored world whose log were cut
+would validate a later attempt against the wrong commits. A job's world is
+recorded by its name and resolved among the worlds the restore is given. A
+backend holding attempts refuses to export, since a held attempt is a running
+closure, not state. Restore refuses a backend that committed or holds attempts,
+registers other components, or is not given a job's world. Subscriptions are
+the client's, not the kernel's, and are not carried.
+
+Not simulated: the binary's own snapshot import and export. The binary exports
+a ZIP of `<table>/documents.jsonl` in `ConvexExportJSON`
+(`crates/exports/src/zip_uploader.rs:57-65`) and imports ZIP, JSONL, JSON and
+CSV files (`crates/application/src/snapshot_import/parse.rs:173-258`). A kernel
+snapshot is neither, so there is no binary import to drive against it. Native
+import compatibility stays on the binary.
+
+The digest binds integrity, not origin. Bytes a writer rehashes after editing
+pass the digest and then meet the body's shape check, `SnapshotMalformed`.

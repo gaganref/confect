@@ -10,6 +10,7 @@ import {
   type UserIdentity,
 } from "convex/server";
 import { convexToJson, jsonToConvex, type Value } from "convex/values";
+import * as Result from "effect/Result";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
 import * as Globals from "./Globals.js";
@@ -19,6 +20,7 @@ import * as KernelQuery from "./KernelQuery.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type * as ReadSet from "./ReadSet.js";
 import * as Scheduling from "./Scheduling.js";
+import * as Snapshot from "./Snapshot.js";
 import type {
   DocumentId,
   FunctionPath,
@@ -284,6 +286,19 @@ const pinnedTime = (): number | undefined => {
  * `finishAllScheduledFunctions` defaults to.
  */
 const defaultBudget = 100;
+
+const unresolvedWorld = (
+  name: string,
+  reason: "missing" | "ambiguous",
+): KernelRefusal.SnapshotWorldUnresolved =>
+  new KernelRefusal.SnapshotWorldUnresolved({
+    name,
+    reason,
+    message:
+      reason === "missing"
+        ? `A snapshot job runs under the test world "${name}", which no world passed to restore is named. Pass that world.`
+        : `Two different test worlds are named "${name}", so a snapshot cannot tell their jobs apart. Name each world uniquely.`,
+  });
 
 const current = (): Execution => {
   const execution = executions.getStore();
@@ -726,6 +741,123 @@ export class World {
         (value: Value) => run({ _tag: "returned", value }),
         (error: unknown) => run({ _tag: "failed", error }),
       );
+    });
+  }
+
+  // Snapshots.
+
+  /**
+   * The committed state as snapshot bytes: every component's rows and the
+   * version that wrote each, the write log, the jobs and their targets, the
+   * clock's floor and the identity counters. Each job's world is recorded by
+   * name. Two exports of the same state are the same bytes. A world holding
+   * attempts refuses, since a snapshot carries no held attempt.
+   */
+  exportSnapshot(): Uint8Array {
+    this.refuseHeld(0);
+    const names = new Map<string, Invocation.World>();
+    const jobs = new Map<DocumentId, Snapshot.JobTarget>();
+    for (const byTable of this.state.tables.values()) {
+      for (const id of byTable.get(Scheduling.table)?.keys() ?? []) {
+        const target = this.targets.get(id);
+        if (target === undefined) continue;
+        const world = target.world;
+        if (world !== undefined) {
+          if ((names.get(world.name) ?? world) !== world) {
+            throw unresolvedWorld(world.name, "ambiguous");
+          }
+          names.set(world.name, world);
+        }
+        jobs.set(id, {
+          functionPath: target.functionPath,
+          standing: target.standing,
+          world: world?.name ?? null,
+        });
+      }
+    }
+    return Snapshot.encode({
+      components: [...this.components.keys()],
+      state: this.state,
+      floor: this.floor,
+      identity: {
+        nextDocumentId: this.nextDocId,
+        lastCreationTime: this.lastCreationTime,
+        nextAttemptId: this.nextAttemptId,
+      },
+      jobs,
+    });
+  }
+
+  /**
+   * Replace this world's state with a snapshot's. The world must register the
+   * snapshot's components and have committed nothing and hold nothing. Each
+   * job's world resolves by name among `worlds`. Bytes whose digest does not
+   * match refuse before anything changes.
+   */
+  restoreSnapshot(
+    bytes: Uint8Array,
+    worlds: ReadonlyArray<Invocation.World> = [],
+  ): Promise<void> {
+    return this.open().then(() => this.restore(bytes, worlds));
+  }
+
+  private restore(bytes: Uint8Array, worlds: ReadonlyArray<Invocation.World>) {
+    this.refuseHeld(this.state.version);
+    const decoded = Snapshot.decode(bytes);
+    if (Result.isFailure(decoded)) throw decoded.failure;
+    const image = decoded.success;
+    const registered = [...this.components.keys()].sort();
+    const snapshot = [...image.components].sort();
+    if (registered.join("\u0000") !== snapshot.join("\u0000")) {
+      throw new KernelRefusal.SnapshotComponentMismatch({
+        snapshot,
+        registered,
+        message: `The snapshot holds components ${snapshot.map((p) => `"${p}"`).join(", ")}, but this test backend registers ${registered.map((p) => `"${p}"`).join(", ")}. Register the same components before restoring.`,
+      });
+    }
+    const byName = new Map<string, Invocation.World>();
+    for (const world of worlds) {
+      if ((byName.get(world.name) ?? world) !== world) {
+        throw unresolvedWorld(world.name, "ambiguous");
+      }
+      byName.set(world.name, world);
+    }
+    const targets = Array.from(
+      image.jobs,
+      ([id, { functionPath, standing, world }]): [
+        DocumentId,
+        Scheduling.Target,
+      ] => {
+        const resolved = world === null ? undefined : byName.get(world);
+        if (world !== null && resolved === undefined) {
+          throw unresolvedWorld(world, "missing");
+        }
+        return [id, { functionPath, standing, world: resolved }];
+      },
+    );
+    this.state = image.state;
+    this.floor = image.floor;
+    this.nextDocId = image.identity.nextDocumentId;
+    this.lastCreationTime = image.identity.lastCreationTime;
+    this.nextAttemptId = image.identity.nextAttemptId;
+    this.targets.clear();
+    for (const [id, target] of targets) this.targets.set(id, target);
+  }
+
+  /**
+   * Refuse a snapshot while attempts are held, or, restoring, once `version`
+   * shows the world committed something of its own.
+   */
+  private refuseHeld(version: Kernel.Version) {
+    const held = [...this.holding.keys()];
+    if (held.length === 0 && version === 0) return;
+    throw new KernelRefusal.SnapshotWorldBusy({
+      version,
+      held,
+      message:
+        held.length > 0
+          ? `The test backend holds attempts ${held.join(", ")}, which a snapshot does not carry. Apply them first.`
+          : `The test backend has committed ${version} versions of its own. Restore a snapshot into a fresh test backend.`,
     });
   }
 

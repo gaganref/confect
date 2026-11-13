@@ -5,6 +5,7 @@ import type {
 } from "convex/server";
 import { componentsGeneric } from "convex/server";
 import * as Execution from "./Execution.js";
+import type * as Invocation from "./Invocation.js";
 import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import * as Subscriptions from "./Subscriptions.js";
@@ -65,6 +66,20 @@ export interface KernelControls {
   readonly finishAllScheduledFunctions: (
     advanceTimers?: () => void,
     maxIterations?: number,
+  ) => Promise<void>;
+  /**
+   * The committed state as snapshot bytes, bound to their SHA-256 digest. Two
+   * exports of the same state are the same bytes.
+   */
+  readonly exportSnapshot: () => Uint8Array;
+  /**
+   * Replace a fresh backend's state with a snapshot's. Each job's world
+   * resolves by name among `worlds`. Tampered bytes refuse with
+   * `SnapshotDigestMismatch`.
+   */
+  readonly restoreSnapshot: (
+    bytes: Uint8Array,
+    options?: { readonly worlds?: ReadonlyArray<Invocation.World> },
   ) => Promise<void>;
 }
 
@@ -127,6 +142,11 @@ const accessor = (
     _advanceTimers?: () => void,
     maxIterations?: number,
   ) => world.drain(maxIterations),
+  exportSnapshot: () => world.exportSnapshot(),
+  restoreSnapshot: (
+    bytes: Uint8Array,
+    options?: { readonly worlds?: ReadonlyArray<Invocation.World> },
+  ) => world.restoreSnapshot(bytes, options?.worlds),
 });
 
 /**

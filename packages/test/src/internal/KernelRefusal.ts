@@ -110,3 +110,61 @@ export const rowPending = (operation: string, row: number) =>
     row,
     message: `The test kernel supplies ${operation} in build-order row ${row}.`,
   });
+
+/**
+ * Snapshot bytes are not a kernel snapshot this kernel reads: an unknown
+ * header, a body that is not the snapshot's JSON, or a value that does not
+ * decode.
+ */
+export class SnapshotMalformed extends Schema.TaggedError<SnapshotMalformed>()(
+  "SnapshotMalformed",
+  { reason: Schema.String, message: Schema.String },
+) {}
+
+/**
+ * A snapshot's body does not hash to the digest its header names, so its bytes
+ * changed after export.
+ */
+export class SnapshotDigestMismatch extends Schema.TaggedError<SnapshotDigestMismatch>()(
+  "SnapshotDigestMismatch",
+  { expected: Schema.String, actual: Schema.String, message: Schema.String },
+) {}
+
+/**
+ * A snapshot's components are not the components registered on the world
+ * restoring it.
+ */
+export class SnapshotComponentMismatch extends Schema.TaggedError<SnapshotComponentMismatch>()(
+  "SnapshotComponentMismatch",
+  {
+    snapshot: Schema.Array(Schema.String),
+    registered: Schema.Array(Schema.String),
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * A job's test world is named by no world, or by more than one, so the job
+ * could not run under the world that scheduled it.
+ */
+export class SnapshotWorldUnresolved extends Schema.TaggedError<SnapshotWorldUnresolved>()(
+  "SnapshotWorldUnresolved",
+  {
+    name: Schema.String,
+    reason: Schema.Literals(["missing", "ambiguous"]),
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * A world holds work a snapshot does not carry: attempts held for `apply`, or,
+ * when it restores, commits of its own.
+ */
+export class SnapshotWorldBusy extends Schema.TaggedError<SnapshotWorldBusy>()(
+  "SnapshotWorldBusy",
+  {
+    version: Schema.Int,
+    held: Schema.Array(Schema.String),
+    message: Schema.String,
+  },
+) {}

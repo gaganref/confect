@@ -136,6 +136,26 @@ The option is removed at promotion, when the kernel replaces convex-test.
 Changeset: `testconfect-kernel-target.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel snapshots
+
+The kernel exports its committed state as snapshot bytes and restores them into
+a fresh test backend. A snapshot holds every component's rows with the version
+that wrote each, the write log, the latest commit timestamp, every committed
+job's target, standing and world name, the clock's floor and the identity
+counters (the next document ID, the latest creation time, the next attempt ID).
+Components, tables, rows and jobs are sorted and each document keeps its field
+order, so two exports of one state are the same bytes. The header names the
+SHA-256 digest of the body, and restore refuses bytes whose body does not hash
+to it with `SnapshotDigestMismatch`, before it reads any of them. Restore also
+refuses a malformed body, a backend that committed or holds attempts, other
+components and a job world it is not given, each with a tagged refusal.
+Replaying the same driver choices after a restore reaches the bytes of the run
+that never stopped, and a function handle stored in a row resolves to its
+component's function after restore. The format is the kernel's own, not the
+Convex binary's ZIP export. This is row 6 of Frame's backend testing kernel
+(Frame ADR 0012). Changeset: `test-kernel-snapshots.md`. Upstream: fork only,
+as the kernel is fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
