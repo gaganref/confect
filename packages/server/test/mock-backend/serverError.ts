@@ -1,5 +1,6 @@
 import { expect } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Rec from "effect/Record";
 
 /**
  * Check a response is the binary's answer to a route that throws: 500,
@@ -18,7 +19,7 @@ export const expectServerError = (
       string,
       unknown
     >;
-    expect(Object.keys(body)).toStrictEqual(
+    expect(Rec.keys(body)).toStrictEqual(
       data === undefined ? ["code", "trace"] : ["code", "trace", "data"],
     );
     expect(body["code"]).toMatch(

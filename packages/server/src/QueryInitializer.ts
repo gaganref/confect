@@ -16,7 +16,7 @@ import type {
   SearchIndexes,
 } from "convex/server";
 import type { GenericId } from "convex/values";
-import { pipe } from "effect/Function";
+import { identity, pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -311,14 +311,12 @@ export function make<
       ),
       Effect.andThen((value) =>
         Effect.fromResult(
-          Result.fromNullishOr(
-            value,
-            () =>
-              new GetByIndexFailure({
-                tableName,
-                indexName: indexName as string,
-                indexFieldValues,
-              }),
+          Result.fromNullishOr(value, () =>
+            GetByIndexFailure.make({
+              tableName,
+              indexName: indexName as string,
+              indexFieldValues,
+            }),
           ),
         ),
       ),
@@ -495,16 +493,15 @@ export const getById =
       Effect.promise(() => convexDatabaseReader.get(id)),
       Effect.andThen((value) =>
         Effect.fromResult(
-          Result.fromNullishOr(
-            value,
-            () => new GetByIdFailure({ tableName: table.tableName, id }),
+          Result.fromNullishOr(value, () =>
+            GetByIdFailure.make({ tableName: table.tableName, id }),
           ),
         ),
       ),
       Effect.andThen(Document.decode(table)),
     );
 
-export class GetByIdFailure extends Schema.TaggedError<GetByIdFailure>()(
+export class GetByIdFailure extends Schema.TaggedError<GetByIdFailure, {}>()(
   "GetByIdFailure",
   {
     id: Schema.String,
@@ -520,18 +517,24 @@ export class GetByIdFailure extends Schema.TaggedError<GetByIdFailure>()(
   }
 }
 
-export class GetByIndexFailure extends Schema.TaggedError<GetByIndexFailure>()(
-  "GetByIndexFailure",
-  {
-    tableName: Schema.String,
-    indexName: Schema.String,
-    indexFieldValues: Schema.Array(Schema.Unknown),
-  },
-) {
+export class GetByIndexFailure extends Schema.TaggedError<
+  GetByIndexFailure,
+  {}
+>()("GetByIndexFailure", {
+  tableName: Schema.String,
+  indexName: Schema.String,
+  indexFieldValues: Schema.Array(Schema.Unknown),
+}) {
   override get message(): string {
-    return `No documents found in table '${this.tableName}' with index '${this.indexName}' and field values '${JSON.stringify(
-      this.indexFieldValues,
-      (_key, value) => (typeof value === "bigint" ? value.toString() : value),
-    )}'`;
+    const fieldValues = Result.getOrThrowWith(
+      Schema.encodeResult(
+        Schema.fromJsonString(Schema.Unknown, {
+          replacer: (_key, value) =>
+            typeof value === "bigint" ? value.toString() : value,
+        }),
+      )(this.indexFieldValues),
+      identity,
+    );
+    return `No documents found in table '${this.tableName}' with index '${this.indexName}' and field values '${fieldValues}'`;
   }
 }

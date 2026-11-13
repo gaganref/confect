@@ -13,7 +13,8 @@ import schema from "../../../../../../cli/test/fixtures/authored-component/confe
 import refs from "../../../../../../cli/test/fixtures/authored-component/confect/_generated/refs";
 
 export const makeHttp = () =>
-  ConfectHttpRouter.forSchema(schema)(
+  ConfectHttpRouter.make(
+    schema,
     Layer.unwrap(
       Effect.gen(function* () {
         const siteUrl = yield* Config.schema(Schema.String, "CONVEX_SITE_URL");
@@ -38,7 +39,8 @@ export const makeHttp = () =>
             Effect.gen(function* () {
               const request = yield* HttpServerRequest.HttpServerRequest;
               const mutation = yield* MutationRunner.MutationRunner;
-              const count = Number(yield* request.text);
+              const text2 = yield* request.text;
+              const count = Number(text2);
               yield* mutation.runMutation(refs.public.counter.create, {
                 count,
               });

@@ -1,11 +1,12 @@
 import { getFunctionReference } from "@confect/core/RefInternal";
 import { expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import refs from "confect-local-backend/refs";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
+import registry from "../../../../tools/local-backend/fixtures/confect/_generated/testing";
 import { TestConfect } from "../../../test/src/index";
 import { boundary } from "../mock-backend/kernelBoundaries";
-import refs from "./fixtures/confect/_generated/refs";
-import registry from "./fixtures/confect/_generated/testing";
-import * as LocalBackend from "./LocalBackend";
+import * as Layer from "effect/Layer";
 
 const functions = refs.public.groups.transactions;
 
@@ -20,10 +21,15 @@ const onKernel = <A, E>(
   ) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
-    return yield* program(
-      yield* TestConfect.TestConfect<typeof registry.schema>(),
+    const services = yield* Layer.build(
+      TestConfect.layer(registry, { target: "kernel" }),
     );
-  }).pipe(Effect.provide(TestConfect.layer(registry, { target: "kernel" })));
+    return yield* Effect.gen(function* () {
+      const testConfect =
+        yield* TestConfect.TestConfect<typeof registry.schema>();
+      return yield* program(testConfect);
+    }).pipe(Effect.provideContext(services));
+  }).pipe(Effect.scoped);
 
 layer(LocalBackend.layer, { timeout: "120 seconds" })(
   "transaction controls",
@@ -38,22 +44,20 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
             count: 2,
           }),
         );
-        expect(
-          yield* Effect.promise(() =>
-            client.query(getFunctionReference(functions.limitedRead), {
-              caseId,
-              limit: 10,
-            }),
+        const promiseResult = yield* Effect.promise(() =>
+          client.query(getFunctionReference(functions.limitedRead), {
+            caseId,
+            limit: 10,
+          }),
+        );
+        expect(promiseResult).toEqual(["seed-0", "seed-1"]);
+        const promiseResult2 = yield* Effect.promise(() =>
+          client.mutation(
+            getFunctionReference(functions.limitedReadFromMutation),
+            { caseId, limit: 10 },
           ),
-        ).toEqual(["seed-0", "seed-1"]);
-        expect(
-          yield* Effect.promise(() =>
-            client.mutation(
-              getFunctionReference(functions.limitedReadFromMutation),
-              { caseId, limit: 10 },
-            ),
-          ),
-        ).toEqual(["seed-0", "seed-1"]);
+        );
+        expect(promiseResult2).toEqual(["seed-0", "seed-1"]);
         yield* Effect.promise(() =>
           expect(
             client.query(getFunctionReference(functions.limitedRead), {
@@ -93,28 +97,26 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
             "Too many writes in a single function execution (limit: 0)",
           ),
         );
-        expect(
-          yield* Effect.promise(() =>
-            client.query(getFunctionReference(functions.limitedRead), {
-              caseId,
-              limit: 10,
-            }),
-          ),
-        ).toEqual([]);
+        const promiseResult3 = yield* Effect.promise(() =>
+          client.query(getFunctionReference(functions.limitedRead), {
+            caseId,
+            limit: 10,
+          }),
+        );
+        expect(promiseResult3).toEqual([]);
         yield* Effect.promise(() =>
           client.mutation(getFunctionReference(functions.limitedWrite), {
             caseId,
             limit: 1,
           }),
         );
-        expect(
-          yield* Effect.promise(() =>
-            client.query(getFunctionReference(functions.limitedRead), {
-              caseId,
-              limit: 10,
-            }),
-          ),
-        ).toEqual(["child"]);
+        const promiseResult4 = yield* Effect.promise(() =>
+          client.query(getFunctionReference(functions.limitedRead), {
+            caseId,
+            limit: 10,
+          }),
+        );
+        expect(promiseResult4).toEqual(["child"]);
       }),
     );
 
@@ -130,21 +132,19 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
               count: 0,
             }),
           );
-          expect(
-            yield* Effect.promise(() =>
-              client.mutation(getFunctionReference(functions.rollback), {
-                caseId,
-              }),
-            ),
-          ).toBe(true);
-          expect(
-            yield* Effect.promise(() =>
-              client.query(getFunctionReference(functions.limitedRead), {
-                caseId,
-                limit: 10,
-              }),
-            ),
-          ).toEqual(["parent"]);
+          const promiseResult5 = yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(functions.rollback), {
+              caseId,
+            }),
+          );
+          expect(promiseResult5).toBe(true);
+          const promiseResult6 = yield* Effect.promise(() =>
+            client.query(getFunctionReference(functions.limitedRead), {
+              caseId,
+              limit: 10,
+            }),
+          );
+          expect(promiseResult6).toEqual(["parent"]);
         }),
     );
 
@@ -265,7 +265,7 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
           // Reading the one inserted ID drops the kernel's 0 by the index's 1
           // interval, saturating, and adds 1 back. The binary's count starts at
           // its system share and drops by 1 without saturating. So the gap
-          // shrinks from the share to the share less 1 (19 against 1 on the
+          // shrinks from the share to the share less 1 (21 against 1 on the
           // fixture). The `by_id` scan merges the one interval into one.
           expect(kernel).toEqual({
             afterInserts: 0,

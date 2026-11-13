@@ -7,7 +7,7 @@ import { convexTest } from "convex-test";
 import { defineSchema, makeFunctionReference } from "convex/server";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import { describe, expect, it } from "@effect/vitest";
+import { assert, describe, expect, it } from "@effect/vitest";
 
 const profile = FunctionSpec.extend()({
   middleware: [],
@@ -101,25 +101,26 @@ describe("reserved arguments", () => {
     },
   );
 
-  it("compiles an optional any validator and refuses collisions at registration", () => {
+  it("compiles an optional any validator and refuses collisions when it compiles", () => {
     const definition = RegisteredConvexFunction.prepare(
       database,
       item(profile.publicMutation(options)),
     );
-    expect(definition).toMatchObject({
-      args: { context: { kind: "any", isOptional: "optional" } },
+    assert(definition._tag === "PublicMutation");
+    expect(definition.args()).toMatchObject({
+      context: { kind: "any", isOptional: "optional" },
     });
-    expect(() =>
-      RegisteredConvexFunction.prepare(
-        database,
-        item(
-          profile.publicMutation({
-            ...options,
-            args: () => ({ context: Schema.String }),
-          }),
-        ),
+    const colliding = RegisteredConvexFunction.prepare(
+      database,
+      item(
+        profile.publicMutation({
+          ...options,
+          args: () => ({ context: Schema.String }),
+        }),
       ),
-    ).toThrow(
+    );
+    assert(colliding._tag === "PublicMutation");
+    expect(() => colliding.args()).toThrow(
       'echo declares the argument "context", which its profile reserves. Rename the argument.',
     );
   });

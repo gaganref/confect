@@ -1,7 +1,7 @@
 {
   "name": "@confect/alchemy",
   "description": "Alchemy resources for deploying Convex and Confect applications",
-  "version": "10.3.1",
+  "version": "10.6.0",
   "author": "RJ Dellecese",
   "bugs": {
     "url": "https://github.com/rjdellecese/confect/issues"
@@ -11,16 +11,17 @@
   },
   "devDependencies": {
     "@confect/cli": "workspace:*",
-    "@effect/platform-node": "4.0.4",
-    "@effect/vitest": "4.0.4",
-    "@types/node": "26.6.5",
-    "alchemy": "2.0.0-beta.82",
+    "@effect/platform-node": "4.1.4",
+    "@effect/vitest": "4.1.4",
+    "@types/node": "26.6.6",
+    "alchemy": "2.0.0-beta.86",
     "convex": "1.49.0",
-    "effect": "4.0.4",
-    "tsdown": "0.23.1",
-    "typescript": "7.0.2",
+    "effect": "4.1.4",
+    "tsdown": "0.23.7",
+    "tsrs": "0.23.0-ts7.1.0-beta",
+    "typescript": "7.1.0-beta",
     "unrun": "0.3.1",
-    "vitest": "5.0.3"
+    "vitest": "5.1.0"
   },
   "engines": {
     "node": ">=24"
@@ -58,9 +59,9 @@
   "peerDependencies": {
     "@confect/cli": "workspace:^",
     "@confect/core": "workspace:^",
-    "alchemy": "2.0.0-beta.82",
+    "alchemy": "2.0.0-beta.86",
     "convex": "^1.32.0",
-    "effect": ">=4.0.0 <4.1.0"
+    "effect": "~4.1.4"
   },
   "peerDependenciesMeta": {
     "@confect/cli": {
@@ -76,8 +77,8 @@
     "clean": "shx rm -rf dist coverage node_modules",
     "dev": "tsdown --watch --no-clean --config-loader unrun",
     "test": "vitest run",
-    "typecheck": "tsc -b tsconfig.src.json",
-    "typecheck:inexact": "tsc --noEmit --project tsconfig.json --exactOptionalPropertyTypes false"
+    "typecheck": "tsrs -b tsconfig.src.json",
+    "typecheck:inexact": "tsrs --noEmit --project tsconfig.json --exactOptionalPropertyTypes false"
   },
   "sideEffects": false,
   "type": "module",

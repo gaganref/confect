@@ -15,6 +15,7 @@ import * as Effect from "effect/Effect";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import type * as Execution from "../src/internal/Execution";
 import * as Subscriptions from "../src/internal/Subscriptions";
+import * as Arr from "effect/Array";
 
 type TaskId = GenericId<"tasks">;
 type Task = { title: string; owner: string; due: number };
@@ -58,7 +59,7 @@ const store = (componentsGeneric() as any).store as {
 };
 
 const titles = (rows: ReadonlyArray<{ readonly title: string }>) =>
-  rows.map((row) => row.title);
+  Arr.map(rows, (row) => row.title);
 
 const schema = defineSchema({
   tasks: defineTable({ title: v.string(), owner: v.string(), due: v.number() })
@@ -197,7 +198,7 @@ const storeModules = {
           ctx.db
             .query("rows")
             .collect()
-            .then((rows) => rows.map((row) => row.text)),
+            .then((rows) => Arr.map(rows, (row) => row.text)),
       }),
     }),
 };
@@ -282,7 +283,9 @@ describe("full-rerun reference", () => {
           disagreements.push(...(yield* call(() => t.reference())));
         }
         expect(disagreements).toEqual([]);
-        expect(subscriptions.map((s) => s.current().outcome)).toMatchObject([
+        expect(
+          Arr.map(subscriptions, (s) => s.current().outcome),
+        ).toMatchObject([
           returned(["d", "e"]),
           returned(["d", "c", "a"]),
           returned(null),
@@ -414,7 +417,8 @@ describe("failures", () => {
             because: { kind: "commit" },
           },
         ]);
-        expect(yield* call(() => t.reference())).toEqual([]);
+        const callResult = yield* call(() => t.reference());
+        expect(callResult).toEqual([]);
       }),
   );
 
@@ -501,7 +505,7 @@ describe("read sets", () => {
         );
         const changed = yield* call(() => t.refresh());
         expect(beside).toBe(empty);
-        expect(changed.map((transition) => transition.to)).toEqual([
+        expect(Arr.map(changed, (transition) => transition.to)).toEqual([
           returned(["c"]),
         ]);
       }),
@@ -547,7 +551,8 @@ describe("read sets", () => {
         expect(subscription.current().outcome).toEqual(
           returned(["a", "b", "c"]),
         );
-        expect(yield* call(() => t.reference())).toEqual([]);
+        const callResult = yield* call(() => t.reference());
+        expect(callResult).toEqual([]);
       }),
   );
 
@@ -566,9 +571,9 @@ describe("read sets", () => {
         t.mutation(tasks.add, { title: "a", owner: "ada", due: 10 }),
       );
       const changed = yield* call(() => t.refresh());
-      expect(changed.map((transition) => transition.subscription)).toEqual([
-        kept.id,
-      ]);
+      expect(Arr.map(changed, (transition) => transition.subscription)).toEqual(
+        [kept.id],
+      );
     }),
   );
 });
@@ -642,7 +647,8 @@ describe("time", () => {
         expect(moved).toEqual([]);
         expect(subscription.current().outcome).toEqual(returned(["a"]));
         expect(subscription.current().time).toBe(100);
-        expect(yield* call(() => t.reference())).toEqual([]);
+        const callResult = yield* call(() => t.reference());
+        expect(callResult).toEqual([]);
       }),
   );
 
