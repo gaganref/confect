@@ -663,6 +663,14 @@ export const unmark = (
 };
 
 /**
+ * `json` with every string value that holds a kept secret replaced by the
+ * marker, as the backstop marks one: keys, encoded bytes and integers, and
+ * system fields stay as they are.
+ */
+export const scrubJson = (json: JSONValue, secrets: Secrets): JSONValue =>
+  backstop(json, secrets.searchable(), () => marker);
+
+/**
  * `text` with every kept secret, raw or as it appears inside a JSON string,
  * replaced by the marker.
  */

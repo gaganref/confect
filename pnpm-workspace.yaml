@@ -5,6 +5,7 @@ packages:
   - packages/server/test/mock-backend/fixtures
   - tools/local-backend/fixtures
   - tools/local-backend/fixtures/plain
+  - tools/local-backend/fixtures/sync
 
 allowBuilds:
   "@parcel/watcher": false

@@ -14,6 +14,7 @@ import type * as Scheduling from "./Scheduling.js";
 import * as Option from "effect/Option";
 import * as Array from "effect/Array";
 import * as Storage from "./Storage.js";
+import * as Sync from "./Sync.js";
 
 type Modules = Record<string, () => Promise<any>>;
 
@@ -37,9 +38,17 @@ export interface KernelControls {
     readonly userAgent?: string | null;
   }) => KernelControls;
   /**
-   * A client's query set under this accessor's caller.
+   * A client's query set under this accessor's caller. Under a presented token,
+   * the subscriber presents it as the sync protocol's Authenticate does, and
+   * its subscriptions wait for the kernel to verify it.
    */
   readonly subscriber: () => Subscriptions.Subscriber;
+  /**
+   * The kernel's end of the Convex client sync protocol. Its `WebSocket` is a
+   * constructor the unmodified `BaseConvexClient` takes as its
+   * `webSocketConstructor`, so a client runs against the kernel in process.
+   */
+  readonly sync: () => Sync.Endpoint;
   /**
    * Rerun every stale subscription. Lists each one whose value changed.
    */
@@ -49,6 +58,25 @@ export interface KernelControls {
    * from the full rerun.
    */
   readonly reference: () => Promise<ReadonlyArray<Subscriptions.Disagreement>>;
+  /**
+   * The same backend as a client that presents `token`. Each call verifies it
+   * against the app's `auth.config` providers at the kernel's time before
+   * anything runs, and refuses with `InvalidToken` as the binary does. An HTTP
+   * request is the exception, as on the binary: its handler runs, and
+   * `getUserIdentity` throws the refused token's error. A `customJwt`
+   * provider's JWKS must be a `data:` URL, so the test owns its keys.
+   */
+  readonly withToken: (token: string) => KernelControls;
+  /**
+   * Send `path` to the app's HTTP router, as a request to its site URL.
+   */
+  readonly fetch: (path: string, init?: RequestInit) => Promise<Response>;
+  /**
+   * The deployment's public keys, which verify what `ctx.auth.signJwt` signs.
+   */
+  readonly jwks: () => Promise<{
+    readonly keys: ReadonlyArray<JsonWebKey & { readonly kid: string }>;
+  }>;
   /**
    * Move the kernel's clock forward, running each job due on the way at its
    * deadline.
@@ -127,10 +155,17 @@ const isSchemaDefinition = (
   "tables" in value &&
   typeof (value as { tables: unknown }).tables === "object";
 
+/**
+ * A test's view of the backend as one caller. With a presented `token`, every
+ * call first verifies it, as the binary verifies a client's token on each
+ * request.
+ */
 const accessor = (
   world: Execution.World,
   subscriptions: Subscriptions.Registry,
+  sync: Sync.Server,
   caller: Execution.Caller,
+  token?: string,
 ): any => {
   // Every failure the kernel hands back is a report a test runner prints, so
   // each leaves through the world's redaction.
@@ -144,14 +179,14 @@ const accessor = (
     world.functionPathOf(subscriptions.referenceOf(subscription));
   return {
     query: (reference: any, args?: any) =>
-      reported(() => world.query(caller, reference, args)),
+      reported(() => world.query(caller, reference, args, token)),
     mutation: (reference: any, args?: any) =>
-      reported(() => world.mutation(caller, reference, args)),
+      reported(() => world.mutation(caller, reference, args, token)),
     action: (reference: any, args?: any) =>
-      reported(() => world.action(caller, reference, args)),
+      reported(() => world.action(caller, reference, args, token)),
     prepare: (reference: any, args?: any) =>
-      reported(() => world.prepare(caller, reference, args)).then((view) =>
-        world.projectHeld(view),
+      reported(() => world.prepare(caller, reference, args, token)).then(
+        (view) => world.projectHeld(view),
       ),
     apply: (id: string) => {
       // The attempt leaves `held` once applied, so its function is read first.
@@ -163,7 +198,13 @@ const accessor = (
       );
     },
     held: () => Array.map(world.held(), (view) => world.projectHeld(view)),
-    subscriber: () => subscriptions.subscriber(caller),
+    subscriber: () => {
+      const subscriber = subscriptions.subscriber(caller);
+      // A refusal reaches the subscriber's next subscription.
+      if (token !== undefined) subscriber.present(token).catch(() => undefined);
+      return subscriber;
+    },
+    sync: (): Sync.Endpoint => sync.endpoint(),
     refresh: () =>
       reported(() => subscriptions.refresh()).then((transitions) =>
         Array.map(transitions, (transition): Subscriptions.Transition => ({
@@ -203,31 +244,46 @@ const accessor = (
         ),
       ),
     run: (handler: (ctx: any) => any) =>
-      reported(() => world.run(caller, "", handler)),
+      reported(() => world.run(caller, "", handler, token)),
     runInComponent: (componentPath: string, handler: (ctx: any) => any) =>
-      reported(() => world.run(caller, componentPath, handler)),
+      reported(() => world.run(caller, componentPath, handler, token)),
     withIdentity: (identity: Partial<UserIdentity>) =>
-      accessor(world, subscriptions, Execution.withIdentity(caller, identity)),
+      accessor(
+        world,
+        subscriptions,
+        sync,
+        Execution.withIdentity(caller, identity),
+      ),
+    withToken: (presented: string) =>
+      accessor(world, subscriptions, sync, caller, presented),
     withRequestMetadata: (metadata: {
       readonly ip?: string | null;
       readonly userAgent?: string | null;
     }) =>
-      accessor(world, subscriptions, {
-        ...caller,
-        ip: metadata.ip ?? null,
-        userAgent: metadata.userAgent ?? null,
-      }),
+      accessor(
+        world,
+        subscriptions,
+        sync,
+        {
+          ...caller,
+          ip: metadata.ip ?? null,
+          userAgent: metadata.userAgent ?? null,
+        },
+        token,
+      ),
     // An upload to a URL from `generateUploadUrl`, or a download from one
     // `getUrl` answered, streams through the binary's storage endpoints, which
-    // the kernel does not simulate.
+    // the kernel does not simulate. A presented token the verifier refuses
+    // reaches the handler, whose `getUserIdentity` throws its error.
     fetch: (path: unknown, init?: RequestInit) => {
       const endpoint =
         typeof path === "string" ? Storage.endpoint(path) : undefined;
-      return endpoint === undefined
-        ? reported(() => world.fetch(caller, path, init))
-        : Promise.reject(KernelRefusal.requiresBinary(endpoint));
+      if (endpoint !== undefined) {
+        return Promise.reject(KernelRefusal.requiresBinary(endpoint));
+      }
+      return reported(() => world.fetch(caller, path, init, token));
     },
-    jwks: () => Promise.reject(KernelRefusal.rowPending("JWT verification", 6)),
+    jwks: () => world.deploymentKey.jwks(),
     advance: (ms: number) => reported(() => world.advance(ms)),
     jobs: () => world.jobs(),
     crons: () => world.crons(),
@@ -287,6 +343,13 @@ export function convexTest(
          * stream.
          */
         readonly world?: Invocation.World;
+        /**
+         * How long a sync socket's cached query result that read the time stays
+         * valid, in the kernel's milliseconds: the binary's `MAX_CACHE_AGE`, 17
+         * seconds by default. A test against a binary with other UDF timeouts
+         * passes that binary's.
+         */
+        readonly queryCacheAge?: number;
       },
   modules?: Modules,
 ): any {
@@ -294,6 +357,7 @@ export function convexTest(
   let runtime: Kernel.KernelRuntime | undefined;
   let redaction: Redaction.Policy | undefined;
   let own: Invocation.World | undefined;
+  let queryCacheAge: number | undefined;
   if (isSchemaDefinition(schemaOrOptions)) {
     schema = schemaOrOptions;
   } else if (schemaOrOptions !== undefined) {
@@ -305,6 +369,7 @@ export function convexTest(
     runtime = schemaOrOptions.runtime;
     redaction = schemaOrOptions.redaction;
     own = schemaOrOptions.world;
+    queryCacheAge = schemaOrOptions.queryCacheAge;
   }
   if (modules === undefined) {
     throw new Error(
@@ -312,8 +377,14 @@ export function convexTest(
     );
   }
   const world = new Execution.World(schema, modules, runtime, redaction, own);
+  const subscriptions = new Subscriptions.Registry(world, queryCacheAge);
   return {
-    ...accessor(world, new Subscriptions.Registry(world), Execution.anonymous),
+    ...accessor(
+      world,
+      subscriptions,
+      new Sync.Server(world, subscriptions),
+      Execution.anonymous,
+    ),
     registerComponent: (
       componentPath: string,
       componentSchema: SchemaDefinition<GenericSchema, boolean>,
