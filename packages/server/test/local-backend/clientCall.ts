@@ -20,7 +20,7 @@ const Answer = Schema.Struct({
 export const send =
   (kind: "query" | "mutation" | "action", headers: Record<string, string>) =>
   (reference: any, args: unknown): Promise<unknown> =>
-    fetch(`http://127.0.0.1:3210/api/${kind}`, {
+    fetch(`${LocalBackend.cloudUrl()}/api/${kind}`, {
       method: "POST",
       headers: { "content-type": "application/json", ...headers },
       body: encodeJson({
