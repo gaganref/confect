@@ -2,9 +2,9 @@
   "name": "@confect/server-local-backend-plain-probe",
   "description": "Internal fixture project of plain Convex HTTP actions, with no Confect router, for the local-backend suite's probes of the binary's own HTTP answers.",
   "version": "0.0.0",
-  "private": true,
-  "type": "module",
   "dependencies": {
     "convex": "*"
-  }
+  },
+  "private": true,
+  "type": "module"
 }
