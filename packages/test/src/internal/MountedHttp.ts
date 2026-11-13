@@ -113,14 +113,19 @@ export const make = (
   const registered = new Set<string>();
   let tail = Promise.resolve();
 
-  const register: RegisterComponent = (componentPath, schema, modules) => {
+  const register: RegisterComponent = (
+    componentPath,
+    schema,
+    modules,
+    options,
+  ) => {
     if (
       !Arr.some(
         normalized.success,
         (mount) => mount.componentPath === componentPath,
       )
     ) {
-      registerComponent(componentPath, schema, modules);
+      registerComponent(componentPath, schema, modules, options);
       return;
     }
     const generated = Option.getOrUndefined(
@@ -207,10 +212,12 @@ export const make = (
         }
       },
     });
-    registerComponent(componentPath, schema, {
-      ...modules,
-      [bridgePath]: () => Promise.resolve({ invoke }),
-    });
+    registerComponent(
+      componentPath,
+      schema,
+      { ...modules, [bridgePath]: () => Promise.resolve({ invoke }) },
+      options,
+    );
     registered.add(componentPath);
   };
 

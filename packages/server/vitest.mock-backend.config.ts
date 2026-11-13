@@ -24,6 +24,8 @@ export default mergeConfig(
       root: import.meta.dirname,
       name: "@confect/server (mock-backend)",
       include: ["test/mock-backend/**/*.test.ts"],
+      // The kernel lane's own controls run only there.
+      exclude: ["test/mock-backend/kernelLane.test.ts"],
       globalSetup: ["./test/mock-backend/setup.ts"],
     },
   }),

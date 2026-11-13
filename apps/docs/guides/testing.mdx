@@ -348,3 +348,60 @@ Effect.gen(function* () {
   });
 });
 ```
+
+### Declare self-rescheduling functions
+
+Some components schedule their own next run forever, such as the crons component's `public:rescheduler`. A component's test kit declares those functions as `module:export` in `registerComponent`'s `standing` option:
+
+```ts
+t.registerComponent(name, schema, modules, {
+  standing: ["public:rescheduler"],
+});
+```
+
+convex-test ignores the option. Confect's in-process test kernel does not count a standing job as work `finishAllScheduledFunctions` must finish, so the drain ends with the next run pending. Without the declaration the kernel's drain stops after 100 jobs and fails with `DrainBudgetExceeded`.
+
+### Run on the test kernel
+
+`TestConfect.layer` runs on convex-test unless you pass `target: "kernel"`. The option is the last argument of each form:
+
+```ts
+TestConfect.layer(registry, { target: "kernel" });
+TestConfect.layer(app, registry, { target: "kernel" });
+TestConfect.layer(schema, convexSchema, modules, {
+  target: "kernel",
+  register,
+});
+```
+
+On the kernel, scheduled functions run on the kernel's own clock and never on a host timer, so `finishAllScheduledFunctions` does not call its `advanceTimers` callback. The default kernel clock follows the test's `Date`, fake timers included, so advancing fake timers and then calling `finishInProgressScheduledFunctions` runs the jobs that came due. A layer on one target can be provided inside a layer on the other, and each keeps its own backend while both are live. The option goes away once the kernel replaces convex-test.
+
+The kernel also runs the cron jobs each component's `crons.ts` declares, which convex-test does not. It reads them when the backend opens and refuses a job Convex would refuse at deploy. Each run starts when Convex would start it, in UTC. An interval's first run is due at once, and each later one an interval after the previous run's time. An hourly, daily, weekly, monthly or cron-expression schedule runs at its next occurrence, delayed by a random number of seconds as Convex delays it: up to 59 for a pinned minute, up to 3599 across the hour when `minuteUTC` is left out. The kernel holds no random generator. On the kernel target, `TestConfect.layer` gives the backend a seeded random stream, and every delay draws from it, so two runs with the same seed get the same delays. The seed defaults to `0`. Pass `seed` beside `target` to draw a different stream:
+
+```ts
+TestConfect.layer(registry, { target: "kernel", seed: 7 });
+```
+
+A cron run counts as no work for `finishAllScheduledFunctions`, so a drain never runs one. Advancing fake timers and then calling `finishInProgressScheduledFunctions` runs every cron run that came due, in time order with scheduled jobs. Cron expressions with `L`, `W` and `#` run as Convex runs them.
+
+### Keep secrets out of kernel artifacts
+
+On the kernel, a value under a `Schema.Redacted` node, which a `Schema.RedactedFromValue` field decodes to, reaches the kernel's failure reports and diffs only as `[redacted]`. The raw value stays in memory as the backend's own state, so handlers and subscriptions still read it. The layer reads the secret nodes of the app's tables from its database schema. Pass `secrets` for function arguments and return values and for component tables:
+
+```typescript
+TestConfect.layer(databaseSchema, convexSchemaDefinition, modules, {
+  target: "kernel",
+  secrets: {
+    functions: {
+      "": {
+        "accounts:open": {
+          args: () =>
+            Schema.Struct({ token: Schema.RedactedFromValue(Schema.String) }),
+        },
+      },
+    },
+  },
+});
+```
+
+`secrets` is keyed by component path (`""` for the app), then by `module:export` or table name, and each schema is a thunk the kernel builds only when it first needs it. Codegen will fill the same record from your Confect specs as `secrets` in `confect/_generated/testing`, which replaces a hand-written policy.

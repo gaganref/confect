@@ -12,6 +12,228 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Test invocation services
+
+`runHandlerPromise` starts a query, mutation or action handler with the
+services of the test invocation it belongs to, through `Effect.runPromiseWith`.
+`@confect/test` binds an invocation through async context, and a nested call
+joins it. A query's or mutation's `Date` reads its start time through its
+run. An action's reads the world's clock as it runs, and a query or mutation it
+calls starts at the action's time then. The handler's `Math.random` and
+`crypto.getRandomValues` draw from the invocation's random stream. These pins
+rely on convex-test's per-handler copies of those globals, and a bound handler
+without one is refused before it runs. A job convex-test
+starts from a timer gets a fresh record with its world's services, clock and
+random stream and the job's request metadata. With no bound invocation, and
+always in production, handlers keep `Effect.runPromise`. This is row 1 of
+Frame's backend testing kernel (Frame ADR 0012).
+`packages/test/RECHECK.md` records what each kernel part is on `main`.
+Changeset: `test-invocation-services.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
+## Test kernel storage and attempts
+
+`@confect/test` has an internal kernel that runs Convex functions in process
+without convex-test. It keeps committed rows per component and a write log.
+Each query and mutation runs as an attempt over a snapshot and its own pending
+writes. A function's async syscalls, nested calls included, run one at a time
+in the order it made them, as in Convex's syscall queue. A nested mutation's
+writes merge into its caller's or are dropped, and only the outermost mutation
+publishes, across every component at once. The
+kernel loads every module Convex's bundler would deploy before the first
+function runs, and Node actions run through the action path. Scheduling,
+storage, HTTP, JWT and transaction limits refuse until later kernel rows land.
+A second mock-backend run aliases `convex-test` to the kernel's shim and
+refuses the real package. `test/mock-backend/kernelPlacement.ts` lists the
+cases that wait for a later row. This is row 2 of Frame's backend testing
+kernel (Frame ADR 0012). Changeset: `test-kernel-storage.md`. Upstream: fork
+only, as the kernel is fork-specific.
+
+## Test kernel read sets and held attempts
+
+Each kernel attempt records what it read: documents by ID, present or absent,
+and each query's ordered interval up to the prefix it examined. A page reads no
+further than its end cursor, and a page from the terminal cursor reads nothing.
+A top-level mutation runs to its commit point and is held. Applying it checks
+its reads against every commit since its snapshot, then publishes it, or runs
+exactly one next attempt and holds that, or gives up on attempt 5 with
+`OptimisticConcurrencyControlFailure`. The kernel has no retry loop. The
+convex-test shim applies each attempt at once, so concurrent mutations conflict
+and rerun instead of taking turns. A runtime supplies the clock and commit
+timestamps, which strictly increase, so a history replays byte for byte. A
+mutation that writes nothing takes no timestamp and answers its snapshot's, as
+on Convex. A mutation's attempt takes writes until its function has returned
+and its syscalls have settled, so a detached fiber's late write commits, and a
+syscall after that is refused. A nested mutation's frame merges into its
+caller's only after its own syscalls settle, so the same holds inside it. Each attempt reaches the invocation bridge with
+its number, and a nested action gets a fresh invocation. Each function call
+the kernel starts has its own `Date`, `Math` and `crypto`, so the bridge's
+pins hold there, and the kernel's wall clock reads the host's time, never a
+handler's pinned one. This is row 3 of
+Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-read-sets.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
+## Test kernel subscriptions
+
+A client of the test kernel subscribes to queries under one identity. Each
+subscription keeps its latest run with the dependencies it took: the commit and
+reads it read, the caller's identity if it asked for it, the time if it read
+it, and where its paginated read ended. A commit that changes what a run read
+makes it stale, by the same check an attempt's commit makes, and so does an
+identity change when the run read the identity. The clock moving never does, as
+on the Convex binary. `refresh` reruns the stale subscriptions and lists the
+values that changed. A full-rerun reference reruns every subscription from
+scratch, so a missed invalidation shows up as a disagreement. It decides from
+its own rerun's reads whether a rerun was owed, and then reruns at the kernel's
+time, so a missed invalidation of a query whose value is only the time shows
+too. Failures compare by error name, message and data, or by the bare value a
+query threw. `Date` inside a query or mutation answers the kernel's time at its
+start, in a bound handler too, since the invocation bridge leaves `Date` to the
+kernel there. This is row 4 of Frame's backend testing kernel (Frame ADR 0012).
+Changeset: `test-kernel-subscriptions.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
+## Test kernel scheduler, crons, handles and workflow events
+
+The kernel runs scheduled functions on its own clock, never on a host timer. A
+job is a row in its component's `_scheduled_functions`, written through the
+scheduling attempt, so it exists only once that mutation commits. An action's
+schedule and cancel commit at once. `advance(ms)` runs every job whose deadline
+falls in the window, in deadline order, jobs those jobs schedule included, and
+starts each one at its deadline. `Date` inside a query or mutation reads its
+start time, which Convex's `runAfter` uses. On the kernel the invocation bridge
+leaves `Date` to this clock, so a bound handler reads it too, whatever start
+time its invocation carries, and draws from its invocation's random stream. A scheduled call has no identity
+and fresh request metadata carrying its job ID. It runs as a fresh invocation
+of the test world that scheduled it, with that world's services, or unbound
+when none was bound, whatever invocation the drain runs under.
+`finishAllScheduledFunctions` runs jobs until only standing ones remain, and
+fails with `DrainBudgetExceeded` after 100. `registerComponent` takes
+`{ standing }`, the self-rescheduling functions of a component, so a kit can
+declare the crons component's `public:rescheduler`. A job that runs one, or that
+one schedules, is never drain work. A standing name the component does not
+export is refused at open. Each component's `crons.ts` is simulated too: see
+"Test kernel cron jobs".
+A lint fence refuses host timers in the kernel's modules. Row 2's
+`KernelRowPending` refusals for the scheduler are lifted, a `v.function()`
+validator accepts a function handle and refuses any other value, and the six row-5
+mock-backend cases run on the kernel. This is row 5 of Frame's backend testing
+kernel (Frame ADR 0012). Changeset: `test-kernel-scheduler.md`. Upstream: fork
+only, as the kernel and its option are fork-specific.
+
+## Test kernel cron jobs
+
+The kernel runs the cron jobs each component's `crons.ts` declares, as standing
+sources on its own clock. It reads them when the backend opens and refuses with
+`InvalidCron` what a Convex push refuses. Each run's time follows convex-backend's
+`compute_next_ts` and saffron at the revisions the pinned binary uses: an
+interval first at once, then an interval after the previous run's time; a clock
+schedule at its next UTC occurrence plus Convex's random delay within the
+minute, or within the hour when `minuteUTC` is left out. The delay draws from
+the random stream of the world bound when the backend opened, or else the
+world its driver gave it. `TestConfect.layer`'s kernel target gives it a world
+whose stream is seeded by the new `seed` option, `0` by default. A direct kernel
+open with neither world refuses a clock schedule with `CronRandomUnavailable`. A run that finishes after later runs came
+due skips them. A run is a system request with no identity and fresh request
+metadata, and a mutation's writes and jobs exist only if it commits. `advance`
+runs cron runs and jobs in time order, and a drain never runs a cron run.
+Cron expressions follow saffron's search, including `L`, `W` and `#`. A search
+that reaches saffron's `u32` underflow, which aborts the overflow-checked binary,
+is refused with `CronAbortsBinary`. A snapshot carries every cron job's run
+state, and a restore installs it without a draw. A failed run's text reaches
+`crons()` and a snapshot only through the failure redaction. A cron run's function is
+metered as any mutation, and the cron bookkeeping charges no counter, as on the
+binary, where it writes only system tables.
+Why: design row 5 lists declared schedules among the kernel's standing sources,
+and #123 left them out. This is row 5 of Frame's backend testing kernel (Frame
+ADR 0012). Changeset: `test-kernel-crons.md`. Upstream: fork only, as the kernel
+is fork-specific.
+
+## Test kernel transaction limits
+
+The kernel meters each attempt against Convex's transaction limits: documents
+and bytes read, disjoint index intervals, documents and bytes written, and
+scheduled functions with their argument bytes. The defaults, the counting rules
+and the messages are convex-backend's, so a function crossing a limit gets the
+binary's catchable error. A failed nested mutation's writes leave the count and
+its reads and schedules stay. A nested call's `transactionLimits` budget
+tightens only that call. A stale-snapshot query keeps its caller's scheduling
+counters. A patch or replace that changes nothing writes nothing, and a pending
+commit timestamp equals only another pending timestamp. `TransactionMetadata.getMetrics` reads the same counters, so the
+mock-backend `TransactionMetadata` case runs on the kernel. A local-backend case
+compares `getMetrics` for one workload on both targets. The binary's
+`databaseQueries` also counts its own system-table reads, which stay on the
+binary as the named `SystemTableReadIntervals` boundary. File storage counters stay at zero until the storage row. This is the
+limits row of Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-limits.md`. Upstream: fork only, as the kernel is fork-specific.
+
+## TestConfect kernel target
+
+`TestConfect.layer` takes `{ target: "kernel" }` in each of its three forms. It
+builds the test backend on the kernel's convex-test shim instead of
+convex-test, so every module and component the layer registers runs on the
+kernel, with `registerComponent`'s `standing` honoured. Layers on the two
+targets stay live together: the kernel answers `globalThis.Convex` only inside
+its own functions and hands every other syscall to convex-test. The default stays
+`"convex-test"`, so no current test changes until it opts in. This is how
+Frame's generated test backend and its half of build-order row 5 reach the
+kernel without a new export path: the package keeps `./internal/*` unexported.
+The option is removed at promotion, when the kernel replaces convex-test.
+Changeset: `testconfect-kernel-target.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
+## Test kernel redaction
+
+A value under a secret schema node, a `Schema.Redacted` that
+`Schema.RedactedFromValue` decodes to, reaches every artifact the kernel
+writes as a marker. The kernel reads the nodes from Effect schemas: a Confect
+database schema's tables, and a secret policy keyed by component and function
+or table, which `TestConfect.layer` takes as `secrets` and codegen will fill
+from the Confect specs. Each marking walks the value together with its schema,
+so recursive and reused schemas, compound secrets and overlapping union
+members are all covered. The kernel keeps each secret before validating it, in
+an in-memory store that is replay state and never an artifact. A snapshot
+export writes `{ "$redacted": <n> }`, and a restore given the store puts the
+raw values back. A restore without it refuses with `SnapshotSecretMissing`.
+Failure reports are separate copies of whatever was thrown, marked, cycles
+included, and the raw error is never changed. A held attempt's outcome and an
+applied result are marked by the mutation's return shape. Subscription diffs, their causes and read records
+write `[redacted]`. This is row 6 of Frame's backend testing kernel (Frame ADR
+0012). Changeset: `test-kernel-redaction.md`. Upstream: fork only, as the
+kernel is fork-specific.
+
+## Test kernel snapshots
+
+The kernel exports its committed state as snapshot bytes and restores them into
+a fresh test backend. A snapshot holds every component's rows with the version
+that wrote each, the write log, the latest commit timestamp, every committed
+job's target, standing and world name, the clock's floor and the identity
+counters (the next document ID, the latest creation time, the next attempt ID).
+Components, tables, rows and jobs are sorted and each document keeps its field
+order, so two exports of one state are the same bytes. The header names the
+SHA-256 digest of the body, and restore refuses bytes whose body does not hash
+to it with `SnapshotDigestMismatch`, before it reads any of them. Restore also
+refuses a malformed body, a backend that committed, holds attempts, has a
+subscriber or is running a call, a scheduler walk or a function (detached ones
+included), other components and a job world it is not given, and state
+the kernel could not have reached: rows the write log does not publish,
+identity counters behind the state, commit timestamps out of order, jobs
+without their rows or targets, documents without their system fields, and
+duplicate components, tables, rows or jobs. Each has a tagged refusal. The snapshot also
+carries the identity epoch that subscribers' identity versions come from, and
+`Snapshot.contract` names every piece of kernel state as exported or excluded,
+checked by type and by a test. With cron jobs (#133) the format is version 2:
+each declared job's declaration, next run, latest outcome and world by name. A
+restore installs them without redeclaring a job or drawing a random value, and
+refuses with `SnapshotCronMismatch` when the app declares other jobs.
+Replaying the same driver choices after a restore reaches the bytes of the run
+that never stopped, and a function handle stored in a row resolves to its
+component's function after restore. The format is the kernel's own, not the
+Convex binary's ZIP export. This is row 6 of Frame's backend testing kernel
+(Frame ADR 0012). Changeset: `test-kernel-snapshots.md`. Upstream: fork only,
+as the kernel is fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector

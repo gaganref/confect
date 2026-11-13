@@ -8,7 +8,6 @@ import type {
 } from "convex-test";
 import { convexTest } from "convex-test";
 import type {
-  GenericDataModel,
   GenericMutationCtx,
   GenericSchema,
   SchemaDefinition,
@@ -19,21 +18,39 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Clock from "./internal/Clock.js";
+import { convexTest as kernelTest } from "./internal/ConvexTest.js";
+import type * as Invocation from "./internal/Invocation.js";
 import * as MountedHttp from "./internal/MountedHttp.js";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Rec from "effect/Record";
+import * as Redaction from "./internal/Redaction.js";
 
 declare const process: { env: Record<string, string | undefined> };
+
+/**
+ * How a kit registers a component beyond its schema and modules.
+ */
+export type RegisterOptions = {
+  /**
+   * The component's functions, as `module:export`, that schedule their own next
+   * run, such as the crons component's `public:rescheduler`. The test kernel
+   * never treats a job that runs one, or that one schedules, as work
+   * `finishAllScheduledFunctions` must finish. convex-test ignores it.
+   */
+  readonly standing?: ReadonlyArray<string>;
+};
 
 /**
  * Register a component's Convex schema and modules at its installation path.
  */
 export type RegisterComponent = (
-  ...args: Parameters<
-    TestConvexForDataModelAndIdentity<GenericDataModel>["registerComponent"]
-  >
+  componentPath: string,
+  schema: SchemaDefinition<GenericSchema, boolean>,
+  modules: Record<string, () => Promise<any>>,
+  options?: RegisterOptions,
 ) => void;
 
 /**
@@ -44,7 +61,59 @@ export type HttpMount = {
   readonly httpPrefix: string;
 };
 
-export type LayerOptions = {
+/**
+ * The in-process backend a test layer runs on.
+ */
+export type Target = "convex-test" | "kernel";
+
+export type TargetOptions = {
+  /**
+   * `"kernel"` runs every function and component the layer registers on
+   * Confect's test kernel, which runs scheduled functions on its own clock and
+   * reads `registerComponent`'s `standing`. Defaults to `"convex-test"`. The
+   * option goes once the kernel replaces convex-test.
+   */
+  readonly target?: Target;
+  /**
+   * The seed of the random stream the `"kernel"` target's backend draws from on
+   * its own, such as the random delay Convex gives each run of an hourly,
+   * daily, weekly, monthly or cron-expression job. Two layers with the same
+   * seed draw the same stream. Defaults to `0`. convex-test ignores it.
+   */
+  readonly seed?: number;
+};
+
+/**
+ * Which values a kernel-target layer treats as secret, by component path, then
+ * table name or `module:export`: each entry a thunk of the Confect schema whose
+ * `Schema.Redacted` nodes mark the secrets. A value under one reaches the
+ * kernel's artifacts (snapshots, failure reports, diffs) only as a marker. The
+ * layer derives the app's own tables from its database schema, so this adds
+ * function arguments and returns and component tables. Codegen fills it from
+ * the Confect specs as `secrets` in the generated registry, which replaces a
+ * hand-written one.
+ */
+export type SecretPolicy = {
+  readonly tables?: Readonly<
+    Record<string, Readonly<Record<string, () => Schema.Top>>>
+  >;
+  readonly functions?: Readonly<
+    Record<
+      string,
+      Readonly<
+        Record<
+          string,
+          {
+            readonly args?: () => Schema.Top;
+            readonly returns?: () => Schema.Top;
+          }
+        >
+      >
+    >
+  >;
+};
+
+export type LayerOptions = TargetOptions & {
   /**
    * Register component kits synchronously before the test service is available.
    */
@@ -53,6 +122,10 @@ export type LayerOptions = {
    * Explicit HTTP mounts. The test layer does not evaluate convex.config.ts.
    */
   readonly httpMounts?: ReadonlyArray<HttpMount>;
+  /**
+   * The secret policy, read by the kernel target only.
+   */
+  readonly secrets?: SecretPolicy;
 };
 
 export type { DeploymentJwk, DeploymentJwks } from "convex-test";
@@ -114,6 +187,7 @@ export type TestConfect<ConfectSchema extends DatabaseSchema.AnyWithProps> = {
     componentPath: string,
     schema: SchemaDefinition<GenericSchema, boolean>,
     modules: Record<string, () => Promise<any>>,
+    options?: RegisterOptions,
   ) => Effect.Effect<void>;
   withIdentity: (
     userIdentity: Partial<UserIdentity>,
@@ -273,9 +347,9 @@ class TestConfectImpl<
 
   readonly registerComponent: TestConfect<ConfectSchema>["registerComponent"] =
     Effect.fn("TestConfect.registerComponent")(
-      (componentPath, schema, modules) =>
+      (componentPath, schema, modules, options) =>
         Effect.sync(() =>
-          this.mountedHttp.register(componentPath, schema, modules),
+          this.mountedHttp.register(componentPath, schema, modules, options),
         ),
     );
 
@@ -371,6 +445,11 @@ export type Registry<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> = {
   readonly convexSchema: SchemaDefinition<GenericSchema, true>;
   readonly modules: Record<string, () => Promise<any>>;
   readonly components: Readonly<Record<string, ComponentKit>>;
+  /**
+   * The secret policy codegen derives from the Confect specs, read by the
+   * kernel target only.
+   */
+  readonly secrets?: SecretPolicy;
 };
 
 /**
@@ -384,9 +463,12 @@ export type DeclaredApp<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> =
 /**
  * Build a fresh test backend from a declaration and its generated
  * `confect/_generated/testing` registry, without restating component mounts.
+ * Pass `{ target: "kernel" }` to run it on Confect's test kernel instead of
+ * convex-test.
  */
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   app: DeclaredApp<DatabaseSchema_>,
+  options?: TargetOptions,
 ): Layer.Layer<TestConfect<DatabaseSchema_>>;
 export function layer<
   A extends App.Any,
@@ -401,6 +483,7 @@ export function layer<
       >
     >;
   },
+  options?: TargetOptions,
 ): Layer.Layer<TestConfect<DatabaseSchema_>>;
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   databaseSchema: DatabaseSchema_,
@@ -410,20 +493,23 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
 ): Layer.Layer<TestConfect<DatabaseSchema_>>;
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   appOrSchema: App.Any | DeclaredApp<DatabaseSchema_> | DatabaseSchema_,
-  registryOrSchema?:
+  second?:
     | Registry<DatabaseSchema_>
-    | SchemaDefinition<GenericSchema, true>,
-  modules?: Record<string, () => Promise<any>>,
+    | SchemaDefinition<GenericSchema, true>
+    | TargetOptions,
+  third?: Record<string, () => Promise<any>> | TargetOptions,
   options: LayerOptions = {},
 ): Layer.Layer<TestConfect<DatabaseSchema_>> {
   if (App.isApp(appOrSchema)) {
-    const registry = registryOrSchema as Registry<DatabaseSchema_>;
+    const registry = second as Registry<DatabaseSchema_>;
     const mounts = App.mounts(appOrSchema);
     return schemaLayer(
       registry.schema,
       registry.convexSchema,
       registry.modules,
       {
+        ...targetOf(third as TargetOptions | undefined),
+        ...secretsOf(registry),
         // reduce skips a sparse list's holes, which effect/Array's flatMap visits.
         httpMounts: Array.reduce(
           mounts,
@@ -453,6 +539,8 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   if ("httpMounts" in appOrSchema) {
     const app = appOrSchema as DeclaredApp<DatabaseSchema_>;
     return schemaLayer(app.schema, app.convexSchema, app.modules, {
+      ...targetOf(second as TargetOptions | undefined),
+      ...secretsOf(app),
       httpMounts: app.httpMounts,
       register: (registerComponent) => {
         for (const [name, component] of Rec.toEntries(app.components)) {
@@ -463,11 +551,48 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   }
   return schemaLayer(
     appOrSchema as DatabaseSchema_,
-    registryOrSchema as SchemaDefinition<GenericSchema, true>,
-    modules!,
+    second as SchemaDefinition<GenericSchema, true>,
+    third as Record<string, () => Promise<any>>,
     options,
   );
 }
+
+const targetOf = (options: TargetOptions | undefined): TargetOptions => ({
+  ...(options?.target === undefined ? {} : { target: options.target }),
+  ...(options?.seed === undefined ? {} : { seed: options.seed }),
+});
+
+/**
+ * Mulberry32: a stream uniform on [0, 1) from a 32-bit seed. The kernel holds
+ * no generator, so this driver supplies the stream, of the type a test world
+ * gives its handlers.
+ */
+const seeded = (seed: number): (() => number) => {
+  let state = Math.trunc(seed) >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+  };
+};
+
+/**
+ * The world a kernel-target layer gives its backend: no services of its own,
+ * the host's clock, which the kernel's clock follows, and a seeded stream.
+ */
+const layerWorld = (seed: number): Invocation.World => ({
+  name: "TestConfect.layer",
+  services: Context.empty(),
+  clock: Clock.hostNow,
+  random: seeded(seed),
+});
+
+const secretsOf = (registry: {
+  readonly secrets?: SecretPolicy;
+}): Pick<LayerOptions, "secrets"> =>
+  registry.secrets === undefined ? {} : { secrets: registry.secrets };
 
 const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   databaseSchema: DatabaseSchema_,
@@ -478,9 +603,30 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   Layer.sync(TestConfect<DatabaseSchema_>(), () => {
     process.env.CONVEX_CLOUD_URL ??= "https://some-deployment.convex.cloud";
     process.env.CONVEX_SITE_URL ??= "https://some.convex.site";
-    const testConvex = convexTest(convexSchemaDefinition, modules);
+    // On the kernel, a value under a secret node of the app's table schemas,
+    // or of the policy's functions and component tables, reaches every
+    // artifact as a marker. The backend's own world draws from the seeded
+    // stream.
+    const testConvex =
+      options.target === "kernel"
+        ? kernelTest({
+            schema: convexSchemaDefinition,
+            modules,
+            world: layerWorld(options.seed ?? 0),
+            redaction: Redaction.policy(
+              Redaction.merge(
+                { tables: { "": Redaction.tablesOf(databaseSchema) } },
+                options.secrets ?? {},
+              ),
+            ),
+          })
+        : convexTest(convexSchemaDefinition, modules);
+    // convex-test takes three arguments and ignores the options. The kernel
+    // reads `standing`.
+    const registerComponent =
+      testConvex.registerComponent as unknown as RegisterComponent;
     const mountedHttp = MountedHttp.make(options.httpMounts ?? [], (...args) =>
-      testConvex.registerComponent(...args),
+      registerComponent(...args),
     );
     options.register?.(mountedHttp.register);
     return new TestConfectImpl(databaseSchema, testConvex as any, mountedHttp);
