@@ -28,6 +28,7 @@ export const api: {
       { count: string; run: string },
       string
     >;
+    identityChain: FunctionReference<"query", "public", {}, any>;
     list: FunctionReference<
       "query",
       "public",
