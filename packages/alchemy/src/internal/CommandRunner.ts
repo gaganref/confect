@@ -115,7 +115,7 @@ const packageBin = Effect.fn("CommandRunner.packageBin")(function* (
       );
       const relative =
         typeof manifest.bin === "string" ? manifest.bin : manifest.bin[binName];
-      if (relative === "") return yield* invalid();
+      if (relative === undefined || relative === "") return yield* invalid();
       return path.resolve(path.dirname(manifestPath), relative);
     }
     const parent = path.dirname(directory);
