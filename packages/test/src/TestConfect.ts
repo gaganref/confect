@@ -423,8 +423,14 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       registry.convexSchema,
       registry.modules,
       {
-        httpMounts: Array.flatMap(mounts, ({ name, httpPrefix }) =>
-          httpPrefix === undefined ? [] : [{ componentPath: name, httpPrefix }],
+        // reduce skips a sparse list's holes, which effect/Array's flatMap visits.
+        httpMounts: Array.reduce(
+          mounts,
+          Array.empty<{ componentPath: string; httpPrefix: string }>(),
+          (httpMounts, { name, httpPrefix }) =>
+            httpPrefix === undefined
+              ? httpMounts
+              : Array.append(httpMounts, { componentPath: name, httpPrefix }),
         ),
         register: (registerComponent) => {
           for (const [name, component] of Rec.toEntries(registry.components)) {

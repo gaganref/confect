@@ -180,10 +180,14 @@ export const routes = (
   app: App.Any,
   http?: Any,
 ): Result.Result<ReadonlyArray<Route>, RouteError> => {
-  const mounts = Array.flatMap(App.mounts(app), ({ name, httpPrefix }) =>
-    httpPrefix === undefined
-      ? []
-      : [{ name, httpPrefix: trimSlash(httpPrefix) }],
+  // reduce skips a sparse list's holes, which effect/Array's flatMap visits.
+  const mounts = Array.reduce(
+    App.mounts(app),
+    Array.empty<{ name: string; httpPrefix: string }>(),
+    (prefixed, { name, httpPrefix }) =>
+      httpPrefix === undefined
+        ? prefixed
+        : Array.append(prefixed, { name, httpPrefix: trimSlash(httpPrefix) }),
   );
 
   for (const [index, first] of mounts.entries()) {
