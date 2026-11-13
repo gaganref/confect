@@ -1,4 +1,4 @@
-// oxlint-disable effecttsgo/async-function -- The fixtures are plain Convex functions, which are async as product code is.
+// oxlint-disable effecttsgo/async-function, effecttsgo/prefer-effect-array, effecttsgo/global-date -- The fixtures are plain Convex functions, async as product code is, and the app depends on `convex` alone; `clock` answers Convex's own pinned `Date.now()`.
 import { mutationGeneric, queryGeneric } from "convex/server";
 import { ConvexError, v } from "convex/values";
 
@@ -132,4 +132,15 @@ export const peek = queryGeneric({
 export const stash = mutationGeneric({
   args: { secret: v.string() },
   handler: async () => null,
+});
+
+/**
+ * The time the query ran at. It reads no identity and no row, so only an
+ * identity change reruns it, and then the binary's query cache answers it with
+ * the value it already sent until that value is older than the cache age.
+ * `name` gives each run a cache entry of its own.
+ */
+export const clock = queryGeneric({
+  args: { name: v.string() },
+  handler: async () => Date.now(),
 });

@@ -1,3 +1,4 @@
+/* oxlint-disable effecttsgo/global-json-in-effect -- #134 (the JWT row) wrote this file before main moved to the Effect 4.1 lint rules. #134 brings it to those rules when it merges main, so row 7 leaves its code as #134 has it rather than rewrite it twice. */
 // One history that stores a signed token on the test kernel, printed as bytes.
 // `Identity.test.ts` runs this file in two processes and compares their output.
 import {

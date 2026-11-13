@@ -2,6 +2,7 @@
  * The sync probe's app (`tools/local-backend/fixtures/sync`) on the test
  * kernel, and the kernel as a probe target.
  */
+import * as Arr from "effect/Array";
 import * as Schema from "effect/Schema";
 import schema from "../../../../tools/local-backend/fixtures/sync/convex/schema";
 import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
@@ -42,6 +43,11 @@ export const kernelApp = (
      * first run open.
      */
     readonly loaded?: Promise<void>;
+    /**
+     * The binary's `MAX_CACHE_AGE` the backend's query cache keeps, in
+     * milliseconds.
+     */
+    readonly queryCacheAge?: number;
   } = {},
 ): KernelControls =>
   convexTest({
@@ -58,6 +64,9 @@ export const kernelApp = (
     },
     redaction: options.redaction ?? policy,
     ...(options.runtime === undefined ? {} : { runtime: options.runtime }),
+    ...(options.queryCacheAge === undefined
+      ? {}
+      : { queryCacheAge: options.queryCacheAge }),
   });
 
 /**
@@ -72,14 +81,13 @@ export const kernelTarget = (t: KernelControls): Target => {
     WebSocket: endpoint.WebSocket as unknown as Target["WebSocket"],
     contention: (since) =>
       Promise.resolve(
-        endpoint
-          .ledger()
-          .filter(
-            (entry) =>
-              entry.functionPath.udfPath === "sync:increment" &&
-              entry.attempts > 1 &&
-              entry.ts >= BigInt(since) * 1_000_000n,
-          ).length,
+        Arr.filter(
+          endpoint.ledger(),
+          (entry) =>
+            entry.functionPath.udfPath === "sync:increment" &&
+            entry.attempts > 1 &&
+            entry.ts >= BigInt(since) * 1_000_000n,
+        ).length,
       ),
   };
 };

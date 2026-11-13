@@ -8,8 +8,11 @@ import {
   type JSONValue,
   type Value,
 } from "convex/values";
+import * as Arr from "effect/Array";
 import * as Result from "effect/Result";
 import * as Execution from "./Execution.js";
+import * as Identity from "./Identity.js";
+import * as Json from "./Json.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type { FunctionPath } from "./KernelValues.js";
 import type * as Subscriptions from "./Subscriptions.js";
@@ -161,9 +164,10 @@ export const encodeTs = (ts: bigint): string => {
 };
 
 export const decodeTs = (encoded: string): bigint =>
-  Base64.toByteArray(encoded).reduceRight(
-    (value, byte) => (value << 8n) | BigInt(byte),
+  Arr.reduceRight(
+    Array.from(Base64.toByteArray(encoded)),
     0n,
+    (value, byte) => (value << 8n) | BigInt(byte),
   );
 
 const wire = (version: Version): WireVersion => ({
@@ -216,26 +220,12 @@ export const nextIdentity = (
       );
 
 /**
- * `json` with object keys in order, so equal arguments digest the same however
- * a client ordered them.
- */
-const canonical = (json: JSONValue): JSONValue =>
-  Array.isArray(json)
-    ? json.map(canonical)
-    : json !== null && typeof json === "object"
-      ? Object.fromEntries(
-          Object.keys(json)
-            .sort()
-            .map((key) => [key, canonical(json[key]!)]),
-        )
-      : json;
-
-/**
- * The SHA-256 of `json`, canonical.
+ * The SHA-256 of `json` with its keys in order, so equal arguments digest the
+ * same however a client ordered them.
  */
 export const digest = (json: JSONValue): string =>
   createHash("sha256")
-    .update(JSON.stringify(canonical(json)))
+    .update(Json.stringify(Json.canonical(json)))
     .digest("hex");
 
 /**
@@ -328,15 +318,27 @@ export interface Failure {
   readonly message: JSONValue;
 }
 
+/**
+ * A request as `Sync` tells a resend from a reuse: by `argsKey`, the digest of
+ * its raw canonical arguments. Raw digests stay in memory, like the secrets
+ * store, and never reach an artifact: a secret's digest can be guessed. The
+ * artifact digest is `argsDigest`, which marks secrets first, so it changes
+ * when the secrets the world keeps change and cannot identify a request.
+ */
+interface Keyed {
+  readonly argsKey: string;
+  readonly argsDigest: string;
+}
+
 interface Session {
-  readonly ledger: Map<number, LedgerEntry>;
+  readonly ledger: Map<number, Keyed & { readonly entry: LedgerEntry }>;
   /**
    * Mutations running now, by request ID, so a resend waits for the one already
    * running.
    */
   readonly running: Map<
     number,
-    { readonly argsDigest: string; readonly answer: Promise<ServerMessage> }
+    Keyed & { readonly answer: Promise<ServerMessage> }
   >;
 }
 
@@ -437,8 +439,8 @@ export class Server {
    * marked by its mutation's return shape.
    */
   ledger(): ReadonlyArray<LedgerEntry> {
-    return Array.from(this.sessions.values()).flatMap((session) =>
-      Array.from(session.ledger.values(), (entry) => {
+    return Arr.flatMap(Array.from(this.sessions.values()), (session) =>
+      Arr.map(Array.from(session.ledger.values()), ({ entry }) => {
         const outcome = this.world.redactOutcome(
           { _tag: "returned", value: entry.result },
           entry.functionPath,
@@ -458,7 +460,7 @@ export class Server {
    * holding a kept secret marked.
    */
   transcript(): ReadonlyArray<Recorded> {
-    return this.recorded.map(({ socket, direction, mark }) => ({
+    return Arr.map(this.recorded, ({ socket, direction, mark }) => ({
       socket,
       direction,
       message: this.world.redactJson(mark()),
@@ -469,7 +471,7 @@ export class Server {
    * The protocol failures `Sync` answered, as failure reports.
    */
   failures(): ReadonlyArray<Failure> {
-    return this.failed.map(({ socket, error, message }) => ({
+    return Arr.map(this.failed, ({ socket, error, message }) => ({
       socket,
       error: this.world.redactFailure(error),
       message: this.world.redactJson(message()),
@@ -526,6 +528,10 @@ export class Connection {
   private receivedIdentity = 0;
   private current: Version = { querySet: 0, ts: 0n, identity: 0 };
   private token: string | null = null;
+  /**
+   * When the presented token expires, in the kernel's milliseconds.
+   */
+  private expiresAt: number | undefined;
   private messages: Promise<void> = Promise.resolve();
   private mutations: Promise<void> = Promise.resolve();
   private updating = false;
@@ -550,7 +556,7 @@ export class Connection {
    */
   receive(text: string) {
     if (this.closed) return;
-    const message = JSON.parse(text) as ClientMessage;
+    const message = Json.parse(text) as ClientMessage;
     this.server.record(this.id, "client", () => this.markClient(message));
     this.messages = this.messages
       .then(() => (this.closed ? undefined : this.handle(message)))
@@ -590,7 +596,7 @@ export class Connection {
   ) {
     if (this.closed) return;
     this.server.record(this.id, "server", mark);
-    this.peer.send(JSON.stringify(message));
+    this.peer.send(Json.stringify(message));
   }
 
   private fatal(error: unknown, message?: () => JSONValue) {
@@ -644,16 +650,16 @@ export class Connection {
       }
       case "Authenticate":
         return this.authenticate(message);
-      case "Mutation":
+      case "Mutation": {
         this.checkRoot(message.componentPath);
-        return this.callerNow().then(
-          (caller) => caller && this.mutate(caller, message),
-        );
-      case "Action":
+        if (!this.expired()) this.mutate(this.subscriber.caller, message);
+        return;
+      }
+      case "Action": {
         this.checkRoot(message.componentPath);
-        return this.callerNow().then(
-          (caller) => caller && this.act(caller, message),
-        );
+        if (!this.expired()) this.act(this.subscriber.caller, message);
+        return;
+      }
       case "Event":
         return;
     }
@@ -670,33 +676,44 @@ export class Connection {
   }
 
   /**
-   * The identity a request runs under: the latest the client presented,
-   * verified again at the kernel's time, as the binary revalidates a token
-   * before each request (`crates/sync/src/worker.rs:903-912`). A token that no
-   * longer verifies answers `AuthError` and closes the socket, and there is no
-   * caller.
+   * Whether the presented token has expired at the kernel's time. The binary
+   * checks this before each request and before each update
+   * (`crates/sync/src/worker.rs:503`, `:671`, `:781`, `:903-912`): a user
+   * identity is expired once the time reaches its `exp`, with no skew
+   * (`crates/sync/src/state.rs:282-305`, `keybroker/src/broker.rs:676-678`). An
+   * expired one answers `AuthError` without `authUpdateAttempted` and closes
+   * the socket, so nothing runs under it.
    */
-  private callerNow(): Promise<Execution.Caller | undefined> {
-    const caller = this.subscriber.caller;
-    if (this.token === null) return Promise.resolve(caller);
-    return this.server.world
-      .authenticate(Execution.anonymous, this.token)
-      .catch((error: unknown) =>
-        this.authError(error, this.receivedIdentity, false),
-      );
+  private expired(): boolean {
+    if (
+      this.token === null ||
+      this.expiresAt === undefined ||
+      this.server.world.now() < this.expiresAt
+    ) {
+      return false;
+    }
+    this.authError(
+      KernelRefusal.TokenExpired.make({
+        code: "TokenExpired",
+        message: "Convex token identity expired",
+      }),
+      false,
+    );
+    return true;
   }
 
-  private authError(
-    error: unknown,
-    baseVersion: number,
-    attempted: boolean,
-  ): undefined {
+  /**
+   * Answer `AuthError` and close. Its base version is the identity version the
+   * socket last sent, as the binary's is
+   * (`crates/local_backend/src/subs/mod.rs:276-292`).
+   */
+  private authError(error: unknown, attempted: boolean): undefined {
     this.server.fail(this.id, error);
     const text = error instanceof Error ? error.message : String(error);
     this.send({
       type: "AuthError",
       error: text,
-      baseVersion,
+      baseVersion: this.current.identity,
       authUpdateAttempted: attempted,
     });
     this.peer.close(1000, "AuthError");
@@ -713,6 +730,7 @@ export class Connection {
           nextIdentity(this.receivedIdentity, message.baseVersion),
         );
         this.token = null;
+        this.expiresAt = undefined;
         this.subscriber.authenticate(null);
         this.receivedIdentity = identity;
         this.scheduleUpdate();
@@ -724,7 +742,7 @@ export class Connection {
         const token = message.value ?? "";
         return this.subscriber.present(token).then(
           () => this.authenticated(token, message.baseVersion),
-          (error: unknown) => this.authError(error, message.baseVersion, true),
+          (error: unknown) => this.authError(error, true),
         );
       }
     }
@@ -735,6 +753,7 @@ export class Connection {
       nextIdentity(this.receivedIdentity, baseVersion),
     );
     this.token = token;
+    this.expiresAt = Identity.expiresAt(token);
     this.scheduleUpdate();
   }
 
@@ -750,25 +769,28 @@ export class Connection {
     const session = this.session ?? this.server.session(this.sessionId);
     const functionPath = this.functionPath(message.udfPath);
     const args = jsonToConvex(message.args[0] ?? {});
-    const argsDigest = digest(
-      convexToJson(this.server.world.projectArguments(functionPath, args)),
-    );
+    const keyed: Keyed = {
+      argsKey: digest(message.args[0] ?? {}),
+      argsDigest: digest(
+        convexToJson(this.server.world.projectArguments(functionPath, args)),
+      ),
+    };
     this.mutations = this.mutations
       .then(() => {
         const recorded = session.ledger.get(message.requestId);
         const running = session.running.get(message.requestId);
         const known = recorded ?? running;
-        if (known !== undefined && known.argsDigest !== argsDigest) {
+        if (known !== undefined && known.argsKey !== keyed.argsKey) {
           throw KernelRefusal.SyncRequestReused.make({
             requestId: message.requestId,
             recorded: known.argsDigest,
-            sent: argsDigest,
+            sent: keyed.argsDigest,
             message: `Request ${message.requestId} of this session was already sent with other arguments.`,
           });
         }
         const answer =
           recorded !== undefined
-            ? Promise.resolve(this.success(recorded))
+            ? Promise.resolve(this.success(recorded.entry))
             : (running?.answer ??
               this.runMutation(
                 session,
@@ -776,7 +798,7 @@ export class Connection {
                 message,
                 functionPath,
                 args,
-                argsDigest,
+                keyed,
               ));
         return answer.then((response) => this.answered(response, functionPath));
       })
@@ -805,7 +827,7 @@ export class Connection {
     message: Call<"Mutation">,
     functionPath: FunctionPath,
     args: Value,
-    argsDigest: string,
+    keyed: Keyed,
   ): Promise<ServerMessage> {
     const world = this.server.world;
     const failure = (error: unknown): ServerMessage => {
@@ -831,12 +853,12 @@ export class Connection {
           sessionId: this.sessionId,
           requestId: message.requestId,
           functionPath,
-          argsDigest,
+          argsDigest: keyed.argsDigest,
           attempts,
           ts: applied.commitTs,
           result: applied.result,
         };
-        session.ledger.set(message.requestId, entry);
+        session.ledger.set(message.requestId, { ...keyed, entry });
         return this.success(entry);
       });
     const answer = world
@@ -845,7 +867,7 @@ export class Connection {
       .finally(() => {
         session.running.delete(message.requestId);
       });
-    session.running.set(message.requestId, { argsDigest, answer });
+    session.running.set(message.requestId, { ...keyed, answer });
     return answer;
   }
 
@@ -913,21 +935,25 @@ export class Connection {
   }
 
   /**
-   * One transition: apply the pending modifications, rerun the stale queries
-   * until none is stale, then end at the latest commit's timestamp and the
-   * identity received, read in the same turn as that last check
-   * (`crates/sync/src/worker.rs:933-1061`, `:1253-1324`).
+   * One transition: check the token has not expired, as the binary does before
+   * it starts an update (`crates/sync/src/worker.rs:503-506`), apply the
+   * pending modifications, rerun the stale queries until none is stale, then
+   * end at the latest commit's timestamp and the identity received, read in the
+   * same turn as that last check (`:933-1061`, `:1253-1324`).
    */
   private update(): Promise<void> {
+    if (this.expired()) return Promise.resolve();
     const start = this.current;
     const taken = this.pending;
     this.pending = [];
     const querySet = this.receivedQuerySet;
     const modifications = new Map<number, StateModification>();
     const functionPaths = new Map<number, FunctionPath>();
-    const apply = taken.reduce<Promise<void>>(
-      (previous, change) =>
-        previous.then(() => {
+    const apply = Arr.reduce(
+      taken,
+      Promise.resolve(),
+      (previous: Promise<void>, change) =>
+        previous.then((): Promise<void> | undefined => {
           if (change.type === "Remove") {
             const query = this.queries.get(change.queryId);
             if (query === undefined) {
@@ -976,7 +1002,6 @@ export class Connection {
               return undefined;
             });
         }),
-      Promise.resolve(),
     );
     const settle = (): Promise<Version> =>
       this.server.subscriptions.refresh(this.subscriber).then((transitions) => {
@@ -1026,7 +1051,7 @@ export class Connection {
       () =>
         ({
           ...transition,
-          modifications: modifications.map((change) =>
+          modifications: Arr.map(modifications, (change) =>
             this.markModification(change, functionPaths.get(change.queryId)),
           ),
         }) as unknown as JSONValue,
@@ -1067,7 +1092,7 @@ export class Connection {
 
   private markArgs(udfPath: string, args: ReadonlyArray<JSONValue>) {
     const world = this.server.world;
-    return args.map((arg) =>
+    return Arr.map(args, (arg) =>
       convexToJson(
         world.projectArguments(this.functionPath(udfPath), jsonToConvex(arg)),
       ),
@@ -1085,7 +1110,7 @@ export class Connection {
       case "ModifyQuerySet":
         return {
           ...message,
-          modifications: message.modifications.map((change) =>
+          modifications: Arr.map(message.modifications, (change) =>
             change.type === "Add"
               ? { ...change, args: this.markArgs(change.udfPath, change.args) }
               : change,

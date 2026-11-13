@@ -5,6 +5,11 @@
  * that process, its executable's checksum, the ports, the worktree and its
  * revision. It takes ports, never a URL, so a record cannot describe a backend
  * someone else started.
+ *
+ * A leg's record is written before the leg runs, as `incomplete`, so a record
+ * an earlier run left never stands for this one. Each side of a leg runs to a
+ * deadline. A side that fails or passes its deadline leaves the record
+ * `incomplete`, with what each side had observed by then.
  */
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The binding runs git once, before any Effect runtime matters.
 import { execFileSync, spawn } from "node:child_process";
@@ -15,15 +20,37 @@ import * as Fs from "node:fs";
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- Paths of the files the record digests.
 import * as Path from "node:path";
 import type { JSONValue } from "convex/values";
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
+import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
+import * as Str from "effect/String";
+import * as Json from "../../../test/src/internal/Json";
+
+// Records and log lines are written and read in promise callbacks and child
+// process streams, through the kernel's synchronous JSON helper.
+const encodeJson = Json.stringify;
+const decodeJson = Json.parse;
 
 /**
  * The probe cannot bind its record to a binary this run started.
  */
-export class ProbeBindingError extends Schema.TaggedError<ProbeBindingError>()(
-  "ProbeBindingError",
-  { message: Schema.String },
-) {}
+export class ProbeBindingError extends Schema.TaggedError<
+  ProbeBindingError,
+  { readonly brand: unique symbol }
+>()("ProbeBindingError", { message: Schema.String }) {}
+
+/**
+ * A side of a leg did not finish by its deadline.
+ */
+export class ProbeDeadline extends Schema.TaggedError<
+  ProbeDeadline,
+  { readonly brand: unique symbol }
+>()("ProbeDeadline", {
+  side: Schema.Literals(["binary", "kernel"]),
+  deadline: Schema.Int,
+  message: Schema.String,
+}) {}
 
 export interface Binding {
   readonly worktree: string;
@@ -53,15 +80,20 @@ const sha256 = (bytes: Uint8Array | string) =>
  * The inodes of sockets listening on `port`, from `/proc/net/tcp` and `tcp6`.
  */
 const listening = (port: number): ReadonlySet<string> => {
-  const hex = port.toString(16).toUpperCase().padStart(4, "0");
+  const hex = Str.padStart(4, "0")(Str.toUpperCase(port.toString(16)));
   const inodes = new Set<string>();
   for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
     if (!Fs.existsSync(table)) continue;
-    for (const line of Fs.readFileSync(table, "utf8").split("\n").slice(1)) {
-      const fields = line.trim().split(/\s+/);
+    const rows = Arr.drop(Str.split(Fs.readFileSync(table, "utf8"), "\n"), 1);
+    for (const row of rows) {
+      const fields = Str.split(Str.trim(row), /\s+/);
       // `0A` is LISTEN.
-      if (fields[1]?.endsWith(`:${hex}`) && fields[3] === "0A") {
-        inodes.add(fields[9]!);
+      if (
+        Str.endsWith(`:${hex}`)(fields[1] ?? "") &&
+        fields[3] === "0A" &&
+        fields[9] !== undefined
+      ) {
+        inodes.add(fields[9]);
       }
     }
   }
@@ -89,7 +121,7 @@ const owner = (port: number): number => {
       if (inode !== undefined && inodes.has(inode)) return Number(entry);
     }
   }
-  throw new ProbeBindingError({
+  throw ProbeBindingError.make({
     message: `No process of this user listens on port ${port}.`,
   });
 };
@@ -97,7 +129,8 @@ const owner = (port: number): number => {
 const parent = (pid: number): number => {
   const stat = Fs.readFileSync(`/proc/${pid}/stat`, "utf8");
   // The command name may hold spaces and parentheses, so read after the last.
-  return Number(stat.slice(stat.lastIndexOf(")") + 2).split(" ")[1]);
+  const after = Option.getOrElse(Str.lastIndexOf(")")(stat), () => -1);
+  return Number(Str.split(Str.slice(after + 2)(stat), " ")[1]);
 };
 
 const descends = (pid: number, from: number): boolean => {
@@ -108,22 +141,27 @@ const descends = (pid: number, from: number): boolean => {
 };
 
 const git = (worktree: string, ...args: ReadonlyArray<string>) =>
-  execFileSync("git", args, { cwd: worktree, encoding: "utf8" }).trim();
+  Str.trim(execFileSync("git", args, { cwd: worktree, encoding: "utf8" }));
+
+/**
+ * Whether this platform can bind a record: the binding reads `/proc`.
+ */
+export const supported = process.platform === "linux";
 
 /**
  * Bind a probe to the binary listening on `ports`. It refuses unless this
  * process started that binary.
  */
 export const bind = (ports: Binding["ports"]): Binding => {
-  if (process.platform !== "linux") {
-    throw new ProbeBindingError({
+  if (!supported) {
+    throw ProbeBindingError.make({
       message:
         "The sync probe binds its record through /proc, so it runs on Linux.",
     });
   }
   const pid = owner(ports.cloud);
   if (!descends(pid, process.pid)) {
-    throw new ProbeBindingError({
+    throw ProbeBindingError.make({
       message: `Process ${pid} owns port ${ports.cloud}, but this run did not start it. The probe runs only against a binary its runner started.`,
     });
   }
@@ -148,14 +186,17 @@ export const bind = (ports: Binding["ports"]): Binding => {
  * and subscription code.
  */
 export const sources = (worktree: string): Record<string, string> =>
-  Object.fromEntries(
-    [
-      "tools/local-backend/fixtures/sync/convex/schema.ts",
-      "tools/local-backend/fixtures/sync/convex/sync.ts",
-      "packages/test/test/fixtures/syncLegs.ts",
-      "packages/test/src/internal/Sync.ts",
-      "packages/test/src/internal/Subscriptions.ts",
-    ].map((file) => [file, sha256(Fs.readFileSync(Path.join(worktree, file)))]),
+  Rec.fromEntries(
+    Arr.map(
+      [
+        "tools/local-backend/fixtures/sync/convex/schema.ts",
+        "tools/local-backend/fixtures/sync/convex/sync.ts",
+        "packages/test/test/fixtures/syncLegs.ts",
+        "packages/test/src/internal/Sync.ts",
+        "packages/test/src/internal/Subscriptions.ts",
+      ],
+      (file) => [file, sha256(Fs.readFileSync(Path.join(worktree, file)))],
+    ),
   );
 
 /**
@@ -181,25 +222,25 @@ export const contention = (directory: string, since: number) =>
       clearTimeout(limit);
       clearTimeout(quiet);
       child.kill();
-      const retried = output
-        .split("\n")
-        .filter((line) => line.startsWith("{"))
-        .map(
-          (line) =>
-            JSON.parse(line) as {
-              readonly identifier?: string;
-              readonly timestamp?: number;
-              readonly occInfo?: unknown;
-            },
-        )
-        .filter(
+      const entries = Arr.map(
+        Arr.filter(Str.split(output, "\n"), Str.startsWith("{")),
+        (line) =>
+          decodeJson(line) as {
+            readonly identifier?: string;
+            readonly timestamp?: number;
+            readonly occInfo?: unknown;
+          },
+      );
+      resolve(
+        Arr.filter(
+          entries,
           (entry) =>
             entry.identifier === "sync:increment" &&
             entry.occInfo !== null &&
             entry.occInfo !== undefined &&
             (entry.timestamp ?? 0) * 1000 >= since,
-        );
-      resolve(retried.length);
+        ).length,
+      );
     };
     // The first poll prints the history at once; the command then tails, so
     // it ends when output has been quiet for a while.
@@ -214,11 +255,15 @@ export const contention = (directory: string, since: number) =>
     child.on("error", reject);
   });
 
-export type Verdict = "agree" | "disagree";
+/**
+ * `agree` and `disagree` compare two finished sides. `incomplete` is a leg that
+ * has not finished, or one whose side failed or passed its deadline.
+ */
+export type Verdict = "agree" | "disagree" | "incomplete";
 
 /**
- * One leg's record. A disagreement carries both targets' normalised
- * observations.
+ * One leg's record. Every record carries both targets' normalised observations,
+ * partial when the leg is incomplete, and names the side that stopped it.
  */
 export interface ProbeRecord {
   readonly leg: string;
@@ -229,22 +274,152 @@ export interface ProbeRecord {
     readonly kernel: JSONValue;
     readonly binary: JSONValue;
   };
+  readonly failure: {
+    readonly side: "binary" | "kernel" | "none";
+    readonly message: string;
+  } | null;
 }
 
 /**
- * Write `record` under the suite's ignored `.sync-probe` directory, after
- * `redact` marks every secret in it, and answer what was written.
+ * Where records go: the suite's ignored `.sync-probe` directory.
+ */
+export const records = Path.join(import.meta.dirname, ".sync-probe");
+
+/**
+ * Write `record` as `<leg>.json` under `directory`, after `redact` marks every
+ * secret in it, and answer what was written.
  */
 export const write = (
   record: ProbeRecord,
   redact: (json: JSONValue) => JSONValue,
+  directory: string = records,
 ): JSONValue => {
   const marked = redact(record as unknown as JSONValue);
-  const directory = Path.join(import.meta.dirname, ".sync-probe");
   Fs.mkdirSync(directory, { recursive: true });
   Fs.writeFileSync(
     Path.join(directory, `${record.leg}.json`),
-    `${JSON.stringify(marked, null, 2)}\n`,
+    `${encodeJson(marked)}\n`,
   );
   return marked;
+};
+
+/**
+ * What a side has observed so far, which the leg rewrites after each step.
+ */
+export interface Progress {
+  observed: unknown;
+}
+
+/**
+ * `json` with every object's keys in order, for comparing observations.
+ */
+export const canonical = (json: unknown): unknown =>
+  Arr.isArray(json)
+    ? Arr.map(json, canonical)
+    : json !== null && typeof json === "object"
+      ? Rec.fromEntries(
+          Arr.map(Arr.sort(Rec.keys(json), Str.Order), (key) => [
+            key,
+            canonical((json as Record<string, unknown>)[key]),
+          ]),
+        )
+      : json;
+
+const bounded = <A>(
+  promise: Promise<A>,
+  side: "binary" | "kernel",
+  deadline: number,
+): Promise<A> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  // oxlint-disable-next-line effecttsgo/new-promise -- A side is a promise from the unmodified client, raced against a host timer.
+  const late = new Promise<never>((_resolve, reject) => {
+    // oxlint-disable-next-line effecttsgo/global-timers -- See above.
+    timer = setTimeout(
+      () =>
+        reject(
+          ProbeDeadline.make({
+            side,
+            deadline,
+            message: `The ${side} side did not finish within ${deadline} ms.`,
+          }),
+        ),
+      deadline,
+    );
+  });
+  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
+};
+
+/**
+ * Run one leg on the binary, then on the kernel, each to `deadline`, and write
+ * its record. The record is first written `incomplete`, so a run that never
+ * finishes leaves no earlier verdict standing. A side that throws or passes its
+ * deadline stops the leg and leaves the record `incomplete` with both sides'
+ * partial observations. Two finished sides agree when their canonical
+ * observations are equal and each `holds`.
+ */
+export const runLeg = (options: {
+  readonly leg: string;
+  readonly binding: Binding;
+  readonly sources: Record<string, string>;
+  readonly deadline: number;
+  readonly binary: (progress: Progress) => Promise<unknown>;
+  readonly kernel: (progress: Progress) => Promise<unknown>;
+  readonly holds: (observed: unknown) => boolean;
+  readonly redact: (json: JSONValue) => JSONValue;
+  readonly directory?: string;
+}): Promise<ProbeRecord> => {
+  const progress = {
+    binary: { observed: null } as Progress,
+    kernel: { observed: null } as Progress,
+  };
+  const record = (
+    verdict: Verdict,
+    observations: ProbeRecord["observations"],
+    failure: ProbeRecord["failure"],
+  ) =>
+    write(
+      {
+        leg: options.leg,
+        verdict,
+        binding: options.binding,
+        sources: options.sources,
+        observations,
+        failure,
+      },
+      options.redact,
+      options.directory,
+    ) as unknown as ProbeRecord;
+  const partial = () => ({
+    kernel: progress.kernel.observed as JSONValue,
+    binary: progress.binary.observed as JSONValue,
+  });
+  record("incomplete", partial(), {
+    side: "none",
+    message: "The leg has not finished.",
+  });
+  let running: "binary" | "kernel" = "binary";
+  const side = (name: "binary" | "kernel") => {
+    running = name;
+    return bounded(options[name](progress[name]), name, options.deadline);
+  };
+  return side("binary")
+    .then((binary) =>
+      side("kernel").then((kernel) => {
+        const agree =
+          encodeJson(canonical(kernel)) === encodeJson(canonical(binary)) &&
+          options.holds(kernel) &&
+          options.holds(binary);
+        return record(
+          agree ? "agree" : "disagree",
+          { kernel: kernel as JSONValue, binary: binary as JSONValue },
+          null,
+        );
+      }),
+    )
+    .catch((error: unknown) =>
+      record("incomplete", partial(), {
+        side: running,
+        message: error instanceof Error ? error.message : String(error),
+      }),
+    );
 };

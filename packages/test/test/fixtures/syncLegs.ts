@@ -9,10 +9,26 @@
  * Normalised means what a client can rely on: per-socket query values with
  * consecutive duplicates removed, mutation outcomes as values or error data,
  * and terminal views. Batching, timestamps, timing, version tuples and retry
- * counts are never observed.
+ * counts are never observed. A value that is the time is observed only as the
+ * position of each change, since two clocks never agree on its digits.
+ *
+ * Every step has a deadline, so a target that stops answering ends its leg
+ * instead of holding it. A leg writes what it has observed so far into its
+ * `progress` after each step, so a leg that fails still leaves its partial
+ * observations for the record.
  */
 import { BaseConvexClient } from "convex/browser";
 import { convexToJson, type JSONValue, type Value } from "convex/values";
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
+import * as Rec from "effect/Record";
+import * as Str from "effect/String";
+import * as Json from "../../src/internal/Json";
+
+// The legs read and compare the client's frames and values synchronously,
+// inside its callbacks, through the kernel's JSON helper.
+const encodeJson = Json.stringify;
+const decodeJson = Json.parse;
 
 /**
  * Where a leg runs. `address` is only the client's own setting: a kernel target
@@ -37,15 +53,32 @@ export interface Target {
   readonly contention: (since: number) => Promise<number>;
 }
 
-const settleWithin = 20_000;
+/**
+ * What a leg has observed so far, rewritten after each step.
+ */
+export interface Progress {
+  observed: unknown;
+}
+
+export const progress = (): Progress => ({ observed: null });
+
+/**
+ * How long one step may take before the leg gives up on it.
+ */
+export const stepDeadline = 20_000;
 
 const wait = (ms: number) =>
   new Promise<void>((resolve) => {
     setTimeout(resolve, ms);
   });
 
-const same = (a: unknown, b: unknown) =>
-  JSON.stringify(a) === JSON.stringify(b);
+const same = (a: unknown, b: unknown) => encodeJson(a) === encodeJson(b);
+
+/**
+ * A promise that resolves `fallback` after `ms` unless `promise` settles first.
+ */
+const within = <A>(promise: Promise<A>, ms: number, fallback: A) =>
+  Promise.race([promise, wait(ms).then(() => fallback)]);
 
 /**
  * A failure as a client can rely on it: a `ConvexError`'s data, or the
@@ -61,16 +94,12 @@ export const normaliseError = (error: unknown): JSONValue => {
     }
   }
   const text = error instanceof Error ? error.message : String(error);
-  const uncaught = text
-    .split("\n")
-    .map((line) => line.trim())
-    .find((line) => line.includes("Uncaught "));
-  return {
-    message: (uncaught ?? text.split("\n")[0] ?? "").replace(
-      /^.*Uncaught /,
-      "",
-    ),
-  };
+  const lines = Arr.map(Str.split(text, "\n"), Str.trim);
+  const line = Option.getOrElse(
+    Arr.findFirst(lines, Str.includes("Uncaught ")),
+    () => Option.getOrElse(Arr.head(lines), () => ""),
+  );
+  return { message: Str.replace(/^.*Uncaught /, "")(line) };
 };
 
 const outcomeOf = (promise: Promise<unknown>): Promise<JSONValue> =>
@@ -79,11 +108,9 @@ const outcomeOf = (promise: Promise<unknown>): Promise<JSONValue> =>
     (error: unknown) => ({ failed: normaliseError(error) }),
   );
 
-/**
- * A promise that resolves `fallback` after `ms` unless `promise` settles first.
- */
-const within = <A>(promise: Promise<A>, ms: number, fallback: A) =>
-  Promise.race([promise, wait(ms).then(() => fallback)]);
+const unanswered: JSONValue = {
+  failed: { message: "no answer within the step deadline" },
+};
 
 /**
  * One client of `target` and everything the probe watches it do: its queries'
@@ -141,7 +168,7 @@ export const connect = (target: Target) => {
       if (this.dropped) return;
       if (
         state.dropResponse &&
-        (JSON.parse(event.data) as { readonly type: string }).type ===
+        (decodeJson(event.data) as { readonly type: string }).type ===
           "MutationResponse"
       ) {
         state.dropResponse = false;
@@ -174,7 +201,10 @@ export const connect = (target: Target) => {
       for (const label of watched.keys()) {
         const value = read(label);
         const sequence = sequences.get(label)!;
-        if (value !== undefined && !same(sequence.at(-1), value)) {
+        if (
+          value !== undefined &&
+          !same(Option.getOrUndefined(Arr.last(sequence)), value)
+        ) {
           sequence.push(value);
         }
       }
@@ -191,7 +221,7 @@ export const connect = (target: Target) => {
   /**
    * Whether `predicate` holds after some transition within `ms`.
    */
-  const until = (predicate: () => boolean, ms = settleWithin) =>
+  const until = (predicate: () => boolean, ms = stepDeadline) =>
     predicate()
       ? Promise.resolve(true)
       : new Promise<boolean>((resolve) => {
@@ -217,17 +247,24 @@ export const connect = (target: Target) => {
     },
     value: (label: string): JSONValue | undefined => read(label),
     sequences: (): Record<string, ReadonlyArray<JSONValue>> =>
-      Object.fromEntries(sequences),
+      Rec.fromEntries(Array.from(sequences)),
     terminal: (): Record<string, JSONValue | null> =>
-      Object.fromEntries(
-        Array.from(watched.keys(), (label) => [label, read(label) ?? null]),
+      Rec.fromEntries(
+        Arr.map(Array.from(watched.keys()), (label) => [
+          label,
+          read(label) ?? null,
+        ]),
       ),
     until,
     mutation: (udfPath: string, args: Record<string, Value>) =>
-      outcomeOf(client.mutation(udfPath, args)),
+      within(
+        outcomeOf(client.mutation(udfPath, args)),
+        stepDeadline,
+        unanswered,
+      ),
     /**
      * Present `token`, resolving whether the client saw the server confirm it
-     * within the settling time.
+     * within the step deadline.
      */
     setAuth: (token: string) =>
       within(
@@ -237,7 +274,7 @@ export const connect = (target: Target) => {
             (authenticated) => resolve(authenticated),
           );
         }),
-        settleWithin,
+        stepDeadline,
         false,
       ),
     clearAuth: () => client.clearAuth(),
@@ -248,11 +285,23 @@ export const connect = (target: Target) => {
     loseNextMutationResponse: () => {
       state.dropResponse = true;
     },
-    close: () => client.close(),
+    close: () => within(client.close(), stepDeadline, undefined),
   };
 };
 
 export type Client = ReturnType<typeof connect>;
+
+/**
+ * `sequence` with each value replaced by the position of its first appearance:
+ * what a client can rely on about a value that is the time.
+ */
+const ordinals = (sequence: ReadonlyArray<JSONValue>): ReadonlyArray<number> =>
+  Arr.map(sequence, (value) =>
+    Option.getOrElse(
+      Arr.findFirstIndex(sequence, (other) => same(other, value)),
+      () => -1,
+    ),
+  );
 
 /**
  * The names one run's rows go under, fresh so rows an earlier run left on a
@@ -279,39 +328,64 @@ export interface Tokens {
  * other passes a secret through a mutation, a failure and a query. After each
  * step both clients wait until they see the barrier counter reach it, so each
  * socket's sequence of values is the same whatever the batching.
+ *
+ * A third client then watches a query that answers the time and reads no
+ * identity. It signs in at once, within the cache age: the binary reruns every
+ * query on an identity change, and its cache answers this one with the value it
+ * already sent. It waits out the cache age and changes identity again: the
+ * cached value has expired, so the rerun answers a new time.
  */
 export const observable = async (
   target: Target,
   run: string,
   tokens: Tokens,
   secret: string,
+  options: { readonly cacheAge: number; readonly progress?: Progress },
 ) => {
   const name = names(run);
   const a = connect(target);
   const b = connect(target);
+  const c = connect(target);
+  const outcomes: Array<JSONValue> = [];
+  const observed = () => ({
+    sockets: {
+      a: a.sequences(),
+      b: b.sequences(),
+      c: { clock: ordinals(c.sequences()["clock"] ?? []) },
+    },
+    outcomes,
+    terminal: { a: a.terminal(), b: b.terminal() },
+    rejections: [...a.rejections, ...b.rejections, ...c.rejections],
+  });
+  const record = () => {
+    if (options.progress !== undefined) options.progress.observed = observed();
+  };
   try {
-    for (const c of [a, b]) {
-      c.watch("counter", "sync:counter", { name: name.counter });
-      c.watch("barrier", "sync:counter", { name: name.barrier });
-      c.watch("whoami", "sync:whoami", {});
+    for (const client of [a, b]) {
+      client.watch("counter", "sync:counter", { name: name.counter });
+      client.watch("barrier", "sync:counter", { name: name.barrier });
+      client.watch("whoami", "sync:whoami", {});
     }
     a.watch("notes", "sync:notes", { name: name.counter });
     b.watch("peek", "sync:peek", { secret });
-    const outcomes: Array<JSONValue> = [];
     let step = 0;
     const barrier = async () => {
       step++;
       outcomes.push(await a.mutation("sync:increment", { name: name.barrier }));
       const reached = { value: step };
-      return Promise.all(
-        [a, b].map((c) => c.until(() => same(c.value("barrier"), reached))),
+      await Promise.all(
+        Arr.map([a, b], (client) =>
+          client.until(() => same(client.value("barrier"), reached)),
+        ),
       );
+      record();
     };
     await Promise.all(
-      [a, b].map((c) =>
-        c.until(
+      Arr.map([a, b], (client) =>
+        client.until(
           () =>
-            c.value("barrier") !== undefined && c.value("whoami") !== undefined,
+            client.value("barrier") !== undefined &&
+            client.value("whoami") !== undefined,
         ),
       ),
     );
@@ -339,14 +413,20 @@ export const observable = async (
     await barrier();
     outcomes.push(await a.mutation("sync:reveal", { secret }));
     await barrier();
-    return {
-      sockets: { a: a.sequences(), b: b.sequences() },
-      outcomes,
-      terminal: { a: a.terminal(), b: b.terminal() },
-      rejections: [...a.rejections, ...b.rejections],
-    };
+
+    c.watch("clock", "sync:clock", { name: name.counter });
+    await c.until(() => c.value("clock") !== undefined);
+    outcomes.push({ authenticated: await c.setAuth(tokens.person) });
+    record();
+    await wait(options.cacheAge + 1_500);
+    outcomes.push({ authenticated: await c.setAuth(tokens.other) });
+    await c.until(() => (c.sequences()["clock"] ?? []).length > 1);
+    // Let a late extra value show, should one come.
+    await wait(500);
+    return observed();
   } finally {
-    await Promise.all([a.close(), b.close()]);
+    record();
+    await Promise.all([a.close(), b.close(), c.close()]);
   }
 };
 
@@ -357,39 +437,49 @@ export const observable = async (
  * twice. A target that shows no contention in a round runs another, up to
  * three, since contention on a binary depends on timing.
  */
-export const occ = async (target: Target, run: string) => {
-  const clients = [0, 1, 2, 3].map(() => connect(target));
+export const occ = async (
+  target: Target,
+  run: string,
+  options: { readonly progress?: Progress } = {},
+) => {
+  const clients = Arr.map([0, 1, 2, 3], () => connect(target));
+  let observation = { contended: false, consistent: false };
   try {
-    let observation = { contended: false, consistent: false, rounds: 0 };
     for (let round = 1; round <= 3; round++) {
       const name = `${names(run).contended}:${round}`;
       const since = Date.now();
       const outcomes = await Promise.all(
-        clients.flatMap((c) =>
-          Array.from({ length: 8 }, () =>
-            c.mutation("sync:increment", { name }),
+        Arr.flatMap(clients, (client) =>
+          Arr.map(Arr.range(1, 8), () =>
+            client.mutation("sync:increment", { name }),
           ),
         ),
       );
-      const succeeded = outcomes.filter((o) => "value" in (o as object)).length;
+      const succeeded = Arr.filter(
+        outcomes,
+        (outcome) => "value" in (outcome as object),
+      ).length;
       const watcher = clients[0]!;
       watcher.watch(name, "sync:counter", { name });
       const expected = { value: succeeded };
       await watcher.until(() => same(watcher.value(name), expected));
-      const contention = await target.contention(since);
+      const contention = await within(
+        target.contention(since),
+        stepDeadline,
+        0,
+      );
       observation = {
         contended: contention > 0,
         consistent: same(watcher.value(name), expected),
-        rounds: round,
       };
+      if (options.progress !== undefined) {
+        options.progress.observed = { ...observation, round };
+      }
       if (observation.contended || !observation.consistent) break;
     }
-    return {
-      contended: observation.contended,
-      consistent: observation.consistent,
-    };
+    return observation;
   } finally {
-    await Promise.all(clients.map((c) => c.close()));
+    await Promise.all(Arr.map(clients, (client) => client.close()));
   }
 };
 
@@ -404,34 +494,42 @@ export const acceptance = async (
   target: Target,
   run: string,
   tokens: Tokens,
+  options: { readonly progress?: Progress } = {},
 ) => {
   const name = names(run).accepted;
   const c = connect(target);
+  const confirmed: Array<boolean> = [];
+  const settled: Array<boolean> = [];
+  const observed = () => ({
+    thrownOn: c.rejections,
+    confirmed,
+    settled,
+    reconnected: c.sockets.length > 1,
+    terminal: c.terminal(),
+  });
+  const record = () => {
+    if (options.progress !== undefined) options.progress.observed = observed();
+  };
+  const increment = () =>
+    c
+      .mutation("sync:increment", { name })
+      .then((outcome) => outcome !== unanswered);
   try {
     c.watch("counter", "sync:counter", { name });
-    const confirmed = [await c.setAuth(tokens.person)];
-    const settled: Array<boolean> = [];
-    const increment = () =>
-      within(
-        c.mutation("sync:increment", { name }).then(() => true),
-        settleWithin,
-        false,
-      );
+    confirmed.push(await c.setAuth(tokens.person));
+    record();
     settled.push(await increment());
+    record();
     c.loseNextMutationResponse();
     settled.push(await increment());
+    record();
     confirmed.push(await c.setAuth(tokens.other));
     settled.push(await increment());
     const expected = { value: 3 };
     await c.until(() => same(c.value("counter"), expected));
-    return {
-      thrownOn: c.rejections,
-      confirmed,
-      settled,
-      reconnected: c.sockets.length > 1,
-      terminal: c.terminal(),
-    };
+    return observed();
   } finally {
+    record();
     await c.close();
   }
 };

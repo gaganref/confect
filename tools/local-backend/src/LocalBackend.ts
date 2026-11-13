@@ -307,6 +307,8 @@ export const plainLayer = Layer.effect(
  * The sync probe's app (`fixtures/sync`), which the probe runs on this binary
  * and on the test kernel. Its `auth.config` reads `TEST_AUTH_JWKS`, which the
  * probe replaces with the JWKS of the tokens it mints.
+ *
+ * @internal
  */
 export const syncLayer = Layer.effect(
   LocalBackend,

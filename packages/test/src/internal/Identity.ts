@@ -1,3 +1,4 @@
+/* oxlint-disable effecttsgo/global-json, effecttsgo/prefer-effect-array, effecttsgo/prefer-effect-record, effecttsgo/prefer-effect-string -- #134 (the JWT row) wrote this file before main moved to the Effect 4.1 lint rules. #134 brings it to those rules when it merges main, so row 7 leaves its code as #134 has it rather than rewrite it twice. */
 // The deployment signer's validation (`DeploymentKey.sign`) is derived from
 // convex-test 0.0.65 (index.ts), Copyright Convex, Inc., licensed under the
 // Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
@@ -558,6 +559,17 @@ export const verify = (
     if (claims.exp === undefined) throw invalid("Missing expiry");
     return identityOf({ ...claims, iss: claims.iss, sub: claims.sub });
   });
+};
+
+/**
+ * When a token the kernel verified stops being valid, in milliseconds: its
+ * `exp`, read as `verify` read it. A sync session checks it before each request
+ * and update, as the binary's `is_expired` does
+ * (`keybroker/src/broker.rs:676-678`).
+ */
+export const expiresAt = (token: string): number | undefined => {
+  const exp = readClaims(token.split(".")[1])?.exp;
+  return exp === undefined ? undefined : exp * 1000;
 };
 
 // Limits the backend puts on tokens from `ctx.auth.signJwt`.

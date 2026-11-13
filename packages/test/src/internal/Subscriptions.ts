@@ -26,23 +26,38 @@ export type Invalidation =
 
 /**
  * Why `run` is stale, if it is: a commit since its snapshot changed something
- * it read, as an attempt's read set conflicts, or it read its subscriber's
- * identity and that identity has changed. The clock never makes a run stale.
- * The binary does not rerun a query because time passed, so a run keeps the
- * time it read until something else invalidates it.
+ * it read, as an attempt's read set conflicts, or its subscriber's identity has
+ * changed. A test's subscriber reruns only the runs that read the identity. A
+ * sync socket's reruns every run, as the binary's worker does
+ * (`crates/sync/src/worker.rs:948-962`), and its query cache decides which of
+ * those reruns answer anything new. The clock never makes a run stale. The
+ * binary does not rerun a query because time passed, so a run keeps the time it
+ * read until something else invalidates it.
  */
 export const invalidation = (
   run: Run,
   state: Kernel.State,
   identityVersion: number,
+  everyRun = false,
 ): Invalidation | undefined => {
   const change = Kernel.conflict(state, run.snapshot, run.reads);
   if (change !== undefined) return { kind: "commit", change };
-  if (run.observedIdentity && run.identityVersion !== identityVersion) {
+  if (
+    (everyRun || run.observedIdentity) &&
+    run.identityVersion !== identityVersion
+  ) {
     return { kind: "identity", from: run.identityVersion, to: identityVersion };
   }
   return undefined;
 };
+
+/**
+ * The binary's default `MAX_CACHE_AGE`: `DATABASE_UDF_USER_TIMEOUT` (1 s) plus
+ * `DATABASE_UDF_SYSTEM_TIMEOUT` (15 s) plus a second
+ * (`crates/application/src/cache/mod.rs:112-122`,
+ * `crates/common/src/knobs.rs:982-994`).
+ */
+export const defaultCacheAge = 17_000;
 
 /**
  * A thrown value as JSON: a Convex value as Convex writes it, and anything else
@@ -218,8 +233,21 @@ export class Subscriber {
 export class Registry {
   private readonly live = new Map<string, Live>();
   private nextId = 1;
+  /**
+   * The binary's query cache, for the runs of the subscribers `Sync` pushes:
+   * each result under its function, arguments, journal and, when it read the
+   * identity, that identity (`crates/application/src/cache/mod.rs:151-230`).
+   */
+  private readonly cache = new Map<string, Execution.QueryRun>();
 
-  constructor(private readonly world: Execution.World) {}
+  constructor(
+    private readonly world: Execution.World,
+    /**
+     * How long a cached result that read the time stays valid, in the kernel's
+     * milliseconds: the binary's `MAX_CACHE_AGE`.
+     */
+    private readonly cacheAge: number = defaultCacheAge,
+  ) {}
 
   subscriber(caller: Execution.Caller, pushed = false): Subscriber {
     this.world.registerSubscriber();
@@ -302,6 +330,7 @@ export class Registry {
         live.run,
         this.world.state,
         live.subscriber.identityVersion,
+        live.subscriber.pushed,
       );
       return because === undefined ? [] : [{ live, because }];
     });
@@ -394,8 +423,75 @@ export class Registry {
     pinned: { readonly time?: number; readonly journal: string | null },
   ): Promise<Run> {
     const identityVersion = subscriber.identityVersion;
+    const caching = subscriber.pushed && pinned.time === undefined;
+    const key = (identity: Execution.Caller["identity"] | undefined) =>
+      cacheKey(this.world, reference, args, identity, pinned.journal);
+    if (caching) {
+      const hit = Arr.findFirst(
+        [key(subscriber.caller.identity), key(undefined)],
+        (candidate) => this.valid(candidate),
+      );
+      if (hit._tag === "Some") {
+        return Promise.resolve({
+          ...this.cache.get(hit.value)!,
+          identityVersion,
+        });
+      }
+    }
+    const caller = subscriber.caller;
     return this.world
-      .subscribed(subscriber.caller, reference, args, pinned)
-      .then((run) => ({ ...run, identityVersion }));
+      .subscribed(caller, reference, args, pinned)
+      .then((run) => {
+        if (caching) {
+          const identity = run.observedIdentity ? caller.identity : undefined;
+          this.cache.set(key(identity), run);
+          if (run.journal !== pinned.journal) {
+            this.cache.set(
+              cacheKey(this.world, reference, args, identity, run.journal),
+              run,
+            );
+          }
+        }
+        return { ...run, identityVersion };
+      });
+  }
+
+  /**
+   * Whether the cached result under `key` still answers for the latest commit
+   * and the kernel's time: no commit since it ran changed what it read, and a
+   * result that read the time is no older or newer than the cache age
+   * (`crates/application/src/cache/mod.rs:768-823`). A stale one is dropped.
+   */
+  private valid(key: string): boolean {
+    const cached = this.cache.get(key);
+    if (cached === undefined) return false;
+    const fresh =
+      Kernel.conflict(this.world.state, cached.snapshot, cached.reads) ===
+        undefined &&
+      (cached.time === null ||
+        Math.abs(this.world.now() - cached.time) <= this.cacheAge);
+    if (!fresh) this.cache.delete(key);
+    return fresh;
   }
 }
+
+/**
+ * A cache key: the function, the canonical arguments, the identity when the
+ * result read it (`undefined` when it did not), and the journal.
+ */
+const cacheKey = (
+  world: Execution.World,
+  reference: unknown,
+  args: unknown,
+  identity: Execution.Caller["identity"] | undefined,
+  journal: string | null,
+): string => {
+  const path = world.functionPathOf(reference);
+  return Json.stringify([
+    path?.componentPath ?? "",
+    path?.udfPath ?? "",
+    Json.canonical(convexToJson((args ?? {}) as Value)),
+    identity === undefined ? "any" : Json.canonical(identity ?? null),
+    journal,
+  ]);
+};

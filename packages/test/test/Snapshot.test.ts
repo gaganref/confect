@@ -1138,9 +1138,8 @@ describe("snapshot live state", () => {
         refusals["sockets"] = yield* refusal(connected);
         socket.close();
         // The closed socket's subscriber outlives it, as any subscriber does.
-        expect(yield* refusal(connected)).toMatchObject({
-          _tag: "SnapshotSubscribed",
-        });
+        const afterClose = yield* refusal(connected);
+        expect(afterClose).toMatchObject({ _tag: "SnapshotSubscribed" });
 
         const subscribed = backend(driver());
         subscribed.subscriber();

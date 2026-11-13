@@ -521,8 +521,8 @@ const makeComponent = (
     ),
     loaded: new Map(),
     standing: new Set(standing),
-    authConfig: relative.find(([file]) =>
-      /^auth\.config\.[jt]s$/.test(file),
+    authConfig: Option.getOrUndefined(
+      Arr.findFirst(relative, ([file]) => /^auth\.config\.[jt]s$/.test(file)),
     )?.[1],
   };
 };

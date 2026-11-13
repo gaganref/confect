@@ -1,3 +1,4 @@
+/* oxlint-disable effecttsgo/global-json, effecttsgo/prefer-effect-array, effecttsgo/prefer-effect-string, effecttsgo/yield-in-call-argument -- #134 (the JWT row) wrote this file before main moved to the Effect 4.1 lint rules. #134 brings it to those rules when it merges main, so row 7 leaves its code as #134 has it rather than rewrite it twice. */
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The replay test compares the exact stdout of two fresh Node processes.
 import { spawnSync } from "node:child_process";
 import { createRequire } from "node:module";

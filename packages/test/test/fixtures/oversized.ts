@@ -1,3 +1,4 @@
+/* oxlint-disable effecttsgo/prefer-effect-array, effecttsgo/strict-boolean-expressions -- #134 (the JWT row) wrote this file before main moved to the Effect 4.1 lint rules. #134 brings it to those rules when it merges main, so row 7 leaves its code as #134 has it rather than rewrite it twice. */
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- Web Crypto generates no primes, and a 16,384-bit key from it takes minutes.
 import { checkPrimeSync, generatePrimeSync, randomBytes } from "node:crypto";
 

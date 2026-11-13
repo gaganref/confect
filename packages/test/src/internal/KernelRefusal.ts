@@ -451,6 +451,19 @@ export const isKernelRefusal = (error: unknown): boolean =>
   Array.some(refusals, (is) => is(error));
 
 /**
+ * A sync session's token expired, so the binary answers its next request or
+ * update with `AuthError` and closes the socket
+ * (`crates/sync/src/state.rs:282-305`). `code` and `message` are the binary's.
+ */
+export class TokenExpired extends Schema.TaggedError<
+  TokenExpired,
+  { readonly brand: unique symbol }
+>()("TokenExpired", {
+  code: Schema.Literal("TokenExpired"),
+  message: Schema.String,
+}) {}
+
+/**
  * A sync client sent a message the binary's sync worker refuses, so `Sync`
  * answers it with a `FatalError` and closes the socket. `reason` names the
  * binary's check.

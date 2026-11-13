@@ -1,3 +1,4 @@
+/* oxlint-disable confect/no-schema-codec-wrappers, effecttsgo/schema-sync -- #134 (the JWT row) wrote this file before main moved to the Effect 4.1 lint rules. #134 brings it to those rules when it merges main, so row 7 leaves its code as #134 has it rather than rewrite it twice. */
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
