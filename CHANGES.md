@@ -168,6 +168,19 @@ binary as the named `SystemTableReadIntervals` boundary. File storage counters s
 limits row of Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-limits.md`. Upstream: fork only, as the kernel is fork-specific.
 
+## Metering limit test timeouts
+
+The kernel's `documentsRead` limit test seeds 32,001 notes and reads 64,001
+documents, each metered as the binary meters it. It took up to 6.1 s on Windows
+CI, where it timed out at Vitest's 5 s default on `main`, and 2.8 to 3.6 s on
+Ubuntu CI. The `documentsWritten` test reached 3.49 s on Windows and 2.17 s on
+Ubuntu. A profile spreads the cost over per-document work: the read-interval
+set's comparisons of each inserted ID, syscall JSON and document sizing. No
+bulk seeding path exists, so the two tests take explicit 15 s and 10 s
+timeouts, with the reason on the line. The assertions are unchanged. Changeset:
+none, as only a test changes. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## TestConfect kernel target
 
 `TestConfect.layer` takes `{ target: "kernel" }` in each of its three forms. It

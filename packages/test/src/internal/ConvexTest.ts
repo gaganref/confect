@@ -61,11 +61,16 @@ export interface KernelControls {
   /**
    * The same backend as a client that presents `token`. Each call verifies it
    * against the app's `auth.config` providers at the kernel's time before
-   * anything runs, and refuses with `InvalidToken` as the binary does. A
-   * `customJwt` provider's JWKS must be a `data:` URL, so the test owns its
-   * keys.
+   * anything runs, and refuses with `InvalidToken` as the binary does. An HTTP
+   * request is the exception, as on the binary: its handler runs, and
+   * `getUserIdentity` throws the refused token's error. A `customJwt`
+   * provider's JWKS must be a `data:` URL, so the test owns its keys.
    */
   readonly withToken: (token: string) => KernelControls;
+  /**
+   * Send `path` to the app's HTTP router, as a request to its site URL.
+   */
+  readonly fetch: (path: string, init?: RequestInit) => Promise<Response>;
   /**
    * The deployment's public keys, which verify what `ctx.auth.signJwt` signs.
    */
@@ -156,10 +161,6 @@ const accessor = (
   caller: Execution.Caller,
   token?: string,
 ): any => {
-  const as = <A>(call: (caller: Execution.Caller) => Promise<A>) =>
-    token === undefined
-      ? call(caller)
-      : world.authenticate(caller, token).then(call);
   // Every failure the kernel hands back is a report a test runner prints, so
   // each leaves through the world's redaction.
   const reported = <A>(run: () => Promise<A>): Promise<A> =>
@@ -172,13 +173,13 @@ const accessor = (
     world.functionPathOf(subscriptions.referenceOf(subscription));
   return {
     query: (reference: any, args?: any) =>
-      reported(() => as((who) => world.query(who, reference, args))),
+      reported(() => world.query(caller, reference, args, token)),
     mutation: (reference: any, args?: any) =>
-      reported(() => as((who) => world.mutation(who, reference, args))),
+      reported(() => world.mutation(caller, reference, args, token)),
     action: (reference: any, args?: any) =>
-      reported(() => as((who) => world.action(who, reference, args))),
+      reported(() => world.action(caller, reference, args, token)),
     prepare: (reference: any, args?: any) =>
-      reported(() => as((who) => world.prepare(who, reference, args))).then(
+      reported(() => world.prepare(caller, reference, args, token)).then(
         (view) => world.projectHeld(view),
       ),
     apply: (id: string) => {
@@ -237,9 +238,9 @@ const accessor = (
         ),
       ),
     run: (handler: (ctx: any) => any) =>
-      reported(() => as((who) => world.run(who, "", handler))),
+      reported(() => world.run(caller, "", handler, token)),
     runInComponent: (componentPath: string, handler: (ctx: any) => any) =>
-      reported(() => as((who) => world.run(who, componentPath, handler))),
+      reported(() => world.run(caller, componentPath, handler, token)),
     withIdentity: (identity: Partial<UserIdentity>) =>
       accessor(
         world,
@@ -266,20 +267,15 @@ const accessor = (
       ),
     // An upload to a URL from `generateUploadUrl`, or a download from one
     // `getUrl` answered, streams through the binary's storage endpoints, which
-    // the kernel does not simulate. An HTTP action reads a presented token's
-    // identity without refusing the request, which the kernel does not do yet.
+    // the kernel does not simulate. A presented token the verifier refuses
+    // reaches the handler, whose `getUserIdentity` throws its error.
     fetch: (path: unknown, init?: RequestInit) => {
       const endpoint =
         typeof path === "string" ? Storage.endpoint(path) : undefined;
       if (endpoint !== undefined) {
         return Promise.reject(KernelRefusal.requiresBinary(endpoint));
       }
-      if (token !== undefined) {
-        return Promise.reject(
-          KernelRefusal.rowPending("an HTTP request that presents a token", 6),
-        );
-      }
-      return reported(() => world.fetch(caller, path, init));
+      return reported(() => world.fetch(caller, path, init, token));
     },
     jwks: () => world.deploymentKey.jwks(),
     advance: (ms: number) => reported(() => world.advance(ms)),

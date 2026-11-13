@@ -1,5 +1,6 @@
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, layer } from "@effect/vitest";
+import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -11,6 +12,7 @@ import {
   mint,
   type VerifierOutcome,
 } from "../../../../tools/local-backend/fixtures/minted";
+import * as TokenReview from "../../../../tools/local-backend/fixtures/tokenReview";
 import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 const Answer = Schema.Struct({
@@ -63,6 +65,37 @@ layer(
                     .value.identity as object,
                 };
           expect(outcome, name).toEqual(expected);
+        }
+      }),
+  );
+
+  it.effect(
+    "runs an HTTP action under each token, and a refused token's error is thrown only by getUserIdentity",
+    () =>
+      Effect.gen(function* () {
+        const backend = yield* LocalBackend.LocalBackend;
+        const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+        const { jwks, cases } = yield* mint(now);
+        yield* backend.setEnv("TEST_AUTH_JWKS", jwks);
+        yield* backend.redeploy;
+        const seconds = Effect.map(Clock.currentTimeMillis, (ms) =>
+          Math.floor(ms / 1000),
+        );
+        for (const { name, token, review } of cases) {
+          // The binary reads its clock in whole seconds somewhere between
+          // these two reads.
+          const before = yield* seconds;
+          const response = yield* HttpClient.get(
+            LocalBackend.siteUrl(TokenReview.path),
+            { headers: { authorization: `Bearer ${token}` } },
+          );
+          const after = yield* seconds;
+          expect(response.status, name).toBe(200);
+          const body = yield* response.json;
+          expect(
+            Arr.map(Arr.range(before, after), review),
+            name,
+          ).toContainEqual(body);
         }
       }),
   );

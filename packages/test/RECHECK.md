@@ -1139,7 +1139,11 @@ verifies a client's token on every request (`application/src/lib.rs:3297-3328`):
    five seconds of skew (`authentication/src/lib.rs:371-407`,
    `biscuit/src/lib.rs:906-966`). A timestamp is a number from 0 up to 2^64,
    rounded to the nearest second, and any other value fails the payload
-   (`biscuit/src/serde_custom/numeric_type.rs:52-91`).
+   (`biscuit/src/serde_custom/numeric_type.rs:52-91`). The clock is whole
+   seconds (`authentication/src/lib.rs:155-159`), and a failure's message is
+   `biscuit`'s, counting the seconds: `Token expired 60 seconds ago`, or
+   `Token will be valid in 60 seconds` for `nbf` and `iat`
+   (`biscuit/src/errors.rs:213-218`).
 5. `sub`, `iss` and `exp` must be present. The identity is `tokenIdentifier`
    (`iss|sub`), `issuer`, `subject` and every other claim under its own name.
    Nested objects flatten to `outer.inner` keys, and `aud`, `exp`, `iat`,
@@ -1151,6 +1155,24 @@ Steps 2 to 5 fail with `InvalidAuthHeader`. Both codes come as `InvalidToken`,
 the transport refusal, which the binary answers with HTTP 401. A token is
 verified on every call, so a call past its expiry plus five seconds of the
 kernel's clock is refused.
+
+Verifying the token is part of its call. A query, mutation, action, `run`,
+`prepare` or `fetch` that presents a token reaches the verifier inside its own
+live call, so while the backend loads the modules the verifier needs, an export
+or a restore refuses with `SnapshotWorldRunning`, as it does for a call that
+presents none.
+
+An HTTP request is the exception the binary makes. Its handler runs whatever
+the verifier decides: a refused token leaves the request an unknown identity
+that holds the verifier's error (`local_backend/src/http_actions.rs:165-169`).
+A verified token gives `getUserIdentity` its identity. For a refused one,
+`getUserIdentity` throws the error
+(`isolate/src/environment/action/task_executor.rs:205-216`), which reaches the
+handler as a plain `Error` with the verifier's message and no `data`
+(`isolate/src/environment/helpers/promise.rs:74-76`, `errors/src/lib.rs:25-26`,
+`convex` 1.49 `src/server/impl/syscall.ts:47-52`). A function the handler calls
+sees no identity, since an unknown identity carries no token
+(`database/src/transaction.rs:390-396`, `keybroker/src/broker.rs:165-175`).
 
 `ctx.auth.signJwt` in a mutation now signs with an ES256 key, and `t.jwks()`
 answers its public half. The rules are convex-test 0.0.65's, which match the
@@ -1186,15 +1208,25 @@ under the same key. A restore without the secrets refuses with
 contract lists `deploymentKey` as exported, and `authConfig` and `providers` as
 excluded, since the restoring backend loads its own `auth.config`.
 
-`test/fixtures/minted.ts` mints five tokens with keys the test makes: a valid
+`tools/local-backend/fixtures/minted.ts` mints five tokens with keys the test makes: a valid
 control, a wrong issuer, a wrong audience, a foreign key under the declared
 key's `kid`, and an expired token. `test/Identity.test.ts` runs them on the
 kernel, and `packages/server/test/local-backend/jwt.test.ts` runs them against
 the binary through the fixture's own `auth.config.ts` and its
 `groups/components:identity` query. Both targets give the same outcome, the
-refusal code and the valid control's identity included.
+refusal code and the valid control's identity included. Both also send each
+token to an HTTP action at `/token-review`, which answers 200 with what
+`getUserIdentity` gave or threw (`tools/local-backend/fixtures/tokenReview.ts`).
+The thrown error's class, `data` and message are the same on both targets. An
+expired token's message counts the seconds on the verifier's clock, so the
+binary test accepts the message for any second between its clock reads before
+and after the request.
 `components.test.ts:84`, signing and the deployment JWKS, now runs in the
-kernel lane, and its placement is gone.
+kernel lane, and its placement is gone. Upstream's "rejects tokens from another
+TestConfect instance" builds its second layer with `seed: 1` through the lane's
+`TestConfect.layerWith`, so on the kernel the second backend draws another key,
+as a second deployment has its own. convex-test ignores the seed. The case runs
+in the kernel lane, and its placement is gone.
 
 ## Sync protocol (row 7)
 

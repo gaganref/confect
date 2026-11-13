@@ -1,6 +1,8 @@
 import { Http } from "@confect/core";
 import * as Auth from "@confect/server/Auth";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
@@ -16,6 +18,7 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
 import * as Stream from "effect/Stream";
 import * as SignedEnvelope from "../../../../packages/server/test/signedEnvelope";
+import * as TokenReview from "../tokenReview";
 import refs from "./_generated/refs";
 import {
   ExecutionMetadata,
@@ -118,6 +121,22 @@ const ingress = HttpRouter.add(
   }).pipe(Effect.orDie),
 );
 
+// What the handler sees of a presented token. The binary runs it whatever the
+// verifier decides, and a refused token's error waits for `getUserIdentity`.
+const tokenReview = HttpRouter.add(
+  "GET",
+  TokenReview.path,
+  Effect.gen(function* () {
+    const presented = yield* Auth.Auth;
+    const read = yield* Effect.exit(presented.getUserIdentity);
+    return yield* HttpServerResponse.json(
+      Exit.isSuccess(read)
+        ? TokenReview.identified(read.value)
+        : TokenReview.threw(read.cause.pipe(Cause.squash)),
+    );
+  }).pipe(Effect.orDie),
+);
+
 const http = Http.make({
   api: HostApi,
   handlers: Layer.mergeAll(users, metadata, componentAuthoring, auth),
@@ -139,5 +158,11 @@ const largeStream = HttpRouter.add(
  */
 export default {
   ...http,
-  routes: Layer.mergeAll(http.routes, optionalPrefix, largeStream, ingress),
+  routes: Layer.mergeAll(
+    http.routes,
+    optionalPrefix,
+    largeStream,
+    ingress,
+    tokenReview,
+  ),
 };
