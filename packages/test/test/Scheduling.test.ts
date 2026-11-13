@@ -27,6 +27,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Invocation from "../src/internal/Invocation";
+import { inlineSources } from "./fixtures/inlineSources";
 
 const start = 1_000_000;
 const runtime = {
@@ -403,7 +404,12 @@ const world = (
     ) => unknown;
   }) => void = () => {},
 ): KernelControls => {
-  const t = convexTest({ schema: hostSchema, modules: hostModules, runtime });
+  const t = convexTest({
+    schema: hostSchema,
+    modules: hostModules,
+    sources: inlineSources(hostModules),
+    runtime,
+  });
   register(t);
   return t;
 };

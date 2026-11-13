@@ -21,6 +21,7 @@ import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Execution from "../src/internal/Execution";
 import * as Invocation from "../src/internal/Invocation";
 import * as Snapshot from "../src/internal/Snapshot";
+import { inlineSources } from "./fixtures/inlineSources";
 
 const start = 1_767_225_600_000;
 
@@ -289,11 +290,13 @@ const backend = (
   const t = convexTest({
     schema: hostSchema,
     modules: hostModules,
+    sources: inlineSources(hostModules),
     runtime: d.runtime,
   });
   for (const path of components) {
     t.registerComponent(path, storeSchema, storeModules, {
       standing: ["rows:tick"],
+      sources: inlineSources(storeModules),
     });
   }
   return t;

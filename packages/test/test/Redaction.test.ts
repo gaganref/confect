@@ -22,6 +22,7 @@ import * as Execution from "../src/internal/Execution";
 import * as Invocation from "../src/internal/Invocation";
 import * as Redaction from "../src/internal/Redaction";
 import type * as Subscriptions from "../src/internal/Subscriptions";
+import { inlineSources } from "./fixtures/inlineSources";
 
 // Each canary reaches the kernel by one route: a handler argument it never
 // stores, a stored row, a test provider's answer.
@@ -362,7 +363,13 @@ const policy = () =>
   });
 
 const backend = (): Backend =>
-  convexTest({ schema: convexSchema, modules, runtime, redaction: policy() });
+  convexTest({
+    schema: convexSchema,
+    modules,
+    sources: inlineSources(modules),
+    runtime,
+    redaction: policy(),
+  });
 
 const provider: Invocation.World = {
   name: "provider",

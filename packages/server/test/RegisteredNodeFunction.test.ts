@@ -1,7 +1,12 @@
 import { RegisteredNodeFunction } from "@confect/server/node";
-import { DatabaseSchema, FunctionImpl, GroupImpl } from "@confect/server";
+import {
+  DatabaseSchema,
+  FunctionImpl,
+  FunctionRegistryItem,
+  GroupImpl,
+} from "@confect/server";
 import { FunctionSpec, GroupSpec } from "@confect/core";
-import { expect, expectTypeOf, it } from "@effect/vitest";
+import { assert, expect, expectTypeOf, it } from "@effect/vitest";
 import type { RegisteredAction } from "convex/server";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -32,4 +37,23 @@ it("registers a Node group without a factory parameter", () => {
   expectTypeOf<
     Parameters<typeof RegisteredNodeFunction.buildForGroup>["length"]
   >().toEqualTypeOf<2>();
+});
+
+// `@confect/test`'s kernel reads the mark, since a module's "use node"
+// directive is gone once it loads.
+it("marks the runtime of a registered Node action as Node", () => {
+  const item = FunctionRegistryItem.make({
+    functionSpec: FunctionSpec.publicNodeAction({
+      name: "get",
+      returns: () => Schema.String,
+    }),
+    groupMiddlewareAttachments: [],
+    handler: () => Effect.succeed("ok"),
+  });
+  assert(item._tag === "Confect");
+  const registered = RegisteredNodeFunction.make(
+    DatabaseSchema.make({}),
+    item,
+  ) as unknown as Record<symbol, unknown>;
+  expect(registered[Symbol.for("@confect/server/NodeAction")]).toBe(true);
 });

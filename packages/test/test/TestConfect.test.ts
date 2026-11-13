@@ -6,7 +6,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
-import { App, Mount, Table } from "@confect/core";
+import { App, Mount, Ref, Table } from "@confect/core";
 import {
   componentsGeneric,
   defineSchema,
@@ -469,4 +469,160 @@ it.effect(
         ),
       ),
     ),
+);
+
+// A plain Convex "use node" action, whose runtime the kernel can read only from
+// its module's source.
+const runtimeModules = import.meta.glob(
+  "./fixtures/runtime/{_generated/server,plainNode}.ts",
+);
+const runtimeSources = import.meta.glob<string>(
+  "./fixtures/runtime/{_generated/server,plainNode}.ts",
+  { query: "?raw", import: "default" },
+);
+const runtimeRegistry = {
+  schema: DatabaseSchema.make({}),
+  convexSchema: defineSchema({}),
+  modules: runtimeModules,
+  components: {},
+};
+const nodeSurface = Ref.fromFunctionReference(
+  makeFunctionReference<
+    "action",
+    {},
+    { setImmediate: string; queueMicrotask: string }
+  >("plainNode:surface"),
+  "action",
+);
+const surface = Effect.gen(function* () {
+  const test = yield* TestConfect.TestConfect<typeof runtimeRegistry.schema>();
+  return yield* test.action(nodeSurface);
+});
+const refusalOf = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.exit(effect).pipe(
+    Effect.map((exit) => {
+      assert(Exit.isFailure(exit));
+      return Cause.squash(exit.cause);
+    }),
+  );
+
+it.effect.each([
+  {
+    form: "declared app",
+    layer: (options: TestConfect.LayerOptions) =>
+      TestConfect.layer({ ...runtimeRegistry, httpMounts: [] }, options),
+  },
+  {
+    form: "app and registry",
+    layer: (options: TestConfect.LayerOptions) =>
+      TestConfect.layer(App.make({ env }), runtimeRegistry, options),
+  },
+  {
+    form: "schema and modules",
+    layer: (options: TestConfect.LayerOptions) =>
+      TestConfect.layer(
+        runtimeRegistry.schema,
+        runtimeRegistry.convexSchema,
+        runtimeRegistry.modules,
+        options,
+      ),
+  },
+])(
+  'on the kernel target, the $form form takes sources, so a plain "use node" action runs in Node, and without them it is refused',
+  ({ layer }) =>
+    Effect.gen(function* () {
+      expect(
+        yield* surface.pipe(
+          Effect.provide(layer({ target: "kernel", sources: runtimeSources })),
+        ),
+      ).toEqual({ setImmediate: "function", queueMicrotask: "function" });
+      expect(
+        yield* refusalOf(
+          surface.pipe(Effect.provide(layer({ target: "kernel" }))),
+        ),
+      ).toMatchObject({
+        _tag: "ActionRuntimeUnknown",
+        componentPath: "",
+        module: "plainNode",
+        exports: ["surface"],
+      });
+    }),
+);
+
+it.effect(
+  "on the kernel target, a generated registry's sources reach the kernel, and a layer's own take their place",
+  () =>
+    Effect.gen(function* () {
+      const generated = {
+        ...runtimeRegistry,
+        httpMounts: [],
+        sources: runtimeSources,
+      };
+      expect(
+        yield* surface.pipe(
+          Effect.provide(TestConfect.layer(generated, { target: "kernel" })),
+        ),
+      ).toEqual({ setImmediate: "function", queueMicrotask: "function" });
+      // A layer's own sources replace the registry's: here, none of the
+      // modules', so the module is refused as one without a source.
+      expect(
+        yield* refusalOf(
+          surface.pipe(
+            Effect.provide(
+              TestConfect.layer(generated, { target: "kernel", sources: {} }),
+            ),
+          ),
+        ),
+      ).toMatchObject({ _tag: "ModuleRuntime", reason: "missingSource" });
+    }),
+);
+
+it.effect(
+  "on the kernel target, a component registered without sources is refused, naming it, until the layer declares its runtime or the kit passes its sources",
+  () =>
+    Effect.gen(function* () {
+      const kitLayer = (
+        options: TestConfect.LayerOptions,
+        kitOptions?: TestConfect.RegisterOptions,
+      ) =>
+        TestConfect.layer(
+          runtimeRegistry.schema,
+          runtimeRegistry.convexSchema,
+          runtimeRegistry.modules,
+          {
+            target: "kernel",
+            sources: runtimeSources,
+            register: (registerComponent) =>
+              registerComponent(
+                "kit",
+                defineSchema({}),
+                runtimeModules,
+                kitOptions,
+              ),
+            ...options,
+          },
+        );
+      const refused = yield* refusalOf(
+        surface.pipe(Effect.provide(kitLayer({}))),
+      );
+      expect(refused).toMatchObject({
+        _tag: "ActionRuntimeUnknown",
+        componentPath: "kit",
+        module: "plainNode",
+      });
+      expect((refused as Error).message).toContain(
+        'componentRuntimes: { "kit": "isolate" }',
+      );
+      expect(
+        yield* surface.pipe(
+          Effect.provide(kitLayer({ componentRuntimes: { kit: "node" } })),
+        ),
+      ).toEqual({ setImmediate: "function", queueMicrotask: "function" });
+      // A kit that can pass its sources does.
+      expect(
+        yield* surface.pipe(
+          Effect.provide(kitLayer({}, { sources: runtimeSources })),
+        ),
+      ).toEqual({ setImmediate: "function", queueMicrotask: "function" });
+    }),
 );

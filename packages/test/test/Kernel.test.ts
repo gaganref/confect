@@ -36,6 +36,7 @@ import * as Schema from "effect/Schema";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import type * as Execution from "../src/internal/Execution";
 import * as Invocation from "../src/internal/Invocation";
+import { inlineSources } from "./fixtures/inlineSources";
 
 type Latch = { readonly promise: Promise<void>; readonly release: () => void };
 
@@ -265,8 +266,14 @@ const hostModules = {
 };
 
 const world = () => {
-  const t = convexTest(hostSchema, hostModules);
-  t.registerComponent("store", storeSchema, storeModules);
+  const t = convexTest({
+    schema: hostSchema,
+    modules: hostModules,
+    sources: inlineSources(hostModules),
+  });
+  t.registerComponent("store", storeSchema, storeModules, {
+    sources: inlineSources(storeModules),
+  });
   return t;
 };
 
@@ -689,7 +696,7 @@ describe("module loading", () => {
         loads.push(name);
         return Promise.resolve({});
       };
-      const t = convexTest(hostSchema, {
+      const modules = {
         "_generated/server.ts": recorded("_generated/server"),
         "schema.ts": recorded("schema"),
         "convex.config.ts": recorded("convex.config"),
@@ -698,6 +705,11 @@ describe("module loading", () => {
         "child/convex.config.ts": recorded("child/convex.config"),
         "child/rows.ts": recorded("child/rows"),
         "notes.ts": hostModules["notes.ts"],
+      };
+      const t = convexTest({
+        schema: hostSchema,
+        modules,
+        sources: inlineSources(modules),
       });
       yield* Effect.promise(() => t.query(notes.list, {}));
       expect(loads).toEqual([]);
@@ -760,18 +772,24 @@ describe("module loading", () => {
       Effect.gen(function* () {
         const loads: Array<string> = [];
         const registered: Array<string> = [];
-        const t = convexTest(hostSchema, {
-          "_generated/server.ts": () => Promise.resolve({}),
-          "first.ts": () =>
-            Promise.resolve({
-              run: queryGeneric({
-                args: {},
-                handler: () => {
-                  loads.push("handler");
-                  return null;
-                },
+        // The kit registers its modules without sources, so the test declares
+        // the runtime its components' plain actions run in.
+        const t = convexTest({
+          schema: hostSchema,
+          modules: {
+            "_generated/server.ts": () => Promise.resolve({}),
+            "first.ts": () =>
+              Promise.resolve({
+                run: queryGeneric({
+                  args: {},
+                  handler: () => {
+                    loads.push("handler");
+                    return null;
+                  },
+                }),
               }),
-            }),
+          },
+          componentRuntimes: { "workflow/workpool": "isolate" },
         });
         const recording = {
           ...t,
