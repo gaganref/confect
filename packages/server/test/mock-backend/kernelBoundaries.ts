@@ -31,11 +31,13 @@ export interface KernelBoundary {
    */
   readonly kernel: string;
   /**
-   * The amounts the probe measured on the pinned binary.
+   * The local-backend function that measures the difference at run time, on the
+   * deployment the probe runs against. The amounts depend on it, so none is
+   * pinned here.
    */
-  readonly measured: Readonly<Record<string, number>>;
+  readonly control: string;
   /**
-   * The binary the amounts were measured on.
+   * The binary the behaviour was read from.
    */
   readonly backend: string;
   readonly owner: string;
@@ -56,14 +58,11 @@ export const boundaries: ReadonlyArray<KernelBoundary> = [
     metric: "databaseQueries",
     refusal: "Too many reads in a single function execution (limit: 4096).",
     binary:
-      "The binary counts, in databaseQueries, the system-table intervals it reads to run a function: the backend state and info, the function's module, its UDF config and its component. They depend on the deployment's modules, components and environment. On the local-backend fixture a root mutation starts at 20 before its first read, and its first nested call adds 2. A stale-snapshot query runs on a clone whose read set starts empty, so it starts at 20 again. Adding the I/O bans group (`groups/ioBans`) to the fixture moved both from 19.",
+      "The binary counts, in databaseQueries, the system-table intervals it reads to run a function: the backend state and info, the function's module, its UDF config and its component. They depend on the deployment's modules, components and environment: adding the I/O bans group (`groups/ioBans`) to the local-backend fixture moved a root mutation's start from 19 to 20. So the probe measures the share at run time, a root mutation's count at its start, what its first nested call adds and a stale-snapshot query's count at its start, and compares the binary less that share with the kernel.",
     kernel:
-      "The kernel counts only the intervals of the function's own reads, by the binary's rule, starting from zero. Each read maps a total x to max(0, x - before) + after, which never decreases and never moves two totals apart, so the binary's count stays between the kernel's and the kernel's plus the system share. While neither count saturates it is exactly the kernel's plus the share, and the binary refuses TooManyReads that many reads sooner. A read that covers inserted IDs can saturate only the kernel's lower count, and the gap shrinks: one insert and a read of its ID answer 20 on the binary and 1 on the kernel. Once both saturate they agree: 100 inserts and a read of one answer 100 on both. The binary refuses no later than the kernel, and at most the system share sooner.",
-    measured: {
-      rootMutationStart: 20,
-      firstNestedCall: 2,
-      staleSnapshotQueryStart: 20,
-    },
+      "The kernel counts only the intervals of the function's own reads, by the binary's rule, starting from zero. Each read maps a total x to max(0, x - before) + after, which never decreases and never moves two totals apart, so the binary's count stays between the kernel's and the kernel's plus the system share. While neither count saturates it is exactly the kernel's plus the share, and the binary refuses TooManyReads that many reads sooner. A read that covers inserted IDs can saturate only the kernel's lower count, and the gap shrinks: one insert and a read of its ID answer the share on the binary and 1 on the kernel. Once both saturate they agree: 100 inserts and a read of one answer 100 on both. The binary refuses no later than the kernel, and at most the system share sooner.",
+    control:
+      "groups/transactions:systemShare, a mutation that touches no user table and answers its root, first nested call and stale-snapshot shares. The kernel answers 0 for each.",
     backend: "precompiled-2026-10-28-cccbade",
     owner: "@confect/test kernel, build-order row 6 (transaction limits)",
     evidence:

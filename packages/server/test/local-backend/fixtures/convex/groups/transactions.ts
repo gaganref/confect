@@ -12,4 +12,5 @@ export const rollback = registeredFunctions.rollback;
 export const seed = registeredFunctions.seed;
 export const staleMetrics = registeredFunctions.staleMetrics;
 export const staleRead = registeredFunctions.staleRead;
+export const systemShare = registeredFunctions.systemShare;
 export const write = registeredFunctions.write;
