@@ -381,3 +381,29 @@ Open: Convex's own `crons.ts` schedules are not simulated, though the design's
 kernel scope lists declared schedules. convex-test does not run them either, and
 no inventory case or row-5 check uses them. A raw host timer in a handler is row
 6's I/O ban.
+
+`TestConfect.layer`'s `target: "kernel"` builds the layer's backend on this
+shim, in each of the layer's three forms, so a consumer reaches the kernel
+without importing `@confect/test/internal/*`, which stays unexported. A
+throwaway rerun of the crons spike through that option, with Frame's crons
+suite's fake-timer step, ticked at +1000 and +2000 with `public:rescheduler`
+standing and failed `DrainBudgetExceeded` without it.
+
+Both targets reach Convex's server library through the one `globalThis.Convex`.
+convex-test assigns its own the first time it builds a world, so before this fix
+whichever target was built last answered every syscall, and a live layer on the
+other target failed its next one. The kernel now keeps the global as an accessor
+that always reads its dispatcher. A syscall inside a kernel function goes to the
+kernel, and any other to the backend that convex-test assigned. Nothing is
+restored when a layer ends. `test/TestConfectTargets.test.ts` resumes a live
+layer of each target beside and after a layer of the other, and holds a kernel
+function between two syscalls while convex-test makes its first assignment.
+
+Both targets also give each function call its own `Date`, `Math` and `crypto`
+through accessors on `globalThis`, and convex-test installs its own again
+whenever another is on top (`dist/index.js:1854-1866`). Row 3's
+`src/internal/Globals.ts` did the same, so with both layers live each call
+wrapped the other's accessor once more and every read of these globals went
+deeper. The kernel now leaves an accessor in place when it already reads
+through one of the kernel's, which a sentinel in a fresh copy shows, and the
+chain settles after the first call on each target.

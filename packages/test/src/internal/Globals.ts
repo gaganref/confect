@@ -34,6 +34,25 @@ const state = (): State =>
   });
 
 /**
+ * Whether `accessor`, another library's, already reads through one of this
+ * module's, as convex-test's does once it wraps the kernel's: it answers a
+ * value only a fresh copy holds. convex-test reinstalls its accessor whenever
+ * another is on top (its `dist/index.js:1854-1866`), so wrapping it again would
+ * add a layer at every call while both kinds of world are live.
+ */
+const readsThrough = (
+  copies: State["copies"],
+  accessor: PropertyDescriptor,
+  name: Name,
+): boolean => {
+  const probe = {};
+  return (
+    copies.run({ [name]: probe }, () => accessor.get?.call(globalThis)) ===
+    probe
+  );
+};
+
+/**
  * Point each global at the calling function's copy, falling back to the
  * global's own value outside one. A test that redefines a global, as
  * `vi.stubGlobal` does, removes the accessor, so every call installs it again
@@ -45,6 +64,7 @@ const install = ({ copies, getters }: State) => {
     const own = Object.getOwnPropertyDescriptor(global, name);
     // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
     if (own?.get !== undefined && getters.has(own.get)) continue;
+    if (own?.get !== undefined && readsThrough(copies, own, name)) continue;
     const base: PropertyDescriptor = own ?? {
       value: undefined,
       writable: true,

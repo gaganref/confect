@@ -347,4 +347,19 @@ t.registerComponent(name, schema, modules, {
 });
 ```
 
-convex-test ignores the option. Confect's in-process test kernel, which the fork's kernel lane runs, does not count a standing job as work `finishAllScheduledFunctions` must finish, so the drain ends with the next run pending. Without the declaration the kernel's drain stops after 100 jobs and fails with `DrainBudgetExceeded`.
+convex-test ignores the option. Confect's in-process test kernel does not count a standing job as work `finishAllScheduledFunctions` must finish, so the drain ends with the next run pending. Without the declaration the kernel's drain stops after 100 jobs and fails with `DrainBudgetExceeded`.
+
+### Run on the test kernel
+
+`TestConfect.layer` runs on convex-test unless you pass `target: "kernel"`. The option is the last argument of each form:
+
+```ts
+TestConfect.layer(registry, { target: "kernel" });
+TestConfect.layer(app, registry, { target: "kernel" });
+TestConfect.layer(schema, convexSchema, modules, {
+  target: "kernel",
+  register,
+});
+```
+
+On the kernel, scheduled functions run on the kernel's own clock and never on a host timer, so `finishAllScheduledFunctions` does not call its `advanceTimers` callback. The default kernel clock follows the test's `Date`, fake timers included, so advancing fake timers and then calling `finishInProgressScheduledFunctions` runs the jobs that came due. A layer on one target can be provided inside a layer on the other, and each keeps its own backend while both are live. The option goes away once the kernel replaces convex-test.
