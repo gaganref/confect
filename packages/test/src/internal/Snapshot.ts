@@ -229,6 +229,10 @@ export const contract = {
       excluded:
         "The secret policy is configuration: the restoring world is built with its own.",
     },
+    sink: {
+      excluded:
+        "The callback sink is configuration: the restoring world is built with its own, and a held callback is the session's record, not kernel state.",
+    },
     secrets: {
       excluded:
         "Raw secrets are replay state and never reach an artifact. A snapshot writes markers, and a restore takes the raw values from the source's `secrets()`.",
