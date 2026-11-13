@@ -1,4 +1,3 @@
-// oxlint-disable effecttsgo/new-promise -- The loopback server's callbacks are Node's.
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The action control fetches from a real loopback server.
 import { createServer, type Server } from "node:http";
 import { Ref } from "@confect/core";
@@ -27,6 +26,7 @@ const failureOf = <A, E>(effect: Effect.Effect<A, E>) =>
 const loopback = Effect.acquireRelease(
   Effect.promise(
     () =>
+      // oxlint-disable-next-line effecttsgo/new-promise -- Node's http server reports listening and closing through callbacks.
       new Promise<{ readonly server: Server; url: string; hits: number }>(
         (resolve) => {
           const state = {
@@ -47,6 +47,7 @@ const loopback = Effect.acquireRelease(
   ),
   ({ server }) =>
     Effect.promise(
+      // oxlint-disable-next-line effecttsgo/new-promise -- Node's http server reports listening and closing through callbacks.
       () => new Promise<void>((resolve) => server.close(() => resolve())),
     ),
 );

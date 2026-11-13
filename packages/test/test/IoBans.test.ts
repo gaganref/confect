@@ -1,4 +1,3 @@
-// oxlint-disable effecttsgo/global-fetch, effecttsgo/global-fetch-in-effect, effecttsgo/global-timers, effecttsgo/global-timers-in-effect, effecttsgo/new-promise, effecttsgo/async-function -- These handlers call the runtime's own fetch and timers, which is what the I/O bans refuse or allow.
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The positive controls fetch from a real loopback server.
 import { createServer, type Server } from "node:http";
 import * as FunctionSpec from "@confect/core/FunctionSpec";
@@ -47,6 +46,7 @@ const startTimer = (name: Timer) => timerOf(name)(() => {}, 0);
  * Wait on `name` as a handler that awaits its timer does.
  */
 const awaitTimer = (name: Timer) =>
+  // oxlint-disable-next-line effecttsgo/new-promise -- The case waits on the runtime's own timer callback, which is what the I/O bans refuse or allow.
   new Promise<void>((resolve) => {
     timerOf(name)(resolve, 10);
   });
@@ -243,22 +243,27 @@ const modules = {
     return Promise.resolve({
       fetchInQuery: queryGeneric({
         args: { url: v.string() },
+        // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
         handler: (_ctx, { url }) => outcomeOf(fetch(url)),
       }),
       fetchInMutation: mutationGeneric({
         args: { url: v.string() },
+        // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
         handler: (_ctx, { url }) => outcomeOf(fetch(url)),
       }),
       capturedFetchInQuery: queryGeneric({
         args: { url: v.string() },
+        // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
         handler: (_ctx, { url }) => outcomeOf(captured(url)),
       }),
       importedFetchInQuery: queryGeneric({
         args: { url: v.string() },
+        // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
         handler: (_ctx, { url }) => outcomeOf(keptFetch(url)),
       }),
       reassignedFetchInQuery: queryGeneric({
         args: { url: v.string() },
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
         handler: async (_ctx, { url }) => {
           const before = globalThis.fetch;
           globalThis.fetch = (() =>
@@ -266,6 +271,7 @@ const modules = {
               new Response("reassigned"),
             )) as unknown as typeof fetch;
           try {
+            // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
             return await outcomeOf(fetch(url));
           } finally {
             globalThis.fetch = before;
@@ -281,6 +287,7 @@ const modules = {
       }),
       timerInMutation: mutationGeneric({
         args: timerArgs,
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
         handler: async (ctx, { name }) => {
           await ctx.db.insert("notes", { text: "before" });
           startTimer(name);
@@ -290,6 +297,7 @@ const modules = {
       }),
       awaitedTimerInQuery: queryGeneric({
         args: timerArgs,
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
         handler: async (_ctx, { name }) => {
           await awaitTimer(name);
           return "returned";
@@ -297,6 +305,7 @@ const modules = {
       }),
       awaitedTimerInMutation: mutationGeneric({
         args: timerArgs,
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
         handler: async (ctx, { name }) => {
           await ctx.db.insert("notes", { text: "before" });
           await awaitTimer(name);
@@ -363,10 +372,12 @@ const modules = {
       fetchInAction: actionGeneric({
         args: { url: v.string() },
         handler: (_ctx, { url }) =>
+          // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
           fetch(url).then((response) => response.text()),
       }),
       promisifiedTimerInQuery: queryGeneric({
         args: {},
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
         handler: async () => {
           await Util.promisify(setTimeout)(10);
           return "returned";
@@ -411,14 +422,17 @@ const modules = {
         args: { url: v.string() },
         handler: (_ctx, { url }) => {
           redefineFetch();
+          // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
           return fetch(url).then((response) => response.text());
         },
       }),
       redefinedFetchInMutation: mutationGeneric({
         args: { url: v.string() },
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
         handler: async (ctx, { url }) => {
           await ctx.db.insert("notes", { text: "before" });
           redefineFetch();
+          // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
           await fetch(url);
           await ctx.db.insert("notes", { text: "after" });
           return "returned";
@@ -428,6 +442,7 @@ const modules = {
         args: { url: v.string() },
         handler: (_ctx, { url }) => {
           redefineFetch();
+          // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
           return fetch(url).then((response) => response.text());
         },
       }),
@@ -444,16 +459,22 @@ const modules = {
             },
             configurable: true,
           });
+          // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
           return outcomeOf(fetch(url));
         },
       }),
       timersInAction: actionGeneric({
         args: {},
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
         handler: async () => {
+          // oxlint-disable-next-line effecttsgo/new-promise -- The case waits on the runtime's own timer callback, which is what the I/O bans refuse or allow.
           const slept = await new Promise<string>((resolve) =>
+            // oxlint-disable-next-line effecttsgo/global-timers -- The handler starts the runtime's own timer, which the I/O bans refuse or allow.
             setTimeout(() => resolve("slept"), 1),
           );
+          // oxlint-disable-next-line effecttsgo/new-promise -- The case waits on the runtime's own timer callback, which is what the I/O bans refuse or allow.
           const ticked = await new Promise<string>((resolve) => {
+            // oxlint-disable-next-line effecttsgo/global-timers -- The handler starts the runtime's own timer, which the I/O bans refuse or allow.
             const id = setInterval(() => {
               clearInterval(id);
               resolve("ticked");
@@ -496,6 +517,7 @@ const failureOf = (call: Promise<unknown>) =>
 const loopback = Effect.acquireRelease(
   Effect.promise(
     () =>
+      // oxlint-disable-next-line effecttsgo/new-promise -- Node's http server reports listening and closing through callbacks.
       new Promise<{
         readonly server: Server;
         readonly url: string;
@@ -518,6 +540,7 @@ const loopback = Effect.acquireRelease(
   ),
   ({ server }) =>
     Effect.promise(
+      // oxlint-disable-next-line effecttsgo/new-promise -- Node's http server reports listening and closing through callbacks.
       () => new Promise<void>((resolve) => server.close(() => resolve())),
     ),
 );
@@ -577,6 +600,7 @@ describe("I/O bans", () => {
           expect(Reflect.get(globalThis, "fetch")).toBe(host);
           const server = yield* loopback;
           const observed2 = yield* Effect.promise(() =>
+            // oxlint-disable-next-line effecttsgo/global-fetch-in-effect -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
             fetch(server.url).then((response) => response.text()),
           );
           expect(observed2).toBe("reached /ping");
@@ -725,6 +749,7 @@ describe("I/O bans", () => {
           for (const round of [1, 2]) {
             vi.useFakeTimers();
             let fired = false;
+            // oxlint-disable-next-line effecttsgo/global-timers-in-effect -- The handler starts the runtime's own timer, which the I/O bans refuse or allow.
             setTimeout(() => {
               fired = true;
             }, 1000);
@@ -738,7 +763,9 @@ describe("I/O bans", () => {
           }
           const observed2 = yield* Effect.promise(
             () =>
+              // oxlint-disable-next-line effecttsgo/new-promise -- The case waits on the runtime's own timer callback, which is what the I/O bans refuse or allow.
               new Promise<string>((resolve) =>
+                // oxlint-disable-next-line effecttsgo/global-timers -- The handler starts the runtime's own timer, which the I/O bans refuse or allow.
                 setTimeout(() => resolve("real"), 1),
               ),
           );
@@ -756,7 +783,9 @@ describe("I/O bans", () => {
           vi.useFakeTimers();
           const fired = yield* Effect.promise(
             () =>
+              // oxlint-disable-next-line effecttsgo/new-promise -- The case waits on the runtime's own timer callback, which is what the I/O bans refuse or allow.
               new Promise<string>((resolve) => {
+                // oxlint-disable-next-line effecttsgo/global-timers -- The handler starts the runtime's own timer, which the I/O bans refuse or allow.
                 kept(() => resolve("real"), 1);
               }),
           ).pipe(Effect.ensuring(Effect.sync(() => vi.useRealTimers())));
@@ -949,6 +978,7 @@ describe("replaced globals", () => {
           t.query(io.fetchInQuery, { url }),
         );
         const outside = yield* Effect.promise(() =>
+          // oxlint-disable-next-line effecttsgo/global-fetch-in-effect -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
           fetch("https://example.com/").then((response) => response.text()),
         ).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals())));
         expect(outcome).toEqual(fetchRefusal);
@@ -965,11 +995,11 @@ describe("replaced globals", () => {
         (error: {
           readonly _tag?: string;
           readonly reason?: string;
-          readonly names?: unknown;
+          readonly globals?: unknown;
         }) => ({
           failed: error._tag,
           reason: error.reason,
-          names: error.names,
+          globals: error.globals,
         }),
       ),
     );
@@ -977,7 +1007,7 @@ describe("replaced globals", () => {
   const replacedRefusal = {
     failed: "UnguardableGlobal",
     reason: "replacedWhileRunning",
-    names: ["fetch"],
+    globals: ["fetch"],
   };
 
   it.effect.each([

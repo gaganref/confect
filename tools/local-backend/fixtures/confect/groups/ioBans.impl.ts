@@ -1,4 +1,3 @@
-// oxlint-disable effecttsgo/global-fetch-in-effect, effecttsgo/global-timers, effecttsgo/new-promise, effecttsgo/async-function -- These handlers call the runtime's own fetch and timers, which is what the I/O bans refuse or allow.
 import { FunctionImpl, GroupImpl } from "@confect/server";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -20,6 +19,7 @@ const startTimer = (name: Timer) =>
 
 const rejectionOf = (url: string) =>
   Effect.promise(() =>
+    // oxlint-disable-next-line effecttsgo/global-fetch-in-effect -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
     fetch(url).then(
       () => ({ name: "none", message: "fetched" }),
       (error: Error) => ({ name: error.name, message: error.message }),
@@ -65,6 +65,7 @@ const timerInMutation = FunctionImpl.make(
 const awaitTimer = (name: Timer) =>
   Effect.promise(
     () =>
+      // oxlint-disable-next-line effecttsgo/new-promise -- The case waits on the runtime's own timer callback, which is what the I/O bans refuse or allow.
       new Promise<string>((resolve) => {
         (
           globalThis as unknown as Record<
@@ -177,6 +178,7 @@ const fetchInAction = FunctionImpl.make(
   ioBans,
   "fetchInAction",
   ({ url }) =>
+    // oxlint-disable-next-line effecttsgo/global-fetch-in-effect -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
     Effect.promise(() => fetch(url).then((response) => response.text())),
 );
 
@@ -185,11 +187,16 @@ const timersInAction = FunctionImpl.make(
   ioBans,
   "timersInAction",
   () =>
+    // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
     Effect.promise(async () => {
+      // oxlint-disable-next-line effecttsgo/new-promise -- The case waits on the runtime's own timer callback, which is what the I/O bans refuse or allow.
       const slept = await new Promise<string>((resolve) =>
+        // oxlint-disable-next-line effecttsgo/global-timers -- The handler starts the runtime's own timer, which the I/O bans refuse or allow.
         setTimeout(() => resolve("slept"), 1),
       );
+      // oxlint-disable-next-line effecttsgo/new-promise -- The case waits on the runtime's own timer callback, which is what the I/O bans refuse or allow.
       const ticked = await new Promise<string>((resolve) => {
+        // oxlint-disable-next-line effecttsgo/global-timers -- The handler starts the runtime's own timer, which the I/O bans refuse or allow.
         const id = setInterval(() => {
           clearInterval(id);
           resolve("ticked");

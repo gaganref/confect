@@ -184,31 +184,31 @@ export class UnguardableGlobal extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("UnguardableGlobal", {
   reason: Schema.Literals(["notConfigurable", "replacedWhileRunning"]),
-  names: Schema.Array(Schema.String),
+  globals: Schema.Array(Schema.String),
   message: Schema.String,
 }) {}
 
-const globals = (names: ReadonlyArray<string>) =>
+const qualified = (globals: ReadonlyArray<string>) =>
   Array.join(
-    Array.map(names, (name) => `globalThis.${name}`),
+    Array.map(globals, (global) => `globalThis.${global}`),
     ", ",
   );
 
-export const unguardableGlobal = (names: ReadonlyArray<string>) =>
+export const unguardableGlobal = (globals: ReadonlyArray<string>) =>
   UnguardableGlobal.make({
     reason: "notConfigurable",
-    names,
-    message: `The test kernel cannot guard ${globals(names)}: a test replaced it with a property that cannot be redefined, so a function could reach the host's implementation unchecked. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`,
+    globals,
+    message: `The test kernel cannot guard ${qualified(globals)}: a test replaced it with a property that cannot be redefined, so a function could reach the host's implementation unchecked. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`,
   });
 
 export const replacedWhileRunning = (
   udfPath: string,
-  names: ReadonlyArray<string>,
+  globals: ReadonlyArray<string>,
 ) =>
   UnguardableGlobal.make({
     reason: "replacedWhileRunning",
-    names,
-    message: `${globals(names)} was redefined while ${udfPath} ran, so a call made through the replacement reached it without the test kernel's check. The function fails, a mutation's writes are rolled back, and the guard is installed again. Replace a global between functions, or assign it, which keeps it guarded.`,
+    globals,
+    message: `${qualified(globals)} was redefined while ${udfPath} ran, so a call made through the replacement reached it without the test kernel's check. The function fails, a mutation's writes are rolled back, and the guard is installed again. Replace a global between functions, or assign it, which keeps it guarded.`,
   });
 
 /**

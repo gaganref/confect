@@ -38,18 +38,18 @@ describe("I/O bans", () => {
             (error: {
               readonly _tag?: string;
               readonly reason?: string;
-              readonly names?: unknown;
+              readonly globals?: unknown;
             }) => ({
               failed: error._tag,
               reason: error.reason,
-              names: error.names,
+              globals: error.globals,
             }),
           ),
         );
         expect(outcome).toEqual({
           failed: "UnguardableGlobal",
           reason: "notConfigurable",
-          names: ["setInterval"],
+          globals: ["setInterval"],
         });
       }),
   );
