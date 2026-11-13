@@ -17,7 +17,9 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Clock from "./internal/Clock.js";
 import { convexTest as kernelTest } from "./internal/ConvexTest.js";
+import type * as Invocation from "./internal/Invocation.js";
 import * as MountedHttp from "./internal/MountedHttp.js";
 import * as Redaction from "./internal/Redaction.js";
 
@@ -67,6 +69,13 @@ export type TargetOptions = {
    * option goes once the kernel replaces convex-test.
    */
   readonly target?: Target;
+  /**
+   * The seed of the random stream the `"kernel"` target's backend draws from on
+   * its own, such as the random delay Convex gives each run of an hourly,
+   * daily, weekly, monthly or cron-expression job. Two layers with the same
+   * seed draw the same stream. Defaults to `0`. convex-test ignores it.
+   */
+  readonly seed?: number;
 };
 
 /**
@@ -522,8 +531,37 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   );
 }
 
-const targetOf = (options: TargetOptions | undefined): TargetOptions =>
-  options?.target === undefined ? {} : { target: options.target };
+const targetOf = (options: TargetOptions | undefined): TargetOptions => ({
+  ...(options?.target === undefined ? {} : { target: options.target }),
+  ...(options?.seed === undefined ? {} : { seed: options.seed }),
+});
+
+/**
+ * Mulberry32: a stream uniform on [0, 1) from a 32-bit seed. The kernel holds
+ * no generator, so this driver supplies the stream, of the type a test world
+ * gives its handlers.
+ */
+const seeded = (seed: number): (() => number) => {
+  let state = Math.trunc(seed) >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+  };
+};
+
+/**
+ * The world a kernel-target layer gives its backend: no services of its own,
+ * the host's clock, which the kernel's clock follows, and a seeded stream.
+ */
+const layerWorld = (seed: number): Invocation.World => ({
+  name: "TestConfect.layer",
+  services: Context.empty(),
+  clock: Clock.hostNow,
+  random: seeded(seed),
+});
 
 const secretsOf = (registry: {
   readonly secrets?: SecretPolicy;
@@ -541,12 +579,14 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
     process.env.CONVEX_SITE_URL ??= "https://some.convex.site";
     // On the kernel, a value under a secret node of the app's table schemas,
     // or of the policy's functions and component tables, reaches every
-    // artifact as a marker.
+    // artifact as a marker. The backend's own world draws from the seeded
+    // stream.
     const testConvex =
       options.target === "kernel"
         ? kernelTest({
             schema: convexSchemaDefinition,
             modules,
+            world: layerWorld(options.seed ?? 0),
             redaction: Redaction.policy(
               Redaction.merge(
                 { tables: { "": Redaction.tablesOf(databaseSchema) } },

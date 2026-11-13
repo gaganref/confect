@@ -103,6 +103,55 @@ export class UnknownStandingSource extends Schema.TaggedError<UnknownStandingSou
   { componentPath: Schema.String, name: Schema.String, message: Schema.String },
 ) {}
 
+/**
+ * A component's `crons.ts` declares a job the binary refuses at push: a
+ * schedule it cannot read, or a function that is no mutation or action.
+ */
+export class InvalidCron extends Schema.TaggedError<InvalidCron>()(
+  "InvalidCron",
+  { componentPath: Schema.String, name: Schema.String, message: Schema.String },
+) {}
+
+/**
+ * A cron job runs on a clock schedule, which Convex delays by a random draw,
+ * and no test world was bound when the backend opened to draw it from. The
+ * kernel holds no generator of its own.
+ */
+export class CronRandomUnavailable extends Schema.TaggedError<CronRandomUnavailable>()(
+  "CronRandomUnavailable",
+  { componentPath: Schema.String, name: Schema.String, message: Schema.String },
+) {}
+
+/**
+ * Computing a cron job's next run reaches arithmetic that aborts the Convex
+ * binary, which is built with overflow checks.
+ */
+export class CronAbortsBinary extends Schema.TaggedError<CronAbortsBinary>()(
+  "CronAbortsBinary",
+  {
+    componentPath: Schema.String,
+    name: Schema.String,
+    date: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * A snapshot's cron jobs are not the ones the restoring app declares: one the
+ * snapshot holds is not declared, one declared is not in the snapshot, or a
+ * declaration's function, arguments or schedule changed. A restore would run
+ * the snapshot's runs for jobs the app no longer declares as they were.
+ */
+export class SnapshotCronMismatch extends Schema.TaggedError<SnapshotCronMismatch>()(
+  "SnapshotCronMismatch",
+  {
+    componentPath: Schema.String,
+    name: Schema.String,
+    reason: Schema.Literals(["undeclared", "missing", "changed"]),
+    message: Schema.String,
+  },
+) {}
+
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
   new RequiresBinary({
     operation,
