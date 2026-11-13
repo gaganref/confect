@@ -259,7 +259,7 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
           // Reading the one inserted ID drops the kernel's 0 by the index's 1
           // interval, saturating, and adds 1 back. The binary's count starts at
           // its system share and drops by 1 without saturating. So the gap
-          // shrinks from the share to the share less 1 (19 against 1 on the
+          // shrinks from the share to the share less 1 (21 against 1 on the
           // fixture). The `by_id` scan merges the one interval into one.
           expect(kernel).toEqual({
             afterInserts: 0,
