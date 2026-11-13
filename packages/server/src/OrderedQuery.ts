@@ -8,6 +8,7 @@ import type {
 } from "convex/server";
 import { identity, pipe } from "effect/Function";
 import type { Option } from "effect";
+import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Stream from "effect/Stream";
 import type * as DatabaseSchema from "./DatabaseSchema.js";
@@ -88,14 +89,19 @@ export function make<Table_ extends Table.AnyWithProps>(
   const stream: OrderedQueryFunction<"stream"> = () =>
     pipe(streamEncoded, Stream.mapEffect(Document.decode(table)));
 
-  const first: OrderedQueryFunction<"first"> = () =>
-    pipe(stream(), Stream.take(1), Stream.runHead);
-
-  const take: OrderedQueryFunction<"take"> = (n: number) =>
-    pipe(stream(), Stream.take(n), Stream.runCollect);
-
   const collect: OrderedQueryFunction<"collect"> = () =>
     pipe(stream(), Stream.runCollect);
+
+  const take: OrderedQueryFunction<"take"> = (n: number) =>
+    pipe(
+      Effect.promise(() => query.take(n)),
+      Effect.flatMap((encoded) =>
+        Effect.forEach(encoded, Document.decode(table)),
+      ),
+    );
+
+  const first: OrderedQueryFunction<"first"> = () =>
+    Effect.map(take(1), Array.head);
 
   const paginate: NativePaginate<TableInfo_, TableInfo_["document"]> =
     Effect.fn("OrderedQuery.paginate")(function* (options, filter) {
@@ -115,10 +121,13 @@ export function make<Table_ extends Table.AnyWithProps>(
         isDone: paginationResult.isDone,
         continueCursor: paginationResult.continueCursor,
         /* v8 ignore start */
-        ...(paginationResult.splitCursor
+        ...(paginationResult.splitCursor !== undefined &&
+        paginationResult.splitCursor !== null &&
+        paginationResult.splitCursor !== ""
           ? { splitCursor: paginationResult.splitCursor }
           : {}),
-        ...(paginationResult.pageStatus
+        ...(paginationResult.pageStatus !== undefined &&
+        paginationResult.pageStatus !== null
           ? { pageStatus: paginationResult.pageStatus }
           : {}),
         /* v8 ignore stop */

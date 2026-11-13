@@ -1,7 +1,9 @@
 import { recording } from "./internal/recording";
+import * as RecordEffect from "effect/Record";
+import { UnsupportedSchemaTypeError } from "@confect/core/SchemaToValidator";
+import { ConvexError, v } from "convex/values";
 import * as RegisteredFunction from "@confect/server/RegisteredFunction";
 import { assert, describe, expect, it } from "@effect/vitest";
-import { ConvexError } from "convex/values";
 import * as Cause from "effect/Cause";
 import * as Clock from "effect/Clock";
 import * as Console from "effect/Console";
@@ -14,8 +16,10 @@ import * as Logger from "effect/Logger";
 import * as References from "effect/References";
 import * as Schema from "effect/Schema";
 import * as SchemaGetter from "effect/SchemaGetter";
+import * as Scheduler from "effect/Scheduler";
 import * as TestConsole from "effect/testing/TestConsole";
 import { vi } from "vitest";
+import * as Arr from "effect/Array";
 
 describe("runHandlerPromise", () => {
   const errorSchemas = [
@@ -96,10 +100,12 @@ describe("runHandlerPromise", () => {
     "keeps a defect alongside a typed failure $schemaLabel an error schema",
     ({ errorSchema }) =>
       Effect.promise(() => {
-        const result = RegisteredFunction.runHandlerPromise(errorSchema)(
-          Effect.failCause(
-            Cause.combine(Cause.fail("rejected"), Cause.die(new Error("bug"))),
-          ),
+        const result = Cause.combine(
+          Cause.fail("rejected"),
+          Cause.die(new Error("bug")),
+        ).pipe(
+          Effect.failCause,
+          RegisteredFunction.runHandlerPromise(errorSchema),
         );
         return Promise.all([
           expect(result).rejects.toBeInstanceOf(Error),
@@ -203,8 +209,9 @@ describe("runHandlerPromise", () => {
     },
   ])("treats $label as a defect", ({ cause, message, reasons }) =>
     Effect.promise(() => {
-      const result = RegisteredFunction.runHandlerPromise(Schema.String)(
-        Effect.failCause(cause),
+      const result = cause.pipe(
+        Effect.failCause,
+        RegisteredFunction.runHandlerPromise(Schema.String),
       );
       return Promise.all([
         expect(result).rejects.toBeInstanceOf(Error),
@@ -286,13 +293,79 @@ describe("runHandlerPromise", () => {
     Effect.promise(() => {
       const bug = new Error("bug");
       const cause = Cause.die(bug);
-      const result = RegisteredFunction.runHandlerPromise(Schema.String)(
-        Effect.failCause(cause),
+      const result = cause.pipe(
+        Effect.failCause,
+        RegisteredFunction.runHandlerPromise(Schema.String),
       );
       return Promise.all([
         expect(result).rejects.toThrow("bug"),
         expect(result).rejects.toHaveProperty("cause", cause),
       ]);
+    }),
+  );
+
+  it.effect("encodes declared errors without wrapping the ConvexError", () =>
+    Effect.promise(() =>
+      expect(
+        RegisteredFunction.runHandlerPromise(
+          Schema.Struct({ count: Schema.FiniteFromString }),
+        )(Effect.fail({ count: 2 })),
+      ).rejects.toEqual(new ConvexError({ count: "2" })),
+    ),
+  );
+
+  it.effect("does not expose undeclared errors as ConvexError data", () =>
+    Effect.promise(() =>
+      expect(
+        RegisteredFunction.runHandlerPromise(undefined)(
+          Effect.fail({ secret: "server-only" }),
+        ),
+      ).rejects.not.toBeInstanceOf(ConvexError),
+    ),
+  );
+
+  it.effect("does not expose an error that its schema cannot encode", () =>
+    Effect.promise(() =>
+      expect(
+        RegisteredFunction.runHandlerPromise(
+          Schema.Struct({ count: Schema.FiniteFromString }),
+        )(Effect.fail({ count: "not a number" })),
+      ).rejects.not.toBeInstanceOf(ConvexError),
+    ),
+  );
+
+  it.effect("rethrows a ConvexError defect with its original identity", () => {
+    const defect = new ConvexError({ message: "InvalidCursor" });
+    return Effect.promise(() =>
+      expect(
+        RegisteredFunction.runHandlerPromise(undefined)(Effect.die(defect)),
+      ).rejects.toBe(defect),
+    );
+  });
+
+  it.effect("starts a fresh fiber with each invocation's root scheduler", () =>
+    Effect.gen(function* () {
+      const firstScheduler = new Scheduler.MixedScheduler("sync");
+      const secondScheduler = new Scheduler.MixedScheduler("sync");
+      const inspect = Effect.withFiber((fiber) =>
+        Effect.succeed({
+          id: fiber.id,
+          scheduler: fiber.getRef(Scheduler.Scheduler),
+        }),
+      );
+      const [first, second] = yield* Effect.promise(() =>
+        Promise.all([
+          RegisteredFunction.runHandlerPromise(undefined, {
+            scheduler: firstScheduler,
+          })(inspect),
+          RegisteredFunction.runHandlerPromise(undefined, {
+            scheduler: secondScheduler,
+          })(inspect),
+        ]),
+      );
+      expect(first.id).not.toBe(second.id);
+      expect(first.scheduler).toBe(firstScheduler);
+      expect(second.scheduler).toBe(secondScheduler);
     }),
   );
 
@@ -306,7 +379,7 @@ describe("runHandlerPromise", () => {
       yield* Effect.promise(() => {
         globalThis.console = first;
         const firstResult = run(
-          Deferred.await(release).pipe(Effect.andThen(Effect.log("first"))),
+          release.pipe(Deferred.await, Effect.andThen(Effect.log("first"))),
         );
         globalThis.console = second;
         const secondResult = run(Effect.log("second")).finally(() =>
@@ -372,7 +445,8 @@ describe("runHandlerPromise", () => {
               yield* Effect.logTrace("hidden trace");
               yield* Effect.logDebug("hidden debug");
               yield* Effect.logInfo("visible");
-              expect(yield* References.MinimumLogLevel).toBe("Info");
+              const minimumLogLevel = yield* References.MinimumLogLevel;
+              expect(minimumLogLevel).toBe("Info");
               expect(
                 (yield* Effect.context<never>()).mapUnsafe.has(Clock.Clock.key),
               ).toBe(false);
@@ -420,7 +494,7 @@ it.each([false, true])(
       Schema.encodeEffect(Schema.FiniteFromString)(NaN).pipe(Effect.orDie),
     ];
     const messages = await Promise.all(
-      scenarios.map((effect) =>
+      Arr.map(scenarios, (effect) =>
         RegisteredFunction.runHandlerPromise(Schema.String, {
           invocation: instrumented
             ? invocation
@@ -490,14 +564,13 @@ it.each([false, true])(
     expect(await run(Effect.fail(undeclared))).toBe(undeclared);
     expect(await run(Effect.fail(signal))).toBe(signal);
     expect(
-      await run(
-        Effect.failCause(
-          Cause.combine(Cause.fail(signal), Cause.fail(undeclared)),
-        ),
+      await Cause.combine(Cause.fail(signal), Cause.fail(undeclared)).pipe(
+        Effect.failCause,
+        run,
       ),
     ).toBe(signal);
     if (!instrumented) return;
-    const [failed, passed] = spans.map(({ status }) => {
+    const [failed, passed] = Arr.map(spans, ({ status }) => {
       assert(status._tag === "Ended" && Exit.isFailure(status.exit));
       return status.exit.cause.reasons;
     });
@@ -547,15 +620,20 @@ it.each([
     const undeclared = new Error("undeclared");
     const cause = Cause.combine(Cause.fail(undeclared), other);
     const run = (instrumented: boolean) =>
-      RegisteredFunction.runHandlerPromise(undefined, {
-        invocation: instrumented ? invocation : Effect.die("unused"),
-        observability: instrumented ? observability : undefined,
-      })(Effect.failCause(cause)).catch((error: unknown) => error);
+      cause
+        .pipe(
+          Effect.failCause,
+          RegisteredFunction.runHandlerPromise(undefined, {
+            invocation: instrumented ? invocation : Effect.die("unused"),
+            observability: instrumented ? observability : undefined,
+          }),
+        )
+        .catch((error: unknown) => error);
     const [plain, instrumented] = [await run(false), await run(true)];
     expect(instrumented).toEqual(plain);
     const status = spans[0]!.status;
     assert(status._tag === "Ended" && Exit.isFailure(status.exit));
-    expect(status.exit.cause.reasons.some(Cause.isDieReason)).toBe(true);
+    expect(Arr.some(status.exit.cause.reasons, Cause.isDieReason)).toBe(true);
   },
 );
 
@@ -564,5 +642,70 @@ describe("domainArgs", () => {
     expect(
       RegisteredFunction.domainArgs({ value: "ok", context: 1 }, "context"),
     ).toEqual({ value: "ok" });
+  });
+});
+
+describe("toConvexDefinition", () => {
+  it("materializes each validator independently into a stable data property", () => {
+    const args = { text: v.string() };
+    const returns = v.array(v.string());
+    const prepared = {
+      args: vi.fn(() => args),
+      returns: vi.fn(() => returns),
+      handler: (text: string) => [text],
+    };
+    const definition = RegisteredFunction.toConvexDefinition(prepared);
+
+    expect(definition.handler).toBe(prepared.handler);
+    expect(RecordEffect.keys(definition)).toEqual([
+      "handler",
+      "args",
+      "returns",
+    ]);
+    expect(prepared.args).not.toHaveBeenCalled();
+    expect(prepared.returns).not.toHaveBeenCalled();
+
+    expect(definition.returns).toBe(returns);
+    expect(definition.returns).toBe(returns);
+    expect(prepared.returns).toHaveBeenCalledOnce();
+    expect(prepared.args).not.toHaveBeenCalled();
+    expect(Object.getOwnPropertyDescriptor(definition, "returns")).toEqual({
+      value: returns,
+      writable: false,
+      enumerable: true,
+      configurable: false,
+    });
+
+    expect(definition.args).toBe(args);
+    expect(definition.args).toBe(args);
+    expect(prepared.args).toHaveBeenCalledOnce();
+    expect(Object.getOwnPropertyDescriptor(definition, "args")).toEqual({
+      value: args,
+      writable: false,
+      enumerable: true,
+      configurable: false,
+    });
+    expect(RecordEffect.keys(prepared)).toEqual(["args", "returns", "handler"]);
+    expect(prepared.args).toBeTypeOf("function");
+    expect(prepared.returns).toBeTypeOf("function");
+  });
+
+  it("propagates a compiler failure only when its validator is requested", () => {
+    const failure = UnsupportedSchemaTypeError.make({ schemaType: "Symbol" });
+    const prepared = {
+      args: vi.fn(() => {
+        throw failure;
+      }),
+      returns: vi.fn(() => v.null()),
+      handler: () => null,
+    };
+    const definition = RegisteredFunction.toConvexDefinition(prepared);
+
+    expect(prepared.args).not.toHaveBeenCalled();
+    expect(definition.returns.kind).toBe("null");
+    expect(() => definition.args).toThrow(failure);
+    expect(prepared.args).toHaveBeenCalledOnce();
+    expect(prepared.returns).toHaveBeenCalledOnce();
+    expect(prepared.args).toBeTypeOf("function");
   });
 });

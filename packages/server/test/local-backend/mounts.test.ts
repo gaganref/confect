@@ -2,8 +2,8 @@ import { Ref } from "@confect/core";
 import { expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Random from "effect/Random";
-import refs from "./fixtures/confect/_generated/refs";
-import * as LocalBackend from "./LocalBackend";
+import refs from "confect-local-backend/refs";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 const mounts = refs.public.groups.mounts;
 
@@ -15,7 +15,8 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
       () =>
         Effect.gen(function* () {
           const { client } = yield* LocalBackend.LocalBackend;
-          const run = String(yield* Random.next);
+          const random = yield* Random.next;
+          const run = String(random);
           const create = (mount: "first" | "second", count: number) =>
             Ref.runWithCodec(mounts.create, { mount, run, count }, (r, a) =>
               client.mutation(r, a),
@@ -26,15 +27,18 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
             Ref.runWithCodec(mounts.counts, { mount, run }, (r, a) =>
               client.query(r, a),
             );
-          expect(yield* counts("first")).toEqual([1]);
-          expect(yield* counts("second")).toEqual([2]);
+          const countsResult = yield* counts("first");
+          expect(countsResult).toEqual([1]);
+          const countsResult2 = yield* counts("second");
+          expect(countsResult2).toEqual([2]);
         }),
     );
 
     it.effect("is replaced inside provideService and nowhere else", () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
-        const run = String(yield* Random.next);
+        const random = yield* Random.next;
+        const run = String(random);
         yield* Ref.runWithCodec(
           mounts.create,
           { mount: "first", run, count: 3 },

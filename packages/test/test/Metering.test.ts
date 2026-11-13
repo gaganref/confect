@@ -1,4 +1,6 @@
 // oxlint-disable effecttsgo/async-function -- Convex handlers and the kernel shim are Promise APIs, and these cases drive them directly.
+import { pipe } from "effect/Function";
+import * as Str from "effect/String";
 import { assert, describe, expect, it } from "@effect/vitest";
 import {
   defineSchema,
@@ -13,6 +15,8 @@ import {
 } from "convex/server";
 import { v, type GenericId } from "convex/values";
 import { convexTest } from "../src/internal/ConvexTest";
+import * as Arr from "effect/Array";
+import * as Record from "effect/Record";
 
 // The binary's default ceilings and messages, from convex-backend at the
 // local backend's pin (`precompiled-2026-10-28-cccbade`): `crates/common/src/knobs.rs`
@@ -124,7 +128,7 @@ const modules = {
           ctx.db
             .query("notes")
             .collect()
-            .then((rows) => rows.map((row) => row.text)),
+            .then((rows) => Arr.map(rows, (row) => row.text)),
       }),
       ids: queryGeneric({
         args: {},
@@ -132,7 +136,7 @@ const modules = {
           ctx.db
             .query("notes")
             .collect()
-            .then((rows) => rows.map((row) => row._id)),
+            .then((rows) => Arr.map(rows, (row) => row._id)),
       }),
     }),
 };
@@ -143,8 +147,8 @@ const metricsOf = (ctx: Ctx): Promise<TransactionMetrics> =>
   ctx.meta.getTransactionMetrics();
 
 const usedOf = (metrics: TransactionMetrics) =>
-  Object.fromEntries(
-    Object.entries(metrics).map(([metric, { used }]) => [metric, used]),
+  Record.fromEntries(
+    Arr.map(Record.toEntries(metrics), ([metric, { used }]) => [metric, used]),
   );
 
 /**
@@ -152,9 +156,10 @@ const usedOf = (metrics: TransactionMetrics) =>
  * call that crosses a limit is the last one made.
  */
 const inOrder = (count: number, step: (i: number) => Promise<unknown>) =>
-  Array.from({ length: count }, (_, i) => i).reduce<Promise<unknown>>(
+  Arr.reduce(
+    Array.from({ length: count }, (_, i) => i),
+    Promise.resolve<unknown>(undefined),
     (previous, i) => previous.then(() => step(i)),
-    Promise.resolve(),
   );
 
 /**
@@ -178,7 +183,7 @@ const seed = (
  * A text that makes a note exactly `bytes` in the binary's sizing: two
  * delimiters, `_id` with a 32-character ID, `_creationTime` and `text`.
  */
-const textForNoteOf = (bytes: number) => "x".repeat(bytes - 70);
+const textForNoteOf = (bytes: number) => pipe("x", Str.repeat(bytes - 70));
 
 describe("getTransactionMetrics", () => {
   it("answers the binary's ceilings with nothing used in a fresh transaction", async () => {
@@ -318,7 +323,7 @@ describe("limits", () => {
   it("scheduledFunctionArgsBytes: 16 MiB of arguments, one byte more is refused", async () => {
     const t = world();
     // A schedule's arguments are sized as `[{ text }]`: 2 + 2 + 5 + 2 + length.
-    const text = "x".repeat(8 * MiB - 11);
+    const text = pipe("x", Str.repeat(8 * MiB - 11));
     const at = await t.run(async (ctx: Ctx) => {
       await ctx.scheduler.runAfter(60_000, notes.add, { text });
       await ctx.scheduler.runAfter(60_000, notes.add, { text });

@@ -364,7 +364,7 @@ describe(compileAst, () => {
 
         expect(exit).toStrictEqual(
           Exit.fail(
-            new UnsupportedPropertySignatureKeyTypeError({
+            UnsupportedPropertySignatureKeyTypeError.make({
               propertyKey: numberKey,
             }),
           ),
@@ -386,7 +386,7 @@ describe(compileAst, () => {
 
         expect(exit).toStrictEqual(
           Exit.fail(
-            new UnsupportedPropertySignatureKeyTypeError({
+            UnsupportedPropertySignatureKeyTypeError.make({
               propertyKey: symbolKey,
             }),
           ),
@@ -404,7 +404,7 @@ describe(compileAst, () => {
 
         expect(exit).toStrictEqual(
           Exit.fail(
-            new UnsupportedSchemaTypeError({ schemaType: "Undefined" }),
+            UnsupportedSchemaTypeError.make({ schemaType: "Undefined" }),
           ),
         );
       }),
@@ -422,7 +422,7 @@ describe(compileAst, () => {
 
         expect(exit).toStrictEqual(
           Exit.fail(
-            new UnsupportedSchemaTypeError({ schemaType: "Undefined" }),
+            UnsupportedSchemaTypeError.make({ schemaType: "Undefined" }),
           ),
         );
       }),
@@ -437,7 +437,7 @@ describe(compileAst, () => {
         );
 
         expect(exit).toStrictEqual(
-          Exit.fail(new EmptyTupleIsNotSupportedError()),
+          Exit.fail(EmptyTupleIsNotSupportedError.make()),
         );
       }),
     );
@@ -451,7 +451,7 @@ describe(compileAst, () => {
         );
 
         expect(exit).toStrictEqual(
-          Exit.fail(new EmptyUnionIsNotSupportedError()),
+          Exit.fail(EmptyUnionIsNotSupportedError.make()),
         );
       }),
     );
@@ -467,7 +467,7 @@ describe(compileAst, () => {
         );
 
         expect(exit).toStrictEqual(
-          Exit.fail(new EmptyUnionIsNotSupportedError()),
+          Exit.fail(EmptyUnionIsNotSupportedError.make()),
         );
       }),
     );
@@ -481,7 +481,7 @@ describe(compileAst, () => {
         );
 
         expect(exit).toStrictEqual(
-          Exit.fail(new OptionalTupleElementsAreNotSupportedError()),
+          Exit.fail(OptionalTupleElementsAreNotSupportedError.make()),
         );
       }),
     );
@@ -496,7 +496,7 @@ describe(compileAst, () => {
 
         expect(exit).toStrictEqual(
           Exit.fail(
-            new UnsupportedSchemaTypeError({ schemaType: "Undefined" }),
+            UnsupportedSchemaTypeError.make({ schemaType: "Undefined" }),
           ),
         );
       }),
@@ -515,7 +515,7 @@ describe(compileAst, () => {
 
         expect(exit).toStrictEqual(
           Exit.fail(
-            new UnsupportedSchemaTypeError({ schemaType: "Declaration" }),
+            UnsupportedSchemaTypeError.make({ schemaType: "Declaration" }),
           ),
         );
       }),
@@ -1499,7 +1499,7 @@ describe(compileTableSchema, () => {
     const stringSchema = Schema.String;
 
     expect(() => compileTableSchema(stringSchema)).toThrow(
-      new TopLevelMustBeObjectOrUnionError(),
+      TopLevelMustBeObjectOrUnionError.make(),
     );
   });
 
@@ -1520,7 +1520,7 @@ describe(compileTableSchema, () => {
     );
 
     expect(() => compileTableSchema(structWithIndexSignatures)).toThrow(
-      new IndexSignaturesAreNotSupportedError(),
+      IndexSignaturesAreNotSupportedError.make(),
     );
   });
 
@@ -1532,7 +1532,7 @@ describe(compileTableSchema, () => {
       }).pipe(Effect.exit);
 
       expect(exit).toStrictEqual(
-        Exit.fail(new TopLevelMustBeObjectOrUnionError()),
+        Exit.fail(TopLevelMustBeObjectOrUnionError.make()),
       );
     }),
   );
@@ -1682,7 +1682,7 @@ describe(compileArgsSchema, () => {
       }).pipe(Effect.exit);
 
       expect(exit).toStrictEqual(
-        Exit.fail(new IndexSignaturesAreNotSupportedError()),
+        Exit.fail(IndexSignaturesAreNotSupportedError.make()),
       );
     }),
   );
@@ -1694,7 +1694,7 @@ describe(compileArgsSchema, () => {
         catch: (e) => e as TopLevelMustBeObjectError,
       }).pipe(Effect.exit);
 
-      expect(exit).toStrictEqual(Exit.fail(new TopLevelMustBeObjectError()));
+      expect(exit).toStrictEqual(Exit.fail(TopLevelMustBeObjectError.make()));
     }),
   );
 });

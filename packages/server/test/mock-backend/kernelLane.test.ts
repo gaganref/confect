@@ -5,6 +5,7 @@ import * as Effect from "effect/Effect";
 // Imported by relative path, as in `TestConfect.ts`.
 import { ownsConvexGlobal } from "../../../test/src/internal/Execution";
 import convexSchema from "./fixtures/confect/_generated/convexSchema";
+import * as Array from "effect/Array";
 
 // Runs only in the kernel lane (`vitest.mock-backend.kernel.config.ts`).
 describe("the kernel lane", () => {
@@ -28,7 +29,7 @@ describe("the kernel lane", () => {
     Effect.gen(function* () {
       // Built at run time so the import resolves through the lane's plugins
       // when the case runs, not when the file is transformed.
-      const specifier = ["convex-test", "dist", "index.js"].join("/");
+      const specifier = Array.join(["convex-test", "dist", "index.js"], "/");
       const refusal = yield* Effect.promise(() =>
         import(/* @vite-ignore */ specifier).then(
           () => "loaded",

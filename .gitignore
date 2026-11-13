@@ -15,4 +15,4 @@ tsconfig.vitest-temp.json
 *.bundled_*.mjs
 .README.md.bak
 
-packages/server/test/local-backend/.consumer/
+tools/local-backend/.consumer/

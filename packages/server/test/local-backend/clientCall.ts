@@ -2,7 +2,7 @@ import { getFunctionName } from "convex/server";
 import * as Clock from "effect/Clock";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import * as LocalBackend from "./LocalBackend";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 

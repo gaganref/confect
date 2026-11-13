@@ -1,4 +1,5 @@
 import * as BunServices from "@effect/platform-bun/BunServices";
+import * as Layer from "effect/Layer";
 import { expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as HttpClient from "effect/http/HttpClient";
@@ -14,8 +15,15 @@ import {
 } from "./stageForkPackages";
 import * as Schema from "effect/Schema";
 import { publishedPackages } from "./checkPackContents";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
+import * as Record from "effect/Record";
 
-const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const encodeJson = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(
+    Effect.orDie,
+  );
 
 const directories = await Effect.runPromise(
   publishedPackages().pipe(Effect.provide(BunServices.layer)),
@@ -36,10 +44,10 @@ test.each(directories)(
               Schema.decodeEffect(Schema.fromJsonString(PackageManifest)),
             ),
           );
-        const before = encodeJson(input);
+        const before = yield* encodeJson(input);
         const output = stageForkPackages(input, "10.2.0-fork.7");
         expect(output).toMatchObject({
-          name: `@gaganref/confect-${input.name.slice("@confect/".length)}`,
+          name: `@gaganref/confect-${pipe(input.name, String.slice("@confect/".length))}`,
           version: "10.2.0-fork.7",
           repository: {
             type: "git",
@@ -62,11 +70,11 @@ test.each(directories)(
           expect(output[field]).toEqual(
             dependencies === undefined
               ? undefined
-              : Object.fromEntries(
-                  Object.entries(dependencies).map(([name, range]) => [
+              : Record.fromEntries(
+                  Array.map(Record.toEntries(dependencies), ([name, range]) => [
                     name,
-                    name.startsWith("@confect/")
-                      ? `npm:@gaganref/confect-${name.slice("@confect/".length)}@10.2.0-fork.7`
+                    pipe(name, String.startsWith("@confect/"))
+                      ? `npm:@gaganref/confect-${pipe(name, String.slice("@confect/".length))}@10.2.0-fork.7`
                       : range,
                   ]),
                 ),
@@ -74,7 +82,8 @@ test.each(directories)(
         }
         expect(output.devDependencies).toBeUndefined();
         expect(output.scripts).toBeUndefined();
-        expect(encodeJson(input)).toBe(before);
+        const json = yield* encodeJson(input);
+        expect(json).toBe(before);
       }).pipe(Effect.provide(BunServices.layer)),
     ),
 );
@@ -114,22 +123,22 @@ test("rewrites all internal dependency maps and retains external ranges and meta
 });
 
 test("starts at one and advances past the highest published build for this base", () => {
-  expect(Result.getOrThrow(chooseBuildVersion("10.2.0", []))).toBe(
+  expect(chooseBuildVersion("10.2.0", []).pipe(Result.getOrThrow)).toBe(
     "10.2.0-fork.1",
   );
   expect(
-    Result.getOrThrow(
-      chooseBuildVersion("10.2.0", [
-        "10.2.0-fork.2",
-        "10.2.0-fork.10",
-        "10.3.0-fork.99",
-        "10.2.0-next.90",
-        "10.2.0-fork.11.extra",
-      ]),
-    ),
+    chooseBuildVersion("10.2.0", [
+      "10.2.0-fork.2",
+      "10.2.0-fork.10",
+      "10.3.0-fork.99",
+      "10.2.0-next.90",
+      "10.2.0-fork.11.extra",
+    ]).pipe(Result.getOrThrow),
   ).toBe("10.2.0-fork.11");
   expect(
-    Result.getOrThrow(chooseBuildVersion("10.2.0", ["10.2.0-fork.10"], "30")),
+    chooseBuildVersion("10.2.0", ["10.2.0-fork.10"], "30").pipe(
+      Result.getOrThrow,
+    ),
   ).toBe("10.2.0-fork.30");
 });
 
@@ -140,7 +149,7 @@ test("plans from fresh registry state after the previous publish finishes", () =
   expect([first, stale]).toEqual(["10.2.0-fork.7", "10.2.0-fork.7"]);
 
   const published = [...versions, first];
-  expect(Result.getOrThrow(chooseBuildVersion("10.2.0", published))).toBe(
+  expect(chooseBuildVersion("10.2.0", published).pipe(Result.getOrThrow)).toBe(
     "10.2.0-fork.8",
   );
   const override = chooseBuildVersion("10.2.0", published, "7");
@@ -191,12 +200,10 @@ test("never accepts dry-run as a build number", () => {
 test("requires all source packages to share the core base version", () => {
   const core = { name: "@confect/core", version: "10.2.0" };
   expect(
-    Result.getOrThrow(
-      packageBaseVersion([
-        core,
-        { name: "@confect/server", version: "10.2.0" },
-      ]),
-    ),
+    packageBaseVersion([
+      core,
+      { name: "@confect/server", version: "10.2.0" },
+    ]).pipe(Result.getOrThrow),
   ).toBe("10.2.0");
   const mismatch = packageBaseVersion([
     core,
@@ -227,36 +234,38 @@ test("rejects an unused override below the highest existing number", () => {
 });
 
 const registryVersions = (body: string, status = 200) =>
-  readVersions("@gaganref/confect-server").pipe(
-    Effect.provideService(
-      HttpClient.HttpClient,
-      HttpClient.make((request) => {
-        expect(request.url).toBe(
-          "https://registry.npmjs.org/@gaganref%2Fconfect-server",
-        );
-        expect(request.headers.authorization).toBeUndefined();
-        return Effect.succeed(
-          HttpClientResponse.fromWeb(request, new Response(body, { status })),
-        );
-      }),
-    ),
-    Effect.provide(BunServices.layer),
-  );
+  Effect.gen(function* () {
+    const services = yield* Layer.build(BunServices.layer);
+    return yield* readVersions("@gaganref/confect-server").pipe(
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.make((request) => {
+          expect(request.url).toBe(
+            "https://registry.npmjs.org/@gaganref%2Fconfect-server",
+          );
+          expect(request.headers.authorization).toBeUndefined();
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(request, new Response(body, { status })),
+          );
+        }),
+      ),
+      Effect.provideContext(services),
+    );
+  }).pipe(Effect.scoped);
 
 test.each([{ gaganref: "10.2.0-fork.1" }, {}])(
   "reads every published version without a latest tag %j",
   (tags) =>
     Effect.runPromise(
-      registryVersions(
-        JSON.stringify({
-          "dist-tags": tags,
-          versions: {
-            "10.2.0-fork.1": {},
-            "10.2.0-fork.4": {},
-            "10.1.0-fork.99": {},
-          },
-        }),
-      ).pipe(
+      encodeJson({
+        "dist-tags": tags,
+        versions: {
+          "10.2.0-fork.1": {},
+          "10.2.0-fork.4": {},
+          "10.1.0-fork.99": {},
+        },
+      }).pipe(
+        Effect.flatMap(registryVersions),
         Effect.map((versions) => {
           expect(versions).toEqual([
             "10.2.0-fork.1",
@@ -264,7 +273,7 @@ test.each([{ gaganref: "10.2.0-fork.1" }, {}])(
             "10.1.0-fork.99",
           ]);
           expect(
-            Result.getOrThrow(chooseBuildVersion("10.2.0", versions)),
+            chooseBuildVersion("10.2.0", versions).pipe(Result.getOrThrow),
           ).toBe("10.2.0-fork.5");
         }),
       ),

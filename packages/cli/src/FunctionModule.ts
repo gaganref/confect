@@ -5,7 +5,7 @@ import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as HashSet from "effect/HashSet";
 import * as Match from "effect/Match";
-import * as Schema from "effect/Schema";
+import * as String from "effect/String";
 import { UnownedConvexEntrypointError } from "./CodegenError.js";
 import * as Declaration from "./Declaration.js";
 import * as SectionFiles from "./SectionFiles.js";
@@ -23,6 +23,8 @@ import {
   toPosixPath,
 } from "./utils.js";
 import { ProjectRoot } from "./ProjectRoot.js";
+import * as Option from "effect/Option";
+import { quote } from "./Json.js";
 
 const RESERVED_CONVEX_TS_FILE_NAMES = new Set([
   "schema.ts",
@@ -41,25 +43,33 @@ const getEntrypoints = Effect.gen(function* () {
   const path = yield* Path.Path;
   const convex = yield* ConvexDirectory.get;
   const files = yield* fs.readDirectory(convex, { recursive: true });
-  const components = files
-    .filter(
+  const components = pipe(
+    files,
+    Array.filter(
       (file) =>
         path.basename(file) === "convex.config.ts" &&
         path.dirname(file) !== ".",
-    )
-    .map((file) => path.dirname(file) + path.sep);
-  return files.filter((file) => {
+    ),
+    Array.map((file) => path.dirname(file) + path.sep),
+  );
+  return Array.filter(files, (file) => {
     const base = path.basename(file);
     return (
-      !file.startsWith("_generated" + path.sep) &&
-      !components.some((component) => file.startsWith(component)) &&
+      !pipe(file, String.startsWith("_generated" + path.sep)) &&
+      !Array.some(components, (component) =>
+        pipe(file, String.startsWith(component)),
+      ) &&
       /\.(?:js|mjs|cjs|ts|tsx|mts|cts|jsx)$/.test(base) &&
-      !base.startsWith(".") &&
-      !base.startsWith("#") &&
-      (base.match(/\./g)?.length ?? 0) === 1 &&
+      !pipe(base, String.startsWith(".")) &&
+      !pipe(base, String.startsWith("#")) &&
+      pipe(
+        base,
+        String.match(/\./g),
+        Option.match({ onNone: () => 0, onSome: (dots) => dots.length }),
+      ) === 1 &&
       base !== "schema.ts" &&
       base !== "schema.js" &&
-      !file.includes(" ")
+      !pipe(file, String.includes(" "))
     );
   });
 });
@@ -77,14 +87,17 @@ const tokenize = (
     if (match === null) return undefined;
     const value = match[0];
     if (/^\s|^\//.test(value)) continue;
-    if (value.startsWith('"') || value.startsWith("'")) {
-      const literal = value.slice(1, -1);
+    if (
+      pipe(value, String.startsWith('"')) ||
+      pipe(value, String.startsWith("'"))
+    ) {
+      const literal = pipe(value, String.slice(1, -1));
       tokens.push(
-        JSON.stringify(
-          literal.startsWith(".")
+        quote(
+          pipe(literal, String.startsWith("."))
             ? path.resolve(
                 path.dirname(modulePath),
-                literal.replace(/\.js$/, ""),
+                pipe(literal, String.replace(/\.js$/, "")),
               )
             : literal,
         ),
@@ -93,8 +106,6 @@ const tokenize = (
   }
   return tokens;
 };
-
-const encodeString = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
 const matchesShape = (
   actual: readonly string[],
@@ -109,6 +120,16 @@ const matchesShape = (
   return index === actual.length;
 };
 
+// Before the schema-first HttpRouter.make, codegen emitted forSchema; codegen
+// owns that output so it can rewrite it.
+const legacyRouter = String.replace(
+  "HttpRouter.make(schema, http.routes, ",
+  "HttpRouter.forSchema(schema)(http.routes, ",
+);
+
+/**
+ * @internal
+ */
 export const assertOwnedEntrypoints = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -117,23 +138,27 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
   const projectRoot = yield* ProjectRoot.get;
   const importFromConvex = (file: string) =>
     toModuleImportPath(path.relative(convex, path.join(confect, file)));
+  const httpTemplates = [
+    yield* templates.http({
+      httpImportPath: yield* importFromConvex("http.ts"),
+    }),
+    yield* templates.declaredHttp({
+      schemaImportPath: yield* importFromConvex("_generated/schema.ts"),
+      httpImportPath: yield* importFromConvex("http.ts"),
+    }),
+    yield* templates.declaredHttp({
+      schemaImportPath: yield* importFromConvex("_generated/schema.ts"),
+      httpImportPath: yield* importFromConvex("http.ts"),
+      runtimeImportPath: yield* importFromConvex("runtime.ts"),
+    }),
+  ];
   const optional = new Map([
     [
       "http.ts",
-      [
-        yield* templates.http({
-          httpImportPath: yield* importFromConvex("http.ts"),
-        }),
-        yield* templates.declaredHttp({
-          schemaImportPath: yield* importFromConvex("_generated/schema.ts"),
-          httpImportPath: yield* importFromConvex("http.ts"),
-        }),
-        yield* templates.declaredHttp({
-          schemaImportPath: yield* importFromConvex("_generated/schema.ts"),
-          httpImportPath: yield* importFromConvex("http.ts"),
-          runtimeImportPath: yield* importFromConvex("runtime.ts"),
-        }),
-      ],
+      Array.flatMap(httpTemplates, (template) => [
+        template,
+        legacyRouter(template),
+      ]),
     ],
     [
       "crons.ts",
@@ -144,12 +169,11 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
       ],
     ],
   ]);
+  const written2 = yield* SectionFiles.written;
   // The declared HTTP router first imports each file a manifest section wrote.
   const sectionImports = new Set(
-    (yield* SectionFiles.written).map((file) =>
-      encodeString(
-        path.join(confect, "_generated", path.basename(file, ".ts")),
-      ),
+    Array.map(written2, (file) =>
+      quote(path.join(confect, "_generated", path.basename(file, ".ts"))),
     ),
   );
   const withoutSectionImports = (
@@ -166,33 +190,39 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
       continue;
     const tokens = tokenize(contents, absolute, path);
     if (tokens !== undefined) {
+      const shapes = optional.get(relative);
       if (
-        optional
-          .get(relative)
-          ?.some((template) =>
-            matchesShape(
-              relative === "http.ts" ? withoutSectionImports(tokens) : tokens,
-              tokenize(template, absolute, path)!,
-            ),
-          )
+        shapes !== undefined &&
+        Array.some(shapes, (template) =>
+          matchesShape(
+            relative === "http.ts" ? withoutSectionImports(tokens) : tokens,
+            tokenize(template, absolute, path)!,
+          ),
+        )
       )
         continue;
       if (path.extname(relative) === ".ts") {
-        const names = tokens.flatMap((token, index) =>
+        const names = Array.flatMap(tokens, (token, index) =>
           token === "export" && tokens[index + 1] === "const"
             ? [tokens[index + 2]!]
             : [],
         );
         const group = yield* GroupPath.fromGroupModulePath(relative);
+        const reusesContext = names.includes("experimental_reuseContext");
+        const functionNames = Array.filter(
+          names,
+          (name) => name !== "experimental_reuseContext",
+        );
         const template = yield* render({
-          functionNames: names,
+          functionNames,
           registeredFunctionsImportPath:
             yield* registeredFunctionsImportPathForGroup(group, absolute),
           useNode: tokens[0] === '"use node"',
+          experimental_reuseContext: reusesContext,
         });
         if (
-          names.length > 0 &&
-          new Set(names).size === names.length &&
+          functionNames.length > 0 &&
+          new Set(functionNames).size === functionNames.length &&
           matchesShape(tokens, tokenize(template, absolute, path)!)
         )
           continue;
@@ -201,7 +231,7 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
     refused.push(toPosixPath(path, path.relative(projectRoot, absolute)));
   }
   if (refused.length > 0)
-    return yield* new UnownedConvexEntrypointError({
+    return yield* UnownedConvexEntrypointError.make({
       filePaths: refused.sort(),
     });
 });
@@ -210,17 +240,25 @@ export const render = ({
   functionNames,
   registeredFunctionsImportPath,
   useNode = false,
+  experimental_reuseContext = false,
 }: Parameters<typeof renderEffect>[0]) =>
-  renderEffect({ functionNames, registeredFunctionsImportPath, useNode });
+  renderEffect({
+    functionNames,
+    registeredFunctionsImportPath,
+    useNode,
+    experimental_reuseContext,
+  });
 
 const renderEffect = Effect.fnUntraced(function* ({
   functionNames,
   registeredFunctionsImportPath,
   useNode = false,
+  experimental_reuseContext = false,
 }: {
   functionNames: ReadonlyArray<string>;
   registeredFunctionsImportPath: string;
   useNode?: boolean;
+  experimental_reuseContext?: boolean;
 }) {
   const cbw = new CodeBlockWriter({ indentNumberOfSpaces: 2 });
 
@@ -233,6 +271,10 @@ const renderEffect = Effect.fnUntraced(function* ({
     `import registeredFunctions from "${registeredFunctionsImportPath}";`,
   );
   yield* cbw.newLine();
+  if (experimental_reuseContext) {
+    yield* cbw.writeLine("export const experimental_reuseContext = true;");
+    yield* cbw.newLine();
+  }
   yield* Effect.forEach(functionNames, (name) =>
     cbw.writeLine(`export const ${name} = registeredFunctions.${name};`),
   );
@@ -240,17 +282,22 @@ const renderEffect = Effect.fnUntraced(function* ({
   return yield* cbw.toString();
 });
 
+/**
+ * @internal
+ */
 export const generateGroupModule = ({
   groupPath,
   functionNames,
   registeredFunctionsImportPath,
   useNode = false,
+  experimental_reuseContext = false,
 }: Parameters<typeof generateGroupModuleEffect>[0]) =>
   generateGroupModuleEffect({
     groupPath,
     functionNames,
     registeredFunctionsImportPath,
     useNode,
+    experimental_reuseContext,
   });
 
 const generateGroupModuleEffect = Effect.fnUntraced(function* ({
@@ -258,11 +305,13 @@ const generateGroupModuleEffect = Effect.fnUntraced(function* ({
   functionNames,
   registeredFunctionsImportPath,
   useNode = false,
+  experimental_reuseContext = false,
 }: {
   groupPath: GroupPath.GroupPath;
   functionNames: ReadonlyArray<string>;
   registeredFunctionsImportPath: string;
   useNode?: boolean;
+  experimental_reuseContext?: boolean;
 }) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -280,6 +329,7 @@ const generateGroupModuleEffect = Effect.fnUntraced(function* ({
     functionNames,
     registeredFunctionsImportPath,
     useNode,
+    experimental_reuseContext,
   });
 
   if (!(yield* fs.exists(modulePath))) {
@@ -300,6 +350,8 @@ const generateGroupModuleEffect = Effect.fnUntraced(function* ({
  * path mirrors the group's path one-to-one (see
  * `registeredFunctionsRelativePath` in `LeafModule.ts`) for both Convex and
  * Node groups.
+ *
+ * @internal
  */
 export const registeredFunctionsImportPathForGroup = Effect.fnUntraced(
   function* (groupPath: GroupPath.GroupPath, modulePath: string) {
@@ -336,6 +388,9 @@ const logGroupPaths = Effect.fnUntraced(function* <R>(
   );
 });
 
+/**
+ * @internal
+ */
 export const generateFunctions = Effect.fnUntraced(function* (
   snapshot: GenerationSnapshot.GenerationSnapshot,
 ) {
@@ -344,6 +399,9 @@ export const generateFunctions = Effect.fnUntraced(function* (
   return GenerationSnapshot.functionPaths(snapshot);
 });
 
+/**
+ * @internal
+ */
 export const applyFunctionPlan = Effect.fnUntraced(function* (
   plan: GenerationSnapshot.ModulePlan,
 ) {
@@ -373,6 +431,9 @@ const getGroupPathsFromFs = Effect.gen(function* () {
   return GroupPaths.GroupPaths.make(HashSet.fromIterable(groupPathArray));
 });
 
+/**
+ * @internal
+ */
 export const removeGroups = Effect.fnUntraced(function* (
   groupPaths: GroupPaths.GroupPaths,
 ) {
@@ -395,6 +456,9 @@ export const removeGroups = Effect.fnUntraced(function* (
   );
 });
 
+/**
+ * @internal
+ */
 export const writeGroups = (
   groups: ReadonlyArray<GenerationSnapshot.GroupSummary>,
 ) =>
@@ -412,6 +476,7 @@ export const writeGroups = (
         functionNames: group.functionNames,
         registeredFunctionsImportPath,
         useNode: group.runtime === "Node",
+        experimental_reuseContext: group.experimental_reuseContext === true,
       });
       yield* Match.value(change).pipe(
         Match.when("Added", () => logFileAdded(modulePath)),

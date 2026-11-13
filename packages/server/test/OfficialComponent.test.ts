@@ -70,7 +70,7 @@ const handler = {
 
 const defectOf = <A, E>(exit: Exit.Exit<A, E>) =>
   Exit.isFailure(exit)
-    ? Result.getOrThrow(Cause.findDefect(exit.cause))
+    ? exit.cause.pipe(Cause.findDefect, Result.getOrThrow)
     : undefined;
 
 class Counter {
@@ -164,7 +164,12 @@ describe("make", () => {
         const layer: Layer.Layer<QueryRunner.QueryRunner> =
           handler[kind](native);
 
-        const result = yield* counter("count", "a").pipe(Effect.provide(layer));
+        const result = yield* Effect.gen(function* () {
+          const services = yield* Layer.build(layer);
+          return yield* counter("count", "a").pipe(
+            Effect.provideContext(services),
+          );
+        }).pipe(Effect.scoped);
 
         expect(result).toBe("c:a");
         expect(official.calls).toEqual([[native, "a"]]);
@@ -179,7 +184,12 @@ describe("make", () => {
         const counter = OfficialComponent.make("counter", new Counter("c"));
 
         const exit = yield* Effect.exit(
-          counter("add", 1).pipe(Effect.provide(handler.mutation({}))),
+          Effect.gen(function* () {
+            const services2 = yield* Layer.build(handler.mutation({}));
+            return yield* counter("add", 1).pipe(
+              Effect.provideContext(services2),
+            );
+          }).pipe(Effect.scoped),
         );
 
         const defect = defectOf(exit);
@@ -198,7 +208,12 @@ describe("make", () => {
       const counter = OfficialComponent.make("counter", new Counter("c"));
 
       const exit = yield* Effect.exit(
-        counter("count", "a").pipe(Effect.provide(runners.query)),
+        Effect.gen(function* () {
+          const services3 = yield* Layer.build(runners.query);
+          return yield* counter("count", "a").pipe(
+            Effect.provideContext(services3),
+          );
+        }).pipe(Effect.scoped),
       );
 
       expect(defectOf(exit)).toEqual(
@@ -232,10 +247,9 @@ describe("encodeCall", () => {
   );
 
   it("requires an explicit carrier option", () => {
-    void (() => {
+    void (() =>
       // @ts-expect-error TS2554: A component's carrier policy must be explicit.
-      return OfficialComponent.encodeCall(record, { value: 42, note: "n" });
-    });
+      OfficialComponent.encodeCall(record, { value: 42, note: "n" }));
   });
 
   const options = {
@@ -315,11 +329,10 @@ describe("encodeCall", () => {
         );
 
         expect(getFunctionName(call.reference)).toBe("jobs:run");
-        expect(
-          yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
-            call.args,
-          ),
-        ).toBe('{"value":"42"}');
+        const encoded = yield* Schema.encodeEffect(
+          Schema.fromJsonString(Schema.Unknown),
+        )(call.args);
+        expect(encoded).toBe('{"value":"42"}');
       }).pipe(
         Effect.withSpan("enqueue"),
         Effect.provideService(RegisteredFunction.Forward, (span) => ({
@@ -332,9 +345,8 @@ describe("encodeCall", () => {
 describe("encodeField", () => {
   it.effect("encodes one declared field through its codec", () =>
     Effect.gen(function* () {
-      expect(yield* OfficialComponent.encodeField(record, "value", 42)).toBe(
-        "42",
-      );
+      const field = yield* OfficialComponent.encodeField(record, "value", 42);
+      expect(field).toBe("42");
     }),
   );
 });

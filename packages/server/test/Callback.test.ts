@@ -29,13 +29,18 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { vi } from "vitest";
+import * as Arr from "effect/Array";
 
+// oxlint-disable-next-line effecttsgo/schema-class-missing-brand -- Structural on purpose: Rebuilt below copies this tag and fields, and the test proves Callback.create accepts the copy, which a brand would reject at compile time.
 class EventRejected extends Schema.TaggedError<EventRejected>()(
   "EventRejected",
   { reason: Schema.String },
 ) {}
 
-class Unrelated extends Schema.TaggedError<Unrelated>()("Unrelated", {
+class Unrelated extends Schema.TaggedError<
+  Unrelated,
+  { readonly brand: unique symbol }
+>()("Unrelated", {
   reason: Schema.String,
 }) {}
 
@@ -65,19 +70,22 @@ describe("create", () => {
     "asks Convex for a handle to the ref and runs the component's calls through it",
     () =>
       Effect.gen(function* () {
-        const syscalls: Array<[string, unknown]> = [];
+        const syscalls: Array<readonly [string, string]> = [];
         vi.stubGlobal("Convex", {
           asyncSyscall: (op: string, arg: string) => {
-            syscalls.push([op, JSON.parse(arg)]);
-            return Promise.resolve(
-              JSON.stringify("function://;callbacks:onEvent"),
-            );
+            syscalls.push([op, arg]);
+            return Promise.resolve('"function://;callbacks:onEvent"');
           },
         });
         const handle = yield* Callback.create(OnEvent, onEvent).pipe(
           Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals())),
         );
-        expect(syscalls).toEqual([
+        const decodedSyscalls = yield* Effect.forEach(syscalls, ([op, arg]) =>
+          Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(arg).pipe(
+            Effect.map((parsed) => [op, parsed]),
+          ),
+        );
+        expect(decodedSyscalls).toEqual([
           [
             "1.0/createFunctionHandle",
             expect.objectContaining({ name: "callbacks:onEvent" }),
@@ -103,8 +111,7 @@ describe("create", () => {
 const created = <A, E>(effect: Effect.Effect<A, E>) =>
   Effect.suspend(() => {
     vi.stubGlobal("Convex", {
-      asyncSyscall: () =>
-        Promise.resolve(JSON.stringify("function://;callbacks:onEvent")),
+      asyncSyscall: () => Promise.resolve('"function://;callbacks:onEvent"'),
     });
     return Effect.result(effect);
   }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals())));
@@ -116,7 +123,12 @@ const mismatch = (
   actual: Schema.Json,
 ) =>
   Result.fail(
-    new Callback.CallbackContractMismatch({ contract, side, expected, actual }),
+    Callback.CallbackContractMismatch.make({
+      contract,
+      side,
+      expected,
+      actual,
+    }),
   );
 
 describe("create checks the host's validators", () => {
@@ -188,10 +200,11 @@ describe("create checks the host's validators", () => {
             error: () => Unrelated,
           }),
         );
-        expect(
+        const unrelatedResult = yield* created(
           // @ts-expect-error the host's Unrelated error is outside the contract's declared set
-          yield* created(Callback.create(OnEvent, unrelated)),
-        ).toEqual(
+          Callback.create(OnEvent, unrelated),
+        );
+        expect(unrelatedResult).toEqual(
           mismatch(
             "counter/onEvent",
             "error",
@@ -229,9 +242,8 @@ describe("create checks the host's validators", () => {
             error: () => EventRejected,
           }),
         );
-        const handle = Result.getOrThrow(
-          yield* created(Callback.create(Declared, subset)),
-        );
+        const createdResult = yield* created(Callback.create(Declared, subset));
+        const handle = Result.getOrThrow(createdResult);
         expect(getFunctionReference(handle)).toBe(
           "function://;callbacks:onEvent",
         );
@@ -257,7 +269,8 @@ describe("create checks the host's validators", () => {
           returns: () => Schema.Null,
         }),
       );
-      expect(yield* created(Callback.create(Keyed, keyed))).toEqual(
+      const createdResult = yield* created(Callback.create(Keyed, keyed));
+      expect(createdResult).toEqual(
         mismatch(
           "counter/onKeyed",
           "args",
@@ -290,7 +303,8 @@ describe("create checks the host's validators", () => {
           returns: () => Schema.Null,
         }),
       );
-      expect(yield* created(Callback.create(Keyed, keyed))).toEqual(
+      const createdResult = yield* created(Callback.create(Keyed, keyed));
+      expect(createdResult).toEqual(
         mismatch(
           "counter/onKeyed",
           "args",
@@ -324,7 +338,8 @@ describe("create checks the host's validators", () => {
           returns: () => Schema.Struct(hostFields),
         }),
       );
-      expect(yield* created(Callback.create(Keyed, keyed))).toEqual(
+      const createdResult = yield* created(Callback.create(Keyed, keyed));
+      expect(createdResult).toEqual(
         mismatch(
           "counter/onKeyed",
           "returns",
@@ -348,10 +363,11 @@ describe("create checks the host's validators", () => {
           returns: () => Schema.Null,
         }),
       );
-      expect(
+      const namedResult = yield* created(
         // @ts-expect-error the host's validator accepts only IDs of users
-        yield* created(Callback.create(Named, named)),
-      ).toEqual(
+        Callback.create(Named, named),
+      );
+      expect(namedResult).toEqual(
         mismatch(
           "counter/onNamed",
           "args",
@@ -367,7 +383,10 @@ describe("create checks the host's validators", () => {
 
   it.effect("refuses errors from group middleware whose types are erased", () =>
     Effect.gen(function* () {
-      class Blocked extends Schema.TaggedError<Blocked>()("Blocked", {}) {}
+      class Blocked extends Schema.TaggedError<
+        Blocked,
+        { readonly brand: unique symbol }
+      >()("Blocked", {}) {}
       class Gate extends MiddlewareSpec.MiddlewareSpec<Gate>()("Gate", {
         error: () => Blocked,
         functionTypes: { query: false, mutation: true, action: false },
@@ -387,10 +406,11 @@ describe("create checks the host's validators", () => {
         }),
         attachments,
       );
-      expect(
+      const groupedResult = yield* created(
         // @ts-expect-error the erased attachments may fail with any error
-        yield* created(Callback.create(Guarded, grouped)),
-      ).toEqual(
+        Callback.create(Guarded, grouped),
+      );
+      expect(groupedResult).toEqual(
         mismatch(
           "counter/onGuarded",
           "error",
@@ -431,7 +451,8 @@ describe("create checks the host's validators", () => {
         kind: "unsupported",
         reason: "Unsupported schema type 'TemplateLiteral'",
       };
-      expect(yield* created(Callback.create(Reasoning, rebuilt))).toEqual(
+      const createdResult = yield* created(Callback.create(Reasoning, rebuilt));
+      expect(createdResult).toEqual(
         mismatch("counter/onReasoning", "error", unsupported, unsupported),
       );
     }),
@@ -464,9 +485,8 @@ describe("create checks the host's validators", () => {
             error: () => Unrelated,
           }),
         );
-        expect(
-          Result.isSuccess(yield* created(Callback.create(Mixed, mixed))),
-        ).toBe(true);
+        const createdResult = yield* created(Callback.create(Mixed, mixed));
+        expect(Result.isSuccess(createdResult)).toBe(true);
       }),
   );
 
@@ -486,9 +506,8 @@ describe("create checks the host's validators", () => {
           returns: () => Schema.Null,
         }),
       );
-      expect(
-        Result.isSuccess(yield* created(Callback.create(Flagged, flagged))),
-      ).toBe(true);
+      const createdResult = yield* created(Callback.create(Flagged, flagged));
+      expect(Result.isSuccess(createdResult)).toBe(true);
     }),
   );
 
@@ -496,6 +515,7 @@ describe("create checks the host's validators", () => {
     "accepts errors rebuilt with the contract's validators, or shared even when Convex cannot compile them",
     () =>
       Effect.gen(function* () {
+        // oxlint-disable-next-line effecttsgo/schema-class-missing-brand -- Structural on purpose: this copy of EventRejected must match it by shape, which a brand would prevent.
         class Rebuilt extends Schema.TaggedError<Rebuilt>()("EventRejected", {
           reason: Schema.String,
         }) {}
@@ -513,11 +533,10 @@ describe("create checks the host's validators", () => {
             error: () => Schema.Union([Rebuilt, Reasoned]),
           }),
         );
-        expect(
-          Result.isSuccess(
-            yield* created(Callback.create(Reasoning, reasoning)),
-          ),
-        ).toBe(true);
+        const createdResult = yield* created(
+          Callback.create(Reasoning, reasoning),
+        );
+        expect(Result.isSuccess(createdResult)).toBe(true);
       }),
   );
 });
@@ -635,13 +654,16 @@ describe("create types", () => {
     // @ts-expect-error H1 the host returns a number on the wire, the contract decodes a string
     void Callback.create(Counted, finiteOnWire);
 
-    class Rejected extends Schema.TaggedError<Rejected>()("Rejected", {
+    class Rejected extends Schema.TaggedError<
+      Rejected,
+      { readonly brand: unique symbol }
+    >()("Rejected", {
       at: Schema.FiniteFromString,
     }) {}
-    class RejectedOnWire extends Schema.TaggedError<RejectedOnWire>()(
-      "Rejected",
-      { at: Schema.Finite },
-    ) {}
+    class RejectedOnWire extends Schema.TaggedError<
+      RejectedOnWire,
+      { readonly brand: unique symbol }
+    >()("Rejected", { at: Schema.Finite }) {}
     const Guarded = CoreCallback.mutation("counter/onGuarded", {
       returns: () => Schema.Null,
       error: () => Rejected,
@@ -703,13 +725,16 @@ describe("create types", () => {
   });
 
   it("H1: rejects a ref whose middleware encodes an error differently", () => {
-    class Rejected extends Schema.TaggedError<Rejected>()("Rejected", {
+    class Rejected extends Schema.TaggedError<
+      Rejected,
+      { readonly brand: unique symbol }
+    >()("Rejected", {
       at: Schema.FiniteFromString,
     }) {}
-    class RejectedOnWire extends Schema.TaggedError<RejectedOnWire>()(
-      "Rejected",
-      { at: Schema.Finite },
-    ) {}
+    class RejectedOnWire extends Schema.TaggedError<
+      RejectedOnWire,
+      { readonly brand: unique symbol }
+    >()("Rejected", { at: Schema.Finite }) {}
     class Gate extends MiddlewareSpec.MiddlewareSpec<Gate>()("Gate", {
       error: () => RejectedOnWire,
       functionTypes: { query: false, mutation: true, action: false },
@@ -834,13 +859,16 @@ describe("create types", () => {
   });
 
   it("H1: rejects a ref built directly whose function middleware encodes an error differently", () => {
-    class Rejected extends Schema.TaggedError<Rejected>()("Rejected", {
+    class Rejected extends Schema.TaggedError<
+      Rejected,
+      { readonly brand: unique symbol }
+    >()("Rejected", {
       at: Schema.FiniteFromString,
     }) {}
-    class RejectedOnWire extends Schema.TaggedError<RejectedOnWire>()(
-      "Rejected",
-      { at: Schema.Finite },
-    ) {}
+    class RejectedOnWire extends Schema.TaggedError<
+      RejectedOnWire,
+      { readonly brand: unique symbol }
+    >()("Rejected", { at: Schema.Finite }) {}
     class Gate extends MiddlewareSpec.MiddlewareSpec<Gate>()("Gate", {
       error: () => RejectedOnWire,
       functionTypes: { query: false, mutation: true, action: false },
@@ -940,7 +968,10 @@ describe("create types", () => {
   });
 
   it("H1: rejects a ref built with group middleware whose errors the contract does not declare", () => {
-    class Blocked extends Schema.TaggedError<Blocked>()("Blocked", {}) {}
+    class Blocked extends Schema.TaggedError<
+      Blocked,
+      { readonly brand: unique symbol }
+    >()("Blocked", {}) {}
     class Gate extends MiddlewareSpec.MiddlewareSpec<Gate>()("Gate", {
       error: () => Blocked,
       functionTypes: { query: false, mutation: true, action: false },
@@ -1057,20 +1088,26 @@ describe("callback carrier", () => {
             ],
             ["ActionRunner.runAction", action.runAction(actionHandle, args)],
           ] as const) {
-            expect(yield* call).toEqual({
+            const callValue = yield* call;
+            expect(callValue).toEqual({
               count: "1",
-              ...(enabled && options ? { observe: { boundary } } : {}),
+              ...(enabled && options !== undefined
+                ? { observe: { boundary } }
+                : {}),
             });
           }
           for (const handle of [mutationHandle, actionHandle]) {
             yield* Effect.gen(function* () {
-              const scheduler = yield* Scheduler.Scheduler;
-              yield* scheduler.runAfter(Duration.zero, handle, args);
-              yield* scheduler.runAt(DateTime.makeUnsafe(0), handle, args);
-            }).pipe(Effect.provide(schedulers));
+              const services = yield* Layer.build(schedulers);
+              return yield* Effect.gen(function* () {
+                const scheduler = yield* Scheduler.Scheduler;
+                yield* scheduler.runAfter(Duration.zero, handle, args);
+                yield* scheduler.runAt(DateTime.makeUnsafe(0), handle, args);
+              }).pipe(Effect.provideContext(services));
+            }).pipe(Effect.scoped);
             expect(scheduled.splice(0)).toEqual(
-              ["Scheduler.runAfter", "Scheduler.runAt"].map((boundary) =>
-                enabled && options
+              Arr.map(["Scheduler.runAfter", "Scheduler.runAt"], (boundary) =>
+                enabled && options !== undefined
                   ? { count: "1", observe: { boundary } }
                   : { count: "1" },
               ),
@@ -1079,13 +1116,11 @@ describe("callback carrier", () => {
           expect(args).toEqual({ count: 1 });
         }
       }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            MutationRunner.layer(Forwarding.echo),
-            ActionRunner.layer(Forwarding.echo),
-            Layer.succeed(RegisteredFunction.Forward, forward),
-          ),
-        ),
+        Effect.provide([
+          MutationRunner.layer(Forwarding.echo),
+          ActionRunner.layer(Forwarding.echo),
+          Layer.succeed(RegisteredFunction.Forward, forward),
+        ]),
       ),
   );
 });

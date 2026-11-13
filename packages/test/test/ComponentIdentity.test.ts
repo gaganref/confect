@@ -1,6 +1,6 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import refs from "../../server/test/local-backend/fixtures/confect/_generated/refs";
+import refs from "../../../tools/local-backend/fixtures/confect/_generated/refs";
 import { expected, subject } from "./fixtures/componentIdentityProbe";
 import { call, localBackendWorld } from "./fixtures/localBackendWorld";
 

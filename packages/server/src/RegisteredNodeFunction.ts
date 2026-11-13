@@ -59,17 +59,19 @@ export const make = (
   );
 
   return genericFunction(
-    nodeActionFunction(databaseSchema, {
-      name: item.name,
-      reservedArgument: item.reservedArgument,
-      observability,
-      functionVisibility: item.functionVisibility,
-      args: item.args,
-      returns: item.returns,
-      error: item.error,
-      handler: item.handler,
-      resolvedMiddlewares,
-    }),
+    RegisteredFunction.toConvexDefinition(
+      nodeActionFunction(databaseSchema, {
+        name: item.name,
+        reservedArgument: item.reservedArgument,
+        observability,
+        functionVisibility: item.functionVisibility,
+        args: item.args,
+        returns: item.returns,
+        error: item.error,
+        handler: item.handler,
+        resolvedMiddlewares,
+      }),
+    ),
   );
 };
 

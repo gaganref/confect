@@ -60,8 +60,7 @@ it.effect(
         args: { route: { cb: onLabel } },
       });
       vi.stubGlobal("Convex", {
-        asyncSyscall: () =>
-          Promise.resolve(JSON.stringify("function://;callbacks:onLabel")),
+        asyncSyscall: () => Promise.resolve('"function://;callbacks:onLabel"'),
       });
       const call = yield* Mount.initCall(mount, (contract, ref) =>
         Callback.create(contract, ref as never),

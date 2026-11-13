@@ -10,7 +10,7 @@ import {
 } from "@confect/server";
 import * as Forwarding from "./internal/forwarding";
 import * as Layer from "effect/Layer";
-import { expect, expectTypeOf, it } from "@effect/vitest";
+import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import schema from "./mock-backend/fixtures/confect/_generated/schema";
@@ -103,3 +103,18 @@ it.effect.each(Forwarding.cases)(
       }
     }),
 );
+
+describe("ActionCall errors", () => {
+  it.each([
+    [ServerActionCall.ActionCallAlreadyUsed.make({}), "ActionCallAlreadyUsed"],
+    [ServerActionCall.ActionCallNotUsed.make({}), "ActionCallNotUsed"],
+    [ServerActionCall.MissingFunctionType.make({}), "MissingFunctionType"],
+    [
+      ServerActionCall.NestedActionNotAllowed.make({}),
+      "NestedActionNotAllowed",
+    ],
+    [ServerActionCall.SchedulingNotAllowed.make({}), "SchedulingNotAllowed"],
+  ])("prints %s as its tag", (error, printed) => {
+    expect(String(error)).toBe(printed);
+  });
+});

@@ -9,7 +9,13 @@ import * as Flag from "effect/cli/Flag";
 import * as ConfectDirectory from "./ConfectDirectory.js";
 import * as ConvexDirectory from "./ConvexDirectory.js";
 import * as ProjectRoot from "./ProjectRoot.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
 
+/**
+ * @internal
+ */
 export const flags = {
   componentDir: Flag.String("component-dir").pipe(
     Flag.withDescription(
@@ -58,7 +64,7 @@ export const layer = ({
               path.join(path.dirname(absolute), "confect", "app.ts"),
             ))
           ) {
-            return yield* new ConvexDirectory.ConvexDirectoryNotFoundError();
+            return yield* ConvexDirectory.ConvexDirectoryNotFoundError.make({});
           }
           const pkg = yield* fs
             .readFileString(path.join(projectRoot, "package.json"))
@@ -69,7 +75,7 @@ export const layer = ({
                 ),
               ),
             );
-          const definition = `${pkg.name}:${path.relative(projectRoot, absolute).split(path.sep).join("/")}`;
+          const definition = `${pkg.name}:${Array.join(pipe(path.relative(projectRoot, absolute), String.split(path.sep)), "/")}`;
           return ConvexDirectory.ConvexDirectory.of({
             get: Effect.succeed(absolute),
             target: {

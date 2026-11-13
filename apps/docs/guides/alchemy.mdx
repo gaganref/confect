@@ -6,14 +6,14 @@ description: "Provision Convex cloud resources and deploy a Confect backend as p
 
 `@confect/alchemy` integrates Convex cloud deployments with [Alchemy](https://alchemy.run). Use `Convex` resources for plain Convex applications, or `Confect.Backend` to run Confect codegen before pushing your backend. Your existing tables, specs, impls, and client code do not change.
 
-This integration supports Alchemy `2.0.0-beta.82` and Effect v4. It does not infer infrastructure from your function implementations. With `alchemy dev`, the same resources run against a local Convex backend instead of Convex cloud; see [Develop locally](#develop-locally).
+This integration supports Alchemy `2.0.0-beta.86` and Effect v4. It does not infer infrastructure from your function implementations. With `alchemy dev`, the same resources run against a local Convex backend instead of Convex cloud; see [Develop locally](#develop-locally).
 
 ## Install
 
 Install the integration and Alchemy in the workspace that contains your stack:
 
 ```sh
-pnpm add -D @confect/alchemy alchemy@2.0.0-beta.82
+pnpm add -D @confect/alchemy alchemy@2.0.0-beta.86
 ```
 
 The backend workspace must also have `convex` and, for `Confect.Backend`, `@confect/cli` installed. Deployment uses these installed binaries; it does not download a CLI. Use Node.js 24 or later.
