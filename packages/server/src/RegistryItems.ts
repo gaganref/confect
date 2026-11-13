@@ -56,22 +56,24 @@ export const missingRequired = (
     ),
     ([functionName, value]) =>
       FunctionRegistryItem.isFunctionRegistryItem(value)
-        ? Array.flatMap(required, ({ key }) =>
-            value._tag === "Confect" &&
-            Array.some(
-              value.middlewareAttachments,
-              ({ spec }) => spec.key === key,
-            )
-              ? []
-              : [
-                  {
+        ? // reduce skips a sparse list's holes, which effect/Array's flatMap visits.
+          Array.reduce(
+            required,
+            Array.empty<MissingMiddleware>(),
+            (missing, { key }) =>
+              value._tag === "Confect" &&
+              Array.some(
+                value.middlewareAttachments,
+                ({ spec }) => spec.key === key,
+              )
+                ? missing
+                : Array.append(missing, {
                     functionName:
                       groupPath === ""
                         ? functionName
                         : `${groupPath}.${functionName}`,
                     middlewareKey: key,
-                  },
-                ],
+                  }),
           )
         : [],
   );
