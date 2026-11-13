@@ -285,6 +285,8 @@ export const inputs = Effect.map(
  * keeping the previous inputs after a failure, so `confect dev` sees the fix.
  * Returns the claimed file names, whether they differ from the section files
  * that existed before, and the modules each section key matched.
+ *
+ * @internal
  */
 export const sync = Effect.fnUntraced(function* (
   backend: Option.Option<Backend>,
@@ -346,6 +348,8 @@ export const sync = Effect.fnUntraced(function* (
  * after logging the rest. The files each loaded are recorded as section inputs,
  * keeping the previous ones after a failure, so `confect dev` checks again when
  * one changes.
+ *
+ * @internal
  */
 export const verify = Effect.fnUntraced(function* (
   backend: Option.Option<Backend>,
@@ -402,6 +406,8 @@ export const verify = Effect.fnUntraced(function* (
  * Remove each file a section wrote that is not in `files`. Codegen runs this
  * after it rewrites the registration files and the HTTP router, so a run that
  * fails earlier leaves no import of a removed file.
+ *
+ * @internal
  */
 export const removeUnclaimed = Effect.fnUntraced(function* (
   files: ReadonlyArray<string>,

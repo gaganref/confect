@@ -14,7 +14,7 @@ layer(Layer.merge(LocalBackend.consumerLayer, FetchHttpClient.layer), {
     Effect.gen(function* () {
       const { client } = yield* LocalBackend.LocalBackend;
       const response = yield* HttpClient.get(
-        "http://127.0.0.1:3221/counter/health",
+        LocalBackend.siteUrl("/counter/health", LocalBackend.ports.consumer),
       );
       expect(response.status).toBe(200);
       const text2 = yield* response.text;

@@ -16,6 +16,7 @@ import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Array from "effect/Array";
+import * as SignedEnvelope from "../signedEnvelope";
 
 const encodeJson = (value: unknown) =>
   Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(
@@ -38,7 +39,7 @@ layer(
   it.effect("streams a 100 MiB response through the Effect router", () =>
     Effect.gen(function* () {
       const response = yield* HttpClient.get(
-        "http://127.0.0.1:3211/large-stream",
+        LocalBackend.siteUrl("/large-stream"),
       );
 
       expect(response.status).toBe(200);
@@ -63,7 +64,7 @@ layer(
         const started = (yield* Clock.currentTimeMillis) / 1000;
         for (const requestPath of ["/users/42", "/first/members/42"]) {
           const response = yield* HttpClient.get(
-            `http://127.0.0.1:3211${requestPath}`,
+            LocalBackend.siteUrl(requestPath),
           );
           expect(response.status).toBe(200);
           const json2 = yield* response.json;
@@ -109,11 +110,59 @@ layer(
         });
       }),
   );
+  // The kernel lane's `signedIngress.test.ts` expects these same answers from
+  // the mock-backend fixture's copy of the route.
+  it.effect(
+    "answers a signed envelope's round trip, and refuses a tampered or non-UTF-8 one, as the test kernel does",
+    () =>
+      Effect.gen(function* () {
+        const send = (body: Uint8Array, signature: string) =>
+          HttpClient.execute(
+            HttpClientRequest.post(
+              LocalBackend.siteUrl(SignedEnvelope.path),
+            ).pipe(
+              HttpClientRequest.setHeader(
+                SignedEnvelope.signatureHeader,
+                signature,
+              ),
+              HttpClientRequest.bodyUint8Array(body, "application/json"),
+            ),
+          ).pipe(
+            Effect.flatMap((response) =>
+              Effect.map(response.text, (text) => ({
+                status: response.status,
+                body: text,
+              })),
+            ),
+          );
+        const sign = (body: Uint8Array) =>
+          Effect.promise(() => SignedEnvelope.sign(body));
+        const acceptedText = yield* encodeJson({ id: "evt_1", event: "paid" });
+        const accepted = new TextEncoder().encode(acceptedText);
+        const signResult = yield* sign(accepted);
+        const sendResult = yield* send(accepted, signResult);
+        expect(sendResult).toStrictEqual({
+          status: 200,
+          body: "accepted paid evt_1",
+        });
+        const tampered = Uint8Array.from(accepted);
+        tampered[tampered.length - 2] ^= 1;
+        const signResult2 = yield* sign(accepted);
+        const sendResult2 = yield* send(tampered, signResult2);
+        expect(sendResult2).toStrictEqual(SignedEnvelope.refusals.badSignature);
+        const notUtf8 = Uint8Array.of(0x7b, 0xff, 0x7d);
+        const signResult3 = yield* sign(notUtf8);
+        const sendResult3 = yield* send(notUtf8, signResult3);
+        expect(sendResult3).toStrictEqual(
+          SignedEnvelope.refusals.malformedJson,
+        );
+      }),
+  );
   it.effect("keeps unmatched app and component responses in Effect", () =>
     Effect.gen(function* () {
       for (const requestPath of ["/no-such-route", "/first/no-such-route"]) {
         const response = yield* HttpClient.get(
-          `http://127.0.0.1:3211${requestPath}`,
+          LocalBackend.siteUrl(requestPath),
         );
         expect(response.status).toBe(404);
         const text2 = yield* response.text;
@@ -126,7 +175,7 @@ layer(
       for (const requestPath of ["/users/42", "/first/members/42"]) {
         const response = yield* HttpClient.execute(
           HttpClientRequest.make("OPTIONS")(
-            `http://127.0.0.1:3211${requestPath}`,
+            LocalBackend.siteUrl(requestPath),
           ).pipe(
             HttpClientRequest.setHeader("Access-Control-Request-Method", "GET"),
           ),
@@ -142,7 +191,7 @@ layer(
         for (const requestPath of ["/prefix", "/first/prefix"]) {
           const response = yield* HttpClient.execute(
             HttpClientRequest.make("OPTIONS")(
-              `http://127.0.0.1:3211${requestPath}`,
+              LocalBackend.siteUrl(requestPath),
             ),
           );
           expect([response.status, yield* response.text]).toEqual([
@@ -239,7 +288,7 @@ layer(
       ] as const;
       for (const [label, token, expected] of cases) {
         const response = yield* HttpClient.get(
-          "http://127.0.0.1:3211/identity",
+          LocalBackend.siteUrl("/identity"),
           token === undefined
             ? {}
             : { headers: { authorization: `Bearer ${token}` } },

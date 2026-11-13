@@ -1,6 +1,7 @@
 /// <reference types="vite/client" />
 
 import * as componentTesting from "./fixtures/componentTesting";
+import { expectServerError } from "./serverError";
 import * as Layer from "effect/Layer";
 import * as mounts from "../../../../tools/local-backend/fixtures/confect/componentBindings";
 import counterConvexSchema from "../../../../tools/local-backend/fixtures/components/counter/convex/schema";
@@ -31,6 +32,7 @@ import { convexTest } from "convex-test";
 import {
   componentsGeneric,
   defineSchema,
+  httpActionGeneric,
   httpRouter,
   type FunctionReference,
 } from "convex/server";
@@ -779,6 +781,40 @@ it.effect("fetches an installation mounted at the root prefix", () =>
       });
     }).pipe(Effect.provideContext(services17));
   }),
+);
+
+const throwingRouter = httpRouter();
+throwingRouter.route({
+  path: "/ping",
+  method: "GET",
+  handler: httpActionGeneric(() =>
+    Promise.reject(new Error("The mounted route failed.")),
+  ),
+});
+
+it.effect(
+  "a mounted route that throws answers the binary's 500 JSON error body",
+  () =>
+    Effect.gen(function* () {
+      const services22 = yield* Layer.build(
+        TestConfect.layer(hostSchema, hostConvexSchema, hostModules, {
+          register: (registerComponent) =>
+            registerComponent("first", componentSchema, {
+              ...componentTesting.modules,
+              "http.ts": () => Promise.resolve({ default: throwingRouter }),
+            }),
+          httpMounts: [{ componentPath: "first", httpPrefix: "/email" }],
+        }),
+      );
+      return yield* Effect.gen(function* () {
+        const t = yield* TestConfect.TestConfect<typeof hostSchema>();
+        const fetch2 = yield* t.fetch("/email/ping");
+        yield* expectServerError(
+          fetch2,
+          "Uncaught Error: The mounted route failed.",
+        );
+      }).pipe(Effect.provideContext(services22));
+    }).pipe(Effect.scoped),
 );
 
 const localHostModules = import.meta.glob([

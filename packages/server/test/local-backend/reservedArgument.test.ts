@@ -50,7 +50,7 @@ layer(LocalBackend.layer, {
           expect(result.received).toEqual({
             value: context,
             requestId: expect.any(String),
-            deployment: "http://127.0.0.1:3210",
+            deployment: LocalBackend.cloudUrl(),
           });
         }
       }),
