@@ -11,6 +11,7 @@ import { actionGeneric } from "convex/server";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { HttpMount, RegisterComponent } from "../TestConfect.js";
+import * as Http from "./Http.js";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -101,6 +102,7 @@ export const make = (
   if (Result.isFailure(normalized)) throw normalized.failure;
   const registered = new Set<string>();
   let tail = Promise.resolve();
+  let nextErrorRequest = 1;
 
   const register: RegisterComponent = (
     componentPath,
@@ -173,13 +175,21 @@ export const make = (
               });
             }
             // Convex selects on the relative path and passes the full URL to the handler.
-            response = await action.invokeHttpAction(
-              new Request(args.url, {
-                method: args.method,
-                headers: args.headers,
-                ...(args.body === null ? {} : { body: args.body }),
-              }),
-            );
+            // A handler that throws gets the binary's 500, as on the root.
+            response = await action
+              .invokeHttpAction(
+                new Request(args.url, {
+                  method: args.method,
+                  headers: args.headers,
+                  ...(args.body === null ? {} : { body: args.body }),
+                }),
+              )
+              .catch((thrown: unknown) =>
+                Http.serverError(
+                  thrown,
+                  Http.errorRequestId(nextErrorRequest++),
+                ),
+              );
           }
           return {
             status: response.status,

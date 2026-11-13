@@ -475,6 +475,7 @@ export class World {
   private readonly legacyIds = new Map<string, DocumentId>();
   private nextFile = 1;
   private nextUploadToken = 1;
+  private nextErrorRequest = 1;
 
   constructor(
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
@@ -656,7 +657,7 @@ export class World {
    * Send `path` to the root component's HTTP router, as the binary routes a
    * request: the router's `lookup` picks the route by pathname and method, and
    * the route's handler runs as an action with the caller's identity. With no
-   * route, the binary's 404.
+   * route, the binary's 404, and for a handler that throws, its 500.
    */
   fetch(caller: Caller, path: unknown, init?: RequestInit): Promise<Response> {
     return this.open().then(() => {
@@ -690,8 +691,17 @@ export class World {
       ) as unknown as {
         invokeHttpAction: (request: globalThis.Request) => Promise<Response>;
       };
+      // A handler that throws gets the binary's 500, not a rejected fetch.
       return enter(execution, () => action.invokeHttpAction(request)).then(
         (response) => Http.forMethod(request.method, response),
+        (thrown: unknown) =>
+          Http.forMethod(
+            request.method,
+            Http.serverError(
+              thrown,
+              Http.errorRequestId(this.nextErrorRequest++),
+            ),
+          ),
       );
     });
   }
