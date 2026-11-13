@@ -6,6 +6,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 const encodeJson = Schema.encodeSync(
   Schema.fromJsonString(Schema.Unknown, { space: 2 }),
@@ -63,7 +65,7 @@ type ConsumerManifest = Result.Result.Success<
 
 export const installCommand = (manifest: ConsumerManifest) =>
   `pnpm add --strict-peer-dependencies ${Object.entries(manifest.dependencies)
-    .filter(([name]) => name.startsWith("@confect/"))
+    .filter(([name]) => pipe(name, String.startsWith("@confect/")))
     .map(([name, spec]) => `'${name}@${spec}'`)
     .join(" ")}`;
 
@@ -76,8 +78,11 @@ export const writeConsumer = Effect.fn("ConsumerFixture.write")(function* (
   yield* fs.makeDirectory(destination, { recursive: true });
   const template = path.join(import.meta.dir, "consumer");
   for (const file of yield* fs.readDirectory(template, { recursive: true })) {
-    if (!file.endsWith(".template")) continue;
-    const target = path.join(destination, file.replace(/\.template$/, ""));
+    if (!pipe(file, String.endsWith(".template"))) continue;
+    const target = path.join(
+      destination,
+      pipe(file, String.replace(/\.template$/, "")),
+    );
     yield* fs.makeDirectory(path.dirname(target), { recursive: true });
     yield* fs.writeFileString(
       target,
@@ -97,14 +102,15 @@ export const writeConsumer = Effect.fn("ConsumerFixture.write")(function* (
     [
       "minimumReleaseAgeExclude:",
       ...Object.values(manifest.dependencies)
-        .filter((spec) => spec.startsWith("npm:@gaganref/"))
-        .map((spec) => `  - "${spec.slice(4)}"`),
+        .filter((spec) => pipe(spec, String.startsWith("npm:@gaganref/")))
+        .map((spec) => `  - "${pipe(spec, String.slice(4))}"`),
       "",
       "overrides:",
       ...Object.entries(manifest.dependencies)
         .filter(
           ([name, spec]) =>
-            name.startsWith("@confect/") && spec.startsWith("file:"),
+            pipe(name, String.startsWith("@confect/")) &&
+            pipe(spec, String.startsWith("file:")),
         )
         .map(([name, spec]) => `  "${name}": "${spec}"`),
       `  effect: ${manifest.dependencies.effect}`,

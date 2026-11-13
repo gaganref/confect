@@ -477,14 +477,15 @@ const nameUnwrittenSectionFiles = Effect.fnUntraced(function* (
           specifier,
         ),
       );
-      if (file.startsWith("..") || path.isAbsolute(file)) return message;
+      if (pipe(file, String.startsWith("..")) || path.isAbsolute(file))
+        return message;
       const extension = path.extname(file);
       const name = toPosixPath(
         path,
         extension === ""
           ? `${file}.ts`
           : extension === ".js"
-            ? `${file.slice(0, -extension.length)}.ts`
+            ? `${pipe(file, String.slice(0, -extension.length))}.ts`
             : file,
       );
       return Object.assign({}, message, {
@@ -676,7 +677,9 @@ export const validateAllImpls = Effect.fnUntraced(function* (
     }),
   ))
     .flat()
-    .sort((left, right) => left.functionName.localeCompare(right.functionName));
+    .sort((left, right) =>
+      pipe(left.functionName, String.localeCompare(right.functionName)),
+    );
   if (missing.length > 0) {
     return yield* new RequiredMiddlewareError({ missing });
   }

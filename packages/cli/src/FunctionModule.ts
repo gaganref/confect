@@ -24,6 +24,7 @@ import {
   toPosixPath,
 } from "./utils.js";
 import { ProjectRoot } from "./ProjectRoot.js";
+import * as Option from "effect/Option";
 
 const RESERVED_CONVEX_TS_FILE_NAMES = new Set([
   "schema.ts",
@@ -52,15 +53,21 @@ const getEntrypoints = Effect.gen(function* () {
   return files.filter((file) => {
     const base = path.basename(file);
     return (
-      !file.startsWith("_generated" + path.sep) &&
-      !components.some((component) => file.startsWith(component)) &&
+      !pipe(file, String.startsWith("_generated" + path.sep)) &&
+      !components.some((component) =>
+        pipe(file, String.startsWith(component)),
+      ) &&
       /\.(?:js|mjs|cjs|ts|tsx|mts|cts|jsx)$/.test(base) &&
-      !base.startsWith(".") &&
-      !base.startsWith("#") &&
-      (base.match(/\./g)?.length ?? 0) === 1 &&
+      !pipe(base, String.startsWith(".")) &&
+      !pipe(base, String.startsWith("#")) &&
+      pipe(
+        base,
+        String.match(/\./g),
+        Option.match({ onNone: () => 0, onSome: (dots) => dots.length }),
+      ) === 1 &&
       base !== "schema.ts" &&
       base !== "schema.js" &&
-      !file.includes(" ")
+      !pipe(file, String.includes(" "))
     );
   });
 });
@@ -78,14 +85,17 @@ const tokenize = (
     if (match === null) return undefined;
     const value = match[0];
     if (/^\s|^\//.test(value)) continue;
-    if (value.startsWith('"') || value.startsWith("'")) {
-      const literal = value.slice(1, -1);
+    if (
+      pipe(value, String.startsWith('"')) ||
+      pipe(value, String.startsWith("'"))
+    ) {
+      const literal = pipe(value, String.slice(1, -1));
       tokens.push(
         JSON.stringify(
-          literal.startsWith(".")
+          pipe(literal, String.startsWith("."))
             ? path.resolve(
                 path.dirname(modulePath),
-                literal.replace(/\.js$/, ""),
+                pipe(literal, String.replace(/\.js$/, "")),
               )
             : literal,
         ),

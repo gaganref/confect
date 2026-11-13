@@ -6,6 +6,8 @@ import * as Result from "effect/Result";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as RealBackend from "./RealBackend";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 // Runs the real pinned backend: it downloads the release once into a cache
 // under the OS temp directory, binds ports 3300-3399, and is skipped on
@@ -76,9 +78,11 @@ describe.skipIf(process.platform === "win32")("real local backend", () => {
             return outputs;
           }),
         );
-        const held = events.filter((event) => !event.endsWith("attempt"));
-        const [earlier, later] = [held[0], held.at(-1)].map(
-          (event) => event?.split(" ")[0],
+        const held = events.filter(
+          (event) => !pipe(event, String.endsWith("attempt")),
+        );
+        const [earlier, later] = [held[0], held.at(-1)].map((event) =>
+          event === undefined ? undefined : pipe(event, String.split(" "))[0],
         );
         expect(earlier).not.toBe(later);
         expect(held).toEqual(

@@ -16,6 +16,9 @@ import { DatabaseSchema, MutationAuth } from "@confect/server";
 import { TestConfect } from "../../../test/src";
 import { defineSchema } from "convex/server";
 import { vi } from "vitest";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -50,9 +53,12 @@ check: (next, previous) => ({ errors: Object.values(next.functions).includes("ba
 export const other = { ...tags, check: (next) => ({ errors: Object.values(next.functions).includes("bad") ? ["other failed"] : [], notes: [] }) };`,
         );
         const spec = (label: string) =>
-          Project.spec.replace(
-            'name: "list"',
-            `name: "list", description: "${label}"`,
+          pipe(
+            Project.spec,
+            Str.replace(
+              'name: "list"',
+              `name: "list", description: "${label}"`,
+            ),
           );
         const run = Effect.gen(function* () {
           const process = yield* project.start("codegen");
@@ -74,7 +80,7 @@ export const other = { ...tags, check: (next) => ({ errors: Object.values(next.f
         const recovered = yield* run;
         expect(recovered.exit, recovered.output).toBe(0);
         expect(recovered.output).toContain("1 previous entries");
-        expect(recovered.output.split(manifest)).toHaveLength(2);
+        expect(pipe(recovered.output, Str.split(manifest))).toHaveLength(2);
         const unchanged = yield* run;
         expect(unchanged.exit, unchanged.output).toBe(0);
         expect(unchanged.output).not.toContain(manifest);
@@ -88,7 +94,7 @@ export const other = { ...tags, check: (next) => ({ errors: Object.values(next.f
           "1 previous entries",
           "tags checked",
         ])
-          expect(failed.output.split(message)).toHaveLength(2);
+          expect(pipe(failed.output, Str.split(message))).toHaveLength(2);
         expect(failed.output).toContain('Manifest section "tags" is invalid:');
         expect(failed.output).toContain('Manifest section "other" is invalid:');
         expect(
@@ -232,7 +238,12 @@ export default Auth.make(app, { providers: [
             Schema.fromJsonString(
               Schema.Struct({ iss: Schema.String, aud: Schema.String }),
             ),
-          )(Buffer.from(token.split(".")[1]!, "base64url").toString());
+          )(
+            Buffer.from(
+              pipe(token, Str.split("."))[1]!,
+              "base64url",
+            ).toString(),
+          );
           expect(claims).toEqual({
             iss: provider.issuer,
             aud: provider.audience,
@@ -289,9 +300,12 @@ export default Auth.make(app, { providers: [
         yield* project.write(
           "confect/notes.impl.ts",
           'import { providers } from "./_generated/auth.providers";\n' +
-            Project.impl.replace(
-              "const reader =",
-              'if (providers[0].family !== "person") throw new Error("missing family"); const reader =',
+            pipe(
+              Project.impl,
+              Str.replace(
+                "const reader =",
+                'if (providers[0].family !== "person") throw new Error("missing family"); const reader =',
+              ),
             ),
         );
         const generated = yield* project.start("codegen");
@@ -353,7 +367,7 @@ export default Auth.make(app, { providers: [
         for (const file of definitions)
           expect(
             Object.keys(registered.metafile.inputs).some((input) =>
-              input.endsWith(file),
+              pipe(input, Str.endsWith(file)),
             ),
           ).toBe(false);
         yield* project.write("confect/app.ts", app);
@@ -544,17 +558,23 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
           yield* project.write(
             "confect/notes.spec.ts",
             'import { Policy } from "./policy";\n' +
-              Project.spec.replace(
-                "GroupSpec.make()",
-                "GroupSpec.make().middleware(Policy)",
+              pipe(
+                Project.spec,
+                Str.replace(
+                  "GroupSpec.make()",
+                  "GroupSpec.make().middleware(Policy)",
+                ),
               ),
           );
           yield* project.write(
             "confect/notes.impl.ts",
             'import { MiddlewareImpl } from "@confect/server";\nimport { Policy } from "./policy";\n' +
-              Project.impl.replace(
-                "GroupImpl.finalize);",
-                "Layer.provide(MiddlewareImpl.make(databaseSchema, Policy, effect => effect)), GroupImpl.finalize);",
+              pipe(
+                Project.impl,
+                Str.replace(
+                  "GroupImpl.finalize);",
+                  "Layer.provide(MiddlewareImpl.make(databaseSchema, Policy, effect => effect)), GroupImpl.finalize);",
+                ),
               ),
           );
         }
@@ -562,19 +582,23 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
         yield* fs.makeDirectory(`${project.root}/confect/admin`);
         yield* project.write(
           "confect/admin/tasks.spec.ts",
-          (yield* fs.readFileString(`${project.root}/confect/notes.spec.ts`))
-            .replace('"./policy"', '"../policy"')
-            .replace(
+          pipe(
+            yield* fs.readFileString(`${project.root}/confect/notes.spec.ts`),
+            Str.replace('"./policy"', '"../policy"'),
+            Str.replace(
               '"./_generated/tables/notes"',
               '"../_generated/tables/notes"',
             ),
+          ),
         );
         yield* project.write(
           "confect/admin/tasks.impl.ts",
-          (yield* fs.readFileString(`${project.root}/confect/notes.impl.ts`))
-            .replace('"./policy"', '"../policy"')
-            .replaceAll('"./_generated/', '"../_generated/')
-            .replace('"./notes.spec"', '"./tasks.spec"'),
+          pipe(
+            yield* fs.readFileString(`${project.root}/confect/notes.impl.ts`),
+            Str.replace('"./policy"', '"../policy"'),
+            Str.replaceAll('"./_generated/', '"../_generated/'),
+            Str.replace('"./notes.spec"', '"./tasks.spec"'),
+          ),
         );
         const generated = yield* project.start("codegen");
         const exitCode = yield* generated.handle.exitCode;
@@ -590,9 +614,12 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
           ).toBe(true);
           yield* project.write(
             "confect/admin/tasks.spec.ts",
-            Project.spec.replace(
-              '"./_generated/tables/notes"',
-              '"../_generated/tables/notes"',
+            pipe(
+              Project.spec,
+              Str.replace(
+                '"./_generated/tables/notes"',
+                '"../_generated/tables/notes"',
+              ),
             ),
           );
           expect(
@@ -605,9 +632,13 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
           expect(output).toContain(
             'Required middleware is missing:\nadmin.tasks.list requires middleware "Policy"\nnotes.list requires middleware "Policy"',
           );
-          expect(output.match(/Required middleware is missing:/g)).toHaveLength(
-            1,
-          );
+          expect(
+            pipe(
+              output,
+              Str.match(/Required middleware is missing:/g),
+              Option.getOrNull,
+            ),
+          ).toHaveLength(1);
         }
       }),
     { timeout: 30000 },
@@ -716,7 +747,7 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
         yield* project.write("confect/removed.spec.ts", Project.spec);
         yield* project.write(
           "confect/removed.impl.ts",
-          Project.impl.replace('"./notes.spec"', '"./removed.spec"'),
+          pipe(Project.impl, Str.replace('"./notes.spec"', '"./removed.spec"')),
         );
         const added = yield* project.start("codegen");
         yield* added.waitFor("Generated files are up-to-date");
@@ -757,7 +788,13 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
             yield* fs.readFileString(path.join(project.root, "convex", file)),
           ).toBe(source);
         }
-        expect(output.match(/not written by confect codegen/g)).toHaveLength(1);
+        expect(
+          pipe(
+            output,
+            Str.match(/not written by confect codegen/g),
+            Option.getOrNull,
+          ),
+        ).toHaveLength(1);
       }).pipe(Effect.scoped),
     { timeout: 30000 },
   );
@@ -770,11 +807,11 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
         const project = yield* Project.make;
         yield* project.write(
           "confect/notes.spec.ts",
-          Project.spec.replace('name: "list"', 'name: "$list"'),
+          pipe(Project.spec, Str.replace('name: "list"', 'name: "$list"')),
         );
         yield* project.write(
           "confect/notes.impl.ts",
-          Project.impl.replace('"list"', '"$list"'),
+          pipe(Project.impl, Str.replace('"list"', '"$list"')),
         );
         const initial = yield* project.start("codegen");
         yield* initial.waitFor("Generated files are up-to-date");
@@ -855,7 +892,7 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
             );
           }
           for (let index = 1; index <= 47; index++) {
-            const name = `g${String(index).padStart(2, "0")}`;
+            const name = `g${pipe(String(index), Str.padStart(2, "0"))}`;
             yield* project.write(
               `confect/${name}.spec.ts`,
               `import { FunctionSpec, GroupSpec } from "@confect/core";

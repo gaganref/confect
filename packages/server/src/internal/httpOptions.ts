@@ -5,6 +5,8 @@ import * as Layer from "effect/Layer";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServerError from "effect/http/HttpServerError";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 /* oxlint-disable effecttsgo/any-unknown-in-error-context -- Preserve the router's erased request errors at the routing boundary. */
 
@@ -25,7 +27,10 @@ const notFound = Effect.flatMap(
 const optional = /(\/:[^/()]*?)\?(\/?)/;
 const forms = (path: Route["path"]) =>
   (optional.test(path)
-    ? [path.replace(optional, "$1$2"), path.replace(optional, "$2") || "/"]
+    ? [
+        pipe(path, String.replace(optional, "$1$2")),
+        pipe(path, String.replace(optional, "$2")) || "/",
+      ]
     : [path]) as ReadonlyArray<Route["path"]>;
 
 const missingRouteContext = `Service not found: ${HttpRouter.RouteContext.key}`;
@@ -73,7 +78,10 @@ export const withOptions = <A, E, R>(
           add: (method, path, handler, options) =>
             addAll([HttpRouter.route(method, path, handler, options)]),
           prefixed: (next) =>
-            wrap(target.prefixed(next), `${prefix}${next.replace(/\/$/, "")}`),
+            wrap(
+              target.prefixed(next),
+              `${prefix}${pipe(next, String.replace(/\/$/, ""))}`,
+            ),
         });
       };
       const register = Effect.gen(function* () {

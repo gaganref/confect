@@ -5,6 +5,8 @@ import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- a synchronous hash of in-memory strings in a pure function; Effect's Crypto is a service.
 import { createHash } from "node:crypto";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 /**
  * A backend's declaration (`confect/env.ts`, `app.ts`, `auth.ts`) reduced to
@@ -393,7 +395,8 @@ export const isGenerated = (
   contents: string,
   legacy: ReadonlyArray<string>,
 ): boolean =>
-  contents.startsWith(GENERATED_PREFIX) || legacy.includes(contents);
+  pipe(contents, String.startsWith(GENERATED_PREFIX)) ||
+  legacy.includes(contents);
 
 const validator = (descriptor: Env.Descriptor): string => {
   const base =
@@ -406,8 +409,9 @@ const validator = (descriptor: Env.Descriptor): string => {
 };
 
 const RESERVED = new Set(
-  "await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield".split(
-    " ",
+  pipe(
+    "await break case catch class const continue debugger default delete do else enum export extends false finally for function if implements import in instanceof interface let new null package private protected public return static super switch this throw true try typeof var void while with yield",
+    String.split(" "),
   ),
 );
 
@@ -415,7 +419,7 @@ const RESERVED = new Set(
  * A safe import name for a component, from its Convex name.
  */
 const identifier = (name: string): string => {
-  const cleaned = name.replaceAll(/[^A-Za-z0-9_$]/g, "_");
+  const cleaned = pipe(name, String.replaceAll(/[^A-Za-z0-9_$]/g, "_"));
   const valid = /^[A-Za-z_$]/.test(cleaned) ? cleaned : `_${cleaned}`;
   return RESERVED.has(valid) ? `${valid}Component` : valid;
 };
@@ -507,7 +511,7 @@ const providerValue = (value: ProviderValue): string => {
     case "env":
       return `process.env[${quote(value.key)}]!`;
     default:
-      return `\`\${process.env.${value.kind === "siteUrl" ? "CONVEX_SITE_URL" : "CONVEX_CLOUD_URL"}}${value.path.replaceAll(/[`$\\]/g, "\\$&")}\``;
+      return `\`\${process.env.${value.kind === "siteUrl" ? "CONVEX_SITE_URL" : "CONVEX_CLOUD_URL"}}${pipe(value.path, String.replaceAll(/[`$\\]/g, "\\$&"))}\``;
   }
 };
 

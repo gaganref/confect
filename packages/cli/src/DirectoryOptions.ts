@@ -9,6 +9,8 @@ import * as Flag from "effect/cli/Flag";
 import * as ConfectDirectory from "./ConfectDirectory.js";
 import * as ConvexDirectory from "./ConvexDirectory.js";
 import * as ProjectRoot from "./ProjectRoot.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 export const flags = {
   componentDir: Flag.String("component-dir").pipe(
@@ -69,7 +71,7 @@ export const layer = ({
                 ),
               ),
             );
-          const definition = `${pkg.name}:${path.relative(projectRoot, absolute).split(path.sep).join("/")}`;
+          const definition = `${pkg.name}:${pipe(path.relative(projectRoot, absolute), String.split(path.sep)).join("/")}`;
           return ConvexDirectory.ConvexDirectory.of({
             get: Effect.succeed(absolute),
             target: {

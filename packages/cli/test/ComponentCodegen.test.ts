@@ -23,6 +23,8 @@ import * as Stream from "effect/Stream";
 import * as Config from "effect/Config";
 import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 const fixture = `${import.meta.dirname}/fixtures/authored-component`;
 const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
@@ -171,13 +173,21 @@ export const serverTags = [MutationCtx.MutationCtx(), QueryCtx.QueryCtx(), Actio
         Stream.mkString,
       );
       expect((yield* compiler.exitCode) === 0, output).toBe(!component);
-      expect(output.match(/error TS/g) ?? [], output).toHaveLength(
-        component ? 3 : 0,
-      );
+      expect(
+        pipe(
+          output,
+          String.match(/error TS/g),
+          Option.getOrElse((): ReadonlyArray<string> => []),
+        ),
+        output,
+      ).toHaveLength(component ? 3 : 0);
       expect(
         [
-          ...output.matchAll(
-            /rawCtx\.ts\((\d+),\d+\): error TS(\d+): Property '(\w+)'/g,
+          ...pipe(
+            output,
+            String.matchAll(
+              /rawCtx\.ts\((\d+),\d+\): error TS(\d+): Property '(\w+)'/g,
+            ),
           ),
         ].map((match) => match.slice(1)),
       ).toEqual(
@@ -563,9 +573,11 @@ it.effect.each(["configured", "declared"] as const)(
       }
       yield* project.write(
         "confect/tasks.spec.ts",
-        nodeSpec
-          .replace("makeNode()", "make()")
-          .replace("publicNodeAction", "publicAction"),
+        pipe(
+          nodeSpec,
+          String.replace("makeNode()", "make()"),
+          String.replace("publicNodeAction", "publicAction"),
+        ),
       );
       const run = codegenHandler.pipe(
         Effect.provide(
@@ -583,7 +595,7 @@ it.effect.each(["configured", "declared"] as const)(
         const files = (yield* fs.readDirectory(generatedDirectory, {
           recursive: true,
         }))
-          .filter((file) => file.endsWith(".ts"))
+          .filter((file) => pipe(file, String.endsWith(".ts")))
           .sort();
         return yield* Effect.forEach(files, (file) =>
           fs
@@ -791,7 +803,9 @@ export default App.make({ kind: "component", env: Env.make("ledger", {}), manife
       const registration = yield* fs.readFileString(
         `${project.root}/confect/_generated/registeredFunctions/notes.ts`,
       );
-      expect(registration.split("\n")[0]).toBe('import "../observe.js";');
+      expect(pipe(registration, String.split("\n"))[0]).toBe(
+        'import "../observe.js";',
+      );
       expect(yield* Project.writtenFiles(run)).toEqual([]);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   { timeout: 30000 },

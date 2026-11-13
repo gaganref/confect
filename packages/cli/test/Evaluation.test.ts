@@ -261,11 +261,11 @@ layer(NodeServices.layer, { excludeTestServices: true })("Evaluation", (it) => {
           });
           yield* project.write(
             "confect/notes.spec.ts",
-            Project.spec.replace('name: "list"', 'name: "latest"'),
+            pipe(Project.spec, Str.replace('name: "list"', 'name: "latest"')),
           );
           yield* project.write(
             "confect/notes.impl.ts",
-            Project.impl.replace('"list"', '"latest"'),
+            pipe(Project.impl, Str.replace('"list"', '"latest"')),
           );
           const recovered = yield* project.provide(Evaluation.generate);
           expect([...recovered].map((fn) => fn.name)).toEqual(["latest"]);

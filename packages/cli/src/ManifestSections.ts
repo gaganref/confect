@@ -8,9 +8,11 @@ import {
   InvalidDeclarationError,
   InvalidManifestSectionError,
 } from "./CodegenError.js";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 const reserved = new Set(
-  "name env http digest __proto__ constructor prototype".split(" "),
+  pipe("name env http digest __proto__ constructor prototype", Str.split(" ")),
 );
 export const sections = (manifest: Readonly<Record<string, unknown>>) =>
   Object.fromEntries(

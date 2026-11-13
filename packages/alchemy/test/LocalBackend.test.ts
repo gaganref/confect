@@ -19,6 +19,8 @@ import {
   LocalBackendError,
 } from "../src/internal/LocalBackend";
 import { fakeBackend } from "./fixtures/LocalBackend";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 const serialize = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const name = "confect-deployment-0123456789abcdef01234567";
@@ -179,9 +181,9 @@ describe("LocalBackend", () => {
       const identity = path.join(directory, "identity.json");
       yield* fs.writeFileString(
         identity,
-        (yield* fs.readFileString(identity)).replace(
-          backendVersion,
-          "precompiled-2020-01-01-0000000",
+        pipe(
+          yield* fs.readFileString(identity),
+          Str.replace(backendVersion, "precompiled-2020-01-01-0000000"),
         ),
       );
       const restarted = yield* run(boot(name, directory));

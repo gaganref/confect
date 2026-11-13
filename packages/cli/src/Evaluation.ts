@@ -27,6 +27,8 @@ import { ConvexDirectory } from "./ConvexDirectory.js";
 import { FunctionPaths } from "./FunctionPaths.js";
 import { ImplModulePath } from "./ImplModulePath.js";
 import { ProjectRoot } from "./ProjectRoot.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 export const RequestContext = Schema.Struct({
   projectRoot: Schema.String,
@@ -151,7 +153,7 @@ const withWorker = Effect.fn("Evaluation.withWorker")(function* <A>(
       Match.when({ kind: "app" }, () => ({ kind: "app" as const })),
       Match.when({ kind: "component" }, ({ scope }) => ({
         kind: "component" as const,
-        definition: scope.slice("component:".length),
+        definition: pipe(scope, String.slice("component:".length)),
       })),
       Match.exhaustive,
     ),

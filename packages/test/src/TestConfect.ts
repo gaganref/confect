@@ -20,6 +20,8 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as MountedHttp from "./internal/MountedHttp.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -424,7 +426,8 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
             if (
               mounts.some(
                 (mount) =>
-                  name === mount.name || name.startsWith(`${mount.name}/`),
+                  name === mount.name ||
+                  pipe(name, String.startsWith(`${mount.name}/`)),
               )
             ) {
               registerKit(registerComponent, name, component);

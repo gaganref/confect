@@ -9,6 +9,8 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import type * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import { scalarDocs } from "./internal/scalarDocs.js";
 import * as App from "./App.js";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 const TypeId = "~@confect/core/Http";
 
@@ -119,13 +121,15 @@ export type RouteError =
   | OverlappingMountPrefixes;
 
 const trimSlash = (prefix: string): string =>
-  prefix.length > 1 && prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
+  prefix.length > 1 && pipe(prefix, Str.endsWith("/"))
+    ? pipe(prefix, Str.slice(0, -1))
+    : prefix;
 
 const isUnder = (path: string, prefix: string): boolean =>
   prefix === "/" ||
   path === prefix ||
   path === `${prefix}/` ||
-  path.startsWith(`${prefix}/`);
+  pipe(path, Str.startsWith(`${prefix}/`));
 
 /**
  * The parameter names an endpoint declares. As in Effect's router, a colon

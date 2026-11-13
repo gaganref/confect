@@ -12,6 +12,9 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as LocalBackend from "confect-local-backend/LocalBackend";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -80,7 +83,7 @@ layer(
         const completions = yield* logs.stdout.pipe(
           Stream.decodeText(),
           Stream.splitLines,
-          Stream.filter((line) => line.startsWith("{")),
+          Stream.filter((line) => pipe(line, String.startsWith("{"))),
           Stream.mapEffect((line) => Schema.decodeEffect(LogEntry)(line)),
           Stream.filter(
             (entry) =>
@@ -186,11 +189,16 @@ layer(
         return `${unsigned}.${Buffer.from(signature).toString("base64url")}`;
       });
       const valid = yield* sign(issuer);
-      const signatureStart = valid.lastIndexOf(".") + 1;
+      const signatureStart =
+        pipe(
+          valid,
+          String.lastIndexOf("."),
+          Option.getOrElse(() => -1),
+        ) + 1;
       const badSignature =
-        valid.slice(0, signatureStart) +
+        pipe(valid, String.slice(0, signatureStart)) +
         (valid[signatureStart] === "A" ? "B" : "A") +
-        valid.slice(signatureStart + 1);
+        pipe(valid, String.slice(signatureStart + 1));
       const foreign = yield* sign("https://foreign.invalid");
       const cases = [
         ["absent", undefined, { _tag: "Absent" }],

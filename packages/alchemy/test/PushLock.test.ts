@@ -19,6 +19,8 @@ import {
   layer as lockLayer,
 } from "../src/internal/PushLock";
 import { deadPid } from "./fixtures/Processes";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 const serialize = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -133,12 +135,9 @@ setTimeout(() => process.exit(0), 600);`,
         yield* Effect.all([push("a"), push("b")], {
           concurrency: "unbounded",
         });
-        expect(events.map((event) => event.split(" ")[0])).toEqual([
-          "start",
-          "end",
-          "start",
-          "end",
-        ]);
+        expect(
+          events.map((event) => pipe(event, String.split(" "))[0]),
+        ).toEqual(["start", "end", "start", "end"]);
       }),
     ).pipe(provide),
   );

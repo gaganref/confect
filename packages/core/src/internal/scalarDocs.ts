@@ -4,21 +4,31 @@ import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import type * as HttpApi from "effect/http-api/HttpApi";
 import type * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as OpenApi from "effect/http-api/OpenApi";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 const escape = (value: string) =>
-  value
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;");
+  pipe(
+    value,
+    String.replaceAll("&", "&amp;"),
+    String.replaceAll("<", "&lt;"),
+    String.replaceAll(">", "&gt;"),
+  );
 
 const escapeAttribute = (value: string) =>
-  escape(value).replaceAll('"', "&quot;").replaceAll("'", "&#39;");
+  pipe(
+    escape(value),
+    String.replaceAll('"', "&quot;"),
+    String.replaceAll("'", "&#39;"),
+  );
 
 const escapeJson = (value: unknown) =>
-  JSON.stringify(value)
-    .replaceAll("<", "\\u003c")
-    .replaceAll("\u2028", "\\u2028")
-    .replaceAll("\u2029", "\\u2029");
+  pipe(
+    JSON.stringify(value),
+    String.replaceAll("<", "\\u003c"),
+    String.replaceAll("\u2028", "\\u2028"),
+    String.replaceAll("\u2029", "\\u2029"),
+  );
 
 // WORKAROUND: Effect 4.0.6's HttpApiScalar module imports its inline Scalar
 // script dynamically, and Convex's bundler then splits a schema that reaches it

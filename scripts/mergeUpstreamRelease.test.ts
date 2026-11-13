@@ -9,6 +9,8 @@ import {
   planMerge,
   selectReleaseTag,
 } from "./mergeUpstreamRelease";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 test("selects the newest stable core release numerically", () => {
   expect(
@@ -77,7 +79,7 @@ const makeHistory = (conflict = false) =>
         stderr: "pipe",
       });
       expect(result.exitCode, result.stderr.toString()).toBe(0);
-      return result.stdout.toString().trim();
+      return pipe(result.stdout.toString(), String.trim);
     };
     git(["init", "--initial-branch=upstream"]);
     git(["config", "user.name", "Confect test"]);
@@ -106,9 +108,9 @@ const makeHistory = (conflict = false) =>
   });
 
 const worktrees = (git: (args: Array<string>) => string) =>
-  git(["worktree", "list", "--porcelain"])
-    .split("\n")
-    .filter((line) => line.startsWith("worktree "));
+  pipe(git(["worktree", "list", "--porcelain"]), String.split("\n")).filter(
+    (line) => pipe(line, String.startsWith("worktree ")),
+  );
 
 test("computes the merge base with the release from git history", () =>
   Effect.runPromise(
@@ -155,9 +157,9 @@ test.each([false, true])(
           "M shared.txt\n?? untracked.txt",
         );
         expect(
-          git(["branch", "--list"])
-            .split("\n")
-            .map((b) => b.trim()),
+          pipe(git(["branch", "--list"]), String.split("\n")).map((b) =>
+            pipe(b, String.trim),
+          ),
         ).toEqual(["fork", "* upstream"]);
         expect(worktrees(git)).toEqual([`worktree ${root}`]);
       }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),

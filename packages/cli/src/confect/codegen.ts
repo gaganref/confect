@@ -69,6 +69,7 @@ import {
   syncDeployModule,
   syncDeclaredHttp,
 } from "./declaration.js";
+import * as String from "effect/String";
 
 const GENERATED_DIRNAME = "_generated";
 
@@ -411,7 +412,10 @@ const validateCallbackPrefixes = Effect.fnUntraced(function* (
     Effect.mapError((error) => fromBundlerError("confect/callbacks.ts", error)),
   );
   for (const contract of Object.values(module)) {
-    if (Callback.isContract(contract) && !contract.id.startsWith(`${name}/`)) {
+    if (
+      Callback.isContract(contract) &&
+      !pipe(contract.id, String.startsWith(`${name}/`))
+    ) {
       return yield* new CodegenError.CallbackPrefixError({
         declarationPath: "confect/callbacks.ts",
         contractId: contract.id,
@@ -1147,7 +1151,7 @@ const checkTestKit = Effect.fnUntraced(function* (
       declarationPath: "confect/app.ts",
       reason: `the mount ${quote(mount)} names the test kit ${quote(specifier)} in its component descriptor${problem}`,
     });
-  if (specifier.startsWith(".") || path.isAbsolute(specifier)) {
+  if (pipe(specifier, String.startsWith(".")) || path.isAbsolute(specifier)) {
     return yield* invalid(
       '; name it by a package specifier, such as "<package>/testing".',
     );
@@ -1170,16 +1174,19 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
   const confectDirectory = yield* ConfectDirectory.get;
   const convexDirectory = yield* ConvexDirectory.get;
   const generated = path.join(confectDirectory, "_generated");
-  const configDisplay = path
-    .relative(
+  const configDisplay = pipe(
+    path.relative(
       yield* ProjectRoot.get,
       path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
-    )
-    .split(path.sep)
-    .join("/");
+    ),
+    String.split(path.sep),
+  ).join("/");
   const relative = (file: string) => {
-    const value = path.relative(generated, file).split(path.sep).join("/");
-    return value.startsWith(".") ? value : `./${value}`;
+    const value = pipe(
+      path.relative(generated, file),
+      String.split(path.sep),
+    ).join("/");
+    return pipe(value, String.startsWith(".")) ? value : `./${value}`;
   };
   const imports = [
     'import schema from "./schema.js";',
@@ -1190,15 +1197,15 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
       .filter(
         (file) =>
           /\.[cm]?[jt]s$/.test(file) &&
-          !file.endsWith(".d.ts") &&
-          !file.split(path.sep).includes("_generated") &&
-          !file.includes(".config."),
+          !pipe(file, String.endsWith(".d.ts")) &&
+          !pipe(file, String.split(path.sep)).includes("_generated") &&
+          !pipe(file, String.includes(".config.")),
       )
       .sort();
     return `{ "_generated/testing.ts": () => Promise.resolve({}),\n${files
       .map((file) => {
         const specifier = relative(path.join(directory, file));
-        return `${quote(file.split(path.sep).join("/"))}: () => import(${quote(specifier.replace(/\.([cm]?)[jt]s$/, ".$1js"))}),`;
+        return `${quote(pipe(file, String.split(path.sep)).join("/"))}: () => import(${quote(pipe(specifier, String.replace(/\.([cm]?)[jt]s$/, ".$1js")))}),`;
       })
       .join("\n")}\n}`;
   });
@@ -1276,9 +1283,9 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
       const httpPrefix =
         parentHttpPrefix === undefined || localPrefix === undefined
           ? undefined
-          : `${parentHttpPrefix.replace(/\/+$/, "")}${localPrefix}`.replace(
-              /\/+$/,
-              "",
+          : pipe(
+              `${pipe(parentHttpPrefix, String.replace(/\/+$/, ""))}${localPrefix}`,
+              String.replace(/\/+$/, ""),
             ) || "/";
       if (
         httpPrefix !== undefined &&
@@ -1292,7 +1299,7 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
       const kitKey = kitEntry ?? resolved;
       let identifier = kits.get(kitKey);
       if (identifier === undefined) {
-        const cleaned = name.replaceAll(/[^A-Za-z0-9_$]/g, "_");
+        const cleaned = pipe(name, String.replaceAll(/[^A-Za-z0-9_$]/g, "_"));
         const base = /^[A-Za-z_$]/.test(cleaned) ? cleaned : `_${cleaned}`;
         identifier = `${base}Kit`;
         let schemaIdentifier = `${base}Schema`;

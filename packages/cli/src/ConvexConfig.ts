@@ -88,7 +88,9 @@ export const resolveDefinition = (
   const extension = path.extname(specifier);
   const candidates = [
     specifier,
-    ...(extension === ".js" ? [specifier.slice(0, -3) + ".ts"] : []),
+    ...(extension === ".js"
+      ? [pipe(specifier, String.slice(0, -3)) + ".ts"]
+      : []),
     ...(extension !== ".js" && extension !== ".ts"
       ? [specifier + ".js", specifier + ".ts"]
       : []),
@@ -305,7 +307,7 @@ export const discoverInstalledComponents = Effect.fn(
         componentDefinitionPath,
         ...(httpPrefix === undefined
           ? {}
-          : { httpPrefix: httpPrefix.replace(/\/$/, "") }),
+          : { httpPrefix: pipe(httpPrefix, String.replace(/\/$/, "")) }),
       };
     }),
     Array.sort(byName),

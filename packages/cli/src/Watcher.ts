@@ -878,7 +878,7 @@ const handleConfectChange = ({
   // Sections read the files they match and those files' imports, entry points
   // included. An entry point's own watcher only validates or updates that
   // entry, so an edit to a recorded section input reruns codegen in full.
-  const source = relativePath.split(/[/\\]/).join("/");
+  const source = pipe(relativePath, String.split(/[/\\]/)).join("/");
   const regenerateIfInput = SectionFiles.inputs.pipe(
     Effect.map((inputs) => inputs.includes(source)),
     Effect.orElseSucceed(() => false),

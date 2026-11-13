@@ -17,6 +17,8 @@ import * as Fiber from "effect/Fiber";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 const table = Table.make(() => Schema.Struct({ group: Schema.String }))(
   "documents",
@@ -947,8 +949,8 @@ it.effect.each(["SplitRequired", "SplitRecommended"] as const)(
         seal: (cursor) => Effect.succeed(`sealed:${cursor}`),
         open: (cursor) =>
           Effect.succeed(
-            cursor.startsWith("sealed:")
-              ? Option.some(cursor.slice(7))
+            pipe(cursor, String.startsWith("sealed:"))
+              ? Option.some(pipe(cursor, String.slice(7)))
               : Option.none(),
           ),
       };
@@ -962,8 +964,10 @@ it.effect.each(["SplitRequired", "SplitRecommended"] as const)(
       });
       expect(page.pageStatus).toBe(status);
       const split = Option.getOrThrow(Option.fromNullishOr(page.splitCursor));
-      expect(page.continueCursor.startsWith("sealed:")).toBe(true);
-      expect(split.startsWith("sealed:")).toBe(true);
+      expect(pipe(page.continueCursor, String.startsWith("sealed:"))).toBe(
+        true,
+      );
+      expect(pipe(split, String.startsWith("sealed:"))).toBe(true);
       const left = yield* QueryStream.paginate(reader.stream, {
         cursor: null,
         endCursor: split,

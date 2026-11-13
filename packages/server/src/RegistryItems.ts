@@ -3,6 +3,7 @@ import { pipe } from "effect/Function";
 import * as Record from "effect/Record";
 import * as FunctionRegistryItem from "./FunctionRegistryItem.js";
 import * as MiddlewareRegistryItem from "./MiddlewareRegistryItem.js";
+import * as Str from "effect/String";
 
 /**
  * Runtime tree that mirrors a `Spec`'s group structure. Values remain unknown
@@ -50,7 +51,7 @@ export const missingRequired = (
   groupPath = "",
 ): ReadonlyArray<MissingMiddleware> =>
   Object.entries(items)
-    .sort(([left], [right]) => left.localeCompare(right))
+    .sort(([left], [right]) => pipe(left, Str.localeCompare(right)))
     .flatMap(([functionName, value]) =>
       FunctionRegistryItem.isFunctionRegistryItem(value)
         ? required.flatMap(({ key }) =>

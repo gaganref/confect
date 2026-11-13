@@ -20,6 +20,7 @@ import type * as Redacted from "effect/Redacted";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import * as Option from "effect/Option";
 // The built package, not its source, so these tests run what ships.
 import { Convex } from "../../dist/index.js";
 import * as ConvexClient from "../../dist/ConvexClient.js";
@@ -29,6 +30,8 @@ import {
   layer as runnerLayer,
 } from "../../dist/internal/CommandRunner.js";
 import { PushLock, layer as lockLayer } from "../../dist/internal/PushLock.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 export interface Outputs {
   readonly name: string;
@@ -92,7 +95,8 @@ interface VitestGlobal {
   };
 }
 
-const forwardSlashes = (file: string) => file.replaceAll("\\", "/");
+const forwardSlashes = (file: string) =>
+  pipe(file, String.replaceAll("\\", "/"));
 
 /**
  * What vitest's module registry shows of a test process. Windows paths differ
@@ -203,7 +207,7 @@ export const make = Effect.fn("RealBackend.make")(function* (options: {
       Effect.provide(context),
       Effect.scoped,
     );
-  const [low = 0, high = 0] = ports.split("-").map(Number);
+  const [low = 0, high = 0] = pipe(ports, String.split("-")).map(Number);
   return { root, ports: { low, high }, session };
 });
 
@@ -221,14 +225,36 @@ export const copyApp = Effect.fn("RealBackend.copyApp")(function* (
   yield* fs.copy(fixture, directory);
   for (const [at, source] of Object.entries(links)) {
     const link = `${directory}/${at}`;
-    yield* fs.makeDirectory(link.slice(0, link.lastIndexOf("/")), {
-      recursive: true,
-    });
+    yield* fs.makeDirectory(
+      pipe(
+        link,
+        String.slice(
+          0,
+          pipe(
+            link,
+            String.lastIndexOf("/"),
+            Option.getOrElse(() => -1),
+          ),
+        ),
+      ),
+      {
+        recursive: true,
+      },
+    );
     yield* fs.symlink(source, link);
   }
   yield* fs.writeFileString(
     `${directory}/package.json`,
-    `{ "name": "${directory.slice(directory.lastIndexOf("/") + 1)}", "private": true, "type": "module", "dependencies": { "convex": "*" } }\n`,
+    `{ "name": "${pipe(
+      directory,
+      String.slice(
+        pipe(
+          directory,
+          String.lastIndexOf("/"),
+          Option.getOrElse(() => -1),
+        ) + 1,
+      ),
+    )}", "private": true, "type": "module", "dependencies": { "convex": "*" } }\n`,
   );
 });
 

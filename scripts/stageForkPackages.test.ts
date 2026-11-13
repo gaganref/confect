@@ -14,6 +14,8 @@ import {
 } from "./stageForkPackages";
 import * as Schema from "effect/Schema";
 import { publishedPackages } from "./checkPackContents";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -39,7 +41,7 @@ test.each(directories)(
         const before = encodeJson(input);
         const output = stageForkPackages(input, "10.2.0-fork.7");
         expect(output).toMatchObject({
-          name: `@gaganref/confect-${input.name.slice("@confect/".length)}`,
+          name: `@gaganref/confect-${pipe(input.name, String.slice("@confect/".length))}`,
           version: "10.2.0-fork.7",
           repository: {
             type: "git",
@@ -65,8 +67,8 @@ test.each(directories)(
               : Object.fromEntries(
                   Object.entries(dependencies).map(([name, range]) => [
                     name,
-                    name.startsWith("@confect/")
-                      ? `npm:@gaganref/confect-${name.slice("@confect/".length)}@10.2.0-fork.7`
+                    pipe(name, String.startsWith("@confect/"))
+                      ? `npm:@gaganref/confect-${pipe(name, String.slice("@confect/".length))}@10.2.0-fork.7`
                       : range,
                   ]),
                 ),

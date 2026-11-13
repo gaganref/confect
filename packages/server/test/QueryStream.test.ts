@@ -1,7 +1,7 @@
 import * as Arr from "effect/Array";
 import type * as QueryStreamKeyLabels from "@confect/server/QueryStreamKeyLabels";
 import * as QueryStreamReadBudget from "@confect/server/QueryStreamReadBudget";
-import { identity } from "effect/Function";
+import { identity, pipe } from "effect/Function";
 import * as Result from "effect/Result";
 import * as QueryStreamKeyLayout from "@confect/server/QueryStreamKeyLayout";
 import type * as QueryStreamOrderDirection from "@confect/server/QueryStreamOrderDirection";
@@ -16,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as String from "effect/String";
 
 const encodeCursor =
   (layout: QueryStreamKeyLayout.QueryStreamKeyLayout) =>
@@ -1044,7 +1045,10 @@ describe("QueryStream cursor envelope", () => {
             ),
           ).pipe(
             Effect.map((bytes) =>
-              Buffer.from(bytes).toString("base64url").slice(0, 22),
+              pipe(
+                Buffer.from(bytes).toString("base64url"),
+                String.slice(0, 22),
+              ),
             ),
           );
         const envelope = (print: string): QueryStream.CursorEnvelope => ({
@@ -1052,18 +1056,30 @@ describe("QueryStream cursor envelope", () => {
             tag(print, raw).pipe(Effect.map((mac) => `${print}.${mac}.${raw}`)),
           open: (sealed) =>
             Effect.gen(function* () {
-              const first = sealed.indexOf(".");
-              const second = sealed.indexOf(".", first + 1);
+              const first = pipe(
+                sealed,
+                String.indexOf("."),
+                Option.getOrElse(() => -1),
+              );
+              const second = pipe(
+                sealed,
+                String.slice(first + 1),
+                String.indexOf("."),
+                Option.match({
+                  onNone: () => -1,
+                  onSome: (index) => first + 1 + index,
+                }),
+              );
               if (first < 0 || second < 0) return Option.none();
-              const claimed = sealed.slice(0, first);
-              const given = sealed.slice(first + 1, second);
-              const raw = sealed.slice(second + 1);
+              const claimed = pipe(sealed, String.slice(0, first));
+              const given = pipe(sealed, String.slice(first + 1, second));
+              const raw = pipe(sealed, String.slice(second + 1));
               return claimed === print && given === (yield* tag(claimed, raw))
                 ? Option.some(raw)
                 : Option.none();
             }),
         });
-        const cursorEnvelope = envelope("f".repeat(22));
+        const cursorEnvelope = envelope(pipe("f", String.repeat(22)));
         const layout = Result.getOrThrow(
           QueryStreamKeyLayout.fromIndex(["_creationTime"]),
         );
@@ -1095,17 +1111,21 @@ describe("QueryStream cursor envelope", () => {
         expect(secondSeal).toBe(firstSeal);
         expect(firstSeal).toBe(sealed.continueCursor);
         const tampered =
-          sealed.continueCursor.slice(0, 23) +
+          pipe(sealed.continueCursor, String.slice(0, 23)) +
           "!" +
-          sealed.continueCursor.slice(24);
-        const stale = yield* envelope("s".repeat(22)).seal(raw.continueCursor);
+          pipe(sealed.continueCursor, String.slice(24));
+        const stale = yield* envelope(pipe("s", String.repeat(22))).seal(
+          raw.continueCursor,
+        );
         const farAhead =
           '{"runtimeLabels":["_creationTime","_id"],"keyValues":[1000000000000,"zzzz"]}';
         for (const crafted of [
           { cursor: tampered },
           { cursor: stale },
           { endCursor: farAhead },
-          { endCursor: `${"f".repeat(22)}.${"A".repeat(22)}.${farAhead}` },
+          {
+            endCursor: `${pipe("f", String.repeat(22))}.${pipe("A", String.repeat(22))}.${farAhead}`,
+          },
         ]) {
           reads = 0;
           const error = yield* QueryStream.paginate(source(), {

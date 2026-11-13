@@ -8,6 +8,8 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientError from "effect/http/HttpClientError";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { ChildProcessSpawner } from "effect/process";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 // Python's zipfile with ZIP_DEFLATED: convex-local-backend and
 // convex-local-backend.exe, each "#!/bin/sh\necho local backend\n" x 20.
@@ -156,7 +158,7 @@ export const fakeBackend = (options?: Partial<FakeBehaviour>) => {
   const http = Layer.succeed(
     HttpClient.HttpClient,
     HttpClient.make((request) => {
-      if (request.url.startsWith("https://github.com/")) {
+      if (pipe(request.url, String.startsWith("https://github.com/"))) {
         downloads.push(request.url);
         return Effect.succeed(
           HttpClientResponse.fromWeb(request, new Response(backendArchive)),

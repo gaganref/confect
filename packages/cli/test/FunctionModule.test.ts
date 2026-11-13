@@ -127,7 +127,7 @@ const runGenerateForNodeGroupEffect = Effect.fnUntraced(function* ({
   assert(importMatch !== null, "expected a registry import in the module");
   const resolved = path.resolve(
     path.dirname(modulePath),
-    importMatch[1]!.replace(/\.js$/, ".ts"),
+    pipe(importMatch[1]!, Str.replace(/\.js$/, ".ts")),
   );
   const resolves = yield* fs.exists(resolved);
 
@@ -312,18 +312,25 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
         path.join(import.meta.dirname, "fixtures/codegen/status.ts.txt"),
       );
       if (format === "rewrapped")
-        source = source
-          .replaceAll("check", "fortyCharacterFunctionNameForCodegenTest")
-          .replace(" = registeredFunctions.", " =\n  registeredFunctions.");
-      if (format === "equivalent registry path")
-        source = source.replace(
-          "registeredFunctions/system/status",
-          "registeredFunctions/system/../system/status.js",
+        source = pipe(
+          source,
+          Str.replaceAll("check", "fortyCharacterFunctionNameForCodegenTest"),
+          Str.replace(" = registeredFunctions.", " =\n  registeredFunctions."),
         );
-      if (format === "CRLF") source = source.replaceAll("\n", "\r\n");
+      if (format === "equivalent registry path")
+        source = pipe(
+          source,
+          Str.replace(
+            "registeredFunctions/system/status",
+            "registeredFunctions/system/../system/status.js",
+          ),
+        );
+      if (format === "CRLF")
+        source = pipe(source, Str.replaceAll("\n", "\r\n"));
       if (format === "Node and single quotes")
         source =
-          "'use node'\n" + source.replaceAll('"', "'").replaceAll(";", "");
+          "'use node'\n" +
+          pipe(source, Str.replaceAll('"', "'"), Str.replaceAll(";", ""));
       yield* fs.makeDirectory(path.join(project.root, "convex/system"));
       yield* project.write("convex/system/status.ts", source);
       expect(

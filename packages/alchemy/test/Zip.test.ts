@@ -5,6 +5,8 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import { extract, ZipError } from "../src/internal/Zip";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 // Python's zipfile with ZIP_DEFLATED: README.txt, then convex-local-backend
 // holding "#!/bin/sh\necho local backend\n" twenty times.
@@ -39,7 +41,7 @@ describe("Zip", () => {
         const destination = path.join(directory, "convex-local-backend");
         yield* extract(zip, "convex-local-backend", destination);
         expect(yield* fs.readFileString(destination)).toBe(
-          "#!/bin/sh\necho local backend\n".repeat(20),
+          pipe("#!/bin/sh\necho local backend\n", Str.repeat(20)),
         );
       }),
     ).pipe(Effect.provide(NodeServices.layer)),

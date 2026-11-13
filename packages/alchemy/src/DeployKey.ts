@@ -13,6 +13,8 @@ import type { Providers } from "./Providers.js";
 import { resourceName } from "./internal/ResourceIdentity.js";
 import { checkpointCreate } from "./internal/Lifecycle.js";
 import { adminKey, dataDirectories } from "./internal/LocalBackend.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 export interface DeployKeyProps {
   readonly deploymentName: string;
@@ -57,8 +59,8 @@ export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient;
   const hasName = (keyName: string, name: string) =>
     keyName === name ||
-    (keyName.startsWith(`${name} (`) &&
-      /^[0-9a-f]{8}\)$/.test(keyName.slice(name.length + 2)));
+    (pipe(keyName, String.startsWith(`${name} (`)) &&
+      /^[0-9a-f]{8}\)$/.test(pipe(keyName, String.slice(name.length + 2))));
   const recover = (
     deploymentName: string,
     name: string,

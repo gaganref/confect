@@ -28,6 +28,8 @@ import {
 import { PushLock, layer as lockLayer } from "../src/internal/PushLock";
 import { ConvexClient, ConvexFunctionError } from "../src/ConvexClient";
 import { MountInitFailed } from "../src/internal/MountInit";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 const serialize = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const props: CodeProps = {
@@ -708,7 +710,7 @@ describe("Code mount init", () => {
         runFunction: (_url, _key, functionPath, _args, componentPath) =>
           Effect.gen(function* () {
             if (functionPath === "confectDeploy:steps") {
-              yield* record(`steps ${componentPath ?? ""}`.trim());
+              yield* record(pipe(`steps ${componentPath ?? ""}`, String.trim));
               return (options.steps ?? steps)[componentPath ?? ""];
             }
             yield* record(`init ${componentPath}`);

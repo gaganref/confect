@@ -4,6 +4,8 @@ import * as Result from "effect/Result";
 import * as HttpIncomingMessage from "effect/http/HttpIncomingMessage";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 /**
  * Read the body once under the endpoint's cap before downstream middleware or
@@ -17,7 +19,11 @@ export const withBodyLimit = <A, E, R>(
 ) =>
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const encoding = request.headers["content-encoding"]?.trim().toLowerCase();
+    const header = request.headers["content-encoding"];
+    const encoding =
+      header === undefined
+        ? undefined
+        : pipe(header, Str.trim, Str.toLowerCase);
     if (encoding !== undefined && encoding !== "identity")
       return HttpServerResponse.empty({ status: 415 });
     const read = yield* request.arrayBuffer.pipe(

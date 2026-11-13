@@ -14,6 +14,8 @@ import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { publishedPackages } from "./checkPackContents";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 const encodeJson = Schema.encodeSync(
   Schema.fromJsonString(Schema.Unknown, { space: 2 }),
@@ -37,7 +39,7 @@ export const PackageManifest = Schema.StructWithRest(
 export type PackageManifest = typeof PackageManifest.Type;
 
 const forkPackageName = (name: string) =>
-  name.replace(/^@confect\//, "@gaganref/confect-");
+  pipe(name, Str.replace(/^@confect\//, "@gaganref/confect-"));
 
 export const stageForkPackages = (
   manifest: PackageManifest,
@@ -64,7 +66,7 @@ export const stageForkPackages = (
               Object.fromEntries(
                 Object.entries(values).map(([name, range]) => [
                   name,
-                  name.startsWith("@confect/")
+                  pipe(name, Str.startsWith("@confect/"))
                     ? `npm:${forkPackageName(name)}@${version}`
                     : range,
                 ]),
@@ -146,8 +148,8 @@ export const chooseBuildVersion = (
 ): Result.Result<string, InvalidBuildVersion | BuildNumberUnavailable> => {
   const prefix = `${base}-fork.`;
   const builds = versions
-    .filter((version) => version.startsWith(prefix))
-    .map((version) => version.slice(prefix.length))
+    .filter((version) => pipe(version, Str.startsWith(prefix)))
+    .map((version) => pipe(version, Str.slice(prefix.length)))
     .filter((build) => /^(0|[1-9]\d*)$/.test(build))
     .map(Number);
   const highestBuild = Math.max(0, ...builds);
@@ -204,7 +206,7 @@ export const readVersions = Effect.fn("ForkPackages.versions")(function* (
 ) {
   const response = yield* HttpClient.execute(
     HttpClientRequest.get(
-      `https://registry.npmjs.org/${name.replace("/", "%2F")}`,
+      `https://registry.npmjs.org/${pipe(name, Str.replace("/", "%2F"))}`,
     ).pipe(HttpClientRequest.acceptJson),
   );
   if (response.status === 404) return [];

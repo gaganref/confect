@@ -12,6 +12,8 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import type * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Loopback from "./internal/Loopback.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 export type Project = ManagementApi.ProjectResponse;
 export type CreatedProject = ManagementApi.PlatformCreateProjectResponse;
@@ -344,7 +346,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       !/^[a-z0-9-]+(?:\.(?:eu-west-1|ap-southeast-2|ca-central-1))?\.convex\.cloud$/.test(
         parsed.hostname,
       ) ||
-      url.replace(/\/$/, "") !== parsed.origin
+      pipe(url, String.replace(/\/$/, "")) !== parsed.origin
     ) {
       return yield* invalidUrl();
     }
@@ -364,9 +366,9 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       componentPath?: string,
     ) {
       const operation = "runFunction";
-      const origin = (yield* deploymentUrl(operation, url)).replace(
-        /\/api\/v1$/,
-        "",
+      const origin = pipe(
+        yield* deploymentUrl(operation, url),
+        String.replace(/\/api\/v1$/, ""),
       );
       const request = yield* HttpClientRequest.post(
         `${origin}/api/function`,

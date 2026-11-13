@@ -31,6 +31,8 @@ import {
   writeFileString,
   writeFileStringAndLog,
 } from "../utils.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 /**
  * Bumped when the generated files change shape, so a manifest written by an
@@ -147,8 +149,8 @@ const declarationInputs = Effect.fnUntraced(function* (
       const relative = path.relative(projectRoot, input);
       if (
         path.isAbsolute(input) &&
-        !relative.startsWith("..") &&
-        !relative.split(path.sep).includes("node_modules") &&
+        !pipe(relative, String.startsWith("..")) &&
+        !pipe(relative, String.split(path.sep)).includes("node_modules") &&
         path.resolve(input) !== registry
       ) {
         files.add(input);
@@ -179,16 +181,16 @@ const componentImport = Effect.fnUntraced(function* () {
   return (definition: unknown): Option.Option<Declaration.ComponentImport> =>
     Option.map(ConvexConfig.componentImportOf(definition), (recorded) => {
       const bare =
-        !recorded.specifier.startsWith(".") &&
+        !pipe(recorded.specifier, String.startsWith(".")) &&
         !path.isAbsolute(recorded.specifier);
-      const relative = toPosixPath(
-        path,
-        path.relative(convexDirectory, recorded.path),
-      ).replace(/\.([cm]?)[jt]s$/, ".$1js");
+      const relative = pipe(
+        toPosixPath(path, path.relative(convexDirectory, recorded.path)),
+        String.replace(/\.([cm]?)[jt]s$/, ".$1js"),
+      );
       return {
         importPath: bare
           ? recorded.specifier
-          : relative.startsWith(".")
+          : pipe(relative, String.startsWith("."))
             ? relative
             : `./${relative}`,
         componentName:
@@ -357,7 +359,7 @@ const writeDeclaration = Effect.fnUntraced(function* (
     path.relative(convexDirectory, authPath),
   );
   const legacyAuthConfigs = yield* Effect.forEach(
-    [authImportPath, authImportPath.replace(/\.js$/, "")],
+    [authImportPath, pipe(authImportPath, String.replace(/\.js$/, ""))],
     (importPath) => templates.authConfig({ authImportPath: importPath }),
   );
   yield* assertOwned(convexConfigPath, "app.ts", []);

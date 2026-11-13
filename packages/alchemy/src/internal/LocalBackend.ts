@@ -22,6 +22,8 @@ import * as FileLock from "./FileLock.js";
 import * as Loopback from "./Loopback.js";
 import { userCache } from "./UserCache.js";
 import { extract } from "./Zip.js";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 /**
  * The backend release a new local deployment runs. An existing data directory
@@ -345,8 +347,9 @@ export const boot = Effect.fn("LocalBackend.boot")(function* (
           { env, extendEnv: false, stdin: "ignore", stderr: "ignore" },
         ),
       );
-      const key = output.trim();
-      if (!key.startsWith(`${deploymentName}|`)) return yield* fail("identity");
+      const key = pipe(output, Str.trim);
+      if (!pipe(key, Str.startsWith(`${deploymentName}|`)))
+        return yield* fail("identity");
       return { instanceSecret, adminKey: key };
     }).pipe(
       Effect.catchTag("PlatformError", () => Effect.fail(fail("identity"))),

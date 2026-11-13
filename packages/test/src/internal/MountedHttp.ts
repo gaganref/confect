@@ -11,6 +11,8 @@ import { actionGeneric } from "convex/server";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { HttpMount, RegisterComponent } from "../TestConfect.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -41,7 +43,10 @@ type NormalizedMount = {
 const normalizeMounts = (mounts: ReadonlyArray<HttpMount>) => {
   const normalized: Array<NormalizedMount> = [];
   for (const mount of mounts) {
-    if (!mount.httpPrefix.startsWith("/") || /[?#]/.test(mount.httpPrefix)) {
+    if (
+      !pipe(mount.httpPrefix, String.startsWith("/")) ||
+      /[?#]/.test(mount.httpPrefix)
+    ) {
       return Result.fail(
         new InvalidHttpMount({
           ...mount,
@@ -50,7 +55,7 @@ const normalizeMounts = (mounts: ReadonlyArray<HttpMount>) => {
         }),
       );
     }
-    const prefix = mount.httpPrefix.replace(/\/+$/, "");
+    const prefix = pipe(mount.httpPrefix, String.replace(/\/+$/, ""));
     if (normalized.some((previous) => previous.prefix === prefix)) {
       return Result.fail(
         new InvalidHttpMount({
@@ -110,12 +115,15 @@ export const make = (
       return;
     }
     const generated = Object.keys(modules).find((key) =>
-      key.includes("_generated"),
+      pipe(key, String.includes("_generated")),
     );
-    const root = generated?.split("_generated", 2)[0];
+    const root =
+      generated === undefined
+        ? undefined
+        : pipe(generated, String.split("_generated"))[0];
     const moduleLoaders = Object.fromEntries(
       Object.entries(modules).map(([path, load]) => [
-        path.replace(/\.[^.]+$/, ""),
+        pipe(path, String.replace(/\.[^.]+$/, "")),
         load,
       ]),
     );
@@ -202,7 +210,7 @@ export const make = (
   ): Promise<Response> => {
     if (normalized.success.length === 0) return accessor.fetch(path, init);
     const run = async () => {
-      if (!path.startsWith("/")) {
+      if (!pipe(path, String.startsWith("/"))) {
         throw new InvalidFetchPath({
           path,
           message: 'Path given to fetch must start with a "/".',
@@ -211,7 +219,8 @@ export const make = (
       const pathname = new URL(`${defaultSiteUrl}${path}`).pathname;
       const mount = normalized.success.find(
         ({ prefix }) =>
-          pathname === prefix || pathname.startsWith(`${prefix}/`),
+          pathname === prefix ||
+          pipe(pathname, String.startsWith(`${prefix}/`)),
       );
       if (mount === undefined) return accessor.fetch(path, init);
       if (!registered.has(mount.componentPath)) {
@@ -220,9 +229,10 @@ export const make = (
           message: "Register the mounted component before calling fetch.",
         });
       }
-      const appSiteUrl = (
-        process.env.CONVEX_SITE_URL || defaultSiteUrl
-      ).replace(/\/$/, "");
+      const appSiteUrl = pipe(
+        process.env.CONVEX_SITE_URL || defaultSiteUrl,
+        String.replace(/\/$/, ""),
+      );
       const request = new Request(new URL(`${appSiteUrl}${path}`), init);
       // convex-test encodes exact component paths in test-only function handles.
       const reference =
@@ -235,7 +245,7 @@ export const make = (
       const response = await accessor.action(reference, {
         siteUrl: `${appSiteUrl}${mount.prefix}`,
         url: request.url,
-        pathname: pathname.slice(mount.prefix.length) || "/",
+        pathname: pipe(pathname, String.slice(mount.prefix.length)) || "/",
         method: request.method,
         headers: [...request.headers],
         body:

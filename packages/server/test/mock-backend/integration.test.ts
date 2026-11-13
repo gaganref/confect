@@ -70,6 +70,8 @@ import {
 import { NodeNotFound } from "./fixtures/confect/typedErrorsNode.spec";
 import * as TestConfect from "./TestConfect";
 import * as TestConfect_ from "../../../test/src/TestConfect";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 it.layer(TestConfect.layer, { buildPerTest: true })(
   "TestConfect JWT signing",
@@ -2062,7 +2064,10 @@ describe("DatabaseWriter patch", () => {
             .pipe(
               Effect.as(null),
               Effect.catch(({ _tag, message }) =>
-                Effect.succeed({ _tag, message: message.replace(id, "<id>") }),
+                Effect.succeed({
+                  _tag,
+                  message: pipe(message, Str.replace(id, "<id>")),
+                }),
               ),
             );
           const { _id, _creationTime, ...storedFields } =
@@ -2187,7 +2192,7 @@ describe("DatabaseWriter patch", () => {
             Schema.String,
             SchemaTransformation.transform({
               decode: (value) => value,
-              encode: (value) => value.trim(),
+              encode: (value) => pipe(value, Str.trim),
             }),
           ),
         );

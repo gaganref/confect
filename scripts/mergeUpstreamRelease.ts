@@ -9,6 +9,8 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 export class NoStableCoreRelease extends Schema.TaggedError<NoStableCoreRelease>()(
   "NoStableCoreRelease",
@@ -24,7 +26,9 @@ export const selectReleaseTag = (
         tag,
       ),
     )
-    .sort((left, right) => right.localeCompare(left, "en", { numeric: true }));
+    .sort((left, right) =>
+      pipe(right, String.localeCompare(left, ["en"], { numeric: true })),
+    );
   return releases[0] === undefined
     ? Result.fail(new NoStableCoreRelease({ tags }))
     : Result.succeed(releases[0]);
@@ -108,17 +112,17 @@ const git = Effect.fn("MergeRelease.git")(function* (
       exitCode: result.exitCode,
       output: result.stdout + result.stderr,
     });
-  return result.stdout.trim();
+  return pipe(result.stdout, String.trim);
 });
 
 export const inspectRelease = Effect.fn("MergeRelease.inspect")(function* (
   directory: string,
   forkRef: string,
 ) {
-  const tags = (yield* git(
-    ["tag", "--list", "@confect/core@*"],
-    directory,
-  )).split("\n");
+  const tags = pipe(
+    yield* git(["tag", "--list", "@confect/core@*"], directory),
+    String.split("\n"),
+  );
   const tag = yield* Effect.fromResult(selectReleaseTag(tags));
   const forkHead = yield* git(["rev-parse", `${forkRef}^{commit}`], directory);
   const target = yield* git(["rev-parse", `${tag}^{commit}`], directory);
@@ -165,12 +169,10 @@ export const checkMerge = Effect.fn("MergeRelease.check")(function* (
     scratch,
   );
   if (result.exitCode !== 0) {
-    const files = (yield* git(
-      ["diff", "--name-only", "--diff-filter=U"],
-      scratch,
-    ))
-      .split("\n")
-      .filter(Boolean);
+    const files = pipe(
+      yield* git(["diff", "--name-only", "--diff-filter=U"], scratch),
+      String.split("\n"),
+    ).filter(Boolean);
     yield* Console.error(
       `Merging ${plan.tag} into ${forkRef} failed. Conflicting files:\n${files.join("\n") || "(none; see git output)"}`,
     );

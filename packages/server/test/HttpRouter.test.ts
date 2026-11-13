@@ -28,6 +28,8 @@ import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as HttpApiMiddleware from "effect/http-api/HttpApiMiddleware";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpApiError from "effect/http-api/HttpApiError";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 const api = HttpApi.make("users").add(
   HttpApiGroup.make("users").add(
@@ -902,7 +904,7 @@ it.effect(
         ["/body", '{"value":"signed"}', "identity", 200, '"signed"'],
         ["/body", '{"value":"changed"}', "identity", 401, ""],
         ["/body", '{"value":"signed"}', "gzip", 415, ""],
-        ["/body", "x".repeat(65), "identity", 413, ""],
+        ["/body", pipe("x", Str.repeat(65)), "identity", 413, ""],
         ["/json", '{"value":"signed"}', "identity", 200, '"signed"'],
         ["/json", '{"value":"changed"}', "identity", 401, ""],
         [

@@ -1,12 +1,13 @@
 import type { GenericId as ConvexGenericId } from "convex/values";
 import * as Array from "effect/Array";
-import { memoize } from "effect/Function";
+import { memoize, pipe } from "effect/Function";
 import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import * as IdScope from "./IdScope.js";
 import type * as Ref from "./Ref.js";
+import * as String from "effect/String";
 
 const ConvexId = "~@confect/core/ConvexId";
 const ConvexIdScope = "~@confect/core/ConvexIdScope";
@@ -285,9 +286,10 @@ export const rebase = <
     const ownScope = scope(ast);
     const scoped =
       Option.isSome(tableName(ast)) &&
-      (ownScope === from || ownScope.startsWith(`${from}/instance:`))
+      (ownScope === from ||
+        pipe(ownScope, String.startsWith(`${from}/instance:`)))
         ? Schema.make<Schema.Codec<unknown>>(next).annotate({
-            [ConvexIdScope]: to + ownScope.slice(from.length),
+            [ConvexIdScope]: to + pipe(ownScope, String.slice(from.length)),
           }).ast
         : next;
     if (ast.encoding === undefined) {

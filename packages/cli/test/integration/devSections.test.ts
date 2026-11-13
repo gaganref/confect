@@ -7,6 +7,8 @@ import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Option from "effect/Option";
 import * as Project from "./Project";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 const success = "Generated files are up-to-date";
 
@@ -32,17 +34,23 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
           );
           const spec =
             'import { Policy } from "./policy";\n' +
-            Project.spec.replace(
-              "GroupSpec.make()",
-              "GroupSpec.make().middleware(Policy)",
+            pipe(
+              Project.spec,
+              String.replace(
+                "GroupSpec.make()",
+                "GroupSpec.make().middleware(Policy)",
+              ),
             );
           yield* project.write("confect/notes.spec.ts", spec);
           yield* project.write(
             "confect/notes.impl.ts",
             'import { MiddlewareImpl } from "@confect/server";\nimport { Policy } from "./policy";\n' +
-              Project.impl.replace(
-                "GroupImpl.finalize);",
-                "Layer.provide(MiddlewareImpl.make(databaseSchema, Policy, effect => effect)), GroupImpl.finalize);",
+              pipe(
+                Project.impl,
+                String.replace(
+                  "GroupImpl.finalize);",
+                  "Layer.provide(MiddlewareImpl.make(databaseSchema, Policy, effect => effect)), GroupImpl.finalize);",
+                ),
               ),
           );
           const watching = yield* project.start("dev");
@@ -92,7 +100,10 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
           const standby = yield* Ref.get(watching.output).pipe(
             Effect.map((output) => {
               const matches = [
-                ...output.matchAll(/Evaluator ready[^\n]*pid: (\d+)/g),
+                ...pipe(
+                  output,
+                  String.matchAll(/Evaluator ready[^\n]*pid: (\d+)/g),
+                ),
               ];
               const pid = Number(matches.at(-1)?.[1]);
               return Number.isInteger(pid) && isAlive(pid) ? pid : undefined;
@@ -136,9 +147,11 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
             "confect/tasks.spec.ts",
             when === "initial sync"
               ? dependentSpec
-              : dependentSpec
-                  .replace("makeNode()", "make()")
-                  .replace("publicNodeAction", "publicAction"),
+              : pipe(
+                  dependentSpec,
+                  String.replace("makeNode()", "make()"),
+                  String.replace("publicNodeAction", "publicAction"),
+                ),
           );
           const watching = yield* project.start("dev", [
             "--component-dir",

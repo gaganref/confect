@@ -13,6 +13,8 @@ import {
   refuseSpecSections,
   summarize,
 } from "@confect/cli/ManifestSections";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 const section = {
   owner: "test/tags",
@@ -94,7 +96,7 @@ describe("ManifestSections", () => {
       .addFunction(FunctionSpec.publicQuery({ ...list, name: "a" }));
     const leaves = ["Z", "m", "m/n", "b"].map((name) => ({
       relativePath: `${name}.spec.ts`,
-      pathSegments: name.split("/") as [string, ...string[]],
+      pathSegments: pipe(name, Str.split("/")) as [string, ...string[]],
       spec: group,
     }));
     const collected = (ordered: typeof leaves) => {
@@ -171,19 +173,21 @@ describe("ManifestSections", () => {
       },
     });
   });
-  it.each("name env http digest __proto__ constructor prototype".split(" "))(
-    "refuses the built-in key %s on App.make",
-    (key) => {
-      expect(declared([{ key, section }])).toMatchObject({
-        _tag: "Failure",
-        failure: {
-          _tag: "InvalidDeclarationError",
-          declarationPath: "confect/app.ts",
-          reason: `Manifest section "${key}" shadows a built-in key.`,
-        },
-      });
-    },
-  );
+  it.each(
+    pipe(
+      "name env http digest __proto__ constructor prototype",
+      Str.split(" "),
+    ),
+  )("refuses the built-in key %s on App.make", (key) => {
+    expect(declared([{ key, section }])).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        _tag: "InvalidDeclarationError",
+        declarationPath: "confect/app.ts",
+        reason: `Manifest section "${key}" shadows a built-in key.`,
+      },
+    });
+  });
   it("refuses a key App.make declares twice", () => {
     expect(declared([...tags(), ...tags()])).toMatchObject({
       _tag: "Failure",

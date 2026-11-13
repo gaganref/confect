@@ -6,6 +6,8 @@ import * as Random from "effect/Random";
 import * as Deferred from "effect/Deferred";
 import { api } from "../../../../tools/local-backend/fixtures/convex/_generated/api";
 import * as LocalBackend from "confect-local-backend/LocalBackend";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 layer(LocalBackend.layer, {
   timeout: "120 seconds",
@@ -44,7 +46,7 @@ layer(LocalBackend.layer, {
   it.effect("pages search results inside a component", () =>
     Effect.gen(function* () {
       const { client } = yield* LocalBackend.LocalBackend;
-      const run = `search${String(yield* Random.next).replaceAll(".", "")}`;
+      const run = `search${pipe(String(yield* Random.next), Str.replaceAll(".", ""))}`;
       yield* Effect.promise(() =>
         client.mutation(api.groups.components.seed, {
           run,

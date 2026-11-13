@@ -6,6 +6,8 @@ import { MutationCtx } from "./fixtures/confect/_generated/services";
 import refs from "./fixtures/confect/_generated/refs";
 import * as TestConfect from "./TestConfect";
 import type * as Ref from "@confect/core/Ref";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 const execute = (
   mode: Ref.Args<typeof refs.public.groups.actionCall.execute>["mode"],
 ) =>
@@ -83,7 +85,9 @@ describe("one-call actions", () => {
         );
         const rows = yield* c.query(refs.public.groups.notes.list);
         expect(rows.length).toBeLessThanOrEqual(1);
-        expect(rows.every((row) => row.text.startsWith("parallel"))).toBe(true);
+        expect(
+          rows.every((row) => pipe(row.text, String.startsWith("parallel"))),
+        ).toBe(true);
       }).pipe(Effect.provide(TestConfect.layer)),
   );
 });

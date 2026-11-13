@@ -10,6 +10,8 @@ import {
   render as renderSpecAssembly,
   type SpecAssemblyNode,
 } from "./SpecAssemblyNode.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 /**
  * Emit `convex/schema.ts` as a one-line re-export of the codegen-emitted deploy
@@ -219,7 +221,7 @@ const idEffect = Effect.fnUntraced(function* ({
   if (scope !== undefined) {
     yield* cbw.writeLine(
       // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Emit an escaped TypeScript string literal, not a JSON payload.
-      `export const scope = IdScope.component(${JSON.stringify(scope.slice("component:".length))});`,
+      `export const scope = IdScope.component(${JSON.stringify(pipe(scope, String.slice("component:".length)))});`,
     );
     yield* cbw.writeLine(
       `export const target = { kind: "component", scope } as const;`,
