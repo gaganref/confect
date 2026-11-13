@@ -199,6 +199,54 @@ local-backend suite pins each behaviour on the binary. This is the I/O bans row
 of Frame's backend testing kernel (Frame ADR 0012, row 6). Changeset:
 `test-kernel-io-bans.md`. Upstream: fork only, as the kernel is fork-specific.
 
+## Test kernel redaction
+
+A value under a secret schema node, a `Schema.Redacted` that
+`Schema.RedactedFromValue` decodes to, reaches every artifact the kernel
+writes as a marker. The kernel reads the nodes from Effect schemas: a Confect
+database schema's tables, and a secret policy keyed by component and function
+or table, which `TestConfect.layer` takes as `secrets` and codegen will fill
+from the Confect specs. Each marking walks the value together with its schema,
+so recursive and reused schemas, compound secrets and overlapping union
+members are all covered. The kernel keeps each secret before validating it, in
+an in-memory store that is replay state and never an artifact. A snapshot
+export writes `{ "$redacted": <n> }`, and a restore given the store puts the
+raw values back. A restore without it refuses with `SnapshotSecretMissing`.
+Failure reports are separate copies of whatever was thrown, marked, cycles
+included, and the raw error is never changed. A held attempt's outcome and an
+applied result are marked by the mutation's return shape. Subscription diffs, their causes and read records
+write `[redacted]`. This is row 6 of Frame's backend testing kernel (Frame ADR
+0012). Changeset: `test-kernel-redaction.md`. Upstream: fork only, as the
+kernel is fork-specific.
+
+## Test kernel snapshots
+
+The kernel exports its committed state as snapshot bytes and restores them into
+a fresh test backend. A snapshot holds every component's rows with the version
+that wrote each, the write log, the latest commit timestamp, every committed
+job's target, standing and world name, the clock's floor and the identity
+counters (the next document ID, the latest creation time, the next attempt ID).
+Components, tables, rows and jobs are sorted and each document keeps its field
+order, so two exports of one state are the same bytes. The header names the
+SHA-256 digest of the body, and restore refuses bytes whose body does not hash
+to it with `SnapshotDigestMismatch`, before it reads any of them. Restore also
+refuses a malformed body, a backend that committed, holds attempts, has a
+subscriber or is running a call, a scheduler walk or a function (detached ones
+included), other components and a job world it is not given, and state
+the kernel could not have reached: rows the write log does not publish,
+identity counters behind the state, commit timestamps out of order, jobs
+without their rows or targets, documents without their system fields, and
+duplicate components, tables, rows or jobs. Each has a tagged refusal. The snapshot also
+carries the identity epoch that subscribers' identity versions come from, and
+`Snapshot.contract` names every piece of kernel state as exported or excluded,
+checked by type and by a test.
+Replaying the same driver choices after a restore reaches the bytes of the run
+that never stopped, and a function handle stored in a row resolves to its
+component's function after restore. The format is the kernel's own, not the
+Convex binary's ZIP export. This is row 6 of Frame's backend testing kernel
+(Frame ADR 0012). Changeset: `test-kernel-snapshots.md`. Upstream: fork only,
+as the kernel is fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
