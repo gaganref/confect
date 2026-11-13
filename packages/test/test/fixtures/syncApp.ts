@@ -3,6 +3,7 @@
  * kernel, and the kernel as a probe target.
  */
 import * as Arr from "effect/Array";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import schema from "../../../../tools/local-backend/fixtures/sync/convex/schema";
 import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
@@ -80,14 +81,15 @@ export const kernelTarget = (t: KernelControls): Target => {
     address: "http://127.0.0.1:9",
     WebSocket: endpoint.WebSocket as unknown as Target["WebSocket"],
     contention: (since) =>
-      Promise.resolve(
-        Arr.filter(
-          endpoint.ledger(),
-          (entry) =>
-            entry.functionPath.udfPath === "sync:increment" &&
-            entry.attempts > 1 &&
-            entry.ts >= BigInt(since) * 1_000_000n,
-        ).length,
+      Effect.sync(
+        () =>
+          Arr.filter(
+            endpoint.ledger(),
+            (entry) =>
+              entry.functionPath.udfPath === "sync:increment" &&
+              entry.attempts > 1 &&
+              entry.ts >= BigInt(since) * 1_000_000n,
+          ).length,
       ),
   };
 };

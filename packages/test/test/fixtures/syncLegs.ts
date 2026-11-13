@@ -1,10 +1,10 @@
-// oxlint-disable effecttsgo/async-function, effecttsgo/new-promise, effecttsgo/global-timers, effecttsgo/global-date, unicorn/prefer-add-event-listener, eslint/no-await-in-loop -- The legs drive the unmodified Convex client, whose surface is promises, host timers and `on*` socket handlers, the same way on both targets, one step after another.
 /**
  * The three legs of the sync protocol probe, each a script the unmodified
  * `convex` client (`BaseConvexClient`) runs against one target: the test
- * kernel's `Sync` in process, or a binary over its WebSocket. Each leg returns
- * its normalised observations, which the probe compares between targets. The
- * kernel's own suite runs the same legs against the kernel alone.
+ * kernel's `Sync` in process, or a binary over its WebSocket. Each leg is an
+ * Effect that answers its normalised observations, which the probe compares
+ * between targets. The kernel's own suite runs the same legs against the kernel
+ * alone.
  *
  * Normalised means what a client can rely on: per-socket query values with
  * consecutive duplicates removed, mutation outcomes as values or error data,
@@ -15,20 +15,20 @@
  * Every step has a deadline, so a target that stops answering ends its leg
  * instead of holding it. A leg writes what it has observed so far into its
  * `progress` after each step, so a leg that fails still leaves its partial
- * observations for the record.
+ * observations for the record. The legs run on the real clock: a test that runs
+ * them is live.
  */
 import { BaseConvexClient } from "convex/browser";
 import { convexToJson, type JSONValue, type Value } from "convex/values";
 import * as Arr from "effect/Array";
+import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Rec from "effect/Record";
+import type * as Scope from "effect/Scope";
 import * as Str from "effect/String";
 import * as Json from "../../src/internal/Json";
-
-// The legs read and compare the client's frames and values synchronously,
-// inside its callbacks, through the kernel's JSON helper.
-const encodeJson = Json.stringify;
-const decodeJson = Json.parse;
 
 /**
  * Where a leg runs. `address` is only the client's own setting: a kernel target
@@ -50,7 +50,7 @@ export interface Target {
    * How many times `sync:increment` lost a conflict to another commit and ran
    * again, since `since` (milliseconds on the host clock).
    */
-  readonly contention: (since: number) => Promise<number>;
+  readonly contention: (since: number) => Effect.Effect<number>;
 }
 
 /**
@@ -65,20 +65,12 @@ export const progress = (): Progress => ({ observed: null });
 /**
  * How long one step may take before the leg gives up on it.
  */
-export const stepDeadline = 20_000;
+export const stepDeadline = Duration.seconds(20);
 
-const wait = (ms: number) =>
-  new Promise<void>((resolve) => {
-    setTimeout(resolve, ms);
-  });
-
-const same = (a: unknown, b: unknown) => encodeJson(a) === encodeJson(b);
-
-/**
- * A promise that resolves `fallback` after `ms` unless `promise` settles first.
- */
-const within = <A>(promise: Promise<A>, ms: number, fallback: A) =>
-  Promise.race([promise, wait(ms).then(() => fallback)]);
+// The client's frames and values are read inside its own callbacks, which
+// cannot run an Effect, so they go through the kernel's synchronous JSON.
+const same = (a: unknown, b: unknown) =>
+  Json.stringify(a) === Json.stringify(b);
 
 /**
  * A failure as a client can rely on it: a `ConvexError`'s data, or the
@@ -102,21 +94,26 @@ export const normaliseError = (error: unknown): JSONValue => {
   return { message: Str.replace(/^.*Uncaught /, "")(line) };
 };
 
-const outcomeOf = (promise: Promise<unknown>): Promise<JSONValue> =>
-  promise.then(
-    (value) => ({ value: convexToJson(value as Value) }),
-    (error: unknown) => ({ failed: normaliseError(error) }),
-  );
-
 const unanswered: JSONValue = {
   failed: { message: "no answer within the step deadline" },
 };
 
 /**
+ * A step that yields `fallback` once the step deadline passes.
+ */
+const bounded = <A>(step: Effect.Effect<A>, fallback: A) =>
+  step.pipe(
+    Effect.timeoutOrElse({
+      duration: stepDeadline,
+      orElse: () => Effect.succeed(fallback),
+    }),
+  );
+
+/**
  * One client of `target` and everything the probe watches it do: its queries'
  * values, any message its handler threw on, and its sockets.
  */
-export const connect = (target: Target) => {
+const openClient = (target: Target) => {
   const rejections: Array<string> = [];
   const sockets: Array<{ readonly drop: () => void }> = [];
   const sequences = new Map<string, Array<JSONValue>>();
@@ -141,9 +138,13 @@ export const connect = (target: Target) => {
     constructor(url: string) {
       this.socket = new target.WebSocket(url);
       sockets.push({ drop: () => this.drop() });
+      // oxlint-disable-next-line unicorn/prefer-add-event-listener -- The kernel's socket has only the `on*` handlers the Convex client uses, so the wrapper forwards through them on both targets.
       this.socket.onopen = (event) => this.onopen?.(event);
+      // oxlint-disable-next-line unicorn/prefer-add-event-listener -- See above.
       this.socket.onclose = (event) => this.onclose?.(event);
+      // oxlint-disable-next-line unicorn/prefer-add-event-listener -- See above.
       this.socket.onerror = (event) => this.onerror?.(event);
+      // oxlint-disable-next-line unicorn/prefer-add-event-listener -- See above.
       this.socket.onmessage = (event) => this.message(event);
     }
 
@@ -168,7 +169,7 @@ export const connect = (target: Target) => {
       if (this.dropped) return;
       if (
         state.dropResponse &&
-        (decodeJson(event.data) as { readonly type: string }).type ===
+        (Json.parse(event.data) as { readonly type: string }).type ===
           "MutationResponse"
       ) {
         state.dropResponse = false;
@@ -186,7 +187,7 @@ export const connect = (target: Target) => {
   const read = (label: string): JSONValue | undefined => {
     const { udfPath, args } = watched.get(label)!;
     try {
-      const value = client.localQueryResult(udfPath, args);
+      const value = convex.localQueryResult(udfPath, args);
       return value === undefined
         ? undefined
         : { value: convexToJson(value as Value) };
@@ -195,7 +196,7 @@ export const connect = (target: Target) => {
     }
   };
 
-  const client: BaseConvexClient = new BaseConvexClient(
+  const convex: BaseConvexClient = new BaseConvexClient(
     target.address,
     () => {
       for (const label of watched.keys()) {
@@ -218,30 +219,11 @@ export const connect = (target: Target) => {
     },
   );
 
-  /**
-   * Whether `predicate` holds after some transition within `ms`.
-   */
-  const until = (predicate: () => boolean, ms = stepDeadline) =>
-    predicate()
-      ? Promise.resolve(true)
-      : new Promise<boolean>((resolve) => {
-          const done = (held: boolean) => {
-            listeners.delete(check);
-            clearTimeout(timer);
-            resolve(held);
-          };
-          const check = () => {
-            if (predicate()) done(true);
-          };
-          const timer = setTimeout(() => done(false), ms);
-          listeners.add(check);
-        });
-
   return {
     rejections,
     sockets,
     watch: (label: string, udfPath: string, args: Record<string, Value>) => {
-      client.subscribe(udfPath, args);
+      convex.subscribe(udfPath, args);
       watched.set(label, { udfPath, args });
       sequences.set(label, []);
     },
@@ -255,29 +237,51 @@ export const connect = (target: Target) => {
           read(label) ?? null,
         ]),
       ),
-    until,
+    /**
+     * Whether `predicate` holds after some transition within the step deadline.
+     */
+    until: (predicate: () => boolean) =>
+      bounded(
+        Effect.callback<boolean>((resume) => {
+          if (predicate()) {
+            resume(Effect.succeed(true));
+            return;
+          }
+          const check = () => {
+            if (predicate()) resume(Effect.succeed(true));
+          };
+          listeners.add(check);
+          return Effect.sync(() => {
+            listeners.delete(check);
+          });
+        }),
+        false,
+      ),
     mutation: (udfPath: string, args: Record<string, Value>) =>
-      within(
-        outcomeOf(client.mutation(udfPath, args)),
-        stepDeadline,
+      bounded(
+        Effect.promise(() =>
+          convex.mutation(udfPath, args).then(
+            (value): JSONValue => ({ value: convexToJson(value as Value) }),
+            (error: unknown): JSONValue => ({ failed: normaliseError(error) }),
+          ),
+        ),
         unanswered,
       ),
     /**
-     * Present `token`, resolving whether the client saw the server confirm it
+     * Present `token`, answering whether the client saw the server confirm it
      * within the step deadline.
      */
     setAuth: (token: string) =>
-      within(
-        new Promise<boolean>((resolve) => {
-          client.setAuth(
+      bounded(
+        Effect.callback<boolean>((resume) => {
+          convex.setAuth(
             () => Promise.resolve(token),
-            (authenticated) => resolve(authenticated),
+            (authenticated) => resume(Effect.succeed(authenticated)),
           );
         }),
-        stepDeadline,
         false,
       ),
-    clearAuth: () => client.clearAuth(),
+    clearAuth: () => convex.clearAuth(),
     /**
      * Lose the next mutation response this client is sent, and drop its socket,
      * so it reconnects under its session and resends the mutation.
@@ -285,11 +289,25 @@ export const connect = (target: Target) => {
     loseNextMutationResponse: () => {
       state.dropResponse = true;
     },
-    close: () => within(client.close(), stepDeadline, undefined),
+    close: bounded(
+      Effect.promise(() => convex.close()),
+      undefined,
+    ),
   };
 };
 
-export type Client = ReturnType<typeof connect>;
+export type Client = ReturnType<typeof openClient>;
+
+/**
+ * A client of `target` for the scope, closed when the scope closes.
+ */
+export const connect = (
+  target: Target,
+): Effect.Effect<Client, never, Scope.Scope> =>
+  Effect.acquireRelease(
+    Effect.sync(() => openClient(target)),
+    (opened) => opened.close,
+  );
 
 /**
  * `sequence` with each value replaced by the position of its first appearance:
@@ -335,100 +353,112 @@ export interface Tokens {
  * already sent. It waits out the cache age and changes identity again: the
  * cached value has expired, so the rerun answers a new time.
  */
-export const observable = async (
+export const observable = (
   target: Target,
   run: string,
   tokens: Tokens,
   secret: string,
   options: { readonly cacheAge: number; readonly progress?: Progress },
-) => {
-  const name = names(run);
-  const a = connect(target);
-  const b = connect(target);
-  const c = connect(target);
-  const outcomes: Array<JSONValue> = [];
-  const observed = () => ({
-    sockets: {
-      a: a.sequences(),
-      b: b.sequences(),
-      c: { clock: ordinals(c.sequences()["clock"] ?? []) },
-    },
-    outcomes,
-    terminal: { a: a.terminal(), b: b.terminal() },
-    rejections: [...a.rejections, ...b.rejections, ...c.rejections],
-  });
-  const record = () => {
-    if (options.progress !== undefined) options.progress.observed = observed();
-  };
-  try {
-    for (const client of [a, b]) {
-      client.watch("counter", "sync:counter", { name: name.counter });
-      client.watch("barrier", "sync:counter", { name: name.barrier });
-      client.watch("whoami", "sync:whoami", {});
-    }
-    a.watch("notes", "sync:notes", { name: name.counter });
-    b.watch("peek", "sync:peek", { secret });
-    let step = 0;
-    const barrier = async () => {
-      step++;
-      outcomes.push(await a.mutation("sync:increment", { name: name.barrier }));
-      const reached = { value: step };
-      await Promise.all(
-        Arr.map([a, b], (client) =>
-          client.until(() => same(client.value("barrier"), reached)),
-        ),
+) =>
+  Effect.gen(function* () {
+    const name = names(run);
+    const a = yield* connect(target);
+    const b = yield* connect(target);
+    const c = yield* connect(target);
+    const outcomes: Array<JSONValue> = [];
+    const observed = () => ({
+      sockets: {
+        a: a.sequences(),
+        b: b.sequences(),
+        c: { clock: ordinals(c.sequences()["clock"] ?? []) },
+      },
+      outcomes,
+      terminal: { a: a.terminal(), b: b.terminal() },
+      rejections: [...a.rejections, ...b.rejections, ...c.rejections],
+    });
+    const record = Effect.sync(() => {
+      if (options.progress !== undefined) {
+        options.progress.observed = observed();
+      }
+    });
+    const both = (predicate: (client: Client) => boolean) =>
+      Effect.all(
+        Arr.map([a, b], (client) => client.until(() => predicate(client))),
       );
-      record();
-    };
-    await Promise.all(
-      Arr.map([a, b], (client) =>
-        client.until(
-          () =>
-            client.value("barrier") !== undefined &&
-            client.value("whoami") !== undefined,
-        ),
-      ),
-    );
-    outcomes.push(await a.mutation("sync:increment", { name: name.counter }));
-    await barrier();
-    outcomes.push(
-      await b.mutation("sync:add", { name: name.counter, text: "first" }),
-    );
-    await barrier();
-    outcomes.push(await a.mutation("sync:refuse", { code: "nope" }));
-    await barrier();
-    outcomes.push({ authenticated: await a.setAuth(tokens.person) });
-    await barrier();
-    outcomes.push(
-      await b.mutation("sync:add", { name: name.counter, text: "second" }),
-    );
-    await barrier();
-    outcomes.push({ authenticated: await a.setAuth(tokens.other) });
-    await barrier();
-    a.clearAuth();
-    await barrier();
-    outcomes.push(
-      await b.mutation("sync:remember", { name: name.counter, secret }),
-    );
-    await barrier();
-    outcomes.push(await a.mutation("sync:reveal", { secret }));
-    await barrier();
+    let step = 0;
+    const barrier = Effect.gen(function* () {
+      step++;
+      const reached = { value: step };
+      const outcome = yield* a.mutation("sync:increment", {
+        name: name.barrier,
+      });
+      outcomes.push(outcome);
+      yield* both((client) => same(client.value("barrier"), reached));
+      yield* record;
+    });
+    const call = (
+      client: Client,
+      udfPath: string,
+      args: Record<string, Value>,
+    ) =>
+      client
+        .mutation(udfPath, args)
+        .pipe(
+          Effect.tap((outcome) => Effect.sync(() => outcomes.push(outcome))),
+        );
+    const signIn = (client: Client, token: string) =>
+      client
+        .setAuth(token)
+        .pipe(
+          Effect.tap((authenticated) =>
+            Effect.sync(() => outcomes.push({ authenticated })),
+          ),
+        );
 
-    c.watch("clock", "sync:clock", { name: name.counter });
-    await c.until(() => c.value("clock") !== undefined);
-    outcomes.push({ authenticated: await c.setAuth(tokens.person) });
-    record();
-    await wait(options.cacheAge + 1_500);
-    outcomes.push({ authenticated: await c.setAuth(tokens.other) });
-    await c.until(() => (c.sequences()["clock"] ?? []).length > 1);
-    // Let a late extra value show, should one come.
-    await wait(500);
-    return observed();
-  } finally {
-    record();
-    await Promise.all([a.close(), b.close(), c.close()]);
-  }
-};
+    return yield* Effect.gen(function* () {
+      for (const client of [a, b]) {
+        client.watch("counter", "sync:counter", { name: name.counter });
+        client.watch("barrier", "sync:counter", { name: name.barrier });
+        client.watch("whoami", "sync:whoami", {});
+      }
+      a.watch("notes", "sync:notes", { name: name.counter });
+      b.watch("peek", "sync:peek", { secret });
+      yield* both(
+        (client) =>
+          client.value("barrier") !== undefined &&
+          client.value("whoami") !== undefined,
+      );
+      yield* call(a, "sync:increment", { name: name.counter });
+      yield* barrier;
+      yield* call(b, "sync:add", { name: name.counter, text: "first" });
+      yield* barrier;
+      yield* call(a, "sync:refuse", { code: "nope" });
+      yield* barrier;
+      yield* signIn(a, tokens.person);
+      yield* barrier;
+      yield* call(b, "sync:add", { name: name.counter, text: "second" });
+      yield* barrier;
+      yield* signIn(a, tokens.other);
+      yield* barrier;
+      a.clearAuth();
+      yield* barrier;
+      yield* call(b, "sync:remember", { name: name.counter, secret });
+      yield* barrier;
+      yield* call(a, "sync:reveal", { secret });
+      yield* barrier;
+
+      c.watch("clock", "sync:clock", { name: name.counter });
+      yield* c.until(() => c.value("clock") !== undefined);
+      yield* signIn(c, tokens.person);
+      yield* record;
+      yield* Effect.sleep(Duration.millis(options.cacheAge + 1_500));
+      yield* signIn(c, tokens.other);
+      yield* c.until(() => (c.sequences()["clock"] ?? []).length > 1);
+      // Let a late extra value show, should one come.
+      yield* Effect.sleep(Duration.millis(500));
+      return observed();
+    }).pipe(Effect.ensuring(record));
+  }).pipe(Effect.scoped);
 
 /**
  * Leg 2, the OCC counter. Four clients each send eight increments of one
@@ -437,37 +467,36 @@ export const observable = async (
  * twice. A target that shows no contention in a round runs another, up to
  * three, since contention on a binary depends on timing.
  */
-export const occ = async (
+export const occ = (
   target: Target,
   run: string,
   options: { readonly progress?: Progress } = {},
-) => {
-  const clients = Arr.map([0, 1, 2, 3], () => connect(target));
-  let observation = { contended: false, consistent: false };
-  try {
+) =>
+  Effect.gen(function* () {
+    const clients = yield* Effect.all(
+      Arr.map(Arr.range(1, 4), () => connect(target)),
+    );
+    const watcher = clients[0]!;
+    let observation = { contended: false, consistent: false };
     for (let round = 1; round <= 3; round++) {
       const name = `${names(run).contended}:${round}`;
-      const since = Date.now();
-      const outcomes = await Promise.all(
+      const since = yield* Clock.currentTimeMillis;
+      const outcomes = yield* Effect.all(
         Arr.flatMap(clients, (client) =>
           Arr.map(Arr.range(1, 8), () =>
             client.mutation("sync:increment", { name }),
           ),
         ),
+        { concurrency: "unbounded" },
       );
       const succeeded = Arr.filter(
         outcomes,
         (outcome) => "value" in (outcome as object),
       ).length;
-      const watcher = clients[0]!;
       watcher.watch(name, "sync:counter", { name });
       const expected = { value: succeeded };
-      await watcher.until(() => same(watcher.value(name), expected));
-      const contention = await within(
-        target.contention(since),
-        stepDeadline,
-        0,
-      );
+      yield* watcher.until(() => same(watcher.value(name), expected));
+      const contention = yield* bounded(target.contention(since), 0);
       observation = {
         contended: contention > 0,
         consistent: same(watcher.value(name), expected),
@@ -478,10 +507,7 @@ export const occ = async (
       if (observation.contended || !observation.consistent) break;
     }
     return observation;
-  } finally {
-    await Promise.all(Arr.map(clients, (client) => client.close()));
-  }
-};
+  }).pipe(Effect.scoped);
 
 /**
  * Leg 3, client acceptance. One client signs in, increments, loses a mutation
@@ -490,49 +516,55 @@ export const occ = async (
  * thrown on, each token confirmed, each mutation settled, and the counter at
  * exactly the increments it made, so the resent mutation applied once.
  */
-export const acceptance = async (
+export const acceptance = (
   target: Target,
   run: string,
   tokens: Tokens,
   options: { readonly progress?: Progress } = {},
-) => {
-  const name = names(run).accepted;
-  const c = connect(target);
-  const confirmed: Array<boolean> = [];
-  const settled: Array<boolean> = [];
-  const observed = () => ({
-    thrownOn: c.rejections,
-    confirmed,
-    settled,
-    reconnected: c.sockets.length > 1,
-    terminal: c.terminal(),
-  });
-  const record = () => {
-    if (options.progress !== undefined) options.progress.observed = observed();
-  };
-  const increment = () =>
-    c
-      .mutation("sync:increment", { name })
-      .then((outcome) => outcome !== unanswered);
-  try {
-    c.watch("counter", "sync:counter", { name });
-    confirmed.push(await c.setAuth(tokens.person));
-    record();
-    settled.push(await increment());
-    record();
-    c.loseNextMutationResponse();
-    settled.push(await increment());
-    record();
-    confirmed.push(await c.setAuth(tokens.other));
-    settled.push(await increment());
-    const expected = { value: 3 };
-    await c.until(() => same(c.value("counter"), expected));
-    return observed();
-  } finally {
-    record();
-    await c.close();
-  }
-};
+) =>
+  Effect.gen(function* () {
+    const name = names(run).accepted;
+    const c = yield* connect(target);
+    const confirmed: Array<boolean> = [];
+    const settled: Array<boolean> = [];
+    const observed = () => ({
+      thrownOn: c.rejections,
+      confirmed,
+      settled,
+      reconnected: c.sockets.length > 1,
+      terminal: c.terminal(),
+    });
+    const record = Effect.sync(() => {
+      if (options.progress !== undefined) {
+        options.progress.observed = observed();
+      }
+    });
+    const increment = c.mutation("sync:increment", { name }).pipe(
+      Effect.tap((outcome) =>
+        Effect.sync(() => settled.push(outcome !== unanswered)),
+      ),
+      Effect.andThen(record),
+    );
+    const signIn = (token: string) =>
+      c.setAuth(token).pipe(
+        Effect.tap((authenticated) =>
+          Effect.sync(() => confirmed.push(authenticated)),
+        ),
+        Effect.andThen(record),
+      );
+    return yield* Effect.gen(function* () {
+      c.watch("counter", "sync:counter", { name });
+      yield* signIn(tokens.person);
+      yield* increment;
+      c.loseNextMutationResponse();
+      yield* increment;
+      yield* signIn(tokens.other);
+      yield* increment;
+      const expected = { value: 3 };
+      yield* c.until(() => same(c.value("counter"), expected));
+      return observed();
+    }).pipe(Effect.ensuring(record));
+  }).pipe(Effect.scoped);
 
 /**
  * What the acceptance leg must show on every target.

@@ -1,25 +1,22 @@
-// oxlint-disable effecttsgo/new-promise, effecttsgo/global-timers, unicorn/prefer-add-event-listener -- The kernel socket has the `on*` surface the Convex client uses, whose callbacks these promises wrap.
 import { describe, expect, it } from "@effect/vitest";
 import { makeFunctionReference } from "convex/server";
 import type { JSONValue } from "convex/values";
 import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Str from "effect/String";
+import { mint } from "../../../tools/local-backend/fixtures/minted";
 import type { KernelControls } from "../src/internal/ConvexTest";
 import * as Json from "../src/internal/Json";
 import * as Redaction from "../src/internal/Redaction";
-import { mint } from "../../../tools/local-backend/fixtures/minted";
 import { kernelApp, kernelTarget } from "./fixtures/syncApp";
 import * as Legs from "./fixtures/syncLegs";
-
-// Socket frames are read and written in the socket's callbacks, so they go
-// through the kernel's synchronous JSON helper.
-const encodeJson = Json.stringify;
-const decodeJson = Json.parse;
+import { assertIs } from "./internal/assertIs";
 
 const secret = "canary-7f3a9c";
 
@@ -35,6 +32,29 @@ const short = "§¶";
  */
 const cacheAge = 1_000;
 
+/**
+ * JSON text of any value, as the kernel's frames and artifacts are written.
+ */
+const UnknownJson = Schema.fromJsonString(Schema.Unknown);
+
+/**
+ * `json` with bigints as their digits, so it encodes.
+ */
+const plain = (json: unknown): unknown =>
+  typeof json === "bigint"
+    ? json.toString()
+    : Arr.isArray(json)
+      ? Arr.map(json, plain)
+      : json !== null && typeof json === "object"
+        ? Rec.map(json as Record<string, unknown>, plain)
+        : json;
+
+/**
+ * `json` as text, with bigints as their digits.
+ */
+const text = (json: unknown) =>
+  Schema.encodeEffect(UnknownJson)(plain(json)).pipe(Effect.orDie);
+
 // The tests that mint tokens run live, so this is the host's time, the time
 // the kernel's wall-clock runtime verifies them at.
 const nowSeconds = Clock.currentTimeMillis.pipe(
@@ -45,23 +65,16 @@ const tokens = Effect.gen(function* () {
   const now = yield* nowSeconds;
   const { jwks, cases, signDeclared } = yield* mint(now);
   const other = yield* signDeclared({ sub: "other", role: "teacher" });
-  return {
-    jwks,
-    tokens: {
-      person: Option.getOrThrow(
-        Arr.findFirst(cases, (c) => c.name === "valid control"),
-      ).token,
-      other,
-    },
-  };
+  const person = Option.getOrThrow(
+    Arr.findFirst(cases, (c) => c.name === "valid control"),
+  ).token;
+  return { jwks, tokens: { person, other } };
 });
-
-const promise = <A>(run: () => Promise<A>) => Effect.promise(run);
 
 /**
  * A policy with the probe app's `notes.text` secret.
  */
-const policyTables = {
+const notesSecret = Redaction.policy({
   tables: {
     "": {
       notes: () =>
@@ -71,7 +84,8 @@ const policyTables = {
         }),
     },
   },
-};
+  functions: {},
+});
 
 describe("the unmodified client on the kernel", () => {
   it.live(
@@ -80,10 +94,12 @@ describe("the unmodified client on the kernel", () => {
       Effect.gen(function* () {
         const { jwks, tokens: minted } = yield* tokens;
         const t = kernelApp(jwks, { queryCacheAge: cacheAge });
-        const observed = yield* promise(() =>
-          Legs.observable(kernelTarget(t), "leg1", minted, secret, {
-            cacheAge,
-          }),
+        const observed = yield* Legs.observable(
+          kernelTarget(t),
+          "leg1",
+          minted,
+          secret,
+          { cacheAge },
         );
         expect(observed.rejections).toEqual([]);
         expect(observed.sockets.a["whoami"]).toEqual([
@@ -105,7 +121,7 @@ describe("the unmodified client on the kernel", () => {
         // The sign-in within the cache age is answered from the cache; the
         // identity change after it has expired answers a new time.
         expect(observed.sockets.c.clock).toEqual([0, 1]);
-        const disagreements = yield* promise(() => t.reference());
+        const disagreements = yield* Effect.promise(() => t.reference());
         expect(disagreements).toEqual([]);
       }),
   );
@@ -116,9 +132,7 @@ describe("the unmodified client on the kernel", () => {
       Effect.gen(function* () {
         const { jwks } = yield* tokens;
         const t = kernelApp(jwks);
-        const observed = yield* promise(() =>
-          Legs.occ(kernelTarget(t), "leg2"),
-        );
+        const observed = yield* Legs.occ(kernelTarget(t), "leg2");
         expect(observed).toEqual({ contended: true, consistent: true });
       }),
   );
@@ -129,8 +143,10 @@ describe("the unmodified client on the kernel", () => {
       Effect.gen(function* () {
         const { jwks, tokens: minted } = yield* tokens;
         const t = kernelApp(jwks);
-        const observed = yield* promise(() =>
-          Legs.acceptance(kernelTarget(t), "leg3", minted),
+        const observed = yield* Legs.acceptance(
+          kernelTarget(t),
+          "leg3",
+          minted,
         );
         expect(observed).toEqual(Legs.accepted);
       }),
@@ -139,35 +155,41 @@ describe("the unmodified client on the kernel", () => {
 
 /**
  * A socket on `t`'s sync endpoint driven by hand, for messages the unmodified
- * client never sends. It waits on the socket's callbacks and a short host
- * timer, as a client of the WebSocket surface does.
+ * client never sends, opened before it answers. Each send waits a moment for
+ * the kernel's answers, which reach `received` in later turns.
  */
-const rawSocket = (t: KernelControls) => {
-  const ws = new (t.sync().WebSocket)("ws://kernel.invalid");
-  const received: Array<Record<string, any>> = [];
-  const state: { closed: { code: number; reason: string } | undefined } = {
-    closed: undefined,
-  };
-  const opened = new Promise<void>((resolve) => {
-    ws.onopen = () => resolve();
+const rawSocket = (t: KernelControls) =>
+  Effect.gen(function* () {
+    const ws = new (t.sync().WebSocket)("ws://kernel.invalid");
+    const received: Array<Record<string, any>> = [];
+    const state: { closed: { code: number; reason: string } | undefined } = {
+      closed: undefined,
+    };
+    // oxlint-disable-next-line unicorn/prefer-add-event-listener -- The kernel's socket has only the `on*` handlers the Convex client uses.
+    ws.onmessage = (event) => {
+      // A frame arrives in the socket's callback, which cannot run an Effect.
+      received.push(Json.parse(event.data) as Record<string, any>);
+    };
+    // oxlint-disable-next-line unicorn/prefer-add-event-listener -- See above.
+    ws.onclose = (event) => {
+      state.closed = { code: event.code, reason: event.reason };
+    };
+    yield* Effect.callback<void>((resume) => {
+      // oxlint-disable-next-line unicorn/prefer-add-event-listener -- See above.
+      ws.onopen = () => resume(Effect.void);
+    });
+    return {
+      ws,
+      received,
+      state,
+      send: (message: object) =>
+        Schema.encodeEffect(UnknownJson)(message).pipe(
+          Effect.orDie,
+          Effect.flatMap((frame) => Effect.sync(() => ws.send(frame))),
+          Effect.andThen(Effect.sleep(Duration.millis(50))),
+        ),
+    };
   });
-  ws.onmessage = (event) => {
-    received.push(decodeJson(event.data) as Record<string, any>);
-  };
-  ws.onclose = (event) => {
-    state.closed = { code: event.code, reason: event.reason };
-  };
-  const settled = () => new Promise<void>((resolve) => setTimeout(resolve, 50));
-  return {
-    received,
-    state,
-    send: (message: object) =>
-      opened.then(() => {
-        ws.send(encodeJson(message));
-        return settled();
-      }),
-  };
-};
 
 const connectMessage = (sessionId: string) => ({
   type: "Connect",
@@ -177,25 +199,11 @@ const connectMessage = (sessionId: string) => ({
   clientTs: 0,
 });
 
-/**
- * `json` with bigints as their digits, so it encodes.
- */
-const plain = (json: unknown): unknown =>
-  typeof json === "bigint"
-    ? json.toString()
-    : Arr.isArray(json)
-      ? Arr.map(json, plain)
-      : json !== null && typeof json === "object"
-        ? Rec.map(json as Record<string, unknown>, plain)
-        : json;
-
-/**
- * `json` as text, with bigints as their digits.
- */
-const text = (json: unknown) => encodeJson(plain(json));
-
 const ofType = (received: ReadonlyArray<Record<string, any>>, type: string) =>
   Arr.filter(received, (message) => message["type"] === type);
+
+const lastError = (t: KernelControls) =>
+  Option.map(Arr.last(t.sync().failures()), (failure) => failure.error);
 
 describe("Sync's artifacts", () => {
   it.live(
@@ -204,44 +212,47 @@ describe("Sync's artifacts", () => {
       Effect.gen(function* () {
         const { jwks } = yield* tokens;
         const t = kernelApp(jwks);
-        const client = Legs.connect(kernelTarget(t));
-        client.watch("peek", "sync:peek", { secret });
-        const remembered = yield* promise(() =>
-          client.mutation("sync:remember", { name: "canary", secret }),
-        );
-        const revealed = yield* promise(() =>
-          client.mutation("sync:reveal", { secret }),
-        );
-        const stashed = yield* promise(() =>
-          client.mutation("sync:stash", { secret: short }),
-        );
-        yield* promise(() =>
-          client.until(() => client.value("peek") !== undefined),
-        );
-        expect(remembered).toEqual({ value: `kept ${secret}` });
-        expect(revealed).toEqual({
-          failed: { data: { code: "revealed", secret } },
-        });
-        expect(client.value("peek")).toEqual({ value: `seen ${secret}` });
-        expect(stashed).toEqual({ value: null });
-        yield* promise(() => client.close());
+        const { remembered, revealed, sequences } = yield* Effect.gen(
+          function* () {
+            const client = yield* Legs.connect(kernelTarget(t));
+            client.watch("peek", "sync:peek", { secret });
+            const kept = yield* client.mutation("sync:remember", {
+              name: "canary",
+              secret,
+            });
+            const failed = yield* client.mutation("sync:reveal", { secret });
+            const stashed = yield* client.mutation("sync:stash", {
+              secret: short,
+            });
+            yield* client.until(() => client.value("peek") !== undefined);
+            expect(kept).toEqual({ value: `kept ${secret}` });
+            expect(failed).toEqual({
+              failed: { data: { code: "revealed", secret } },
+            });
+            expect(client.value("peek")).toEqual({ value: `seen ${secret}` });
+            expect(stashed).toEqual({ value: null });
+            return {
+              remembered: kept,
+              revealed: failed,
+              sequences: client.sequences(),
+            };
+          },
+        ).pipe(Effect.scoped);
 
         // A call the binary's worker refuses, whose report names its message.
-        const socket = rawSocket(t);
-        yield* promise(() => socket.send(connectMessage("canary")));
-        yield* promise(() =>
-          socket.send({
-            type: "Mutation",
-            requestId: 0,
-            udfPath: "sync:stash",
-            args: [{ secret: short }],
-            componentPath: "child",
-          }),
-        );
+        const socket = yield* rawSocket(t);
+        yield* socket.send(connectMessage("canary"));
+        yield* socket.send({
+          type: "Mutation",
+          requestId: 0,
+          udfPath: "sync:stash",
+          args: [{ secret: short }],
+          componentPath: "child",
+        });
 
         const endpoint = t.sync();
         const record = endpoint.redact({
-          observations: client.sequences() as Record<string, Array<JSONValue>>,
+          observations: sequences as Record<string, Array<JSONValue>>,
           outcomes: [remembered, revealed],
         });
         const artifacts = {
@@ -251,9 +262,10 @@ describe("Sync's artifacts", () => {
           record,
         };
         for (const [name, artifact] of Rec.toEntries(artifacts)) {
-          expect(text(artifact), name).not.toContain(secret);
-          expect(text(artifact), name).not.toContain(short);
-          expect(text(artifact), name).toContain("[redacted]");
+          const written = yield* text(artifact);
+          expect(written, name).not.toContain(secret);
+          expect(written, name).not.toContain(short);
+          expect(written, name).toContain("[redacted]");
         }
         expect(endpoint.failures()).toEqual([
           expect.objectContaining({
@@ -274,25 +286,26 @@ describe("Sync's artifacts", () => {
     () =>
       Effect.gen(function* () {
         const t = kernelApp("");
-        const socket = rawSocket(t);
+        const socket = yield* rawSocket(t);
         const add = (requestId: number, note: string) => ({
           type: "Mutation",
           requestId,
           udfPath: "sync:add",
           args: [{ name: "ledger", text: note }],
         });
-        yield* promise(() => socket.send(connectMessage("session")));
-        yield* promise(() => socket.send(add(0, "once")));
-        yield* promise(() => socket.send(add(0, "once")));
+        yield* socket.send(connectMessage("session"));
+        yield* socket.send(add(0, "once"));
+        yield* socket.send(add(0, "once"));
         const responses = ofType(socket.received, "MutationResponse");
         expect(responses).toHaveLength(2);
         expect(responses[1]).toEqual(responses[0]);
-        const notes = yield* promise(() =>
+        const notes = yield* Effect.promise(() =>
           t.query(makeFunctionReference("sync:notes"), { name: "ledger" }),
         );
         expect(notes).toEqual(["once"]);
         const [entry, ...rest] = t.sync().ledger();
         expect(rest).toEqual([]);
+        assertIs(entry, Predicate.isNotUndefined);
         expect(entry).toMatchObject({
           sessionId: "session",
           requestId: 0,
@@ -300,18 +313,16 @@ describe("Sync's artifacts", () => {
           attempts: 1,
           result: null,
         });
-        expect(entry!.argsDigest).toMatch(/^[0-9a-f]{64}$/);
+        expect(entry.argsDigest).toMatch(/^[0-9a-f]{64}$/);
         expect(entry).not.toHaveProperty("args");
         expect(entry).not.toHaveProperty("argsKey");
 
-        yield* promise(() => socket.send(add(0, "other")));
+        yield* socket.send(add(0, "other"));
         expect(Arr.last(socket.received)).toMatchObject(
           Option.some({ type: "FatalError" }),
         );
         expect(socket.state.closed).toBeDefined();
-        expect(
-          Option.map(Arr.last(t.sync().failures()), (failure) => failure.error),
-        ).toMatchObject(
+        expect(lastError(t)).toMatchObject(
           Option.some({ _tag: "SyncRequestReused", requestId: 0 }),
         );
       }),
@@ -324,30 +335,26 @@ describe("Sync's artifacts", () => {
         // The note's text is secret in its table, so the first call keeps it
         // as it writes the row, after its arguments were first digested.
         const note = "ledger-note-secret-91c4";
-        const t = kernelApp("", {
-          redaction: Redaction.policy({
-            ...policyTables,
-            functions: {},
-          }),
-        });
-        const client = Legs.connect(kernelTarget(t));
+        const t = kernelApp("", { redaction: notesSecret });
+        const client = yield* Legs.connect(kernelTarget(t));
         client.loseNextMutationResponse();
-        const outcome = yield* promise(() =>
-          client.mutation("sync:add", { name: "resent", text: note }),
-        );
+        const outcome = yield* client.mutation("sync:add", {
+          name: "resent",
+          text: note,
+        });
         expect(outcome).toEqual({ value: null });
         expect(client.rejections).toEqual([]);
         expect(client.sockets.length).toBeGreaterThan(1);
-        const notes = yield* promise(() =>
+        const notes = yield* Effect.promise(() =>
           t.query(makeFunctionReference("sync:notes"), { name: "resent" }),
         );
         expect(notes).toEqual([note]);
         expect(t.sync().failures()).toEqual([]);
         const ledger = t.sync().ledger();
         expect(ledger).toHaveLength(1);
-        expect(text(ledger)).not.toContain(note);
-        yield* promise(() => client.close());
-      }),
+        const written = yield* text(ledger);
+        expect(written).not.toContain(note);
+      }).pipe(Effect.scoped),
   );
 
   it.live(
@@ -369,40 +376,36 @@ describe("Sync's artifacts", () => {
           value: valid,
           baseVersion: 0,
         };
-        const watching = rawSocket(t);
-        yield* promise(() => watching.send(connectMessage("watching")));
-        yield* promise(() => watching.send(authenticate));
-        yield* promise(() =>
-          watching.send({
-            type: "ModifyQuerySet",
-            baseVersion: 0,
-            newVersion: 1,
-            modifications: [
-              {
-                type: "Add",
-                queryId: 0,
-                udfPath: "sync:counter",
-                args: [{ name: "expiring" }],
-              },
-            ],
-          }),
-        );
-        const calling = rawSocket(t);
-        yield* promise(() => calling.send(connectMessage("calling")));
-        yield* promise(() => calling.send(authenticate));
+        const watching = yield* rawSocket(t);
+        yield* watching.send(connectMessage("watching"));
+        yield* watching.send(authenticate);
+        yield* watching.send({
+          type: "ModifyQuerySet",
+          baseVersion: 0,
+          newVersion: 1,
+          modifications: [
+            {
+              type: "Add",
+              queryId: 0,
+              udfPath: "sync:counter",
+              args: [{ name: "expiring" }],
+            },
+          ],
+        });
+        const calling = yield* rawSocket(t);
+        yield* calling.send(connectMessage("calling"));
+        yield* calling.send(authenticate);
         const sentBefore = watching.received.length;
 
         // The tokens expire an hour after they were minted, and the binary
         // treats the token as expired once the time reaches its `exp`.
         clock.now = start + 3_600_000;
-        yield* promise(() =>
+        yield* Effect.promise(() =>
           t.mutation(makeFunctionReference("sync:increment"), {
             name: "expiring",
           }),
         );
-        yield* promise(
-          () => new Promise<void>((resolve) => setTimeout(resolve, 50)),
-        );
+        yield* Effect.sleep(Duration.millis(50));
         expect(Arr.drop(watching.received, sentBefore)).toEqual([
           expect.objectContaining({
             type: "AuthError",
@@ -412,19 +415,17 @@ describe("Sync's artifacts", () => {
         ]);
         expect(watching.state.closed).toMatchObject({ code: 1000 });
 
-        yield* promise(() =>
-          calling.send({
-            type: "Mutation",
-            requestId: 0,
-            udfPath: "sync:add",
-            args: [{ name: "expiring", text: "too late" }],
-          }),
-        );
+        yield* calling.send({
+          type: "Mutation",
+          requestId: 0,
+          udfPath: "sync:add",
+          args: [{ name: "expiring", text: "too late" }],
+        });
         expect(Arr.last(calling.received)).toMatchObject(
           Option.some({ type: "AuthError", authUpdateAttempted: false }),
         );
         expect(ofType(calling.received, "MutationResponse")).toEqual([]);
-        const notes = yield* promise(() =>
+        const notes = yield* Effect.promise(() =>
           t.query(makeFunctionReference("sync:notes"), { name: "expiring" }),
         );
         expect(notes).toEqual([]);
@@ -470,22 +471,21 @@ describe("Sync's artifacts", () => {
           ],
         ] as const;
         for (const [message, error] of refusals) {
-          const socket = rawSocket(t);
-          yield* promise(() => socket.send(connectMessage("refused")));
-          yield* promise(() => socket.send(message));
+          const socket = yield* rawSocket(t);
+          yield* socket.send(connectMessage("refused"));
+          yield* socket.send(message);
           expect(Arr.last(socket.received)).toMatchObject(
             Option.some({ type: "FatalError" }),
           );
           expect(socket.state.closed).toMatchObject({ code: 1011 });
-          expect(
-            Option.map(Arr.last(t.sync().failures()), (f) => f.error),
-          ).toMatchObject(Option.some(error));
+          expect(lastError(t)).toMatchObject(Option.some(error));
         }
-        expect(
-          Arr.filter(t.sync().transcript(), ({ message }) =>
-            Str.includes("Admin")(text(message)),
-          ),
-        ).toEqual([
+        const admin = yield* Effect.filter(
+          t.sync().transcript(),
+          ({ message }) =>
+            text(message).pipe(Effect.map(Str.includes("Admin"))),
+        );
+        expect(admin).toEqual([
           expect.objectContaining({
             direction: "client",
             message: expect.objectContaining({ value: "[redacted]" }),
@@ -501,18 +501,16 @@ describe("Sync's artifacts", () => {
         const now = yield* nowSeconds;
         const { jwks, cases } = yield* mint(now);
         const t = kernelApp(jwks);
-        const socket = rawSocket(t);
-        yield* promise(() => socket.send(connectMessage("auth")));
-        yield* promise(() =>
-          socket.send({
-            type: "Authenticate",
-            tokenType: "User",
-            value: Option.getOrThrow(
-              Arr.findFirst(cases, (c) => c.name === "expired"),
-            ).token,
-            baseVersion: 0,
-          }),
-        );
+        const socket = yield* rawSocket(t);
+        yield* socket.send(connectMessage("auth"));
+        yield* socket.send({
+          type: "Authenticate",
+          tokenType: "User",
+          value: Option.getOrThrow(
+            Arr.findFirst(cases, (c) => c.name === "expired"),
+          ).token,
+          baseVersion: 0,
+        });
         expect(socket.received).toEqual([
           expect.objectContaining({
             type: "AuthError",
@@ -521,9 +519,7 @@ describe("Sync's artifacts", () => {
           }),
         ]);
         expect(socket.state.closed).toMatchObject({ code: 1000 });
-        expect(
-          Option.map(Arr.last(t.sync().failures()), (f) => f.error),
-        ).toMatchObject(
+        expect(lastError(t)).toMatchObject(
           Option.some({ _tag: "InvalidToken", code: "InvalidAuthHeader" }),
         );
       }),
@@ -534,39 +530,37 @@ describe("Sync's artifacts", () => {
     () =>
       Effect.gen(function* () {
         const t = kernelApp("");
-        const socket = rawSocket(t);
-        yield* promise(() => socket.send(connectMessage("invalid")));
-        yield* promise(() =>
-          socket.send({
-            type: "ModifyQuerySet",
-            baseVersion: 0,
-            newVersion: 1,
-            modifications: [
-              {
-                type: "Add",
-                queryId: 0,
-                udfPath: "sync:counter",
-                args: [{ name: 5 }],
-              },
-              {
-                type: "Add",
-                queryId: 1,
-                udfPath: "sync:counter",
-                args: [{ name: "fine" }],
-              },
-            ],
-          }),
-        );
-        yield* promise(() =>
-          socket.send({
-            type: "ModifyQuerySet",
-            baseVersion: 1,
-            newVersion: 2,
-            modifications: [{ type: "Remove", queryId: 0 }],
-          }),
-        );
-        const transitions = ofType(socket.received, "Transition");
-        expect(transitions[0]?.["modifications"]).toEqual([
+        const socket = yield* rawSocket(t);
+        yield* socket.send(connectMessage("invalid"));
+        yield* socket.send({
+          type: "ModifyQuerySet",
+          baseVersion: 0,
+          newVersion: 1,
+          modifications: [
+            {
+              type: "Add",
+              queryId: 0,
+              udfPath: "sync:counter",
+              args: [{ name: 5 }],
+            },
+            {
+              type: "Add",
+              queryId: 1,
+              udfPath: "sync:counter",
+              args: [{ name: "fine" }],
+            },
+          ],
+        });
+        yield* socket.send({
+          type: "ModifyQuerySet",
+          baseVersion: 1,
+          newVersion: 2,
+          modifications: [{ type: "Remove", queryId: 0 }],
+        });
+        const [first, second] = ofType(socket.received, "Transition");
+        assertIs(first, Predicate.isNotUndefined);
+        assertIs(second, Predicate.isNotUndefined);
+        expect(first["modifications"]).toEqual([
           expect.objectContaining({ type: "QueryFailed", queryId: 0 }),
           expect.objectContaining({
             type: "QueryUpdated",
@@ -574,10 +568,8 @@ describe("Sync's artifacts", () => {
             value: 0,
           }),
         ]);
-        expect(transitions[0]?.["modifications"][0]).not.toHaveProperty(
-          "errorData",
-        );
-        expect(transitions[1]?.["modifications"]).toEqual([
+        expect(first["modifications"][0]).not.toHaveProperty("errorData");
+        expect(second["modifications"]).toEqual([
           { type: "QueryRemoved", queryId: 0 },
         ]);
         expect(socket.state.closed).toBeUndefined();
@@ -589,48 +581,33 @@ describe("Sync's artifacts", () => {
     "a query a socket added just before it closed leaves no subscription behind, so a later commit leaves the full rerun in agreement",
     () =>
       Effect.gen(function* () {
-        let release = () => {};
-        const loaded = new Promise<void>((resolve) => {
-          release = resolve;
-        });
+        const { promise: loaded, resolve: release } =
+          Promise.withResolvers<void>();
         const t = kernelApp("", { loaded });
-        const ws = new (t.sync().WebSocket)("ws://kernel.invalid");
-        yield* promise(
-          () =>
-            new Promise<void>((resolve) => {
-              ws.onopen = () => resolve();
-            }),
-        );
-        ws.send(encodeJson(connectMessage("closing")));
-        ws.send(
-          encodeJson({
-            type: "ModifyQuerySet",
-            baseVersion: 0,
-            newVersion: 1,
-            modifications: [
-              {
-                type: "Add",
-                queryId: 0,
-                udfPath: "sync:counter",
-                args: [{ name: "late" }],
-              },
-            ],
-          }),
-        );
-        // The update has started, and the query's first run waits for the
-        // app's modules, which load only once the socket has closed.
-        yield* promise(
-          () => new Promise<void>((resolve) => setTimeout(resolve, 20)),
-        );
-        ws.close();
+        const socket = yield* rawSocket(t);
+        yield* socket.send(connectMessage("closing"));
+        // The update starts, and the query's first run waits for the app's
+        // modules, which load only once the socket has closed.
+        yield* socket.send({
+          type: "ModifyQuerySet",
+          baseVersion: 0,
+          newVersion: 1,
+          modifications: [
+            {
+              type: "Add",
+              queryId: 0,
+              udfPath: "sync:counter",
+              args: [{ name: "late" }],
+            },
+          ],
+        });
+        socket.ws.close();
         release();
-        yield* promise(
-          () => new Promise<void>((resolve) => setTimeout(resolve, 100)),
-        );
-        yield* promise(() =>
+        yield* Effect.sleep(Duration.millis(100));
+        yield* Effect.promise(() =>
           t.mutation(makeFunctionReference("sync:increment"), { name: "late" }),
         );
-        const disagreements = yield* promise(() => t.reference());
+        const disagreements = yield* Effect.promise(() => t.reference());
         expect(disagreements).toEqual([]);
       }),
   );
@@ -640,29 +617,31 @@ describe("Sync's artifacts", () => {
     () =>
       Effect.gen(function* () {
         const t = kernelApp("");
-        const client = Legs.connect(kernelTarget(t));
+        const client = yield* Legs.connect(kernelTarget(t));
         client.watch("counter", "sync:counter", { name: "pushed" });
-        yield* promise(() =>
-          client.until(() => client.value("counter") !== undefined),
-        );
-        yield* promise(() =>
+        yield* client.until(() => client.value("counter") !== undefined);
+        yield* Effect.promise(() =>
           t.mutation(makeFunctionReference("sync:increment"), {
             name: "pushed",
           }),
         );
-        const refreshed = yield* promise(() => t.refresh());
+        const refreshed = yield* Effect.promise(() => t.refresh());
         expect(refreshed).toEqual([]);
-        const reached = yield* promise(() =>
-          client.until(() => text(client.value("counter")) === '{"value":1}'),
+        const reached = yield* client.until(
+          () =>
+            (
+              client.value("counter") as
+                | { readonly value?: unknown }
+                | undefined
+            )?.value === 1,
         );
         expect(reached).toBe(true);
         expect(client.sequences()["counter"]).toEqual([
           { value: 0 },
           { value: 1 },
         ]);
-        const disagreements = yield* promise(() => t.reference());
+        const disagreements = yield* Effect.promise(() => t.reference());
         expect(disagreements).toEqual([]);
-        yield* promise(() => client.close());
-      }),
+      }).pipe(Effect.scoped),
   );
 });

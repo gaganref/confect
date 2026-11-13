@@ -11,8 +11,8 @@
  * deadline. A side that fails or passes its deadline leaves the record
  * `incomplete`, with what each side had observed by then.
  */
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- The binding runs git once, before any Effect runtime matters.
-import { execFileSync, spawn } from "node:child_process";
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- The binding runs git synchronously, as it reads `/proc`, before the leg starts.
+import { execFileSync } from "node:child_process";
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The binding hashes files synchronously.
 import { createHash } from "node:crypto";
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The binding reads `/proc` and source files synchronously.
@@ -21,16 +21,25 @@ import * as Fs from "node:fs";
 import * as Path from "node:path";
 import type { JSONValue } from "convex/values";
 import * as Arr from "effect/Array";
+import * as Cause from "effect/Cause";
+import * as Duration from "effect/Duration";
+import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import * as Str from "effect/String";
+import * as ChildProcess from "effect/process/ChildProcess";
+import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as Json from "../../../test/src/internal/Json";
 
-// Records and log lines are written and read in promise callbacks and child
-// process streams, through the kernel's synchronous JSON helper.
-const encodeJson = Json.stringify;
-const decodeJson = Json.parse;
+/**
+ * Two observations' canonical JSON, compared as text. The comparison is a
+ * synchronous predicate, so it goes through the kernel's JSON helper.
+ */
+export const canonicalEqual = (a: unknown, b: unknown) =>
+  Json.stringify(canonical(a)) === Json.stringify(canonical(b));
 
 /**
  * The probe cannot bind its record to a binary this run started.
@@ -203,57 +212,53 @@ export const sources = (worktree: string): Record<string, string> =>
  * How many times `sync:increment` lost a conflict on the binary since `since`:
  * the function log's executions of it that carry OCC information, read with
  * `convex logs` from the fixture project, whose CLI holds its own credentials.
+ * The command prints the history at once and then tails, so its output is read
+ * for a few seconds and the process ends with the scope.
  */
 export const contention = (directory: string, since: number) =>
-  // oxlint-disable-next-line effecttsgo/new-promise -- `convex logs` tails until it is killed, so the count settles from its output stream and a host timer.
-  new Promise<number>((resolve, reject) => {
-    const child = spawn(
-      "pnpm",
-      ["convex", "logs", "--history", "2000", "--jsonl"],
-      {
-        cwd: directory,
-        env: { ...process.env, CONVEX_AGENT_MODE: "anonymous" },
-        stdio: ["ignore", "pipe", "ignore"],
-      },
+  Effect.gen(function* () {
+    const spawner = yield* ChildProcessSpawner;
+    const handle = yield* spawner.spawn(
+      ChildProcess.make(
+        "pnpm",
+        ["convex", "logs", "--history", "2000", "--jsonl"],
+        {
+          cwd: directory,
+          extendEnv: true,
+          env: { CONVEX_AGENT_MODE: "anonymous" },
+        },
+      ),
     );
-    let output = "";
-    let quiet: ReturnType<typeof setTimeout> | undefined;
-    const finish = () => {
-      clearTimeout(limit);
-      clearTimeout(quiet);
-      child.kill();
-      const entries = Arr.map(
-        Arr.filter(Str.split(output, "\n"), Str.startsWith("{")),
-        (line) =>
-          decodeJson(line) as {
-            readonly identifier?: string;
-            readonly timestamp?: number;
-            readonly occInfo?: unknown;
-          },
-      );
-      resolve(
-        Arr.filter(
-          entries,
-          (entry) =>
-            entry.identifier === "sync:increment" &&
-            entry.occInfo !== null &&
-            entry.occInfo !== undefined &&
-            (entry.timestamp ?? 0) * 1000 >= since,
-        ).length,
-      );
-    };
-    // The first poll prints the history at once; the command then tails, so
-    // it ends when output has been quiet for a while.
-    // oxlint-disable-next-line effecttsgo/global-timers -- See above.
-    const limit = setTimeout(finish, 30_000);
-    child.stdout.on("data", (chunk: Buffer) => {
-      output += chunk.toString("utf8");
-      clearTimeout(quiet);
-      // oxlint-disable-next-line effecttsgo/global-timers -- See above.
-      quiet = setTimeout(finish, 3_000);
-    });
-    child.on("error", reject);
-  });
+    const lines = yield* handle.stdout.pipe(
+      Stream.decodeText(),
+      Stream.splitLines,
+      Stream.filter(Str.startsWith("{")),
+      Stream.interruptWhen(Effect.sleep(Duration.seconds(8))),
+      Stream.runCollect,
+    );
+    const entries = yield* Effect.forEach(lines, (line) =>
+      Schema.decodeEffect(Schema.fromJsonString(LogEntry))(line).pipe(
+        Effect.orDie,
+      ),
+    );
+    return Arr.filter(
+      entries,
+      (entry) =>
+        entry.identifier === "sync:increment" &&
+        entry.occInfo !== null &&
+        entry.occInfo !== undefined &&
+        (entry.timestamp ?? 0) * 1000 >= since,
+    ).length;
+  }).pipe(Effect.scoped);
+
+/**
+ * The fields of a function log entry the contention count reads.
+ */
+const LogEntry = Schema.Struct({
+  identifier: Schema.optional(Schema.String),
+  timestamp: Schema.optional(Schema.Finite),
+  occInfo: Schema.optional(Schema.Unknown),
+});
 
 /**
  * `agree` and `disagree` compare two finished sides. `incomplete` is a leg that
@@ -293,15 +298,18 @@ export const write = (
   record: ProbeRecord,
   redact: (json: JSONValue) => JSONValue,
   directory: string = records,
-): JSONValue => {
-  const marked = redact(record as unknown as JSONValue);
-  Fs.mkdirSync(directory, { recursive: true });
-  Fs.writeFileSync(
-    Path.join(directory, `${record.leg}.json`),
-    `${encodeJson(marked)}\n`,
-  );
-  return marked;
-};
+): Effect.Effect<JSONValue> =>
+  Effect.gen(function* () {
+    const marked = redact(record as unknown as JSONValue);
+    const text = yield* Schema.encodeEffect(
+      Schema.fromJsonString(Schema.Unknown),
+    )(marked).pipe(Effect.orDie);
+    yield* Effect.sync(() => {
+      Fs.mkdirSync(directory, { recursive: true });
+      Fs.writeFileSync(Path.join(directory, `${record.leg}.json`), `${text}\n`);
+    });
+    return marked;
+  });
 
 /**
  * What a side has observed so far, which the leg rewrites after each step.
@@ -325,30 +333,6 @@ export const canonical = (json: unknown): unknown =>
         )
       : json;
 
-const bounded = <A>(
-  promise: Promise<A>,
-  side: "binary" | "kernel",
-  deadline: number,
-): Promise<A> => {
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  // oxlint-disable-next-line effecttsgo/new-promise -- A side is a promise from the unmodified client, raced against a host timer.
-  const late = new Promise<never>((_resolve, reject) => {
-    // oxlint-disable-next-line effecttsgo/global-timers -- See above.
-    timer = setTimeout(
-      () =>
-        reject(
-          ProbeDeadline.make({
-            side,
-            deadline,
-            message: `The ${side} side did not finish within ${deadline} ms.`,
-          }),
-        ),
-      deadline,
-    );
-  });
-  return Promise.race([promise, late]).finally(() => clearTimeout(timer));
-};
-
 /**
  * Run one leg on the binary, then on the kernel, each to `deadline`, and write
  * its record. The record is first written `incomplete`, so a run that never
@@ -361,65 +345,79 @@ export const runLeg = (options: {
   readonly leg: string;
   readonly binding: Binding;
   readonly sources: Record<string, string>;
-  readonly deadline: number;
-  readonly binary: (progress: Progress) => Promise<unknown>;
-  readonly kernel: (progress: Progress) => Promise<unknown>;
+  readonly deadline: Duration.Duration;
+  readonly binary: (progress: Progress) => Effect.Effect<unknown>;
+  readonly kernel: (progress: Progress) => Effect.Effect<unknown>;
   readonly holds: (observed: unknown) => boolean;
   readonly redact: (json: JSONValue) => JSONValue;
   readonly directory?: string;
-}): Promise<ProbeRecord> => {
-  const progress = {
-    binary: { observed: null } as Progress,
-    kernel: { observed: null } as Progress,
-  };
-  const record = (
-    verdict: Verdict,
-    observations: ProbeRecord["observations"],
-    failure: ProbeRecord["failure"],
-  ) =>
-    write(
-      {
-        leg: options.leg,
-        verdict,
-        binding: options.binding,
-        sources: options.sources,
-        observations,
-        failure,
-      },
-      options.redact,
-      options.directory,
-    ) as unknown as ProbeRecord;
-  const partial = () => ({
-    kernel: progress.kernel.observed as JSONValue,
-    binary: progress.binary.observed as JSONValue,
-  });
-  record("incomplete", partial(), {
-    side: "none",
-    message: "The leg has not finished.",
-  });
-  let running: "binary" | "kernel" = "binary";
-  const side = (name: "binary" | "kernel") => {
-    running = name;
-    return bounded(options[name](progress[name]), name, options.deadline);
-  };
-  return side("binary")
-    .then((binary) =>
-      side("kernel").then((kernel) => {
-        const agree =
-          encodeJson(canonical(kernel)) === encodeJson(canonical(binary)) &&
-          options.holds(kernel) &&
-          options.holds(binary);
-        return record(
-          agree ? "agree" : "disagree",
-          { kernel: kernel as JSONValue, binary: binary as JSONValue },
-          null,
+}): Effect.Effect<ProbeRecord> =>
+  Effect.gen(function* () {
+    const progress = {
+      binary: { observed: null } as Progress,
+      kernel: { observed: null } as Progress,
+    };
+    const record = (
+      verdict: Verdict,
+      observations: ProbeRecord["observations"],
+      failure: ProbeRecord["failure"],
+    ) =>
+      write(
+        {
+          leg: options.leg,
+          verdict,
+          binding: options.binding,
+          sources: options.sources,
+          observations,
+          failure,
+        },
+        options.redact,
+        options.directory,
+      ).pipe(Effect.map((marked) => marked as unknown as ProbeRecord));
+    const partial = () => ({
+      kernel: progress.kernel.observed as JSONValue,
+      binary: progress.binary.observed as JSONValue,
+    });
+    yield* record("incomplete", partial(), {
+      side: "none",
+      message: "The leg has not finished.",
+    });
+    let running: "binary" | "kernel" = "binary";
+    const side = (name: "binary" | "kernel") =>
+      Effect.suspend(() => {
+        running = name;
+        return options[name](progress[name]).pipe(
+          Effect.timeoutOrElse({
+            duration: options.deadline,
+            orElse: () =>
+              Effect.fail(
+                ProbeDeadline.make({
+                  side: name,
+                  deadline: Duration.toMillis(options.deadline),
+                  message: `The ${name} side did not finish within ${Duration.toMillis(options.deadline)} ms.`,
+                }),
+              ),
+          }),
         );
-      }),
-    )
-    .catch((error: unknown) =>
-      record("incomplete", partial(), {
+      });
+    const finished = yield* Effect.exit(
+      Effect.all({ binary: side("binary"), kernel: side("kernel") }),
+    );
+    if (Exit.isFailure(finished)) {
+      const error = Cause.squash(finished.cause);
+      return yield* record("incomplete", partial(), {
         side: running,
         message: error instanceof Error ? error.message : String(error),
-      }),
+      });
+    }
+    const { binary, kernel } = finished.value;
+    const agree =
+      canonicalEqual(kernel, binary) &&
+      options.holds(kernel) &&
+      options.holds(binary);
+    return yield* record(
+      agree ? "agree" : "disagree",
+      { kernel: kernel as JSONValue, binary: binary as JSONValue },
+      null,
     );
-};
+  });

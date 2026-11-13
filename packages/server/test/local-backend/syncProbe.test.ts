@@ -12,21 +12,20 @@
  */
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The fixture project's directory, for the CLI that reads its logs.
 import * as Path from "node:path";
+import * as NodeServices from "@effect/platform-node/NodeServices";
 import { describe, expect, it, layer } from "@effect/vitest";
 import * as LocalBackend from "confect-local-backend/LocalBackend";
+import * as Arr from "effect/Array";
 import * as Clock from "effect/Clock";
 import * as Duration from "effect/Duration";
-import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import { mint } from "../../../../tools/local-backend/fixtures/minted";
 import { kernelApp, kernelTarget } from "../../../test/test/fixtures/syncApp";
 import * as Legs from "../../../test/test/fixtures/syncLegs";
 import * as SyncProbe from "./SyncProbe";
-
-import * as Json from "../../../test/src/internal/Json";
-
-const encodeJson = Json.stringify;
 
 const fixture = Path.join(
   import.meta.dirname,
@@ -44,44 +43,47 @@ const cacheAge = Duration.toMillis(LocalBackend.maxCacheAge);
 /**
  * How long one side of a leg may take, every step's own deadline included.
  */
-const deadline = 120_000;
-
-const binaryTarget: Legs.Target = {
-  name: "binary",
-  address: LocalBackend.cloudUrl(LocalBackend.ports.sync),
-  WebSocket: globalThis.WebSocket as unknown as Legs.Target["WebSocket"],
-  contention: (since) => SyncProbe.contention(fixture, since),
-};
+const deadline = Duration.minutes(2);
 
 /**
  * Run `leg` on the binary and on a fresh kernel through `SyncProbe.runLeg`, and
- * answer the record it wrote.
+ * answer the record it wrote. The binary's contention is read by the fixture's
+ * own CLI, a child process the Node services spawn.
  */
 const probe = (
   leg: string,
-  run: (target: Legs.Target, progress: Legs.Progress) => Promise<unknown>,
+  run: (target: Legs.Target, progress: Legs.Progress) => Effect.Effect<unknown>,
   jwks: string,
   holds: (observation: unknown) => boolean = () => true,
 ) =>
   Effect.gen(function* () {
+    const services = yield* Layer.build(NodeServices.layer);
+    const binary: Legs.Target = {
+      name: "binary",
+      address: LocalBackend.cloudUrl(LocalBackend.ports.sync),
+      WebSocket: globalThis.WebSocket as unknown as Legs.Target["WebSocket"],
+      contention: (since) =>
+        SyncProbe.contention(fixture, since).pipe(
+          Effect.provideContext(services),
+          Effect.orDie,
+        ),
+    };
     const binding = SyncProbe.bind({
       cloud: LocalBackend.ports.sync,
       site: LocalBackend.ports.sync + 1,
     });
     const t = kernelApp(jwks, { queryCacheAge: cacheAge });
-    return yield* Effect.promise(() =>
-      SyncProbe.runLeg({
-        leg,
-        binding,
-        sources: SyncProbe.sources(binding.worktree),
-        deadline,
-        binary: (progress) => run(binaryTarget, progress),
-        kernel: (progress) => run(kernelTarget(t), progress),
-        holds,
-        redact: t.sync().redact,
-      }),
-    );
-  });
+    return yield* SyncProbe.runLeg({
+      leg,
+      binding,
+      sources: SyncProbe.sources(binding.worktree),
+      deadline,
+      binary: (progress) => run(binary, progress),
+      kernel: (progress) => run(kernelTarget(t), progress),
+      holds,
+      redact: t.sync().redact,
+    });
+  }).pipe(Effect.scoped);
 
 const tokens = (backend: LocalBackend.LocalBackend["Service"]) =>
   Effect.gen(function* () {
@@ -92,19 +94,16 @@ const tokens = (backend: LocalBackend.LocalBackend["Service"]) =>
     yield* backend.setEnv("TEST_AUTH_JWKS", jwks);
     yield* backend.redeploy;
     const other = yield* signDeclared({ sub: "other", role: "teacher" });
-    return {
-      jwks,
-      tokens: {
-        person: Option.getOrThrow(
-          Arr.findFirst(cases, (c) => c.name === "valid control"),
-        ).token,
-        other,
-      },
-    };
+    const person = Option.getOrThrow(
+      Arr.findFirst(cases, (c) => c.name === "valid control"),
+    ).token;
+    return { jwks, tokens: { person, other } };
   });
 
-const same = (a: unknown, b: unknown) =>
-  encodeJson(SyncProbe.canonical(a)) === encodeJson(SyncProbe.canonical(b));
+const recordText = (record: SyncProbe.ProbeRecord) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(record).pipe(
+    Effect.orDie,
+  );
 
 if (!SyncProbe.supported) {
   describe.skip(`sync protocol probe against a runner-started binary: skipped on ${process.platform}, since its record binds the binary's process through /proc, which only Linux has`, () => {
@@ -135,11 +134,11 @@ if (!SyncProbe.supported) {
               (observed as { readonly rejections: ReadonlyArray<string> })
                 .rejections.length === 0,
           );
-          expect(record.verdict, encodeJson(record)).toBe("agree");
+          const written = yield* recordText(record);
+          expect(record.verdict, written).toBe("agree");
           expect(record.binding.pid).toBeGreaterThan(0);
           expect(record.binding.binary.sha256).toMatch(/^[0-9a-f]{64}$/);
           expect(record.binding).not.toHaveProperty("url");
-          const written = encodeJson(record);
           expect(written).not.toContain(secret);
           expect(written).toContain("[redacted]");
         }),
@@ -155,9 +154,14 @@ if (!SyncProbe.supported) {
             "occ",
             (target, progress) => Legs.occ(target, run, { progress }),
             "",
-            (observed) => same(observed, { contended: true, consistent: true }),
+            (observed) =>
+              SyncProbe.canonicalEqual(observed, {
+                contended: true,
+                consistent: true,
+              }),
           );
-          expect(record.verdict, encodeJson(record)).toBe("agree");
+          const written = yield* recordText(record);
+          expect(record.verdict, written).toBe("agree");
         }),
     );
 
@@ -174,9 +178,10 @@ if (!SyncProbe.supported) {
             (target, progress) =>
               Legs.acceptance(target, run, minted, { progress }),
             jwks,
-            (observed) => same(observed, Legs.accepted),
+            (observed) => SyncProbe.canonicalEqual(observed, Legs.accepted),
           );
-          expect(record.verdict, encodeJson(record)).toBe("agree");
+          const written = yield* recordText(record);
+          expect(record.verdict, written).toBe("agree");
         }),
     );
   });
