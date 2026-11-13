@@ -1,4 +1,5 @@
 import { GroupSpec, Spec } from "@confect/core";
+import egressNode from "../egressNode.spec.js";
 import groups_cacheControl from "../groups/cacheControl.spec.js";
 import groups_cacheStubbed from "../groups/cacheStubbed.spec.js";
 import groups_callbacks from "../groups/callbacks.spec.js";
@@ -17,9 +18,11 @@ import groups_transactions from "../groups/transactions.spec.js";
 import metadataNode from "../metadataNode.spec.js";
 
 const spec: Spec.Spec<{
+  readonly egressNode: GroupSpec.NamedAt<typeof egressNode, "egressNode">;
   readonly groups: GroupSpec.NamedAt<GroupSpec.GroupSpec<"Convex", "groups", never, GroupSpec.NamedAt<typeof groups_cacheControl, "cacheControl"> | GroupSpec.NamedAt<typeof groups_cacheStubbed, "cacheStubbed"> | GroupSpec.NamedAt<typeof groups_callbacks, "callbacks"> | GroupSpec.NamedAt<typeof groups_commitTs, "commitTs"> | GroupSpec.NamedAt<typeof groups_componentAuthoring, "componentAuthoring"> | GroupSpec.NamedAt<typeof groups_components, "components"> | GroupSpec.NamedAt<typeof groups_ioBans, "ioBans"> | GroupSpec.NamedAt<typeof groups_metadata, "metadata"> | GroupSpec.NamedAt<typeof groups_mounts, "mounts"> | GroupSpec.NamedAt<typeof groups_nativeComponents, "nativeComponents"> | GroupSpec.NamedAt<typeof groups_pagination, "pagination"> | GroupSpec.NamedAt<typeof groups_reserved, "reserved"> | GroupSpec.NamedAt<typeof groups_scheduling, "scheduling"> | GroupSpec.NamedAt<typeof groups_storage, "storage"> | GroupSpec.NamedAt<typeof groups_transactions, "transactions">>, "groups">;
   readonly metadataNode: GroupSpec.NamedAt<typeof metadataNode, "metadataNode">;
 }> = Spec.fromGroups({
+  ["egressNode"]: egressNode,
   ["groups"]: GroupSpec.addGroupsAt(GroupSpec.make(), {
     ["cacheControl"]: groups_cacheControl,
     ["cacheStubbed"]: groups_cacheStubbed,
