@@ -395,4 +395,43 @@ describe("deployment signing", () => {
         expect(verified).toBe(true);
       }),
   );
+
+  it.effect(
+    "a backend that drew its signing key refuses a snapshot, which does not carry the key",
+    () =>
+      Effect.gen(function* () {
+        const fresh = () =>
+          convexTest({
+            schema: defineSchema({}),
+            modules: { "_generated/server.ts": () => Promise.resolve({}) },
+            runtime: {
+              now: () => start,
+              commitTs: (version: number) => BigInt(version),
+              random: () => 0.5,
+            },
+          }) as KernelControls;
+        const source = fresh();
+        const before = source.exportSnapshot();
+        yield* Effect.promise(() => source.jwks());
+        expect(() => source.exportSnapshot()).toThrow(
+          expect.objectContaining({
+            _tag: "SnapshotSigningKey",
+            operation: "export",
+          }),
+        );
+        const signed = fresh();
+        yield* Effect.promise(() => signed.jwks());
+        const restore = yield* Effect.promise(() =>
+          signed.restoreSnapshot(before).then(
+            () => undefined,
+            (error: unknown) => error,
+          ),
+        );
+        expect(restore).toMatchObject({
+          _tag: "SnapshotSigningKey",
+          operation: "restore",
+        });
+        yield* Effect.promise(() => fresh().restoreSnapshot(before));
+      }),
+  );
 });

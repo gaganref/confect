@@ -633,6 +633,13 @@ export class DeploymentKey {
 
   constructor(private readonly random: () => number) {}
 
+  /**
+   * Whether the key was drawn: a token was signed or the JWKS was served.
+   */
+  get drawn(): boolean {
+    return this.derived !== undefined;
+  }
+
   private key(): Derived {
     this.derived ??= derive(
       Uint8Array.from({ length: 32 }, () => Math.floor(this.random() * 256)),
