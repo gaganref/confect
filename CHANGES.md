@@ -308,6 +308,31 @@ its fixture's system-table share measures 21. Changeset:
 `kernel-refusal-field-names.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel randomness
+
+Every random source a kernel function or module reaches draws from the
+driver's stream, or is refused. The kernel's own `Math` and `crypto` sit in
+each function's and each module load's copy of the globals and resolve their
+source on every call. While modules load, they draw from the stream of the
+world the backend opens in, which `TestConfect.layer`'s `seed` starts. Inside
+a function they draw from the bound invocation's stream, for plain Convex and
+component functions and lazily imported modules too, so a function a module
+kept while it loaded draws from whichever function later calls it.
+`getRandomValues` answers as the binary's: a `TypeError` past 65,536 bytes, a
+`TypeMismatchError` for a non-integer array, and a draw for a detached call.
+`randomUUID` builds a version 4 UUID from the stream. Modules load one at a
+time, so their draws replay, and a draw while loading with no world refuses
+with `LoadRandomUnavailable`, and so does the open. `crypto.subtle`'s drawing
+operations, `generateKey`, RSA-OAEP `encrypt` and ECDSA or RSA-PSS `sign`,
+reject with the binary's error in a query, a mutation and a module load, and
+with `RequiresBinary` in an action. `kernelBoundaries.ts` records the action
+cases as `ActionCryptoRandomness` and `ActionLoadCryptoRandomness`. A function
+with no invocation bound, and a reference kept before the kernel ran any code,
+keep the host's. The fixture's system-table share measures 22 with the probe.
+This is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-randomness.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
