@@ -76,11 +76,19 @@ describe("conformance exceptions", () => {
     ]);
   });
 
-  it("the lane holds one exception, the action egress departure", () => {
+  it("the lane holds three exceptions: the action egress departure and the two route errors convex-test rejects", () => {
     expect(Arr.map(exceptions, ({ file, name }) => ({ file, name }))).toEqual([
       {
         file: "egress.test.ts",
         name: "action egress > a raw fetch in an action or a Node action dies with UndeclaredFetch naming the action and host",
+      },
+      {
+        file: "httpRouteError.test.ts",
+        name: "HTTP route errors > a root route that throws an Error answers the binary's 500 JSON error body",
+      },
+      {
+        file: "httpRouteConvexError.test.ts",
+        name: "HTTP route errors > a root route that throws a ConvexError answers the binary's 500 JSON error body with its data",
       },
     ]);
   });

@@ -191,8 +191,11 @@ On the kernel, a raw `fetch` in an action or a Node action dies with
 `docs` anchor. The action settles with it at once, whatever its handler catches
 and whether or not the handler settles, runs no later call, and logs nothing
 more, as the binary stops an ended function's JavaScript. The binary performs
-this fetch, so this is the kernel's one deliberate departure, recorded as the
-convex-test lane's single conformance exception. The entry names one exact case,
+this fetch, so this is the kernel's one deliberate departure, recorded as a
+convex-test lane conformance exception in `conformance.ts`, now the lane's one
+exception mechanism: `main`'s two route-error exceptions moved into it from
+`vitest.mock-backend.config.ts`, and every entry names convex-test 0.0.67. An
+entry names one exact case,
 the binary behaviour, each function's expected outcome there, an owner, the
 convex-test version and its local-backend evidence, and the lane refuses broad,
 stale or versionless entries, a skipped case, an unrelated failure and an

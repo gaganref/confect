@@ -19,7 +19,7 @@ import {
 
 // The convex-test lane (`vitest.mock-backend.config.ts`) runs each case in
 // `conformance.ts` and requires it to fail on convex-test with the outcomes its
-// entry expects, the binary's, and no error but its own assertions. An entry
+// entry records and no error but its own departure assertion. An entry
 // that does not name one case exactly, or was checked against another
 // convex-test version, fails the lane, and `conformanceReporter.ts` fails a run in which an
 // excepted case did not run.

@@ -891,13 +891,15 @@ where the binary writes a float as `2.0`.
 
 convex-test rejects the `fetch` instead. The two root cases
 (`test/mock-backend/httpRouteError.test.ts` and `httpRouteConvexError.test.ts`)
-are conformance exceptions in the convex-test lane. #137's `conformance.ts`
-machinery is not on `main` yet, so they are recorded the way the lane records
-an exception today: `vitest.mock-backend.config.ts` lists each one, its exact
-case, the binary behaviour, an owner, the convex-test version and the binary
-evidence, and excludes its file, which holds that one case. An entry checked
-against another convex-test version fails the lane. The mounted case runs on
-both lanes, since the bridge is the adapter's own.
+are conformance exceptions in the convex-test lane. #137 moved them from
+`vitest.mock-backend.config.ts`'s file exclusions into `conformance.ts`, the
+lane's one mechanism: each case now runs on convex-test, records the fetch's
+outcome (`fetchOutcome` in `serverError.ts`: the response's status, or the
+rejection's tag and message) and asserts the binary's 500 through `departs`, so
+the lane takes its failure only for that departure, with the recorded outcome,
+`Error` "The route failed." and `ConvexError` `{"code":"denied","attempt":2}`
+on convex-test 0.0.67. The body check runs where there is a response. The
+mounted case runs on both lanes, since the bridge is the adapter's own.
 
 Fix round 2:
 
@@ -994,8 +996,11 @@ package holds the same way.
 
 `test/mock-backend/egress.test.ts` asserts the refusal for a Confect action and
 a Confect Node action. It passes in the kernel lane. In the convex-test lane,
-where convex-test performs the fetch as the binary does, it is the lane's one
-conformance exception (`test/mock-backend/conformance.ts`): one exact case, the
+where convex-test performs the fetch as the binary does, it is one of the
+lane's three conformance exceptions (`test/mock-backend/conformance.ts`),
+re-checked on convex-test 0.0.67, and the only one where the kernel departs
+from the binary; in the other two, the route errors above, convex-test does.
+Its entry names one exact case, the
 binary behaviour, the outcome each function it calls has there (both return
 `reached /ping`), an owner, the convex-test version and the evidence above. The
 case records each function's outcome, a return value or an error's tag and

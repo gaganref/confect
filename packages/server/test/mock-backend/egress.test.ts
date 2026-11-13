@@ -11,8 +11,9 @@ import { departs, recordOutcomes, type Outcome } from "./conformance";
 import refs from "./fixtures/confect/_generated/refs";
 import * as TestConfect from "./TestConfect";
 
-// The binary performs this fetch, and so does convex-test, so the case is the
-// convex-test lane's one conformance exception (`conformance.ts`).
+// The binary performs this fetch, and so does convex-test, so the case is a
+// convex-test lane conformance exception (`conformance.ts`), the one where the
+// kernel departs from the binary.
 
 const loopback = Effect.acquireRelease(
   Effect.promise(

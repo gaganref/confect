@@ -6,11 +6,14 @@ import * as Str from "effect/String";
 /**
  * The convex-test lane's conformance exceptions as data, and the rule each
  * entry must meet. An exception is a mock-backend case that holds the test
- * kernel's behaviour where the Convex binary, and convex-test with it, does
- * otherwise on purpose. The lane (`convexTestLane.ts`) runs each excepted case
- * and requires it to fail there with the outcomes its entry expects, and with
- * no error but its own assertions. A case that passes on convex-test, fails for
- * another reason or is skipped fails the lane, so the list only shrinks.
+ * kernel's behaviour where convex-test does otherwise: either the kernel
+ * departs from the binary on purpose, as action egress does, or convex-test
+ * departs from the binary, which the kernel follows, as for a route that
+ * throws. The kernel lane runs every one as an ordinary case. The lane
+ * (`convexTestLane.ts`) runs each excepted case and requires it to fail there
+ * with the outcomes its entry expects, and with no error but its own
+ * assertions. A case that passes on convex-test, fails for another reason or is
+ * skipped fails the lane, so the list only shrinks.
  */
 
 /**
@@ -105,8 +108,8 @@ export interface ConformanceException {
    */
   readonly binary: string;
   /**
-   * What each function the case calls does on convex-test, which follows the
-   * binary. A case that records anything else fails the lane.
+   * What each function the case calls does on convex-test. A case that records
+   * anything else fails the lane.
    */
   readonly outcomes: ReadonlyArray<Outcome>;
   /**
@@ -127,7 +130,7 @@ export const exceptions: ReadonlyArray<ConformanceException> = [
   {
     file: "egress.test.ts",
     name: "action egress > a raw fetch in an action or a Node action dies with UndeclaredFetch naming the action and host",
-    convexTest: "0.0.65",
+    convexTest: "0.0.67",
     binary:
       "The binary performs a raw fetch in an action and a Node action, and the action returns the response. The test kernel refuses it with BackendRefusal UndeclaredFetch, so egress goes through a provider port and a run replays. This is the kernel's one deliberate departure (Frame ADR 0012, action egress row).",
     outcomes: [
@@ -139,6 +142,43 @@ export const exceptions: ReadonlyArray<ConformanceException> = [
     owner: "@confect/test kernel, build-order row 6 (action egress)",
     evidence:
       "packages/server/test/local-backend/egress.test.ts > action egress > an action and a Node action perform a raw fetch, on precompiled-2026-10-28-cccbade: each reaches a loopback server and returns its response. convex-backend cccbade4: an action's start_async_op starts the fetch as a task (crates/isolate/src/environment/action/mod.rs:1639-1645), which task_executor.rs:151 hands to run_fetch (action/fetch.rs:34); only a cloud proxy's 407 refuses a host (crates/http_client/src/lib.rs:131-134). Positive control: packages/test/test/Egress.test.ts > provider ports > a port call in an action is held as a command until the test answers it.",
+  },
+  {
+    file: "httpRouteError.test.ts",
+    name: "HTTP route errors > a root route that throws an Error answers the binary's 500 JSON error body",
+    convexTest: "0.0.67",
+    binary:
+      'The binary answers 500, application/json, {"code":"[Request ID: <16 hex>] Server Error: Uncaught Error: <message>","trace":"Uncaught Error: <message>\\n    at …\\n"}. convex-test rejects the fetch with the thrown Error.',
+    outcomes: [
+      {
+        function: "GET /convex-native/throws",
+        failed: { tag: "Error", message: "The route failed." },
+      },
+    ],
+    departure: "expected { …(2) } to deeply equal { …(2) }",
+    owner: "@confect/test kernel, build-order row 6 (HTTP and signed ingress)",
+    evidence:
+      "packages/server/test/local-backend/httpErrors.test.ts > HTTP route errors on the binary > a route that throws an Error answers 500 with the redacted-error JSON body, on precompiled-2026-10-28-cccbade. convex-backend cccbade: Application::run_http_action sends RedactedJsError::to_http_response_parts (crates/application/src/lib.rs:1542-1548), which builds the body (crates/application/src/redaction.rs:143-160) through HttpActionResponsePart::from_json (crates/udf/src/http_action.rs:133-141).",
+  },
+  {
+    file: "httpRouteConvexError.test.ts",
+    name: "HTTP route errors > a root route that throws a ConvexError answers the binary's 500 JSON error body with its data",
+    convexTest: "0.0.67",
+    binary:
+      "The binary answers 500, application/json, with code and trace naming Uncaught ConvexError and the error's JSON, and data holding the ConvexError's data. convex-test rejects the fetch with the thrown ConvexError.",
+    outcomes: [
+      {
+        function: "GET /convex-native/throws-convex-error",
+        failed: {
+          tag: "ConvexError",
+          message: '{"code":"denied","attempt":2}',
+        },
+      },
+    ],
+    departure: "expected { …(2) } to deeply equal { …(2) }",
+    owner: "@confect/test kernel, build-order row 6 (HTTP and signed ingress)",
+    evidence:
+      "packages/server/test/local-backend/httpErrors.test.ts > HTTP route errors on the binary > a route that throws a ConvexError answers 500 with its data, on precompiled-2026-10-28-cccbade. convex-backend cccbade: custom_data_if_any adds data (crates/application/src/redaction.rs:156-158).",
   },
 ];
 
