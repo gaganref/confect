@@ -1,4 +1,5 @@
 import * as Clock from "./Clock.js";
+import * as Globals from "./Globals.js";
 import type { DocumentId, StoredDocument } from "./KernelValues.js";
 import { resolveCommittedValues, tableNameFromId } from "./KernelValues.js";
 import * as ReadSet from "./ReadSet.js";
@@ -169,18 +170,26 @@ export interface KernelRuntime {
    * version and asks nothing.
    */
   readonly commitTs: (version: Version) => bigint;
+  /**
+   * A random stream, uniform on [0, 1), that the kernel draws its own values
+   * from, such as the seed of the deployment's signing key. Without one they
+   * come from a fixed seed, so a runtime that pins the clock and commit
+   * timestamps replays byte for byte.
+   */
+  readonly random?: () => number;
 }
 
 /**
  * The wall clock, as convex-test reads it. Each answer is the time in
  * nanoseconds when it is asked for, bumped past the previous answer when the
- * clock stands still.
+ * clock stands still. Its random stream is the host's.
  */
 export const wallClock = (): KernelRuntime => {
   let latest = 0n;
   const now = Clock.hostNow;
   return {
     now,
+    random: () => Globals.host(() => Math.random()),
     commitTs: () => {
       const nanos = BigInt(now()) * 1_000_000n;
       latest = nanos > latest ? nanos : latest + 1n;

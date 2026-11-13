@@ -42,12 +42,12 @@ export interface VerifierCase {
 const encode = (value: unknown) =>
   Buffer.from(encodeJson(value)).toString("base64url");
 
-const rsaKeys = () =>
+export const rsaKeys = (modulusLength = 2048) =>
   Effect.promise(() =>
     crypto.subtle.generateKey(
       {
         name: "RSASSA-PKCS1-v1_5",
-        modulusLength: 2048,
+        modulusLength,
         publicExponent: new Uint8Array([1, 0, 1]),
         hash: "SHA-256",
       },
@@ -56,11 +56,23 @@ const rsaKeys = () =>
     ),
   );
 
-const sign = (key: CryptoKey, claims: Record<string, unknown>) =>
+const signatureAlgorithms = {
+  RS256: "RSASSA-PKCS1-v1_5",
+  ES256: { name: "ECDSA", hash: "SHA-256" },
+} as const;
+
+/**
+ * A token over `claims` under `kid` "test", signed by `key` with `alg`.
+ */
+export const sign = (
+  key: CryptoKey,
+  claims: Record<string, unknown>,
+  alg: keyof typeof signatureAlgorithms = "RS256",
+) =>
   Effect.promise(() => {
-    const unsigned = `${encode({ alg: "RS256", typ: "JWT", kid: "test" })}.${encode(claims)}`;
+    const unsigned = `${encode({ alg, typ: "JWT", kid: "test" })}.${encode(claims)}`;
     return crypto.subtle
-      .sign("RSASSA-PKCS1-v1_5", key, new TextEncoder().encode(unsigned))
+      .sign(signatureAlgorithms[alg], key, new TextEncoder().encode(unsigned))
       .then(
         (signature) =>
           `${unsigned}.${Buffer.from(signature).toString("base64url")}`,
@@ -68,9 +80,16 @@ const sign = (key: CryptoKey, claims: Record<string, unknown>) =>
   });
 
 /**
+ * A JWKS of `keys` as a base64 `data:` URL.
+ */
+export const jwksUrl = (keys: ReadonlyArray<object>) =>
+  `data:application/json;base64,${Buffer.from(encodeJson({ keys })).toString("base64")}`;
+
+/**
  * Keys made in the test, the JWKS that declares one of them as a `data:` URL,
  * and the five verifier cases, each with a token minted at `nowSeconds`. The
- * foreign key signs under the declared key's `kid` and issuer.
+ * foreign key signs under the declared key's `kid` and issuer. `signDeclared`
+ * signs the valid control's claims with overrides.
  */
 export const mint = (nowSeconds: number) =>
   Effect.gen(function* () {
@@ -79,11 +98,9 @@ export const mint = (nowSeconds: number) =>
     const publicJwk = yield* Effect.promise(() =>
       crypto.subtle.exportKey("jwk", declared.publicKey),
     );
-    const jwks = `data:application/json;base64,${Buffer.from(
-      encodeJson({
-        keys: [{ ...publicJwk, kid: "test", alg: "RS256", use: "sig" }],
-      }),
-    ).toString("base64")}`;
+    const jwks = jwksUrl([
+      { ...publicJwk, kid: "test", alg: "RS256", use: "sig" },
+    ]);
     const claims = {
       iss: provider.issuer,
       aud: provider.applicationID,
@@ -141,5 +158,11 @@ export const mint = (nowSeconds: number) =>
         expected: refused("InvalidAuthHeader"),
       },
     ];
-    return { jwks, cases };
+    return {
+      jwks,
+      cases,
+      claims,
+      signDeclared: (overrides: Record<string, unknown>) =>
+        sign(declared.privateKey, { ...claims, ...overrides }),
+    };
   });

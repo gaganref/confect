@@ -1,8 +1,12 @@
-// The deployment signer (`DeploymentKey`) is derived from convex-test 0.0.65
-// (index.ts), Copyright Convex, Inc., licensed under the Apache License,
-// Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0). The verifier
-// follows the binary's `validate_id_token`, cited at each rule.
+// The deployment signer's validation (`DeploymentKey.sign`) is derived from
+// convex-test 0.0.65 (index.ts), Copyright Convex, Inc., licensed under the
+// Apache License, Version 2.0 (https://www.apache.org/licenses/LICENSE-2.0).
+// Its key and signatures come from @noble/curves. The verifier follows the
+// binary's `validate_id_token`, cited at each rule.
 
+import { p256 } from "@noble/curves/nist.js";
+import { hmac } from "@noble/hashes/hmac.js";
+import { sha256 } from "@noble/hashes/sha2.js";
 import type { UserIdentity } from "convex/server";
 import * as KernelRefusal from "./KernelRefusal.js";
 import { base64UrlEncode, base64UrlEncodeBytes } from "./KernelValues.js";
@@ -116,8 +120,7 @@ const invalid = (message: string) => refuse("InvalidAuthHeader", message);
 
 /**
  * The registered claims, typed as the binary's `RegisteredClaims` reads them,
- * and the rest as the private claims. A timestamp is any number, truncated to
- * whole seconds.
+ * and the rest as the private claims.
  */
 interface Claims {
   readonly iss: string | undefined;
@@ -153,9 +156,15 @@ const decodePart = (part: string | undefined): unknown => {
 
 const text = (value: unknown) =>
   typeof value === "string" ? value : undefined;
+/**
+ * A timestamp as `biscuit`'s `numeric_type` reads it: a number from 0 up to
+ * 2^64, rounded to the nearest second. A negative or larger number fails the
+ * payload (`biscuit/src/serde_custom/numeric_type.rs:52-91`,
+ * `biscuit/src/lib.rs:719-732`).
+ */
 const time = (value: unknown) =>
-  typeof value === "number" && Number.isFinite(value)
-    ? Math.trunc(value)
+  typeof value === "number" && value >= 0 && value < 2 ** 64
+    ? Math.round(value)
     : undefined;
 const audienceList = (value: unknown) =>
   typeof value === "string"
@@ -241,24 +250,31 @@ const noProviderMessage = (providers: ReadonlyArray<Provider>) =>
         .join(", ")}]`;
 
 /**
- * The text of a `data:` URL, percent-decoded and then base64-decoded when its
- * media type ends `;base64`, as the binary's `data-url` crate decodes a JWKS
- * (`authentication/src/lib.rs:445-456`). `undefined` for any other URL. A body
- * that does not decode throws.
+ * The text of a `data:` URL, decoded as the binary's `data-url` crate 0.3.1
+ * decodes a JWKS (`authentication/src/lib.rs:445-456`). Tabs and newlines are
+ * ignored. The media type ends at the first comma, which must come before any
+ * `#`. The body stops at the first `#`, so a fragment is dropped, and is
+ * percent-decoded, then base64-decoded when the media type ends `;base64`
+ * (`data-url/src/lib.rs:73-120`, `:158-200`, `:283-353`). `undefined` for a URL
+ * of another scheme. A data URL that does not decode throws.
  */
 const dataUrlBody = (url: string): string | undefined => {
-  if (!/^data:/i.test(url)) return undefined;
-  const comma = url.indexOf(",");
-  if (comma === -1) return undefined;
-  const mediaType = url.slice("data:".length, comma).trim();
-  const binary = url
+  const input = url.replace(/^[\0-\x20]+/, "").replace(/[\t\n\r]/g, "");
+  if (!/^data:/i.test(input)) return undefined;
+  const afterColon = input.slice("data:".length).replace(/[\0-\x20]+$/, "");
+  const comma = afterColon.search(/[,#]/);
+  if (comma === -1 || afterColon[comma] !== ",") {
+    throw new Error("A data URL needs a comma before its body.");
+  }
+  const mediaType = afterColon.slice(0, comma).trim();
+  const binary = afterColon
     .slice(comma + 1)
+    .split("#", 1)[0]!
     .replace(/%([0-9a-f]{2})/gi, (_match, hex: string) =>
       String.fromCharCode(Number.parseInt(hex, 16)),
     );
-  const decoded = /;\s*base64$/i.test(mediaType)
-    ? atob(binary.replace(/[\t\n\f\r ]/g, ""))
-    : binary;
+  // `atob` is the forgiving-base64 decode the crate implements.
+  const decoded = /; *base64$/i.test(mediaType) ? atob(binary) : binary;
   return new TextDecoder("utf-8", { fatal: true }).decode(
     Uint8Array.from(decoded, (char) => char.charCodeAt(0)),
   );
@@ -275,20 +291,69 @@ const verifyParameters = {
 } as const;
 
 /**
- * Only the key material, since the binary's `biscuit` ignores `use` and
- * `key_ops`, which Web Crypto would check.
+ * An unsigned big-endian integer's bytes without leading zeros, as `biscuit`
+ * reads a JWK's `n` and `e` into a `BigUint`.
  */
-const keyMaterial = (jwk: Record<string, unknown>): JsonWebKey | undefined =>
-  jwk["kty"] === "RSA"
-    ? { kty: "RSA", n: jwk["n"] as string, e: jwk["e"] as string }
-    : jwk["kty"] === "EC"
-      ? {
-          kty: "EC",
-          crv: jwk["crv"] as string,
-          x: jwk["x"] as string,
-          y: jwk["y"] as string,
-        }
+const unsigned = (part: unknown): Uint8Array | undefined => {
+  const bytes = typeof part === "string" ? decodeBytes(part) : undefined;
+  if (bytes === undefined) return undefined;
+  const first = bytes.findIndex((byte) => byte !== 0);
+  return first === -1 ? new Uint8Array() : bytes.subarray(first);
+};
+
+const bitLength = (bytes: Uint8Array) =>
+  bytes.length === 0
+    ? 0
+    : (bytes.length - 1) * 8 + (32 - Math.clz32(bytes[0]!));
+
+/**
+ * Whether `ring` 0.17.14, which `biscuit` verifies RS256 with as
+ * `RSA_PKCS1_2048_8192_SHA256` (`biscuit/src/jwa.rs:368-445`), takes this
+ * public key. The modulus is odd, over 2,040 bits rounded up to whole bytes and
+ * at most 8,192 (`ring/src/rsa/public_modulus.rs:47-71`,
+ * `ring/src/arithmetic/bigint/modulusvalue.rs:42-67`). The exponent is odd, at
+ * most five bytes, and from 3 to 2^33 - 1
+ * (`ring/src/rsa/public_exponent.rs:46-80`,
+ * `ring/src/rsa/verification.rs:205-219`).
+ */
+const ringTakesRsa = (n: Uint8Array, e: Uint8Array) => {
+  const nBits = bitLength(n);
+  if (nBits === 0 || n[n.length - 1]! % 2 === 0) return false;
+  if (Math.ceil(nBits / 8) * 8 < 2048 || nBits > 8192) return false;
+  if (e.length === 0 || e.length > 5) return false;
+  const exponent = e.reduce((value, byte) => value * 256 + byte, 0);
+  return exponent >= 3 && exponent <= 2 ** 33 - 1 && exponent % 2 === 1;
+};
+
+const encodeBytes = (bytes: Uint8Array) => base64UrlEncodeBytes(bytes);
+
+/**
+ * The key Web Crypto verifies with, holding only what `biscuit` reads, or
+ * `undefined` for a key the binary would refuse for `algorithm`. RS256 needs an
+ * RSA key `ring` takes. ES256 needs an EC key whose `x` and `y` are 32 bytes
+ * each: `biscuit` passes `0x04 || x || y` to `ring`'s `ECDSA_P256_SHA256_FIXED`
+ * and never reads `crv`, `use` or `key_ops` (`biscuit/src/jwk.rs:373-380`).
+ */
+const keyMaterial = (
+  jwk: Record<string, unknown>,
+  algorithm: Algorithm,
+): JsonWebKey | undefined => {
+  if (algorithm === "RS256") {
+    const n = unsigned(jwk["n"]);
+    const e = unsigned(jwk["e"]);
+    return jwk["kty"] === "RSA" &&
+      n !== undefined &&
+      e !== undefined &&
+      ringTakesRsa(n, e)
+      ? { kty: "RSA", n: encodeBytes(n), e: encodeBytes(e) }
       : undefined;
+  }
+  const x = typeof jwk["x"] === "string" ? decodeBytes(jwk["x"]) : undefined;
+  const y = typeof jwk["y"] === "string" ? decodeBytes(jwk["y"]) : undefined;
+  return jwk["kty"] === "EC" && x?.length === 32 && y?.length === 32
+    ? { kty: "EC", crv: "P-256", x: encodeBytes(x), y: encodeBytes(y) }
+    : undefined;
+};
 
 /**
  * Checks the signature against the key the header's `kid` names, as `biscuit`'s
@@ -315,7 +380,7 @@ const signatureHolds = (
   if (header["alg"] !== algorithm || algorithm !== expected) {
     return Promise.resolve(false);
   }
-  const material = keyMaterial(jwk);
+  const material = keyMaterial(jwk, expected);
   const signature = decodeBytes(parts[2]);
   if (material === undefined || signature === undefined) {
     return Promise.resolve(false);
@@ -516,56 +581,70 @@ interface DeploymentJwk {
   readonly use: "sig";
 }
 
+interface Derived {
+  readonly secretKey: Uint8Array;
+  readonly jwk: DeploymentJwk;
+}
+
+const KEY_LABEL = new TextEncoder().encode("deployment jwt signing key");
+
 /**
- * One test backend's deployment signing key, made on first use. It signs what
- * `ctx.auth.signJwt` mints, and its public half is the deployment's JWKS.
+ * The P-256 key the seed gives, as the binary derives its own from the
+ * deployment's root secret: an HMAC of the label, generation 0 and an attempt
+ * counter, retried while the scalar is out of range
+ * (`keybroker/src/deployment_jwt.rs:162-176`). The `kid` is the key's RFC 7638
+ * thumbprint (`:337-346`).
+ */
+const derive = (seed: Uint8Array): Derived => {
+  for (let attempt = 0; attempt <= 255; attempt++) {
+    const label = new Uint8Array(KEY_LABEL.length + 5);
+    label.set(KEY_LABEL);
+    label[label.length - 1] = attempt;
+    const secretKey = hmac(sha256, seed, label);
+    if (!p256.utils.isValidSecretKey(secretKey)) continue;
+    const point = p256.getPublicKey(secretKey, false);
+    const x = base64UrlEncodeBytes(point.subarray(1, 33));
+    const y = base64UrlEncodeBytes(point.subarray(33, 65));
+    const kid = base64UrlEncodeBytes(
+      sha256(
+        new TextEncoder().encode(
+          `{"crv":"P-256","kty":"EC","x":"${x}","y":"${y}"}`,
+        ),
+      ),
+    );
+    return {
+      secretKey,
+      jwk: { kty: "EC", crv: "P-256", x, y, kid, alg: "ES256", use: "sig" },
+    };
+  }
+  throw new Error("Could not derive a valid P-256 key");
+};
+
+/**
+ * One test backend's deployment signing key, derived on first use from 32 bytes
+ * drawn from the kernel runtime's random stream, never the host's. It signs
+ * what `ctx.auth.signJwt` mints by RFC 6979, so a replay of one history signs
+ * the same tokens. The binary's signer draws a random nonce (`:308`), which no
+ * verifier can tell from a deterministic one. Its public half is the
+ * deployment's JWKS.
  */
 export class DeploymentKey {
-  private key:
-    | Promise<{ readonly privateKey: CryptoKey; readonly jwk: DeploymentJwk }>
-    | undefined;
+  private derived: Derived | undefined;
 
-  private generated() {
-    this.key ??= subtle
-      .generateKey({ name: "ECDSA", namedCurve: "P-256" }, false, [
-        "sign",
-        "verify",
-      ])
-      .then(({ privateKey, publicKey }) =>
-        subtle.exportKey("jwk", publicKey).then(({ x, y }) =>
-          // Like the backend, use the key's RFC 7638 thumbprint as its `kid`.
-          subtle
-            .digest(
-              "SHA-256",
-              new TextEncoder().encode(
-                JSON.stringify({ crv: "P-256", kty: "EC", x: x!, y: y! }),
-              ),
-            )
-            .then((thumbprint) => {
-              const kid = base64UrlEncodeBytes(new Uint8Array(thumbprint));
-              return {
-                privateKey,
-                jwk: {
-                  kty: "EC",
-                  crv: "P-256",
-                  x: x!,
-                  y: y!,
-                  kid,
-                  alg: "ES256",
-                  use: "sig",
-                } as const,
-              };
-            }),
-        ),
-      );
-    return this.key;
+  constructor(private readonly random: () => number) {}
+
+  private key(): Derived {
+    this.derived ??= derive(
+      Uint8Array.from({ length: 32 }, () => Math.floor(this.random() * 256)),
+    );
+    return this.derived;
   }
 
   /**
    * What the backend serves at `${CONVEX_CLOUD_URL}/.well-known/jwks.json`.
    */
   jwks(): Promise<{ readonly keys: ReadonlyArray<DeploymentJwk> }> {
-    return this.generated().then(({ jwk }) => ({ keys: [{ ...jwk }] }));
+    return Promise.resolve({ keys: [{ ...this.key().jwk }] });
   }
 
   /**
@@ -658,28 +737,26 @@ export class DeploymentKey {
       iat: issuedAt,
       exp: issuedAt + expiresIn,
     };
-    return this.generated().then(({ privateKey, jwk }) => {
-      const signingInput =
-        base64UrlEncode(
-          JSON.stringify({ alg: "ES256", typ: "JWT", kid: jwk.kid }),
-        ) +
-        "." +
-        base64UrlEncode(JSON.stringify(payload));
-      return subtle
-        .sign(
-          { name: "ECDSA", hash: "SHA-256" },
-          privateKey,
-          new TextEncoder().encode(signingInput),
-        )
-        .then((signature) => {
-          const token = `${signingInput}.${base64UrlEncodeBytes(new Uint8Array(signature))}`;
-          if (token.length > DEPLOYMENT_JWT_MAX_SIZE) {
-            throw new Error(
-              `The token is ${token.length} bytes, over the ${DEPLOYMENT_JWT_MAX_SIZE} byte limit`,
-            );
-          }
-          return token;
-        });
-    });
+    const { secretKey, jwk } = this.key();
+    const signingInput =
+      base64UrlEncode(
+        JSON.stringify({ alg: "ES256", typ: "JWT", kid: jwk.kid }),
+      ) +
+      "." +
+      base64UrlEncode(JSON.stringify(payload));
+    // `p256.sign` hashes with SHA-256 and takes its nonce by RFC 6979.
+    const signature = p256.sign(
+      new TextEncoder().encode(signingInput),
+      secretKey,
+    );
+    const token = `${signingInput}.${base64UrlEncodeBytes(signature)}`;
+    if (token.length > DEPLOYMENT_JWT_MAX_SIZE) {
+      return Promise.reject(
+        new Error(
+          `The token is ${token.length} bytes, over the ${DEPLOYMENT_JWT_MAX_SIZE} byte limit`,
+        ),
+      );
+    }
+    return Promise.resolve(token);
   }
 }

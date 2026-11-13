@@ -1,19 +1,28 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- The replay test compares the exact stdout of two fresh Node processes.
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
 import {
   defineSchema,
   makeFunctionReference,
   queryGeneric,
 } from "convex/server";
+import { jsonToConvex } from "convex/values";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as KernelRefusal from "../src/internal/KernelRefusal";
 import {
+  jwksUrl,
   mint,
   provider,
+  rsaKeys,
+  sign,
   type VerifierCase,
   type VerifierOutcome,
 } from "./fixtures/minted";
+import { oversizedRsa } from "./fixtures/oversized";
 
 const whoami = makeFunctionReference<"query", {}, object | null>(
   "identity:whoami",
@@ -167,5 +176,223 @@ describe("token verification", () => {
         index: 0,
       });
     }),
+  );
+
+  it.effect(
+    "a fractional expiry rounds to the nearest second, as the binary reads it",
+    () =>
+      Effect.gen(function* () {
+        const now = start / 1000;
+        const { jwks, signDeclared } = yield* mint(now);
+        const { t } = world([{ ...provider, jwks }]);
+        // Rounds to now - 5, inside the skew. Truncating gives now - 6.
+        const inside = yield* signDeclared({ exp: now - 5.4 });
+        expect(yield* outcome(t, inside)).toMatchObject({ _tag: "accepted" });
+        const outside = yield* signDeclared({ exp: now - 5.6 });
+        expect(yield* outcome(t, outside)).toEqual(
+          refused("InvalidAuthHeader"),
+        );
+        const negative = yield* signDeclared({ nbf: -1 });
+        expect(yield* outcome(t, negative)).toEqual(
+          refused("InvalidAuthHeader"),
+        );
+      }),
+  );
+
+  it.effect("a JWKS data URL's fragment is dropped before it decodes", () =>
+    Effect.gen(function* () {
+      const { jwks, cases } = yield* mint(start / 1000);
+      const { t } = world([{ ...provider, jwks: `${jwks}#review` }]);
+      expect(yield* outcome(t, cases[0]!.token)).toEqual(cases[0]!.expected);
+    }),
+  );
+});
+
+/**
+ * A backend that declares `jwk` under `kid` "test" for `algorithm`, and a token
+ * over the valid claims signed with `alg`.
+ */
+const declaring = (jwk: object, algorithm: "RS256" | "ES256" = "RS256") =>
+  world([{ ...provider, algorithm, jwks: jwksUrl([{ ...jwk, kid: "test" }]) }])
+    .t;
+
+const validClaims = {
+  iss: provider.issuer,
+  aud: provider.applicationID,
+  sub: "person",
+  iat: start / 1000,
+  exp: start / 1000 + 3600,
+};
+
+const refused = (code: "NoAuthProvider" | "InvalidAuthHeader") => ({
+  _tag: "refused",
+  refusal: "InvalidToken",
+  code,
+});
+
+describe("key constraints", () => {
+  it.effect.each([
+    { bits: 2048, expected: { _tag: "accepted" } },
+    { bits: 1024, expected: refused("InvalidAuthHeader") },
+  ])("an RS256 key of $bits bits", ({ bits, expected }) =>
+    Effect.gen(function* () {
+      const keys = yield* rsaKeys(bits);
+      const jwk = yield* Effect.promise(() =>
+        crypto.subtle.exportKey("jwk", keys.publicKey),
+      );
+      const token = yield* sign(keys.privateKey, validClaims);
+      expect(yield* outcome(declaring(jwk), token)).toMatchObject(expected);
+    }),
+  );
+
+  it.effect(
+    "an RS256 key of 16,384 bits is refused, though Web Crypto verifies its signature",
+    () =>
+      Effect.gen(function* () {
+        const key = oversizedRsa(16_384);
+        expect(key.bits).toBe(16_384);
+        const encode = (value: object) =>
+          Buffer.from(JSON.stringify(value)).toString("base64url");
+        const unsigned = `${encode({ alg: "RS256", kid: "test" })}.${encode(validClaims)}`;
+        const message = new TextEncoder().encode(unsigned);
+        const signature = yield* Effect.promise(() => key.sign(message));
+        const verifies = yield* Effect.promise(() =>
+          crypto.subtle
+            .importKey(
+              "jwk",
+              key.jwk,
+              { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
+              false,
+              ["verify"],
+            )
+            .then((imported) =>
+              crypto.subtle.verify(
+                "RSASSA-PKCS1-v1_5",
+                imported,
+                signature as BufferSource,
+                message,
+              ),
+            ),
+        );
+        expect(verifies).toBe(true);
+        const token = `${unsigned}.${Buffer.from(signature).toString("base64url")}`;
+        expect(yield* outcome(declaring(key.jwk), token)).toEqual(
+          refused("InvalidAuthHeader"),
+        );
+      }),
+    120_000,
+  );
+
+  it.effect(
+    "an ES256 key is its 32-byte coordinates, whatever curve it names",
+    () =>
+      Effect.gen(function* () {
+        const keys = yield* Effect.promise(() =>
+          crypto.subtle.generateKey(
+            { name: "ECDSA", namedCurve: "P-256" },
+            true,
+            ["sign", "verify"],
+          ),
+        );
+        const jwk = yield* Effect.promise(() =>
+          crypto.subtle.exportKey("jwk", keys.publicKey),
+        );
+        const token = yield* sign(keys.privateKey, validClaims, "ES256");
+        expect(
+          yield* outcome(declaring({ ...jwk, crv: "P-384" }, "ES256"), token),
+        ).toMatchObject({ _tag: "accepted" });
+        expect(
+          yield* outcome(
+            declaring({ ...jwk, x: `${jwk.x}AA` }, "ES256"),
+            token,
+          ),
+        ).toEqual(refused("InvalidAuthHeader"));
+      }),
+  );
+});
+
+describe("deployment signing", () => {
+  it("two processes storing a signed token commit the same bytes", () => {
+    const loader = pathToFileURL(
+      createRequire(import.meta.url).resolve("tsx/esm"),
+    ).href;
+    const script = fileURLToPath(
+      new URL("fixtures/signedReplay.ts", import.meta.url),
+    );
+    const replay = () =>
+      spawnSync(process.execPath, ["--import", loader, script], {
+        encoding: "utf8",
+      });
+    const [one, two] = [replay(), replay()];
+    expect([one.status, one.stderr, two.status, two.stderr]).toEqual([
+      0,
+      "",
+      0,
+      "",
+    ]);
+    expect(one.stdout).toBe(two.stdout);
+    const { held, applied, stored, rows } = jsonToConvex(
+      JSON.parse(one.stdout),
+    ) as unknown as {
+      held: string;
+      applied: string;
+      stored: string;
+      rows: ReadonlyArray<{ token: string }>;
+    };
+    expect(applied).toBe(held);
+    expect(rows.map((row) => row.token)).toEqual([held, stored]);
+  }, 60_000);
+
+  it.effect(
+    "a signed token verifies against the deployment's JWKS, and one runtime seed gives one key",
+    () =>
+      Effect.gen(function* () {
+        const seeded = (value: number) =>
+          convexTest({
+            schema: defineSchema({}),
+            modules: { "_generated/server.ts": () => Promise.resolve({}) },
+            runtime: {
+              now: () => start,
+              commitTs: (version: number) => BigInt(version),
+              random: () => value,
+            },
+          }) as KernelControls;
+        const keys = (t: KernelControls) =>
+          Effect.promise(() => t.jwks()).pipe(
+            Effect.map((jwks) => jwks.keys[0]!),
+          );
+        const first = yield* keys(seeded(0.25));
+        expect(yield* keys(seeded(0.25))).toEqual(first);
+        expect((yield* keys(seeded(0.75))).kid).not.toBe(first.kid);
+        const t = seeded(0.25);
+        const token = yield* Effect.promise((): Promise<string> =>
+          t.mutation((ctx: any) =>
+            ctx.auth.signJwt({
+              claims: { sub: "outbox" },
+              expiresInSeconds: 60,
+            }),
+          ),
+        );
+        const [header, payload, signature] = token.split(".");
+        const verified = yield* Effect.promise(() =>
+          crypto.subtle
+            .importKey(
+              "jwk",
+              first,
+              { name: "ECDSA", namedCurve: "P-256" },
+              false,
+              ["verify"],
+            )
+            .then((key) =>
+              crypto.subtle.verify(
+                { name: "ECDSA", hash: "SHA-256" },
+                key,
+                Buffer.from(signature!, "base64url"),
+                new TextEncoder().encode(`${header}.${payload}`),
+              ),
+            ),
+        );
+        expect(verified).toBe(true);
+      }),
   );
 });

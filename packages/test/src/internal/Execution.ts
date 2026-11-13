@@ -42,6 +42,11 @@ import {
 } from "./KernelValues.js";
 
 const ROOT = "";
+
+/**
+ * The stream a runtime without one draws from, so its draws replay.
+ */
+const fixedSeed = () => 0;
 const TYPICAL_CONVEX_ID_LENGTH = 32;
 
 type Modules = Record<string, () => Promise<any>>;
@@ -481,7 +486,7 @@ export class World {
    */
   private authConfig: Promise<unknown> = Promise.resolve(undefined);
   private providers: ReadonlyArray<Identity.Provider> | undefined;
-  readonly deploymentKey = new Identity.DeploymentKey();
+  readonly deploymentKey: Identity.DeploymentKey;
 
   constructor(
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
@@ -491,6 +496,9 @@ export class World {
     installConvexGlobal();
     Clock.install(pinnedTime, () => executions.getStore() !== undefined);
     this.components.set(ROOT, makeComponent(ROOT, schema, modules));
+    this.deploymentKey = new Identity.DeploymentKey(
+      runtime.random ?? fixedSeed,
+    );
   }
 
   register(

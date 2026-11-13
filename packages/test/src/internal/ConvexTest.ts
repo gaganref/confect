@@ -55,7 +55,9 @@ export interface KernelControls {
   /**
    * The deployment's public keys, which verify what `ctx.auth.signJwt` signs.
    */
-  readonly jwks: () => Promise<{ readonly keys: ReadonlyArray<JsonWebKey> }>;
+  readonly jwks: () => Promise<{
+    readonly keys: ReadonlyArray<JsonWebKey & { readonly kid: string }>;
+  }>;
   /**
    * Move the kernel's clock forward, running each job due on the way at its
    * deadline.
