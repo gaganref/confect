@@ -422,7 +422,7 @@ it.effect("assigns a task", () =>
 );
 ```
 
-`TestBackend.layer` opens a fresh session on the test kernel. Every module of every mount loads. Then each mount's `init` runs through the deploy modules a push runs, nested mounts before their parent. Then `seed` runs in one mutation. `TestBackend.Session` reports each kit's standing sources and the inits that ran.
+`TestBackend.layer` opens a fresh session on the test kernel. Every module of every mount loads. Then each mount's `init` runs through the deploy modules a push runs, nested mounts before their parent. Then `seed` runs in one mutation. `TestBackend.Session` reports each kit's standing sources, the declared cron jobs and the inits that ran.
 
 ### Configuration
 

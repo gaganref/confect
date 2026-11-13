@@ -6,9 +6,11 @@ import { FunctionSpec, GroupSpec, Ref } from "@confect/core";
 import { assert, describe, expect, expectTypeOf, it } from "@effect/vitest";
 import {
   componentsGeneric,
+  cronJobs,
   defineSchema,
   defineTable,
   internalMutationGeneric,
+  makeFunctionReference,
   mutationGeneric,
   queryGeneric,
   type FunctionReference,
@@ -78,6 +80,19 @@ const component = (child: boolean) => ({
         },
       }),
     }),
+  ...(child
+    ? {}
+    : {
+        "crons.ts": () => {
+          const crons = cronJobs();
+          crons.interval(
+            "beat",
+            { minutes: 1 },
+            makeFunctionReference<"mutation">("state:tick"),
+          );
+          return Promise.resolve({ default: crons });
+        },
+      }),
   "state.ts": () =>
     Promise.resolve({
       log: queryGeneric({
@@ -180,6 +195,9 @@ describe("TestBackend.layer", () => {
         parent: [],
         "parent/child": ["state:tick"],
       });
+      expect(session.crons).toEqual([
+        { componentPath: "parent/child", name: "beat", udfPath: "state:tick" },
+      ]);
     }).pipe(Effect.provide(backend.layer({ config }))),
   );
 

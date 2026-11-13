@@ -135,6 +135,15 @@ const docs = "https://confect.dev/guides/testing#configuration";
  */
 export interface Opened {
   readonly standing: Readonly<Record<string, ReadonlyArray<string>>>;
+  /**
+   * The declared cron jobs of every component's `crons.ts`, the other standing
+   * source a drain leaves pending.
+   */
+  readonly crons: ReadonlyArray<{
+    readonly componentPath: string;
+    readonly name: string;
+    readonly udfPath: string;
+  }>;
   readonly initialized: ReadonlyArray<string>;
 }
 
@@ -381,7 +390,23 @@ export const make = <
         );
         if (seed !== undefined) yield* opened.service.run(seed);
         return Context.make(service, opened.service).pipe(
-          Context.add(Session, { standing, initialized }),
+          Context.add(Session, {
+            standing,
+            crons: opened.raw
+              .crons()
+              .map(
+                ({
+                  componentPath,
+                  name,
+                  udfPath,
+                }: {
+                  readonly componentPath: string;
+                  readonly name: string;
+                  readonly udfPath: string;
+                }) => ({ componentPath, name, udfPath }),
+              ),
+            initialized,
+          }),
         );
       }),
     );
