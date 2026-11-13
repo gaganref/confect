@@ -375,7 +375,6 @@
     {
       "files": [
         "packages/alchemy/src/Code.ts",
-        "packages/alchemy/src/ConvexClient.ts",
         "packages/alchemy/src/DeployKey.ts",
         "packages/alchemy/src/Deployment.ts",
         "packages/alchemy/src/index.ts",

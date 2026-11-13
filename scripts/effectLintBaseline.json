@@ -1,7 +1,6 @@
 {
   "effecttsgo/api-stability-leak": {
     "packages/alchemy/src/Code.ts": 8,
-    "packages/alchemy/src/ConvexClient.ts": 1,
     "packages/alchemy/src/DeployKey.ts": 4,
     "packages/alchemy/src/Deployment.ts": 5,
     "packages/alchemy/src/index.ts": 5,
@@ -111,7 +110,7 @@
     "scripts/stageForkPackages.ts": 1
   },
   "effecttsgo/strict-effect-provide": {
-    "packages/alchemy/test/Code.test.ts": 16,
+    "packages/alchemy/test/Code.test.ts": 17,
     "packages/alchemy/test/ConvexClient.test.ts": 14,
     "packages/alchemy/test/DeployKey.test.ts": 8,
     "packages/alchemy/test/Deployment.test.ts": 5,
@@ -152,7 +151,7 @@
     "packages/server/test/mock-backend/components.test.ts": 20,
     "packages/server/test/mock-backend/integration.test.ts": 12,
     "packages/server/test/mock-backend/middleware.test.ts": 1,
-    "packages/test/test/TestConfect.test.ts": 8,
+    "packages/test/test/TestConfect.test.ts": 9,
     "scripts/stageForkPackages.test.ts": 1,
     "tools/local-backend/src/setup.ts": 1
   }
