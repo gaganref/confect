@@ -653,53 +653,73 @@ on the local backend and on `TestConfect.layer(registry, { target: "kernel" })`.
 `src/internal/Redaction.ts` finds secret schema nodes and marks what they
 hold. A secret node is a `Schema.Redacted` declaration, which
 `Schema.RedactedFromValue` decodes to (its representation id is
-`effect/schema/Redacted`). `secretPaths` walks a schema's type side through
-structs, records, arrays, tuples, unions and suspensions, and answers paths
-into the encoded value, whose fields keep the schema's names. A schema that
-renames a field on encoding is not followed. Convex validators carry no secret
-flag, and a Confect-registered function keeps only its validators at runtime,
-so the kernel cannot read secret nodes from the modules it loads. A policy
-names them instead: `tablesOf` reads a Confect database schema's tables, and
-`convexTest`'s `redaction` option takes declared argument and return schemas
-per function. Each schema is built the first time its paths are needed, so a
-policy leaves Confect's lazy table schemas unbuilt until then.
-`TestConfect.layer`'s kernel target passes the app's tables. A component kit
-registers only Convex schemas, so its tables carry no policy.
+`effect/schema/Redacted`). Convex validators carry no secret flag, and a
+Confect-registered function keeps only its validators at runtime, so the
+kernel cannot read secret nodes from the modules it loads. A policy names them:
+`tablesOf` reads a Confect database schema's tables, and a declaration names
+argument and return schemas per function and tables per component. Each schema
+is a thunk built the first time the kernel needs it, so Confect's lazy table
+schemas stay unbuilt until then. `TestConfect.layer`'s kernel target passes the
+app's tables merged with its `secrets` option, or the generated registry's
+`secrets`, which row 8's codegen fills from the Confect specs.
 
-The kernel keeps every value at a secret path, before it validates it, in the
-world's `Secrets` store: a function's arguments as it is called, a job's
+A policy hands out shapes, the type side of each schema's AST, and every
+marking walks a value together with its shape. The value bounds the walk, so a
+recursive schema ends at the value's depth, and a suspension reused at another
+field is walked again there. A union applies each member the value fits,
+and a secret member fits only what its inner type encodes to. Where the value's
+structure departs from a shape that holds a secret beneath it, the walk treats
+the value as secret whole. The walk never enters a marker, so overlapping union
+members mark a shared field once and marking is idempotent.
+
+The kernel keeps every value at a secret position, before it validates it, in
+the world's `Secrets` store: a function's arguments as it is called, a job's
 arguments as it is scheduled, a return value, and a document's fields as they
-are written. The store is replay state. It lives in memory, positions values in
-the order first seen, and no artifact writes it. Three writers mark what it
-holds:
+are written. A compound secret is kept whole, and every string beneath it is
+kept for searching free text. The store is replay state. It lives in memory,
+positions values in the order first seen, and no artifact writes it. The
+writers:
 
-- A snapshot export replaces each value at a secret path, and each string that
-  holds a kept secret of four characters or more, with `{ "$redacted": <n> }`,
-  `n` its position in the store. A job row's arguments take the secret paths of
-  its target's arguments. Convex's encoded JSON allows no object key that
-  starts with `$` (`crates/value/src/json/mod.rs:9` at
-  `precompiled-2026-10-28-cccbade`), so no stored value reads as a marker. A
+- A snapshot export marks each secret position of a document, by its table's
+  shape and, for a job row, its target's argument shape at `args.0`, with
+  `{ "$redacted": <n> }`, `n` its position in the store. Convex's encoded JSON
+  allows no object key that starts with `$` (`crates/value/src/json/mod.rs:9`
+  at `precompiled-2026-10-28-cccbade`), so no stored value reads as a marker. A
   restore given the store puts the raw values back and adopts a copy of it, so
   its own exports are the same bytes. Without the store it refuses with
   `SnapshotSecretMissing`.
-- A failure report the shim hands back, every rejection and the error in a
-  held attempt's outcome, has each kept secret in its message and stack, raw or
-  JSON-escaped, and each string of its data holding one, replaced by
-  `[redacted]`. The error object is the same one.
-- A subscription diff, `refresh`'s transitions and `reference`'s
-  disagreements, has each string holding a kept secret replaced by
-  `[redacted]`. A subscription's own current value is replay state and keeps
-  the raw value.
+- A failure report, whether a rejection or the error in a held attempt's
+  outcome, is a separate report of whatever was thrown. A string, an `Error`,
+  a frozen `Error` and a plain object all get their text, data and causes
+  marked as `[redacted]`. When something is marked, the report is a copy with
+  the thrown value's prototype and fields, so its class and tag read the same.
+  The thrown value is never changed, so a subscription's cached error compares
+  as it was.
+- A subscription diff marks each outcome by the shape of what its query
+  returns, and a commit cause's documents by their tables' shapes. A
+  subscription's own value is replay state and stays raw.
+- Read records, in held attempts and a subscription's `current()`, mark a key
+  or range bound on a field its table's shape holds secret.
+- `projectArguments` marks a function's arguments by its argument shape. #137's
+  `commands()` writes each provider command's input through it when the stacks
+  meet.
+
+Every value artifact then passes a string backstop: a string holding a kept
+secret of four characters or more is marked. Free text has no schema, so a
+failure report's message and stack are searched for kept secret strings. A
+secret string shorter than four characters is marked in values by its schema,
+not in free text.
 
 The binary has no schema-level secret marking. It redacts by visibility: with
 logging blocked, a client's log lines are dropped and an error reads "Server
 Error" (`crates/application/src/redaction.rs:39-50`, `:96-140`). Rejecting
 credential-shaped text by pattern stays with the artifact filer, not here. The
-kernel writes no logs of its own. A handler's `console` output goes to the host
-and is not marked. Each wire canary lands with its wire.
+kernel writes no logs of its own, and a handler's `console` output goes to the
+host unmarked. Each wire canary lands with its wire.
 
-Planted canaries, one per route: an argument never stored, an argument stored
-in a secret field, a row written directly, and a provider's answer, which an
-action reads from its test world's services and passes to a mutation. None
-reaches the snapshot, any failure report or the diff, and each artifact carries
-a marker in its place.
+Canaries cover every route found so far. These are an argument never stored, an
+argument stored in a secret field, a row written directly, a provider's
+answer, a bare throw and a frozen error. They also include a failing
+subscription, a compound secret, a reused suspension, a recursive value, two
+union members sharing a field, and an index read on a secret field. None
+reaches the snapshot, a failure report, a diff or a read record.

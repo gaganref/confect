@@ -363,3 +363,25 @@ TestConfect.layer(schema, convexSchema, modules, {
 ```
 
 On the kernel, scheduled functions run on the kernel's own clock and never on a host timer, so `finishAllScheduledFunctions` does not call its `advanceTimers` callback. The default kernel clock follows the test's `Date`, fake timers included, so advancing fake timers and then calling `finishInProgressScheduledFunctions` runs the jobs that came due. A layer on one target can be provided inside a layer on the other, and each keeps its own backend while both are live. The option goes away once the kernel replaces convex-test.
+
+### Keep secrets out of kernel artifacts
+
+On the kernel, a value under a `Schema.Redacted` node, which a `Schema.RedactedFromValue` field decodes to, reaches the kernel's failure reports and diffs only as `[redacted]`. The raw value stays in memory as the backend's own state, so handlers and subscriptions still read it. The layer reads the secret nodes of the app's tables from its database schema. Pass `secrets` for function arguments and return values and for component tables:
+
+```typescript
+TestConfect.layer(databaseSchema, convexSchemaDefinition, modules, {
+  target: "kernel",
+  secrets: {
+    functions: {
+      "": {
+        "accounts:open": {
+          args: () =>
+            Schema.Struct({ token: Schema.RedactedFromValue(Schema.String) }),
+        },
+      },
+    },
+  },
+});
+```
+
+`secrets` is keyed by component path (`""` for the app), then by `module:export` or table name, and each schema is a thunk the kernel builds only when it first needs it. Codegen will fill the same record from your Confect specs as `secrets` in `confect/_generated/testing`, which replaces a hand-written policy.

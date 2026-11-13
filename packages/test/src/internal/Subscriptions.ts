@@ -186,6 +186,14 @@ export class Registry {
   }
 
   /**
+   * The reference a live subscription runs, for marking its diffs by the shape
+   * of what its query returns.
+   */
+  referenceOf(subscription: string): unknown {
+    return this.live.get(subscription)?.reference;
+  }
+
+  /**
    * The world's identity epoch, where a new subscriber's version starts.
    */
   identityEpoch(): number {
@@ -216,7 +224,12 @@ export class Registry {
         this.live.set(live.id, live);
         return {
           id: live.id,
-          current: () => live.run,
+          // The run's value is the client's own, so it stays raw. Its read
+          // records are the kernel's, so they leave projected.
+          current: () => ({
+            ...live.run,
+            reads: this.world.projectReads(live.run.reads),
+          }),
           unsubscribe: () => {
             this.live.delete(live.id);
           },

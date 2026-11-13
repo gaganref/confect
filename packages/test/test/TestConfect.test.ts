@@ -417,3 +417,56 @@ it.effect(
       ),
     ),
 );
+
+const hookCanary = "canary-hook-5d2a7c90";
+
+it.effect(
+  "on the kernel target, the layer's secret policy hook marks a table the app's Confect schema does not declare",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* Vault;
+      yield* test.run(
+        withCtx((ctx) => ctx.db.insert("tokens", { token: hookCanary })),
+      );
+      const exit = yield* Effect.exit(
+        test.run(
+          withCtx((ctx) =>
+            ctx.db
+              .query("tokens")
+              .first()
+              .then((row) => {
+                throw new Error(`the stored token is ${row!.token as string}`);
+              }),
+          ),
+        ),
+      );
+      assert(Exit.isFailure(exit));
+      const report = Cause.pretty(exit.cause);
+      expect(report).toContain("the stored token is [redacted]");
+      expect(report).not.toContain(hookCanary);
+    }).pipe(
+      Effect.provide(
+        TestConfect.layer(
+          vault,
+          defineSchema({
+            keys: defineTable({ token: v.string() }),
+            tokens: defineTable({ token: v.string() }),
+          }),
+          generatedOnly,
+          {
+            target: "kernel",
+            secrets: {
+              tables: {
+                "": {
+                  tokens: () =>
+                    Schema.Struct({
+                      token: Schema.RedactedFromValue(Schema.String),
+                    }),
+                },
+              },
+            },
+          },
+        ),
+      ),
+    ),
+);

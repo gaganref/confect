@@ -14,7 +14,6 @@ import {
   compareValues,
   convexToJson,
   jsonToConvex,
-  type JSONValue,
   type Value,
 } from "convex/values";
 import * as Result from "effect/Result";
@@ -314,6 +313,15 @@ const unresolvedWorld = (
         ? `A snapshot job runs under the test world "${name}", which no world passed to restore is named. Pass that world.`
         : `Two different test worlds are named "${name}", so a snapshot cannot tell their jobs apart. Name each world uniquely.`,
   });
+
+/**
+ * `shape` placed at `at`, or no placement when there is no shape.
+ */
+const placed = (
+  shape: Redaction.Shape | undefined,
+  at: ReadonlyArray<string> = [],
+): ReadonlyArray<Redaction.Placement> =>
+  shape === undefined ? [] : [{ at, shape }];
 
 const current = (): Execution => {
   const execution = executions.getStore();
@@ -865,7 +873,11 @@ export class World {
       (componentPath, table, json) =>
         Redaction.mark(
           json,
-          this.documentPaths(componentPath, table, json),
+          this.documentPlacements(
+            componentPath,
+            table,
+            json as { readonly _id: unknown; readonly name?: unknown },
+          ),
           this.secrets,
         ),
     );
@@ -1679,40 +1691,45 @@ export class World {
   // Secrets.
 
   private keepArgs(functionPath: FunctionPath, args: unknown) {
-    Redaction.keep(args ?? {}, this.redaction.args(functionPath), this.secrets);
+    Redaction.keep(
+      args ?? {},
+      placed(this.redaction.args(functionPath)),
+      this.secrets,
+    );
   }
 
   private keepReturns(functionPath: FunctionPath, result: Value) {
-    Redaction.keep(result, this.redaction.returns(functionPath), this.secrets);
+    Redaction.keep(
+      result,
+      placed(this.redaction.returns(functionPath)),
+      this.secrets,
+    );
   }
 
   private keepRow(componentPath: string, table: string, value: unknown) {
     Redaction.keep(
       value,
-      this.redaction.table(componentPath, table),
+      placed(this.redaction.table(componentPath, table)),
       this.secrets,
     );
   }
 
   /**
-   * Where a stored document holds secrets: its table's secret paths, and for a
-   * job's row, the secret paths of its target's arguments.
+   * Where a stored document holds secrets: its table's shape at its root, and
+   * for a job's row, its target's argument shape at `args.0`.
    */
-  private documentPaths(
+  private documentPlacements(
     componentPath: string,
     table: string,
-    json: JSONValue,
-  ): ReadonlyArray<Redaction.Path> {
-    const own = this.redaction.table(componentPath, table);
+    doc: { readonly _id: unknown; readonly name?: unknown },
+  ): ReadonlyArray<Redaction.Placement> {
+    const own = placed(this.redaction.table(componentPath, table));
     if (table !== Scheduling.table) return own;
-    const { _id, name } = json as { _id: DocumentId; name: string };
-    const target = this.targets.get(_id)?.functionPath ?? {
+    const target = this.targets.get(doc._id as DocumentId)?.functionPath ?? {
       componentPath,
-      udfPath: name,
+      udfPath: String(doc.name),
     };
-    return own.concat(
-      this.redaction.args(target).map((path) => ["args", "0"].concat(path)),
-    );
+    return own.concat(placed(this.redaction.args(target), ["args", "0"]));
   }
 
   /**
@@ -1724,37 +1741,140 @@ export class World {
   }
 
   /**
-   * Mark every kept secret in `error`, a failure report the kernel hands back:
-   * its message, stack and data. Answers the same error.
+   * The failure report for `thrown`, whatever was thrown, with every kept
+   * secret marked. `thrown` itself is never changed.
    */
-  redactFailure<E>(error: E): E {
-    if (!(error instanceof Error)) return error;
-    try {
-      error.message = Redaction.scrubText(error.message, this.secrets);
-      if (error.stack !== undefined)
-        error.stack = Redaction.scrubText(error.stack, this.secrets);
-      const data = (error as { data?: Value }).data;
-      if (data !== undefined)
-        (error as { data?: Value }).data = Redaction.scrubValue(
-          data,
-          this.secrets,
-        );
-    } catch {
-      // A frozen error keeps its text. The kernel's own errors are not frozen.
-    }
-    return error;
+  redactFailure(thrown: unknown): unknown {
+    return Redaction.failure(thrown, this.secrets);
   }
 
   /**
-   * `outcome` as a diff writes it: every string holding a kept secret marked.
+   * `outcome` as an artifact writes it: a value marked by the shape of what
+   * `functionPath` returns, a failure as its report.
    */
-  redactOutcome(outcome: Outcome): Outcome {
+  redactOutcome(outcome: Outcome, functionPath?: FunctionPath): Outcome {
     return outcome._tag === "returned"
       ? {
           _tag: "returned",
-          value: Redaction.scrubValue(outcome.value, this.secrets),
+          value: Redaction.markValue(
+            outcome.value,
+            placed(
+              functionPath === undefined
+                ? undefined
+                : this.redaction.returns(functionPath),
+            ),
+            this.secrets,
+          ),
         }
       : { _tag: "failed", error: this.redactFailure(outcome.error) };
+  }
+
+  /**
+   * A changed document as an artifact writes it, marked by its table's shape.
+   */
+  redactChange(change: Kernel.Change): Kernel.Change {
+    const document = (doc: StoredDocument | null) =>
+      doc === null
+        ? null
+        : (Redaction.markValue(
+            doc as Value,
+            this.documentPlacements(
+              change.componentPath,
+              tableNameFromId(doc._id) ?? "",
+              doc,
+            ),
+            this.secrets,
+          ) as StoredDocument);
+    return {
+      ...change,
+      before: document(change.before),
+      after: document(change.after),
+    };
+  }
+
+  /**
+   * The function a subscription's or call's reference names, if it names one.
+   */
+  functionPathOf(reference: unknown): FunctionPath | undefined {
+    try {
+      return typeof reference === "function"
+        ? undefined
+        : pathOfReference(reference as FunctionReference<any>, ROOT);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Read records as an artifact writes them. A key or range bound on a field
+   * its table's shape holds secret is the marker, and so is any string holding
+   * a kept secret.
+   */
+  projectReads(
+    reads: ReadonlyArray<ReadSet.Read>,
+  ): ReadonlyArray<ReadSet.Read> {
+    return reads.map((read) => {
+      if (read.kind === "document") return read;
+      const shape = this.redaction.table(read.componentPath, read.table);
+      const sensitive = (fieldPath: string) =>
+        shape !== undefined &&
+        Redaction.sensitiveAt(shape, fieldPath.split("."));
+      const value = (fieldPath: string, v: Value): Value =>
+        sensitive(fieldPath)
+          ? Redaction.marker
+          : Redaction.markValue(v, [], this.secrets);
+      const key = (k: ReadSet.Key | null) =>
+        k === null
+          ? null
+          : k.map((v, i) =>
+              v === undefined ? undefined : value(read.fields[i] ?? "", v),
+            );
+      return {
+        ...read,
+        range: read.range.map((bound) => ({
+          ...bound,
+          value: sensitive(bound.fieldPath)
+            ? Redaction.marker
+            : convexToJson(
+                Redaction.markValue(
+                  jsonToConvex(bound.value),
+                  [],
+                  this.secrets,
+                ),
+              ),
+        })),
+        after: key(read.after),
+        through:
+          read.through === "end" || read.through === null
+            ? read.through
+            : key(read.through),
+      };
+    });
+  }
+
+  /**
+   * A held attempt as an artifact writes it: its read records projected and its
+   * outcome marked.
+   */
+  projectHeld(view: HeldAttempt): HeldAttempt {
+    return {
+      ...view,
+      reads: this.projectReads(view.reads),
+      outcome: this.redactOutcome(view.outcome),
+    };
+  }
+
+  /**
+   * A function's arguments as an artifact writes them, marked by the shape of
+   * its arguments. A command log of provider calls (#137's `commands()`) writes
+   * each command's input through this.
+   */
+  projectArguments(functionPath: FunctionPath, args: Value): Value {
+    return Redaction.markValue(
+      args,
+      placed(this.redaction.args(functionPath)),
+      this.secrets,
+    );
   }
 
   // Syscalls.

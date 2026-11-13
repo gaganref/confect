@@ -1,5 +1,10 @@
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
-import { convexToJson, type JSONValue, type Value } from "convex/values";
+import {
+  convexToJson,
+  jsonToConvex,
+  type JSONValue,
+  type Value,
+} from "convex/values";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
@@ -7,16 +12,8 @@ import * as KernelRefusal from "./KernelRefusal.js";
 import type { FunctionPath } from "./KernelValues.js";
 
 /**
- * A path into an encoded value: object field names and array indexes, with `*`
- * for every element of an array or every value of a record.
- */
-export type Path = ReadonlyArray<string>;
-
-const every = "*";
-
-/**
  * What a marker writes in place of a secret in text and in values: a failure
- * report, a diff.
+ * report, a diff, a read record.
  */
 export const marker = "[redacted]";
 
@@ -28,11 +25,27 @@ export const marker = "[redacted]";
 export const markerKey = "$redacted";
 
 /**
- * A secret shorter than this is marked only where a secret schema node puts it.
- * Searching every string for it would mark text that merely shares a few
- * letters.
+ * Free text has no schema, so a failure report's message and stack are searched
+ * for every kept secret string. A string shorter than this is not searched for,
+ * or text that merely shares a few letters would be marked. Values are marked
+ * by their schema at any length.
  */
 const searchableLength = 4;
+
+/**
+ * Where a value may hold secrets: the type side of a schema's AST. A walk
+ * follows it through the encoded value, so the value bounds the walk.
+ */
+export type Shape = SchemaAST.AST;
+
+/**
+ * A shape placed at a path inside a value: a table's schema at a document's
+ * root, a job's target arguments at its row's `args.0`.
+ */
+export interface Placement {
+  readonly at: ReadonlyArray<string>;
+  readonly shape: Shape;
+}
 
 const isSecretNode = (ast: SchemaAST.AST): boolean =>
   ast._tag === "Declaration" &&
@@ -40,64 +53,295 @@ const isSecretNode = (ast: SchemaAST.AST): boolean =>
     ?.id === "effect/schema/Redacted";
 
 /**
- * Every path at which `schema` holds a secret: a `Schema.Redacted` node, which
- * `Schema.RedactedFromValue` decodes to. The paths address the encoded value
- * the kernel stores and passes, whose fields keep the schema's names.
+ * Whether a secret node is reachable from `ast`. A suspension is followed once
+ * per ancestry, so a recursive schema ends, and a suspension reused at another
+ * path is followed again there.
  */
-export const secretPaths = (schema: Schema.Top): ReadonlyArray<Path> => {
-  const paths: Array<Path> = [];
-  const seen = new Set<SchemaAST.AST>();
-  const walk = (ast: SchemaAST.AST, path: Path) => {
-    if (seen.has(ast)) return;
-    if (isSecretNode(ast)) {
-      paths.push(path);
-      return;
+const reachesSecret = (
+  ast: SchemaAST.AST,
+  ancestry: Set<SchemaAST.AST>,
+): boolean => {
+  if (isSecretNode(ast)) return true;
+  switch (ast._tag) {
+    case "Objects":
+      return (
+        ast.propertySignatures.some((p) => reachesSecret(p.type, ancestry)) ||
+        ast.indexSignatures.some((i) => reachesSecret(i.type, ancestry))
+      );
+    case "Arrays":
+      return [...ast.elements, ...ast.rest].some((e) =>
+        reachesSecret(e, ancestry),
+      );
+    case "Union":
+      return ast.types.some((t) => reachesSecret(t, ancestry));
+    case "Declaration":
+      return ast.typeParameters.some((t) => reachesSecret(t, ancestry));
+    case "Suspend": {
+      if (ancestry.has(ast)) return false;
+      ancestry.add(ast);
+      const found = reachesSecret(ast.thunk(), ancestry);
+      ancestry.delete(ast);
+      return found;
     }
-    switch (ast._tag) {
-      case "Objects":
-        for (const property of ast.propertySignatures)
-          walk(property.type, [...path, String(property.name)]);
-        for (const index of ast.indexSignatures)
-          walk(index.type, [...path, every]);
-        return;
-      case "Arrays":
-        ast.elements.forEach((element, i) => walk(element, [...path, `${i}`]));
-        for (const rest of ast.rest) walk(rest, [...path, every]);
-        return;
-      case "Union":
-        for (const member of ast.types) walk(member, path);
-        return;
-      case "Suspend":
-        seen.add(ast);
-        walk(ast.thunk(), path);
-        return;
-      default:
-        return;
+    default:
+      return false;
+  }
+};
+
+const reaches = new WeakMap<SchemaAST.AST, boolean>();
+
+/**
+ * Whether `shape` holds a secret anywhere beneath it.
+ */
+export const hasSecret = (shape: Shape): boolean => {
+  let found = reaches.get(shape);
+  if (found === undefined) {
+    found = reachesSecret(shape, new Set());
+    reaches.set(shape, found);
+  }
+  return found;
+};
+
+const isObject = (json: JSONValue): json is { [key: string]: JSONValue } =>
+  typeof json === "object" && json !== null && !Array.isArray(json);
+
+/**
+ * A Convex encoded leaf, such as `{"$integer": …}` or `{"$bytes": …}`, or a
+ * marker: one key that starts with `$`.
+ */
+const isWrapped = (json: JSONValue): boolean => {
+  if (!isObject(json)) return false;
+  const keys = Object.keys(json);
+  return keys.length === 1 && keys[0]!.startsWith("$");
+};
+
+const isMarker = (json: JSONValue): boolean =>
+  isObject(json) && Object.keys(json).length === 1 && markerKey in json;
+
+const isRecord = (json: JSONValue): json is { [key: string]: JSONValue } =>
+  isObject(json) && !isWrapped(json);
+
+/**
+ * Whether `json` can be a value of `ast`, for choosing a union's members. Nodes
+ * the walk does not look into fit anything.
+ */
+const fits = (
+  ast: SchemaAST.AST,
+  json: JSONValue,
+  ancestry: Set<SchemaAST.AST> = new Set(),
+): boolean => {
+  switch (ast._tag) {
+    case "Objects":
+      return isRecord(json);
+    case "Arrays":
+      return Array.isArray(json);
+    case "String":
+    case "TemplateLiteral":
+      return typeof json === "string";
+    case "Number":
+      return typeof json === "number" || (isObject(json) && "$float" in json);
+    case "BigInt":
+      return isObject(json) && "$integer" in json;
+    case "Boolean":
+      return typeof json === "boolean";
+    case "Null":
+      return json === null;
+    case "Literal":
+      return typeof ast.literal === "bigint"
+        ? isObject(json) && "$integer" in json
+        : json === ast.literal;
+    case "Union":
+      return ast.types.some((t) => fits(t, json, ancestry));
+    case "Suspend": {
+      if (ancestry.has(ast)) return true;
+      ancestry.add(ast);
+      const fit = fits(ast.thunk(), json, ancestry);
+      ancestry.delete(ast);
+      return fit;
     }
-  };
-  walk(schema.ast, []);
-  return paths;
+    case "Declaration":
+      // A secret is stored as what its inner type encodes to, so a union
+      // member that is a secret fits only those values.
+      return (
+        !isSecretNode(ast) ||
+        ast.typeParameters.some((t) => fits(t, json, ancestry))
+      );
+    default:
+      return true;
+  }
 };
 
 /**
- * Which values the kernel treats as secret: at paths in a table's documents, in
- * a function's arguments and in its return value.
+ * `json` with `onSecret` applied at every position where `shape` puts a secret.
+ * A value whose structure the shape cannot follow, beneath a node that holds a
+ * secret, is treated as secret whole: the walk fails closed. A marker is never
+ * walked again, so marking is idempotent and overlapping members of a union
+ * mark a shared field once.
+ */
+const walk = (
+  shape: SchemaAST.AST,
+  json: JSONValue,
+  onSecret: (value: JSONValue) => JSONValue,
+  unconsumed: Set<SchemaAST.AST> = new Set(),
+): JSONValue => {
+  if (isMarker(json)) return json;
+  if (isSecretNode(shape)) return onSecret(json);
+  if (!hasSecret(shape)) return json;
+  switch (shape._tag) {
+    case "Objects": {
+      if (!isRecord(json)) return onSecret(json);
+      const named = new Map(
+        shape.propertySignatures.map((p) => [String(p.name), p.type]),
+      );
+      return Object.fromEntries(
+        Object.entries(json).map(([key, item]) => {
+          const type = named.get(key);
+          return [
+            key,
+            type !== undefined
+              ? walk(type, item, onSecret)
+              : shape.indexSignatures.reduce(
+                  (value, index) => walk(index.type, value, onSecret),
+                  item,
+                ),
+          ];
+        }),
+      );
+    }
+    case "Arrays": {
+      if (!Array.isArray(json)) return onSecret(json);
+      const [rest, ...post] = shape.rest;
+      return json.map((item, i) => {
+        if (i < shape.elements.length)
+          return walk(shape.elements[i]!, item, onSecret);
+        const fromEnd = json.length - i;
+        if (fromEnd <= post.length)
+          return walk(post[post.length - fromEnd]!, item, onSecret);
+        return rest === undefined ? item : walk(rest, item, onSecret);
+      });
+    }
+    case "Union": {
+      const members = shape.types.filter((t) => fits(t, json));
+      if (members.length === 0) return onSecret(json);
+      return members.reduce(
+        (value, member) => walk(member, value, onSecret, unconsumed),
+        json,
+      );
+    }
+    case "Suspend": {
+      if (unconsumed.has(shape)) return json;
+      unconsumed.add(shape);
+      const walked = walk(shape.thunk(), json, onSecret, unconsumed);
+      unconsumed.delete(shape);
+      return walked;
+    }
+    case "Declaration":
+      return shape.typeParameters.reduce(
+        (value, parameter) => walk(parameter, value, onSecret, unconsumed),
+        json,
+      );
+    default:
+      return onSecret(json);
+  }
+};
+
+const replaceAt = (
+  json: JSONValue,
+  path: ReadonlyArray<string>,
+  replace: (value: JSONValue) => JSONValue,
+): JSONValue => {
+  if (path.length === 0) return replace(json);
+  const [head, ...rest] = path as [string, ...Array<string>];
+  if (Array.isArray(json)) {
+    return json.map((item, i) =>
+      `${i}` === head ? replaceAt(item, rest, replace) : item,
+    );
+  }
+  if (isRecord(json)) {
+    return Object.fromEntries(
+      Object.entries(json).map(([key, item]) => [
+        key,
+        key === head ? replaceAt(item, rest, replace) : item,
+      ]),
+    );
+  }
+  return json;
+};
+
+const walkPlaced = (
+  json: JSONValue,
+  placements: ReadonlyArray<Placement>,
+  onSecret: (value: JSONValue) => JSONValue,
+): JSONValue =>
+  placements.reduce(
+    (value, { at, shape }) =>
+      replaceAt(value, at, (inner) => walk(shape, inner, onSecret)),
+    json,
+  );
+
+/**
+ * Whether the field at `fieldPath` of a document of `shape` holds a secret, or
+ * sits under one.
+ */
+export const sensitiveAt = (
+  shape: Shape,
+  fieldPath: ReadonlyArray<string>,
+): boolean => {
+  const at = (
+    ast: SchemaAST.AST,
+    path: ReadonlyArray<string>,
+    ancestry: Set<SchemaAST.AST>,
+  ): boolean => {
+    if (isSecretNode(ast)) return true;
+    if (path.length === 0) return hasSecret(ast);
+    const [head, ...rest] = path as [string, ...Array<string>];
+    switch (ast._tag) {
+      case "Objects": {
+        const property = ast.propertySignatures.find(
+          (p) => String(p.name) === head,
+        );
+        return property !== undefined
+          ? at(property.type, rest, ancestry)
+          : ast.indexSignatures.some((i) => at(i.type, rest, ancestry));
+      }
+      case "Union":
+        return ast.types.some((t) => at(t, path, ancestry));
+      case "Declaration":
+        return ast.typeParameters.some((t) => at(t, path, ancestry));
+      case "Suspend": {
+        if (ancestry.has(ast)) return false;
+        ancestry.add(ast);
+        const found = at(ast.thunk(), path, ancestry);
+        ancestry.delete(ast);
+        return found;
+      }
+      default:
+        return hasSecret(ast);
+    }
+  };
+  return at(shape, fieldPath, new Set());
+};
+
+/**
+ * Which values the kernel treats as secret: the shapes of a table's documents,
+ * of a function's arguments and of its return value.
  */
 export interface Policy {
-  readonly table: (componentPath: string, table: string) => ReadonlyArray<Path>;
-  readonly args: (functionPath: FunctionPath) => ReadonlyArray<Path>;
-  readonly returns: (functionPath: FunctionPath) => ReadonlyArray<Path>;
+  readonly table: (componentPath: string, table: string) => Shape | undefined;
+  readonly args: (functionPath: FunctionPath) => Shape | undefined;
+  readonly returns: (functionPath: FunctionPath) => Shape | undefined;
 }
 
 /**
- * A schema the policy builds the first time it needs its paths, as Confect's
- * specs and tables keep theirs.
+ * A schema the policy builds the first time it needs it, as Confect's specs and
+ * tables keep theirs.
  */
 export type Lazy = () => Schema.Top;
 
 /**
  * The schemas a policy reads its secret nodes from, by component path, then
- * table name or `module:export`.
+ * table name or `module:export`. Row 8's codegen fills this from the Confect
+ * specs. A test that declares it by hand writes the same record.
  */
 export interface Declared {
   readonly tables?: Readonly<Record<string, Readonly<Record<string, Lazy>>>>;
@@ -120,21 +364,19 @@ const memo = <A>(compute: (key: string) => A) => {
 };
 
 /**
- * A policy from `declared`'s schemas. Each schema is built and walked the first
- * time its paths are asked for.
+ * A policy from `declared`'s schemas. Each schema is built the first time its
+ * shape is asked for.
  */
 export const policy = (declared: Declared): Policy => {
   const split = (key: string) => key.split("\u0000") as [string, string];
   const table = memo((key) => {
     const [componentPath, name] = split(key);
-    const schema = declared.tables?.[componentPath]?.[name];
-    return schema === undefined ? [] : secretPaths(schema());
+    return declared.tables?.[componentPath]?.[name]?.().ast;
   });
   const fn = (part: "args" | "returns") =>
     memo((key) => {
       const [componentPath, udfPath] = split(key);
-      const schema = declared.functions?.[componentPath]?.[udfPath]?.[part];
-      return schema === undefined ? [] : secretPaths(schema());
+      return declared.functions?.[componentPath]?.[udfPath]?.[part]?.().ast;
     });
   const args = fn("args");
   const returns = fn("returns");
@@ -150,8 +392,31 @@ export const policy = (declared: Declared): Policy => {
 export const none: Policy = policy({});
 
 /**
+ * Two declarations as one: `second`'s entries win where both name a table or
+ * function.
+ */
+export const merge = (first: Declared, second: Declared): Declared => {
+  const each = <A>(
+    a: Readonly<Record<string, Readonly<Record<string, A>>>> | undefined,
+    b: Readonly<Record<string, Readonly<Record<string, A>>>> | undefined,
+  ) =>
+    Object.fromEntries(
+      [...new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])].map(
+        (componentPath) => [
+          componentPath,
+          { ...a?.[componentPath], ...b?.[componentPath] },
+        ],
+      ),
+    );
+  return {
+    tables: each(first.tables, second.tables),
+    functions: each(first.functions, second.functions),
+  };
+};
+
+/**
  * A Confect database schema's tables, as a policy's `tables` entry for one
- * component. No table's schema is built until the kernel asks for its paths.
+ * component. No table's schema is built until the kernel asks for its shape.
  */
 export const tablesOf = (
   databaseSchema: DatabaseSchema.AnyWithProps,
@@ -166,14 +431,37 @@ export const tablesOf = (
   );
 
 /**
+ * The text a secret leaf can show in free text: a string itself, an int64 as
+ * its decimal digits.
+ */
+const leafTexts = (json: JSONValue): Array<string> => {
+  if (typeof json === "string") return [json];
+  if (Array.isArray(json)) return json.flatMap(leafTexts);
+  if (isObject(json)) {
+    if ("$integer" in json) {
+      try {
+        const integer = jsonToConvex(json);
+        return typeof integer === "bigint" ? [integer.toString()] : [];
+      } catch {
+        return [];
+      }
+    }
+    if (isWrapped(json)) return [];
+    return Object.values(json).flatMap(leafTexts);
+  }
+  return [];
+};
+
+/**
  * The raw secrets the kernel has seen under a secret node, in the order it
- * first saw each. This store is replay state: it lives in memory beside the
- * world and is never written to an artifact. A snapshot's markers name entries
- * here by position.
+ * first saw each, with every string a compound secret holds beneath it. This
+ * store is replay state: it lives in memory beside the world and is never
+ * written to an artifact. A snapshot's markers name entries here by position.
  */
 export class Secrets {
   private readonly values: Array<JSONValue> = [];
   private readonly refs = new Map<string, number>();
+  private readonly texts = new Set<string>();
 
   /**
    * Keep `value` and answer its position. A value kept before answers its first
@@ -185,6 +473,7 @@ export class Secrets {
     if (known !== undefined) return known;
     this.values.push(value);
     this.refs.set(key, this.values.length - 1);
+    for (const text of leafTexts(value)) this.texts.add(text);
     return this.values.length - 1;
   }
 
@@ -193,15 +482,12 @@ export class Secrets {
   }
 
   /**
-   * The kept strings long enough to search for, longest first, so a secret
-   * inside another is never marked half.
+   * Every kept secret's text long enough to search free text for, longest
+   * first, so a secret inside another is never marked half.
    */
   searchable(): ReadonlyArray<string> {
-    return this.values
-      .filter(
-        (value): value is string =>
-          typeof value === "string" && value.length >= searchableLength,
-      )
+    return [...this.texts]
+      .filter((text) => text.length >= searchableLength)
       .sort((a, b) => b.length - a.length);
   }
 
@@ -212,114 +498,101 @@ export class Secrets {
   }
 }
 
-const isRecord = (json: JSONValue): json is { [key: string]: JSONValue } =>
-  typeof json === "object" && json !== null && !Array.isArray(json);
-
-const isPlainObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" &&
-  value !== null &&
-  Object.getPrototypeOf(value) === Object.prototype;
-
 /**
- * Every value of a Convex value at `path`, before it is encoded or validated.
- */
-const valuesAt = (value: unknown, path: Path): Array<unknown> => {
-  if (path.length === 0) return value === undefined ? [] : [value];
-  const [head, ...rest] = path as [string, ...Array<string>];
-  if (Array.isArray(value)) {
-    return head === every
-      ? value.flatMap((item) => valuesAt(item, rest))
-      : valuesAt(value[Number(head)], rest);
-  }
-  if (isPlainObject(value)) {
-    return head === every
-      ? Object.values(value).flatMap((item) => valuesAt(item, rest))
-      : valuesAt(value[head], rest);
-  }
-  return [];
-};
-
-/**
- * Keep every value of `value` at `paths` in `secrets`. The kernel keeps a
- * function's arguments and a document's fields before it validates them, so a
- * validation error can already mark them.
+ * Keep every secret of `value` that `placements` put there, before it is
+ * validated, so a validation error can already mark it.
  */
 export const keep = (
   value: unknown,
-  paths: ReadonlyArray<Path>,
+  placements: ReadonlyArray<Placement>,
   secrets: Secrets,
 ): void => {
-  for (const path of paths) {
-    for (const found of valuesAt(value, path)) {
-      try {
-        secrets.keep(convexToJson(found as Value));
-      } catch {
-        // A value Convex cannot encode is never stored or passed, so it
-        // reaches no artifact as a value.
-      }
-    }
+  if (placements.length === 0) return;
+  let json: JSONValue;
+  try {
+    json = convexToJson(value as Value);
+  } catch {
+    // A value Convex cannot encode is never stored or passed, so it reaches no
+    // artifact as a value.
+    return;
   }
+  walkPlaced(json, placements, (secret) => {
+    secrets.keep(secret);
+    return secret;
+  });
 };
 
-const replaceAt = (
-  json: JSONValue,
-  path: Path,
-  replace: (value: JSONValue) => JSONValue,
-): JSONValue => {
-  if (path.length === 0) return replace(json);
-  const [head, ...rest] = path as [string, ...Array<string>];
-  if (Array.isArray(json)) {
-    return json.map((item, i) =>
-      head === every || head === `${i}` ? replaceAt(item, rest, replace) : item,
-    );
-  }
-  if (isRecord(json)) {
-    return Object.fromEntries(
-      Object.entries(json).map(([key, item]) => [
-        key,
-        head === every || head === key ? replaceAt(item, rest, replace) : item,
-      ]),
-    );
-  }
-  return json;
-};
-
-const containsSecret = (text: string, secrets: ReadonlyArray<string>) =>
-  secrets.some((secret) => text.includes(secret));
+const containsSecret = (text: string, searchable: ReadonlyArray<string>) =>
+  searchable.some((secret) => text.includes(secret));
 
 /**
- * `json`, a value bound for an artifact, with each value at `paths` and each
- * string holding a kept secret replaced by a marker that names the raw value's
- * position in `secrets`. The raw values are kept there, so the artifact can be
- * read back by whoever holds the store.
+ * The backstop beneath every schema walk: each string, outside a marker, that
+ * holds a kept secret, replaced by `replace`.
+ */
+const backstop = (
+  json: JSONValue,
+  searchable: ReadonlyArray<string>,
+  replace: (value: JSONValue) => JSONValue,
+): JSONValue => {
+  if (searchable.length === 0) return json;
+  const go = (value: JSONValue): JSONValue => {
+    if (typeof value === "string")
+      return containsSecret(value, searchable) ? replace(value) : value;
+    if (Array.isArray(value)) return value.map(go);
+    if (isObject(value)) {
+      if (isWrapped(value)) return value;
+      return Object.fromEntries(
+        Object.entries(value).map(([key, item]) => [key, go(item)]),
+      );
+    }
+    return value;
+  };
+  return go(json);
+};
+
+/**
+ * `json`, a document bound for a snapshot, with every secret its placements put
+ * there, and every string holding a kept secret, replaced by a marker that
+ * names the raw value's position in `secrets`. The walk never enters a marker,
+ * so marking a marked value changes nothing.
  */
 export const mark = (
   json: JSONValue,
-  paths: ReadonlyArray<Path>,
+  placements: ReadonlyArray<Placement>,
   secrets: Secrets,
 ): JSONValue => {
   const toMarker = (value: JSONValue): JSONValue => ({
     [markerKey]: secrets.keep(value),
   });
-  const pathMarked = paths.reduce(
-    (marked, path) => replaceAt(marked, path, toMarker),
-    json,
+  return backstop(
+    walkPlaced(json, placements, toMarker),
+    secrets.searchable(),
+    toMarker,
   );
-  const searchable = secrets.searchable();
-  if (searchable.length === 0) return pathMarked;
-  const strings = (value: JSONValue): JSONValue => {
-    if (typeof value === "string")
-      return containsSecret(value, searchable) ? toMarker(value) : value;
-    if (Array.isArray(value)) return value.map(strings);
-    if (isRecord(value)) {
-      if (markerKey in value) return value;
-      return Object.fromEntries(
-        Object.entries(value).map(([key, item]) => [key, strings(item)]),
-      );
-    }
+};
+
+/**
+ * `value` as an artifact other than a snapshot writes it: every secret its
+ * placements put there, and every string holding a kept secret, replaced by the
+ * marker text.
+ */
+export const markValue = (
+  value: Value,
+  placements: ReadonlyArray<Placement>,
+  secrets: Secrets,
+): Value => {
+  let json: JSONValue;
+  try {
+    json = convexToJson(value);
+  } catch {
     return value;
-  };
-  return strings(pathMarked);
+  }
+  const marked = backstop(
+    walkPlaced(json, placements, () => marker),
+    secrets.searchable(),
+    () => marker,
+  );
+  return marked === json ? value : jsonToConvex(marked);
 };
 
 /**
@@ -331,20 +604,20 @@ export const unmark = (
   secrets: Secrets,
 ): Result.Result<JSONValue, KernelRefusal.SnapshotSecretMissing> => {
   let missing: unknown = undefined;
-  const walk = (value: JSONValue): JSONValue => {
-    if (Array.isArray(value)) return value.map(walk);
-    if (!isRecord(value)) return value;
-    if (markerKey in value) {
+  const go = (value: JSONValue): JSONValue => {
+    if (Array.isArray(value)) return value.map(go);
+    if (!isObject(value)) return value;
+    if (isMarker(value)) {
       const ref = value[markerKey];
       const raw = typeof ref === "number" ? secrets.raw(ref) : undefined;
       if (raw === undefined) missing ??= ref;
       return raw ?? null;
     }
     return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, walk(item)]),
+      Object.entries(value).map(([key, item]) => [key, go(item)]),
     );
   };
-  const unmarked = walk(json);
+  const unmarked = go(json);
   return missing === undefined
     ? Result.succeed(unmarked)
     : Result.fail(
@@ -365,22 +638,55 @@ export const scrubText = (text: string, secrets: Secrets): string =>
     return scrubbed.split(secret).join(marker).split(escaped).join(marker);
   }, text);
 
+const isPlainObject = (value: object): boolean =>
+  Object.getPrototypeOf(value) === Object.prototype ||
+  Object.getPrototypeOf(value) === null;
+
 /**
- * `value` with every string that holds a kept secret replaced by the marker.
+ * A failure report for `thrown`, whatever was thrown: every kept secret in its
+ * text, its data and its causes marked. When nothing needs marking it is
+ * `thrown` itself. Otherwise it is a copy with the same prototype and fields,
+ * so its class and tag still read the same. `thrown` is never changed, so a
+ * subscription that keeps the raw error compares it as it was.
  */
-export const scrubValue = (value: Value, secrets: Secrets): Value => {
+export const failure = (thrown: unknown, secrets: Secrets): unknown => {
   const searchable = secrets.searchable();
-  if (searchable.length === 0) return value;
-  const walk = (v: Value): Value => {
-    if (typeof v === "string")
-      return containsSecret(v, searchable) ? marker : v;
-    if (Array.isArray(v)) return v.map(walk);
-    if (isPlainObject(v)) {
-      return Object.fromEntries(
-        Object.entries(v).map(([key, item]) => [key, walk(item as Value)]),
-      );
+  if (searchable.length === 0) return thrown;
+  const copies = new Map<object, unknown>();
+  const go = (value: unknown): unknown => {
+    if (typeof value === "string") return scrubText(value, secrets);
+    if (typeof value !== "object" || value === null) return value;
+    if (copies.has(value)) return copies.get(value);
+    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return value;
+    if (Array.isArray(value)) {
+      copies.set(value, value);
+      const items = value.map(go);
+      const copy = items.every((item, i) => item === value[i]) ? value : items;
+      copies.set(value, copy);
+      return copy;
     }
-    return v;
+    if (!(value instanceof Error) && !isPlainObject(value)) return value;
+    copies.set(value, value);
+    const fields: PropertyDescriptorMap = {};
+    let changed = false;
+    for (const key of Reflect.ownKeys(value)) {
+      const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+      const raw =
+        "value" in descriptor ? descriptor.value : Reflect.get(value, key);
+      const scrubbed = go(raw);
+      if (scrubbed !== raw) changed = true;
+      fields[key] = {
+        value: scrubbed,
+        writable: true,
+        enumerable: descriptor.enumerable ?? false,
+        configurable: true,
+      };
+    }
+    const copy = changed
+      ? Object.create(Object.getPrototypeOf(value), fields)
+      : value;
+    copies.set(value, copy);
+    return copy;
   };
-  return walk(value);
+  return go(thrown);
 };

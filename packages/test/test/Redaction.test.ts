@@ -16,9 +16,10 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
-import type * as Execution from "../src/internal/Execution";
+import * as Execution from "../src/internal/Execution";
 import * as Invocation from "../src/internal/Invocation";
 import * as Redaction from "../src/internal/Redaction";
+import type * as Subscriptions from "../src/internal/Subscriptions";
 
 // Each canary reaches the kernel by one route: a handler argument it never
 // stores, a stored row, a test provider's answer.
@@ -28,7 +29,43 @@ const rowCanary = "canary-row-51e0b2aa";
 const providerCanary = "canary-provider-c48d1190";
 const canaries = [argumentCanary, openedCanary, rowCanary, providerCanary];
 
+// Each later canary reaches an artifact by one of the routes a review found.
+const bareCanary = "canary-bare-3e81d0c2";
+const frozenCanary = "canary-frozen-a5b7f913";
+const failingCanary = "canary-failing-6c02e4d8";
+const compoundCanary = "canary-compound-90ab1f37";
+const reusedCanary = "canary-reused-41d8e2b6";
+const deepCanary = "canary-deep-7e3c5a01";
+const unionCanary = "canary-union-b2f6d48e";
+const indexCanary = "canary-index-c9e04a75";
+
 const Token = Schema.RedactedFromValue(Schema.String);
+
+// A secret whose value is an object, so its canary sits beneath it.
+const Credential = Schema.RedactedFromValue(
+  Schema.Struct({ user: Schema.String, key: Schema.String }),
+);
+
+// One suspended schema reused at two fields, and a recursive one.
+const Inner = Schema.suspend(() => Schema.Struct({ key: Token }));
+interface Tree {
+  readonly secret: string;
+  readonly children: ReadonlyArray<Tree>;
+}
+const Tree: Schema.Codec<any, Tree> = Schema.Struct({
+  secret: Token,
+  children: Schema.Array(Schema.suspend(() => Tree)),
+});
+
+// Two union members that share a secret field.
+const Either = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("a"), token: Token }),
+  Schema.Struct({
+    kind: Schema.Literal("b"),
+    token: Token,
+    note: Schema.String,
+  }),
+]);
 
 // The app's Confect schema marks each account's token secret. The kernel reads
 // the secret node from it, not from the Convex validators.
@@ -37,6 +74,13 @@ const databaseSchema = DatabaseSchema.make({
     Schema.Struct({ name: Schema.String, token: Token }),
   )("accounts"),
   notes: Table.make(() => Schema.Struct({ text: Schema.String }))("notes"),
+  vault: Table.make(() =>
+    Schema.Struct({
+      label: Schema.String,
+      credential: Credential,
+      either: Either,
+    }),
+  )("vault"),
 });
 
 const functions = {
@@ -48,6 +92,20 @@ const functions = {
   "app:accounts": {
     returns: () =>
       Schema.Array(Schema.Struct({ name: Schema.String, token: Token })),
+  },
+  "app:throwBare": { args: () => Schema.Struct({ token: Token }) },
+  "app:throwFrozen": { args: () => Schema.Struct({ token: Token }) },
+  "app:store": {
+    args: () => Schema.Struct({ credential: Credential, either: Either }),
+  },
+  "app:credentials": {
+    returns: () =>
+      Schema.Array(
+        Schema.Struct({ label: Schema.String, credential: Credential }),
+      ),
+  },
+  "app:nested": {
+    args: () => Schema.Struct({ a: Inner, b: Inner, tree: Tree }),
   },
 };
 
@@ -65,6 +123,24 @@ const app = {
     Array<{ name: string; token: string }>
   >("app:accounts"),
   notes: makeFunctionReference<"query", {}, Array<string>>("app:notes"),
+  throwBare: makeFunctionReference<"mutation", { token: string }>(
+    "app:throwBare",
+  ),
+  throwFrozen: makeFunctionReference<"mutation", { token: string }>(
+    "app:throwFrozen",
+  ),
+  failing: makeFunctionReference<"query">("app:failing"),
+  store: makeFunctionReference<"mutation", { credential: any; either: any }>(
+    "app:store",
+  ),
+  credentials: makeFunctionReference<"query">("app:credentials"),
+  nested: makeFunctionReference<"mutation", { a: any; b: any; tree: any }>(
+    "app:nested",
+  ),
+  findByToken: makeFunctionReference<"mutation", { token: string }>(
+    "app:findByToken",
+  ),
+  byToken: makeFunctionReference<"query", { token: string }>("app:byToken"),
 };
 
 class Provider extends Context.Service<
@@ -126,6 +202,69 @@ const modules = {
               accounts.map(({ name, token }) => ({ name, token })),
             ),
       }),
+      throwBare: mutationGeneric({
+        args: { token: v.string() },
+        handler: (_ctx, { token }) => {
+          throw `bare ${token}`;
+        },
+      }),
+      throwFrozen: mutationGeneric({
+        args: { token: v.string() },
+        handler: (_ctx, { token }) => {
+          throw Object.freeze(new Error(`frozen ${token}`));
+        },
+      }),
+      failing: queryGeneric({
+        args: {},
+        handler: async (ctx) => {
+          const accounts = await ctx.db.query("accounts").collect();
+          const failing = accounts.find(({ name }) => name === "fail");
+          if (failing !== undefined)
+            throw new Error(`failing on ${failing.token}`);
+          return accounts.length;
+        },
+      }),
+      store: mutationGeneric({
+        args: { credential: v.any(), either: v.any() },
+        handler: (ctx, { credential, either }) =>
+          ctx.db.insert("vault", { label: "stored", credential, either }),
+      }),
+      credentials: queryGeneric({
+        args: {},
+        handler: (ctx) =>
+          ctx.db
+            .query("vault")
+            .collect()
+            .then((rows) =>
+              rows.map(({ label, credential }) => ({ label, credential })),
+            ),
+      }),
+      nested: mutationGeneric({
+        args: { a: v.any(), b: v.any(), tree: v.any() },
+        handler: (_ctx, { a, b, tree }) => {
+          throw new Error(
+            `nested ${a.key} ${b.key} ${tree.children[0].secret}`,
+          );
+        },
+      }),
+      findByToken: mutationGeneric({
+        args: { token: v.string() },
+        handler: async (ctx, { token }) => {
+          await ctx.db
+            .query("accounts")
+            .withIndex("by_token", (q) => q.eq("token", token))
+            .first();
+          return null;
+        },
+      }),
+      byToken: queryGeneric({
+        args: { token: v.string() },
+        handler: (ctx, { token }) =>
+          ctx.db
+            .query("accounts")
+            .withIndex("by_token", (q) => q.eq("token", token))
+            .first(),
+      }),
       notes: queryGeneric({
         args: {},
         handler: (ctx) =>
@@ -138,8 +277,16 @@ const modules = {
 };
 
 const convexSchema = defineSchema({
-  accounts: defineTable({ name: v.string(), token: v.string() }),
+  accounts: defineTable({ name: v.string(), token: v.string() }).index(
+    "by_token",
+    ["token"],
+  ),
   notes: defineTable({ text: v.string() }),
+  vault: defineTable({
+    label: v.string(),
+    credential: v.any(),
+    either: v.any(),
+  }),
 });
 
 const runtime = {
@@ -157,16 +304,14 @@ type Backend = KernelControls & {
   ) => Promise<A>;
 };
 
-const backend = (): Backend =>
-  convexTest({
-    schema: convexSchema,
-    modules,
-    runtime,
-    redaction: Redaction.policy({
-      tables: { "": Redaction.tablesOf(databaseSchema) },
-      functions: { "": functions },
-    }),
+const policy = () =>
+  Redaction.policy({
+    tables: { "": Redaction.tablesOf(databaseSchema) },
+    functions: { "": functions },
   });
+
+const backend = (): Backend =>
+  convexTest({ schema: convexSchema, modules, runtime, redaction: policy() });
 
 const provider: Invocation.World = {
   name: "provider",
@@ -196,6 +341,25 @@ const report = (error: unknown): string => {
   };
   return `${message}\n${stack ?? ""}\n${JSON.stringify(convexToJson(data ?? null))}`;
 };
+
+/**
+ * A report of anything thrown, as a runner prints it.
+ */
+const thrownText = (thrown: unknown): string =>
+  typeof thrown === "object" && thrown !== null
+    ? report(thrown)
+    : String(thrown);
+
+const causeText = (because: Subscriptions.Invalidation): string =>
+  because.kind === "commit"
+    ? JSON.stringify(
+        convexToJson({
+          ...because.change,
+          before: because.change.before as Value,
+          after: because.change.after as Value,
+        } as unknown as Value),
+      )
+    : JSON.stringify(because);
 
 const outcomeText = (outcome: Execution.Outcome): string =>
   outcome._tag === "returned"
@@ -248,7 +412,10 @@ const plant = (t: Backend) =>
       snapshot: new TextDecoder().decode(t.exportSnapshot()),
       failures: [refused, readBack, connected].map(report),
       diff: transitions
-        .map(({ from, to }) => `${outcomeText(from)}\n${outcomeText(to)}`)
+        .map(
+          ({ from, to, because }) =>
+            `${outcomeText(from)}\n${outcomeText(to)}\n${causeText(because)}`,
+        )
         .join("\n"),
     };
   });
@@ -331,31 +498,226 @@ describe("redaction", () => {
   );
 
   it.effect(
-    "a value under a secret node is found through structs, arrays, records, unions and optional fields, and nowhere else",
+    "a value under a secret node is marked through structs, optional fields, arrays, records, unions, tuples, a suspension reused at two fields and a recursive value, and nowhere else",
     () =>
       Effect.sync(() => {
+        const secrets = new Redaction.Secrets();
+        const shape = Schema.Struct({
+          plain: Schema.String,
+          token: Token,
+          maybe: Schema.optional(Token),
+          list: Schema.Array(Schema.Struct({ key: Token })),
+          byName: Schema.Record(Schema.String, Token),
+          either: Schema.Union([Schema.Finite, Token]),
+          pair: Schema.Tuple([Schema.String, Token]),
+          wrapped: Schema.Redacted(Schema.String),
+          a: Inner,
+          b: Inner,
+          tree: Tree,
+          overlap: Either,
+        }).ast;
+        const value = {
+          plain: "plain",
+          token: "t",
+          maybe: "m",
+          list: [{ key: "k1" }, { key: "k2" }],
+          byName: { x: "r" },
+          either: 7,
+          pair: ["first", "second"],
+          wrapped: "w",
+          a: { key: "a" },
+          b: { key: "b" },
+          tree: {
+            secret: "root",
+            children: [{ secret: "child", children: [] }],
+          },
+          overlap: { kind: "b", token: "o", note: "n" },
+        };
+        const at = (raw: string) => ({
+          [Redaction.markerKey]: secrets.keep(raw),
+        });
+        expect(Redaction.mark(value, [{ at: [], shape }], secrets)).toEqual({
+          plain: "plain",
+          token: at("t"),
+          maybe: at("m"),
+          list: [{ key: at("k1") }, { key: at("k2") }],
+          byName: { x: at("r") },
+          either: 7,
+          pair: ["first", at("second")],
+          wrapped: at("w"),
+          a: { key: at("a") },
+          b: { key: at("b") },
+          tree: {
+            secret: at("root"),
+            children: [{ secret: at("child"), children: [] }],
+          },
+          overlap: { kind: "b", token: at("o"), note: "n" },
+        });
+      }),
+  );
+});
+
+describe("redaction routes", () => {
+  it.effect(
+    "a bare throw and a frozen error reach their failure reports marked, and the frozen error keeps its class",
+    () =>
+      Effect.gen(function* () {
+        const t = backend();
+        const bare = yield* failure(() =>
+          t.mutation(app.throwBare, { token: bareCanary }),
+        );
+        const frozen = yield* failure(() =>
+          t.mutation(app.throwFrozen, { token: frozenCanary }),
+        );
+        expect(thrownText(bare)).not.toContain(bareCanary);
+        expect(thrownText(bare)).toContain(Redaction.marker);
+        expect(thrownText(frozen)).not.toContain(frozenCanary);
+        expect(thrownText(frozen)).toContain(Redaction.marker);
+        expect(frozen).toBeInstanceOf(Error);
+      }),
+  );
+
+  it.effect(
+    "a failing subscription's report is marked, while its cached error stays raw, so a full rerun finds no disagreement",
+    () =>
+      Effect.gen(function* () {
+        const t = backend();
+        const subscription = yield* call(() =>
+          t.subscriber().subscribe(app.failing, {}),
+        );
+        yield* call(() =>
+          t.mutation(app.open, { name: "fail", token: failingCanary }),
+        );
+        const transitions = yield* call(() => t.refresh());
+        const diff = transitions
+          .map(
+            ({ from, to, because }) =>
+              `${outcomeText(from)}\n${outcomeText(to)}\n${causeText(because)}`,
+          )
+          .join("\n");
+        expect(diff).not.toContain(failingCanary);
+        expect(diff).toContain(Redaction.marker);
+        const cached = subscription.current().outcome;
+        if (cached._tag !== "failed") throw new Error("expected a failure");
+        expect((cached.error as Error).message).toContain(failingCanary);
+        expect(yield* call(() => t.reference())).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "a compound secret's nested canary reaches neither a failure report nor a diff, and two union members sharing a secret field restore it once",
+    () =>
+      Effect.gen(function* () {
+        const t = backend();
+        const subscription = yield* call(() =>
+          t.subscriber().subscribe(app.credentials, {}),
+        );
+        yield* call(() =>
+          t.mutation(app.store, {
+            // "zq" is too short for the string backstop, so only the schema
+            // marks it.
+            credential: { user: "zq", key: compoundCanary },
+            either: { kind: "b", token: unionCanary, note: "note" },
+          }),
+        );
+        const transitions = yield* call(() => t.refresh());
+        const diff = transitions
+          .map(
+            ({ from, to, because }) =>
+              `${outcomeText(from)}\n${outcomeText(to)}\n${causeText(because)}`,
+          )
+          .join("\n");
+        const reported = yield* failure(() =>
+          t.run(async (ctx) => {
+            const row = await ctx.db.query("vault").first();
+            throw new Error(`stored key ${row!.credential.key}`);
+          }),
+        );
+        const snapshot = t.exportSnapshot();
+        for (const text of [
+          diff,
+          report(reported),
+          new TextDecoder().decode(snapshot),
+        ]) {
+          expect(text).not.toContain(compoundCanary);
+          expect(text).not.toContain(unionCanary);
+        }
+        expect(diff).not.toContain('"zq"');
+        expect(subscription.current().outcome).toMatchObject({
+          value: [{ credential: { key: compoundCanary } }],
+        });
+        const restored = backend();
+        yield* call(() =>
+          restored.restoreSnapshot(snapshot, { secrets: t.secrets() }),
+        );
         expect(
-          Redaction.secretPaths(
-            Schema.Struct({
-              plain: Schema.String,
-              token: Token,
-              maybe: Schema.optional(Token),
-              list: Schema.Array(Schema.Struct({ key: Token })),
-              byName: Schema.Record(Schema.String, Token),
-              either: Schema.Union([Schema.Finite, Token]),
-              pair: Schema.Tuple([Schema.String, Token]),
-              wrapped: Schema.Redacted(Schema.String),
-            }),
+          yield* call(() =>
+            restored.run((ctx) => ctx.db.query("vault").first()),
           ),
-        ).toEqual([
-          ["token"],
-          ["maybe"],
-          ["list", "*", "key"],
-          ["byName", "*"],
-          ["either"],
-          ["pair", "1"],
-          ["wrapped"],
+        ).toMatchObject({
+          credential: { key: compoundCanary },
+          either: { token: unionCanary },
+        });
+      }),
+  );
+
+  it.effect(
+    "a secret under a suspended schema reused at a second field, and one deep in a recursive value, never reach a failure report",
+    () =>
+      Effect.gen(function* () {
+        const reported = yield* failure(() =>
+          backend().mutation(app.nested, {
+            a: { key: "canary-first-field" },
+            b: { key: reusedCanary },
+            tree: {
+              secret: "canary-tree-root",
+              children: [{ secret: deepCanary, children: [] }],
+            },
+          }),
+        );
+        expect(report(reported)).not.toContain(reusedCanary);
+        expect(report(reported)).not.toContain(deepCanary);
+      }),
+  );
+
+  it.effect(
+    "a read record's key on a secret index field is the marker in a held attempt and a subscription, though no call ever kept that value",
+    () =>
+      Effect.gen(function* () {
+        const t = backend();
+        const prepared = yield* call(() =>
+          t.prepare(app.findByToken, { token: indexCanary }),
+        );
+        const subscription = yield* call(() =>
+          t.subscriber().subscribe(app.byToken, { token: indexCanary }),
+        );
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The records are printed as a report would print them.
+        const records = JSON.stringify([
+          prepared.reads,
+          t.held().map(({ reads }) => reads),
+          subscription.current().reads,
         ]);
+        expect(records).not.toContain(indexCanary);
+        expect(records).toContain(Redaction.marker);
+      }),
+  );
+
+  it.effect(
+    "a provider command log marks its input by the shape of the function's arguments",
+    () =>
+      Effect.sync(() => {
+        const world = new Execution.World(
+          convexSchema,
+          modules,
+          runtime,
+          policy(),
+        );
+        expect(
+          world.projectArguments(
+            { componentPath: "", udfPath: "app:open" },
+            { name: "provider", token: providerCanary },
+          ),
+        ).toEqual({ name: "provider", token: Redaction.marker });
       }),
   );
 });

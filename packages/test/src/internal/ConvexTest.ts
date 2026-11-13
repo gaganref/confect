@@ -124,10 +124,10 @@ const accessor = (
     run().catch((error: unknown) => {
       throw world.redactFailure(error);
     });
-  const held = (view: Execution.HeldAttempt): Execution.HeldAttempt => {
-    if (view.outcome._tag === "failed") world.redactFailure(view.outcome.error);
-    return view;
-  };
+  // A diff names its subscription; its outcomes are marked by the shape of
+  // what that subscription's query returns.
+  const returnsOf = (subscription: string) =>
+    world.functionPathOf(subscriptions.referenceOf(subscription));
   return {
     query: (reference: any, args?: any) =>
       reported(() => world.query(caller, reference, args)),
@@ -136,30 +136,59 @@ const accessor = (
     action: (reference: any, args?: any) =>
       reported(() => world.action(caller, reference, args)),
     prepare: (reference: any, args?: any) =>
-      reported(() => world.prepare(caller, reference, args)).then(held),
+      reported(() => world.prepare(caller, reference, args)).then((view) =>
+        world.projectHeld(view),
+      ),
     apply: (id: string) =>
-      reported(() => world.apply(id)).then((applied) => {
-        if (applied.kind === "conflict") held(applied.next);
-        if (applied.kind === "refused" || applied.kind === "exhausted")
-          world.redactFailure(applied.error);
-        return applied;
-      }),
-    held: () => world.held(),
+      reported(() => world.apply(id)).then((applied): Execution.KernelApply =>
+        applied.kind === "conflict"
+          ? { ...applied, next: world.projectHeld(applied.next) }
+          : applied.kind === "refused"
+            ? { ...applied, error: world.redactFailure(applied.error) }
+            : applied.kind === "exhausted"
+              ? {
+                  ...applied,
+                  error: world.redactFailure(
+                    applied.error,
+                  ) as typeof applied.error,
+                }
+              : applied,
+      ),
+    held: () => world.held().map((view) => world.projectHeld(view)),
     subscriber: () => subscriptions.subscriber(caller),
     refresh: () =>
       reported(() => subscriptions.refresh()).then((transitions) =>
-        transitions.map((transition) => ({
+        transitions.map((transition): Subscriptions.Transition => ({
           ...transition,
-          from: world.redactOutcome(transition.from),
-          to: world.redactOutcome(transition.to),
+          from: world.redactOutcome(
+            transition.from,
+            returnsOf(transition.subscription),
+          ),
+          to: world.redactOutcome(
+            transition.to,
+            returnsOf(transition.subscription),
+          ),
+          because:
+            transition.because.kind === "commit"
+              ? {
+                  kind: "commit",
+                  change: world.redactChange(transition.because.change),
+                }
+              : transition.because,
         })),
       ),
     reference: () =>
       reported(() => subscriptions.reference()).then((disagreements) =>
-        disagreements.map((disagreement) => ({
+        disagreements.map((disagreement): Subscriptions.Disagreement => ({
           ...disagreement,
-          incremental: world.redactOutcome(disagreement.incremental),
-          reference: world.redactOutcome(disagreement.reference),
+          incremental: world.redactOutcome(
+            disagreement.incremental,
+            returnsOf(disagreement.subscription),
+          ),
+          reference: world.redactOutcome(
+            disagreement.reference,
+            returnsOf(disagreement.subscription),
+          ),
         })),
       ),
     run: (handler: (ctx: any) => any) =>

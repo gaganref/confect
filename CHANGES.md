@@ -159,18 +159,19 @@ fork-specific.
 A value under a secret schema node, a `Schema.Redacted` that
 `Schema.RedactedFromValue` decodes to, reaches every artifact the kernel
 writes as a marker. The kernel reads the nodes from Effect schemas: a Confect
-database schema's tables, and the arguments and return values a test declares
-in `convexTest`'s `redaction` option. `TestConfect.layer`'s kernel target
-passes the app's table schemas. The kernel keeps each secret it meets, in a
-function's arguments, its return value or a written document, before it
-validates it, in an in-memory store that is replay state and never an
-artifact. A snapshot export writes `{ "$redacted": <n> }` in place of each
-secret and of any string that holds one, and a restore given the store puts
-the raw values back, so a restored backend replays with them. A restore without
-it refuses with `SnapshotSecretMissing`. Failure reports, their message, stack
-and data, and subscription diffs write `[redacted]`. This is row 6 of Frame's
-backend testing kernel (Frame ADR 0012). Changeset: `test-kernel-redaction.md`.
-Upstream: fork only, as the kernel is fork-specific.
+database schema's tables, and a secret policy keyed by component and function
+or table, which `TestConfect.layer` takes as `secrets` and codegen will fill
+from the Confect specs. Each marking walks the value together with its schema,
+so recursive and reused schemas, compound secrets and overlapping union
+members are all covered. The kernel keeps each secret before validating it, in
+an in-memory store that is replay state and never an artifact. A snapshot
+export writes `{ "$redacted": <n> }`, and a restore given the store puts the
+raw values back. A restore without it refuses with `SnapshotSecretMissing`.
+Failure reports are separate copies of whatever was thrown, marked, and the
+raw error is never changed. Subscription diffs, their causes and read records
+write `[redacted]`. This is row 6 of Frame's backend testing kernel (Frame ADR
+0012). Changeset: `test-kernel-redaction.md`. Upstream: fork only, as the
+kernel is fork-specific.
 
 ## Test kernel snapshots
 
