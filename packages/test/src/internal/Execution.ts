@@ -1054,10 +1054,12 @@ export class World {
       (thrown: unknown) => {
         const refusal = refusalOf(thrown, execution);
         if (refusal !== undefined) throw refusal;
+        // The report is an artifact, so it leaves through the failure
+        // redaction a rejected call's report does.
         return Http.forMethod(
           request.method,
           Http.serverError(
-            thrown,
+            this.redactFailure(thrown),
             Http.errorRequestId(this.nextErrorRequest++),
           ),
         );
@@ -3501,6 +3503,14 @@ const keepRefusal = (error: unknown, execution: Execution): unknown => {
  */
 const refusalOf = (thrown: unknown, execution: Execution): unknown =>
   KernelRefusal.isKernelRefusal(thrown) ? thrown : execution.refused.first;
+
+/**
+ * `thrown` as the running kernel function's world reports a failure: a copy
+ * with every kept secret marked. Outside a kernel function, as on convex-test,
+ * `thrown` itself.
+ */
+export const redactCurrentFailure = (thrown: unknown): unknown =>
+  executions.getStore()?.world.redactFailure(thrown) ?? thrown;
 
 /**
  * The kernel refusal behind a failure inside the running kernel function, if

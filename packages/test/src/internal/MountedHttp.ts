@@ -187,8 +187,9 @@ export const make = (
                 // A kernel refusal is no handler error: it surfaces as itself.
                 const refusal = Execution.currentRefusal(thrown);
                 if (refusal !== undefined) throw refusal;
+                // The report is an artifact: a kept secret in it is marked.
                 return Http.serverError(
-                  thrown,
+                  Execution.redactCurrentFailure(thrown),
                   Http.errorRequestId(nextErrorRequest++),
                 );
               });
@@ -251,7 +252,14 @@ export const make = (
       const appSiteUrl = (
         process.env.CONVEX_SITE_URL || defaultSiteUrl
       ).replace(/\/$/, "");
-      const request = new Request(new URL(`${appSiteUrl}${path}`), init);
+      // The body goes before the request is built: a GET or HEAD request with
+      // one cannot be built at all, and the binary discards it anyway.
+      const request = new Request(
+        new URL(`${appSiteUrl}${path}`),
+        Http.discardsBody(init?.method ?? "GET")
+          ? { ...init, body: null }
+          : init,
+      );
       // convex-test encodes exact component paths in test-only function handles.
       const reference =
         `function://${mount.componentPath};${bridgeModule}:invoke` as unknown as FunctionReference<

@@ -11,11 +11,33 @@ import {
   type UserIdentity,
 } from "convex/server";
 import { ConvexError, v } from "convex/values";
+import * as Table from "@confect/core/Table";
+import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as MountedHttp from "../src/internal/MountedHttp";
+import * as Redaction from "../src/internal/Redaction";
 
-const schema = defineSchema({ hits: defineTable({ path: v.string() }) });
+const schema = defineSchema({
+  hits: defineTable({ path: v.string() }),
+  vault: defineTable({ token: v.string() }),
+});
+
+// A secret the world keeps once a row holds it under a secret schema node, and
+// that a route then throws in its error.
+const canary = "canary-route-error-6b1d93c4";
+const secrets = Redaction.policy({
+  tables: {
+    "": Redaction.tablesOf(
+      DatabaseSchema.make({
+        vault: Table.make(() =>
+          Schema.Struct({ token: Schema.RedactedFromValue(Schema.String) }),
+        )("vault"),
+      }),
+    ),
+  },
+});
 
 const hits = {
   add: makeFunctionReference<"mutation", { path: string }>("hits:add"),
@@ -99,6 +121,13 @@ router.route({
     reachedGate();
     await gate;
     return new Response("through");
+  }),
+});
+router.route({
+  path: "/leak",
+  method: "GET",
+  handler: httpActionGeneric(async () => {
+    throw new ConvexError({ token: canary, note: `leaked ${canary}` });
   }),
 });
 router.route({
@@ -408,8 +437,22 @@ describe("mounted HTTP routes", () => {
       return new Response("searched");
     }),
   });
-  const mounted = () => {
-    const t = convexTest(schema, modules);
+  mountedRouter.route({
+    path: "/echo",
+    method: "GET",
+    handler: httpActionGeneric(
+      async (_ctx, request) =>
+        new Response(`received ${(await request.arrayBuffer()).byteLength}`),
+    ),
+  });
+  mountedRouter.route({
+    path: "/leak",
+    method: "GET",
+    handler: httpActionGeneric(async () => {
+      throw new Error(`leaked ${canary}`);
+    }),
+  });
+  const mounted = (t: any = convexTest(schema, modules)) => {
     const http = MountedHttp.make(
       [{ componentPath: "mail", httpPrefix: "/mail" }],
       t.registerComponent,
@@ -420,6 +463,38 @@ describe("mounted HTTP routes", () => {
     });
     return (path: string, init?: RequestInit) => http.fetch(t, path, init);
   };
+
+  it.effect.each(["GET", "HEAD"])(
+    "a mounted %s request with a body reaches its route without it",
+    (method) =>
+      Effect.gen(function* () {
+        const fetch = mounted();
+        // A body on a GET or HEAD request is the case under test.
+        const init: RequestInit = { method, body: "discarded" };
+        const response = yield* call(() => fetch("/mail/echo", init));
+        expect(response.status).toBe(200);
+        expect(yield* call(() => response.text())).toBe(
+          method === "GET" ? "received 0" : "",
+        );
+      }),
+  );
+
+  it.effect(
+    "a mounted route's 500 body marks a kept secret its error carries",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest({ schema, modules, redaction: secrets });
+        const fetch = mounted(t);
+        yield* call(() =>
+          t.run((ctx: any) => ctx.db.insert("vault", { token: canary })),
+        );
+        const response = yield* call(() => fetch("/mail/leak"));
+        const body = yield* call(() => response.text());
+        expect(response.status).toBe(500);
+        expect(body).not.toContain(canary);
+        expect(body).toContain(Redaction.marker);
+      }),
+  );
 
   it.effect(
     "a mounted miss gets the binary's 404, and a HEAD one no body",
@@ -463,5 +538,22 @@ describe("mounted HTTP routes", () => {
           operation: "vectorSearch",
         });
       }),
+  );
+});
+
+describe("HTTP route error reports", () => {
+  it.effect("a route's 500 body marks a kept secret its error carries", () =>
+    Effect.gen(function* () {
+      const t: HttpWorld & { run: (handler: any) => Promise<unknown> } =
+        convexTest({ schema, modules, redaction: secrets });
+      yield* call(() =>
+        t.run((ctx: any) => ctx.db.insert("vault", { token: canary })),
+      );
+      const response = yield* call(() => t.fetch("/leak"));
+      const body = yield* call(() => response.text());
+      expect(response.status).toBe(500);
+      expect(body).not.toContain(canary);
+      expect(body).toContain(Redaction.marker);
+    }),
   );
 });
