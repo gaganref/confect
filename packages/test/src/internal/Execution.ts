@@ -968,8 +968,8 @@ export class World {
   // Calls from the test.
 
   query(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         const from = { caller, request: newRequest(caller) };
         return typeof reference === "function"
           ? this.runQuery(
@@ -979,13 +979,13 @@ export class World {
               from,
             )
           : this.queryAt(pathOfReference(reference, ROOT), args, from);
-      });
-    });
+      }),
+    );
   }
 
   mutation(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         const from = { caller, request: newRequest(caller) };
         return typeof reference === "function"
           ? this.runMutation(
@@ -995,13 +995,13 @@ export class World {
               from,
             )
           : this.mutationAt(pathOfReference(reference, ROOT), args, from);
-      });
-    });
+      }),
+    );
   }
 
   action(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         const from = { caller, request: newRequest(caller) };
         return typeof reference === "function"
           ? this.runAction(
@@ -1011,8 +1011,8 @@ export class World {
               from,
             )
           : this.actionAt(pathOfReference(reference, ROOT), args, from);
-      });
-    });
+      }),
+    );
   }
 
   run(
@@ -1020,8 +1020,8 @@ export class World {
     componentPath: string,
     handler: (ctx: any) => any,
   ): Promise<any> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         this.component(componentPath);
         return this.runMutation(
           { componentPath, udfPath: "custom" },
@@ -1029,8 +1029,8 @@ export class World {
           {},
           { caller, request: newRequest(caller) },
         );
-      });
-    });
+      }),
+    );
   }
 
   /**
@@ -1114,8 +1114,8 @@ export class World {
    * Run a mutation to its commit point and hold it as attempt 1.
    */
   prepare(caller: Caller, reference: any, args: any): Promise<HeldAttempt> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         const functionPath = pathOfReference(reference, ROOT);
         const resolved = this.resolve(functionPath, "mutation");
         this.keepArgs(functionPath, args);
@@ -1128,8 +1128,8 @@ export class World {
           1,
           Invocation.current(),
         ).then((held) => held.view);
-      });
-    });
+      }),
+    );
   }
 
   apply(id: string): Promise<KernelApply> {
@@ -1167,8 +1167,8 @@ export class World {
     args: any,
     pinned: { readonly time?: number; readonly journal: string | null },
   ): Promise<QueryRun> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         const functionPath = pathOfReference(reference, ROOT);
         const resolved = this.resolve(functionPath, "query");
         this.keepArgs(functionPath, args);
@@ -1197,8 +1197,8 @@ export class World {
           (value: Value) => run({ _tag: "returned", value }),
           (error: unknown) => run({ _tag: "failed", error }),
         );
-      });
-    });
+      }),
+    );
   }
 
   /**
@@ -1698,16 +1698,16 @@ export class World {
    * each one moves its job's next run later.
    */
   advance(ms: number, budget = defaultBudget): Promise<void> {
-    return this.track("walks", () => {
-      return this.openIn(this.own).then(() => {
+    return this.track("walks", () =>
+      this.openIn(this.own).then(() => {
         const until = this.now() + ms;
         return this.walk(
           (pending) => Arr.filter(pending, (job) => job.scheduledTime <= until),
           budget,
           until,
         ).then(() => this.raiseFloor(until));
-      });
-    });
+      }),
+    );
   }
 
   /**
@@ -1715,14 +1715,14 @@ export class World {
    * standing jobs are pending. Every job run counts against `budget`.
    */
   drain(budget = defaultBudget): Promise<void> {
-    return this.track("walks", () => {
-      return this.openIn(this.own).then(() =>
+    return this.track("walks", () =>
+      this.openIn(this.own).then(() =>
         this.walk(
           (pending) => Arr.filter(pending, (job) => !job.standing),
           budget,
         ),
-      );
-    });
+      ),
+    );
   }
 
   /**
