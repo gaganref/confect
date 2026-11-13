@@ -525,8 +525,60 @@ Not simulated: upload streaming, signed upload tokens and durability. An upload
 URL has the binary's shape with an unsigned token, and the kernel's `fetch`
 refuses an upload to it or a download from a file URL with `RequiresBinary`
 (`storageUpload`, `storageDownload`). The bytes are held in memory, not
-streamed, and a deleted file's bytes are only unreachable. File and transaction
-limits are the limits row's.
+streamed, and a deleted file's bytes are only unreachable.
+
+Fix round 2, after the limits, snapshot and redaction rows merged:
+
+- **Limits.** File storage charges the four file counters through
+  `Metering.ts`'s one meter. A mutation's store checks
+  `filesWritten` and `fileWriteBytes` before it writes the row
+  (`file_storage_store`, `crates/isolate/src/environment/udf/async_syscall.rs:478-497`),
+  refusing with `TooManyFilesWritten` or `FilesWrittenTooLarge`. Stored files
+  are nested pending writes: a nested mutation starts from its caller's, a
+  commit keeps its own and a rollback drops them, and a delete frees a file
+  stored in the same transaction (`NestedWrites<FileUploads>`,
+  `crates/database/src/transaction.rs:186`, `:425-451`;
+  `crates/database/src/file_uploads.rs:68-79`; `async_syscall.rs:521-529`). A
+  query's or mutation's `storage.get` counts a file once per transaction, never
+  one it stored, against `filesRead` and `fileReadBytes`
+  (`check_file_read_limits`, `async_syscall.rs:1291-1311`; the download cache
+  reaches nested calls at `:732`). `getUrl` and `getMetadata` count nothing,
+  and an action's store and get count toward no transaction. The local-backend
+  probes in `storage.test.ts` cross each limit, at the deployment's ceiling and
+  under a nested budget, and the binary and the kernel give the same message.
+  A nested call's uncaught error reaches its caller as the binary rethrows it,
+  `Uncaught Error: ` and a stack around the message, where the kernel passes
+  the error itself, so nested probes compare the message.
+- **Snapshots.** A snapshot carries every committed `_storage` row's file:
+  bytes (base64), component and storage UUID, and `identity.nextFile` and
+  `identity.nextUploadToken`. `Snapshot.contract.file` covers `Storage.File`
+  by type, and `contract.world` lists `files`, `legacyIds`, `nextFile` and
+  `nextUploadToken`. A restore rebuilds the UUID mappings from the files, and
+  refuses with `SnapshotFileInconsistent` a file with no committed row, a row
+  with no file, bytes whose SHA-256 or size is not the row's, and a UUID the
+  kernel would not mint or two files share, and with `SnapshotAllocatorBehind`
+  a `nextFile` at or behind a stored UUID. Bytes a rolled-back or deleted file
+  left behind are unreachable and not exported.
+- **Redaction.** `_storage` rows pass through every projection as documents,
+  and a declared secret in a row that references a file stays marked. File
+  bytes have no schema, so the backstop's rule applies to them: bytes holding
+  a kept secret's text are written as a marker, which a restore given the
+  secrets puts back, and refuses with `SnapshotSecretMissing` without them.
+- **Content types.** A content type is parsed as the binary's `mime` 0.3.17
+  parses it (`src/parse.rs:111-305`): its tokens, quoted values, spaces after a
+  `;`, an empty subtype, and a bare trailing `;`, which it drops. A mutation's
+  store refuses a malformed one as an argument (`async_syscall.rs:1272-1276`),
+  ``Invalid argument `contentType` for `storage.store`: mime parse error: …``,
+  and an action's as its content type header
+  (`crates/isolate/src/environment/action/storage.rs:55-60`), `mime parse
+  error: …`. The kernel stores the type as `mime` prints it.
+
+`LocalBackend.ts` reads `CONFECT_LOCAL_BACKEND_PORT` (default 3210) for its
+backends' ports, so the local-backend suite can run beside another checkout's
+on one machine. Every anonymous local deployment is named `anonymous-agent`,
+and `convex dev` waits for its recorded port to stop whoever holds it
+(`cli/lib/localDeployment/run.ts:290-342` in the npm package), so a run on
+other ports also moves the fixtures' local deployment config.
 
 `integration.test.ts:61` `Storage` now runs in the kernel lane.
 

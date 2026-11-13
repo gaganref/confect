@@ -169,9 +169,17 @@ id … not found`. Storage reads join the attempt's read set. Uploads and
 downloads through the kernel's `fetch` refuse with `RequiresBinary`, since
 upload streaming and signed URLs stay on the binary. A local-backend case pins
 the same answers on the binary. The mock-backend `Storage` cases run on the
-kernel. This is row 6's storage parity row of Frame's backend testing kernel
-(Frame ADR 0012). Changeset: `test-kernel-file-storage.md`. Upstream: fork
-only, as the kernel is fork-specific.
+kernel. File storage counts toward the transaction limits as on the binary:
+a mutation refuses an eleventh file, or a twelfth when a nested budget allows
+fewer, with `TooManyFilesWritten`, and likewise `FilesWrittenTooLarge`,
+`TooManyFilesRead` and `FilesReadTooLarge`; a file read twice counts once.
+Snapshots carry stored files' bytes, UUIDs and counters and refuse a tampered
+file body, and a file whose bytes hold a kept secret is written as a marker.
+A content type is parsed as the binary's `mime` crate parses it. The
+local-backend suite takes `CONFECT_LOCAL_BACKEND_PORT` to run on other ports.
+This is row 6's storage parity row of Frame's backend testing kernel (Frame
+ADR 0012). Changeset: `test-kernel-file-storage.md`. Upstream: fork only, as
+the kernel is fork-specific.
 
 ## Test kernel redaction
 
