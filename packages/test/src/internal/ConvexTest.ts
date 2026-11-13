@@ -70,6 +70,11 @@ export interface KernelControls {
    */
   readonly jobs: () => ReadonlyArray<Scheduling.Job>;
   /**
+   * The declared cron jobs of every component's `crons.ts`, earliest next run
+   * first. `advance` runs them on the kernel's clock. A drain never does.
+   */
+  readonly crons: () => ReadonlyArray<Execution.Cron>;
+  /**
    * Run the jobs due now. No future deadline is crossed.
    */
   readonly finishInProgressScheduledFunctions: () => Promise<void>;
@@ -241,6 +246,7 @@ const accessor = (
     jwks: () => world.deploymentKey.jwks(),
     advance: (ms: number) => reported(() => world.advance(ms)),
     jobs: () => world.jobs(),
+    crons: () => world.crons(),
     finishInProgressScheduledFunctions: () => reported(() => world.advance(0)),
     finishAllScheduledFunctions: (
       _advanceTimers?: () => void,
@@ -267,7 +273,9 @@ const accessor = (
  * it, and `apply` validates and publishes a held attempt. `mutation` applies
  * each attempt it prepares at once and prepares the next on a conflict, up to
  * attempt 5. `runtime` supplies the clock and commit timestamps. Scheduled
- * functions run on the kernel's clock, never on a host timer. A subscriber's
+ * functions and declared cron jobs run on the kernel's clock, never on a host
+ * timer, and a cron run's delay draws from the random stream of the world bound
+ * when the backend opened, or else the backend's own `world`. A subscriber's
  * subscriptions go stale when a commit changes what they read or the identity
  * they read changes, and `refresh` reruns them. `redaction` names the secret
  * schema nodes of tables and functions: a value under one reaches a snapshot, a
@@ -282,12 +290,19 @@ export function convexTest(
         readonly transactionLimits?: unknown;
         readonly runtime?: Kernel.KernelRuntime;
         readonly redaction?: Redaction.Policy;
+        /**
+         * The backend's own world. A backend opened with no invocation bound
+         * declares its cron jobs in it, and their delays draw from its random
+         * stream.
+         */
+        readonly world?: Invocation.World;
       },
   modules?: Modules,
 ): any {
   let schema: SchemaDefinition<GenericSchema, boolean> | undefined;
   let runtime: Kernel.KernelRuntime | undefined;
   let redaction: Redaction.Policy | undefined;
+  let own: Invocation.World | undefined;
   if (isSchemaDefinition(schemaOrOptions)) {
     schema = schemaOrOptions;
   } else if (schemaOrOptions !== undefined) {
@@ -298,13 +313,14 @@ export function convexTest(
     modules = schemaOrOptions.modules;
     runtime = schemaOrOptions.runtime;
     redaction = schemaOrOptions.redaction;
+    own = schemaOrOptions.world;
   }
   if (modules === undefined) {
     throw new Error(
       "The test kernel needs the modules map: pass `import.meta.glob(...)` as the second argument.",
     );
   }
-  const world = new Execution.World(schema, modules, runtime, redaction);
+  const world = new Execution.World(schema, modules, runtime, redaction, own);
   return {
     ...accessor(world, new Subscriptions.Registry(world), Execution.anonymous),
     registerComponent: (

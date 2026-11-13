@@ -104,6 +104,15 @@ export class UnknownStandingSource extends Schema.TaggedError<UnknownStandingSou
 ) {}
 
 /**
+ * A component's `crons.ts` declares a job the binary refuses at push: a
+ * schedule it cannot read, or a function that is no mutation or action.
+ */
+export class InvalidCron extends Schema.TaggedError<InvalidCron>()(
+  "InvalidCron",
+  { componentPath: Schema.String, name: Schema.String, message: Schema.String },
+) {}
+
+/**
  * The token a test presented was refused before any function ran, as the binary
  * answers a client's request with 401. `code` is the binary's: `NoAuthProvider`
  * when no provider's issuer and audience match the token, and
@@ -124,6 +133,56 @@ export class InvalidToken extends Schema.TaggedError<InvalidToken>()(
 export class InvalidAuthConfig extends Schema.TaggedError<InvalidAuthConfig>()(
   "InvalidAuthConfig",
   { index: Schema.Int, message: Schema.String },
+) {}
+
+/**
+ * The deployment's signing key is drawn on first use from a test world's random
+ * stream, and neither an invocation was bound nor the backend was given a world
+ * to draw it from. The kernel holds no generator of its own.
+ */
+export class SigningKeyRandomUnavailable extends Schema.TaggedError<SigningKeyRandomUnavailable>()(
+  "SigningKeyRandomUnavailable",
+  { message: Schema.String },
+) {}
+
+/**
+ * A cron job runs on a clock schedule, which Convex delays by a random draw,
+ * and no test world was bound when the backend opened to draw it from. The
+ * kernel holds no generator of its own.
+ */
+export class CronRandomUnavailable extends Schema.TaggedError<CronRandomUnavailable>()(
+  "CronRandomUnavailable",
+  { componentPath: Schema.String, name: Schema.String, message: Schema.String },
+) {}
+
+/**
+ * Computing a cron job's next run reaches arithmetic that aborts the Convex
+ * binary, which is built with overflow checks.
+ */
+export class CronAbortsBinary extends Schema.TaggedError<CronAbortsBinary>()(
+  "CronAbortsBinary",
+  {
+    componentPath: Schema.String,
+    name: Schema.String,
+    date: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * A snapshot's cron jobs are not the ones the restoring app declares: one the
+ * snapshot holds is not declared, one declared is not in the snapshot, or a
+ * declaration's function, arguments or schedule changed. A restore would run
+ * the snapshot's runs for jobs the app no longer declares as they were.
+ */
+export class SnapshotCronMismatch extends Schema.TaggedError<SnapshotCronMismatch>()(
+  "SnapshotCronMismatch",
+  {
+    componentPath: Schema.String,
+    name: Schema.String,
+    reason: Schema.Literals(["undeclared", "missing", "changed"]),
+    message: Schema.String,
+  },
 ) {}
 
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
@@ -193,19 +252,6 @@ export class SnapshotWorldBusy extends Schema.TaggedError<SnapshotWorldBusy>()(
   {
     version: Schema.Int,
     held: Schema.Array(Schema.String),
-    message: Schema.String,
-  },
-) {}
-
-/**
- * A world drew its deployment signing key, which a snapshot does not carry yet.
- * Exporting would lose the key that verifies the tokens in its tables, and
- * restoring would keep a key the source never had.
- */
-export class SnapshotSigningKey extends Schema.TaggedError<SnapshotSigningKey>()(
-  "SnapshotSigningKey",
-  {
-    operation: Schema.Literals(["export", "restore"]),
     message: Schema.String,
   },
 ) {}

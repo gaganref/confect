@@ -33,6 +33,7 @@ import {
   httpRouter,
   type FunctionReference,
 } from "convex/server";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Array from "effect/Array";
 import * as Result from "effect/Result";
@@ -85,7 +86,19 @@ it.effect(
   "verifies app and generated component mutation JWTs against deployment JWKS",
   () =>
     Effect.gen(function* () {
-      const t = convexTest(hostConvexSchema, hostModules);
+      // The kernel draws its deployment key from the backend's own world, which
+      // convex-test ignores.
+      const options = {
+        schema: hostConvexSchema,
+        modules: hostModules,
+        world: {
+          name: "signing",
+          services: Context.empty(),
+          clock: () => 0,
+          random: () => 0.5,
+        },
+      };
+      const t = convexTest(options);
       t.registerComponent("first", counterConvexSchema, counterModules);
       const appToken = yield* Effect.promise(() =>
         t.mutation((ctx) =>

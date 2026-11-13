@@ -621,37 +621,63 @@ const derive = (seed: Uint8Array): Derived => {
 };
 
 /**
- * One test backend's deployment signing key, derived on first use from 32 bytes
- * drawn from the kernel runtime's random stream, never the host's. It signs
- * what `ctx.auth.signJwt` mints by RFC 6979, so a replay of one history signs
- * the same tokens. The binary's signer draws a random nonce (`:308`), which no
- * verifier can tell from a deterministic one. Its public half is the
- * deployment's JWKS.
+ * The 32 bytes a key is derived from, as lowercase hex.
+ */
+export type Seed = string;
+
+const seedBytes = (seed: Seed) =>
+  Uint8Array.from({ length: 32 }, (_, index) =>
+    Number.parseInt(seed.slice(index * 2, index * 2 + 2), 16),
+  );
+
+/**
+ * Whether `value` is a seed this kernel writes: 64 lowercase hex digits.
+ */
+export const isSeed = (value: unknown): value is Seed =>
+  typeof value === "string" && /^[0-9a-f]{64}$/.test(value);
+
+/**
+ * One test backend's deployment signing key, derived on first use from the 32
+ * bytes `draw` takes from a test world's random stream, never the host's. It
+ * signs what `ctx.auth.signJwt` mints by RFC 6979, so a replay of one history
+ * signs the same tokens. The binary's signer draws a random nonce (`:308`),
+ * which no verifier can tell from a deterministic one. Its public half is the
+ * deployment's JWKS. A restored key is installed from its seed, never drawn.
  */
 export class DeploymentKey {
-  private derived: Derived | undefined;
+  private derived: { readonly seed: Seed; readonly key: Derived } | undefined;
 
-  constructor(private readonly random: () => number) {}
+  constructor(private readonly draw: () => Seed) {}
 
   /**
-   * Whether the key was drawn: a token was signed or the JWKS was served.
+   * The seed the key was derived from, or `undefined` before it was drawn.
    */
-  get drawn(): boolean {
-    return this.derived !== undefined;
+  get seed(): Seed | undefined {
+    return this.derived?.seed;
+  }
+
+  /**
+   * Use `seed`'s key from now on, or none until the next draw.
+   */
+  install(seed: Seed | undefined) {
+    this.derived =
+      seed === undefined ? undefined : { seed, key: derive(seedBytes(seed)) };
   }
 
   private key(): Derived {
-    this.derived ??= derive(
-      Uint8Array.from({ length: 32 }, () => Math.floor(this.random() * 256)),
-    );
-    return this.derived;
+    if (this.derived === undefined) this.install(this.draw());
+    return this.derived!.key;
   }
 
   /**
    * What the backend serves at `${CONVEX_CLOUD_URL}/.well-known/jwks.json`.
    */
   jwks(): Promise<{ readonly keys: ReadonlyArray<DeploymentJwk> }> {
-    return Promise.resolve({ keys: [{ ...this.key().jwk }] });
+    try {
+      return Promise.resolve({ keys: [{ ...this.key().jwk }] });
+    } catch (error) {
+      return Promise.reject(error);
+    }
   }
 
   /**
@@ -744,7 +770,13 @@ export class DeploymentKey {
       iat: issuedAt,
       exp: issuedAt + expiresIn,
     };
-    const { secretKey, jwk } = this.key();
+    let derived: Derived;
+    try {
+      derived = this.key();
+    } catch (error) {
+      return Promise.reject(error);
+    }
+    const { secretKey, jwk } = derived;
     const signingInput =
       base64UrlEncode(
         JSON.stringify({ alg: "ES256", typ: "JWT", kid: jwk.kid }),

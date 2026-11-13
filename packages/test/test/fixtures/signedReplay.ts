@@ -1,80 +1,82 @@
-// One history that stores a signed token on the test kernel, printed as bytes.
-// `Identity.test.ts` runs this file in two processes and compares their output.
+// oxlint-disable effecttsgo/global-date -- The fixture pins `Date`, which the kernel target's clock follows, so a signed token's times replay.
+// One history that stores signed tokens through `TestConfect.layer` on the
+// kernel target, printed as bytes. `Identity.test.ts` runs this file in several
+// processes and compares their output. `process.argv[2]`, when given, is the
+// layer's seed.
+import { DatabaseSchema, MutationCtx } from "@confect/server";
 import {
   defineSchema,
   defineTable,
-  makeFunctionReference,
-  mutationGeneric,
-  queryGeneric,
+  type GenericDataModel,
 } from "convex/server";
-import { convexToJson, v } from "convex/values";
+import { v } from "convex/values";
 import * as Effect from "effect/Effect";
-import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
+import * as Schema from "effect/Schema";
+import * as TestConfect from "../../src/TestConfect";
 
-const schema = defineSchema({ tokens: defineTable({ token: v.string() }) });
+const now = Date.UTC(2026, 0, 14, 22, 15, 0);
+const RealDate = globalThis.Date;
+class PinnedDate extends RealDate {
+  constructor(...args: Array<unknown>) {
+    if (args.length === 0) super(now);
+    else super(...(args as [number]));
+  }
+  static override now() {
+    return now;
+  }
+}
+globalThis.Date = PinnedDate as DateConstructor;
 
-const modules = {
-  "_generated/server.ts": () => Promise.resolve({}),
-  "tokens.ts": () =>
-    Promise.resolve({
-      store: mutationGeneric({
-        args: {},
-        handler: (ctx) =>
-          (
-            ctx.auth as unknown as {
-              signJwt: (options: object) => Promise<string>;
-            }
-          )
-            .signJwt({ claims: { sub: "outbox" }, expiresInSeconds: 60 })
-            .then((token) =>
-              ctx.db.insert("tokens", { token }).then(() => token),
-            ),
-      }),
-      dump: queryGeneric({
-        args: {},
-        handler: (ctx) => ctx.db.query("tokens").collect(),
-      }),
-    }),
-};
+const schema = DatabaseSchema.make({});
+const seed = process.argv[2];
 
-const tokens = {
-  store: makeFunctionReference<"mutation", {}, string>("tokens:store"),
-  dump: makeFunctionReference<"query">("tokens:dump"),
-};
+const mutation = <A>(
+  use: (ctx: MutationCtx.MutationCtx<GenericDataModel>) => Promise<A>,
+) =>
+  Effect.gen(function* () {
+    const ctx = yield* MutationCtx.MutationCtx<GenericDataModel>();
+    return yield* Effect.promise(() => use(ctx));
+  });
 
-// A seeded stream, so both processes draw the same values.
-const stream = (seed: number) => () => {
-  seed = (seed + 0x6d2b79f5) | 0;
-  let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-  t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-  return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-};
+// Signs a token for `sub` and stores it, answering the token.
+const store = (sub: string) =>
+  mutation((ctx) =>
+    (
+      ctx.auth as unknown as {
+        signJwt: (options: object) => Promise<string>;
+      }
+    )
+      .signJwt({ claims: { sub }, expiresInSeconds: 60 })
+      .then((token) => ctx.db.insert("tokens", { token }).then(() => token)),
+  );
 
 const history = Effect.gen(function* () {
-  const t: KernelControls = convexTest({
-    schema,
-    modules,
-    runtime: {
-      now: () => 1_767_225_600_000,
-      commitTs: (version: number) => 1_000n + BigInt(version),
-      random: stream(7),
-    },
-  });
-  const call = <A>(thunk: () => Promise<A>) => Effect.promise(thunk);
-  const held = yield* call(() => t.prepare(tokens.store, {}));
-  const applied = yield* call(() => t.apply(held.id));
-  const stored = yield* call(() => t.mutation(tokens.store, {}));
-  const rows = yield* call(() => t.query(tokens.dump, {}));
-  const jwks = yield* call(() => t.jwks());
-  const recorded = convexToJson({
-    held: held.outcome._tag === "returned" ? held.outcome.value : "failed",
-    applied: applied.kind === "applied" ? applied.result : applied.kind,
-    stored,
-    rows,
-    jwks: jwks as any,
-  });
-  // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The bytes compared are Convex's own JSON encoding of the history.
-  process.stdout.write(JSON.stringify(recorded));
-});
+  const test = yield* TestConfect.TestConfect<typeof schema>();
+  const first = yield* test.run(store("outbox"), Schema.String);
+  const second = yield* test.run(store("inbox"), Schema.String);
+  const rows = yield* test.run(
+    mutation((ctx) =>
+      ctx.db
+        .query("tokens")
+        .collect()
+        .then((stored) => stored.map(({ token }) => token as string)),
+    ),
+    Schema.mutable(Schema.Array(Schema.String)),
+  );
+  // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The bytes compared are the returned and committed tokens as plain JSON.
+  process.stdout.write(JSON.stringify({ returned: [first, second], rows }));
+}).pipe(
+  Effect.provide(
+    TestConfect.layer(
+      schema,
+      defineSchema({ tokens: defineTable({ token: v.string() }) }),
+      { "_generated/server.ts": () => Promise.resolve({}) },
+      {
+        target: "kernel",
+        ...(seed === undefined ? {} : { seed: Number(seed) }),
+      },
+    ),
+  ),
+);
 
 void Effect.runPromise(history);

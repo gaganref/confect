@@ -8,6 +8,8 @@ import {
 } from "convex/values";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import type * as Execution from "./Execution.js";
+import { isSeed, type Seed } from "./Identity.js";
 import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type * as Scheduling from "./Scheduling.js";
@@ -43,6 +45,32 @@ export interface JobTarget {
 }
 
 /**
+ * A declared cron job as a snapshot carries it: its declaration, which a
+ * restore checks against the restoring app's, its next run, how its latest run
+ * ended, and its test world by name. `null` is a job declared with no world.
+ * `args` is the declaration's arguments as Convex JSON, secrets marked;
+ * `schedule` is its schedule as the kernel reads it, a cron expression by its
+ * text.
+ */
+export interface CronImage {
+  readonly componentPath: string;
+  readonly name: string;
+  readonly udfPath: string;
+  readonly args: JSONValue;
+  readonly schedule: JSONValue;
+  readonly nextRun: number;
+  /**
+   * How the latest run ended. A failure's text is Convex JSON: a marker where
+   * it held a kept secret, the raw text once a restore reads it back.
+   */
+  readonly last:
+    | { readonly kind: "success" }
+    | { readonly kind: "failed"; readonly error: JSONValue }
+    | null;
+  readonly world: string | null;
+}
+
+/**
  * The kernel state a snapshot carries: committed rows of every component with
  * the version that wrote each, the write log, the latest commit timestamp,
  * every job's target, the clock's floor and the identity counters.
@@ -59,6 +87,16 @@ export interface Image {
    * The target of every job whose row is committed, by job ID.
    */
   readonly jobs: ReadonlyMap<DocumentId, JobTarget>;
+  /**
+   * Every declared cron job with its run state, by component and name.
+   */
+  readonly crons: ReadonlyArray<CronImage>;
+  /**
+   * The seed of the deployment's signing key, or `null` before it was drawn. An
+   * export writes it as a secret marker, and a decoded image holds the seed the
+   * restore's secrets put back.
+   */
+  readonly signingKey: JSONValue | null;
 }
 
 /**
@@ -88,12 +126,14 @@ export type Participation =
  * so a piece of live state the snapshot does not carry fails loudly rather than
  * surviving a restore silently. A new live registry adds itself there.
  *
- * Owed by later rows, which add their state here when they land on `main`: cron
- * state (#133), stored file bytes, storage ID mappings, `nextFile` and
- * upload-token counters (#138), component init markers, and the deployment
- * signing key's drawn seed as a secret marker (#134). A restore never
- * redeclares a cron and never draws a fresh random value: it installs the
- * declared state as the snapshot holds it, so a row whose state comes from a
+ * A cron job's fields are checked by type too, against `Execution.CronJob`. A
+ * restore never redeclares a cron and never draws a fresh random value: it
+ * installs each job's run state as the snapshot holds it, after checking that
+ * the restoring app declares the same jobs.
+ *
+ * Owed by later rows, which add their state here when they land on `main`:
+ * stored file bytes, storage ID mappings, `nextFile` and upload-token counters
+ * (#138), and component init markers. A row whose state comes from a
  * declaration or a random draw exports what was declared or drawn.
  */
 export const contract = {
@@ -108,6 +148,16 @@ export const contract = {
     standing: { exported: "jobs[].standing" },
     world: { exported: "jobs[].world, by name" },
   } satisfies { readonly [K in keyof Scheduling.Target]-?: Participation },
+  cron: {
+    componentPath: { exported: "crons[].componentPath" },
+    spec: {
+      exported:
+        "crons[].name, udfPath, args and schedule, which a restore checks against the restoring app's declarations",
+    },
+    nextRun: { exported: "crons[].nextRun" },
+    last: { exported: "crons[].last" },
+    world: { exported: "crons[].world, by name" },
+  } satisfies { readonly [K in keyof Execution.CronJob]-?: Participation },
   world: {
     components: {
       excluded:
@@ -134,6 +184,19 @@ export const contract = {
     nextAttemptId: { exported: "identity.nextAttemptId" },
     floor: { exported: "floor" },
     targets: { exported: "jobs" },
+    cronJobs: { exported: "crons" },
+    declared: {
+      excluded:
+        "Read from the restoring app's `crons.ts` when it loads. A restore refuses unless it equals the snapshot's declarations.",
+    },
+    cronsScheduled: {
+      excluded:
+        "Whether the declared jobs have runs. A restore installs the snapshot's and sets it, so no first run is drawn.",
+    },
+    own: {
+      excluded:
+        "The driver's own world is configuration: the restoring driver gives its own, and cron worlds resolve by name.",
+    },
     live: {
       excluded:
         "Live registries, listed under `live` below. A world refuses to restore while any is non-empty.",
@@ -160,8 +223,8 @@ export const contract = {
         "Read from `authConfig` on the first presented token, so the restoring world reads its own.",
     },
     deploymentKey: {
-      excluded:
-        "Drawn from the runtime's random stream on first use and not carried yet. A world that drew it refuses to export or restore (`SnapshotSigningKey`), so a signed token never outlives its key.",
+      exported:
+        "signingKey, its seed as a secret marker. A restore installs the seed from the source's `secrets()` and never draws.",
     },
   } satisfies Readonly<Record<string, Participation>>,
   /**
@@ -215,7 +278,7 @@ export const contract = {
   } satisfies Readonly<Record<string, Participation>>,
 } as const;
 
-const header = "confect-kernel-snapshot 1 sha256:";
+const header = "confect-kernel-snapshot 3 sha256:";
 
 const FunctionPathJson = Schema.Struct({
   componentPath: Schema.String,
@@ -250,6 +313,27 @@ const Body = Schema.Struct({
       world: Schema.NullOr(Schema.String),
     }),
   ),
+  crons: Schema.Array(
+    Schema.Struct({
+      componentPath: Schema.String,
+      name: Schema.String,
+      udfPath: Schema.String,
+      args: Schema.Unknown,
+      schedule: Schema.Unknown,
+      nextRun: Schema.Finite,
+      last: Schema.NullOr(
+        Schema.Union([
+          Schema.Struct({ kind: Schema.Literal("success") }),
+          Schema.Struct({
+            kind: Schema.Literal("failed"),
+            error: Schema.Unknown,
+          }),
+        ]),
+      ),
+      world: Schema.NullOr(Schema.String),
+    }),
+  ),
+  signingKey: Schema.NullOr(Schema.Unknown),
   log: Schema.Array(
     Schema.Struct({
       version: Schema.Int,
@@ -353,6 +437,11 @@ export const encode = (image: Image, redact: Redact = asIs): Uint8Array => {
       standing: target.standing,
       world: target.world,
     })),
+    crons: sorted(
+      image.crons,
+      ({ componentPath, name }) => `${componentPath}\u0000${name}`,
+    ) as Array<Body["crons"][number]>,
+    signingKey: image.signingKey,
     log: state.log.map((commit) => ({
       version: commit.version,
       commitTs: commit.commitTs.toString(),
@@ -510,6 +599,17 @@ export const checkBody = (
         message: `The snapshot's job ${job.id} appears twice.`,
       }),
     );
+  const cron = once(
+    body.crons,
+    ({ componentPath, name }) => `${componentPath}\u0000${name}`,
+  );
+  if (cron !== undefined)
+    return Result.fail(
+      malformed(
+        "duplicate",
+        `cron job "${cron.name}" of component "${cron.componentPath}" appears twice`,
+      ),
+    );
   return Result.succeed(undefined);
 };
 
@@ -559,6 +659,15 @@ const unredactBody = (
         before: document(change.before),
         after: document(change.after),
       })),
+    })),
+    signingKey: document(body.signingKey),
+    crons: body.crons.map((cron) => ({
+      ...cron,
+      args: document(cron.args),
+      last:
+        cron.last?.kind === "failed"
+          ? { kind: "failed" as const, error: document(cron.last.error) }
+          : cron.last,
     })),
   };
   return refusal === undefined
@@ -613,7 +722,29 @@ const imageOf = (body: Body, unredact: Unredact): Image => {
         },
       ]),
     ),
+    crons: body.crons.map((cron) => {
+      if (cron.last?.kind === "failed" && typeof cron.last.error !== "string") {
+        throw new Error(
+          `cron job "${cron.name}" records a failure whose text is not a string`,
+        );
+      }
+      return {
+        ...cron,
+        args: cron.args as JSONValue,
+        schedule: cron.schedule as JSONValue,
+        last: cron.last as CronImage["last"],
+      };
+    }),
+    signingKey: signingKeyOf(body.signingKey),
   };
+};
+
+const signingKeyOf = (json: unknown): Seed | null => {
+  if (json === null) return null;
+  if (!isSeed(json)) {
+    throw new Error("the signing key's seed is not 64 hex digits");
+  }
+  return json;
 };
 
 /**
