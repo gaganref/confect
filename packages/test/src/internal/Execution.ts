@@ -10,6 +10,8 @@ import {
   type UserIdentity,
 } from "convex/server";
 import {
+  CommitTsPlaceholder,
+  compareValues,
   convexToJson,
   jsonToConvex,
   type JSONValue,
@@ -23,6 +25,7 @@ import * as Invocation from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
 import * as KernelRefusal from "./KernelRefusal.js";
+import * as Metering from "./Metering.js";
 import type * as ReadSet from "./ReadSet.js";
 import * as Redaction from "./Redaction.js";
 import * as Scheduling from "./Scheduling.js";
@@ -39,6 +42,7 @@ import {
   deserializeConvexErrorData,
   evaluateValue,
   hasPendingValues,
+  isSimpleObject,
   parseArgs,
   parseFunctionHandle,
   resolveCommittedValues,
@@ -225,6 +229,11 @@ interface Execution {
   readonly startTime: number;
   readonly pagination: Pagination | undefined;
   readonly turn: Turn;
+  /**
+   * The transaction limits this function runs under: the defaults at the top
+   * level, its caller's inside a nested call, tightened by the call's budget.
+   */
+  readonly limits: Metering.Limits;
 }
 
 /**
@@ -493,6 +502,17 @@ export class World {
    * state, kept in memory and never written to an artifact.
    */
   private secrets = new Redaction.Secrets();
+  /**
+   * How many calls from the test, scheduler walks included, are running. A
+   * snapshot taken or restored under one would split its effects.
+   */
+  private running = 0;
+  /**
+   * The latest identity version a subscriber's `authenticate` reached. Each
+   * subscriber starts at the epoch, and each identity change advances it, so a
+   * restored world never hands out a version its source already used.
+   */
+  private identityEpoch = 0;
 
   constructor(
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
@@ -614,44 +634,50 @@ export class World {
   // Calls from the test.
 
   query(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.open().then(() => {
-      const from = { caller, request: newRequest(caller) };
-      return typeof reference === "function"
-        ? this.runQuery(
-            { componentPath: ROOT, udfPath: "inline" },
-            { handler: reference, args: { type: "any" }, returns: null },
-            args ?? {},
-            from,
-          )
-        : this.queryAt(pathOfReference(reference, ROOT), args, from);
+    return this.during(() => {
+      return this.open().then(() => {
+        const from = { caller, request: newRequest(caller) };
+        return typeof reference === "function"
+          ? this.runQuery(
+              { componentPath: ROOT, udfPath: "inline" },
+              { handler: reference, args: { type: "any" }, returns: null },
+              args ?? {},
+              from,
+            )
+          : this.queryAt(pathOfReference(reference, ROOT), args, from);
+      });
     });
   }
 
   mutation(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.open().then(() => {
-      const from = { caller, request: newRequest(caller) };
-      return typeof reference === "function"
-        ? this.runMutation(
-            { componentPath: ROOT, udfPath: "inline" },
-            { handler: reference, args: { type: "any" }, returns: null },
-            args ?? {},
-            from,
-          )
-        : this.mutationAt(pathOfReference(reference, ROOT), args, from);
+    return this.during(() => {
+      return this.open().then(() => {
+        const from = { caller, request: newRequest(caller) };
+        return typeof reference === "function"
+          ? this.runMutation(
+              { componentPath: ROOT, udfPath: "inline" },
+              { handler: reference, args: { type: "any" }, returns: null },
+              args ?? {},
+              from,
+            )
+          : this.mutationAt(pathOfReference(reference, ROOT), args, from);
+      });
     });
   }
 
   action(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.open().then(() => {
-      const from = { caller, request: newRequest(caller) };
-      return typeof reference === "function"
-        ? this.runAction(
-            { componentPath: ROOT, udfPath: "inline" },
-            { handler: reference, args: { type: "any" }, returns: null },
-            args ?? {},
-            from,
-          )
-        : this.actionAt(pathOfReference(reference, ROOT), args, from);
+    return this.during(() => {
+      return this.open().then(() => {
+        const from = { caller, request: newRequest(caller) };
+        return typeof reference === "function"
+          ? this.runAction(
+              { componentPath: ROOT, udfPath: "inline" },
+              { handler: reference, args: { type: "any" }, returns: null },
+              args ?? {},
+              from,
+            )
+          : this.actionAt(pathOfReference(reference, ROOT), args, from);
+      });
     });
   }
 
@@ -660,14 +686,16 @@ export class World {
     componentPath: string,
     handler: (ctx: any) => any,
   ): Promise<any> {
-    return this.open().then(() => {
-      this.component(componentPath);
-      return this.runMutation(
-        { componentPath, udfPath: "custom" },
-        { handler, args: { type: "any" }, returns: null },
-        {},
-        { caller, request: newRequest(caller) },
-      );
+    return this.during(() => {
+      return this.open().then(() => {
+        this.component(componentPath);
+        return this.runMutation(
+          { componentPath, udfPath: "custom" },
+          { handler, args: { type: "any" }, returns: null },
+          {},
+          { caller, request: newRequest(caller) },
+        );
+      });
     });
   }
 
@@ -677,32 +705,36 @@ export class World {
    * Run a mutation to its commit point and hold it as attempt 1.
    */
   prepare(caller: Caller, reference: any, args: any): Promise<HeldAttempt> {
-    return this.open().then(() => {
-      const functionPath = pathOfReference(reference, ROOT);
-      const resolved = this.resolve(functionPath, "mutation");
-      this.keepArgs(functionPath, args);
-      validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
-      return this.prepareMutation(
-        functionPath,
-        resolved,
-        args,
-        { caller, request: newRequest(caller) },
-        1,
-        Invocation.current(),
-      ).then((held) => held.view);
+    return this.during(() => {
+      return this.open().then(() => {
+        const functionPath = pathOfReference(reference, ROOT);
+        const resolved = this.resolve(functionPath, "mutation");
+        this.keepArgs(functionPath, args);
+        validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
+        return this.prepareMutation(
+          functionPath,
+          resolved,
+          args,
+          { caller, request: newRequest(caller) },
+          1,
+          Invocation.current(),
+        ).then((held) => held.view);
+      });
     });
   }
 
   apply(id: string): Promise<KernelApply> {
-    const held = this.holding.get(id);
-    return held === undefined
-      ? Promise.reject(
-          new KernelRefusal.StaleAttempt({
-            id,
-            message: `The test kernel holds no attempt "${id}". It was already applied, or never prepared.`,
-          }),
-        )
-      : this.applyHeld(held);
+    return this.during(() => {
+      const held = this.holding.get(id);
+      return held === undefined
+        ? Promise.reject(
+            new KernelRefusal.StaleAttempt({
+              id,
+              message: `The test kernel holds no attempt "${id}". It was already applied, or never prepared.`,
+            }),
+          )
+        : this.applyHeld(held);
+    });
   }
 
   /**
@@ -726,36 +758,64 @@ export class World {
     args: any,
     pinned: { readonly time?: number; readonly journal: string | null },
   ): Promise<QueryRun> {
-    return this.open().then(() => {
-      const functionPath = pathOfReference(reference, ROOT);
-      const resolved = this.resolve(functionPath, "query");
-      this.keepArgs(functionPath, args);
-      validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
-      const top: TopQuery = {
-        attempt: new KernelAttempt(this.state),
-        pagination: { calls: 0, journal: pinned.journal, end: null },
-        startTime: pinned.time,
-      };
-      const run = (outcome: Outcome): QueryRun => ({
-        outcome,
-        snapshot: top.attempt.snapshot.version,
-        reads: top.attempt.reads,
-        observedIdentity: top.attempt.observedIdentity,
-        time: top.attempt.observedTime,
-        journal: pinned.journal ?? top.pagination.end,
+    return this.during(() => {
+      return this.open().then(() => {
+        const functionPath = pathOfReference(reference, ROOT);
+        const resolved = this.resolve(functionPath, "query");
+        this.keepArgs(functionPath, args);
+        validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
+        const top: TopQuery = {
+          attempt: new KernelAttempt(this.state),
+          pagination: { calls: 0, journal: pinned.journal, end: null },
+          startTime: pinned.time,
+        };
+        const run = (outcome: Outcome): QueryRun => ({
+          outcome,
+          snapshot: top.attempt.snapshot.version,
+          reads: top.attempt.reads,
+          observedIdentity: top.attempt.observedIdentity,
+          time: top.attempt.observedTime,
+          journal: pinned.journal ?? top.pagination.end,
+        });
+        return this.runQuery(
+          functionPath,
+          resolved,
+          args,
+          { caller, request: newRequest(caller) },
+          false,
+          top,
+        ).then(
+          (value: Value) => run({ _tag: "returned", value }),
+          (error: unknown) => run({ _tag: "failed", error }),
+        );
       });
-      return this.runQuery(
-        functionPath,
-        resolved,
-        args,
-        { caller, request: newRequest(caller) },
-        false,
-        top,
-      ).then(
-        (value: Value) => run({ _tag: "returned", value }),
-        (error: unknown) => run({ _tag: "failed", error }),
-      );
     });
+  }
+
+  /**
+   * Run `call`, a call from the test, counted as running until it settles.
+   */
+  private during<A>(call: () => Promise<A>): Promise<A> {
+    this.running++;
+    return call().finally(() => {
+      this.running--;
+    });
+  }
+
+  // Identity versions.
+
+  /**
+   * The identity version a new subscriber starts at.
+   */
+  currentIdentityEpoch(): number {
+    return this.identityEpoch;
+  }
+
+  /**
+   * The next identity version, for a subscriber whose identity changed.
+   */
+  nextIdentityEpoch(): number {
+    return ++this.identityEpoch;
   }
 
   // Snapshots.
@@ -764,11 +824,11 @@ export class World {
    * The committed state as snapshot bytes: every component's rows and the
    * version that wrote each, the write log, the jobs and their targets, the
    * clock's floor and the identity counters. Each job's world is recorded by
-   * name. Two exports of the same state are the same bytes. A world holding
-   * attempts refuses, since a snapshot carries no held attempt.
+   * name. Two exports of the same state are the same bytes. A world running a
+   * call or holding attempts refuses, since a snapshot carries neither.
    */
   exportSnapshot(): Uint8Array {
-    this.refuseHeld(0);
+    this.refuseBusy(0);
     const names = new Map<string, Invocation.World>();
     const jobs = new Map<DocumentId, Snapshot.JobTarget>();
     for (const byTable of this.state.tables.values()) {
@@ -798,6 +858,7 @@ export class World {
           nextDocumentId: this.nextDocId,
           lastCreationTime: this.lastCreationTime,
           nextAttemptId: this.nextAttemptId,
+          identityEpoch: this.identityEpoch,
         },
         jobs,
       },
@@ -812,9 +873,10 @@ export class World {
 
   /**
    * Replace this world's state with a snapshot's. The world must register the
-   * snapshot's components and have committed nothing and hold nothing. Each
-   * job's world resolves by name among `worlds`. Bytes whose digest does not
-   * match refuse before anything changes.
+   * snapshot's components, run nothing, and have committed nothing and hold
+   * nothing. Each job's world resolves by name among `worlds`. Bytes whose
+   * digest does not match, and state the kernel could not have reached, refuse
+   * before anything changes.
    */
   restoreSnapshot(
     bytes: Uint8Array,
@@ -837,12 +899,14 @@ export class World {
     worlds: ReadonlyArray<Invocation.World>,
     secrets: Redaction.Secrets,
   ) {
-    this.refuseHeld(this.state.version);
+    this.refuseBusy(this.state.version);
     const decoded = Snapshot.decode(bytes, (json) =>
       Redaction.unmark(json, secrets),
     );
     if (Result.isFailure(decoded)) throw decoded.failure;
     const image = decoded.success;
+    const checked = Snapshot.check(image, Scheduling.table);
+    if (Result.isFailure(checked)) throw checked.failure;
     const registered = [...this.components.keys()].sort();
     const snapshot = [...image.components].sort();
     if (registered.join("\u0000") !== snapshot.join("\u0000")) {
@@ -851,6 +915,15 @@ export class World {
         registered,
         message: `The snapshot holds components ${snapshot.map((p) => `"${p}"`).join(", ")}, but this test backend registers ${registered.map((p) => `"${p}"`).join(", ")}. Register the same components before restoring.`,
       });
+    }
+    for (const [id, { functionPath }] of image.jobs) {
+      if (!this.exports(functionPath)) {
+        throw new KernelRefusal.SnapshotJobInconsistent({
+          id,
+          reason: "function",
+          message: `The snapshot's job ${id} targets ${functionPath.udfPath} in "${functionPath.componentPath}", which that component does not export.`,
+        });
+      }
     }
     const byName = new Map<string, Invocation.World>();
     for (const world of worlds) {
@@ -877,16 +950,38 @@ export class World {
     this.nextDocId = image.identity.nextDocumentId;
     this.lastCreationTime = image.identity.lastCreationTime;
     this.nextAttemptId = image.identity.nextAttemptId;
+    this.identityEpoch = image.identity.identityEpoch;
     this.targets.clear();
     for (const [id, target] of targets) this.targets.set(id, target);
     this.secrets = secrets.copy();
   }
 
   /**
-   * Refuse a snapshot while attempts are held, or, restoring, once `version`
-   * shows the world committed something of its own.
+   * Whether `functionPath`'s component exports a Convex function there.
    */
-  private refuseHeld(version: Kernel.Version) {
+  private exports({ componentPath, udfPath }: FunctionPath): boolean {
+    const [modulePath, exportName = "default"] = udfPath.split(":");
+    const func = this.components.get(componentPath)?.loaded.get(modulePath!)?.[
+      exportName
+    ];
+    return (
+      func?.isQuery === true ||
+      func?.isMutation === true ||
+      func?.isAction === true
+    );
+  }
+
+  /**
+   * Refuse a snapshot while a call runs or attempts are held, or, restoring,
+   * once `version` shows the world committed something of its own.
+   */
+  private refuseBusy(version: Kernel.Version) {
+    if (this.running > 0) {
+      throw new KernelRefusal.SnapshotWorldRunning({
+        running: this.running,
+        message: `The test backend is running ${this.running} calls, scheduler walks included, whose effects a snapshot would split. Await them first.`,
+      });
+    }
     const held = [...this.holding.keys()];
     if (held.length === 0 && version === 0) return;
     throw new KernelRefusal.SnapshotWorldBusy({
@@ -923,12 +1018,14 @@ export class World {
    * crosses no future deadline.
    */
   advance(ms: number, budget = defaultBudget): Promise<void> {
-    return this.open().then(() => {
-      const until = this.now() + ms;
-      return this.walk(
-        (pending) => pending.filter((job) => job.scheduledTime <= until),
-        budget,
-      ).then(() => this.raiseFloor(until));
+    return this.during(() => {
+      return this.open().then(() => {
+        const until = this.now() + ms;
+        return this.walk(
+          (pending) => pending.filter((job) => job.scheduledTime <= until),
+          budget,
+        ).then(() => this.raiseFloor(until));
+      });
     });
   }
 
@@ -937,9 +1034,11 @@ export class World {
    * standing jobs are pending. Every job run counts against `budget`.
    */
   drain(budget = defaultBudget): Promise<void> {
-    return this.open().then(() =>
-      this.walk((pending) => pending.filter((job) => !job.standing), budget),
-    );
+    return this.during(() => {
+      return this.open().then(() =>
+        this.walk((pending) => pending.filter((job) => !job.standing), budget),
+      );
+    });
   }
 
   /**
@@ -1086,7 +1185,26 @@ export class World {
         `Invalid arguments for "${target.udfPath}": a scheduled function cannot take an unresolved placeholder value.`,
       );
     }
+    refuse(attempt.meter.schedule(jobArgs, execution.limits));
+    const jobsIndex = indexKey(
+      execution.componentPath,
+      Scheduling.table,
+      "by_id",
+    );
+    // A scheduled function that schedules reads its own job first
+    // (`SchedulerModel::schedule`, `crates/model/src/scheduled_jobs/mod.rs:238-300`).
+    const parentJob = execution.request.scheduledFunctionId;
+    if (parentJob !== null) {
+      refuse(
+        attempt.meter.readInterval(
+          jobsIndex,
+          Metering.point([parentJob]),
+          execution.limits,
+        ),
+      );
+    }
     const id = this.generateId(Scheduling.table);
+    attempt.meter.deriveInterval(jobsIndex, Metering.point([id]));
     attempt.write(
       execution.componentPath,
       id,
@@ -1113,10 +1231,10 @@ export class World {
   /**
    * Cancel a job that has not finished. A finished job stays as it ended.
    */
-  private cancelJob(attempt: KernelAttempt, componentPath: string, id: any) {
+  private cancelJob(attempt: KernelAttempt, execution: Execution, id: any) {
+    const { componentPath } = execution;
     validateId(Scheduling.table, id);
-    attempt.readDocument(componentPath, id);
-    const doc = attempt.get(componentPath, id);
+    const doc = this.readById(attempt, execution, id);
     if (doc === null) {
       throw new Error(`Patch on non-existent document with ID "${id}"`);
     }
@@ -1187,6 +1305,18 @@ export class World {
         : from.parent !== undefined
           ? from.parent.identity
           : from.caller.identity;
+    // A nested call runs under its caller's limits, which its budget can only
+    // tighten, and gives them back when it ends (`run_udf`,
+    // `crates/isolate/src/environment/udf/async_syscall.rs:700-706`, and
+    // `commit_subtransaction`, `crates/database/src/transaction.rs:431-441`).
+    const inherited =
+      attempt === undefined || from.parent?.attempt === undefined
+        ? Metering.defaults
+        : from.parent.limits;
+    const limits =
+      attempt === undefined || from.budget === undefined
+        ? inherited
+        : Metering.fromBudget(from.budget, attempt.meter.used(), inherited);
     return {
       world: this,
       componentPath: functionPath.componentPath,
@@ -1202,6 +1332,7 @@ export class World {
           : this.now()),
       pagination,
       turn: new Turn(),
+      limits,
     };
   }
 
@@ -1220,7 +1351,7 @@ export class World {
       (parentAttempt === undefined
         ? new KernelAttempt(this.state)
         : snapshotOnly
-          ? new KernelAttempt(parentAttempt.snapshot)
+          ? parentAttempt.staleSnapshot()
           : parentAttempt);
     const execution = this.execution(
       functionPath,
@@ -1634,16 +1765,81 @@ export class World {
 
   private view(execution: Execution): KernelQuery.TableView {
     const attempt = transaction(execution);
+    const { componentPath, limits } = execution;
     return {
-      schema: this.schema(execution.componentPath),
-      scan: (tableName) => attempt.scan(execution.componentPath, tableName),
-      read: (interval, after) =>
-        attempt.readInterval({
+      schema: this.schema(componentPath),
+      scan: (tableName) => attempt.scan(componentPath, tableName),
+      read: ({ index, ...interval }, after) => {
+        const advance = attempt.readInterval({
           ...interval,
-          componentPath: execution.componentPath,
+          componentPath,
           after,
-        }),
+        });
+        return (through) => {
+          advance(through);
+          const examined = Metering.examined(
+            interval.range,
+            interval.order,
+            after,
+            through,
+          );
+          if (examined !== null) {
+            refuse(
+              attempt.meter.readInterval(
+                indexKey(componentPath, interval.table, index),
+                examined,
+                limits,
+              ),
+            );
+          }
+        };
+      },
+      examine: (table, doc) =>
+        refuse(attempt.meter.readDocument(doc, isSystemTable(table), limits)),
     };
+  }
+
+  /**
+   * Read one document by ID, as the binary's `get_inner` does for a get and for
+   * the document a patch, replace, delete or cancel changes: it reads the ID's
+   * interval of the table's `by_id` index, then charges the document if there
+   * is one (`crates/database/src/transaction.rs:1188-1250`).
+   */
+  private readById(
+    attempt: KernelAttempt,
+    execution: Execution,
+    id: DocumentId,
+  ): StoredDocument | null {
+    const { componentPath, limits } = execution;
+    const table = tableNameFromId(id)!;
+    attempt.readDocument(componentPath, id);
+    refuse(
+      attempt.meter.readInterval(
+        indexKey(componentPath, table, "by_id"),
+        Metering.point([id]),
+        limits,
+      ),
+    );
+    const doc = attempt.get(componentPath, id);
+    if (doc !== null) {
+      refuse(attempt.meter.readDocument(doc, isSystemTable(table), limits));
+    }
+    return doc;
+  }
+
+  /**
+   * Stage a write to a user table, counted against the execution's limits
+   * first. A write over a limit is not staged (`Writes::update`,
+   * `crates/database/src/writes.rs:241-310`).
+   */
+  private stage(
+    execution: Execution,
+    id: DocumentId,
+    doc: StoredDocument | null,
+  ) {
+    const attempt = transaction(execution);
+    refuse(attempt.meter.write(doc, execution.limits));
+    attempt.write(execution.componentPath, id, doc);
   }
 
   private generateId(table: string): DocumentId {
@@ -1771,6 +1967,15 @@ export class World {
         return JSON.stringify({});
       case "1.0/count": {
         const attempt = transaction(execution);
+        // The binary counts a table by reading its whole `by_id` index, and no
+        // document (`count_tablet`, `crates/database/src/bootstrap_model/table.rs:133-160`).
+        refuse(
+          attempt.meter.readInterval(
+            indexKey(execution.componentPath, args.table, "by_id"),
+            Metering.everything,
+            execution.limits,
+          ),
+        );
         attempt.readInterval({
           kind: "interval",
           componentPath: execution.componentPath,
@@ -1817,8 +2022,12 @@ export class World {
         return run.then((value) => JSON.stringify(convexToJson(value)));
       }
       case "1.0/runUdf": {
-        const { udfType, args: udfArgs } = args;
-        const from: From = { request: execution.request, parent: execution };
+        const { udfType, args: udfArgs, transactionLimits } = args;
+        const from: From = {
+          request: execution.request,
+          parent: execution,
+          budget: budgetOf(transactionLimits),
+        };
         const functionPath = functionPathOf(args, execution.componentPath);
         const value = jsonToConvex(udfArgs);
         const run =
@@ -1857,15 +2066,11 @@ export class World {
           ),
         );
       case "1.0/cancel_job":
-        this.cancelJob(
-          transaction(execution),
-          execution.componentPath,
-          args.id,
-        );
+        this.cancelJob(transaction(execution), execution, args.id);
         return JSON.stringify({});
       case "1.0/actions/cancel_job":
         this.commitNow((attempt) =>
-          this.cancelJob(attempt, execution.componentPath, args.id),
+          this.cancelJob(attempt, execution, args.id),
         );
         return JSON.stringify({});
       case "1.0/storageDelete":
@@ -1873,7 +2078,14 @@ export class World {
       case "1.0/storageGenerateUploadUrl":
         throw KernelRefusal.rowPending("storage", 6);
       case "1.0/getTransactionMetrics":
-        throw KernelRefusal.rowPending("transaction limits", 6);
+        // An action has no transaction, and the binary's action syscalls do
+        // not know this one (`crates/isolate/src/environment/action/async_syscall.rs:105`).
+        if (execution.attempt === undefined) {
+          throw new Error(`Unknown async operation ${op}`);
+        }
+        return JSON.stringify(
+          execution.attempt.meter.metrics(execution.limits),
+        );
       case "1.0/actions/vectorSearch":
         throw KernelRefusal.requiresBinary("vectorSearch");
       default:
@@ -1895,9 +2107,7 @@ export class World {
 
   private get(execution: Execution, tableName: unknown, id: unknown) {
     validateId(tableName, id);
-    const attempt = transaction(execution);
-    attempt.readDocument(execution.componentPath, id);
-    return attempt.get(execution.componentPath, id);
+    return this.readById(transaction(execution), execution, id);
   }
 
   private insert(execution: Execution, table: string, value: any): DocumentId {
@@ -1909,7 +2119,12 @@ export class World {
       value,
     );
     const _id = this.generateId(table);
-    attempt.write(execution.componentPath, _id, {
+    // A new ID joins the table's `by_id` reads without counting as one.
+    attempt.meter.deriveInterval(
+      indexKey(execution.componentPath, table, "by_id"),
+      Metering.point([_id]),
+    );
+    this.stage(execution, _id, {
       ...value,
       _id,
       _creationTime: this.creationTime(execution.startTime),
@@ -1941,9 +2156,7 @@ export class World {
         `Invalid argument \`value\` in \`db.${write}\`, expected object but got '${typeof value}': ${value as any}`,
       );
     }
-    const attempt = transaction(execution);
-    attempt.readDocument(execution.componentPath, id);
-    const document = attempt.get(execution.componentPath, id);
+    const document = this.readById(transaction(execution), execution, id);
     if (document === null) {
       throw new Error(
         write === "delete"
@@ -1989,16 +2202,14 @@ export class World {
     const { _id, _creationTime, ...fields } = document;
     const merged = { ...fields, ...this.fields(document, value) };
     this.keepRow(execution.componentPath, tableNameFromId(_id)!, merged);
+    const next = { _id, _creationTime, ...merged } as StoredDocument;
+    if (sameDocument(document, next)) return;
     KernelQuery.validateDocument(
       this.schema(execution.componentPath),
       tableNameFromId(_id)!,
       merged,
     );
-    transaction(execution).write(execution.componentPath, _id, {
-      _id,
-      _creationTime,
-      ...merged,
-    } as StoredDocument);
+    this.stage(execution, _id, next);
   }
 
   private replace(
@@ -2014,16 +2225,18 @@ export class World {
       tableNameFromId(document._id)!,
       fields,
     );
+    const next = {
+      ...fields,
+      _id: document._id,
+      _creationTime: document._creationTime,
+    } as StoredDocument;
+    if (sameDocument(document, next)) return;
     KernelQuery.validateDocument(
       this.schema(execution.componentPath),
       tableNameFromId(document._id)!,
       fields,
     );
-    transaction(execution).write(execution.componentPath, document._id, {
-      ...fields,
-      _id: document._id,
-      _creationTime: document._creationTime,
-    } as StoredDocument);
+    this.stage(execution, document._id, next);
   }
 
   private remove(execution: Execution, tableName: unknown, id: unknown) {
@@ -2034,7 +2247,7 @@ export class World {
       "delete",
       undefined,
     );
-    transaction(execution).write(execution.componentPath, document._id, null);
+    this.stage(execution, document._id, null);
   }
 }
 
@@ -2047,8 +2260,99 @@ type From =
       readonly caller: Caller;
       readonly request: Request;
       readonly parent?: undefined;
+      readonly budget?: undefined;
     }
-  | { readonly parent: Execution; readonly request: Request };
+  | {
+      readonly parent: Execution;
+      readonly request: Request;
+      readonly budget?: Metering.Budget | undefined;
+    };
+
+const refuse = (error: Metering.TransactionLimitExceeded | undefined) => {
+  if (error !== undefined) throw error;
+};
+
+/**
+ * One index of one table in one component, as the binary keys a read set.
+ */
+const indexKey = (componentPath: string, table: string, index: string) =>
+  `${componentPath}\u0000${table}\u0000${index}`;
+
+const isSystemTable = (table: string) => table.startsWith("_");
+
+const isFieldMap = (value: unknown): value is object =>
+  typeof value === "object" && value !== null && isSimpleObject(value);
+
+/**
+ * Whether two stored values are the same value, an unresolved commit timestamp
+ * included. The binary compares pending values structurally, so a pending
+ * timestamp equals only another pending timestamp, at any depth (`PendingValue`
+ * derives `PartialEq`, `crates/value/src/pending.rs:56-75`, as
+ * `PendingDocument` does, `crates/common/src/document.rs:624-632`). Concrete
+ * values compare by `ConvexValue`'s total order
+ * (`crates/value/src/sorting.rs:468-472`), which `compareValues` follows.
+ * `compareValues` alone ranks a pending timestamp as the largest int64, so it
+ * cannot tell the two apart. An object field set to `undefined` is absent.
+ */
+const sameValue = (a: unknown, b: unknown): boolean => {
+  const aPending = a instanceof CommitTsPlaceholder;
+  const bPending = b instanceof CommitTsPlaceholder;
+  if (aPending || bPending) return aPending && bPending;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((value, i) => sameValue(value, b[i]))
+    );
+  }
+  if (isFieldMap(a) || isFieldMap(b)) {
+    if (!isFieldMap(a) || !isFieldMap(b)) return false;
+    const fields = (value: object) =>
+      Object.entries(value).filter(([, field]) => field !== undefined);
+    const aFields = fields(a);
+    const bFields = new Map(fields(b));
+    return (
+      aFields.length === bFields.size &&
+      aFields.every(
+        ([key, field]) =>
+          bFields.has(key) && sameValue(field, bFields.get(key)),
+      )
+    );
+  }
+  return compareValues(a as Value, b as Value) === 0;
+};
+
+/**
+ * Whether a patch or replace leaves a document as it was. The binary then
+ * writes nothing (`patch_inner` and `replace_inner`,
+ * `crates/database/src/transaction.rs:713-790`).
+ */
+const sameDocument = (before: StoredDocument, after: StoredDocument) =>
+  sameValue(before, after);
+
+/**
+ * A nested call's `transactionLimits`. The binary reads each field as an
+ * unsigned integer and ignores fields it does not know (`TransactionLimits`,
+ * `crates/database/src/execution_size.rs:62-95`).
+ */
+const budgetOf = (limits: unknown): Metering.Budget | undefined => {
+  if (limits === undefined || limits === null) return undefined;
+  const budget: Partial<Record<keyof Metering.Limits, number>> = {};
+  for (const metric of Object.keys(Metering.defaults) as Array<
+    keyof Metering.Limits
+  >) {
+    const value = (limits as Record<string, unknown>)[metric];
+    if (value === undefined) continue;
+    if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
+      throw new Error(
+        `Invalid arguments for \`runUdf\`: transactionLimits.${metric} must be a non-negative integer, got ${JSON.stringify(value)}`,
+      );
+    }
+    budget[metric] = value;
+  }
+  return budget;
+};
 
 const closed = (execution: Execution, operation: string) =>
   new KernelRefusal.ClosedAttempt({

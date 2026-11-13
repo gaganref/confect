@@ -99,17 +99,19 @@ export const validateDocument = (
 };
 
 /**
- * An interval a query reads, before it says where it starts and how far it got.
+ * An interval a query reads, before it says where it starts and how far it got,
+ * and the index it reads it from.
  */
 export type Interval = Omit<
   ReadSet.IntervalRead,
   "componentPath" | "after" | "through"
->;
+> & { readonly index: string };
 
 /**
  * What a query reads: one table of one component, as the running attempt sees
  * it. `read` records an interval in the attempt's read set and returns how to
- * advance it.
+ * advance it. `examine` charges one document the query examined, before the
+ * query's filters see it.
  */
 export interface TableView {
   readonly schema: KernelSchema | null;
@@ -118,6 +120,7 @@ export interface TableView {
     interval: Interval,
     after: ReadSet.Key | null,
   ) => (through: ReadSet.Key | "end") => void;
+  readonly examine: (table: string, doc: GenericDocument) => void;
 }
 
 interface ResolvedSource {
@@ -138,9 +141,12 @@ const resolveSource = (
   let order: "asc" | "desc";
   let table: string;
   let range: ReadonlyArray<SerializedRangeExpression> = [];
+  let index: string;
   switch (source.type) {
     case "FullTableScan": {
       table = source.tableName;
+      // The binary scans a whole table through its creation-time index.
+      index = "by_creation_time";
       docs = [...view.scan(source.tableName)];
       order = source.order ?? "asc";
       fieldPathsToSortBy = ["_creationTime"];
@@ -152,6 +158,7 @@ const resolveSource = (
         string,
       ];
       table = tableName;
+      index = indexName;
       range = source.range;
       order = source.order ?? "asc";
       let fields: Array<string>;
@@ -160,18 +167,18 @@ const resolveSource = (
       } else if (indexName === "by_id") {
         fields = ["_id"];
       } else {
-        const index = view.schema?.tables
+        const declared = view.schema?.tables
           .get(tableName)
           ?.indexes.find(
             ({ indexDescriptor }) => indexDescriptor === indexName,
           );
-        if (index === undefined) {
+        if (declared === undefined) {
           throw new Error(
             `Cannot use index "${indexName}" for table "${tableName}" because ` +
               `it is not declared in the schema.`,
           );
         }
-        fields = index.fields.concat(["_creationTime", "_id"]);
+        fields = declared.fields.concat(["_creationTime", "_id"]);
       }
       fieldPathsToSortBy = fields;
       validateIndexRangeExpression(source, fields);
@@ -216,6 +223,7 @@ const resolveSource = (
     order,
     interval: {
       kind: "interval",
+      index,
       table,
       fields: fieldPathsToSortBy.includes("_id")
         ? fieldPathsToSortBy
@@ -241,6 +249,7 @@ export const stream = (
     let returned = 0;
     for (const doc of sortedDocs) {
       if (limit !== null && returned >= limit) return;
+      view.examine(interval.table, doc);
       examined(ReadSet.keyOf(interval.fields, doc as StoredDocument));
       if (filterFn(doc)) {
         returned++;
@@ -352,6 +361,7 @@ export const paginate = (
         reachedEnd = false;
         examined(endCursorKeys);
         if (cmp === 0) {
+          view.examine(interval.table, doc);
           rowsRead += 1;
           bytesRead += getDocumentSize(doc);
           readDocCursors.push(encodeCursor(doc, cursorFields));
@@ -361,6 +371,7 @@ export const paginate = (
         break;
       }
     }
+    view.examine(interval.table, doc);
     rowsRead += 1;
     bytesRead += getDocumentSize(doc);
     readDocCursors.push(encodeCursor(doc, cursorFields));

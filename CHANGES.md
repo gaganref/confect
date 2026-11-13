@@ -121,6 +121,24 @@ mock-backend cases run on the kernel. This is row 5 of Frame's backend testing
 kernel (Frame ADR 0012). Changeset: `test-kernel-scheduler.md`. Upstream: fork
 only, as the kernel and its option are fork-specific.
 
+## Test kernel transaction limits
+
+The kernel meters each attempt against Convex's transaction limits: documents
+and bytes read, disjoint index intervals, documents and bytes written, and
+scheduled functions with their argument bytes. The defaults, the counting rules
+and the messages are convex-backend's, so a function crossing a limit gets the
+binary's catchable error. A failed nested mutation's writes leave the count and
+its reads and schedules stay. A nested call's `transactionLimits` budget
+tightens only that call. A stale-snapshot query keeps its caller's scheduling
+counters. A patch or replace that changes nothing writes nothing, and a pending
+commit timestamp equals only another pending timestamp. `TransactionMetadata.getMetrics` reads the same counters, so the
+mock-backend `TransactionMetadata` case runs on the kernel. A local-backend case
+compares `getMetrics` for one workload on both targets. The binary's
+`databaseQueries` also counts its own system-table reads, which stay on the
+binary as the named `SystemTableReadIntervals` boundary. File storage counters stay at zero until the storage row. This is the
+limits row of Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-limits.md`. Upstream: fork only, as the kernel is fork-specific.
+
 ## TestConfect kernel target
 
 `TestConfect.layer` takes `{ target: "kernel" }` in each of its three forms. It
@@ -165,8 +183,14 @@ Components, tables, rows and jobs are sorted and each document keeps its field
 order, so two exports of one state are the same bytes. The header names the
 SHA-256 digest of the body, and restore refuses bytes whose body does not hash
 to it with `SnapshotDigestMismatch`, before it reads any of them. Restore also
-refuses a malformed body, a backend that committed or holds attempts, other
-components and a job world it is not given, each with a tagged refusal.
+refuses a malformed body, a backend that committed, holds attempts or is
+running a call, other components and a job world it is not given, and state
+the kernel could not have reached: rows the write log does not publish,
+identity counters behind the state, commit timestamps out of order and jobs
+without their rows or targets. Each has a tagged refusal. The snapshot also
+carries the identity epoch that subscribers' identity versions come from, and
+`Snapshot.contract` names every piece of kernel state as exported or excluded,
+checked by type and by a test.
 Replaying the same driver choices after a restore reaches the bytes of the run
 that never stopped, and a function handle stored in a row resolves to its
 component's function after restore. The format is the kernel's own, not the

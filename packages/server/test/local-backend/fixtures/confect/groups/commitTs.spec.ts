@@ -10,6 +10,18 @@ export default GroupSpec.make()
     }),
   )
   .addFunction(
+    FunctionSpec.publicMutation({
+      name: "maxAfterPending",
+      args: () => ({ caseId: Schema.String }),
+      returns: () =>
+        Schema.Struct({
+          written: Schema.Finite,
+          stored: Schema.Literals(["placeholder", "bigint"]),
+          value: Schema.String,
+        }),
+    }),
+  )
+  .addFunction(
     FunctionSpec.publicQuery({
       name: "newestFirst",
       args: () => ({ caseId: Schema.String }),
