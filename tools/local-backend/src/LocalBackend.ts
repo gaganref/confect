@@ -289,6 +289,8 @@ export const consumerLayer = Layer.effect(
 /**
  * Plain Convex HTTP actions, with no Confect router in front, for probes of the
  * binary's own HTTP answers. It needs no codegen or seeding.
+ *
+ * @internal
  */
 export const plainLayer = Layer.effect(
   LocalBackend,
