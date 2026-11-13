@@ -6,6 +6,7 @@ import * as Logger from "effect/Logger";
 import * as Schema from "effect/Schema";
 import type * as HttpMiddleware from "effect/http/HttpMiddleware";
 import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
@@ -13,7 +14,8 @@ import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as HttpApiScalar from "effect/http-api/HttpApiScalar";
 import refs from "./_generated/refs";
-import { QueryRunner } from "./_generated/services";
+import * as SignedEnvelope from "../../../signedEnvelope";
+import { MutationRunner, QueryRunner } from "./_generated/services";
 import notes from "./_generated/tables/notes";
 
 class NotesGroup extends HttpApiGroup.make("notes").add(
@@ -75,6 +77,30 @@ const withTestHeader: HttpMiddleware.HttpMiddleware = (httpApp) =>
     HttpServerResponse.setHeader(response, "x-confect-middleware", "applied"),
   );
 
+// The route-local signed ingress rule of `../../../signedEnvelope.ts`: a
+// refused envelope gets its declared refusal before anything is written.
+const ingress = HttpRouter.add(
+  "POST",
+  SignedEnvelope.path,
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const body = new Uint8Array(yield* request.arrayBuffer);
+    const verdict = yield* Effect.promise(() =>
+      SignedEnvelope.verify((name) => request.headers[name], body),
+    );
+    if (verdict.kind === "refused") {
+      return HttpServerResponse.text(verdict.refusal.body, {
+        status: verdict.refusal.status,
+      });
+    }
+    const { runMutation } = yield* MutationRunner;
+    yield* runMutation(refs.public.groups.notes.insert, {
+      text: `${verdict.event}:${verdict.id}`,
+    });
+    return HttpServerResponse.text(`accepted ${verdict.event} ${verdict.id}`);
+  }).pipe(Effect.orDie),
+);
+
 const http = ConfectHttpRouter.make(
   Layer.mergeAll(
     HttpApiBuilder.layer(NotesApi).pipe(Layer.provide(NotesApiLive)),
@@ -82,6 +108,7 @@ const http = ConfectHttpRouter.make(
     HttpApiBuilder.layer(ActionsApi).pipe(Layer.provide(ActionsLive)),
     HttpApiScalar.layer(NotesApi, { path: "/api/docs" }),
     HttpRouter.add("GET", "/health", HttpServerResponse.text("OK")),
+    ingress,
     HttpRouter.add(
       "GET",
       "/logging",

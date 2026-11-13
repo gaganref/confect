@@ -11,6 +11,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
+import * as SignedEnvelope from "../signedEnvelope";
 import * as LocalBackend from "./LocalBackend";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
@@ -76,6 +77,51 @@ layer(
             process.stdout.write(`${kind} ${udfType} ${identifier}\n`);
           }
         });
+      }),
+  );
+  // The kernel lane's `signedIngress.test.ts` expects these same answers from
+  // the mock-backend fixture's copy of the route.
+  it.effect(
+    "answers a signed envelope's round trip, and refuses a tampered or non-UTF-8 one, as the test kernel does",
+    () =>
+      Effect.gen(function* () {
+        const send = (body: Uint8Array, signature: string) =>
+          HttpClient.execute(
+            HttpClientRequest.post(
+              `http://127.0.0.1:3211${SignedEnvelope.path}`,
+            ).pipe(
+              HttpClientRequest.setHeader(
+                SignedEnvelope.signatureHeader,
+                signature,
+              ),
+              HttpClientRequest.bodyUint8Array(body, "application/json"),
+            ),
+          ).pipe(
+            Effect.flatMap((response) =>
+              Effect.map(response.text, (text) => ({
+                status: response.status,
+                body: text,
+              })),
+            ),
+          );
+        const sign = (body: Uint8Array) =>
+          Effect.promise(() => SignedEnvelope.sign(body));
+        const accepted = new TextEncoder().encode(
+          encodeJson({ id: "evt_1", event: "paid" }),
+        );
+        expect(yield* send(accepted, yield* sign(accepted))).toStrictEqual({
+          status: 200,
+          body: "accepted paid evt_1",
+        });
+        const tampered = Uint8Array.from(accepted);
+        tampered[tampered.length - 2] ^= 1;
+        expect(yield* send(tampered, yield* sign(accepted))).toStrictEqual(
+          SignedEnvelope.refusals.badSignature,
+        );
+        const notUtf8 = Uint8Array.of(0x7b, 0xff, 0x7d);
+        expect(yield* send(notUtf8, yield* sign(notUtf8))).toStrictEqual(
+          SignedEnvelope.refusals.malformedJson,
+        );
       }),
   );
   it.effect("keeps unmatched app and component responses in Effect", () =>
