@@ -127,9 +127,7 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
           "/first/class-probe/http",
           "/component-class-probe/http",
         ]) {
-          const body = yield* HttpClient.get(
-            `http://127.0.0.1:3211${path}`,
-          ).pipe(
+          const body = yield* HttpClient.get(LocalBackend.siteUrl(path)).pipe(
             Effect.flatMap(HttpClientResponse.filterStatusOk),
             Effect.flatMap((response) => response.text),
           );
@@ -245,14 +243,14 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
           "right/deep/child/child",
         ]) {
           const body = yield* HttpClient.get(
-            `http://127.0.0.1:3211/${mount}/health`,
+            LocalBackend.siteUrl(`/${mount}/health`),
           ).pipe(
             Effect.flatMap(HttpClientResponse.filterStatusOk),
             Effect.flatMap((response) => response.text),
           );
           expect(body).toBe("component-ready");
           const echo = yield* HttpClient.post(
-            `http://127.0.0.1:3211/${mount}/echo`,
+            LocalBackend.siteUrl(`/${mount}/echo`),
             {
               body: HttpBody.text(`body for ${mount}`),
             },
@@ -262,7 +260,7 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
           );
           expect(echo).toBe(`body for ${mount}`);
           const missing = yield* HttpClient.get(
-            `http://127.0.0.1:3211/${mount}/missing`,
+            LocalBackend.siteUrl(`/${mount}/missing`),
           );
           expect(missing.status).toBe(404);
         }

@@ -83,6 +83,12 @@ export declare const api: {
       >;
     };
     commitTs: {
+      maxAfterPending: FunctionReference<
+        "mutation",
+        "public",
+        { caseId: string },
+        { stored: "placeholder" | "bigint"; value: string; written: number }
+      >;
       newestFirst: FunctionReference<
         "query",
         "public",
@@ -456,6 +462,21 @@ export declare const api: {
         { storageId: Id<"_storage"> },
         string
       >;
+      fileProbe: FunctionReference<
+        "mutation",
+        "public",
+        {
+          count: number;
+          fileReadBytes: number;
+          fileWriteBytes: number;
+          filesRead: number;
+          filesWritten: number;
+          ids: Array<Id<"_storage">>;
+          nested: boolean;
+          size: number;
+        },
+        string
+      >;
       generateUploadUrl: FunctionReference<"mutation", "public", {}, string>;
       get: FunctionReference<
         "action",
@@ -475,6 +496,12 @@ export declare const api: {
         { text: string },
         Id<"_storage">
       >;
+      storeInMutation: FunctionReference<
+        "mutation",
+        "public",
+        { contentType: string; text: string },
+        string
+      >;
       storeWith: FunctionReference<
         "action",
         "public",
@@ -483,6 +510,12 @@ export declare const api: {
       >;
     };
     transactions: {
+      insertedIntervals: FunctionReference<
+        "mutation",
+        "public",
+        { caseId: string; count: number },
+        { afterGet: number; afterInserts: number; afterScan: number }
+      >;
       limitedRead: FunctionReference<
         "query",
         "public",
@@ -501,6 +534,15 @@ export declare const api: {
         { caseId: string; limit: number },
         null
       >;
+      metrics: FunctionReference<
+        "mutation",
+        "public",
+        { caseId: string },
+        {
+          end: Record<string, { remaining: number; used: number }>;
+          start: Record<string, { remaining: number; used: number }>;
+        }
+      >;
       rollback: FunctionReference<
         "mutation",
         "public",
@@ -512,6 +554,12 @@ export declare const api: {
         "public",
         { caseId: string; count: number },
         null
+      >;
+      staleMetrics: FunctionReference<
+        "mutation",
+        "public",
+        {},
+        Record<string, { remaining: number; used: number }>
       >;
       staleRead: FunctionReference<
         "mutation",
@@ -556,12 +604,27 @@ export declare const internal: {
         null
       >;
     };
+    storage: {
+      storeAndRead: FunctionReference<
+        "mutation",
+        "internal",
+        { count: number; ids: Array<Id<"_storage">>; size: number },
+        null
+      >;
+    };
     transactions: {
+      idle: FunctionReference<"mutation", "internal", {}, null>;
       read: FunctionReference<
         "query",
         "internal",
         { caseId: string },
         Array<string>
+      >;
+      readMetrics: FunctionReference<
+        "query",
+        "internal",
+        {},
+        Record<string, { remaining: number; used: number }>
       >;
       write: FunctionReference<
         "mutation",

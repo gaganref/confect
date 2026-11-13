@@ -39,7 +39,9 @@ layer(
     ({ path, uncaught, data }) =>
       Effect.gen(function* () {
         yield* LocalBackend.LocalBackend;
-        const response = yield* HttpClient.get(`http://127.0.0.1:3231${path}`);
+        const response = yield* HttpClient.get(
+          LocalBackend.siteUrl(path, LocalBackend.ports.plain),
+        );
         const body = yield* response.text;
         yield* expectServerError(
           new Response(body, {
@@ -55,7 +57,9 @@ layer(
   it.effect("a path no route has answers 404 No matching routes found", () =>
     Effect.gen(function* () {
       yield* LocalBackend.LocalBackend;
-      const response = yield* HttpClient.get("http://127.0.0.1:3231/nope");
+      const response = yield* HttpClient.get(
+        LocalBackend.siteUrl("/nope", LocalBackend.ports.plain),
+      );
       expect(response.status).toBe(404);
       expect(response.headers["content-type"]).toBe(
         "text/plain; charset=utf-8",

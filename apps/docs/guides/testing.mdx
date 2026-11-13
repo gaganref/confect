@@ -367,3 +367,25 @@ On the kernel, scheduled functions run on the kernel's own clock and never on a 
 File storage on the kernel keeps the deployment's metadata: a stored file's `_storage` row carries a base64 SHA-256 `sha256`, its `size` and a `contentType` that is `null` when the file has none, and a `sha256` you declare to `store` must match. Uploading to a `generateUploadUrl` URL, or downloading from a `getUrl` URL, needs a real deployment, so the kernel's `fetch` refuses either with `RequiresBinary`.
 
 The kernel's `fetch` routes a request as a deployment does: the router's own `lookup` picks the route by path and method, the handler gets the exact headers and body bytes you sent, so a route that checks a signature over the raw body behaves as it would deployed, and a request no route matches gets `404 No matching routes found`. A route that throws answers `500` with the deployment's JSON error body, `{ code, trace }` plus `data` for a `ConvexError`, instead of rejecting `fetch`; a mounted component's route answers the same on either target. Identity still comes from `withIdentity`.
+
+### Keep secrets out of kernel artifacts
+
+On the kernel, a value under a `Schema.Redacted` node, which a `Schema.RedactedFromValue` field decodes to, reaches the kernel's failure reports and diffs only as `[redacted]`. The raw value stays in memory as the backend's own state, so handlers and subscriptions still read it. The layer reads the secret nodes of the app's tables from its database schema. Pass `secrets` for function arguments and return values and for component tables:
+
+```typescript
+TestConfect.layer(databaseSchema, convexSchemaDefinition, modules, {
+  target: "kernel",
+  secrets: {
+    functions: {
+      "": {
+        "accounts:open": {
+          args: () =>
+            Schema.Struct({ token: Schema.RedactedFromValue(Schema.String) }),
+        },
+      },
+    },
+  },
+});
+```
+
+`secrets` is keyed by component path (`""` for the app), then by `module:export` or table name, and each schema is a thunk the kernel builds only when it first needs it. Codegen will fill the same record from your Confect specs as `secrets` in `confect/_generated/testing`, which replaces a hand-written policy.

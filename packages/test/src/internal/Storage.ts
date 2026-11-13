@@ -63,6 +63,7 @@ export class Sha256Mismatch extends Schema.TaggedError<Sha256Mismatch>()(
 export type StorageError =
   | StorageIdNotFound
   | InvalidStorageArgument
+  | InvalidContentType
   | Sha256Mismatch;
 
 const invalid = (operation: string, argument: string, cause: string) =>
@@ -182,35 +183,213 @@ export const checkDigest = (
       );
 };
 
-const mediaType =
-  /^[!#$%&'*+.^_`|~0-9a-z-]+\/[!#$%&'*+.^_`|~0-9a-z-]+(\s*;.*)?$/i;
+// `mime` 0.3.17's `TOKEN_MAP` (`src/parse.rs:367-384`): RFC 7230's tchar.
+const isToken = (c: number): boolean =>
+  (c >= 0x30 && c <= 0x39) ||
+  (c >= 0x41 && c <= 0x5a) ||
+  (c >= 0x61 && c <= 0x7a) ||
+  "!#$%&'*+-.^_`|~".includes(String.fromCharCode(c));
+
+// `is_restricted_quoted_char` (`src/parse.rs:390-392`).
+const isQuotedChar = (c: number): boolean => c > 31 && c !== 127;
 
 /**
- * A file's content type: none for an empty one, as the binary filters it, and a
- * refusal for one that is no media type.
+ * Why `mime` 0.3.17 refuses a media type, in its own words (`ParseError::s` and
+ * its `Display`, `src/parse.rs:22-41`, behind `FromStrError`'s "mime parse
+ * error: " prefix, `src/lib.rs:83-93`).
+ */
+export type MediaTypeError =
+  | { readonly kind: "missingSlash" }
+  | { readonly kind: "missingEqual" }
+  | { readonly kind: "missingQuote" }
+  | {
+      readonly kind: "invalidToken";
+      readonly pos: number;
+      readonly byte: number;
+    };
+
+export const mediaTypeMessage = (error: MediaTypeError): string =>
+  `mime parse error: ${
+    error.kind === "missingSlash"
+      ? "a slash (/) was missing between the type and subtype"
+      : error.kind === "missingEqual"
+        ? "an equals sign (=) was missing between a parameter and its value"
+        : error.kind === "missingQuote"
+          ? 'a quote (") was missing from a parameter value'
+          : `an invalid token was encountered, ${error.byte.toString(16).toUpperCase()} at position ${error.pos}`
+  }`;
+
+/**
+ * A media type as `mime` 0.3.17 parses and prints it, the binary's
+ * `mime::Mime::from_str` and `Display` (`src/parse.rs:111-305`,
+ * `src/lib.rs:447-451`): the type, subtype and parameter names and a charset
+ * value lowercased, other values kept, and a bare trailing `;` dropped. The
+ * port keeps the crate's own rules, an empty subtype and an empty unquoted
+ * value at the end included. `text` is ASCII, as a `Blob`'s type always is.
+ */
+export const parseMediaType = (
+  text: string,
+): Result.Result<string, MediaTypeError> => {
+  if (text === "*/*") return Result.succeed(text);
+  const at = (i: number) => text.charCodeAt(i);
+  const invalidToken = (pos: number) =>
+    Result.fail<MediaTypeError>({ kind: "invalidToken", pos, byte: at(pos) });
+  const n = text.length;
+  let i = 0;
+  // The type, up to its slash.
+  for (; ; i++) {
+    if (i === n) return Result.fail({ kind: "missingSlash" });
+    const c = at(i);
+    if (c === 0x2f && i > 0) break;
+    if (!isToken(c)) return invalidToken(i);
+  }
+  let start = i + 1;
+  // The subtype, up to a semicolon.
+  for (i = start; ; i++) {
+    if (i === n) return Result.succeed(text.toLowerCase());
+    const c = at(i);
+    if ((c === 0x2b || c === 0x3b) && i > start) {
+      if (c === 0x3b) break;
+      continue;
+    }
+    if (!isToken(c)) return invalidToken(i);
+  }
+  const semicolon = i;
+  start = i + 1;
+  i = start;
+  const params: Array<{ name: [number, number]; value: [number, number] }> = [];
+  params: while (start < n) {
+    let name: [number, number];
+    for (; ; i++) {
+      if (i === n) return Result.fail({ kind: "missingEqual" });
+      const c = at(i);
+      if (c === 0x20 && i === start) {
+        start = i + 1;
+        i = start;
+        continue params;
+      }
+      if (isToken(c)) continue;
+      if (c === 0x3d && i > start) {
+        name = [start, i];
+        start = i + 1;
+        i++;
+        break;
+      }
+      return invalidToken(i);
+    }
+    let value: [number, number];
+    let quoted = false;
+    for (; ; i++) {
+      if (quoted) {
+        if (i === n) return Result.fail({ kind: "missingQuote" });
+        const c = at(i);
+        if (c === 0x22 && i > start) {
+          value = [start, i];
+          i++;
+          break;
+        }
+        if (!isQuotedChar(c)) return invalidToken(i);
+      } else {
+        if (i === n) {
+          value = [start, n];
+          start = n;
+          break;
+        }
+        const c = at(i);
+        if (c === 0x22 && i === start) {
+          quoted = true;
+          start = i + 1;
+          continue;
+        }
+        if (isToken(c)) continue;
+        if (c === 0x3b && i > start) {
+          value = [start, i];
+          start = i + 1;
+          i++;
+          break;
+        }
+        return invalidToken(i);
+      }
+    }
+    if (quoted) {
+      for (; ; i++) {
+        if (i === n) {
+          start = n;
+          break;
+        }
+        const c = at(i);
+        if (c === 0x3b) {
+          start = i + 1;
+          i++;
+          break;
+        }
+        if (c !== 0x20) return invalidToken(i);
+      }
+    }
+    params.push({ name, value });
+  }
+  if (params.length === 0)
+    return Result.succeed(text.slice(0, semicolon).toLowerCase());
+  // `lower_ascii_with_params` (`src/parse.rs:307-321`).
+  const chars = Array.from(text);
+  const lower = (from: number, to: number) => {
+    for (let k = from; k < to; k++) chars[k] = chars[k]!.toLowerCase();
+  };
+  lower(0, semicolon);
+  for (const { name, value } of params) {
+    lower(name[0], name[1]);
+    if (text.slice(name[0], name[1]).toLowerCase() === "charset") {
+      lower(value[0], value[1]);
+    }
+  }
+  return Result.succeed(chars.join(""));
+};
+
+/**
+ * A content type that names no media type, refused on an action's store path
+ * (`InvalidContentTypeHeader`, `run_storage_store`,
+ * `crates/isolate/src/environment/action/storage.rs:55-60`).
+ */
+export class InvalidContentType extends Schema.TaggedError<InvalidContentType>()(
+  "InvalidContentType",
+  { code: Schema.Literal("InvalidContentTypeHeader"), message: Schema.String },
+) {}
+
+/**
+ * A file's content type: none for an empty one, as the binary filters it, and
+ * otherwise the media type as `mime` parses and prints it, refused when it
+ * parses as none. A mutation's store refuses it as an argument
+ * (`storage_store`,
+ * `crates/isolate/src/environment/udf/async_syscall.rs:1272-1276`), an action's
+ * as its content type header.
  */
 export const contentType = (
-  operation: string,
+  path: "mutation" | "action",
   type: unknown,
-): Result.Result<string | null, InvalidStorageArgument> => {
+): Result.Result<
+  string | null,
+  InvalidStorageArgument | InvalidContentType
+> => {
   if (type === undefined || type === null || type === "") {
     return Result.succeed(null);
   }
   if (typeof type !== "string") {
     return Result.fail(
       invalid(
-        operation,
+        "storage.store",
         "contentType",
         `expected a string, got ${typeof type}`,
       ),
     );
   }
-  if (!mediaType.test(type)) {
-    return Result.fail(
-      invalid(operation, "contentType", `"${type}" is not a media type`),
-    );
-  }
-  return Result.succeed(type);
+  const parsed = parseMediaType(type);
+  if (Result.isSuccess(parsed)) return Result.succeed(parsed.success);
+  const message = mediaTypeMessage(parsed.failure);
+  return Result.fail(
+    path === "mutation"
+      ? invalid("storage.store", "contentType", message)
+      : new InvalidContentType({ code: "InvalidContentTypeHeader", message }),
+  );
 };
 
 /**
@@ -271,6 +450,16 @@ export const uploadUrl = (token: string): string =>
  */
 export const uuid = (n: number): string =>
   `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
+
+/**
+ * The count `uuid` minted `value` from, or `undefined` for a UUID it never
+ * mints.
+ */
+export const uuidCounter = (value: string): number | undefined => {
+  const match = /^00000000-0000-4000-8000-([0-9a-f]{12})$/.exec(value);
+  const n = match === null ? Number.NaN : Number.parseInt(match[1]!, 16);
+  return Number.isSafeInteger(n) && n >= 1 && uuid(n) === value ? n : undefined;
+};
 
 /**
  * Which binary-only storage endpoint a URL on the kernel's origin names, if

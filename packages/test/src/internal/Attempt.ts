@@ -4,6 +4,7 @@ import type { Attempt as AttemptNumber } from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
 import type { DocumentId, StoredDocument } from "./KernelValues.js";
 import { tableNameFromId } from "./KernelValues.js";
+import * as Metering from "./Metering.js";
 import type * as ReadSet from "./ReadSet.js";
 
 /**
@@ -45,6 +46,12 @@ export class KernelAttempt {
   private readonly life: Life = { running: 0, started: 0, open: true };
   private readonly allReads: Array<ReadSet.Read>;
   /**
+   * The attempt's transaction-limit accounting. A nested mutation's frame
+   * meters into its own child, so its writes merge or drop with it while its
+   * reads stay.
+   */
+  readonly meter: Metering.Meter;
+  /**
    * Whether the attempt asked for its caller's identity, and the time it read.
    * Every frame of the attempt shares them, as it shares the reads.
    */
@@ -54,8 +61,10 @@ export class KernelAttempt {
     readonly snapshot: Kernel.State,
     readonly number: AttemptNumber = 1,
     private readonly parent?: KernelAttempt,
+    meter?: Metering.Meter,
   ) {
     this.allReads = parent?.allReads ?? [];
+    this.meter = meter ?? parent?.meter.child() ?? new Metering.Meter();
     this.observed = parent?.observed ?? { identity: false, time: null };
   }
 
@@ -180,6 +189,20 @@ export class KernelAttempt {
   }
 
   /**
+   * A query run on this attempt's snapshot rather than its pending writes. It
+   * reads and meters on its own, and its meter starts with this attempt's
+   * scheduling counters, as the binary's snapshot clone does.
+   */
+  staleSnapshot(): KernelAttempt {
+    return new KernelAttempt(
+      this.snapshot,
+      this.number,
+      undefined,
+      this.meter.forStaleSnapshot(),
+    );
+  }
+
+  /**
    * A nested mutation begins, in a frame of its own. Dropping a failed one is
    * forgetting it.
    */
@@ -200,6 +223,7 @@ export class KernelAttempt {
     }
     for (const [componentPath, writes] of this.overlay)
       for (const [id, doc] of writes) this.parent.write(componentPath, id, doc);
+    this.meter.merge();
   }
 
   /**
