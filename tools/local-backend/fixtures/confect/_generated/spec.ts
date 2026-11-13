@@ -6,6 +6,7 @@ import groups_cacheStubbed from "../groups/cacheStubbed.spec.js";
 import groups_callbacks from "../groups/callbacks.spec.js";
 import groups_commitTs from "../groups/commitTs.spec.js";
 import groups_componentAuthoring from "../groups/componentAuthoring.spec.js";
+import groups_componentIdentity from "../groups/componentIdentity.spec.js";
 import groups_components from "../groups/components.spec.js";
 import groups_contextReuse from "../groups/contextReuse.spec.js";
 import groups_documentIds from "../groups/documentIds.spec.js";
@@ -22,7 +23,7 @@ import metadataNode from "../metadataNode.spec.js";
 
 const spec: Spec.Spec<{
   readonly clients: GroupSpec.NamedAt<typeof clients, "clients">;
-  readonly groups: GroupSpec.NamedAt<GroupSpec.GroupSpec<"Convex", "groups", never, GroupSpec.NamedAt<typeof groups_authentication, "authentication"> | GroupSpec.NamedAt<typeof groups_cacheControl, "cacheControl"> | GroupSpec.NamedAt<typeof groups_cacheStubbed, "cacheStubbed"> | GroupSpec.NamedAt<typeof groups_callbacks, "callbacks"> | GroupSpec.NamedAt<typeof groups_commitTs, "commitTs"> | GroupSpec.NamedAt<typeof groups_componentAuthoring, "componentAuthoring"> | GroupSpec.NamedAt<typeof groups_components, "components"> | GroupSpec.NamedAt<typeof groups_contextReuse, "contextReuse"> | GroupSpec.NamedAt<typeof groups_documentIds, "documentIds"> | GroupSpec.NamedAt<typeof groups_metadata, "metadata"> | GroupSpec.NamedAt<typeof groups_mounts, "mounts"> | GroupSpec.NamedAt<typeof groups_nativeComponents, "nativeComponents"> | GroupSpec.NamedAt<typeof groups_pagination, "pagination"> | GroupSpec.NamedAt<typeof groups_requests, "requests"> | GroupSpec.NamedAt<typeof groups_reserved, "reserved"> | GroupSpec.NamedAt<typeof groups_scheduling, "scheduling"> | GroupSpec.NamedAt<typeof groups_storage, "storage"> | GroupSpec.NamedAt<typeof groups_transactions, "transactions">>, "groups">;
+  readonly groups: GroupSpec.NamedAt<GroupSpec.GroupSpec<"Convex", "groups", never, GroupSpec.NamedAt<typeof groups_authentication, "authentication"> | GroupSpec.NamedAt<typeof groups_cacheControl, "cacheControl"> | GroupSpec.NamedAt<typeof groups_cacheStubbed, "cacheStubbed"> | GroupSpec.NamedAt<typeof groups_callbacks, "callbacks"> | GroupSpec.NamedAt<typeof groups_commitTs, "commitTs"> | GroupSpec.NamedAt<typeof groups_componentAuthoring, "componentAuthoring"> | GroupSpec.NamedAt<typeof groups_componentIdentity, "componentIdentity"> | GroupSpec.NamedAt<typeof groups_components, "components"> | GroupSpec.NamedAt<typeof groups_contextReuse, "contextReuse"> | GroupSpec.NamedAt<typeof groups_documentIds, "documentIds"> | GroupSpec.NamedAt<typeof groups_metadata, "metadata"> | GroupSpec.NamedAt<typeof groups_mounts, "mounts"> | GroupSpec.NamedAt<typeof groups_nativeComponents, "nativeComponents"> | GroupSpec.NamedAt<typeof groups_pagination, "pagination"> | GroupSpec.NamedAt<typeof groups_requests, "requests"> | GroupSpec.NamedAt<typeof groups_reserved, "reserved"> | GroupSpec.NamedAt<typeof groups_scheduling, "scheduling"> | GroupSpec.NamedAt<typeof groups_storage, "storage"> | GroupSpec.NamedAt<typeof groups_transactions, "transactions">>, "groups">;
   readonly metadataNode: GroupSpec.NamedAt<typeof metadataNode, "metadataNode">;
 }> = Spec.fromGroups({
   ["clients"]: clients,
@@ -33,6 +34,7 @@ const spec: Spec.Spec<{
     ["callbacks"]: groups_callbacks,
     ["commitTs"]: groups_commitTs,
     ["componentAuthoring"]: groups_componentAuthoring,
+    ["componentIdentity"]: groups_componentIdentity,
     ["components"]: groups_components,
     ["contextReuse"]: groups_contextReuse,
     ["documentIds"]: groups_documentIds,

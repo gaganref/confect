@@ -35,6 +35,7 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "groups/callbacks.ts": () => import("../../convex/groups/callbacks.js"),
 "groups/commitTs.ts": () => import("../../convex/groups/commitTs.js"),
 "groups/componentAuthoring.ts": () => import("../../convex/groups/componentAuthoring.js"),
+"groups/componentIdentity.ts": () => import("../../convex/groups/componentIdentity.js"),
 "groups/components.ts": () => import("../../convex/groups/components.js"),
 "groups/contextReuse.ts": () => import("../../convex/groups/contextReuse.js"),
 "groups/documentIds.ts": () => import("../../convex/groups/documentIds.js"),
