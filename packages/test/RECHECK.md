@@ -479,6 +479,107 @@ deeper. The kernel now leaves an accessor in place when it already reads
 through one of the kernel's, which a sentinel in a fresh copy shows, and the
 chain settles after the first call on each target.
 
+## Snapshots (row 6)
+
+`src/internal/Snapshot.ts` encodes the kernel's committed state and reads it
+back. A snapshot is a header line, `confect-kernel-snapshot 1 sha256:<digest>`,
+then the body as JSON. The body holds the registered component paths, the
+version and latest commit timestamp, the clock's floor, the identity counters
+(the next document ID, the latest creation time handed out, the next held
+attempt's ID), every component's rows with the version that wrote each, every
+committed job's target, standing and world name, and the write log with each
+change's before and after values. Components, tables, rows and jobs are sorted,
+so the bytes do not depend on the order a world met them. Each document keeps
+its own field order, which a query on the kernel returns, so a restored world
+answers the same bytes. The binary keeps an object's fields sorted
+(`ConvexObject.fields` is a `BTreeMap`, `crates/value/src/object.rs:51` at
+`precompiled-2026-10-28-cccbade`), which the kernel, like convex-test, does not.
+
+Values use Convex's encoded JSON (`convexToJson`), the binary's
+`ConvexEncodedJSON`, which the websocket and the HTTP API's
+`format: "convex_encoded_json"` return (`crates/value/src/export.rs:20-24`,
+`:45-50`, `crates/local_backend/src/public_api.rs:75-81`). An int64 is
+`{"$integer": <base64, little-endian>}`, bytes are `{"$bytes": …}`, and a
+negative zero, an infinity or a NaN is `{"$float": …}`
+(`crates/value/src/json/mod.rs:103-127`). A throwaway probe through
+`packages/server/test/local-backend/LocalBackend.ts` stamped a `commitStamps`
+row on the binary, read it back through `/api/query` in that format, and
+stamped the same row on the kernel with the binary's commit timestamp: both
+encode the row's `at` and `label` as
+`{"at":{"$integer":"zWXE04qE5xg="},"label":"probe é"}`.
+
+The write log is carried whole. `Kernel.conflict` finds the commits after a
+snapshot version by position in the log, so a restored world whose log were cut
+would validate a later attempt against the wrong commits. A job's world is
+recorded by its name and resolved among the worlds the restore is given. A
+backend holding attempts refuses to export, since a held attempt is a running
+closure, not state. Restore refuses a backend that committed or holds attempts,
+registers other components, or is not given a job's world. Subscriptions are
+the client's, not the kernel's, and are not carried.
+
+Not simulated: the binary's own snapshot import and export. The binary exports
+a ZIP of `<table>/documents.jsonl` in `ConvexExportJSON`
+(`crates/exports/src/zip_uploader.rs:57-65`) and imports ZIP, JSONL, JSON and
+CSV files (`crates/application/src/snapshot_import/parse.rs:173-258`). A kernel
+snapshot is neither, so there is no binary import to drive against it. Native
+import compatibility stays on the binary.
+
+The digest binds integrity, not origin. Bytes a writer rehashes after editing
+pass the digest, so a restore checks that the body is state the kernel could
+have reached before it installs any of it, each rule with its own refusal:
+
+- `SnapshotRowInconsistent`: replaying the write log from the empty world,
+  each change replacing the value the log last published, gives exactly the
+  rows, each at the version that last wrote it, under its ID's table and in a
+  registered component.
+- `SnapshotAllocatorBehind`: the next document ID is past every ID's counter,
+  the latest creation time at or past every document's, the next attempt ID
+  positive and the identity epoch non-negative. A rewound counter would hand
+  out an identity the state already holds, and the next insert would overwrite
+  its row.
+- `SnapshotTimestampInconsistent`: commit timestamps strictly increase through
+  the log, and the latest is the log's last.
+- `SnapshotJobInconsistent`: every job names a committed job row, a registered
+  component and a function that component exports, every job row has its job,
+  and no job is running.
+
+A world refuses to export or restore while any live registry the contract
+names is non-empty. These are calls from the test, scheduler walks, function
+executions (nested and detached ones included) and held attempts, refused with
+`SnapshotWorldRunning` or `SnapshotWorldBusy`. A restore also refuses while a
+subscriber is registered, with `SnapshotSubscribed`: subscriptions are live
+client state, and a restore would rewind an existing subscriber's identity
+version so its next `authenticate` reused one. A scheduled action awaiting
+something would otherwise commit after the export, and a nested mutation an
+action leaves running would write after it. The binary lets detached work
+finish within its function's lifetime (#122), so a snapshot waits for it
+rather than cancel it.
+
+Before any map is built, a restore checks the decoded body, so its order
+cannot change the result. Components, tables, a component's rows and jobs
+each appear once, and every stored or logged document has an `_id` string and
+a finite, non-negative `_creationTime`, logged under its own ID. A duplicate
+table listed empty first would otherwise be overwritten by its populated
+twin, and a missing creation time would make the allocator check compare
+against `NaN`.
+
+The identity epoch is #125's identity version made world-wide. A subscriber
+starts at the world's epoch, and each `authenticate` advances it, so a
+restored world continues the versions its source handed out and replays the
+same identity transitions.
+
+`Snapshot.contract` lists every piece of kernel state as exported or excluded
+with its reason. Its comment names the limit of the fresh-world field test, which
+cannot see lazy, symbol-keyed, `#private` or closure-held state, so every live
+registry is also listed in `contract.live`, reported by a `liveCounts` typed
+against it, and refused on restore while non-empty. A field added to `Kernel.State` or `Scheduling.Target`
+without an entry fails to compile. A `World`'s fields are private, so a test
+compares a fresh world's own fields with the contract. Subscriptions and their
+callers are live client state, so a restore starts with none. Owed when they
+land: cron state (#133); file bytes, storage ID mappings, `nextFile` and
+upload-token counters (#138); and component init markers. A restore never
+redeclares a cron and never draws a fresh random value.
+
 ## Transaction limits (row 6)
 
 `src/internal/Metering.ts` is the kernel's one record of what an attempt has

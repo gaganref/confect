@@ -16,6 +16,7 @@ import {
   jsonToConvex,
   type Value,
 } from "convex/values";
+import * as Result from "effect/Result";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
 import * as Globals from "./Globals.js";
@@ -26,6 +27,7 @@ import * as KernelRefusal from "./KernelRefusal.js";
 import * as Metering from "./Metering.js";
 import type * as ReadSet from "./ReadSet.js";
 import * as Scheduling from "./Scheduling.js";
+import * as Snapshot from "./Snapshot.js";
 import type {
   DocumentId,
   FunctionPath,
@@ -298,6 +300,30 @@ const pinnedTime = (): number | undefined => {
  */
 const defaultBudget = 100;
 
+const unresolvedWorld = (
+  name: string,
+  reason: "missing" | "ambiguous",
+): KernelRefusal.SnapshotWorldUnresolved =>
+  new KernelRefusal.SnapshotWorldUnresolved({
+    name,
+    reason,
+    message:
+      reason === "missing"
+        ? `A snapshot job runs under the test world "${name}", which no world passed to restore is named. Pass that world.`
+        : `Two different test worlds are named "${name}", so a snapshot cannot tell their jobs apart. Name each world uniquely.`,
+  });
+
+const running = (
+  registry: KernelRefusal.SnapshotWorldRunning["registry"],
+  count: number,
+  what: string,
+) =>
+  new KernelRefusal.SnapshotWorldRunning({
+    registry,
+    count,
+    message: `The test backend is running ${count} ${what}, whose effects a snapshot would split. Await them first.`,
+  });
+
 const current = (): Execution => {
   const execution = executions.getStore();
   if (execution === undefined) {
@@ -480,6 +506,23 @@ export class World {
    */
   private floor = Number.NEGATIVE_INFINITY;
   private readonly targets = new Map<DocumentId, Scheduling.Target>();
+  /**
+   * The live registries `Snapshot.contract.live` names, each a count: calls
+   * from the test, scheduler walks, function executions (nested and detached
+   * ones included) and registered subscribers. Held attempts are `holding`.
+   */
+  private readonly live = {
+    running: 0,
+    walks: 0,
+    functions: 0,
+    subscribers: 0,
+  };
+  /**
+   * The latest identity version a subscriber's `authenticate` reached. Each
+   * subscriber starts at the epoch, and each identity change advances it, so a
+   * restored world never hands out a version its source already used.
+   */
+  private identityEpoch = 0;
 
   constructor(
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
@@ -600,44 +643,50 @@ export class World {
   // Calls from the test.
 
   query(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.open().then(() => {
-      const from = { caller, request: newRequest(caller) };
-      return typeof reference === "function"
-        ? this.runQuery(
-            { componentPath: ROOT, udfPath: "inline" },
-            { handler: reference, args: { type: "any" }, returns: null },
-            args ?? {},
-            from,
-          )
-        : this.queryAt(pathOfReference(reference, ROOT), args, from);
+    return this.during(() => {
+      return this.open().then(() => {
+        const from = { caller, request: newRequest(caller) };
+        return typeof reference === "function"
+          ? this.runQuery(
+              { componentPath: ROOT, udfPath: "inline" },
+              { handler: reference, args: { type: "any" }, returns: null },
+              args ?? {},
+              from,
+            )
+          : this.queryAt(pathOfReference(reference, ROOT), args, from);
+      });
     });
   }
 
   mutation(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.open().then(() => {
-      const from = { caller, request: newRequest(caller) };
-      return typeof reference === "function"
-        ? this.runMutation(
-            { componentPath: ROOT, udfPath: "inline" },
-            { handler: reference, args: { type: "any" }, returns: null },
-            args ?? {},
-            from,
-          )
-        : this.mutationAt(pathOfReference(reference, ROOT), args, from);
+    return this.during(() => {
+      return this.open().then(() => {
+        const from = { caller, request: newRequest(caller) };
+        return typeof reference === "function"
+          ? this.runMutation(
+              { componentPath: ROOT, udfPath: "inline" },
+              { handler: reference, args: { type: "any" }, returns: null },
+              args ?? {},
+              from,
+            )
+          : this.mutationAt(pathOfReference(reference, ROOT), args, from);
+      });
     });
   }
 
   action(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.open().then(() => {
-      const from = { caller, request: newRequest(caller) };
-      return typeof reference === "function"
-        ? this.runAction(
-            { componentPath: ROOT, udfPath: "inline" },
-            { handler: reference, args: { type: "any" }, returns: null },
-            args ?? {},
-            from,
-          )
-        : this.actionAt(pathOfReference(reference, ROOT), args, from);
+    return this.during(() => {
+      return this.open().then(() => {
+        const from = { caller, request: newRequest(caller) };
+        return typeof reference === "function"
+          ? this.runAction(
+              { componentPath: ROOT, udfPath: "inline" },
+              { handler: reference, args: { type: "any" }, returns: null },
+              args ?? {},
+              from,
+            )
+          : this.actionAt(pathOfReference(reference, ROOT), args, from);
+      });
     });
   }
 
@@ -646,14 +695,16 @@ export class World {
     componentPath: string,
     handler: (ctx: any) => any,
   ): Promise<any> {
-    return this.open().then(() => {
-      this.component(componentPath);
-      return this.runMutation(
-        { componentPath, udfPath: "custom" },
-        { handler, args: { type: "any" }, returns: null },
-        {},
-        { caller, request: newRequest(caller) },
-      );
+    return this.during(() => {
+      return this.open().then(() => {
+        this.component(componentPath);
+        return this.runMutation(
+          { componentPath, udfPath: "custom" },
+          { handler, args: { type: "any" }, returns: null },
+          {},
+          { caller, request: newRequest(caller) },
+        );
+      });
     });
   }
 
@@ -663,31 +714,35 @@ export class World {
    * Run a mutation to its commit point and hold it as attempt 1.
    */
   prepare(caller: Caller, reference: any, args: any): Promise<HeldAttempt> {
-    return this.open().then(() => {
-      const functionPath = pathOfReference(reference, ROOT);
-      const resolved = this.resolve(functionPath, "mutation");
-      validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
-      return this.prepareMutation(
-        functionPath,
-        resolved,
-        args,
-        { caller, request: newRequest(caller) },
-        1,
-        Invocation.current(),
-      ).then((held) => held.view);
+    return this.during(() => {
+      return this.open().then(() => {
+        const functionPath = pathOfReference(reference, ROOT);
+        const resolved = this.resolve(functionPath, "mutation");
+        validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
+        return this.prepareMutation(
+          functionPath,
+          resolved,
+          args,
+          { caller, request: newRequest(caller) },
+          1,
+          Invocation.current(),
+        ).then((held) => held.view);
+      });
     });
   }
 
   apply(id: string): Promise<KernelApply> {
-    const held = this.holding.get(id);
-    return held === undefined
-      ? Promise.reject(
-          new KernelRefusal.StaleAttempt({
-            id,
-            message: `The test kernel holds no attempt "${id}". It was already applied, or never prepared.`,
-          }),
-        )
-      : this.applyHeld(held);
+    return this.during(() => {
+      const held = this.holding.get(id);
+      return held === undefined
+        ? Promise.reject(
+            new KernelRefusal.StaleAttempt({
+              id,
+              message: `The test kernel holds no attempt "${id}". It was already applied, or never prepared.`,
+            }),
+          )
+        : this.applyHeld(held);
+    });
   }
 
   /**
@@ -711,35 +766,277 @@ export class World {
     args: any,
     pinned: { readonly time?: number; readonly journal: string | null },
   ): Promise<QueryRun> {
-    return this.open().then(() => {
-      const functionPath = pathOfReference(reference, ROOT);
-      const resolved = this.resolve(functionPath, "query");
-      validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
-      const top: TopQuery = {
-        attempt: new KernelAttempt(this.state),
-        pagination: { calls: 0, journal: pinned.journal, end: null },
-        startTime: pinned.time,
-      };
-      const run = (outcome: Outcome): QueryRun => ({
-        outcome,
-        snapshot: top.attempt.snapshot.version,
-        reads: top.attempt.reads,
-        observedIdentity: top.attempt.observedIdentity,
-        time: top.attempt.observedTime,
-        journal: pinned.journal ?? top.pagination.end,
+    return this.during(() => {
+      return this.open().then(() => {
+        const functionPath = pathOfReference(reference, ROOT);
+        const resolved = this.resolve(functionPath, "query");
+        validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
+        const top: TopQuery = {
+          attempt: new KernelAttempt(this.state),
+          pagination: { calls: 0, journal: pinned.journal, end: null },
+          startTime: pinned.time,
+        };
+        const run = (outcome: Outcome): QueryRun => ({
+          outcome,
+          snapshot: top.attempt.snapshot.version,
+          reads: top.attempt.reads,
+          observedIdentity: top.attempt.observedIdentity,
+          time: top.attempt.observedTime,
+          journal: pinned.journal ?? top.pagination.end,
+        });
+        return this.runQuery(
+          functionPath,
+          resolved,
+          args,
+          { caller, request: newRequest(caller) },
+          false,
+          top,
+        ).then(
+          (value: Value) => run({ _tag: "returned", value }),
+          (error: unknown) => run({ _tag: "failed", error }),
+        );
       });
-      return this.runQuery(
-        functionPath,
-        resolved,
-        args,
-        { caller, request: newRequest(caller) },
-        false,
-        top,
-      ).then(
-        (value: Value) => run({ _tag: "returned", value }),
-        (error: unknown) => run({ _tag: "failed", error }),
-      );
     });
+  }
+
+  /**
+   * Run `call`, a call from the test, counted as running until it settles.
+   */
+  private during<A>(call: () => Promise<A>): Promise<A> {
+    return this.track("running", call);
+  }
+
+  /**
+   * Run `work` counted in the live registry `registry` until it settles.
+   */
+  private track<A>(
+    registry: "running" | "walks" | "functions",
+    work: () => Promise<A>,
+  ): Promise<A> {
+    this.live[registry]++;
+    const settle = () => {
+      this.live[registry]--;
+    };
+    try {
+      return work().finally(settle);
+    } catch (error) {
+      settle();
+      throw error;
+    }
+  }
+
+  /**
+   * How many entries each live registry holds now.
+   */
+  liveCounts(): {
+    readonly [K in keyof typeof Snapshot.contract.live]: number;
+  } {
+    return {
+      running: this.live.running,
+      walks: this.live.walks,
+      functions: this.live.functions,
+      held: this.holding.size,
+      subscribers: this.live.subscribers,
+    };
+  }
+
+  /**
+   * Count a subscriber the shim's registry created. Subscribers live as long as
+   * their test, so the count never falls.
+   */
+  registerSubscriber() {
+    this.live.subscribers++;
+  }
+
+  // Identity versions.
+
+  /**
+   * The identity version a new subscriber starts at.
+   */
+  currentIdentityEpoch(): number {
+    return this.identityEpoch;
+  }
+
+  /**
+   * The next identity version, for a subscriber whose identity changed.
+   */
+  nextIdentityEpoch(): number {
+    return ++this.identityEpoch;
+  }
+
+  // Snapshots.
+
+  /**
+   * The committed state as snapshot bytes: every component's rows and the
+   * version that wrote each, the write log, the jobs and their targets, the
+   * clock's floor and the identity counters. Each job's world is recorded by
+   * name. Two exports of the same state are the same bytes. A world running a
+   * call or holding attempts refuses, since a snapshot carries neither.
+   */
+  exportSnapshot(): Uint8Array {
+    this.refuseBusy(0, "export");
+    const names = new Map<string, Invocation.World>();
+    const jobs = new Map<DocumentId, Snapshot.JobTarget>();
+    for (const byTable of this.state.tables.values()) {
+      for (const id of byTable.get(Scheduling.table)?.keys() ?? []) {
+        const target = this.targets.get(id);
+        if (target === undefined) continue;
+        const world = target.world;
+        if (world !== undefined) {
+          if ((names.get(world.name) ?? world) !== world) {
+            throw unresolvedWorld(world.name, "ambiguous");
+          }
+          names.set(world.name, world);
+        }
+        jobs.set(id, {
+          functionPath: target.functionPath,
+          standing: target.standing,
+          world: world?.name ?? null,
+        });
+      }
+    }
+    return Snapshot.encode({
+      components: [...this.components.keys()],
+      state: this.state,
+      floor: this.floor,
+      identity: {
+        nextDocumentId: this.nextDocId,
+        lastCreationTime: this.lastCreationTime,
+        nextAttemptId: this.nextAttemptId,
+        identityEpoch: this.identityEpoch,
+      },
+      jobs,
+    });
+  }
+
+  /**
+   * Replace this world's state with a snapshot's. The world must register the
+   * snapshot's components, run nothing, and have committed nothing and hold
+   * nothing. Each job's world resolves by name among `worlds`. Bytes whose
+   * digest does not match, and state the kernel could not have reached, refuse
+   * before anything changes.
+   */
+  restoreSnapshot(
+    bytes: Uint8Array,
+    worlds: ReadonlyArray<Invocation.World> = [],
+  ): Promise<void> {
+    return this.open().then(() => this.restore(bytes, worlds));
+  }
+
+  private restore(bytes: Uint8Array, worlds: ReadonlyArray<Invocation.World>) {
+    this.refuseBusy(this.state.version, "restore");
+    const decoded = Snapshot.decode(bytes);
+    if (Result.isFailure(decoded)) throw decoded.failure;
+    const image = decoded.success;
+    const checked = Snapshot.check(image, Scheduling.table);
+    if (Result.isFailure(checked)) throw checked.failure;
+    const registered = [...this.components.keys()].sort();
+    const snapshot = [...image.components].sort();
+    if (registered.join("\u0000") !== snapshot.join("\u0000")) {
+      throw new KernelRefusal.SnapshotComponentMismatch({
+        snapshot,
+        registered,
+        message: `The snapshot holds components ${snapshot.map((p) => `"${p}"`).join(", ")}, but this test backend registers ${registered.map((p) => `"${p}"`).join(", ")}. Register the same components before restoring.`,
+      });
+    }
+    for (const [id, { functionPath }] of image.jobs) {
+      if (!this.exports(functionPath)) {
+        throw new KernelRefusal.SnapshotJobInconsistent({
+          id,
+          reason: "function",
+          message: `The snapshot's job ${id} targets ${functionPath.udfPath} in "${functionPath.componentPath}", which that component does not export.`,
+        });
+      }
+    }
+    const byName = new Map<string, Invocation.World>();
+    for (const world of worlds) {
+      if ((byName.get(world.name) ?? world) !== world) {
+        throw unresolvedWorld(world.name, "ambiguous");
+      }
+      byName.set(world.name, world);
+    }
+    const targets = Array.from(
+      image.jobs,
+      ([id, { functionPath, standing, world }]): [
+        DocumentId,
+        Scheduling.Target,
+      ] => {
+        const resolved = world === null ? undefined : byName.get(world);
+        if (world !== null && resolved === undefined) {
+          throw unresolvedWorld(world, "missing");
+        }
+        return [id, { functionPath, standing, world: resolved }];
+      },
+    );
+    this.state = image.state;
+    this.floor = image.floor;
+    this.nextDocId = image.identity.nextDocumentId;
+    this.lastCreationTime = image.identity.lastCreationTime;
+    this.nextAttemptId = image.identity.nextAttemptId;
+    this.identityEpoch = image.identity.identityEpoch;
+    this.targets.clear();
+    for (const [id, target] of targets) this.targets.set(id, target);
+  }
+
+  /**
+   * Whether `functionPath`'s component exports a Convex function there.
+   */
+  private exports({ componentPath, udfPath }: FunctionPath): boolean {
+    const [modulePath, exportName = "default"] = udfPath.split(":");
+    const func = this.components.get(componentPath)?.loaded.get(modulePath!)?.[
+      exportName
+    ];
+    return (
+      func?.isQuery === true ||
+      func?.isMutation === true ||
+      func?.isAction === true
+    );
+  }
+
+  /**
+   * Refuse a snapshot while any live registry `operation` waits on is
+   * non-empty, or, restoring, once `version` shows the world committed
+   * something of its own.
+   */
+  private refuseBusy(version: Kernel.Version, operation: "export" | "restore") {
+    const counts = this.liveCounts();
+    const refusals: {
+      readonly [K in keyof typeof counts]: (count: number) => Error;
+    } = {
+      running: (count) => running("running", count, "calls from the test"),
+      walks: (count) => running("walks", count, "scheduler walks"),
+      functions: (count) =>
+        running(
+          "functions",
+          count,
+          "functions, nested and detached ones included",
+        ),
+      held: () => {
+        const held = [...this.holding.keys()];
+        return new KernelRefusal.SnapshotWorldBusy({
+          version,
+          held,
+          message: `The test backend holds attempts ${held.join(", ")}, which a snapshot does not carry. Apply them first.`,
+        });
+      },
+      subscribers: (count) =>
+        new KernelRefusal.SnapshotSubscribed({
+          subscribers: count,
+          message: `The test backend has ${count} subscribers, whose identity versions a restore would rewind. Restore into a test backend no client has subscribed to.`,
+        }),
+    };
+    for (const key of Object.keys(refusals) as Array<keyof typeof counts>) {
+      const { blocks } = Snapshot.contract.live[key];
+      if (operation === "export" && blocks === "restore") continue;
+      if (counts[key] > 0) throw refusals[key](counts[key]);
+    }
+    if (operation === "restore" && version !== 0) {
+      throw new KernelRefusal.SnapshotWorldBusy({
+        version,
+        held: [],
+        message: `The test backend has committed ${version} versions of its own. Restore a snapshot into a fresh test backend.`,
+      });
+    }
   }
 
   // Scheduled functions, on the kernel's clock.
@@ -766,12 +1063,14 @@ export class World {
    * crosses no future deadline.
    */
   advance(ms: number, budget = defaultBudget): Promise<void> {
-    return this.open().then(() => {
-      const until = this.now() + ms;
-      return this.walk(
-        (pending) => pending.filter((job) => job.scheduledTime <= until),
-        budget,
-      ).then(() => this.raiseFloor(until));
+    return this.track("walks", () => {
+      return this.open().then(() => {
+        const until = this.now() + ms;
+        return this.walk(
+          (pending) => pending.filter((job) => job.scheduledTime <= until),
+          budget,
+        ).then(() => this.raiseFloor(until));
+      });
     });
   }
 
@@ -780,9 +1079,11 @@ export class World {
    * standing jobs are pending. Every job run counts against `budget`.
    */
   drain(budget = defaultBudget): Promise<void> {
-    return this.open().then(() =>
-      this.walk((pending) => pending.filter((job) => !job.standing), budget),
-    );
+    return this.track("walks", () => {
+      return this.open().then(() =>
+        this.walk((pending) => pending.filter((job) => !job.standing), budget),
+      );
+    });
   }
 
   /**
@@ -1084,50 +1385,52 @@ export class World {
     snapshotOnly = false,
     top?: TopQuery,
   ): Promise<any> {
-    const parentAttempt = from.parent?.attempt;
-    const isNested = parentAttempt !== undefined;
-    const attempt =
-      top?.attempt ??
-      (parentAttempt === undefined
-        ? new KernelAttempt(this.state)
-        : snapshotOnly
-          ? parentAttempt.staleSnapshot()
-          : parentAttempt);
-    const execution = this.execution(
-      functionPath,
-      "query",
-      attempt,
-      from,
-      top?.pagination ??
-        ((isNested && from.parent?.pagination) || {
-          calls: 0,
-          journal: null,
-          end: null,
-        }),
-      top?.startTime,
-    );
-    const q = queryGeneric({
-      handler: (ctx: any, a: any) =>
-        resolved.handler({ ...ctx, auth: queryAuth(execution) }, a),
-    }) as unknown as { invokeQuery: (args: string) => Promise<string> };
-    return enter(execution, () =>
-      q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
-    )
-      .then((raw) => settled(execution, raw))
-      .then((raw) => {
-        const result = jsonToConvex(JSON.parse(raw));
-        if (!isNested && hasPendingValues(result)) {
-          throw new Error(
-            `Function ${functionPath.udfPath} return value invalid: queries ` +
-              `cannot return an unresolved placeholder value.`,
-          );
-        }
-        validateReturnValue(resolved.returns, result, "query", functionPath);
-        return result;
-      })
-      .catch((error: unknown) => {
-        throw deserializeConvexErrorData(error);
-      });
+    return this.track("functions", () => {
+      const parentAttempt = from.parent?.attempt;
+      const isNested = parentAttempt !== undefined;
+      const attempt =
+        top?.attempt ??
+        (parentAttempt === undefined
+          ? new KernelAttempt(this.state)
+          : snapshotOnly
+            ? parentAttempt.staleSnapshot()
+            : parentAttempt);
+      const execution = this.execution(
+        functionPath,
+        "query",
+        attempt,
+        from,
+        top?.pagination ??
+          ((isNested && from.parent?.pagination) || {
+            calls: 0,
+            journal: null,
+            end: null,
+          }),
+        top?.startTime,
+      );
+      const q = queryGeneric({
+        handler: (ctx: any, a: any) =>
+          resolved.handler({ ...ctx, auth: queryAuth(execution) }, a),
+      }) as unknown as { invokeQuery: (args: string) => Promise<string> };
+      return enter(execution, () =>
+        q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
+      )
+        .then((raw) => settled(execution, raw))
+        .then((raw) => {
+          const result = jsonToConvex(JSON.parse(raw));
+          if (!isNested && hasPendingValues(result)) {
+            throw new Error(
+              `Function ${functionPath.udfPath} return value invalid: queries ` +
+                `cannot return an unresolved placeholder value.`,
+            );
+          }
+          validateReturnValue(resolved.returns, result, "query", functionPath);
+          return result;
+        })
+        .catch((error: unknown) => {
+          throw deserializeConvexErrorData(error);
+        });
+    });
   }
 
   private invokeMutation(
@@ -1159,42 +1462,44 @@ export class World {
     args: any,
     from: From,
   ): Promise<any> {
-    const parentAttempt = from.parent?.attempt;
-    if (parentAttempt !== undefined) {
-      const frame = parentAttempt.child();
-      const execution = this.execution(
-        functionPath,
-        "mutation",
-        frame,
-        from,
-        undefined,
-      );
-      // As at the top level, a nested mutation ends once its function has
-      // returned and every syscall it started has settled. Convex runs a
-      // nested function's syscall queue to the end before it commits its
-      // subtransaction, so a detached fiber's late write lands in this frame
-      // and merges with it. A failed one ends at once and rolls back.
-      return this.invokeMutation(execution, resolved, args).then(
-        (result) =>
-          frame.drained().then(() => {
+    return this.track("functions", () => {
+      const parentAttempt = from.parent?.attempt;
+      if (parentAttempt !== undefined) {
+        const frame = parentAttempt.child();
+        const execution = this.execution(
+          functionPath,
+          "mutation",
+          frame,
+          from,
+          undefined,
+        );
+        // As at the top level, a nested mutation ends once its function has
+        // returned and every syscall it started has settled. Convex runs a
+        // nested function's syscall queue to the end before it commits its
+        // subtransaction, so a detached fiber's late write lands in this frame
+        // and merges with it. A failed one ends at once and rolls back.
+        return this.invokeMutation(execution, resolved, args).then(
+          (result) =>
+            frame.drained().then(() => {
+              frame.close();
+              frame.merge();
+              return result;
+            }),
+          (error: unknown) => {
             frame.close();
-            frame.merge();
-            return result;
-          }),
-        (error: unknown) => {
-          frame.close();
-          throw deserializeConvexErrorData(error);
-        },
-      );
-    }
-    return this.prepareMutation(
-      functionPath,
-      resolved,
-      args,
-      from,
-      1,
-      Invocation.current(),
-    ).then((held) => this.publish(held));
+            throw deserializeConvexErrorData(error);
+          },
+        );
+      }
+      return this.prepareMutation(
+        functionPath,
+        resolved,
+        args,
+        from,
+        1,
+        Invocation.current(),
+      ).then((held) => this.publish(held));
+    });
   }
 
   /**
@@ -1212,53 +1517,57 @@ export class World {
     number: Invocation.Attempt,
     bound: Invocation.Invocation | undefined,
   ): Promise<Held> {
-    const attempt = new KernelAttempt(this.state, number);
-    const execution = this.execution(
-      functionPath,
-      "mutation",
-      attempt,
-      from,
-      undefined,
-    );
-    const run = () => this.invokeMutation(execution, resolved, args);
-    const started =
-      bound === undefined
-        ? run()
-        : Invocation.bind({ ...bound, attempt: number }, run);
-    return started
-      .then(
-        (value) =>
-          attempt.drained().then((): Outcome => ({ _tag: "returned", value })),
-        (error: unknown): Outcome => ({
-          _tag: "failed",
-          error: deserializeConvexErrorData(error),
-        }),
-      )
-      .then((outcome) => {
-        attempt.close();
-        const held: Held = {
-          view: {
-            id: `attempt-${this.nextAttemptId++}`,
-            request: from.request.requestId,
-            number,
-            snapshot: attempt.snapshot.version,
-            reads: attempt.reads,
-            outcome,
-          },
-          attempt,
-          again: (next) =>
-            this.prepareMutation(
-              functionPath,
-              resolved,
-              args,
-              from,
-              next,
-              bound,
-            ),
-        };
-        this.holding.set(held.view.id, held);
-        return held;
-      });
+    return this.track("functions", () => {
+      const attempt = new KernelAttempt(this.state, number);
+      const execution = this.execution(
+        functionPath,
+        "mutation",
+        attempt,
+        from,
+        undefined,
+      );
+      const run = () => this.invokeMutation(execution, resolved, args);
+      const started =
+        bound === undefined
+          ? run()
+          : Invocation.bind({ ...bound, attempt: number }, run);
+      return started
+        .then(
+          (value) =>
+            attempt
+              .drained()
+              .then((): Outcome => ({ _tag: "returned", value })),
+          (error: unknown): Outcome => ({
+            _tag: "failed",
+            error: deserializeConvexErrorData(error),
+          }),
+        )
+        .then((outcome) => {
+          attempt.close();
+          const held: Held = {
+            view: {
+              id: `attempt-${this.nextAttemptId++}`,
+              request: from.request.requestId,
+              number,
+              snapshot: attempt.snapshot.version,
+              reads: attempt.reads,
+              outcome,
+            },
+            attempt,
+            again: (next) =>
+              this.prepareMutation(
+                functionPath,
+                resolved,
+                args,
+                from,
+                next,
+                bound,
+              ),
+          };
+          this.holding.set(held.view.id, held);
+          return held;
+        });
+    });
   }
 
   /**
@@ -1341,75 +1650,78 @@ export class World {
     args: any,
     from: From,
   ): Promise<any> {
-    const execution = this.execution(
-      functionPath,
-      "action",
-      undefined,
-      from,
-      undefined,
-    );
-    const inner: From = { request: from.request, parent: execution };
-    const a = actionGeneric({
-      handler: (ctx: any, innerArgs: any) =>
-        resolved.handler(
-          {
-            ...ctx,
-            runQuery: (reference: any, queryArgs: any) =>
-              this.queryAt(
-                pathOfReference(reference, functionPath.componentPath),
-                queryArgs,
-                inner,
-              ),
-            runMutation: (reference: any, mutationArgs: any) =>
-              this.mutationAt(
-                pathOfReference(reference, functionPath.componentPath),
-                mutationArgs,
-                inner,
-              ),
-            runAction: (reference: any, actionArgs: any) =>
-              this.actionAt(
-                pathOfReference(reference, functionPath.componentPath),
-                actionArgs,
-                inner,
-              ),
-            auth: queryAuth(execution),
-          },
-          innerArgs,
-        ),
-    }) as unknown as {
-      invokeAction: (requestId: string, args: string) => Promise<string>;
-    };
-    const run = () =>
-      enter(execution, () =>
-        a.invokeAction(
-          from.request.requestId,
-          JSON.stringify(convexToJson([parseArgs(args)])),
-        ),
+    return this.track("functions", () => {
+      const execution = this.execution(
+        functionPath,
+        "action",
+        undefined,
+        from,
+        undefined,
       );
-    // An action another function calls is an invocation of its own, with its
-    // world's services, a start time read from its world's clock and its
-    // world's random stream, as a scheduled job is.
-    const bound = from.parent === undefined ? undefined : Invocation.current();
-    const started =
-      bound === undefined
-        ? run()
-        : Invocation.bind(
-            Invocation.fresh(
-              bound.world,
-              functionPath.componentPath,
-              from.request,
-            ),
-            run,
-          );
-    return started
-      .then((raw) => {
-        const result = jsonToConvex(JSON.parse(raw));
-        validateReturnValue(resolved.returns, result, "action", functionPath);
-        return result;
-      })
-      .catch((error: unknown) => {
-        throw deserializeConvexErrorData(error);
-      });
+      const inner: From = { request: from.request, parent: execution };
+      const a = actionGeneric({
+        handler: (ctx: any, innerArgs: any) =>
+          resolved.handler(
+            {
+              ...ctx,
+              runQuery: (reference: any, queryArgs: any) =>
+                this.queryAt(
+                  pathOfReference(reference, functionPath.componentPath),
+                  queryArgs,
+                  inner,
+                ),
+              runMutation: (reference: any, mutationArgs: any) =>
+                this.mutationAt(
+                  pathOfReference(reference, functionPath.componentPath),
+                  mutationArgs,
+                  inner,
+                ),
+              runAction: (reference: any, actionArgs: any) =>
+                this.actionAt(
+                  pathOfReference(reference, functionPath.componentPath),
+                  actionArgs,
+                  inner,
+                ),
+              auth: queryAuth(execution),
+            },
+            innerArgs,
+          ),
+      }) as unknown as {
+        invokeAction: (requestId: string, args: string) => Promise<string>;
+      };
+      const run = () =>
+        enter(execution, () =>
+          a.invokeAction(
+            from.request.requestId,
+            JSON.stringify(convexToJson([parseArgs(args)])),
+          ),
+        );
+      // An action another function calls is an invocation of its own, with its
+      // world's services, a start time read from its world's clock and its
+      // world's random stream, as a scheduled job is.
+      const bound =
+        from.parent === undefined ? undefined : Invocation.current();
+      const started =
+        bound === undefined
+          ? run()
+          : Invocation.bind(
+              Invocation.fresh(
+                bound.world,
+                functionPath.componentPath,
+                from.request,
+              ),
+              run,
+            );
+      return started
+        .then((raw) => {
+          const result = jsonToConvex(JSON.parse(raw));
+          validateReturnValue(resolved.returns, result, "action", functionPath);
+          return result;
+        })
+        .catch((error: unknown) => {
+          throw deserializeConvexErrorData(error);
+        });
+    });
   }
 
   // Syscalls.
