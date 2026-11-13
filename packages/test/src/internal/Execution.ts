@@ -771,12 +771,27 @@ export class World {
   }
 
   /**
+   * Open the backend, and the caller a call from the test runs as: `caller`, or
+   * the one a presented `token` makes. Each call from the test reaches its
+   * caller inside its own `during`, so verifying a token and running the call
+   * are one live call, and a snapshot refuses while either is pending.
+   */
+  private presenting(
+    caller: Caller,
+    token: string | undefined,
+  ): Promise<Caller> {
+    return token === undefined
+      ? this.open().then(() => caller)
+      : this.authenticate(caller, token);
+  }
+
+  /**
    * The caller a presented token makes, verified against the app's
    * `auth.config` providers at the kernel's time, before anything runs. The
    * binary verifies a client's token on every request, so a token that expires
    * fails the next call after it does.
    */
-  authenticate(caller: Caller, token: string): Promise<Caller> {
+  private authenticate(caller: Caller, token: string): Promise<Caller> {
     return this.open()
       .then(() => this.authConfig)
       .then((config) => {
@@ -1035,10 +1050,15 @@ export class World {
 
   // Calls from the test.
 
-  query(caller: Caller, reference: any, args: any): Promise<any> {
+  query(
+    caller: Caller,
+    reference: any,
+    args: any,
+    token?: string,
+  ): Promise<any> {
     return this.during(() =>
-      this.open().then(() => {
-        const from = { caller, request: newRequest(caller) };
+      this.presenting(caller, token).then((who) => {
+        const from = { caller: who, request: newRequest(who) };
         return typeof reference === "function"
           ? this.runQuery(
               { componentPath: ROOT, udfPath: "inline" },
@@ -1051,10 +1071,15 @@ export class World {
     );
   }
 
-  mutation(caller: Caller, reference: any, args: any): Promise<any> {
+  mutation(
+    caller: Caller,
+    reference: any,
+    args: any,
+    token?: string,
+  ): Promise<any> {
     return this.during(() =>
-      this.open().then(() => {
-        const from = { caller, request: newRequest(caller) };
+      this.presenting(caller, token).then((who) => {
+        const from = { caller: who, request: newRequest(who) };
         return typeof reference === "function"
           ? this.runMutation(
               { componentPath: ROOT, udfPath: "inline" },
@@ -1067,10 +1092,15 @@ export class World {
     );
   }
 
-  action(caller: Caller, reference: any, args: any): Promise<any> {
+  action(
+    caller: Caller,
+    reference: any,
+    args: any,
+    token?: string,
+  ): Promise<any> {
     return this.during(() =>
-      this.open().then(() => {
-        const from = { caller, request: newRequest(caller) };
+      this.presenting(caller, token).then((who) => {
+        const from = { caller: who, request: newRequest(who) };
         return typeof reference === "function"
           ? this.runAction(
               { componentPath: ROOT, udfPath: "inline" },
@@ -1087,15 +1117,16 @@ export class World {
     caller: Caller,
     componentPath: string,
     handler: (ctx: any) => any,
+    token?: string,
   ): Promise<any> {
     return this.during(() =>
-      this.open().then(() => {
+      this.presenting(caller, token).then((who) => {
         this.component(componentPath);
         return this.runMutation(
           { componentPath, udfPath: "custom" },
           { handler, args: { type: "any" }, returns: null },
           {},
-          { caller, request: newRequest(caller) },
+          { caller: who, request: newRequest(who) },
         );
       }),
     );
@@ -1106,10 +1137,35 @@ export class World {
    * request: the router's `lookup` picks the route by pathname and method, and
    * the route's handler runs as an action with the caller's identity. With no
    * route, the binary's 404, and for a handler that throws, its 500.
+   *
+   * A presented `token` is verified first, in the same live call. A token the
+   * verifier refuses does not refuse the request: the binary runs the handler
+   * with an unknown identity that holds the error
+   * (`local_backend/src/http_actions.rs:165-169`), and the handler's
+   * `getUserIdentity` throws it.
    */
-  fetch(caller: Caller, path: unknown, init?: RequestInit): Promise<Response> {
+  fetch(
+    caller: Caller,
+    path: unknown,
+    init?: RequestInit,
+    token?: string,
+  ): Promise<Response> {
     return this.during(() =>
-      this.open().then(() => this.route(caller, path, init)),
+      this.presenting(caller, token).then(
+        (verified) => this.route(verified, path, init),
+        (error: unknown) => {
+          if (!KernelRefusal.isInvalidToken(error)) throw error;
+          // No identity reaches a function the handler calls, and no
+          // token is forwarded (`database/src/transaction.rs:390-396`,
+          // `keybroker/src/broker.rs:165-175`).
+          return this.route(
+            { ...caller, identity: null, token: null },
+            path,
+            init,
+            error,
+          );
+        },
+      ),
     );
   }
 
@@ -1117,6 +1173,7 @@ export class World {
     caller: Caller,
     path: unknown,
     init: RequestInit | undefined,
+    refused?: KernelRefusal.InvalidToken,
   ): Promise<Response> {
     const url = orThrow(Http.requestUrl(path));
     const method = init?.method ?? "GET";
@@ -1149,8 +1206,10 @@ export class World {
       { caller, request: newRequest(caller) },
       undefined,
     );
+    const auth =
+      refused === undefined ? queryAuth(execution) : refusedAuth(refused);
     const action = httpActionGeneric((ctx, received) =>
-      handler({ ...ctx, auth: queryAuth(execution) }, received),
+      handler({ ...ctx, auth }, received),
     ) as unknown as {
       invokeHttpAction: (request: globalThis.Request) => Promise<Response>;
     };
@@ -1181,9 +1240,14 @@ export class World {
   /**
    * Run a mutation to its commit point and hold it as attempt 1.
    */
-  prepare(caller: Caller, reference: any, args: any): Promise<HeldAttempt> {
+  prepare(
+    caller: Caller,
+    reference: any,
+    args: any,
+    token?: string,
+  ): Promise<HeldAttempt> {
     return this.during(() =>
-      this.open().then(() => {
+      this.presenting(caller, token).then((who) => {
         const functionPath = pathOfReference(reference, ROOT);
         const resolved = this.resolve(functionPath, "mutation");
         this.keepArgs(functionPath, args);
@@ -1192,7 +1256,7 @@ export class World {
           functionPath,
           resolved,
           args,
-          { caller, request: newRequest(caller) },
+          { caller: who, request: newRequest(who) },
           1,
           Invocation.current(),
         ).then((held) => held.view);
@@ -3681,6 +3745,19 @@ const queryAuth = (execution: Execution) => ({
     execution.attempt?.observeIdentity();
     return Promise.resolve(execution.identity);
   },
+});
+
+/**
+ * An HTTP action's `ctx.auth` when its request presented a token the verifier
+ * refused. `getUserIdentity` throws the verifier's error
+ * (`isolate/src/environment/action/task_executor.rs:205-216`). It reaches the
+ * handler as a plain `Error` whose message is the error's own
+ * (`isolate/src/environment/helpers/promise.rs:74-76`,
+ * `errors/src/lib.rs:25-26`, `:989-994`), rethrown by `performAsyncSyscall`
+ * without `data` (`convex/src/server/impl/syscall.ts:47-52`).
+ */
+const refusedAuth = (refused: KernelRefusal.InvalidToken) => ({
+  getUserIdentity: () => Promise.reject(new Error(refused.message)),
 });
 
 const mutationAuth = (execution: Execution) => ({

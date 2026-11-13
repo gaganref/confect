@@ -1,5 +1,6 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import { identified, type TokenReview } from "./tokenReview";
 
 const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 
@@ -37,6 +38,13 @@ export interface VerifierCase {
     | "expired";
   readonly token: string;
   readonly expected: VerifierOutcome;
+  /**
+   * What an HTTP action's handler sees of the same token when the verifier's
+   * clock reads `atSeconds`. The binary refuses none: a refused token's error
+   * waits for `getUserIdentity`, as a plain `Error` with the verifier's
+   * message, which for an expired token counts the seconds since it expired.
+   */
+  readonly review: (atSeconds: number) => TokenReview;
 }
 
 const encode = (value: unknown) =>
@@ -122,20 +130,31 @@ export const mint = (nowSeconds: number) =>
     };
     const refused = (code: "NoAuthProvider" | "InvalidAuthHeader") =>
       ({ _tag: "refused", refusal: "InvalidToken", code }) as const;
+    // The binary's messages for this provider and these tokens
+    // (`authentication/src/lib.rs:66-105`, `:327-351`, `:408-418`,
+    // `biscuit/src/errors.rs:213`).
+    const threw = (message: string): TokenReview => ({
+      _tag: "threw",
+      errorClass: "Error",
+      hasData: false,
+      message,
+    });
+    const noProvider = threw(
+      `No auth provider found matching the given token. Check that your JWT's issuer and audience match one of your configured providers: [CustomJWT(issuer=${provider.issuer}, app_id=${provider.applicationID})]`,
+    );
+    const identity = {
+      issuer: provider.issuer,
+      subject: "person",
+      tokenIdentifier: `${provider.issuer}|person`,
+      name: "Synthetic Person",
+      role: "student",
+    };
     const cases: ReadonlyArray<VerifierCase> = [
       {
         name: "valid control",
         token: yield* sign(declared.privateKey, claims),
-        expected: {
-          _tag: "accepted",
-          identity: {
-            issuer: provider.issuer,
-            subject: "person",
-            tokenIdentifier: `${provider.issuer}|person`,
-            name: "Synthetic Person",
-            role: "student",
-          },
-        },
+        expected: { _tag: "accepted", identity },
+        review: () => identified(identity),
       },
       {
         name: "wrong issuer",
@@ -144,6 +163,7 @@ export const mint = (nowSeconds: number) =>
           iss: "https://foreign.invalid",
         }),
         expected: refused("NoAuthProvider"),
+        review: () => noProvider,
       },
       {
         name: "wrong audience",
@@ -152,11 +172,16 @@ export const mint = (nowSeconds: number) =>
           aud: "another-app",
         }),
         expected: refused("NoAuthProvider"),
+        review: () => noProvider,
       },
       {
         name: "foreign key",
         token: yield* sign(foreign.privateKey, claims),
         expected: refused("InvalidAuthHeader"),
+        review: () =>
+          threw(
+            "Could not decode token. The JWT's 'kid' (key ID) header is 'test', does this key match any key in the provider's JWKS?",
+          ),
       },
       {
         name: "expired",
@@ -166,6 +191,10 @@ export const mint = (nowSeconds: number) =>
           exp: nowSeconds - 60,
         }),
         expected: refused("InvalidAuthHeader"),
+        review: (atSeconds) =>
+          threw(
+            `Could not validate token: Token expired ${atSeconds - (nowSeconds - 60)} seconds ago`,
+          ),
       },
     ];
     return {

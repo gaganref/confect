@@ -451,19 +451,23 @@ const decodeFailure = (token: string) => {
 /**
  * How far a token's times may be off: five seconds
  * (`authentication/src/lib.rs:401-407`), checked as `biscuit`'s `validate_exp`,
- * `validate_nbf` and `validate_iat` do (`biscuit/src/lib.rs:906-966`).
+ * `validate_nbf` and `validate_iat` do, in that order
+ * (`biscuit/src/lib.rs:906-966`, `:1006-1010`). `now` is whole seconds, as the
+ * binary truncates its clock (`authentication/src/lib.rs:155-159`). Each
+ * failure reads as `biscuit`'s `ValidationError` displays it, with the seconds
+ * past the expiry or until the time named (`biscuit/src/errors.rs:213-218`).
  */
 const SKEW_SECONDS = 5;
 
 const temporalFailure = (claims: Claims, now: number): string | undefined => {
   if (claims.exp !== undefined && now - claims.exp > SKEW_SECONDS) {
-    return "Token expired";
+    return `Token expired ${now - claims.exp} seconds ago`;
   }
   if (claims.nbf !== undefined && claims.nbf - now > SKEW_SECONDS) {
-    return "Token not yet valid (nbf)";
+    return `Token will be valid in ${claims.nbf - now} seconds`;
   }
   if (claims.iat !== undefined && claims.iat - now > SKEW_SECONDS) {
-    return "Token issued in the future (iat)";
+    return `Token will be valid in ${claims.iat - now} seconds`;
   }
   return undefined;
 };

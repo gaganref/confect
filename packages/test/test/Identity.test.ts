@@ -6,6 +6,8 @@ import { describe, expect, it } from "@effect/vitest";
 import {
   defineSchema,
   defineTable,
+  httpActionGeneric,
+  httpRouter,
   makeFunctionReference,
   mutationGeneric,
   queryGeneric,
@@ -16,6 +18,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
+import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Str from "effect/String";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
@@ -31,6 +34,7 @@ import {
   type VerifierCase,
   type VerifierOutcome,
 } from "../../../tools/local-backend/fixtures/minted";
+import * as TokenReview from "../../../tools/local-backend/fixtures/tokenReview";
 import { oversizedRsa } from "./fixtures/oversized";
 
 const whoami = makeFunctionReference<"query", {}, object | null>(
@@ -42,15 +46,51 @@ const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 const start = 1_800_000_000_000;
 
 /**
- * A backend whose `auth.config` declares `providers`, and a count of the
- * handler runs, so a refusal is seen to come before any function.
+ * What `run` throws, or `undefined` when it returns.
  */
-const world = (providers: ReadonlyArray<object> | undefined) => {
+const thrown = (run: () => unknown): unknown => {
+  try {
+    run();
+    return undefined;
+  } catch (error) {
+    return error;
+  }
+};
+
+/**
+ * The route the local-backend fixture answers at `TokenReview.path`, as a plain
+ * Convex HTTP action.
+ */
+const reviewRouter = () => {
+  const router = httpRouter();
+  router.route({
+    path: TokenReview.path,
+    method: "GET",
+    handler: httpActionGeneric((ctx) =>
+      ctx.auth.getUserIdentity().then(
+        (identity) => Response.json(TokenReview.identified(identity)),
+        (error: unknown) => Response.json(TokenReview.threw(error)),
+      ),
+    ),
+  });
+  return router;
+};
+
+/**
+ * A backend whose `auth.config` declares `providers`, and a count of the
+ * handler runs, so a refusal is seen to come before any function. Its modules
+ * load once `loaded` settles.
+ */
+const world = (
+  providers: ReadonlyArray<object> | undefined,
+  loaded: Promise<void> = Promise.resolve(),
+) => {
   const runs = { count: 0 };
   const t: KernelControls = convexTest({
     schema: defineSchema({}),
     modules: {
-      "_generated/server.ts": () => Promise.resolve({}),
+      "_generated/server.ts": () => loaded.then(() => ({})),
+      "http.ts": () => Promise.resolve({ default: reviewRouter() }),
       ...(providers === undefined
         ? {}
         : {
@@ -117,6 +157,63 @@ describe("minted tokens on the kernel's verifier", () => {
   );
 });
 
+describe("HTTP actions under a presented token", () => {
+  it.effect.each(names)("%s", (name) =>
+    Effect.gen(function* () {
+      const { jwks, cases } = yield* mint(start / 1000);
+      const { t } = world([{ ...provider, jwks }]);
+      const minted = Option.getOrThrow(
+        Arr.findFirst(cases, (c) => c.name === name),
+      );
+      const response = yield* Effect.promise(() =>
+        t.withToken(minted.token).fetch(TokenReview.path),
+      );
+      expect(response.status).toBe(200);
+      const review = yield* Effect.promise(() => response.json());
+      expect(review).toEqual(minted.review(start / 1000));
+    }),
+  );
+});
+
+describe("a presented token is part of its call", () => {
+  const calls = {
+    query: (t: KernelControls) => t.query(() => null),
+    mutation: (t: KernelControls) => t.mutation(() => null),
+    action: (t: KernelControls) => t.action(() => null),
+    fetch: (t: KernelControls) => t.fetch(TokenReview.path),
+  };
+  it.effect.each(Rec.keys(calls))(
+    "a %s whose token is still being verified refuses export and restore, as a call without a token does",
+    (kind) =>
+      Effect.gen(function* () {
+        const blank = world(undefined).t.exportSnapshot();
+        const { promise: loaded, resolve: load } =
+          Promise.withResolvers<void>();
+        const { t } = world(undefined, loaded);
+        const settled = calls[kind](t.withToken("not-a-jwt")).then(
+          () => undefined,
+          () => undefined,
+        );
+        const running = {
+          _tag: "SnapshotWorldRunning",
+          registry: "running",
+          count: 1,
+        };
+        expect(thrown(() => t.exportSnapshot())).toMatchObject(running);
+        const restore = yield* Effect.promise(() =>
+          t.restoreSnapshot(blank).then(
+            () => undefined,
+            (error: unknown) => error,
+          ),
+        );
+        expect(restore).toMatchObject(running);
+        load();
+        yield* Effect.promise(() => settled);
+        expect(thrown(() => t.exportSnapshot())).toBeUndefined();
+      }),
+  );
+});
+
 describe("token verification", () => {
   it.effect(
     "a token stays valid five seconds past its expiry on the kernel's clock and is refused after",
@@ -178,26 +275,14 @@ describe("token verification", () => {
       }),
   );
 
-  it.effect(
-    "a subscriber that presents a token waits for Sync, and an HTTP request that presents one is not simulated yet",
-    () =>
-      Effect.gen(function* () {
-        const { jwks, cases } = yield* mint(start / 1000);
-        const { t } = world([{ ...provider, jwks }]);
-        const presenting = t.withToken(cases[0]!.token) as KernelControls & {
-          fetch: (path: string) => Promise<unknown>;
-        };
-        expect(() => presenting.subscriber()).toThrow(
-          expect.objectContaining({ _tag: "KernelRowPending", row: 7 }),
-        );
-        const answer1 = yield* Effect.promise(() =>
-          presenting.fetch("/identity").then(
-            () => undefined,
-            (error: unknown) => error,
-          ),
-        );
-        expect(answer1).toMatchObject({ _tag: "KernelRowPending", row: 6 });
-      }),
+  it.effect("a subscriber that presents a token waits for Sync", () =>
+    Effect.gen(function* () {
+      const { jwks, cases } = yield* mint(start / 1000);
+      const { t } = world([{ ...provider, jwks }]);
+      expect(() => t.withToken(cases[0]!.token).subscriber()).toThrow(
+        expect.objectContaining({ _tag: "KernelRowPending", row: 7 }),
+      );
+    }),
   );
 
   it.effect("a provider the binary would refuse at push is refused", () =>
@@ -229,6 +314,35 @@ describe("token verification", () => {
         const negative = yield* signDeclared({ nbf: -1 });
         const outcome10 = yield* outcome(t, negative);
         expect(outcome10).toEqual(refused("InvalidAuthHeader"));
+      }),
+  );
+
+  it.effect.each([
+    { claim: "exp", offset: -60, message: "Token expired 60 seconds ago" },
+    { claim: "nbf", offset: 60, message: "Token will be valid in 60 seconds" },
+    { claim: "iat", offset: 60, message: "Token will be valid in 60 seconds" },
+  ])(
+    "a token outside its times is refused with biscuit's message, counting the seconds: $message",
+    ({ claim, offset, message }) =>
+      Effect.gen(function* () {
+        const now = start / 1000;
+        const { jwks, signDeclared } = yield* mint(now);
+        const { t } = world([{ ...provider, jwks }]);
+        const token = yield* signDeclared({ [claim]: now + offset });
+        const refusal = yield* Effect.promise(() =>
+          t
+            .withToken(token)
+            .query(whoami, {})
+            .then(
+              () => undefined,
+              (error: unknown) => error,
+            ),
+        );
+        expect(refusal).toMatchObject({
+          _tag: "InvalidToken",
+          code: "InvalidAuthHeader",
+          message: `Could not validate token: ${message}`,
+        });
       }),
   );
 

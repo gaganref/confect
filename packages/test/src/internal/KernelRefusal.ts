@@ -143,6 +143,8 @@ export class InvalidToken extends Schema.TaggedError<
   message: Schema.String,
 }) {}
 
+export const isInvalidToken = Schema.is(InvalidToken);
+
 /**
  * The app's `auth.config` declares a provider the binary would refuse at push.
  * `index` is the provider's position, or -1 for the config itself.
