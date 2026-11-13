@@ -643,6 +643,36 @@ evidence, and excludes its file, which holds that one case. An entry checked
 against another convex-test version fails the lane. The mounted case runs on
 both lanes, since the bridge is the adapter's own.
 
+Fix round 2:
+
+- A HEAD request's 404 and 500 end with no body, as its 200 does: the binary
+  routes HEAD as GET (`RoutableMethod::try_from`,
+  `crates/common/src/types/actions.rs:127`) and sends no HEAD body.
+- A mounted router's miss answers the binary's `No matching routes found`, on
+  both targets, where the bridge answered convex-test's `No HttpAction routed`.
+  A component router runs through the same `run_http_action_inner`, so its
+  miss is the root's (`crates/isolate/src/environment/action/mod.rs:557-578`).
+  No local fixture mounts a plain component router, so this one is pinned by
+  source, not by a binary run.
+- GET, OPTIONS and HEAD requests reach their route with no body, at the root
+  and through the bridge, as the binary discards one
+  (`ExtractHttpRequestMetadata`, `crates/local_backend/src/http_actions.rs:131-140`).
+- A kernel refusal inside a route is no handler error, so it surfaces as
+  itself rather than as a 500. Convex's `performAsyncSyscall` rethrows a
+  syscall's error as a plain `Error`, so the kernel keeps the first refusal a
+  call's syscalls threw, its nested calls' included, and the root `fetch` and
+  the bridge rethrow it. Loader and compatibility failures stay outside the
+  handler's catch and reject as before.
+- `fetch` now counts in the live registries a snapshot waits on (`running`,
+  then `functions` while the route runs), so a snapshot refuses mid-request.
+
+`test/local-backend/httpErrors.test.ts` pins on the binary, through raw
+`node:http` requests on their own connections: HEAD answers to `/ok`, a missing
+route and a throwing route, an OPTIONS body never reaching its route, two
+values of one request header reaching the route as `a, b`, and a route's two
+`set-cookie` values leaving as two header lines. The test kernel answers each
+the same.
+
 Identity comes from the test's accessor, not from an `Authorization` header,
 which is the JWT row's. Not simulated: TLS, streaming request and response
 bodies, and edge limits.
