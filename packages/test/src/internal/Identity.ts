@@ -606,6 +606,17 @@ export const verify = (
   });
 };
 
+/**
+ * When a token the kernel verified stops being valid, in milliseconds: its
+ * `exp`, read as `verify` read it. A sync session checks it before each request
+ * and update, as the binary's `is_expired` does
+ * (`keybroker/src/broker.rs:676-678`).
+ */
+export const expiresAt = (token: string): number | undefined => {
+  const exp = readClaims(Str.split(token, ".")[1])?.exp;
+  return exp === undefined ? undefined : exp * 1000;
+};
+
 // Limits the backend puts on tokens from `ctx.auth.signJwt`.
 const DEPLOYMENT_JWT_MAX_LIFETIME_SECONDS = 60 * 60;
 const DEPLOYMENT_JWT_MAX_SIZE = 8000;

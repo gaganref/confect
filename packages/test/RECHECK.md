@@ -1316,3 +1316,255 @@ the one literal both targets must answer.
 with a token its `auth.config` accepts, `x-forwarded-for` and `user-agent`, and
 `test/RequestMetadata.test.ts` calls the kernel with the same identity, address
 and agent.
+
+## Sync protocol (row 7)
+
+`src/internal/Sync.ts` is the kernel's side of the Convex client sync
+protocol, as `convex` 1.49.0 speaks it (`src/browser/sync/protocol.ts`) and the
+pinned binary's sync worker serves it (`crates/sync/src/worker.rs` at
+`cccbade4`). `sync()` on the shim gives its `WebSocket`, a constructor the
+unmodified `BaseConvexClient` takes as its `webSocketConstructor`. Every event
+reaches the client in a later turn, in order.
+
+Each socket runs as one worker does (`worker.rs:403-517`, `:598-901`):
+
+- Client messages run one at a time in arrival order. Mutations run one at a
+  time in their own order, and actions at once.
+- A `ModifyQuerySet` whose base is not the version last received, or whose new
+  version is not greater, is refused (`state.rs:223-243`). So is an
+  `Authenticate` whose base is not the identity version last received
+  (`state.rs:257-268`), a timestamp the client observed past the latest commit
+  (`worker.rs:601-644`), a call to a non-root component (`:581-596`), and a
+  duplicate or unknown query ID (`state.rs:339-360`). Each is
+  `SyncProtocolViolation` with the binary's reason, answered with `FatalError`
+  and a closed socket, which the client takes as fatal (`client.ts:504-507`).
+- A `User` token is verified with row 6's verifier before the identity version
+  moves, and a refused one answers `AuthError` with `authUpdateAttempted` and
+  closes (`worker.rs:857-864`, `:1333-1341`). Before each mutation, action and
+  update the token's expiry is checked at the kernel's time, as the binary's
+  `revalidate_identity` checks it (`:503`, `:671`, `:781`, `:903-912`): a user
+  identity is expired once the time reaches its `exp`, with no skew
+  (`state.rs:282-305`, `keybroker/src/broker.rs:676-678`). An expired one
+  answers `AuthError` without `authUpdateAttempted`, before anything runs, and
+  closes. Every `AuthError` carries the identity version the socket last sent,
+  as the binary's does (`local_backend/src/subs/mod.rs:276-292`). An `Admin`
+  token refuses with `RequiresBinary` `adminAuthentication`: the kernel holds no
+  admin key.
+- A transition is scheduled by a query-set change, an identity change, an
+  answered mutation or action, or a commit that changed what one of the
+  socket's queries read (`World.watch`, called as each commit publishes). It
+  applies the pending modifications, reruns the stale queries until none is
+  stale, then ends at the latest commit timestamp and the identity version
+  received, read in the same turn as that last check (`:933-1061`,
+  `:1253-1324`). A query whose value did not change sends nothing, as the
+  binary's result hash does (`state.rs:414-460`). After every answered request
+  a transition follows, even an empty one, so a successful mutation's client
+  sees a state at or past its commit and resolves it
+  (`request_manager.ts:169-191`).
+
+A query that cannot run at all, because its function does not exist or its
+validator refuses its arguments, answers `QueryFailed` and stays in the set
+until the client removes it, as on the binary; the socket lives. A failure with
+no `ConvexError` data leaves `errorData` out, as the binary does, so the client
+reads a plain error. A query whose first run ends after its socket closed is
+unsubscribed at once.
+
+The probe found one divergence outside this row: the kernel's argument
+validator, convex-test's, words a refusal `Validator error: Expected
+\`string\`, got \`5\``, where the binary answers `ArgumentValidationError:
+Value does not match validator.` with the path, value and validator. Both fail
+the query; only the text differs. Validation text belongs to the validator, so
+leg 1 does not compare it, and it is recorded here for that row.
+
+Each socket's queries are subscriptions of row 4's registry under one
+subscriber that `Sync` pushes. A commit makes one stale by row 4's rule. An
+identity change makes every one stale, as the binary's worker takes every
+subscription when the identity version moves (CX-737, `worker.rs:948-962`).
+A test's own subscriber keeps row 4's narrower rule. A pushed subscriber's
+reruns go through a model of the binary's query cache
+(`application/src/cache/mod.rs`): a result is stored under its function, its
+arguments, its journal and, only when it read the identity, that identity
+(`:151-230`); a lookup tries the identity first and then no identity; a commit
+since the result ran that changed what it read drops it; and a result that read
+the time is dropped once it is older or newer than `MAX_CACHE_AGE`
+(`:768-823`), 17 s by default (`:112-122`, `common/src/knobs.rs:982-994`) and
+`queryCacheAge` on the shim. So an identity change answers a time query that
+reads no identity with the value it sent until that value has expired, and a
+new time after: leg 1 checks both on the binary. `refresh` without a subscriber skips
+pushed subscribers, so a test's refresh never takes a change a socket is owed,
+and `reference` still reruns them. `Subscriber.present(token)` is the
+Authenticate step: it verifies the token and bumps the identity version. The
+shim's `withToken(token).subscriber()` presents its token the same way, so
+row 6's `KernelRowPending` naming row 7 is gone; a refused token rejects that
+subscriber's subscriptions with `InvalidToken`.
+
+Each session keeps a request ledger, which `Sync` alone writes. A successful
+mutation enters it as its commit is applied, with its request ID, function,
+attempt number, commit timestamp, result and the SHA-256 of its arguments'
+artifact form (marked by the argument shape, keys sorted). A mutation resent
+under a recorded request ID is answered from the ledger with the original
+timestamp, and one resent while it runs waits for it. This is the binary's
+`_session_requests` (`application_function_runner/mod.rs:999-1004`,
+`:1063-1066`, `:2118-2178`), which records successes only (`:2163`), so a
+failed mutation runs again when resent. A resend is told from a reuse by the
+digest of its raw canonical arguments, which stays in memory beside the
+secrets store and never reaches an artifact. The artifact digest marks secrets
+first, so it changes once a call registers a secret, and it cannot identify a
+request. A session outlives its sockets, so a client that reconnects under it
+is answered from its ledger. `ledger()` is the read side for the System driver.
+
+### Conformance exception: `SyncRequestReused`
+
+The one place `Sync` departs from the binary on purpose.
+
+- **Case.** A session sends a mutation under a request ID its ledger already
+  holds, with arguments whose raw canonical digest differs from the recorded
+  one.
+- **Binary.** It answers the recorded outcome, with the original timestamp,
+  and runs nothing. Its record has no arguments to compare: a
+  `SessionRequestRecord` is the session, the request ID, the outcome and the
+  identity (`model/src/session_requests/types.rs:35-43`), and
+  `check_mutation_status` looks the request up by session and request ID alone
+  before the mutation runs (`application_function_runner/mod.rs:999-1004`,
+  `:2121-2150`).
+- **Kernel.** It refuses with `SyncRequestReused`, answers `FatalError` and
+  closes the socket. The failure report names the recorded and sent artifact
+  digests, never the raw ones.
+- **Why.** The unmodified client never reuses a request ID with other
+  arguments: it resends the same message (`request_manager.ts:193-230`). A
+  client that does is a bespoke client with a bug, and the binary's answer, the
+  outcome of another call, would hide it.
+- **Pinned by** `test/Sync.test.ts`, "a successful mutation enters its
+  session's ledger…", which resends request 0 with other arguments. Owner: row 7.
+
+The protocol's artifacts are the ledger, `transcript()`, every message sent and
+received, and `failures()`, each refusal with the client message that caused
+it. Each leaves marked: arguments by their function's argument shape, values by
+the return shape, a token's value replaced by the marker, and every string
+holding a kept secret marked by row 6's backstop (`World.redactJson`). The wire
+to the client carries raw values, as a call's caller gets them. Messages carry
+no log lines, since the kernel captures no handler output, and no pings or
+transition chunks.
+
+The snapshot contract lists open sockets under `live.sockets`, which blocks a
+restore (`SnapshotSocketsOpen`). A socket's subscriber outlives it, as any
+subscriber does, so a backend a socket ever opened on refuses a restore with
+`SnapshotSubscribed` too. `World.watchers` is excluded as live client state, and
+`outside.sync`, the sessions, ledgers, query sets, versions and presented
+tokens, is excluded: a ledger names commits of the world it answered.
+
+### The binary probe
+
+The probe compares the kernel with the binary, across its three legs. The
+convex-test lane runs separately and is not part of it.
+
+`packages/server/test/local-backend/syncProbe.test.ts` runs three legs of the
+unmodified client (`test/fixtures/syncLegs.ts`) against a binary the run starts
+through `LocalBackend.syncLayer` (port `CONFECT_LOCAL_BACKEND_PORT` + 30, the
+`fixtures/sync` app) and against the kernel on the same app
+(`test/fixtures/syncApp.ts`):
+
+| Leg                 | Compared                                                                                                     | Required on both     |
+| ------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------- |
+| Observable protocol | Each socket's query values with consecutive duplicates removed, normalised mutation outcomes, terminal views | No message thrown on |
+| OCC counter         | Whether contention showed, whether the counter ended at the increments that succeeded                        | Both true            |
+| Client acceptance   | No message thrown on, each token confirmed, each mutation settled, a reconnect, the terminal counter         | All of them          |
+
+Leg 1 waits after each step until both clients see a barrier counter reach it,
+so batching never changes a sequence. Leg 2's contention on the binary is the
+function log's `sync:increment` executions with OCC information, read with
+`convex logs --jsonl` from the fixture project, whose CLI holds its own
+credentials (`local_backend/src/logs.rs:79-280`); on the kernel it is the
+ledger's increments that committed on a later attempt. Leg 3 loses one
+mutation response with its socket, so the client reconnects under its session
+and resends.
+
+Each leg writes `.sync-probe/<leg>.json`: the binding, the digests of the app,
+the legs and the kernel's sync and subscription sources, and both sides'
+observations, through the kernel's redaction. The binding finds the process
+that owns the cloud port through `/proc`, refuses unless the runner is its
+ancestor, and records the worktree, revision, a dirty flag, the executable's
+release directory and SHA-256, the ports and the PID. It takes ports, never a
+URL. `SyncProbe.runLeg` writes the record `incomplete` before the leg runs, so
+an earlier run's verdict never stands for this one. Every step of a leg has a
+deadline, and each side has one too: a side that throws or passes it leaves
+the record `incomplete`, naming that side, with both sides' partial
+observations. A finished leg whose sides differ records both and fails as
+`disagree`. Off Linux, which has no `/proc`, the probe is skipped with that
+reason in its name before any backend starts.
+
+Plants, each a one-line source edit (script and output in the PR):
+
+| Plant                                                                  | Leg it fails |
+| ---------------------------------------------------------------------- | ------------ |
+| A subscription skips the first commit after its run                    | 1            |
+| A held attempt publishes without validating its reads                  | 2            |
+| A transition starts one query-set version past the client's            | 3            |
+| A transition never advances the identity version                       | 3            |
+| A resent mutation runs again instead of being answered from the ledger | 3            |
+| The backstop leaves a protocol artifact as it is                       | canary       |
+| A message's arguments reach the transcript unmarked                    | canary       |
+| The ledger hands out a mutation's raw result                           | canary       |
+| A probe record is written without its marks                            | canary       |
+
+The canary (`test/Sync.test.ts`) sends a secret argument through the
+unmodified client into a mutation that echoes it, one that fails with it, a
+query that answers with it, and a two-character secret only its argument shape
+can mark; it then sends one in a call the kernel refuses. Neither secret is in
+the ledger, the transcript, a failure report or a probe record, and each holds
+the marker.
+
+### Row 7 fix round 1
+
+A review of `d3a242e2` found five gaps, each now fixed with a case that fails
+without it:
+
+| Gap                                                                                                                        | Fix                                                                                             | Case, and the plant that turns it red                                                                                                                 |
+| -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| An identical resend failed once a call registered a secret, since resends were compared by the marked digest               | Compare by the raw canonical digest, kept in memory                                             | `Sync.test.ts`, "a mutation whose call registers a secret is answered from the ledger…"; comparing by the marked digest                               |
+| Updates skipped auth revalidation                                                                                          | Check `exp` before each update and request                                                      | "a token that expires between two updates…"; skipping the update check, and skipping the request check                                                |
+| The narrower identity invalidation was visible: a time query past the cache age changes on the binary after an auth update | Every query of a socket reruns on an identity change, through the cache model                   | leg 1 on both targets and on the kernel; the narrower rule, and no cache                                                                              |
+| The probe failed instead of skipping off Linux                                                                             | Skipped with its reason before any backend starts                                               | a run with `process.platform` set to `darwin` and `win32`                                                                                             |
+| A rejected transition could leave a leg waiting and an earlier `agree` record standing                                     | Deadlines on every step and side, an `incomplete` record first, partial observations on failure | `syncProbeRecord.test.ts`; no incomplete record first, a failure left unrecorded, no side deadline; and the probe under the wrong start-version plant |
+
+### Row 7 fix round 2
+
+- #134's round 2 (`2583a6cb`, on `main` `4fb64502`) is merged in, never
+  rebased. #134's own files take #134's version, without the temporary
+  disables row 7 had put on them. `Identity.test.ts`'s subscriber case no
+  longer expects #134's `KernelRowPending` naming row 7: a subscriber that
+  presents a token subscribes under the verified identity. Its HTTP case
+  stays #134's.
+- Sync never drew from `KernelRuntime.random`, which #134 removed: it signs
+  nothing and draws nothing, so the world stream needs no change here.
+- The snapshot body is unchanged by this row. Its contract gains the open
+  sockets, the commit watchers, Sync's sessions and the sync query cache, all
+  excluded or live, so this row takes no format version; #134's version 4
+  stands.
+- The legs, the probe and the tests are Effect programs under #140's rules.
+  Every step and side is bounded by `Effect.timeoutOrElse`, clients are
+  scoped resources, the binary's contention reads `convex logs` through
+  Effect's `ChildProcess`, records are encoded through `Schema`, and the
+  tests narrow with `assertIs`. The disables left sit on exact lines with
+  their rule and reason: the `on*` handlers of the kernel's socket, a Convex
+  query's `Date.now()`, and Node imports for `/proc`, hashing and temporary
+  directories.
+
+### Row 7 fix round 3
+
+- A failed query is never cached. The binary stores a result only when its
+  execution succeeded ("We do not cache JSErrors",
+  `crates/application/src/cache/mod.rs:500-510`), and a client keeps a
+  failure's `errorData` visible (`convex` 1.49
+  `src/browser/sync/remote_query_set.ts:58-71`). So the kernel's cache stores
+  successful runs only, under both the run's journal and its alias. Leg 1's
+  third client also watches `sync:failingClock`, which fails with
+  `ConvexError({ time: Date.now() })`: its error changes on the sign-in within
+  the cache age and on the one after it, on both targets. The binary pins it
+  in the probe, and the kernel's leg 1 test fails when a failure is cached.
+- #134's round 3 (`f5fdcad3`) and `main` (`38ca5de4`, #151 and #152) are
+  merged in, never rebased. #134 now runs an HTTP handler under an invalid
+  token and lets `getUserIdentity` throw, so this row's case expecting an HTTP
+  token to refuse is gone; its subscriber case stays. #134 made
+  `World.authenticate` private, so a presented token reaches the verifier
+  through `World.verify`, one live call as #134's own calls are.
