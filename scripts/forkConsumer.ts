@@ -15,10 +15,10 @@ const encodeJson = Schema.encodeSync(
   Schema.fromJsonString(Schema.Unknown, { space: 2 }),
 );
 
-export class InvalidConsumerVersion extends Schema.TaggedError<InvalidConsumerVersion>()(
-  "InvalidConsumerVersion",
-  { version: Schema.String },
-) {}
+export class InvalidConsumerVersion extends Schema.TaggedError<
+  InvalidConsumerVersion,
+  { readonly brand: unique symbol }
+>()("InvalidConsumerVersion", { version: Schema.String }) {}
 
 export const consumerManifest = (version: string, tarballs?: string) => {
   if (!/^\d+\.\d+\.\d+-fork\.(0|[1-9]\d*)$/.test(version))

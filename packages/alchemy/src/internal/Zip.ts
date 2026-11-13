@@ -4,7 +4,10 @@ import * as FileSystem from "effect/FileSystem";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 
-export class ZipError extends Schema.TaggedError<ZipError>()("ZipError", {
+export class ZipError extends Schema.TaggedError<
+  ZipError,
+  { readonly brand: unique symbol }
+>()("ZipError", {
   reason: Schema.Literals(["format", "entry", "io"]),
 }) {}
 

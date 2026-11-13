@@ -13,10 +13,10 @@ import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
 
-export class NoStableCoreRelease extends Schema.TaggedError<NoStableCoreRelease>()(
-  "NoStableCoreRelease",
-  { tags: Schema.Array(Schema.String) },
-) {}
+export class NoStableCoreRelease extends Schema.TaggedError<
+  NoStableCoreRelease,
+  { readonly brand: unique symbol }
+>()("NoStableCoreRelease", { tags: Schema.Array(Schema.String) }) {}
 
 export const selectReleaseTag = (
   tags: ReadonlyArray<string>,
@@ -45,31 +45,34 @@ export const planMerge = (
   _tag: history.base === history.target ? "AlreadyMerged" : "Merge",
 });
 
-class GitCommandFailed extends Schema.TaggedError<GitCommandFailed>()(
-  "GitCommandFailed",
-  {
-    args: Schema.Array(Schema.String),
-    directory: Schema.String,
-    exitCode: Schema.Finite,
-    output: Schema.String,
-  },
-) {}
+class GitCommandFailed extends Schema.TaggedError<
+  GitCommandFailed,
+  { readonly brand: unique symbol }
+>()("GitCommandFailed", {
+  args: Schema.Array(Schema.String),
+  directory: Schema.String,
+  exitCode: Schema.Finite,
+  output: Schema.String,
+}) {}
 
-class MergeFailed extends Schema.TaggedError<MergeFailed>()("MergeFailed", {
+class MergeFailed extends Schema.TaggedError<
+  MergeFailed,
+  { readonly brand: unique symbol }
+>()("MergeFailed", {
   tag: Schema.String,
   base: Schema.String,
   output: Schema.String,
 }) {}
 
-class MergeConflict extends Schema.TaggedError<MergeConflict>()(
-  "MergeConflict",
-  {
-    tag: Schema.String,
-    base: Schema.String,
-    files: Schema.Array(Schema.String),
-    output: Schema.String,
-  },
-) {}
+class MergeConflict extends Schema.TaggedError<
+  MergeConflict,
+  { readonly brand: unique symbol }
+>()("MergeConflict", {
+  tag: Schema.String,
+  base: Schema.String,
+  files: Schema.Array(Schema.String),
+  output: Schema.String,
+}) {}
 
 const gitResult = Effect.fn("MergeRelease.commandResult")(function* (
   args: Array<string>,

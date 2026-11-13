@@ -36,18 +36,22 @@ export class SpecMissingDefaultGroupSpecError extends Schema.TaggedError<
   specPath: Schema.String,
 }) {}
 
-export class RemoveBusyError extends Schema.TaggedError<RemoveBusyError>()(
-  "RemoveBusyError",
-  { path: Schema.String, attempts: Schema.Finite, cause: Schema.Unknown },
-) {}
+export class RemoveBusyError extends Schema.TaggedError<
+  RemoveBusyError,
+  { readonly brand: unique symbol }
+>()("RemoveBusyError", {
+  path: Schema.String,
+  attempts: Schema.Finite,
+  cause: Schema.Unknown,
+}) {}
 
-export class ComponentNodeGroupError extends Schema.TaggedError<ComponentNodeGroupError>()(
-  "ComponentNodeGroupError",
-  {
-    specPath: Schema.String,
-    groupPath: Schema.String,
-  },
-) {}
+export class ComponentNodeGroupError extends Schema.TaggedError<
+  ComponentNodeGroupError,
+  { readonly brand: unique symbol }
+>()("ComponentNodeGroupError", {
+  specPath: Schema.String,
+  groupPath: Schema.String,
+}) {}
 
 export class SpecImportsServerError extends Schema.TaggedError<
   SpecImportsServerError,
@@ -118,17 +122,17 @@ export class ImplMissingMiddlewareError extends Schema.TaggedError<
   missingMiddlewareKeys: Schema.Array(Schema.String),
 }) {}
 
-export class RequiredMiddlewareError extends Schema.TaggedError<RequiredMiddlewareError>()(
-  "RequiredMiddlewareError",
-  {
-    missing: Schema.Array(
-      Schema.Struct({
-        functionName: Schema.String,
-        middlewareKey: Schema.String,
-      }),
-    ),
-  },
-) {}
+export class RequiredMiddlewareError extends Schema.TaggedError<
+  RequiredMiddlewareError,
+  { readonly brand: unique symbol }
+>()("RequiredMiddlewareError", {
+  missing: Schema.Array(
+    Schema.Struct({
+      functionName: Schema.String,
+      middlewareKey: Schema.String,
+    }),
+  ),
+}) {}
 
 export class ParentChildNameCollisionError extends Schema.TaggedError<
   ParentChildNameCollisionError,
@@ -198,52 +202,54 @@ export class InvalidConvexConfigError extends Schema.TaggedError<
   reason: Schema.String,
 }) {}
 
-export class InvalidDeclarationError extends Schema.TaggedError<InvalidDeclarationError>()(
-  "InvalidDeclarationError",
-  {
-    declarationPath: Schema.String,
-    reason: Schema.String,
-  },
-) {}
+export class InvalidDeclarationError extends Schema.TaggedError<
+  InvalidDeclarationError,
+  { readonly brand: unique symbol }
+>()("InvalidDeclarationError", {
+  declarationPath: Schema.String,
+  reason: Schema.String,
+}) {}
 
-export class InvalidManifestSectionError extends Schema.TaggedError<InvalidManifestSectionError>()(
-  "InvalidManifestSectionError",
-  {
-    sectionKey: Schema.String,
-    reason: Schema.String,
-  },
-) {}
+export class InvalidManifestSectionError extends Schema.TaggedError<
+  InvalidManifestSectionError,
+  { readonly brand: unique symbol }
+>()("InvalidManifestSectionError", {
+  sectionKey: Schema.String,
+  reason: Schema.String,
+}) {}
 
-export class HandWrittenConvexFileError extends Schema.TaggedError<HandWrittenConvexFileError>()(
-  "HandWrittenConvexFileError",
-  {
-    convexPath: Schema.String,
-    declarationPath: Schema.String,
-  },
-) {}
+export class HandWrittenConvexFileError extends Schema.TaggedError<
+  HandWrittenConvexFileError,
+  { readonly brand: unique symbol }
+>()("HandWrittenConvexFileError", {
+  convexPath: Schema.String,
+  declarationPath: Schema.String,
+}) {}
 
-export class UnownedConvexEntrypointError extends Schema.TaggedError<UnownedConvexEntrypointError>()(
-  "UnownedConvexEntrypointError",
-  { filePaths: Schema.Array(Schema.String) },
-) {}
+export class UnownedConvexEntrypointError extends Schema.TaggedError<
+  UnownedConvexEntrypointError,
+  { readonly brand: unique symbol }
+>()("UnownedConvexEntrypointError", {
+  filePaths: Schema.Array(Schema.String),
+}) {}
 
-export class DeclarationKindMismatchError extends Schema.TaggedError<DeclarationKindMismatchError>()(
-  "DeclarationKindMismatchError",
-  {
-    declarationPath: Schema.String,
-    declaredKind: Schema.Literals(["app", "component"]),
-    targetKind: Schema.Literals(["app", "component"]),
-  },
-) {}
+export class DeclarationKindMismatchError extends Schema.TaggedError<
+  DeclarationKindMismatchError,
+  { readonly brand: unique symbol }
+>()("DeclarationKindMismatchError", {
+  declarationPath: Schema.String,
+  declaredKind: Schema.Literals(["app", "component"]),
+  targetKind: Schema.Literals(["app", "component"]),
+}) {}
 
-export class CallbackPrefixError extends Schema.TaggedError<CallbackPrefixError>()(
-  "CallbackPrefixError",
-  {
-    declarationPath: Schema.String,
-    contractId: Schema.String,
-    componentName: Schema.String,
-  },
-) {}
+export class CallbackPrefixError extends Schema.TaggedError<
+  CallbackPrefixError,
+  { readonly brand: unique symbol }
+>()("CallbackPrefixError", {
+  declarationPath: Schema.String,
+  contractId: Schema.String,
+  componentName: Schema.String,
+}) {}
 
 export const CodegenError = Schema.Union([
   SnapshotError,

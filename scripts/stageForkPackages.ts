@@ -97,29 +97,32 @@ export const stageForkPackages = (
   };
 };
 
-export class InvalidBuildVersion extends Schema.TaggedError<InvalidBuildVersion>()(
-  "InvalidBuildVersion",
-  { base: Schema.String, build: Schema.String },
-) {}
+export class InvalidBuildVersion extends Schema.TaggedError<
+  InvalidBuildVersion,
+  { readonly brand: unique symbol }
+>()("InvalidBuildVersion", { base: Schema.String, build: Schema.String }) {}
 
-export class BuildNumberUnavailable extends Schema.TaggedError<BuildNumberUnavailable>()(
-  "BuildNumberUnavailable",
-  { version: Schema.String, highestBuild: Schema.Finite },
-) {}
+export class BuildNumberUnavailable extends Schema.TaggedError<
+  BuildNumberUnavailable,
+  { readonly brand: unique symbol }
+>()("BuildNumberUnavailable", {
+  version: Schema.String,
+  highestBuild: Schema.Finite,
+}) {}
 
-class MissingCorePackage extends Schema.TaggedError<MissingCorePackage>()(
-  "MissingCorePackage",
-  { packages: Schema.Array(Schema.String) },
-) {}
+class MissingCorePackage extends Schema.TaggedError<
+  MissingCorePackage,
+  { readonly brand: unique symbol }
+>()("MissingCorePackage", { packages: Schema.Array(Schema.String) }) {}
 
-class PackageVersionMismatch extends Schema.TaggedError<PackageVersionMismatch>()(
-  "PackageVersionMismatch",
-  {
-    packageName: Schema.String,
-    expected: Schema.String,
-    actual: Schema.String,
-  },
-) {}
+class PackageVersionMismatch extends Schema.TaggedError<
+  PackageVersionMismatch,
+  { readonly brand: unique symbol }
+>()("PackageVersionMismatch", {
+  packageName: Schema.String,
+  expected: Schema.String,
+  actual: Schema.String,
+}) {}
 
 export const packageBaseVersion = (
   manifests: ReadonlyArray<PackageManifest>,
@@ -177,15 +180,15 @@ export const chooseBuildVersion = (
     : Result.succeed(version);
 };
 
-class CommandFailed extends Schema.TaggedError<CommandFailed>()(
-  "CommandFailed",
-  {
-    command: Schema.Array(Schema.String),
-    exitCode: Schema.Finite,
-    stdout: Schema.String,
-    stderr: Schema.String,
-  },
-) {}
+class CommandFailed extends Schema.TaggedError<
+  CommandFailed,
+  { readonly brand: unique symbol }
+>()("CommandFailed", {
+  command: Schema.Array(Schema.String),
+  exitCode: Schema.Finite,
+  stdout: Schema.String,
+  stderr: Schema.String,
+}) {}
 
 const run = Effect.fn("ForkPackages.command")(function* (
   command: readonly [string, ...Array<string>],

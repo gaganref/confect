@@ -25,15 +25,18 @@ class BackendVersionLookupError extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("BackendVersionLookupError", { message: Schema.String }) {}
 
-class BackendEnvironmentSetupError extends Schema.TaggedError<BackendEnvironmentSetupError>()(
-  "BackendEnvironmentSetupError",
-  { name: Schema.String, exitCode: Schema.Finite },
-) {}
+class BackendEnvironmentSetupError extends Schema.TaggedError<
+  BackendEnvironmentSetupError,
+  { readonly brand: unique symbol }
+>()("BackendEnvironmentSetupError", {
+  name: Schema.String,
+  exitCode: Schema.Finite,
+}) {}
 
-class BackendRedeployError extends Schema.TaggedError<BackendRedeployError>()(
-  "BackendRedeployError",
-  { exitCode: Schema.Finite },
-) {}
+class BackendRedeployError extends Schema.TaggedError<
+  BackendRedeployError,
+  { readonly brand: unique symbol }
+>()("BackendRedeployError", { exitCode: Schema.Finite }) {}
 
 export class LocalBackend extends Context.Service<
   LocalBackend,

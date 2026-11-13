@@ -339,7 +339,10 @@ it.effect.each([
   "reports the original HTTP %s outcome on one request span",
   (scenario) =>
     Effect.gen(function* () {
-      class Denied extends Schema.TaggedError<Denied>()("Denied", {}) {}
+      class Denied extends Schema.TaggedError<
+        Denied,
+        { readonly brand: unique symbol }
+      >()("Denied", {}) {}
       const denied = Denied.make({});
       const forbidden = HttpApiError.Forbidden.make({});
       const defect = new Error("broken");

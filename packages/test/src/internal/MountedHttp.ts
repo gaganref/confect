@@ -19,24 +19,27 @@ import * as Rec from "effect/Record";
 
 declare const process: { env: Record<string, string | undefined> };
 
-class InvalidHttpMount extends Schema.TaggedError<InvalidHttpMount>()(
-  "InvalidHttpMount",
-  {
-    componentPath: Schema.String,
-    httpPrefix: Schema.String,
-    message: Schema.String,
-  },
-) {}
+class InvalidHttpMount extends Schema.TaggedError<
+  InvalidHttpMount,
+  { readonly brand: unique symbol }
+>()("InvalidHttpMount", {
+  componentPath: Schema.String,
+  httpPrefix: Schema.String,
+  message: Schema.String,
+}) {}
 
-class ComponentHttpError extends Schema.TaggedError<ComponentHttpError>()(
-  "ComponentHttpError",
-  { componentPath: Schema.String, message: Schema.String },
-) {}
+class ComponentHttpError extends Schema.TaggedError<
+  ComponentHttpError,
+  { readonly brand: unique symbol }
+>()("ComponentHttpError", {
+  componentPath: Schema.String,
+  message: Schema.String,
+}) {}
 
-class InvalidFetchPath extends Schema.TaggedError<InvalidFetchPath>()(
-  "InvalidFetchPath",
-  { path: Schema.String, message: Schema.String },
-) {}
+class InvalidFetchPath extends Schema.TaggedError<
+  InvalidFetchPath,
+  { readonly brand: unique symbol }
+>()("InvalidFetchPath", { path: Schema.String, message: Schema.String }) {}
 
 type NormalizedMount = {
   readonly componentPath: string;

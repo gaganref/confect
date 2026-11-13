@@ -398,7 +398,9 @@ describe("published component contracts", () => {
   });
 
   it("leaves id-free nominal classes and their methods intact", () => {
-    class Label extends Schema.Class<Label>("Label")({ value: Schema.String }) {
+    class Label extends Schema.Class<Label, { readonly brand: unique symbol }>(
+      "Label",
+    )({ value: Schema.String }) {
       private readonly marker = "label";
       text() {
         return `${this.marker}:${this.value}`;
@@ -419,7 +421,9 @@ describe("published component contracts", () => {
 
   it("keeps id-free suspended class values nominal without forcing their fields", () => {
     const thunk = vi.fn(() => Schema.String);
-    class Label extends Schema.Class<Label>("SuspendedLabel")({
+    class Label extends Schema.Class<Label, { readonly brand: unique symbol }>(
+      "SuspendedLabel",
+    )({
       value: Schema.suspend(thunk),
     }) {
       private readonly marker = "lazy";
@@ -438,7 +442,9 @@ describe("published component contracts", () => {
   });
 
   it("rebases ID-bearing classes without claiming nominal identity", () => {
-    class Item extends Schema.Class<Item>("Item")({ id: ItemId }) {
+    class Item extends Schema.Class<Item, { readonly brand: unique symbol }>(
+      "Item",
+    )({ id: ItemId }) {
       private readonly marker = "item";
       label() {
         return this.marker;

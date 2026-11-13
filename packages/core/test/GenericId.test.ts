@@ -120,7 +120,9 @@ describe("rebase", () => {
       readonly name: string;
       readonly children: ReadonlyArray<NodeEncoded>;
     }
-    class Node extends Schema.Class<Node>("RecursiveNode")({
+    class Node extends Schema.Class<Node, { readonly brand: unique symbol }>(
+      "RecursiveNode",
+    )({
       name: Schema.String,
       children: Schema.Array(
         Schema.suspend((): Schema.Codec<Node, NodeEncoded> => Node),

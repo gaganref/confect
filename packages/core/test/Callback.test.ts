@@ -16,10 +16,10 @@ import * as Refs from "@confect/core/Refs";
 import * as SchemaToValidator from "@confect/core/SchemaToValidator";
 import * as TestSpec from "./TestSpec";
 
-class EventRejected extends Schema.TaggedError<EventRejected>()(
-  "EventRejected",
-  { reason: Schema.String },
-) {}
+class EventRejected extends Schema.TaggedError<
+  EventRejected,
+  { readonly brand: unique symbol }
+>()("EventRejected", { reason: Schema.String }) {}
 
 const Status = Schema.Literals(["queued", "sent", "bounced"]);
 

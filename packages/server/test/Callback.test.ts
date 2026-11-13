@@ -36,7 +36,10 @@ class EventRejected extends Schema.TaggedError<EventRejected>()(
   { reason: Schema.String },
 ) {}
 
-class Unrelated extends Schema.TaggedError<Unrelated>()("Unrelated", {
+class Unrelated extends Schema.TaggedError<
+  Unrelated,
+  { readonly brand: unique symbol }
+>()("Unrelated", {
   reason: Schema.String,
 }) {}
 
@@ -377,7 +380,10 @@ describe("create checks the host's validators", () => {
 
   it.effect("refuses errors from group middleware whose types are erased", () =>
     Effect.gen(function* () {
-      class Blocked extends Schema.TaggedError<Blocked>()("Blocked", {}) {}
+      class Blocked extends Schema.TaggedError<
+        Blocked,
+        { readonly brand: unique symbol }
+      >()("Blocked", {}) {}
       class Gate extends MiddlewareSpec.MiddlewareSpec<Gate>()("Gate", {
         error: () => Blocked,
         functionTypes: { query: false, mutation: true, action: false },
@@ -644,13 +650,16 @@ describe("create types", () => {
     // @ts-expect-error H1 the host returns a number on the wire, the contract decodes a string
     void Callback.create(Counted, finiteOnWire);
 
-    class Rejected extends Schema.TaggedError<Rejected>()("Rejected", {
+    class Rejected extends Schema.TaggedError<
+      Rejected,
+      { readonly brand: unique symbol }
+    >()("Rejected", {
       at: Schema.FiniteFromString,
     }) {}
-    class RejectedOnWire extends Schema.TaggedError<RejectedOnWire>()(
-      "Rejected",
-      { at: Schema.Finite },
-    ) {}
+    class RejectedOnWire extends Schema.TaggedError<
+      RejectedOnWire,
+      { readonly brand: unique symbol }
+    >()("Rejected", { at: Schema.Finite }) {}
     const Guarded = CoreCallback.mutation("counter/onGuarded", {
       returns: () => Schema.Null,
       error: () => Rejected,
@@ -712,13 +721,16 @@ describe("create types", () => {
   });
 
   it("H1: rejects a ref whose middleware encodes an error differently", () => {
-    class Rejected extends Schema.TaggedError<Rejected>()("Rejected", {
+    class Rejected extends Schema.TaggedError<
+      Rejected,
+      { readonly brand: unique symbol }
+    >()("Rejected", {
       at: Schema.FiniteFromString,
     }) {}
-    class RejectedOnWire extends Schema.TaggedError<RejectedOnWire>()(
-      "Rejected",
-      { at: Schema.Finite },
-    ) {}
+    class RejectedOnWire extends Schema.TaggedError<
+      RejectedOnWire,
+      { readonly brand: unique symbol }
+    >()("Rejected", { at: Schema.Finite }) {}
     class Gate extends MiddlewareSpec.MiddlewareSpec<Gate>()("Gate", {
       error: () => RejectedOnWire,
       functionTypes: { query: false, mutation: true, action: false },
@@ -843,13 +855,16 @@ describe("create types", () => {
   });
 
   it("H1: rejects a ref built directly whose function middleware encodes an error differently", () => {
-    class Rejected extends Schema.TaggedError<Rejected>()("Rejected", {
+    class Rejected extends Schema.TaggedError<
+      Rejected,
+      { readonly brand: unique symbol }
+    >()("Rejected", {
       at: Schema.FiniteFromString,
     }) {}
-    class RejectedOnWire extends Schema.TaggedError<RejectedOnWire>()(
-      "Rejected",
-      { at: Schema.Finite },
-    ) {}
+    class RejectedOnWire extends Schema.TaggedError<
+      RejectedOnWire,
+      { readonly brand: unique symbol }
+    >()("Rejected", { at: Schema.Finite }) {}
     class Gate extends MiddlewareSpec.MiddlewareSpec<Gate>()("Gate", {
       error: () => RejectedOnWire,
       functionTypes: { query: false, mutation: true, action: false },
@@ -949,7 +964,10 @@ describe("create types", () => {
   });
 
   it("H1: rejects a ref built with group middleware whose errors the contract does not declare", () => {
-    class Blocked extends Schema.TaggedError<Blocked>()("Blocked", {}) {}
+    class Blocked extends Schema.TaggedError<
+      Blocked,
+      { readonly brand: unique symbol }
+    >()("Blocked", {}) {}
     class Gate extends MiddlewareSpec.MiddlewareSpec<Gate>()("Gate", {
       error: () => Blocked,
       functionTypes: { query: false, mutation: true, action: false },

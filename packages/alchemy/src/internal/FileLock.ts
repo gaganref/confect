@@ -8,10 +8,12 @@ import * as Predicate from "effect/Predicate";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 
-export class FileLockError extends Schema.TaggedError<FileLockError>()(
-  "FileLockError",
-  { reason: Schema.Literals(["held", "timeout", "filesystem"]) },
-) {}
+export class FileLockError extends Schema.TaggedError<
+  FileLockError,
+  { readonly brand: unique symbol }
+>()("FileLockError", {
+  reason: Schema.Literals(["held", "timeout", "filesystem"]),
+}) {}
 
 const Holder = Schema.fromJsonString(
   Schema.Struct({ pid: Schema.Finite, token: Schema.String }),

@@ -336,10 +336,13 @@ export type ComponentKit =
       ): unknown;
     };
 
-class InvalidComponentKit extends Schema.TaggedError<InvalidComponentKit>()(
-  "InvalidComponentKit",
-  { componentPath: Schema.String, message: Schema.String },
-) {}
+class InvalidComponentKit extends Schema.TaggedError<
+  InvalidComponentKit,
+  { readonly brand: unique symbol }
+>()("InvalidComponentKit", {
+  componentPath: Schema.String,
+  message: Schema.String,
+}) {}
 
 const registerKit = (
   registerComponent: RegisterComponent,

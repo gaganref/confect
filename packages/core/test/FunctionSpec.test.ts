@@ -983,17 +983,23 @@ describe("extend", () => {
 });
 
 describe("profile schema wrappers", () => {
-  class ProfileFailure extends Schema.TaggedError<ProfileFailure>()(
-    "ProfileFailure",
-    {},
-  ) {}
-  class Declared extends Schema.TaggedError<Declared>()("Declared", {
+  class ProfileFailure extends Schema.TaggedError<
+    ProfileFailure,
+    { readonly brand: unique symbol }
+  >()("ProfileFailure", {}) {}
+  class Declared extends Schema.TaggedError<
+    Declared,
+    { readonly brand: unique symbol }
+  >()("Declared", {
     flag: Schema.Boolean,
   }) {}
   class StructExtended extends Declared.extend<StructExtended>(
     "StructExtended",
   )(Schema.Struct({ note: Schema.String })) {}
-  class Parent extends Schema.TaggedError<Parent>()("Parent", {
+  class Parent extends Schema.TaggedError<
+    Parent,
+    { readonly brand: unique symbol }
+  >()("Parent", {
     flag: Schema.Boolean,
   }) {}
   class Plain extends Parent {}
