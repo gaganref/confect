@@ -13,6 +13,7 @@ import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Rec from "effect/Record";
 import * as Str from "effect/String";
+import * as Globals from "./Globals.js";
 import * as Json from "./Json.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import { base64UrlEncode, base64UrlEncodeBytes } from "./KernelValues.js";
@@ -641,7 +642,19 @@ const KEY_LABEL = new TextEncoder().encode("deployment jwt signing key");
  * (`keybroker/src/deployment_jwt.rs:162-176`). The `kid` is the key's RFC 7638
  * thumbprint (`:337-346`).
  */
-const derive = (seed: Uint8Array): Derived => {
+const derive = (seed: Uint8Array): Derived => ownCrypto(() => deriveKey(seed));
+
+/**
+ * Run the kernel's own P-256 work against the host's `crypto`, never the copy a
+ * running function holds. @noble/curves blinds each scalar multiplication with
+ * random bytes, which change no result: the key derives from the seed, and the
+ * signature's nonce comes by RFC 6979. So the blinding never reaches a
+ * function, and it draws nothing from the function's stream, which a replay
+ * depends on.
+ */
+const ownCrypto = <A>(run: () => A): A => Globals.host(run);
+
+const deriveKey = (seed: Uint8Array): Derived => {
   for (let attempt = 0; attempt <= 255; attempt++) {
     const label = new Uint8Array(KEY_LABEL.length + 5);
     label.set(KEY_LABEL);
@@ -832,9 +845,8 @@ export class DeploymentKey {
       "." +
       base64UrlEncode(Json.stringify(payload));
     // `p256.sign` hashes with SHA-256 and takes its nonce by RFC 6979.
-    const signature = p256.sign(
-      new TextEncoder().encode(signingInput),
-      secretKey,
+    const signature = ownCrypto(() =>
+      p256.sign(new TextEncoder().encode(signingInput), secretKey),
     );
     const token = `${signingInput}.${base64UrlEncodeBytes(signature)}`;
     if (token.length > DEPLOYMENT_JWT_MAX_SIZE) {
