@@ -423,7 +423,6 @@ export default GroupSpec.make().addFunction(FunctionSpec.internalMutation({ name
           `import { FunctionImpl, GroupImpl } from "@confect/server";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
-import * as Layer from "effect/Layer";
 import schema from "./_generated/schema";
 import events from "./events.spec";
 const onEvent = FunctionImpl.make(schema, events, "onEvent", () => Effect.succeed(null));
@@ -496,7 +495,6 @@ export default GroupSpec.make().addFunction(FunctionSpec.internalMutation({ name
           "confect/events.impl.ts",
           `import { FunctionImpl, GroupImpl } from "@confect/server";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Layer from "effect/Layer";
 import schema from "./_generated/schema";
 import events from "./events.spec";
@@ -919,7 +917,6 @@ export default GroupSpec.make().addFunction(
               `confect/${name}.impl.ts`,
               `import { FunctionImpl, GroupImpl } from "@confect/server";
 import * as Effect from "effect/Effect";
-import * as Layer from "effect/Layer";
 import * as Layer from "effect/Layer";
 import schema from "./_generated/schema";
 import group from "./${name}.spec";
