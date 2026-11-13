@@ -7,8 +7,8 @@ import * as Schema from "effect/Schema";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
-import { mint, type VerifierOutcome } from "../../../test/test/fixtures/minted";
-import * as LocalBackend from "./LocalBackend";
+import { mint, type VerifierOutcome } from "../../../../tools/local-backend/fixtures/minted";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 const Answer = Schema.Struct({
   status: Schema.Literal("success"),

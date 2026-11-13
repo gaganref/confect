@@ -25,7 +25,7 @@ import {
   sign,
   type VerifierCase,
   type VerifierOutcome,
-} from "./fixtures/minted";
+} from "../../../tools/local-backend/fixtures/minted";
 import { oversizedRsa } from "./fixtures/oversized";
 
 const whoami = makeFunctionReference<"query", {}, object | null>(

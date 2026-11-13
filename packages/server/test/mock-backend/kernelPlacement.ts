@@ -46,9 +46,10 @@ export const placements: ReadonlyArray<Placement> = [
   ),
   {
     file: "integration.test.ts",
-    name: "TestConfect JWT signing",
-    row: 6,
-    needs: "JWT signing and verification",
+    name: "TestConfect JWT signing > rejects tokens from another TestConfect instance",
+    row: "binary",
+    needs:
+      "a deployment key of its own per backend: two kernel backends with one seed draw one key, by design",
   },
   {
     file: "integration.test.ts",
