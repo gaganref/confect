@@ -10,8 +10,10 @@ import {
   type UserIdentity,
 } from "convex/server";
 import { convexToJson, jsonToConvex, type Value } from "convex/values";
+import * as Result from "effect/Result";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
+import * as Crons from "./Crons.js";
 import * as Globals from "./Globals.js";
 import * as Invocation from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
@@ -41,6 +43,11 @@ import {
 } from "./KernelValues.js";
 
 const ROOT = "";
+
+const cronKey = (componentPath: string, name: string) =>
+  `${componentPath}\u0000${name}`;
+
+const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const TYPICAL_CONVEX_ID_LENGTH = 32;
 
 type Modules = Record<string, () => Promise<any>>;
@@ -64,6 +71,41 @@ interface Component {
 /**
  * Who is calling: the identity and the request attributes a test accessor set.
  */
+/**
+ * A declared cron job and its next run. The binary keeps this in the
+ * component's `_cron_jobs` and `_cron_next_run` system tables, which no
+ * function reads, so the kernel keeps it beside its tables.
+ */
+interface CronJob {
+  readonly componentPath: string;
+  readonly spec: Crons.Spec;
+  readonly nextRun: number;
+  readonly last: CronOutcome | undefined;
+  /**
+   * The world bound when the test backend opened, which the binary's push
+   * stands for. Each run starts as a fresh invocation of it, or unbound.
+   */
+  readonly world: Invocation.World | undefined;
+}
+
+export type CronOutcome =
+  | { readonly kind: "success" }
+  | { readonly kind: "failed"; readonly error: string };
+
+/**
+ * A declared cron job as a driver sees it.
+ */
+export interface Cron {
+  readonly componentPath: string;
+  readonly name: string;
+  readonly udfPath: string;
+  readonly nextRun: number;
+  /**
+   * How the latest run ended, as the binary's cron log records it.
+   */
+  readonly last: CronOutcome | undefined;
+}
+
 export interface Caller {
   readonly identity: UserIdentity | null;
   readonly token: string | null;
@@ -425,6 +467,7 @@ export class World {
    */
   private floor = Number.NEGATIVE_INFINITY;
   private readonly targets = new Map<DocumentId, Scheduling.Target>();
+  private readonly cronJobs = new Map<string, CronJob>();
 
   constructor(
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
@@ -456,10 +499,18 @@ export class World {
 
   /**
    * Load every registered module of every component, once, before any function
-   * runs, then check that each standing source names an exported function.
+   * runs, check that each standing source names an exported function, and
+   * declare each component's cron jobs. Their runs start in `world`, the world
+   * of the invocation bound by the call that opened the backend. `advance` and
+   * `drain` open with none, since their binding never reaches a job.
    */
   open(): Promise<void> {
-    this.opened ??= Promise.all(
+    return this.openIn(Invocation.current()?.world);
+  }
+
+  private openIn(world: Invocation.World | undefined): Promise<void> {
+    if (this.opened !== undefined) return this.opened;
+    this.opened = Promise.all(
       Array.from(this.components.values(), (component) =>
         Promise.all(
           Array.from(component.loaders, ([path, load]) =>
@@ -467,8 +518,102 @@ export class World {
           ),
         ),
       ),
-    ).then(() => this.checkStanding());
+    )
+      .then(() => this.checkStanding())
+      .then(() => this.declareCrons(world));
     return this.opened;
+  }
+
+  /**
+   * Read each component's `crons.ts` as the binary reads `crons.js` at push
+   * (`crates/model/src/cron_jobs/mod.rs:151-195`), refuse what the push would
+   * (`crates/isolate/src/environment/analyze.rs:1016-1089`,
+   * `crates/application/src/application_function_runner/mod.rs:1932-1979`), and
+   * schedule each job's first run from the kernel's time now. Jobs are created
+   * in name order, as the binary walks them.
+   */
+  private declareCrons(world: Invocation.World | undefined) {
+    for (const component of this.components.values()) {
+      const module = component.loaded.get("crons");
+      if (module === undefined) continue;
+      const refuse = (message: string) =>
+        new KernelRefusal.InvalidCron({
+          componentPath: component.path,
+          name: "",
+          message,
+        });
+      if (!("default" in module)) {
+        throw refuse(
+          "`convex/crons.js` must have a default export of a Crons object.",
+        );
+      }
+      const declared = module.default;
+      if (declared?.isCrons !== true || typeof declared.export !== "function") {
+        throw refuse(
+          "The default export of `convex/crons.js` is not a Crons object.",
+        );
+      }
+      const exported = JSON.parse(declared.export()) as Record<string, unknown>;
+      for (const name of Object.keys(exported).sort()) {
+        const parsed = Crons.parseSpec(component.path, name, exported[name]);
+        if (Result.isFailure(parsed)) throw parsed.failure;
+        const spec = parsed.success;
+        this.checkCronTarget(component, spec);
+        this.cronJobs.set(cronKey(component.path, name), {
+          componentPath: component.path,
+          spec,
+          nextRun: Crons.nextRun(
+            spec.schedule,
+            undefined,
+            this.now(),
+            (bound) => this.draw(bound),
+          ),
+          last: undefined,
+          world,
+        });
+      }
+    }
+  }
+
+  /**
+   * Refuse a cron job whose function is missing or is no mutation or action.
+   */
+  private checkCronTarget(component: Component, spec: Crons.Spec) {
+    const [modulePath, exportName = "default"] = spec.udfPath.split(":");
+    const func = component.loaded.get(modulePath!)?.[exportName];
+    const refuse = (reason: string) =>
+      new KernelRefusal.InvalidCron({
+        componentPath: component.path,
+        name: spec.name,
+        message: `The cron job '${spec.name}' ${reason}: ${spec.udfPath}`,
+      });
+    if (func === undefined) {
+      throw refuse("schedules a function that does not exist");
+    }
+    if (func.isQuery === true) {
+      throw refuse(
+        "schedules a query function, only actions and mutations can be scheduled",
+      );
+    }
+    if (func.isHttp === true) {
+      throw refuse(
+        "schedules an HTTP action, only actions and mutations can be scheduled",
+      );
+    }
+    if (func.isMutation !== true && func.isAction !== true) {
+      throw refuse("schedules a function that does not exist");
+    }
+  }
+
+  /**
+   * A whole number in `[0, bound)` from the runtime's draw.
+   */
+  private draw(bound: number): number {
+    const random =
+      this.runtime.random ??
+      // oxlint-disable-next-line effecttsgo/global-random -- The kernel holds no generator. With no draw from the driver, the host's stands in.
+      (() => Globals.host(() => Math.random()));
+    return Math.floor(random() * bound);
   }
 
   /**
@@ -660,17 +805,34 @@ export class World {
   }
 
   /**
-   * Move the clock forward `ms`, running every job whose deadline falls on the
-   * way, in deadline order, each starting at its deadline. Jobs those jobs
+   * The declared cron jobs, earliest next run first.
+   */
+  crons(): ReadonlyArray<Cron> {
+    return this.cronsByNextRun().map(
+      ({ componentPath, spec, nextRun, last }) => ({
+        componentPath,
+        name: spec.name,
+        udfPath: spec.udfPath,
+        nextRun,
+        last,
+      }),
+    );
+  }
+
+  /**
+   * Move the clock forward `ms`, running every job and cron run whose time
+   * falls on the way, in time order, each starting at its time. Jobs those
    * schedule inside the window run too. `advance(0)` runs what is due now and
-   * crosses no future deadline.
+   * crosses no future deadline. A cron run never counts against the budget:
+   * each one moves its job's next run later.
    */
   advance(ms: number, budget = defaultBudget): Promise<void> {
-    return this.open().then(() => {
+    return this.openIn(undefined).then(() => {
       const until = this.now() + ms;
       return this.walk(
         (pending) => pending.filter((job) => job.scheduledTime <= until),
         budget,
+        until,
       ).then(() => this.raiseFloor(until));
     });
   }
@@ -680,22 +842,37 @@ export class World {
    * standing jobs are pending. Every job run counts against `budget`.
    */
   drain(budget = defaultBudget): Promise<void> {
-    return this.open().then(() =>
+    return this.openIn(undefined).then(() =>
       this.walk((pending) => pending.filter((job) => !job.standing), budget),
     );
   }
 
   /**
-   * Run the first of `select(pending)` until it is empty, moving the clock to
-   * each job's deadline as it starts.
+   * Run the first of `select(pending)`, and with `cronsUntil` each cron run due
+   * by then, until none is left, earliest first and moving the clock to each
+   * one's time as it starts. The binary runs jobs and cron runs on separate
+   * executors, so at one instant it orders neither before the other. The kernel
+   * runs jobs first.
    */
   private walk(
     select: (pending: Array<Scheduling.Due>) => Array<Scheduling.Due>,
     budget: number,
+    cronsUntil?: number,
   ): Promise<void> {
     const step = (ran: number): Promise<void> => {
       const left = select(Scheduling.pending(this.state, this.targets));
       const next = left[0];
+      const cron =
+        cronsUntil === undefined
+          ? undefined
+          : this.cronsByNextRun().find(({ nextRun }) => nextRun <= cronsUntil);
+      if (
+        cron !== undefined &&
+        (next === undefined || cron.nextRun < next.scheduledTime)
+      ) {
+        this.raiseFloor(cron.nextRun);
+        return this.runCron(cron).then(() => step(ran));
+      }
       if (next === undefined) return Promise.resolve();
       if (ran === budget) {
         const pending = Scheduling.functions(left);
@@ -717,6 +894,76 @@ export class World {
       return this.runJob(next).then(() => step(ran + 1));
     };
     return step(0);
+  }
+
+  /**
+   * Run one cron run as its own request, then schedule the next. The request is
+   * a system one: no identity, no IP or user agent, a fresh request ID and no
+   * scheduled function ID (`crates/application/src/cron_jobs/mod.rs:441-446`,
+   * `crates/common/src/types/functions.rs:236-242`). A mutation's writes, jobs
+   * it schedules included, publish only if it commits. Its next run comes from
+   * the time it finished, whether it succeeded or failed
+   * (`crates/application/src/cron_jobs/mod.rs:475-619`).
+   */
+  private runCron(cron: CronJob): Promise<void> {
+    const request = newRequest(anonymous);
+    const from: From = { caller: anonymous, request };
+    const target: FunctionPath = {
+      componentPath: cron.componentPath,
+      udfPath: cron.spec.udfPath,
+    };
+    const run = () =>
+      Promise.resolve().then(() =>
+        this.resolve(target, "any").func.isMutation
+          ? this.mutationAt(target, cron.spec.args, from)
+          : this.actionAt(target, cron.spec.args, from),
+      );
+    return (
+      cron.world === undefined
+        ? Invocation.unbound(run)
+        : Invocation.bind(
+            Invocation.fresh(cron.world, cron.componentPath, request),
+            run,
+          )
+    )
+      .then(
+        (): CronOutcome => ({ kind: "success" }),
+        (error: unknown): CronOutcome => ({
+          kind: "failed",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      )
+      .then((last) => this.scheduleNextRun(cron, last));
+  }
+
+  /**
+   * Record how a cron run ended and schedule the job's next run from the time
+   * the run finished.
+   */
+  private scheduleNextRun(cron: CronJob, last: CronOutcome) {
+    const { next } = Crons.following(
+      cron.spec.schedule,
+      cron.nextRun,
+      this.now(),
+      (bound) => this.draw(bound),
+    );
+    this.cronJobs.set(cronKey(cron.componentPath, cron.spec.name), {
+      ...cron,
+      nextRun: next,
+      last,
+    });
+  }
+
+  /**
+   * The cron jobs, earliest next run first, then by component and name.
+   */
+  private cronsByNextRun(): Array<CronJob> {
+    return Array.from(this.cronJobs.values()).sort(
+      (a, b) =>
+        a.nextRun - b.nextRun ||
+        compare(a.componentPath, b.componentPath) ||
+        compare(a.spec.name, b.spec.name),
+    );
   }
 
   private raiseFloor(to: number) {

@@ -1,0 +1,5 @@
+---
+"@confect/test": minor
+---
+
+On the `kernel` target, `TestConfect.layer` now runs the cron jobs each component's `crons.ts` declares, with Convex's interval, hourly, daily, weekly, monthly and cron-expression schedules in UTC. The kernel reads them when the backend opens. It refuses with `InvalidCron` a job Convex refuses at deploy, and with `UnsupportedCronExpression` an expression that uses `L`, `W` or `#`. Each run starts at the time Convex computes for it, including Convex's random delay within the run's minute, or within its hour when `minuteUTC` is left out. A run has no identity and fresh request metadata. A mutation's writes and the jobs it schedules exist only if it commits, and the next run is scheduled either way. A drain never runs a cron, so `finishAllScheduledFunctions` still ends with cron runs pending. Advancing the clock, or fake timers followed by `finishInProgressScheduledFunctions`, runs them in time order with scheduled jobs. convex-test, the default target, still runs no cron jobs.

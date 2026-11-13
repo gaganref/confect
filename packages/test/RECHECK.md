@@ -377,10 +377,66 @@ The six row-5 cases now run in the kernel lane: `integration.test.ts:360`
 `Scheduler`, `components.test.ts:408` job cancellation, and the stored-handle
 cases at `:768`, `:807`, `:819` and `:831`.
 
-Open: Convex's own `crons.ts` schedules are not simulated, though the design's
-kernel scope lists declared schedules. convex-test does not run them either, and
-no inventory case or row-5 check uses them. A raw host timer in a handler is row
-6's I/O ban.
+Declared cron jobs (`src/internal/Crons.ts`) are simulated as standing
+sources, pinned to convex-backend `precompiled-2026-10-28-cccbade`, the binary
+the fork's local backend runs. When the backend opens, the kernel reads each
+component's `crons` module as the push reads `crons.js`
+(`crates/model/src/cron_jobs/mod.rs:151-223`). It refuses with `InvalidCron`
+what the push refuses: a default export that is no `Crons` object
+(`crates/isolate/src/environment/analyze.rs:1016-1048`), a schedule
+`CronSpec::from_exported_json` rejects (`crates/model/src/cron_jobs/types.rs:270-478`),
+a name with a character that is not printable ASCII (`types.rs:156-166`), and a
+target that is missing, a query or an HTTP action
+(`crates/application/src/application_function_runner/mod.rs:1932-1979`). Jobs
+are created in name order, each with its first run computed from the kernel's
+time at open.
+
+Each run's time is `compute_next_ts` (`crates/model/src/cron_jobs/next_ts.rs:132-189`).
+An interval's first run is due at once, and each later one an interval after the
+previous run's time, not its finish. A clock schedule's run is saffron's next
+occurrence strictly after the minute holding `now` less the previous run's
+delay, plus the next run's delay. The delay (`cron_splay`, `next_ts.rs:56-127`)
+is a whole number of seconds below `CRON_SPLAY_SECONDS`, 60 by default
+(`crates/common/src/knobs.rs:620-621`), for a pinned minute or a cron
+expression, and below 3600 when `minuteUTC` is left out. A first run counts its
+fresh delay as already in effect, so it can land in the current minute or hour.
+Later runs carry the delay through the previous run's timestamp, and draw again
+only when it was 0. The kernel draws from `KernelRuntime.random`, or the host's
+`Math.random` when the driver supplies none. When a run finishes, the next is
+computed from that time, and every run already past is skipped
+(`complete_job_run`, `crates/application/src/cron_jobs/mod.rs:852-965`).
+
+Cron expressions follow saffron at the rev the binary pins
+(`convex/saffron@1d842379`): five fields split by spaces or tabs, numbers,
+three-letter month and weekday names in any case, `*`, ranges, steps and lists,
+weekdays 0-6 from Sunday, a lone `L` for Saturday, and a day of the month and a
+weekday that are both restricted matching either (`saffron/src/lib.rs:975-1003`).
+saffron's quirks are kept: a wrapping range such as `22-2` starts one value
+early, at 21 (`lib.rs:393-407`), and a wrapping step reads its bounds off by one
+for days, months and weekdays (`lib.rs:418-425`). The binary refuses a pattern
+saffron's `any` says never matches (`types.rs:453-459`). The `L` and `W` forms of
+the day of the month, and a weekday's `L` and `#`, parse in the binary but are
+refused with `UnsupportedCronExpression`.
+
+A cron run is a system request: no identity, no IP or user agent, a fresh
+request ID and no scheduled function ID (`cron_jobs/mod.rs:441-446`,
+`crates/common/src/types/functions.rs:236-242`). It starts as a fresh
+invocation of the world bound by the call that opened the backend, or unbound.
+`advance` and `drain` open the backend with no world, as their binding never
+reaches a job. A mutation's writes, jobs it schedules included, publish only if
+it commits. A failed run still schedules the next (`cron_jobs/mod.rs:585-619`).
+The binary keeps the job in `_cron_jobs` and `_cron_next_run`, which no function
+reads, so the kernel keeps it beside its tables, and `crons()` lists each job's
+next run and how its latest run ended.
+
+`advance` runs cron runs and jobs in time order, each at its time. The binary
+runs them on separate executors, so at one instant it orders neither first. The
+kernel runs jobs first, then cron runs by component and name. A cron run never
+counts against the budget, since each moves its job's next run later. A drain
+never runs a cron run. The design asks that the crons door's suite pass on both
+targets with the plain drain; that suite lives in Frame and is not run here.
+
+A raw host timer in a handler is row 6's I/O ban.
 
 `TestConfect.layer`'s `target: "kernel"` builds the layer's backend on this
 shim, in each of the layer's three forms, so a consumer reaches the kernel

@@ -169,6 +169,12 @@ export interface KernelRuntime {
    * version and asks nothing.
    */
   readonly commitTs: (version: Version) => bigint;
+  /**
+   * A draw uniform on [0, 1), asked as the kernel schedules a cron job's run.
+   * The binary delays a clock schedule's runs by a random number of seconds.
+   * Without it the kernel draws from the host's `Math.random`.
+   */
+  readonly random?: () => number;
 }
 
 /**

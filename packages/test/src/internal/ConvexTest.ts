@@ -35,6 +35,11 @@ export interface KernelControls {
    */
   readonly jobs: () => ReadonlyArray<Scheduling.Job>;
   /**
+   * The declared cron jobs of every component's `crons.ts`, earliest next run
+   * first. `advance` runs them on the kernel's clock. A drain never does.
+   */
+  readonly crons: () => ReadonlyArray<Execution.Cron>;
+  /**
    * Run the jobs due now. No future deadline is crossed.
    */
   readonly finishInProgressScheduledFunctions: () => Promise<void>;
@@ -96,6 +101,7 @@ const accessor = (world: Execution.World, caller: Execution.Caller): any => ({
   jwks: () => Promise.reject(KernelRefusal.rowPending("JWT verification", 6)),
   advance: (ms: number) => world.advance(ms),
   jobs: () => world.jobs(),
+  crons: () => world.crons(),
   finishInProgressScheduledFunctions: () => world.advance(0),
   finishAllScheduledFunctions: (
     _advanceTimers?: () => void,
@@ -111,8 +117,9 @@ const accessor = (world: Execution.World, caller: Execution.Caller): any => ({
  * Beyond convex-test, `prepare` runs a mutation to its commit point and holds
  * it, and `apply` validates and publishes a held attempt. `mutation` applies
  * each attempt it prepares at once and prepares the next on a conflict, up to
- * attempt 5. `runtime` supplies the clock and commit timestamps. Scheduled
- * functions run on the kernel's clock, never on a host timer.
+ * attempt 5. `runtime` supplies the clock, commit timestamps and the draw for a
+ * cron run's delay. Scheduled functions and declared cron jobs run on the
+ * kernel's clock, never on a host timer.
  */
 export function convexTest(
   schemaOrOptions?:

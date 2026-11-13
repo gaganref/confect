@@ -98,6 +98,29 @@ export class UnknownStandingSource extends Schema.TaggedError<UnknownStandingSou
   { componentPath: Schema.String, name: Schema.String, message: Schema.String },
 ) {}
 
+/**
+ * A component's `crons.ts` declares a job the binary refuses at push: a
+ * schedule it cannot read, or a function that is no mutation or action.
+ */
+export class InvalidCron extends Schema.TaggedError<InvalidCron>()(
+  "InvalidCron",
+  { componentPath: Schema.String, name: Schema.String, message: Schema.String },
+) {}
+
+/**
+ * A cron expression uses a form the binary accepts and the kernel does not
+ * simulate: `L` or `W` in the day of the month, or `L` or `#` after a weekday.
+ */
+export class UnsupportedCronExpression extends Schema.TaggedError<UnsupportedCronExpression>()(
+  "UnsupportedCronExpression",
+  {
+    componentPath: Schema.String,
+    name: Schema.String,
+    expression: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
   new RequiresBinary({
     operation,
