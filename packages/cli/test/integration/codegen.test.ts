@@ -4,6 +4,7 @@ import { stripVTControlCharacters } from "node:util";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterEach, expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
@@ -217,53 +218,55 @@ export default Auth.make(app, { providers: [
         expect(exitCode2, output2).toBe(0);
         const databaseSchema = DatabaseSchema.make({});
         yield* Effect.gen(function* () {
-          const runtime = yield* Bundler.bundle(
-            `${project.root}/confect/_generated/auth.providers.ts`,
-          );
-          const test = yield* TestConfect.TestConfect<typeof databaseSchema>();
-          const provider = runtime.module.providers[0];
-          const token = yield* test.run(
-            Effect.gen(function* () {
-              const auth = yield* MutationAuth.MutationAuth;
-              return yield* auth.signJwt({
-                claims: { sub: "person", aud: provider.audience },
-                expiresInSeconds: 60,
-              });
-            }),
-            Schema.String,
-          );
-          const claims = yield* Schema.decodeEffect(
-            Schema.fromJsonString(
-              Schema.Struct({ iss: Schema.String, aud: Schema.String }),
-            ),
-          )(
-            Buffer.from(
-              pipe(token, Str.split("."))[1]!,
-              "base64url",
-            ).toString(),
-          );
-          expect(claims).toEqual({
-            iss: provider.issuer,
-            aud: provider.audience,
-          });
-          expect(runtime.module.providers).toEqual([
-            {
-              issuer: configured
-                ? "https://configured.convex.cloud"
-                : "https://some-deployment.convex.cloud",
-              audience: configured
-                ? "https://configured.convex.site"
-                : "https://some.convex.site",
-              family: "person",
-            },
-          ]);
-        }).pipe(
-          Effect.provide(
+          const services = yield* Layer.build(
             TestConfect.layer(databaseSchema, defineSchema({}), {
               "_generated/server.ts": () => Promise.resolve({}),
             }),
-          ),
-        );
+          );
+          return yield* Effect.gen(function* () {
+            const runtime = yield* Bundler.bundle(
+              `${project.root}/confect/_generated/auth.providers.ts`,
+            );
+            const test =
+              yield* TestConfect.TestConfect<typeof databaseSchema>();
+            const provider = runtime.module.providers[0];
+            const token = yield* test.run(
+              Effect.gen(function* () {
+                const auth = yield* MutationAuth.MutationAuth;
+                return yield* auth.signJwt({
+                  claims: { sub: "person", aud: provider.audience },
+                  expiresInSeconds: 60,
+                });
+              }),
+              Schema.String,
+            );
+            const claims = yield* Schema.decodeEffect(
+              Schema.fromJsonString(
+                Schema.Struct({ iss: Schema.String, aud: Schema.String }),
+              ),
+            )(
+              Buffer.from(
+                pipe(token, Str.split("."))[1]!,
+                "base64url",
+              ).toString(),
+            );
+            expect(claims).toEqual({
+              iss: provider.issuer,
+              aud: provider.audience,
+            });
+            expect(runtime.module.providers).toEqual([
+              {
+                issuer: configured
+                  ? "https://configured.convex.cloud"
+                  : "https://some-deployment.convex.cloud",
+                audience: configured
+                  ? "https://configured.convex.site"
+                  : "https://some.convex.site",
+                family: "person",
+              },
+            ]);
+          }).pipe(Effect.provideContext(services));
+        }).pipe(Effect.scoped);
       }),
     { timeout: 30000 },
   );
@@ -420,6 +423,7 @@ export default GroupSpec.make().addFunction(FunctionSpec.internalMutation({ name
           `import { FunctionImpl, GroupImpl } from "@confect/server";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Layer from "effect/Layer";
 import schema from "./_generated/schema";
 import events from "./events.spec";
 const onEvent = FunctionImpl.make(schema, events, "onEvent", () => Effect.succeed(null));
@@ -492,6 +496,7 @@ export default GroupSpec.make().addFunction(FunctionSpec.internalMutation({ name
           "confect/events.impl.ts",
           `import { FunctionImpl, GroupImpl } from "@confect/server";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Layer from "effect/Layer";
 import schema from "./_generated/schema";
 import events from "./events.spec";
@@ -914,6 +919,7 @@ export default GroupSpec.make().addFunction(
               `confect/${name}.impl.ts`,
               `import { FunctionImpl, GroupImpl } from "@confect/server";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as Layer from "effect/Layer";
 import schema from "./_generated/schema";
 import group from "./${name}.spec";

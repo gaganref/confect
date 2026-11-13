@@ -47,26 +47,27 @@ const withHome = <A, E, R>(
         ? path.join(home, "confect", "alchemy", "locks")
         : path.join(home, ".cache", "confect", "alchemy", "locks");
     yield* fs.makeDirectory(locks, { recursive: true });
-    return yield* effect({
-      home,
-      lockFile: path.join(locks, "happy-otter-123.lock"),
-    }).pipe(
-      Effect.provide(
-        ConfigProvider.layer(
-          ConfigProvider.fromUnknown({ HOME: home, LOCALAPPDATA: home }),
-        ),
-      ),
-    );
+    return yield* Effect.gen(function* () {
+      const services = yield* ConfigProvider.fromUnknown({
+        HOME: home,
+        LOCALAPPDATA: home,
+      }).pipe(ConfigProvider.layer, Layer.build);
+      return yield* effect({
+        home,
+        lockFile: path.join(locks, "happy-otter-123.lock"),
+      }).pipe(Effect.provideContext(services));
+    }).pipe(Effect.scoped);
   });
 
 const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
-  effect.pipe(
-    Effect.provide(
+  Effect.gen(function* () {
+    const services2 = yield* Layer.build(
       lockLayer({ timeout: "2 seconds" }).pipe(
         Layer.provideMerge(NodeServices.layer),
       ),
-    ),
-  );
+    );
+    return yield* effect.pipe(Effect.provideContext(services2));
+  }).pipe(Effect.scoped);
 
 describe("PushLock", () => {
   it.live(

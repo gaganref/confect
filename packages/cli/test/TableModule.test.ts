@@ -40,8 +40,10 @@ it.effect.each([
 ] as const)(
   "discovers table files in code-unit order from a $order listing",
   ({ listing }) =>
-    discoverTableFiles.pipe(
-      Effect.provide(listedAs(listing)),
+    Effect.gen(function* () {
+      const services = yield* Layer.build(listedAs(listing));
+      return yield* discoverTableFiles.pipe(Effect.provideContext(services));
+    }).pipe(
       Effect.map((files) =>
         expect(files).toEqual(Array.map(sorted, (file) => `tables/${file}`)),
       ),

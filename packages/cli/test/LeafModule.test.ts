@@ -680,13 +680,14 @@ layer(LeafModuleLayer)("discovery", (it) => {
             Array.join(String.split(`${name}${suffix}`, "/"), path.sep),
           );
         for (const listed of listings) {
-          const discovered = yield* discover.pipe(
-            Effect.provide(
+          const discovered = yield* Effect.gen(function* () {
+            const services3 = yield* Layer.build(
               FileSystem.layerNoop({
                 readDirectory: () => Effect.succeed(hostPaths(listed)),
               }),
-            ),
-          );
+            );
+            return yield* discover.pipe(Effect.provideContext(services3));
+          }).pipe(Effect.scoped);
           expect(discovered).toEqual(hostPaths(sortedNames));
         }
       }),

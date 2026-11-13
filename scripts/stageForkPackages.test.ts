@@ -1,4 +1,5 @@
 import * as BunServices from "@effect/platform-bun/BunServices";
+import * as Layer from "effect/Layer";
 import { expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as HttpClient from "effect/http/HttpClient";
@@ -233,21 +234,24 @@ test("rejects an unused override below the highest existing number", () => {
 });
 
 const registryVersions = (body: string, status = 200) =>
-  readVersions("@gaganref/confect-server").pipe(
-    Effect.provideService(
-      HttpClient.HttpClient,
-      HttpClient.make((request) => {
-        expect(request.url).toBe(
-          "https://registry.npmjs.org/@gaganref%2Fconfect-server",
-        );
-        expect(request.headers.authorization).toBeUndefined();
-        return Effect.succeed(
-          HttpClientResponse.fromWeb(request, new Response(body, { status })),
-        );
-      }),
-    ),
-    Effect.provide(BunServices.layer),
-  );
+  Effect.gen(function* () {
+    const services = yield* Layer.build(BunServices.layer);
+    return yield* readVersions("@gaganref/confect-server").pipe(
+      Effect.provideService(
+        HttpClient.HttpClient,
+        HttpClient.make((request) => {
+          expect(request.url).toBe(
+            "https://registry.npmjs.org/@gaganref%2Fconfect-server",
+          );
+          expect(request.headers.authorization).toBeUndefined();
+          return Effect.succeed(
+            HttpClientResponse.fromWeb(request, new Response(body, { status })),
+          );
+        }),
+      ),
+      Effect.provideContext(services),
+    );
+  }).pipe(Effect.scoped);
 
 test.each([{ gaganref: "10.2.0-fork.1" }, {}])(
   "reads every published version without a latest tag %j",

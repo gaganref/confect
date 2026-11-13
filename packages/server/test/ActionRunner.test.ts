@@ -137,15 +137,15 @@ describe("ActionRunner", () => {
 it.effect.each(Forwarding.cases)(
   "ActionRunner forwards $label only to a reserving target",
   ({ forward, enabled }) =>
-    Effect.flatMap(ActionRunner.ActionRunner, (runner) =>
-      Forwarding.check(
-        Forwarding.actions,
-        runner.runAction,
-        "ActionRunner.runAction",
-        enabled,
-      ),
-    ).pipe(
-      Effect.provide(ActionRunner.layer(Forwarding.echo)),
-      Effect.provideService(RegisteredFunction.Forward, forward),
-    ),
+    Effect.gen(function* () {
+      const services2 = yield* Layer.build(ActionRunner.layer(Forwarding.echo));
+      return yield* Effect.flatMap(ActionRunner.ActionRunner, (runner) =>
+        Forwarding.check(
+          Forwarding.actions,
+          runner.runAction,
+          "ActionRunner.runAction",
+          enabled,
+        ),
+      ).pipe(Effect.provideContext(services2));
+    }).pipe(Effect.provideService(RegisteredFunction.Forward, forward)),
 );

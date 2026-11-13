@@ -1,4 +1,5 @@
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
+import * as Layer from "effect/Layer";
 import { Env } from "@confect/core";
 import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -15,9 +16,13 @@ const env = Env.make("tenant", {
 });
 
 const read = <A>(config: Config.Config<A>, values: Record<string, string>) =>
-  config.pipe(
-    Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(values))),
-  );
+  Effect.gen(function* () {
+    const services = yield* ConfigProvider.fromUnknown(values).pipe(
+      ConfigProvider.layer,
+      Layer.build,
+    );
+    return yield* config.pipe(Effect.provideContext(services));
+  }).pipe(Effect.scoped);
 
 describe("Env", () => {
   it("types each entry as the Config a handler yields", () => {

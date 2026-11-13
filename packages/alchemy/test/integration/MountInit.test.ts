@@ -1,4 +1,5 @@
 import * as NodeServices from "../fixtures/NodeTestServices";
+import * as Layer from "effect/Layer";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -39,12 +40,15 @@ type Row = Record<string, unknown> & { readonly _id: string };
  */
 const node = (cwd: string, ...args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    return yield* spawner.string(
-      ChildProcess.make(process.execPath, args, { cwd, stdin: "ignore" }),
-      { includeStderr: true },
-    );
-  }).pipe(Effect.orDie, Effect.provide(NodeServices.layer));
+    const services = yield* Layer.build(NodeServices.layer);
+    return yield* Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      return yield* spawner.string(
+        ChildProcess.make(process.execPath, args, { cwd, stdin: "ignore" }),
+        { includeStderr: true },
+      );
+    }).pipe(Effect.orDie, Effect.provideContext(services));
+  }).pipe(Effect.scoped);
 
 /**
  * A copy of the fixture, linked to the built packages, with its components
@@ -138,19 +142,22 @@ const withDeployment = <A, E>(
   scenario: (deployment: Deployment) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const backend = yield* RealBackend.make({
-      name: "init",
-      ports: "3400-3499",
-    });
-    const apps = [
-      yield* app(backend.root, "app-a"),
-      yield* app(backend.root, "app-b"),
-    ] as const;
-    return yield* backend.session({ cwd: apps[0], prepare }, (outputs) =>
-      scenario(makeDeployment(outputs, apps, fs)),
-    );
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
+    const services2 = yield* Layer.build(NodeServices.layer);
+    return yield* Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const backend = yield* RealBackend.make({
+        name: "init",
+        ports: "3400-3499",
+      });
+      const apps = [
+        yield* app(backend.root, "app-a"),
+        yield* app(backend.root, "app-b"),
+      ] as const;
+      return yield* backend.session({ cwd: apps[0], prepare }, (outputs) =>
+        scenario(makeDeployment(outputs, apps, fs)),
+      );
+    }).pipe(Effect.scoped, Effect.provideContext(services2));
+  }).pipe(Effect.scoped);
 
 describe.skipIf(process.platform === "win32")("mount init on a push", () => {
   it.live(

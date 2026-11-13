@@ -89,19 +89,26 @@ const makeHarness = (
   const deploy = <A, E, R extends Providers | Stack.StackServices>(
     program: Effect.Effect<A, E, R>,
   ) =>
-    program.pipe(
-      Stack.make({ name: "integration", providers, state }),
-      Effect.flatMap((compiled) =>
-        Plan.make(compiled).pipe(
-          Effect.flatMap(apply),
-          Effect.provideContext(compiled.services),
-        ),
-      ),
-      Effect.provide(state),
-      provideFreshArtifactStore,
-      Effect.provide(context),
-      Effect.scoped,
-    );
+    Effect.gen(function* () {
+      const services3 = yield* Layer.build(context);
+      return yield* Effect.gen(function* () {
+        const services2 = yield* Layer.build(state);
+        return yield* program.pipe(
+          Stack.make({ name: "integration", providers, state }),
+          Effect.flatMap((compiled) =>
+            Plan.make(compiled).pipe(
+              Effect.flatMap(apply),
+              Effect.provideContext(compiled.services),
+            ),
+          ),
+          Effect.provideContext(services2),
+        );
+      }).pipe(
+        Effect.scoped,
+        provideFreshArtifactStore,
+        Effect.provideContext(services3),
+      );
+    }).pipe(Effect.scoped, Effect.scoped);
   return deploy;
 };
 

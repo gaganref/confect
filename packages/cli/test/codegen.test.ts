@@ -2411,8 +2411,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const state = globalThis as { registered?: Array<string> };
           state.registered = [];
           const databaseSchema = DatabaseSchema.make({});
-          yield* TestConfect.TestConfect<typeof databaseSchema>().pipe(
-            Effect.provide(
+          yield* Effect.gen(function* () {
+            const services4 = yield* Layer.build(
               TestConfect.layer({
                 schema: databaseSchema,
                 convexSchema: defineSchema({}),
@@ -2420,8 +2420,11 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
                 components: { pool: module.default.components.pool },
                 httpMounts: [],
               }),
-            ),
-          );
+            );
+            return yield* TestConfect.TestConfect<typeof databaseSchema>().pipe(
+              Effect.provideContext(services4),
+            );
+          }).pipe(Effect.scoped);
           expect(state.registered).toEqual(registered);
         }).pipe(Effect.scoped),
       { timeout: 30000 },

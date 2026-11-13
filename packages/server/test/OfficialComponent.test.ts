@@ -164,7 +164,12 @@ describe("make", () => {
         const layer: Layer.Layer<QueryRunner.QueryRunner> =
           handler[kind](native);
 
-        const result = yield* counter("count", "a").pipe(Effect.provide(layer));
+        const result = yield* Effect.gen(function* () {
+          const services = yield* Layer.build(layer);
+          return yield* counter("count", "a").pipe(
+            Effect.provideContext(services),
+          );
+        }).pipe(Effect.scoped);
 
         expect(result).toBe("c:a");
         expect(official.calls).toEqual([[native, "a"]]);
@@ -179,7 +184,12 @@ describe("make", () => {
         const counter = OfficialComponent.make("counter", new Counter("c"));
 
         const exit = yield* Effect.exit(
-          counter("add", 1).pipe(Effect.provide(handler.mutation({}))),
+          Effect.gen(function* () {
+            const services2 = yield* Layer.build(handler.mutation({}));
+            return yield* counter("add", 1).pipe(
+              Effect.provideContext(services2),
+            );
+          }).pipe(Effect.scoped),
         );
 
         const defect = defectOf(exit);
@@ -198,7 +208,12 @@ describe("make", () => {
       const counter = OfficialComponent.make("counter", new Counter("c"));
 
       const exit = yield* Effect.exit(
-        counter("count", "a").pipe(Effect.provide(runners.query)),
+        Effect.gen(function* () {
+          const services3 = yield* Layer.build(runners.query);
+          return yield* counter("count", "a").pipe(
+            Effect.provideContext(services3),
+          );
+        }).pipe(Effect.scoped),
       );
 
       expect(defectOf(exit)).toEqual(

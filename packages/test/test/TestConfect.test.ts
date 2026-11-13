@@ -1,4 +1,5 @@
 import { TestConfect } from "@confect/test";
+import * as Layer from "effect/Layer";
 import { beforeEach, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import * as Effect from "effect/Effect";
@@ -28,57 +29,67 @@ it.effect(
   "registers declared authored components for callbacks and mounted HTTP",
   () =>
     Effect.gen(function* () {
-      const test = yield* TestConfect.TestConfect<typeof registry.schema>();
-      const callbacks = refs.public.groups.callbacks;
-      const id = yield* test.mutation(callbacks.send, { run: "declared-app" });
-      yield* test.mutation(callbacks.setStatus, { id, status: "delivered" });
-      const query2 = yield* test.query(callbacks.events, {
-        run: "declared-app",
-      });
-      expect(query2).toEqual(["delivered"]);
-      const response = yield* test.fetch("/first/members/42");
-      expect(response.status).toBe(200);
-      const resolved = yield* Effect.promise(() => response.json());
-      expect(resolved).toBe("42");
-    }).pipe(Effect.provide(TestConfect.layer(registry))),
+      const services = yield* Layer.build(TestConfect.layer(registry));
+      return yield* Effect.gen(function* () {
+        const test = yield* TestConfect.TestConfect<typeof registry.schema>();
+        const callbacks = refs.public.groups.callbacks;
+        const id = yield* test.mutation(callbacks.send, {
+          run: "declared-app",
+        });
+        yield* test.mutation(callbacks.setStatus, { id, status: "delivered" });
+        const query2 = yield* test.query(callbacks.events, {
+          run: "declared-app",
+        });
+        expect(query2).toEqual(["delivered"]);
+        const response = yield* test.fetch("/first/members/42");
+        expect(response.status).toBe(200);
+        const resolved = yield* Effect.promise(() => response.json());
+        expect(resolved).toBe("42");
+      }).pipe(Effect.provideContext(services));
+    }),
 );
 
 it.effect("registers a local mount and its nested child", () =>
   Effect.gen(function* () {
-    const test = yield* TestConfect.TestConfect<typeof registry.schema>();
-    const { right } = yield* test.mutation(
-      refs.public.groups.components.exercise,
-      { run: "kit" },
-    );
-    expect(right).toEqual([13]);
-  }).pipe(Effect.provide(TestConfect.layer(registry))),
+    const services2 = yield* Layer.build(TestConfect.layer(registry));
+    return yield* Effect.gen(function* () {
+      const test = yield* TestConfect.TestConfect<typeof registry.schema>();
+      const { right } = yield* test.mutation(
+        refs.public.groups.components.exercise,
+        { run: "kit" },
+      );
+      expect(right).toEqual([13]);
+    }).pipe(Effect.provideContext(services2));
+  }),
 );
 
 it.effect("fetches a nested route under a local mount", () =>
   Effect.gen(function* () {
-    const test = yield* TestConfect.TestConfect<typeof registry.schema>();
-    const response = yield* test.fetch("/right/child/members/5");
-    expect(response.status).toBe(200);
-    const resolved = yield* Effect.promise(() => response.json());
-    expect(resolved).toBe("5");
-  }).pipe(Effect.provide(TestConfect.layer(registry))),
+    const services3 = yield* Layer.build(TestConfect.layer(registry));
+    return yield* Effect.gen(function* () {
+      const test = yield* TestConfect.TestConfect<typeof registry.schema>();
+      const response = yield* test.fetch("/right/child/members/5");
+      expect(response.status).toBe(200);
+      const resolved = yield* Effect.promise(() => response.json());
+      expect(resolved).toBe("5");
+    }).pipe(Effect.provideContext(services3));
+  }),
 );
 
 it.effect("names the mount whose test kit exports no register", () =>
   Effect.gen(function* () {
-    const defect = yield* TestConfect.TestConfect<
-      typeof registry.schema
-    >().pipe(
-      Effect.provide(
+    const defect = yield* Effect.gen(function* () {
+      const services4 = yield* Layer.build(
         TestConfect.layer({
           ...registry,
           // A CommonJS kit's exports are only known once it runs.
           components: { ...registry.components, right: {} as never },
         }),
-      ),
-      Effect.asVoid,
-      Effect.catchDefect(Effect.succeed),
-    );
+      );
+      return yield* TestConfect.TestConfect<typeof registry.schema>().pipe(
+        Effect.provideContext(services4),
+      );
+    }).pipe(Effect.scoped, Effect.asVoid, Effect.catchDefect(Effect.succeed));
     expect(defect).toMatchObject({
       _tag: "InvalidComponentKit",
       componentPath: "right",
@@ -90,10 +101,8 @@ it.effect("names the mount whose test kit exports no register", () =>
 
 it.effect("names the mount whose test kit exports schema without modules", () =>
   Effect.gen(function* () {
-    const defect = yield* TestConfect.TestConfect<
-      typeof registry.schema
-    >().pipe(
-      Effect.provide(
+    const defect = yield* Effect.gen(function* () {
+      const services5 = yield* Layer.build(
         TestConfect.layer({
           ...registry,
           components: {
@@ -101,10 +110,11 @@ it.effect("names the mount whose test kit exports schema without modules", () =>
             right: { schema: defineSchema({}) } as never,
           },
         }),
-      ),
-      Effect.asVoid,
-      Effect.catchDefect(Effect.succeed),
-    );
+      );
+      return yield* TestConfect.TestConfect<typeof registry.schema>().pipe(
+        Effect.provideContext(services5),
+      );
+    }).pipe(Effect.scoped, Effect.asVoid, Effect.catchDefect(Effect.succeed));
     expect(defect).toMatchObject({
       _tag: "InvalidComponentKit",
       componentPath: "right",
@@ -116,12 +126,15 @@ it.effect("names the mount whose test kit exports schema without modules", () =>
 
 it.effect("takes HTTP prefixes from an App value", () =>
   Effect.gen(function* () {
-    const test = yield* TestConfect.TestConfect<typeof registry.schema>();
-    const response = yield* test.fetch("/test-counter/members/7");
-    expect(response.status).toBe(200);
-    const resolved = yield* Effect.promise(() => response.json());
-    expect(resolved).toBe("7");
-  }).pipe(Effect.provide(TestConfect.layer(app, registry))),
+    const services6 = yield* Layer.build(TestConfect.layer(app, registry));
+    return yield* Effect.gen(function* () {
+      const test = yield* TestConfect.TestConfect<typeof registry.schema>();
+      const response = yield* test.fetch("/test-counter/members/7");
+      expect(response.status).toBe(200);
+      const resolved = yield* Effect.promise(() => response.json());
+      expect(resolved).toBe("7");
+    }).pipe(Effect.provideContext(services6));
+  }),
 );
 
 it.effect("skips the holes in an App value's sparse list of mounts", () => {
@@ -129,31 +142,31 @@ it.effect("skips the holes in an App value's sparse list of mounts", () => {
   mounts[1] = app.mounts[0];
   const sparse = App.make({ env, components: [counter], mounts });
   return Effect.gen(function* () {
-    const test = yield* TestConfect.TestConfect<typeof registry.schema>();
-    const response = yield* test.fetch("/test-counter/members/7");
-    expect(response.status).toBe(200);
-  }).pipe(Effect.provide(TestConfect.layer(sparse, registry)));
+    const services7 = yield* Layer.build(TestConfect.layer(sparse, registry));
+    return yield* Effect.gen(function* () {
+      const test = yield* TestConfect.TestConfect<typeof registry.schema>();
+      const response = yield* test.fetch("/test-counter/members/7");
+      expect(response.status).toBe(200);
+    }).pipe(Effect.provideContext(services7));
+  });
 });
 
 it.effect("fetches a nested installation through its declared prefixes", () =>
   Effect.gen(function* () {
-    const test = yield* TestConfect.TestConfect<typeof registry.schema>();
-    const response = yield* test.fetch("/left/deep/child/child/members/9");
-    expect(response.status).toBe(200);
-    const resolved = yield* Effect.promise(() => response.json());
-    expect(resolved).toBe("9");
-  }).pipe(Effect.provide(TestConfect.layer(registry))),
+    const services8 = yield* Layer.build(TestConfect.layer(registry));
+    return yield* Effect.gen(function* () {
+      const test = yield* TestConfect.TestConfect<typeof registry.schema>();
+      const response = yield* test.fetch("/left/deep/child/child/members/9");
+      expect(response.status).toBe(200);
+      const resolved = yield* Effect.promise(() => response.json());
+      expect(resolved).toBe("9");
+    }).pipe(Effect.provideContext(services8));
+  }),
 );
 
 it.effect("registers a component through its test entry's register", () =>
   Effect.gen(function* () {
-    const test = yield* TestConfect.TestConfect<typeof registry.schema>();
-    const response = yield* test.fetch("/first/members/3");
-    expect(response.status).toBe(200);
-    const resolved = yield* Effect.promise(() => response.json());
-    expect(resolved).toBe("3");
-  }).pipe(
-    Effect.provide(
+    const services9 = yield* Layer.build(
       TestConfect.layer({
         ...registry,
         components: {
@@ -168,6 +181,13 @@ it.effect("registers a component through its test entry's register", () =>
           },
         },
       }),
-    ),
-  ),
+    );
+    return yield* Effect.gen(function* () {
+      const test = yield* TestConfect.TestConfect<typeof registry.schema>();
+      const response = yield* test.fetch("/first/members/3");
+      expect(response.status).toBe(200);
+      const resolved = yield* Effect.promise(() => response.json());
+      expect(resolved).toBe("3");
+    }).pipe(Effect.provideContext(services9));
+  }),
 );

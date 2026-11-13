@@ -249,15 +249,17 @@ describe("MutationRunner", () => {
 it.effect.each(Forwarding.cases)(
   "MutationRunner forwards $label only to a reserving target",
   ({ forward, enabled }) =>
-    Effect.flatMap(MutationRunner.MutationRunner, (runner) =>
-      Forwarding.check(
-        Forwarding.mutations,
-        (target, args) => runner.runMutation(target, args),
-        "MutationRunner.runMutation",
-        enabled,
-      ),
-    ).pipe(
-      Effect.provide(MutationRunner.layer(Forwarding.echo)),
-      Effect.provideService(RegisteredFunction.Forward, forward),
-    ),
+    Effect.gen(function* () {
+      const services2 = yield* Layer.build(
+        MutationRunner.layer(Forwarding.echo),
+      );
+      return yield* Effect.flatMap(MutationRunner.MutationRunner, (runner) =>
+        Forwarding.check(
+          Forwarding.mutations,
+          (target, args) => runner.runMutation(target, args),
+          "MutationRunner.runMutation",
+          enabled,
+        ),
+      ).pipe(Effect.provideContext(services2));
+    }).pipe(Effect.provideService(RegisteredFunction.Forward, forward)),
 );

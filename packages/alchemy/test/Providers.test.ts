@@ -30,21 +30,7 @@ const stackEnvironment = Layer.mergeAll(
 describe("providers", () => {
   it.effect("registers every resource without management credentials", () =>
     Effect.gen(function* () {
-      const collection = yield* Providers;
-      for (const resource of [
-        Convex.Project,
-        Convex.Deployment,
-        Convex.DeployKey,
-        Convex.EnvironmentVariables,
-        Convex.Code,
-      ]) {
-        const provider = collection.get(resource.Type);
-        expect(provider).toBeDefined();
-        expect(typeof provider?.reconcile).toBe("function");
-        expect(typeof provider?.delete).toBe("function");
-      }
-    }).pipe(
-      Effect.provide(
+      const services = yield* Layer.build(
         Convex.providers().pipe(
           Layer.provide(stackEnvironment),
           Layer.provide(
@@ -55,8 +41,23 @@ describe("providers", () => {
             }),
           ),
         ),
-      ),
-    ),
+      );
+      return yield* Effect.gen(function* () {
+        const collection = yield* Providers;
+        for (const resource of [
+          Convex.Project,
+          Convex.Deployment,
+          Convex.DeployKey,
+          Convex.EnvironmentVariables,
+          Convex.Code,
+        ]) {
+          const provider = collection.get(resource.Type);
+          expect(provider).toBeDefined();
+          expect(typeof provider?.reconcile).toBe("function");
+          expect(typeof provider?.delete).toBe("function");
+        }
+      }).pipe(Effect.provideContext(services));
+    }),
   );
 
   it.effect.each([
@@ -66,49 +67,7 @@ describe("providers", () => {
     "resolves the same resources to $mode providers when dev is $dev",
     ({ dev, mode }) =>
       Effect.gen(function* () {
-        const collection = yield* Providers;
-        for (const resource of [
-          Convex.Project,
-          Convex.Deployment,
-          Convex.DeployKey,
-          Convex.EnvironmentVariables,
-          Convex.Code,
-        ])
-          expect(collection.get(resource.Type)?.mode).toBe(mode);
-        const project = collection.get(Convex.Project.Type);
-        const result = yield* Effect.flatMap(
-          Effect.fromNullishOr(project),
-          (provider) =>
-            provider.reconcile({
-              id: "Project",
-              fqn: "Project",
-              instanceId: "0123456789abcdef",
-              news: { teamId: 10, name: "notes" },
-              olds: undefined,
-              output: undefined,
-              bindings: [],
-              session: {
-                note: () => Effect.void,
-              },
-            }),
-        ).pipe(Effect.result);
-        expect(result).toEqual(
-          dev
-            ? Result.succeed({
-                projectId: 0,
-                teamId: 10,
-                name: "notes",
-                slug: "notes",
-              })
-            : Result.fail(
-                ConvexApiError.make({
-                  operation: "configure",
-                  code: "InvalidConfiguration",
-                }),
-              ),
-        );
-      }).pipe(
-        Effect.provide(
+        const services2 = yield* Layer.build(
           Convex.providers().pipe(
             Layer.provide(stackEnvironment),
             Layer.provide(
@@ -119,7 +78,50 @@ describe("providers", () => {
               }),
             ),
           ),
-        ),
-      ),
+        );
+        return yield* Effect.gen(function* () {
+          const collection = yield* Providers;
+          for (const resource of [
+            Convex.Project,
+            Convex.Deployment,
+            Convex.DeployKey,
+            Convex.EnvironmentVariables,
+            Convex.Code,
+          ])
+            expect(collection.get(resource.Type)?.mode).toBe(mode);
+          const project = collection.get(Convex.Project.Type);
+          const result = yield* Effect.flatMap(
+            Effect.fromNullishOr(project),
+            (provider) =>
+              provider.reconcile({
+                id: "Project",
+                fqn: "Project",
+                instanceId: "0123456789abcdef",
+                news: { teamId: 10, name: "notes" },
+                olds: undefined,
+                output: undefined,
+                bindings: [],
+                session: {
+                  note: () => Effect.void,
+                },
+              }),
+          ).pipe(Effect.result);
+          expect(result).toEqual(
+            dev
+              ? Result.succeed({
+                  projectId: 0,
+                  teamId: 10,
+                  name: "notes",
+                  slug: "notes",
+                })
+              : Result.fail(
+                  ConvexApiError.make({
+                    operation: "configure",
+                    code: "InvalidConfiguration",
+                  }),
+                ),
+          );
+        }).pipe(Effect.provideContext(services2));
+      }),
   );
 });

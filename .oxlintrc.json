@@ -374,52 +374,6 @@
     },
     {
       "files": [
-        "packages/alchemy/test/Code.test.ts",
-        "packages/alchemy/test/ConvexClient.test.ts",
-        "packages/alchemy/test/DeployKey.test.ts",
-        "packages/alchemy/test/Deployment.test.ts",
-        "packages/alchemy/test/EnvironmentVariables.test.ts",
-        "packages/alchemy/test/FileLock.test.ts",
-        "packages/alchemy/test/LocalBackend.test.ts",
-        "packages/alchemy/test/Project.test.ts",
-        "packages/alchemy/test/Providers.test.ts",
-        "packages/alchemy/test/PushLock.test.ts",
-        "packages/alchemy/test/Zip.test.ts",
-        "packages/alchemy/test/integration/CloudDeployment.test.ts",
-        "packages/alchemy/test/integration/LocalDeployment.test.ts",
-        "packages/alchemy/test/integration/MountInit.test.ts",
-        "packages/alchemy/test/integration/RealBackend.test.ts",
-        "packages/alchemy/test/integration/RealBackend.ts",
-        "packages/alchemy/test/integration/RealLocalBackend.test.ts",
-        "packages/cli/test/ComponentCodegen.test.ts",
-        "packages/cli/test/EntryPoint.test.ts",
-        "packages/cli/test/Evaluation.test.ts",
-        "packages/cli/test/LeafModule.test.ts",
-        "packages/cli/test/Project.test.ts",
-        "packages/cli/test/TableModule.test.ts",
-        "packages/cli/test/codegen.test.ts",
-        "packages/cli/test/integration/codegen.test.ts",
-        "packages/core/test/Env.test.ts",
-        "packages/server/test/ActionRunner.test.ts",
-        "packages/server/test/Auth.test.ts",
-        "packages/server/test/Callback.test.ts",
-        "packages/server/test/MutationRunner.test.ts",
-        "packages/server/test/MutationTransactionContext.test.ts",
-        "packages/server/test/OfficialComponent.test.ts",
-        "packages/server/test/Scheduler.test.ts",
-        "packages/server/test/mock-backend/actionCall.test.ts",
-        "packages/server/test/mock-backend/components.test.ts",
-        "packages/server/test/mock-backend/integration.test.ts",
-        "packages/server/test/mock-backend/middleware.test.ts",
-        "packages/test/test/TestConfect.test.ts",
-        "scripts/stageForkPackages.test.ts"
-      ],
-      "rules": {
-        "effecttsgo/strict-effect-provide": "off"
-      }
-    },
-    {
-      "files": [
         "packages/react/test/StreamPagination.test.ts",
         "packages/server/src/RegisteredFunction.ts"
       ],

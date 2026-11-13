@@ -1098,10 +1098,13 @@ describe("callback carrier", () => {
           }
           for (const handle of [mutationHandle, actionHandle]) {
             yield* Effect.gen(function* () {
-              const scheduler = yield* Scheduler.Scheduler;
-              yield* scheduler.runAfter(Duration.zero, handle, args);
-              yield* scheduler.runAt(DateTime.makeUnsafe(0), handle, args);
-            }).pipe(Effect.provide(schedulers));
+              const services = yield* Layer.build(schedulers);
+              return yield* Effect.gen(function* () {
+                const scheduler = yield* Scheduler.Scheduler;
+                yield* scheduler.runAfter(Duration.zero, handle, args);
+                yield* scheduler.runAt(DateTime.makeUnsafe(0), handle, args);
+              }).pipe(Effect.provideContext(services));
+            }).pipe(Effect.scoped);
             expect(scheduled.splice(0)).toEqual(
               Arr.map(["Scheduler.runAfter", "Scheduler.runAt"], (boundary) =>
                 enabled && options !== undefined

@@ -197,20 +197,31 @@ export const make = Effect.fn("RealBackend.make")(function* (options: {
     code: Code,
     during: (outputs: Outputs) => Effect.Effect<B, E>,
   ) =>
-    stack(code).pipe(
-      Stack.make({ name: options.name, providers: Convex.providers(), state }),
-      Effect.flatMap((compiled) =>
-        Plan.make(compiled).pipe(
-          Effect.flatMap(apply),
-          Effect.flatMap(during),
-          Effect.provideContext(compiled.services),
-        ),
-      ),
-      Effect.provide(state),
-      provideFreshArtifactStore,
-      Effect.provide(context),
-      Effect.scoped,
-    );
+    Effect.gen(function* () {
+      const services5 = yield* Layer.build(context);
+      return yield* Effect.gen(function* () {
+        const services2 = yield* Layer.build(state);
+        return yield* stack(code).pipe(
+          Stack.make({
+            name: options.name,
+            providers: Convex.providers(),
+            state,
+          }),
+          Effect.flatMap((compiled) =>
+            Plan.make(compiled).pipe(
+              Effect.flatMap(apply),
+              Effect.flatMap(during),
+              Effect.provideContext(compiled.services),
+            ),
+          ),
+          Effect.provideContext(services2),
+        );
+      }).pipe(
+        Effect.scoped,
+        provideFreshArtifactStore,
+        Effect.provideContext(services5),
+      );
+    }).pipe(Effect.scoped, Effect.scoped);
   const [low, high = 0] = Arr.map(pipe(ports, String.split("-")), Number);
   return { root, ports: { low, high }, session };
 });
@@ -274,15 +285,18 @@ export const call = (
   args: unknown = {},
 ) =>
   Effect.gen(function* () {
-    const client = yield* ConvexClient.ConvexClient;
-    return yield* client.runFunction(
-      outputs.url,
-      outputs.adminKey,
-      functionPath,
-      args,
-      componentPath,
-    );
-  }).pipe(Effect.provide(localClient), Effect.orDie);
+    const services3 = yield* Layer.build(localClient);
+    return yield* Effect.gen(function* () {
+      const client = yield* ConvexClient.ConvexClient;
+      return yield* client.runFunction(
+        outputs.url,
+        outputs.adminKey,
+        functionPath,
+        args,
+        componentPath,
+      );
+    }).pipe(Effect.provideContext(services3));
+  }).pipe(Effect.scoped, Effect.orDie);
 
 /**
  * Hooks to line two pushes up: `attempting` runs as a push asks for the lock,
@@ -369,18 +383,18 @@ export const push = (
   events: Array<string> = [],
   probe: Probe = {},
 ) =>
-  deploy(
-    {
-      deployment: { name: outputs.name, url: outputs.url },
-      deployKey: outputs.adminKey,
-      ...props,
-    },
-    "local",
-  ).pipe(
-    Effect.provide(
+  Effect.gen(function* () {
+    const services4 = yield* Layer.build(
       recording(tag, events, probe).pipe(
         Layer.provideMerge(NodeServices.layer),
       ),
-    ),
-    Effect.result,
-  );
+    );
+    return yield* deploy(
+      {
+        deployment: { name: outputs.name, url: outputs.url },
+        deployKey: outputs.adminKey,
+        ...props,
+      },
+      "local",
+    ).pipe(Effect.provideContext(services4));
+  }).pipe(Effect.scoped, Effect.result);
