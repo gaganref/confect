@@ -8,6 +8,7 @@ import * as SchemaAST from "effect/SchemaAST";
 import * as IdScope from "./IdScope.js";
 import type * as Ref from "./Ref.js";
 import * as String from "effect/String";
+import * as Record from "effect/Record";
 
 const ConvexId = "~@confect/core/ConvexId";
 const ConvexIdScope = "~@confect/core/ConvexIdScope";
@@ -321,7 +322,7 @@ export const rebase = <
     if ("fields" in input) {
       const fields = (input as { readonly fields: Schema.Struct.Fields })
         .fields;
-      const reboundFields = Object.fromEntries(
+      const reboundFields = Record.fromEntries(
         Array.map(Reflect.ownKeys(fields), (key) => [
           key,
           rebuild(fields[key]!),

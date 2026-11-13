@@ -24,6 +24,7 @@ import {
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
+import * as Record from "effect/Record";
 
 type Leaf = Pick<LoadedLeafModule, "spec" | "pathSegments" | "relativePath">;
 
@@ -74,9 +75,9 @@ const visit = (
     path: string,
     source: string,
   ) => {
-    for (const spec of Object.values(group.functions))
+    for (const spec of Record.values(group.functions))
       each(spec, `${path}:${spec.name}`, source);
-    for (const [name, child] of Object.entries(group.groups))
+    for (const [name, child] of Record.toEntries(group.groups))
       walk(child, `${path}/${name}`, source);
   };
   for (const leaf of leaves)
@@ -152,7 +153,7 @@ const load = Effect.fnUntraced(function* (
       name: "confect:section-inputs",
       setup: (build) =>
         build.onEnd(({ metafile }) => {
-          for (const loaded of Object.keys(metafile?.inputs ?? {})) {
+          for (const loaded of Record.keys(metafile?.inputs ?? {})) {
             // A plugin's own namespace, such as the component config
             // wrapper, is not a file.
             if (/^[^/\\]+:/.test(loaded) && !path.isAbsolute(loaded)) continue;

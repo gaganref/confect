@@ -9,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import { inspect } from "node:util";
+import * as Record from "effect/Record";
 
 const props = {
   deployment: {
@@ -47,10 +48,10 @@ describe("Backend", () => {
           prepare: { command: "confect", args: ["codegen"] },
         });
         expect(first.environment).toBeUndefined();
-        expect(Object.keys(Output.resolveUpstream(first.url))).toEqual([
+        expect(Record.keys(Output.resolveUpstream(first.url))).toEqual([
           first.code.FQN,
         ]);
-        expect(Object.keys(Output.resolveUpstream(first.name))).toEqual([
+        expect(Record.keys(Output.resolveUpstream(first.name))).toEqual([
           first.code.FQN,
         ]);
       }).pipe(Effect.provide([stack(), providers])),
@@ -67,7 +68,7 @@ describe("Backend", () => {
       expect(environment.Namespace?.Id).toBe("Backend");
       expect(environment.Props.variables).toBe(env);
       const url = backend.code.Props.deployment.url;
-      expect(Object.keys(Output.resolveUpstream(url))).toEqual([
+      expect(Record.keys(Output.resolveUpstream(url))).toEqual([
         environment.FQN,
       ]);
       const expression = inspect(url);

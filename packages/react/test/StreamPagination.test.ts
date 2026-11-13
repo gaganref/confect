@@ -2,6 +2,7 @@ import { assert, describe, expect, expectTypeOf, test } from "@effect/vitest";
 
 import * as StreamPagination from "@confect/react/StreamPagination";
 import * as Array from "effect/Array";
+import * as Rec from "effect/Record";
 
 type Response = StreamPagination.PageResult | Error;
 
@@ -48,7 +49,7 @@ const settle = (
 };
 
 const requests = (state: StreamPagination.State) =>
-  Object.values(StreamPagination.pageRequests(state, (page) => page));
+  Rec.values(StreamPagination.pageRequests(state, (page) => page));
 
 const respond = (
   responses: Map<string, Response>,

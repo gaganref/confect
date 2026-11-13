@@ -17,6 +17,7 @@ import { publishedPackages } from "./checkPackContents";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
+import * as Record from "effect/Record";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -65,8 +66,8 @@ test.each(directories)(
           expect(output[field]).toEqual(
             dependencies === undefined
               ? undefined
-              : Object.fromEntries(
-                  Array.map(Object.entries(dependencies), ([name, range]) => [
+              : Record.fromEntries(
+                  Array.map(Record.toEntries(dependencies), ([name, range]) => [
                     name,
                     pipe(name, String.startsWith("@confect/"))
                       ? `npm:@gaganref/confect-${pipe(name, String.slice("@confect/".length))}@10.2.0-fork.7`

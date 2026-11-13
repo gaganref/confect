@@ -289,9 +289,11 @@ export default App.make({ env: Env.make("other", {}), manifestSections: [{ key: 
           yield* project.declare('{ key: "tags", section: tags }');
           const described = yield* runDigest;
           expect([declared, undeclared]).not.toContain(described);
-          expect(Object.keys((yield* project.manifest).tags.functions)).toEqual(
-            ["notes:list", "stock:profiled", "stock:raw"],
-          );
+          expect(Rec.keys((yield* project.manifest).tags.functions)).toEqual([
+            "notes:list",
+            "stock:profiled",
+            "stock:raw",
+          ]);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -348,7 +350,7 @@ export default App.make({ env: Env.make("other", {}), manifestSections: [{ key: 
           const reversed = yield* generated(true);
           expect(reversed.manifest.digest).toBe(forward.manifest.digest);
           expect(reversed.files).toEqual(forward.files);
-          expect(Object.keys(forward.manifest.tags.functions)).toEqual([
+          expect(Rec.keys(forward.manifest.tags.functions)).toEqual([
             "items/flows:profiled",
             "items/flows:raw",
             "landing/sweep:profiled",
@@ -2025,7 +2027,7 @@ const kitProject = (files: Readonly<Record<string, string>>) =>
       files["package.json"] ??
         '{ "name": "pool-kit", "type": "module", "exports": { "./testing": "./testing.js" } }',
     );
-    for (const [file, source] of Object.entries({
+    for (const [file, source] of Rec.toEntries({
       ...files,
       "package.json": yield* Schema.encodeEffect(KitManifest)({
         ...manifest,
@@ -2295,7 +2297,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             "package.json": yield* Schema.encodeEffect(KitManifest)({
               name: "pool-kit",
               type: "module",
-              exports: Object.fromEntries(
+              exports: Rec.fromEntries(
                 Array.map(entries, (entry) => [`./${entry}`, `./${entry}.js`]),
               ),
             }),

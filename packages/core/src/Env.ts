@@ -3,6 +3,7 @@ import type * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import type * as Redacted from "effect/Redacted";
 import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
 
 const TypeId = "~@confect/core/Env";
 const EntryTypeId = "~@confect/core/Env/Entry";
@@ -158,7 +159,7 @@ export const make = <
   fields: Fields,
 ): Env<N, Fields> => {
   const entries = Arr.map(
-    Object.entries(fields),
+    Rec.toEntries(fields),
     ([key, field]) =>
       [
         key,
@@ -175,7 +176,7 @@ export const make = <
   // The entries are built from `fields` key by key, which TypeScript cannot
   // correlate through `Object.fromEntries`.
   return {
-    ...Object.fromEntries(entries),
+    ...Rec.fromEntries(entries),
     [TypeId]: { name, entries },
   } as unknown as Env<N, Fields>;
 };

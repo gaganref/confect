@@ -59,6 +59,7 @@ import * as Tracer from "effect/Tracer";
 import * as ObservabilityRuntime from "./internal/observability.js";
 import * as VectorSearch from "./VectorSearch.js";
 import type * as Handler from "./Handler.js";
+import * as Record from "effect/Record";
 
 export interface ReceivedValue {
   readonly value: unknown;
@@ -430,8 +431,11 @@ export const domainArgs = (
 ): DefaultFunctionArgs =>
   reservedArgument === undefined
     ? args
-    : Object.fromEntries(
-        Array.filter(Object.entries(args), ([key]) => key !== reservedArgument),
+    : Record.fromEntries(
+        Array.filter(
+          Record.toEntries(args),
+          ([key]) => key !== reservedArgument,
+        ),
       );
 
 export const actionFunctionBase = <

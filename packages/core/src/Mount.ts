@@ -14,6 +14,7 @@ import type * as IdScope from "./IdScope.js";
 import { CallbackContract } from "./internal/annotations.js";
 import * as Ref from "./Ref.js";
 import * as Array from "effect/Array";
+import * as Rec from "effect/Record";
 
 const TypeId = "~@confect/core/Mount";
 
@@ -371,14 +372,14 @@ const withHandles = <E, R>(
   const at = entrySchema(schema);
   if (at === undefined || !Predicate.isObject(value))
     return Effect.succeed(value);
-  return Effect.forEach(Object.entries(value), ([key, field]) => {
+  return Effect.forEach(Rec.toEntries(value), ([key, field]) => {
     const fieldSchema = at(key);
     return fieldSchema === undefined
       ? Effect.succeed([key, field] as const)
       : withHandles(fieldSchema, field, create).pipe(
           Effect.map((resolved) => [key, resolved] as const),
         );
-  }).pipe(Effect.map(Object.fromEntries));
+  }).pipe(Effect.map(Rec.fromEntries));
 };
 
 /**

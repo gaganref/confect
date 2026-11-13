@@ -35,6 +35,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Router from "effect/http/HttpRouter";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import * as Record from "effect/Record";
 
 const scope = IdScope.component("@example/counter");
 const users = Table.make(() => Schema.Struct({ name: Schema.String }))(
@@ -217,7 +218,7 @@ describe("component capabilities", () => {
           context,
           MutationCtx.MutationCtx<Model, typeof scope>(),
         );
-        expect(Object.hasOwn(raw, "auth")).toBe(false);
+        expect(Record.has<string, unknown>(raw, "auth")).toBe(false);
       }).pipe(Effect.scoped);
     },
   );

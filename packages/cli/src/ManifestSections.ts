@@ -11,13 +11,14 @@ import {
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
 
 const reserved = new Set(
   pipe("name env http digest __proto__ constructor prototype", Str.split(" ")),
 );
 export const sections = (manifest: Readonly<Record<string, unknown>>) =>
-  Object.fromEntries(
-    Arr.filter(Object.entries(manifest), ([key]) => !reserved.has(key)),
+  Rec.fromEntries(
+    Arr.filter(Rec.toEntries(manifest), ([key]) => !reserved.has(key)),
   );
 // Read only property descriptors, through static functions, so no getter,
 // `toJSON` or other method of the input runs before the check and nothing
@@ -122,9 +123,9 @@ const visit = (
       source: string,
     ): Result.Result<void, InvalidDeclarationError> =>
       Result.gen(function* () {
-        for (const spec of Object.values(group.functions))
+        for (const spec of Rec.values(group.functions))
           yield* each(spec, group, `${path}:${spec.name}`, source);
-        for (const [name, child] of Object.entries(group.groups))
+        for (const [name, child] of Rec.toEntries(group.groups))
           yield* walk(child, `${path}/${name}`, source);
       });
     for (const leaf of leaves)

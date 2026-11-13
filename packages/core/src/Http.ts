@@ -13,6 +13,7 @@ import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Option from "effect/Option";
+import * as Record from "effect/Record";
 
 const TypeId = "~@confect/core/Http";
 
@@ -158,8 +159,8 @@ interface KeyedRoute {
 }
 
 const apiRoutes = (api: App.Api, owner: Owner): ReadonlyArray<KeyedRoute> =>
-  Array.flatMap(Object.values<HttpApiGroup.Top>(api.groups), (group) =>
-    Array.map(Object.values(group.endpoints), (endpoint) => {
+  Array.flatMap(Record.values<string, HttpApiGroup.Top>(api.groups), (group) =>
+    Array.map(Record.values(group.endpoints), (endpoint) => {
       const path = endpoint.path;
       const declared = paramNames(endpoint.params);
       return {

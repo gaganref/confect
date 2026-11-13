@@ -20,6 +20,7 @@ import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Array from "effect/Array";
+import * as Record from "effect/Record";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -367,7 +368,7 @@ export default Auth.make(app, { providers: [
         expect(registered.module.default.list.isPublic).toBe(true);
         for (const file of definitions)
           expect(
-            Array.some(Object.keys(registered.metafile.inputs), (input) =>
+            Array.some(Record.keys(registered.metafile.inputs), (input) =>
               pipe(input, Str.endsWith(file)),
             ),
           ).toBe(false);
@@ -770,7 +771,7 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
               path.join(project.root, "convex/notes.ts"),
             )) + "\nexport { list as unchecked };",
         };
-        for (const [file, source] of Object.entries(files)) {
+        for (const [file, source] of Record.toEntries(files)) {
           yield* fs.makeDirectory(
             path.dirname(path.join(project.root, "convex", file)),
             { recursive: true },
@@ -783,7 +784,7 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
           yield* Ref.get(generated.output),
         );
         expect(exitCode, output).not.toBe(0);
-        for (const [file, source] of Object.entries(files)) {
+        for (const [file, source] of Record.toEntries(files)) {
           expect(output).toContain(`convex/${file}`);
           expect(
             yield* fs.readFileString(path.join(project.root, "convex", file)),

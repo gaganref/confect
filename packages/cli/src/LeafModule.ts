@@ -289,13 +289,13 @@ const validateReservedArguments = Effect.fnUntraced(function* (
   specPath: string,
   groupPath: string,
 ): Effect.fn.Return<void, InvalidDeclarationError> {
-  for (const spec of Object.values(group.functions)) {
+  for (const spec of Record.values(group.functions)) {
     const name = spec.reservedArgument;
     const provenance = spec.functionProvenance;
     if (
       name !== undefined &&
       provenance._tag === "Confect" &&
-      Object.hasOwn(provenance.args.fields, name)
+      Record.has(provenance.args.fields, name)
     ) {
       return yield* new InvalidDeclarationError({
         declarationPath: `confect/${specPath}`,
@@ -303,7 +303,7 @@ const validateReservedArguments = Effect.fnUntraced(function* (
       });
     }
   }
-  for (const [name, child] of Object.entries(group.groups)) {
+  for (const [name, child] of Record.toEntries(group.groups)) {
     yield* validateReservedArguments(child, specPath, `${groupPath}/${name}`);
   }
 });

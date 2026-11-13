@@ -15,6 +15,7 @@ import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
+import * as Rec from "effect/Record";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -120,7 +121,7 @@ export const make = (
       return;
     }
     const generated = Option.getOrUndefined(
-      Arr.findFirst(Object.keys(modules), (key) =>
+      Arr.findFirst(Rec.keys(modules), (key) =>
         pipe(key, String.includes("_generated")),
       ),
     );
@@ -128,8 +129,8 @@ export const make = (
       generated === undefined
         ? undefined
         : pipe(generated, String.split("_generated"))[0];
-    const moduleLoaders = Object.fromEntries(
-      Arr.map(Object.entries(modules), ([path, load]) => [
+    const moduleLoaders = Rec.fromEntries(
+      Arr.map(Rec.toEntries(modules), ([path, load]) => [
         pipe(path, String.replace(/\.[^.]+$/, "")),
         load,
       ]),

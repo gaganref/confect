@@ -3,6 +3,7 @@ import { expect, test } from "bun:test";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Schema from "effect/Schema";
+import * as Record from "effect/Record";
 
 const concurrency = Schema.Struct({
   group: Schema.String,
@@ -33,7 +34,7 @@ test("holds one publish lock across version selection and publication", () =>
           "${{ inputs.publish == true && 'fork-npm-publish' || format('fork-npm-check-{0}', github.run_id) }}",
         "cancel-in-progress": false,
       });
-      for (const job of Object.values(workflow.jobs)) {
+      for (const job of Record.values(workflow.jobs)) {
         expect(job.concurrency).toBeUndefined();
       }
     }).pipe(Effect.provide(BunServices.layer)),

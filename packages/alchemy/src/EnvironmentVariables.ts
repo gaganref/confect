@@ -12,6 +12,7 @@ import * as ConvexClient from "./ConvexClient.js";
 import type { Providers } from "./Providers.js";
 import { checkpointCreate, shouldAdopt } from "./internal/Lifecycle.js";
 import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
 
 export interface EnvironmentVariablesProps {
   readonly url: string;
@@ -52,14 +53,14 @@ export const provider = Effect.gen(function* () {
   const valueAt = (
     variables: Readonly<Record<string, Redacted.Redacted<string>>>,
     name: string,
-  ) => (Object.hasOwn(variables, name) ? variables[name] : undefined);
+  ) => (Rec.has(variables, name) ? variables[name] : undefined);
   const select = (
     variables: Readonly<Record<string, Redacted.Redacted<string>>>,
     names: ReadonlyArray<string>,
   ) =>
-    Object.fromEntries(
+    Rec.fromEntries(
       Arr.flatMap(names, (name) =>
-        !Object.hasOwn(variables, name) ? [] : [[name, variables[name]]],
+        !Rec.has(variables, name) ? [] : [[name, variables[name]]],
       ),
     );
   return {
@@ -69,7 +70,7 @@ export const provider = Effect.gen(function* () {
         return yield* new EnvironmentTargetChange({
           url: output.url,
         });
-      const names = Object.keys(news.variables);
+      const names = Rec.keys(news.variables);
       if (
         names.length !== output.ownedNames.length ||
         Arr.some(names, (name) => !output.ownedNames.includes(name))
@@ -79,7 +80,7 @@ export const provider = Effect.gen(function* () {
         news.url,
         news.deployKey,
       );
-      for (const [name, value] of Object.entries(news.variables)) {
+      for (const [name, value] of Rec.toEntries(news.variables)) {
         const observed = valueAt(variables, name);
         if (
           observed === undefined ||
@@ -95,10 +96,10 @@ export const provider = Effect.gen(function* () {
         url,
         olds.deployKey,
       );
-      const ownedNames = output?.ownedNames ?? Object.keys(olds.variables);
+      const ownedNames = output?.ownedNames ?? Rec.keys(olds.variables);
       const variables = select(observed, ownedNames);
       if (output) return { ...output, deployKey: olds.deployKey, variables };
-      if (Object.keys(variables).length === 0) return undefined;
+      if (Rec.keys(variables).length === 0) return undefined;
       return Unowned({
         url,
         deployKey: olds.deployKey,
@@ -122,7 +123,7 @@ export const provider = Effect.gen(function* () {
         news.url,
         news.deployKey,
       );
-      const ownedNames = Object.keys(news.variables);
+      const ownedNames = Rec.keys(news.variables);
       if (!output && (yield* shouldAdopt(fqn))) {
         const variables = select(observed, ownedNames);
         output = {
@@ -147,8 +148,8 @@ export const provider = Effect.gen(function* () {
             physicalName: name,
           });
       }
-      const desired = Object.fromEntries(
-        Arr.map(Object.entries(news.variables), ([name, value]) => [
+      const desired = Rec.fromEntries(
+        Arr.map(Rec.toEntries(news.variables), ([name, value]) => [
           name,
           redacted(value),
         ]),
@@ -157,7 +158,7 @@ export const provider = Effect.gen(function* () {
         name: string;
         value?: Redacted.Redacted<string>;
       }> = [];
-      for (const [name, value] of Object.entries(desired)) {
+      for (const [name, value] of Rec.toEntries(desired)) {
         const current = valueAt(observed, name);
         if (
           current === undefined ||
@@ -166,7 +167,7 @@ export const provider = Effect.gen(function* () {
           changes.push({ name, value });
       }
       for (const name of previousNames) {
-        if (Object.hasOwn(desired, name)) continue;
+        if (Rec.has(desired, name)) continue;
         const original = output ? valueAt(output.originals, name) : undefined;
         const current = valueAt(observed, name);
         if (original !== undefined) {

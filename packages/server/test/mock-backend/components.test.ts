@@ -41,6 +41,7 @@ import * as Cause from "effect/Cause";
 import * as Schema from "effect/Schema";
 import contract from "../../../cli/test/fixtures/authored-component/confect/_generated/component";
 import componentSchema from "../../../cli/test/fixtures/authored-component/convex/schema";
+import * as Record from "effect/Record";
 
 // The wire API shape Convex generates: component IDs are strings, not host IDs.
 type CounterApi<ComponentName extends string> = {
@@ -724,9 +725,9 @@ it.effect(
             registerComponent(
               "first",
               componentSchema,
-              Object.fromEntries(
+              Record.fromEntries(
                 Array.map(
-                  Object.entries(componentTesting.modules),
+                  Record.toEntries(componentTesting.modules),
                   ([path, load]) => [
                     path === "http.ts" ? "http.mjs" : path,
                     load,

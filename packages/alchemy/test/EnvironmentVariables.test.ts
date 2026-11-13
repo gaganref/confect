@@ -12,6 +12,7 @@ import {
   ConvexNotFound,
 } from "@confect/alchemy/ConvexClient";
 import { lifecycle, mockClient } from "./fixtures/ConvexClient";
+import * as Record from "effect/Record";
 
 const props: EnvironmentVariables.EnvironmentVariablesProps = {
   url: "https://happy-otter-123.convex.cloud",
@@ -111,7 +112,7 @@ it.effect(
       ).not.toContain("test-key");
       yield* provider.delete({ ...lifecycle, olds: props, output: first });
       yield* provider.delete({ ...lifecycle, olds: props, output: first });
-      expect(Object.keys(mock.state.variables)).toEqual(["OTHER"]);
+      expect(Record.keys(mock.state.variables)).toEqual(["OTHER"]);
       expect(mock.client.updateEnvironmentVariables).toHaveBeenCalledTimes(3);
     }).pipe(Effect.provide(mock.layer));
   },
@@ -236,7 +237,7 @@ it.effect(
         output: first,
       });
       expect(output.ownedNames).toEqual(["NEXT"]);
-      expect(Object.keys(mock.state.variables).sort()).toEqual([
+      expect(Record.keys(mock.state.variables).sort()).toEqual([
         "NEXT",
         "OTHER",
       ]);
@@ -279,7 +280,7 @@ it.effect(
         }),
       ).toBeUndefined();
       yield* provider.delete({ ...lifecycle, olds: news, output });
-      expect(Object.keys(mock.state.variables)).toEqual([]);
+      expect(Record.keys(mock.state.variables)).toEqual([]);
     }).pipe(Effect.provide(mock.layer));
   },
 );

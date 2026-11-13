@@ -18,6 +18,7 @@ import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
+import * as Rec from "effect/Record";
 
 /**
  * The host function does not satisfy the contract on one side. `expected` and
@@ -128,9 +129,9 @@ const describe = (validator: GenericValidator): Schema.Json => {
     case "object":
       return {
         kind: "object",
-        fields: Object.fromEntries(
+        fields: Rec.fromEntries(
           pipe(
-            Object.entries(validator.fields),
+            Rec.toEntries(validator.fields),
             Array.sortWith(([name]) => name, Order.String),
             Array.map(([name, field]) => [
               name,
@@ -190,7 +191,7 @@ const compileArgs = (ast: SchemaAST.Objects): ReturnType<typeof compileAst> =>
         );
       },
     });
-  }).pipe(Effect.map((fields) => v.object(Object.fromEntries(fields))));
+  }).pipe(Effect.map((fields) => v.object(Rec.fromEntries(fields))));
 
 const compileSchema = (schema: Schema.Top, side?: "args" | "returns") => {
   const ast = Schema.toEncoded(schema).ast;

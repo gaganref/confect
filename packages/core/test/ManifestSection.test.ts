@@ -3,6 +3,7 @@ import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
+import * as Record from "effect/Record";
 
 type Names = { readonly format: 2; readonly names: ReadonlyArray<string> };
 type Unformatted = Omit<Names, "format">;
@@ -17,7 +18,7 @@ describe("ManifestSection", () => {
       describe: ({ path }) => path,
       summarize: ({ functions }) => ({
         format: 2,
-        names: Object.values(functions),
+        names: Record.values(functions),
       }),
       check: (next) => {
         expectTypeOf(next).toEqualTypeOf<Names>();

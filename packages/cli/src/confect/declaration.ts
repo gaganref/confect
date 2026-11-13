@@ -34,6 +34,7 @@ import {
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
 
 /**
  * Bumped when the generated files change shape, so a manifest written by an
@@ -146,7 +147,7 @@ const declarationInputs = Effect.fnUntraced(function* (
   );
   const files = new Set<string>();
   for (const { metafile } of bundles) {
-    for (const input of Object.keys(metafile.inputs)) {
+    for (const input of Rec.keys(metafile.inputs)) {
       const relative = path.relative(projectRoot, input);
       if (
         path.isAbsolute(input) &&
@@ -251,7 +252,7 @@ const sectionDigest = (
   base: string,
   sections: Readonly<Record<string, unknown>>,
 ) =>
-  Object.keys(sections).length === 0
+  Rec.keys(sections).length === 0
     ? base
     : Declaration.digest({
         files: [["declaration", base]],
@@ -284,7 +285,7 @@ export const syncManifestSections = Effect.fnUntraced(
     const [error, ...more] = checked.errors;
     for (const other of more) yield* logCodegenError(other);
     if (error !== undefined) return yield* error;
-    const sections = Object.fromEntries(
+    const sections = Rec.fromEntries(
       Arr.map([...registry], ([key, { data }]) => [key, data]),
     );
     const { name, env, http } = current;
@@ -582,7 +583,7 @@ const mountExport = Effect.fnUntraced(function* (name: string) {
   )).module;
   const found = Option.getOrUndefined(
     Arr.findFirst(
-      Object.entries(exports),
+      Rec.toEntries(exports),
       ([, value]) =>
         Predicate.hasProperty(value, "~@confect/core/Mount") &&
         Mount.data(value as Mount.Any).name === name,

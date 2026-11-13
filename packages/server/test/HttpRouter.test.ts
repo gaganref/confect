@@ -31,6 +31,7 @@ import * as HttpApiError from "effect/http-api/HttpApiError";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
+import * as Record from "effect/Record";
 
 const api = HttpApi.make("users").add(
   HttpApiGroup.make("users").add(
@@ -698,7 +699,7 @@ const answering = (
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
           if (request.method !== "OPTIONS") return yield* next;
-          const params = Object.entries(yield* HttpRouter.params).flat();
+          const params = Record.toEntries(yield* HttpRouter.params).flat();
           return HttpServerResponse.text(
             Arr.join([method, ...Arr.map(params, (param) => param ?? "")], " "),
           );

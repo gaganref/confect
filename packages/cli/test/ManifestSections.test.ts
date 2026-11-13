@@ -16,6 +16,7 @@ import {
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
+import * as Record from "effect/Record";
 
 const section = {
   owner: "test/tags",
@@ -106,7 +107,7 @@ describe("ManifestSections", () => {
       ).get("tags")!;
       return {
         bytes: JSON.stringify([entry.data, entry.sources]),
-        paths: Object.keys(entry.data.functions),
+        paths: Record.keys(entry.data.functions),
       };
     };
     const forward = collected(leaves);
@@ -320,7 +321,7 @@ describe("ManifestSections", () => {
           returned: "an array whose methods are its own throwing getters",
           value: Object.defineProperties(
             [1],
-            Object.fromEntries(
+            Record.fromEntries(
               Arr.map(
                 [
                   "keys",

@@ -15,6 +15,7 @@ import * as Loopback from "./internal/Loopback.js";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
+import * as Rec from "effect/Record";
 
 export type Project = ManagementApi.ProjectResponse;
 export type CreatedProject = ManagementApi.PlatformCreateProjectResponse;
@@ -564,9 +565,9 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
           environmentVariables: Schema.Record(Schema.String, Schema.String),
         }),
       );
-      return Object.fromEntries(
+      return Rec.fromEntries(
         Array.map(
-          Object.entries(result.environmentVariables),
+          Rec.toEntries(result.environmentVariables),
           ([name, value]) => [name, Redacted.make(value)],
         ),
       );

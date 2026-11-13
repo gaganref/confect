@@ -18,6 +18,7 @@ import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
+import * as Record from "effect/Record";
 
 const encodeJson = Schema.encodeSync(
   Schema.fromJsonString(Schema.Unknown, { space: 2 }),
@@ -55,7 +56,7 @@ export const stageForkPackages = (
   // The publishing command decides provenance; a manifest key would force it on, and terminal publishes have no identity provider.
   const { provenance: _provenance, ...inheritedPublishConfig } =
     manifest.publishConfig ?? {};
-  const dependencies = Object.fromEntries(
+  const dependencies = Record.fromEntries(
     Arr.flatMap(
       ["dependencies", "peerDependencies", "optionalDependencies"] as const,
       (field) => {
@@ -65,8 +66,8 @@ export const stageForkPackages = (
           : [
               [
                 field,
-                Object.fromEntries(
-                  Arr.map(Object.entries(values), ([name, range]) => [
+                Record.fromEntries(
+                  Arr.map(Record.toEntries(values), ([name, range]) => [
                     name,
                     pipe(name, Str.startsWith("@confect/"))
                       ? `npm:${forkPackageName(name)}@${version}`
@@ -226,7 +227,7 @@ export const readVersions = Effect.fn("ForkPackages.versions")(function* (
       ),
     ),
   );
-  return Object.keys(metadata.versions);
+  return Record.keys(metadata.versions);
 });
 
 const stage = Effect.fn("ForkPackages.stage")(function* (

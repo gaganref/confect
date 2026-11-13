@@ -15,6 +15,10 @@ import * as Ref from "@confect/core/Ref";
 
 declare const ServicefulString: Schema.Codec<string, string, "RequiredService">;
 
+// Builders are interfaces, which effect/Record does not take as records.
+const hasOwn = (value: object, key: string): boolean =>
+  Record.has(value as Record.ReadonlyRecord<string, unknown>, key);
+
 describe("isFunctionSpec", () => {
   it("checks whether a value is a function spec", () => {
     const functionSpec: unknown = FunctionSpec.publicQuery({
@@ -510,8 +514,8 @@ describe("middleware options", () => {
     expect(covered.middlewareSpecs).toEqual(
       Array.map(covered.middlewareAttachments, ({ spec }) => spec),
     );
-    expect(Object.hasOwn(covered, "middlewareSpecs")).toBe(false);
-    expect(Object.hasOwn(query, "middlewareSpecs")).toBe(false);
+    expect(hasOwn(covered, "middlewareSpecs")).toBe(false);
+    expect(hasOwn(query, "middlewareSpecs")).toBe(false);
     expect(query.middlewareSpecs).toEqual([]);
     expect(query.middlewareAttachments).toEqual([]);
   });
@@ -585,10 +589,10 @@ describe("public function descriptions", () => {
 
   it.each(specs)("does not add a description key when omitted", (original) => {
     expect(original).toHaveProperty("name", "unchanged");
-    expect(Object.hasOwn(original, "description")).toBe(false);
-    expect(
-      Object.hasOwn(original.middleware(observe("omitted")), "description"),
-    ).toBe(false);
+    expect(hasOwn(original, "description")).toBe(false);
+    expect(hasOwn(original.middleware(observe("omitted")), "description")).toBe(
+      false,
+    );
   });
 
   it("keeps the original inferred types when a description is omitted", () => {
@@ -753,7 +757,7 @@ describe("extend", () => {
     const plain = FunctionSpec.publicQuery({ name: "plain", returns });
 
     expect(argsEvaluated).toBe(0);
-    expect(Object.hasOwn(plain.middleware(Trace), "fields")).toBe(false);
+    expect(hasOwn(plain.middleware(Trace), "fields")).toBe(false);
     expect([wrapped.description, wrapped.fields]).toEqual([
       "Archive a note.",
       { subject: "noteId", owner: "team" },
@@ -1306,7 +1310,7 @@ describe("profile schema wrappers", () => {
     expect(Schema.decodeSync(spec.functionProvenance.returns)("wrapped")).toBe(
       "wrapped",
     );
-    expect(Object.keys(paged.functionProvenance.args.fields)).toEqual([
+    expect(Record.keys(paged.functionProvenance.args.fields)).toEqual([
       "paginationOpts",
     ]);
     expect(

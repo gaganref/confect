@@ -3,6 +3,7 @@ import type { ManifestSection } from "@confect/core";
 import { describe, expect, it } from "@effect/vitest";
 import { builtIn, claims } from "@confect/cli/SectionFiles";
 import * as Array from "effect/Array";
+import * as Rec from "effect/Record";
 
 const generating = (file: string): ManifestSection.ManifestSection => ({
   owner: "test/observe",
@@ -16,8 +17,7 @@ const generating = (file: string): ManifestSection.ManifestSection => ({
 });
 const declared = (
   sections: Readonly<Record<string, ManifestSection.ManifestSection>>,
-) =>
-  Array.map(Object.entries(sections), ([key, section]) => ({ key, section }));
+) => Array.map(Rec.toEntries(sections), ([key, section]) => ({ key, section }));
 
 describe("SectionFiles", () => {
   it("claims each declared generating section's file, ordered by file", () => {

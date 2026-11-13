@@ -303,7 +303,7 @@ export const discoverInstalledComponents = Effect.fn(
     Array.map(({ name, path: componentDefinitionPath }): InstalledComponent => {
       const httpPrefix = Option.getOrUndefined(
         Array.findFirst(
-          Object.entries(decoded.httpMounts ?? {}),
+          Record.toEntries(decoded.httpMounts ?? {}),
           ([, reference]) => reference === `_reference/childComponent/${name}`,
         ),
       )?.[0];

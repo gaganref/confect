@@ -36,6 +36,7 @@ import {
   deployment as existingDeployment,
 } from "../fixtures/ConvexClient";
 import * as Array from "effect/Array";
+import * as Record from "effect/Record";
 
 const makeHarness = (
   client: Layer.Layer<ConvexClient>,
@@ -442,7 +443,7 @@ describe("cloud deployment lifecycle", () => {
         expect(fixture.state.projects).toHaveLength(1);
         expect(fixture.state.deployments).toHaveLength(1);
         expect(fixture.state.keys).toHaveLength(0);
-        expect(Object.keys(fixture.state.variables)).toEqual(["UNRELATED"]);
+        expect(Record.keys(fixture.state.variables)).toEqual(["UNRELATED"]);
         expect(Redacted.value(fixture.state.variables.UNRELATED)).toBe(
           "preserve-me",
         );

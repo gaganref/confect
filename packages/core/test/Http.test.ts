@@ -13,6 +13,7 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as HttpApiScalar from "effect/http-api/HttpApiScalar";
+import * as Record from "effect/Record";
 
 const components = [defineComponent("counter"), defineComponent("workpool")];
 const client = (native: unknown) => native;
@@ -83,8 +84,8 @@ describe("Http", () => {
               effect.handler(new Request("https://example.com/docs")),
             );
             expect(body).toBe(yield* Effect.promise(() => expected.text()));
-            expect(Object.fromEntries(response.headers)).toEqual(
-              Object.fromEntries(expected.headers),
+            expect(Record.fromEntries(response.headers)).toEqual(
+              Record.fromEntries(expected.headers),
             );
             yield* Effect.promise(effect.dispose);
             expect(body).toContain(

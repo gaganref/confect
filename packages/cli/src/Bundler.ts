@@ -155,13 +155,13 @@ export const exportNames = (
   }).pipe(
     Effect.map(({ metafile, outputFiles }) =>
       Array.some(
-        Object.values(metafile.inputs),
+        Record.values(metafile.inputs),
         ({ format }) => format === "cjs",
       ) || Array.some(outputFiles, ({ text }) => /^export \* from /m.test(text))
         ? Option.none()
         : Option.some(
             Array.flatMap(
-              Object.values(metafile.outputs),
+              Record.values(metafile.outputs),
               ({ exports }) => exports,
             ),
           ),

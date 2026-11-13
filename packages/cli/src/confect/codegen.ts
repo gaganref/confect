@@ -368,7 +368,7 @@ const validateComponentGroupRuntime = (
         new CodegenError.ComponentNodeGroupError({ specPath, groupPath }),
       );
     }
-    for (const [name, child] of Object.entries(group.groups)) {
+    for (const [name, child] of Record.toEntries(group.groups)) {
       yield* validateComponentGroupRuntime(
         child,
         `${groupPath}.${name}`,
@@ -411,7 +411,7 @@ const validateCallbackPrefixes = Effect.fnUntraced(function* (
   const { module } = yield* Bundler.bundle(callbacksPath).pipe(
     Effect.mapError((error) => fromBundlerError("confect/callbacks.ts", error)),
   );
-  for (const contract of Object.values(module)) {
+  for (const contract of Record.values(module)) {
     if (
       Callback.isContract(contract) &&
       !pipe(contract.id, String.startsWith(`${name}/`))

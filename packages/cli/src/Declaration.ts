@@ -8,6 +8,7 @@ import { createHash } from "node:crypto";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
 
 /**
  * A backend's declaration (`confect/env.ts`, `app.ts`, `auth.ts`) reduced to
@@ -265,7 +266,7 @@ export const parse = (input: {
         );
       }
       const bindings: Array<readonly [string, Binding]> = [];
-      for (const [slot, bound] of Object.entries(mount.env ?? {})) {
+      for (const [slot, bound] of Rec.toEntries(mount.env ?? {})) {
         if (bound === undefined) continue;
         if (typeof bound === "string") {
           bindings.push([slot, { kind: "value", value: bound }]);
@@ -348,7 +349,10 @@ const parseProviders = (
     const providers: Provider[] = [];
     for (const provider of Auth.providers(auth)) {
       const fields: Array<readonly [string, ProviderValue]> = [];
-      for (const [field, value] of Object.entries(provider)) {
+      for (const [field, value] of Rec.toEntries<
+        string,
+        Auth.Provider[keyof Auth.Provider]
+      >(provider)) {
         const sitePath = Auth.siteUrlPath(value);
         const cloudPath = Auth.cloudUrlPath(value);
         let lowered: ProviderValue;
@@ -604,9 +608,9 @@ export const manifest = (
 ): string => {
   const data = {
     name: declaration.name,
-    env: Object.fromEntries(declaration.env),
+    env: Rec.fromEntries(declaration.env),
     http: {
-      mounts: Object.fromEntries(
+      mounts: Rec.fromEntries(
         Arr.flatMap(declaration.mounts, ({ name, httpPrefix }) =>
           httpPrefix === undefined ? [] : [[name, httpPrefix]],
         ),

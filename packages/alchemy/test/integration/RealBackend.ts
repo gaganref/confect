@@ -33,6 +33,7 @@ import { PushLock, layer as lockLayer } from "../../dist/internal/PushLock.js";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
 
 export interface Outputs {
   readonly name: string;
@@ -224,7 +225,7 @@ export const copyApp = Effect.fn("RealBackend.copyApp")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   yield* fs.copy(fixture, directory);
-  for (const [at, source] of Object.entries(links)) {
+  for (const [at, source] of Rec.toEntries(links)) {
     const link = `${directory}/${at}`;
     yield* fs.makeDirectory(
       pipe(

@@ -7,6 +7,7 @@ import * as Result from "effect/Result";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as RealBackend from "./RealBackend";
 import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
 
 // Runs the real pinned backend, as RealLocalBackend.test.ts does, on ports
 // 3400-3499. Every push runs the real codegen and `convex deploy`.
@@ -54,7 +55,7 @@ const app = (root: string, name: string) =>
     yield* RealBackend.copyApp(fixture, directory, {
       "node_modules/convex": `${modules}/convex`,
       "node_modules/effect": `${modules}/effect`,
-      ...Object.fromEntries(
+      ...Rec.fromEntries(
         Arr.map(["cli", "core", "server"], (dependency) => [
           `node_modules/@confect/${dependency}`,
           `${packages}/${dependency}`,
@@ -174,7 +175,7 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
           expect(Result.isSuccess(yield* push(appA, trimmed))).toBe(true);
           const removed = yield* settings("bulkEmail");
           expect(removed._id).toBe(first.bulkEmail._id);
-          expect(Object.hasOwn(removed, "maxAttempts")).toBe(false);
+          expect(Rec.has(removed, "maxAttempts")).toBe(false);
           expect((yield* both).transactionalEmail).toEqual(
             first.transactionalEmail,
           );

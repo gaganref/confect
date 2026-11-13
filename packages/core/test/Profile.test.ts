@@ -4,6 +4,7 @@ import * as FunctionSpec from "@confect/core/FunctionSpec";
 import * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
 import * as Profile from "@confect/core/Profile";
 import * as Array from "effect/Array";
+import * as Record from "effect/Record";
 
 interface Quota extends Profile.Fields {
   readonly Type: { readonly quota: number };
@@ -173,7 +174,7 @@ describe("attach", () => {
     });
     ready = true;
 
-    expect(Object.keys(args())).toEqual(["noteId"]);
+    expect(Record.keys(args())).toEqual(["noteId"]);
   });
 
   it("refuses options the middleware does not accept, and fields the profile lacks", () => {

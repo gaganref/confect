@@ -45,6 +45,7 @@ import type {
   TypeError,
   UnionToTuple,
 } from "./Types.js";
+import * as Rec from "effect/Record";
 
 // Args
 
@@ -58,7 +59,7 @@ export const compileArgsSchema = <ConfectValue, ConvexValue>(
 
   const validators = Effect.runSync(compileArgsAst(ast, scope));
   if (reservedArgument === undefined) return validators;
-  if (Object.hasOwn(validators, reservedArgument)) {
+  if (Rec.has(validators, reservedArgument)) {
     throw new ReservedArgumentCollision({
       functionName,
       argument: reservedArgument,

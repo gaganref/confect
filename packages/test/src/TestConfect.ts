@@ -23,6 +23,7 @@ import * as MountedHttp from "./internal/MountedHttp.js";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
+import * as Rec from "effect/Record";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -423,7 +424,7 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
           httpPrefix === undefined ? [] : [{ componentPath: name, httpPrefix }],
         ),
         register: (registerComponent) => {
-          for (const [name, component] of Object.entries(registry.components)) {
+          for (const [name, component] of Rec.toEntries(registry.components)) {
             if (
               Array.some(
                 mounts,
@@ -444,7 +445,7 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
     return schemaLayer(app.schema, app.convexSchema, app.modules, {
       httpMounts: app.httpMounts,
       register: (registerComponent) => {
-        for (const [name, component] of Object.entries(app.components)) {
+        for (const [name, component] of Rec.toEntries(app.components)) {
           registerKit(registerComponent, name, component);
         }
       },

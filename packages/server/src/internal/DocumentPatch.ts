@@ -59,7 +59,7 @@ const makePatchEncoder = (table: Table.AnyWithProps): PatchEncoder | null => {
     (
       value: unknown,
     ) => Effect.Effect<ReadonlyValue | undefined, Schema.SchemaError>
-  > = Object.fromEntries(
+  > = Record.fromEntries(
     Array.map(ast.propertySignatures, ({ name, type }) => {
       const key = String(name);
       const encode = Schema.encodeUnknownEffect(
@@ -79,7 +79,7 @@ const makePatchEncoder = (table: Table.AnyWithProps): PatchEncoder | null => {
   return (patch) =>
     pipe(
       fieldEncoders,
-      Record.filter((_, name) => Object.hasOwn(patch, name)),
+      Record.filter((_, name) => Record.has(patch, name)),
       Record.map((encode, name) =>
         patch[name] === undefined ? Effect.undefined : encode(patch[name]),
       ),

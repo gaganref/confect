@@ -51,7 +51,7 @@ export const missingRequired = (
   groupPath = "",
 ): ReadonlyArray<MissingMiddleware> =>
   Array.flatMap(
-    Object.entries(items).sort(([left], [right]) =>
+    Record.toEntries(items).sort(([left], [right]) =>
       pipe(left, Str.localeCompare(right)),
     ),
     ([functionName, value]) =>

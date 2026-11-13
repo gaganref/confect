@@ -19,6 +19,7 @@ import { first } from "../componentBindings";
 import { capture } from "../reservedCapture";
 import { hops } from "../runtime";
 import spec from "./reserved.spec";
+import * as Record from "effect/Record";
 
 const echo = FunctionImpl.make(schema, spec, "echo", capture);
 const echoAction = FunctionImpl.make(schema, spec, "echoAction", capture);
@@ -37,7 +38,7 @@ const inline = FunctionImpl.make(schema, spec, "inline", (args) =>
       parent: yield* capture(args),
       child,
       plain,
-      hops: Object.fromEntries(hops),
+      hops: Record.fromEntries(hops),
     };
   }).pipe(Effect.orDie),
 );
@@ -94,7 +95,7 @@ const chain = FunctionImpl.make(schema, spec, "chain", (args) =>
       action,
       inline: component,
       jobId,
-      hops: Object.fromEntries(hops),
+      hops: Record.fromEntries(hops),
     };
   }).pipe(Effect.orDie),
 );

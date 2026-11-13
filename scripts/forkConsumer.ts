@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
+import * as Record from "effect/Record";
 
 const encodeJson = Schema.encodeSync(
   Schema.fromJsonString(Schema.Unknown, { space: 2 }),
@@ -66,7 +67,7 @@ type ConsumerManifest = Result.Result.Success<
 
 export const installCommand = (manifest: ConsumerManifest) =>
   `pnpm add --strict-peer-dependencies ${pipe(
-    Object.entries(manifest.dependencies),
+    Record.toEntries(manifest.dependencies),
     Array.filter(([name]) => pipe(name, String.startsWith("@confect/"))),
     Array.map(([name, spec]) => `'${name}@${spec}'`),
     Array.join(" "),
@@ -106,7 +107,7 @@ export const writeConsumer = Effect.fn("ConsumerFixture.write")(function* (
       [
         "minimumReleaseAgeExclude:",
         ...pipe(
-          Object.values(manifest.dependencies),
+          Record.values(manifest.dependencies),
           Array.filter((spec) =>
             pipe(spec, String.startsWith("npm:@gaganref/")),
           ),
@@ -115,7 +116,7 @@ export const writeConsumer = Effect.fn("ConsumerFixture.write")(function* (
         "",
         "overrides:",
         ...pipe(
-          Object.entries(manifest.dependencies),
+          Record.toEntries(manifest.dependencies),
           Array.filter(
             ([name, spec]) =>
               pipe(name, String.startsWith("@confect/")) &&
