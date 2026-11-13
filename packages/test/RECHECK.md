@@ -1080,11 +1080,23 @@ reaches the snapshot, a failure report, a diff or a read record.
 ## Generated component subject (row 9)
 
 - A handle under `~sink` reaches no registered function. The kernel hands its
-  query, mutation or action call to the session's sink, which answers with an
-  encoded return or rejects with a `ConvexError` holding an encoded declared
-  error. The binary has no such path: a real handle names a host function.
-- The sink answers runner calls only. Scheduling a sink handle refuses, since
-  `~sink` is no registered component.
-- A drawn `returned` value comes from `Arbitrary.schema` of the contract's
-  return codec, seeded by the session's `draws`, the slot and the call's index,
-  so the same session draws the same values.
+  query, mutation or action call, and a due job that targets it, to the
+  session's sink. The sink holds the call as a pending command until the test
+  answers it. The binary has no such path: a real handle names a host
+  function.
+- A declared error leaves the sink as a `ConvexError` whose data is Convex
+  JSON. The caller's syscall reads that back with `jsonToConvex`
+  (`src/server/impl/syscall.ts:46-51`, convex 1.49), so an int64 or bytes
+  field arrives decoded.
+- Open, outside row 9: the kernel's nested-call path passes a nested
+  function's `ConvexError` on after `deserializeConvexErrorData` has decoded
+  its data, and the caller's syscall decodes it again. A probe confirmed it: a
+  nested `ConvexError({ code: 42n })` reaches its caller as
+  `Error: Unexpected type of 42`.
+- Scheduling a sink handle is accepted. Each job runs through the sink when it
+  comes due, so a stored callback handle can be scheduled, as production
+  allows.
+- A drawn value comes from `Arbitrary.schema` of the contract's return codec,
+  or of the declared error's alternative. It is seeded by the session's
+  `draws` and the command's ID, so the same session draws the same values. A
+  contract's codecs must bound what Convex cannot store, such as an int64.

@@ -4,8 +4,10 @@ import { ConvexError, convexToJson, type Value } from "convex/values";
 import * as Arbitrary from "effect/Arbitrary";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import type * as SchemaAST from "effect/SchemaAST";
 import * as Execution from "./internal/Execution.js";
 import { openSession, type TestConfigMissing } from "./internal/Backend.js";
 import {
@@ -32,8 +34,8 @@ export type ComponentObligation =
 type Tag<E> = E extends { readonly _tag: infer T extends string } ? T : never;
 
 /**
- * How the engine may answer a call to a slot of contract `C`: it returned, or
- * it failed with one of the contract's declared error tags.
+ * How a test may answer a call to a slot of contract `C`: it returned, or it
+ * failed with one of the contract's declared error tags.
  */
 export type Outcome<C extends Callback.Any> =
   | "returned"
@@ -55,14 +57,61 @@ export type AnySlot = Slot<any>;
 type ContractOf<S> = S extends Slot<infer C> ? C : never;
 
 /**
- * A call the component made to one of its slots, as the sink held it, and the
- * outcome the engine answered it with.
+ * A call the component made to one of its slots, pending until the test answers
+ * it. `input` is the call's args as they crossed the wire. The caller is the
+ * function that made the call, or `undefined` for a scheduled job.
  */
-export interface HeldCallback {
+export interface CallbackCommand<
+  K extends string = string,
+  O extends string = string,
+> {
+  readonly id: string;
   readonly kind: "callback";
-  readonly slot: string;
-  readonly args: unknown;
-  readonly outcome: string;
+  readonly slot: K;
+  readonly input: unknown;
+  readonly outcomes: ReadonlyArray<O>;
+  readonly componentPath: string | undefined;
+  readonly functionName: string | undefined;
+}
+
+/**
+ * The commands a subject's slots can hold, one member per slot.
+ */
+export type CommandOf<C> = {
+  readonly [K in keyof C & string]: CallbackCommand<
+    K,
+    Outcome<ContractOf<C[K]>>
+  >;
+}[keyof C & string];
+
+/**
+ * `answer` named a command the session does not hold: it was already answered,
+ * or never held.
+ */
+export class StaleCommand extends Schema.TaggedError<StaleCommand>()(
+  "StaleCommand",
+  { id: Schema.String },
+) {
+  override get message() {
+    return `The session holds no callback command "${this.id}". It was already answered, or never held.`;
+  }
+}
+
+/**
+ * `answer` gave a command an outcome its slot's contract does not declare.
+ */
+export class UndeclaredOutcome extends Schema.TaggedError<UndeclaredOutcome>()(
+  "UndeclaredOutcome",
+  {
+    id: Schema.String,
+    slot: Schema.String,
+    outcome: Schema.String,
+    allowed: Schema.Array(Schema.String),
+  },
+) {
+  override get message() {
+    return `The callback slot ${this.slot} has no outcome ${this.outcome}; its contract allows ${this.allowed.join(", ")}.`;
+  }
 }
 
 /**
@@ -88,12 +137,24 @@ export const ComponentRuntime = <S extends DatabaseSchema.AnyWithProps>() =>
   );
 
 /**
- * What a component session holds beyond the backend: the outcome each slot's
- * next calls are answered with, every held call, and the tables' image.
+ * What a component session holds beyond the backend: the pending callback
+ * commands, how to answer one, the commands that arrived since a mark, and the
+ * tables' image.
  */
 export interface Engine {
-  readonly answer: (slot: string, outcome: string) => Effect.Effect<void>;
-  readonly held: Effect.Effect<ReadonlyArray<HeldCallback>>;
+  readonly commands: Effect.Effect<ReadonlyArray<CallbackCommand>>;
+  readonly answer: (
+    id: string,
+    outcome: string,
+  ) => Effect.Effect<void, StaleCommand | UndeclaredOutcome>;
+  /**
+   * How many commands have arrived since the session opened.
+   */
+  readonly mark: Effect.Effect<number>;
+  /**
+   * The command that arrived at position `at`, once it has.
+   */
+  readonly arrival: (at: number) => Effect.Effect<CallbackCommand>;
   readonly image: Effect.Effect<Postimage>;
 }
 
@@ -101,14 +162,21 @@ export class Callbacks extends Context.Service<Callbacks, Engine>()(
   "@confect/test/TestComponent/Callbacks",
 ) {}
 
-export interface LayerOptions<
+type InstallOption<I> = [I] extends [Ref.AnyConfect]
+  ? {} extends Ref.Args<I>
+    ? { readonly install?: Ref.Args<I> }
+    : { readonly install: Ref.Args<I> }
+  : { readonly install?: never };
+
+export type LayerOptions<
   S extends DatabaseSchema.AnyWithProps,
   C extends ReadonlyArray<Setting>,
-> {
+  I = undefined,
+> = InstallOption<I> & {
   readonly config: Config<C>;
   /**
-   * Writes in one private mutation, after every mount's `init`. A slot's
-   * `handle` is the value to store where the component keeps one.
+   * Writes in one private mutation, after every `init`. A slot's `handle` is
+   * the value to store where the component keeps one.
    */
   readonly seed?: Effect.Effect<
     void,
@@ -116,17 +184,18 @@ export interface LayerOptions<
     RegisteredConvexFunction.MutationServices<S>
   >;
   /**
-   * The seed of the draws that answer a slot with `returned`. Defaults to `0`.
+   * The seed of the values a `returned` or declared-error answer draws.
+   * Defaults to `0`.
    */
   readonly draws?: number;
-}
+};
 
 /**
  * The subject codegen writes in a component's `_generated/testing.ts`: its refs
  * `F`, its exported functions `T` by `group:name`, its provider ports `P`, its
- * callback slots `C` by contract id, its laws and obligations, and a `layer`
- * that opens it on the kernel. It has no groups, and no manifest digest, since
- * only an app writes a manifest.
+ * callback slots `C` by contract id, its own `init` `I` from its descriptor,
+ * its laws and obligations, and a `layer` that opens it on the kernel. It has
+ * no groups, and no manifest digest, since only an app writes a manifest.
  */
 export interface GeneratedComponent<
   F,
@@ -138,24 +207,28 @@ export interface GeneratedComponent<
   L extends ReadonlyArray<Law> = ReadonlyArray<Law>,
   B extends ReadonlyArray<ComponentObligation> =
     ReadonlyArray<ComponentObligation>,
+  I extends Ref.AnyConfect | undefined = Ref.AnyConfect | undefined,
 > {
   readonly kind: "component";
   readonly refs: F;
   readonly functions: T;
   readonly ports: P;
   readonly slots: C;
+  readonly init: I;
   readonly laws: L;
   readonly obligations: B;
   readonly mounts: ReadonlyArray<Mount>;
   readonly settings: G;
   readonly app: GeneratedApp<S>;
   /**
-   * Open a fresh session on the kernel, as an app's opens: every module loads,
-   * each mount's `init` runs, then `seed`. Every call to a slot's handle holds
-   * as a `callback` command the engine answers.
+   * Open a fresh session on the kernel, as a push initialises the component:
+   * every module loads, its own `init` runs with `install`, then each mount's,
+   * through the same traversal as an app's subject, then `seed`. A slot call
+   * during `init` or `seed` returns at once. Every later one is held as a
+   * `callback` command until the test answers it.
    */
   readonly layer: (
-    options: LayerOptions<S, G>,
+    options: LayerOptions<S, G, I>,
   ) => Layer.Layer<
     ComponentRuntime<S> | Callbacks | Session,
     TestConfigMissing
@@ -168,7 +241,10 @@ export type AnyGeneratedComponent = GeneratedComponent<
   Readonly<Record<string, AnyPort>>,
   Readonly<Record<string, AnySlot>>,
   any,
-  ReadonlyArray<Setting>
+  ReadonlyArray<Setting>,
+  ReadonlyArray<Law>,
+  ReadonlyArray<ComponentObligation>,
+  any
 >;
 
 const tagOf = (schema: Schema.Top): string | undefined => {
@@ -181,18 +257,31 @@ const tagOf = (schema: Schema.Top): string | undefined => {
 };
 
 /**
- * The declared error members of a contract, by tag.
+ * Each alternative of a union, through nested and suspended unions.
+ */
+const alternatives = (
+  ast: SchemaAST.AST,
+  seen: Set<SchemaAST.AST> = new Set(),
+): Array<SchemaAST.AST> => {
+  if (seen.has(ast)) return [];
+  seen.add(ast);
+  if (ast._tag === "Union")
+    return ast.types.flatMap((member) => alternatives(member, seen));
+  if (ast._tag === "Suspend") return alternatives(ast.thunk(), seen);
+  return [ast];
+};
+
+/**
+ * The declared error alternatives of a contract, each with its own codec, by
+ * tag.
  */
 const errorsOf = (contract: Callback.Any): ReadonlyMap<string, Schema.Top> => {
   const error = (contract.functionProvenance as { readonly error?: Schema.Top })
     .error;
-  if (error === undefined) return new Map();
-  const members: ReadonlyArray<Schema.Top> =
-    "members" in error && Array.isArray(error.members)
-      ? (error.members as ReadonlyArray<Schema.Top>)
-      : [error];
   const byTag = new Map<string, Schema.Top>();
-  for (const member of members) {
+  if (error === undefined) return byTag;
+  for (const ast of alternatives(error.ast)) {
+    const member = Schema.make<Schema.Top>(ast);
     const tag = tagOf(member);
     if (tag !== undefined) byTag.set(tag, member);
   }
@@ -228,18 +317,45 @@ const draw = (
     Effect.orDie,
   );
 
+interface Pending {
+  readonly command: CallbackCommand;
+  readonly settle: (answer: Promise<unknown>) => void;
+}
+
 /**
- * The sink a component session gives the kernel: each call is held, then
- * answered with the slot's planned outcome, `returned` until a test plans
- * another, with a value drawn from the contract's codec under the draw seed.
+ * The sink a component session gives the kernel. Until the session opens, a
+ * slot call returns at once, so `init` and `seed` never wait. After that each
+ * call is a pending command until `answer` settles it: `returned` with a value
+ * drawn from the contract's return codec, or a declared error drawn from its
+ * alternative's codec, both under the draw seed.
  */
 const makeEngine = (
   slots: Readonly<Record<string, AnySlot>>,
   draws: number,
 ) => {
-  const planned = new Map<string, string>();
-  const held: Array<HeldCallback> = [];
-  const sink: Execution.Sink = ({ slot: id, args }) => {
+  let open = false;
+  let next = 1;
+  const pending = new Map<string, Pending>();
+  const arrived: Array<CallbackCommand> = [];
+  const waiting = new Set<() => void>();
+  const outcome = (found: AnySlot, chosen: string, seed: string) => {
+    const provenance = found.contract.functionProvenance as {
+      readonly returns: Schema.Codec<unknown, unknown>;
+      readonly error: Schema.Codec<unknown, unknown>;
+    };
+    if (chosen === "returned")
+      return Effect.runPromise(
+        draw(provenance.returns, provenance.returns, seed),
+      );
+    return Effect.runPromise(
+      draw(errorsOf(found.contract).get(chosen)!, provenance.error, seed),
+    ).then((encoded) =>
+      // The caller reads the data back with `jsonToConvex`, so it crosses as
+      // Convex JSON, as the binary sends a function's declared error.
+      Promise.reject(new ConvexError(convexToJson(encoded as Value))),
+    );
+  };
+  const sink: Execution.Sink = ({ slot: id, args, caller }) => {
     const found = slots[id];
     if (found === undefined)
       return Promise.reject(
@@ -247,37 +363,70 @@ const makeEngine = (
           `The component called the callback slot ${id}, which it does not declare.`,
         ),
       );
-    const outcome = planned.get(id) ?? "returned";
-    const index = held.length;
-    held.push({ kind: "callback", slot: id, args, outcome });
-    const seed = `${draws}:${id}:${index}`;
-    const provenance = found.contract.functionProvenance as {
-      readonly returns: Schema.Codec<unknown, unknown>;
-      readonly error: Schema.Codec<unknown, unknown>;
+    const commandId = `callback-${next++}`;
+    if (!open) return outcome(found, "returned", `${draws}:${commandId}`);
+    const held = Promise.withResolvers<unknown>();
+    const command: CallbackCommand = {
+      id: commandId,
+      kind: "callback",
+      slot: id,
+      input: args,
+      outcomes: found.outcomes,
+      componentPath: caller?.componentPath,
+      functionName: caller?.functionName,
     };
-    if (outcome === "returned")
-      return Effect.runPromise(
-        draw(provenance.returns, provenance.returns, seed),
-      );
-    return Effect.runPromise(
-      draw(errorsOf(found.contract).get(outcome)!, provenance.error, seed),
-    ).then((encoded) => Promise.reject(new ConvexError(encoded as Value)));
-  };
-  const answer = (id: string, outcome: string) =>
-    Effect.suspend(() => {
-      const found = slots[id];
-      if (found === undefined)
-        return Effect.die(new Error(`No callback slot ${id}.`));
-      if (!(found.outcomes as ReadonlyArray<string>).includes(outcome))
-        return Effect.die(
-          new Error(
-            `The callback slot ${id} has no outcome ${outcome}; its contract allows ${found.outcomes.join(", ")}.`,
-          ),
-        );
-      planned.set(id, outcome);
-      return Effect.void;
+    pending.set(commandId, {
+      command,
+      settle: (answer) => answer.then(held.resolve, held.reject),
     });
-  return { sink, answer, held: Effect.sync(() => [...held]) };
+    arrived.push(command);
+    for (const wake of waiting) wake();
+    return held.promise;
+  };
+  const answer = (id: string, chosen: string) =>
+    Effect.suspend(
+      (): Effect.Effect<void, StaleCommand | UndeclaredOutcome> => {
+        const held = pending.get(id);
+        if (held === undefined) return Effect.fail(new StaleCommand({ id }));
+        const found = slots[held.command.slot]!;
+        if (!(found.outcomes as ReadonlyArray<string>).includes(chosen))
+          return Effect.fail(
+            new UndeclaredOutcome({
+              id,
+              slot: held.command.slot,
+              outcome: chosen,
+              allowed: found.outcomes,
+            }),
+          );
+        pending.delete(id);
+        held.settle(outcome(found, chosen, `${draws}:${id}`));
+        return Effect.void;
+      },
+    );
+  const arrival = (at: number) =>
+    Effect.callback<CallbackCommand>((resume) => {
+      const check = () => {
+        const command = arrived[at];
+        if (command === undefined) return;
+        waiting.delete(check);
+        resume(Effect.succeed(command));
+      };
+      waiting.add(check);
+      check();
+      return Effect.sync(() => waiting.delete(check));
+    });
+  return {
+    sink,
+    open: () => {
+      open = true;
+    },
+    commands: Effect.sync(() =>
+      Array.from(pending.values(), ({ command }) => command),
+    ),
+    answer,
+    mark: Effect.sync(() => arrived.length),
+    arrival,
+  };
 };
 
 const withoutSystemFields = (doc: Record<string, unknown>) => {
@@ -298,6 +447,7 @@ export const make = <
   const G extends ReadonlyArray<Setting>,
   const L extends ReadonlyArray<Law>,
   const B extends ReadonlyArray<ComponentObligation>,
+  I extends Ref.AnyConfect | undefined,
 >(
   app: GeneratedApp<S>,
   declaration: {
@@ -305,27 +455,40 @@ export const make = <
     readonly functions: T;
     readonly ports: P;
     readonly slots: C;
+    readonly init: I;
     readonly laws: L;
     readonly obligations: B;
     readonly mounts: ReadonlyArray<Mount>;
     readonly settings: G;
   },
-): GeneratedComponent<F, T, P, C, S, G, L, B> => ({
+): GeneratedComponent<F, T, P, C, S, G, L, B, I> => ({
   ...declaration,
   kind: "component",
   app,
-  layer: ({ config, seed, draws }) => {
+  layer: (options) => {
     const runtime = ComponentRuntime<S>();
     return Layer.effectContext(
       Effect.gen(function* () {
-        const engine = makeEngine(declaration.slots, draws ?? 0);
+        const engine = makeEngine(declaration.slots, options.draws ?? 0);
+        const init = declaration.init;
+        const root =
+          init === undefined
+            ? undefined
+            : {
+                functionName: init.convexFunctionName,
+                args: yield* Schema.encodeUnknownEffect(init.args)(
+                  options.install ?? {},
+                ).pipe(Effect.orDie),
+              };
         const opened = yield* openSession(
           app,
           declaration.settings,
-          config,
-          seed,
+          options.config,
+          options.seed,
           engine.sink,
+          root,
         );
+        engine.open();
         const { withIdentity: _, ...service } = opened.service;
         const tables = Object.keys(
           (app.convexSchema as unknown as { tables: object }).tables,
@@ -348,8 +511,10 @@ export const make = <
         );
         return Context.make(runtime, service).pipe(
           Context.add(Callbacks, {
+            commands: engine.commands,
             answer: engine.answer,
-            held: engine.held,
+            mark: engine.mark,
+            arrival: engine.arrival,
             image,
           }),
           Context.add(Session, opened.session),
@@ -360,30 +525,28 @@ export const make = <
 });
 
 /**
- * Plan the outcome a slot's next calls are answered with.
+ * The callback commands the session holds, oldest first.
  */
-export const answer = <
+export const commands = <
   C extends Readonly<Record<string, AnySlot>>,
-  K extends keyof C & string,
->(
-  _subject: { readonly slots: C },
-  name: K,
-  outcome: Outcome<ContractOf<C[K]>>,
-): Effect.Effect<void, never, Callbacks> =>
+>(_subject: {
+  readonly slots: C;
+}): Effect.Effect<ReadonlyArray<CommandOf<C>>, never, Callbacks> =>
   Effect.gen(function* () {
-    yield* (yield* Callbacks).answer(name, outcome);
+    return (yield* (yield* Callbacks).commands) as ReadonlyArray<CommandOf<C>>;
   });
 
 /**
- * Every call the component made to its slots so far, as held.
+ * Settle a held command with one of its slot's outcomes, so the component's
+ * call returns or fails with it.
  */
-export const held: Effect.Effect<
-  ReadonlyArray<HeldCallback>,
-  never,
-  Callbacks
-> = Effect.gen(function* () {
-  return yield* (yield* Callbacks).held;
-});
+export const answer = <K extends string, O extends string>(
+  command: CallbackCommand<K, O>,
+  outcome: NoInfer<O>,
+): Effect.Effect<void, StaleCommand | UndeclaredOutcome, Callbacks> =>
+  Effect.gen(function* () {
+    yield* (yield* Callbacks).answer(command.id, outcome);
+  });
 
 type ArgsOf<R> = keyof Ref.Args<R> extends never
   ? { readonly args?: Ref.Args<R> }
@@ -411,7 +574,7 @@ export type ExportRows<T> = {
 
 /**
  * One exported call that triggers a slot, and the component's postimage once
- * the engine answered the slot.
+ * the case answered the slot.
  */
 export type CallbackCase<T> = {
   readonly [K in keyof T & string]: ArgsOf<T[K]> & { readonly call: K };
@@ -450,9 +613,10 @@ type OptionsOf<Subject> =
     infer S,
     infer G,
     any,
-    any
+    any,
+    infer I
   >
-    ? LayerOptions<S, G>
+    ? LayerOptions<S, G, I>
     : never;
 
 const canonical = (value: unknown): string =>
@@ -477,6 +641,35 @@ const call = (
     unknown,
     { readonly _tag: string }
   >;
+
+/**
+ * Run one exported call to its end, answering each callback command it makes
+ * with `outcomeOf`. Only the commands that arrive during the call count, so a
+ * call `init` or `seed` made never does.
+ */
+const invoke = (
+  engine: Engine,
+  exported: Effect.Effect<unknown, { readonly _tag: string }>,
+  outcomeOf: (command: CallbackCommand) => string,
+) =>
+  Effect.gen(function* () {
+    const from = yield* engine.mark;
+    const fiber = yield* Effect.forkChild(Effect.result(exported));
+    const answered: Array<CallbackCommand> = [];
+    for (;;) {
+      const step = yield* Effect.raceFirst(
+        Effect.map(engine.arrival(from + answered.length), (command) => ({
+          command,
+        })),
+        Effect.map(Fiber.join(fiber), (result) => ({ result })),
+      );
+      if ("result" in step) return { result: step.result, answered };
+      answered.push(step.command);
+      yield* engine
+        .answer(step.command.id, outcomeOf(step.command))
+        .pipe(Effect.orDie);
+    }
+  });
 
 const encodedReturn = (ref: Ref.AnyPublic, value: unknown) =>
   ref._tag === "Confect" ? Schema.encodeUnknownSync(ref.returns)(value) : value;
@@ -519,7 +712,8 @@ const checkImage = (name: string, engine: Engine, expected: Postimage) =>
 /**
  * The exported contract as runnable cases, total over the subject's functions
  * by type. A returning case checks the encoded return and the postimage; a
- * failing one checks the declared error's tag.
+ * failing one checks the declared error's tag. A callback the call makes is
+ * answered `returned`.
  */
 export const exports = <Subject extends AnyGeneratedComponent>(
   subject: Subject,
@@ -536,8 +730,10 @@ export const exports = <Subject extends AnyGeneratedComponent>(
           run: (options) =>
             runCase(subject, name, options, (service, engine) =>
               Effect.gen(function* () {
-                const result = yield* Effect.result(
+                const { result } = yield* invoke(
+                  engine,
                   call(service, fn, row.args ?? {}),
+                  () => "returned",
                 );
                 if ("fails" in row) {
                   const tag =
@@ -572,8 +768,10 @@ export const exports = <Subject extends AnyGeneratedComponent>(
 
 /**
  * The callback contract as runnable cases, total over every slot and outcome by
- * type. Each plans the slot's outcome, makes its exported call, checks the slot
- * was held with that outcome, and checks the postimage.
+ * type. Each makes its exported call and answers each command the call makes to
+ * the case's slot with the case's outcome, and any other slot's with
+ * `returned`. It fails when the call never reached the slot, and checks the
+ * postimage once the call ends.
  */
 export const callbacks = <Subject extends AnyGeneratedComponent>(
   subject: Subject,
@@ -590,14 +788,12 @@ export const callbacks = <Subject extends AnyGeneratedComponent>(
         run: (options) =>
           runCase(subject, name, options, (service, engine) =>
             Effect.gen(function* () {
-              yield* engine.answer(slotId, outcome);
-              yield* Effect.ignore(
+              const { answered } = yield* invoke(
+                engine,
                 call(service, subject.functions[row.call]!, row.args ?? {}),
+                (command) => (command.slot === slotId ? outcome : "returned"),
               );
-              const calls = yield* engine.held;
-              if (
-                !calls.some((c) => c.slot === slotId && c.outcome === outcome)
-              )
+              if (!answered.some((command) => command.slot === slotId))
                 return yield* new CaseFailed({
                   case: name,
                   reason: `${row.call} never called the slot ${slotId}`,

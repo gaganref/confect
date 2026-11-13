@@ -51,9 +51,19 @@ const hasDeployModule = (modules: Readonly<Record<string, unknown>>) =>
  * Run the inits a push runs, through the deploy modules production registers,
  * with each nested component's steps before its own `init`.
  */
+/**
+ * The `init` a push runs for the subject itself, at the root path: its function
+ * and encoded install args.
+ */
+export interface RootInit {
+  readonly functionName: string;
+  readonly args: unknown;
+}
+
 const initialize = (
   raw: any,
   hasSteps: (componentPath: string) => boolean,
+  root: RootInit | undefined,
   initialized: Array<string>,
 ) => {
   const call = (componentPath: string, functionName: string, args: unknown) =>
@@ -62,6 +72,19 @@ const initialize = (
         ctx.runMutation(makeFunctionReference<"mutation">(functionName), args),
       ),
     );
+  const run = (
+    path: string,
+    step: {
+      readonly nested: boolean;
+      readonly init: RootInit | null;
+    },
+  ): Effect.Effect<void> =>
+    Effect.gen(function* () {
+      if (step.nested) yield* visit(path);
+      if (step.init === null) return;
+      yield* call(path, step.init.functionName, step.init.args);
+      initialized.push(path);
+    });
   const visit = (prefix: string): Effect.Effect<void> =>
     Effect.gen(function* () {
       if (!hasSteps(prefix)) return;
@@ -77,13 +100,11 @@ const initialize = (
           return yield* Effect.die(
             new Error(`${path}: init failed: ${step.failure}`),
           );
-        if (step.nested) yield* visit(path);
-        if (step.init === null) continue;
-        yield* call(path, step.init.functionName, step.init.args);
-        initialized.push(path);
+        yield* run(path, step);
       }
     });
-  return visit("");
+  // The subject is the root step a push runs for its mount.
+  return run("", { nested: hasSteps(""), init: root ?? null });
 };
 
 const withSettings = (
@@ -121,7 +142,8 @@ const withSettings = (
  * Open a generated subject's session on the kernel: check and set its settings,
  * register every kit, recording each one's standing sources, load every module,
  * run each mount's `init`, then `seed` in one mutation. `sink` answers the
- * calls a component makes to its callback slots.
+ * calls a component makes to its callback slots, and `root` is a component
+ * subject's own `init`, run as the root step.
  */
 export const openSession = <S extends DatabaseSchema.AnyWithProps>(
   app: GeneratedApp<S>,
@@ -131,6 +153,7 @@ export const openSession = <S extends DatabaseSchema.AnyWithProps>(
     | Effect.Effect<void, never, RegisteredConvexFunction.MutationServices<S>>
     | undefined,
   sink?: Execution.Sink,
+  root?: RootInit,
 ): Effect.Effect<
   {
     readonly service: TestConfect<S>;
@@ -177,6 +200,7 @@ export const openSession = <S extends DatabaseSchema.AnyWithProps>(
     yield* initialize(
       opened.raw,
       (path) => deployModules.has(path),
+      root,
       initialized,
     );
     if (seed !== undefined) yield* opened.service.run(seed);

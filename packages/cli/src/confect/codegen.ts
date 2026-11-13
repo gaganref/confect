@@ -14,12 +14,13 @@ import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import type * as PlatformError from "effect/PlatformError";
-import type * as Schema from "effect/Schema";
+import * as Schema from "effect/Schema";
 import type { BuildError } from "../BuildError.js";
 import { pipe } from "effect/Function";
 import * as HashSet from "effect/HashSet";
 import * as Match from "effect/Match";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import type * as Scope from "effect/Scope";
 import * as Bundler from "../Bundler.js";
@@ -1503,12 +1504,16 @@ const testComponent = Effect.fnUntraced(function* (
     TestingManifest.plan({ groups, facts, tables: input.tables, realm: false }),
   );
   const slots = yield* callbackSlots(input.leaves);
+  const init = yield* descriptorInit(groups);
   const imports = [
     'import { TestComponent as $TestComponent } from "@confect/test";',
     'import refs from "./refs.js";',
     ...(slots.length === 0
       ? []
       : ['import * as $callbacks from "../callbacks.js";']),
+    ...(init === undefined
+      ? []
+      : [`import $descriptor from ${quote(init.specifier)};`]),
   ];
   const { imports: portImports, lines: ports } = yield* portsOf(planned.ports);
   if (ports.length > 0)
@@ -1537,12 +1542,100 @@ const testComponent = Effect.fnUntraced(function* (
       `  functions: {${functions.map(({ ref, access: at }) => `\n    ${quote(ref)}: ${at},`).join("")}${functions.length === 0 ? "" : "\n  "}},`,
       `  ports: {${ports.map((line) => `\n    ${line}`).join("")}${ports.length === 0 ? "" : "\n  "}},`,
       `  slots: {${slots.map(({ id, exportName }) => `\n    ${quote(id)}: $TestComponent.slot($callbacks[${quote(exportName)}]),`).join("")}${slots.length === 0 ? "" : "\n  "}},`,
+      `  init: ${init === undefined ? "undefined" : "$descriptor.init"},`,
       `  laws: ${literal(planned.laws)},`,
       `  obligations: ${literal(obligations)},`,
       `  mounts: ${literal(mounts)},`,
       `  settings: ${literal(settings)},`,
       "});",
     ].join("\n"),
+  };
+});
+
+const PackageExports = Schema.fromJsonString(
+  Schema.Struct({ exports: Schema.optional(Schema.Unknown) }),
+);
+
+/**
+ * The file a component's descriptor lives in: its package's `./client` export,
+ * as `Component.make` asks, or else `client.ts` beside `confect/`, as an
+ * in-repo component keeps it.
+ */
+const descriptorFile = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const root = yield* ProjectRoot.get;
+  const manifest = path.join(root, "package.json");
+  if (yield* fs.exists(manifest)) {
+    const exports = Option.getOrUndefined(
+      Schema.decodeOption(PackageExports)(yield* fs.readFileString(manifest)),
+    )?.exports;
+    const entry = Predicate.isObject(exports)
+      ? (exports as Record<string, unknown>)["./client"]
+      : undefined;
+    const target = Predicate.isString(entry)
+      ? entry
+      : Predicate.isObject(entry)
+        ? [entry["import"], entry["default"]].find(Predicate.isString)
+        : undefined;
+    if (target !== undefined) return path.join(root, target);
+  }
+  return path.join(path.dirname(yield* ConfectDirectory.get), "client.ts");
+});
+
+/**
+ * The component's own `init`, from its descriptor, with the specifier
+ * `_generated/testing.ts` imports the descriptor by. None when the component
+ * has no descriptor or its descriptor declares no `init`. An `init` that is no
+ * internal mutation of the component stops codegen.
+ */
+const descriptorInit = Effect.fnUntraced(function* (
+  groups: ReadonlyArray<TestingManifest.FoundGroup>,
+) {
+  const path = yield* Path.Path;
+  const file = yield* descriptorFile;
+  const module = yield* bundledModule(file);
+  const descriptor = module?.["default"];
+  if (
+    !Predicate.isObject(descriptor) ||
+    !Predicate.isString(descriptor["name"]) ||
+    !Predicate.isFunction(descriptor["client"]) ||
+    descriptor["init"] === undefined
+  )
+    return undefined;
+  const init = descriptor["init"];
+  const functionName =
+    Predicate.hasProperty(init, "convexFunctionName") &&
+    Predicate.isString(init.convexFunctionName)
+      ? init.convexFunctionName
+      : "";
+  const colon = functionName.lastIndexOf(":");
+  const found =
+    colon < 0
+      ? undefined
+      : groups
+          .find(
+            ({ path: groupPath }) => groupPath === functionName.slice(0, colon),
+          )
+          ?.functions.find(
+            ({ name }) => name === functionName.slice(colon + 1),
+          );
+  if (found?.kind !== "mutation" || found.visibility !== "internal")
+    return yield* new CodegenError.InvalidDeclarationError({
+      declarationPath: path
+        .relative(yield* ProjectRoot.get, file)
+        .split(path.sep)
+        .join("/"),
+      reason: `the component's descriptor names ${functionName === "" ? "a value" : functionName} its init, which is no internal mutation of the component.`,
+    });
+  const generated = path.join(yield* ConfectDirectory.get, GENERATED_DIRNAME);
+  const relative = path
+    .relative(generated, file)
+    .split(path.sep)
+    .join("/")
+    .replace(/\.([cm]?)[jt]s$/, ".$1js");
+  return {
+    specifier: relative.startsWith(".") ? relative : `./${relative}`,
   };
 });
 

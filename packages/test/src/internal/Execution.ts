@@ -67,13 +67,16 @@ export const SINK = "~sink";
 
 /**
  * Answers a call to a handle under {@link SINK}, in place of a registered
- * function: `udfPath` is the slot the handle names. The answer is the call's
+ * function: `slot` is the udf path the handle names, and `caller` the function
+ * that called it, or `undefined` for a scheduled job. The answer is the call's
  * encoded return, or a rejection the caller receives as the function's.
  */
 export type Sink = (command: {
   readonly slot: string;
-  readonly functionType: "query" | "mutation" | "action";
   readonly args: unknown;
+  readonly caller:
+    | { readonly componentPath: string; readonly functionName: string }
+    | undefined;
 }) => Promise<unknown>;
 
 /**
@@ -1838,6 +1841,8 @@ export class World {
     const from: From = { caller: anonymous, request };
     const run = () =>
       Promise.resolve().then(() => {
+        const sunk = this.sunk(job.target, job.args, from);
+        if (sunk !== undefined) return sunk;
         const { func } = this.resolve(job.target, "any");
         return func.isQuery
           ? this.queryAt(job.target, job.args, from)
@@ -1917,7 +1922,9 @@ export class World {
     args: any,
   ): DocumentId {
     const target = functionPathOf(args, execution.componentPath);
-    this.component(target.componentPath);
+    // A job may target a callback sink's handle, which no component registers.
+    if (target.componentPath !== SINK || this.sink === undefined)
+      this.component(target.componentPath);
     const jobArgs = jsonToConvex(args.args);
     this.keepArgs(target, jobArgs);
     if (hasPendingValues(jobArgs)) {
@@ -1996,12 +2003,23 @@ export class World {
    */
   private sunk(
     functionPath: FunctionPath,
-    functionType: UdfType,
     args: any,
+    from: From,
   ): Promise<any> | undefined {
     if (functionPath.componentPath !== SINK || this.sink === undefined)
       return undefined;
-    return this.sink({ slot: functionPath.udfPath, functionType, args });
+    const caller =
+      from.parent === undefined
+        ? undefined
+        : {
+            componentPath: from.parent.componentPath,
+            functionName: from.parent.udfPath,
+          };
+    // A rejection carries a declared error's data as Convex JSON, which the
+    // caller's syscall reads back with `jsonToConvex` (convex 1.49,
+    // `src/server/impl/syscall.ts:46-51`), as a function's thrown error is
+    // serialized to it (`src/server/impl/registration_impl.ts:112-127`).
+    return this.sink({ slot: functionPath.udfPath, args, caller });
   }
 
   private queryAt(
@@ -2010,7 +2028,7 @@ export class World {
     from: From,
     snapshotOnly = false,
   ) {
-    const sunk = this.sunk(functionPath, "query", args);
+    const sunk = this.sunk(functionPath, args, from);
     if (sunk !== undefined) return sunk;
     const resolved = this.resolve(functionPath, "query");
     this.keepArgs(functionPath, args);
@@ -2024,7 +2042,7 @@ export class World {
   }
 
   private mutationAt(functionPath: FunctionPath, args: any, from: From) {
-    const sunk = this.sunk(functionPath, "mutation", args);
+    const sunk = this.sunk(functionPath, args, from);
     if (sunk !== undefined) return sunk;
     const resolved = this.resolve(functionPath, "mutation");
     this.keepArgs(functionPath, args);
@@ -2038,7 +2056,7 @@ export class World {
   }
 
   private actionAt(functionPath: FunctionPath, args: any, from: From) {
-    const sunk = this.sunk(functionPath, "action", args);
+    const sunk = this.sunk(functionPath, args, from);
     if (sunk !== undefined) return sunk;
     const resolved = this.resolve(functionPath, "action");
     this.keepArgs(functionPath, args);

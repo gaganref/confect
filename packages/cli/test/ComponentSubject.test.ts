@@ -1,6 +1,7 @@
 import { codegenHandler } from "@confect/cli/confect/codegen";
 import * as Bundler from "@confect/cli/Bundler";
 import {
+  InvalidDeclarationError,
   InvalidManifestSectionError,
   UndeclaredCallbackSlotError,
 } from "@confect/cli/CodegenError";
@@ -35,16 +36,40 @@ import { OnEvent } from "../callbacks";
 export default Table.make(() => Schema.Struct({ onEvent: Callback.handle(OnEvent) }));
 `;
 
+const installSpec = `import { Callback, FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+import { OnEvent } from "./callbacks";
+export default GroupSpec.make().addFunction(FunctionSpec.internalMutation({ name: "init", args: () => ({ onEvent: Callback.handle(OnEvent) }), returns: () => Schema.Null }));
+`;
+
+const installImpl = `import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import databaseSchema from "./_generated/schema";
+import install from "./install.spec";
+const init = FunctionImpl.make(databaseSchema, install, "init", () => Effect.succeed(null));
+export default GroupImpl.make(databaseSchema, install).pipe(Layer.provide(init), GroupImpl.finalize);
+`;
+
+const client = (init: string) => `import { Component } from "@confect/core";
+import refs from "./confect/_generated/refs";
+export default Component.make("mailer", { init: ${init}, client: (native: unknown) => native });
+`;
+
 /**
  * The integration project as the `mailer` component, whose `hooks` table holds
- * a handle for its declared `mailer/onEvent` contract.
+ * a handle for its declared `mailer/onEvent` contract, and whose descriptor,
+ * its package's `./client` export, names `install:init` its init.
  */
 const componentProject = Effect.gen(function* () {
   const project = yield* Project.make;
   yield* project.write(
     "package.json",
-    '{"name":"@confect-fixtures/mailer","type":"module"}',
+    '{"name":"@confect-fixtures/mailer","type":"module","exports":{"./client":"./client.ts"}}',
   );
+  yield* project.write("confect/install.spec.ts", installSpec);
+  yield* project.write("confect/install.impl.ts", installImpl);
+  yield* project.write("client.ts", client("refs.internal.install.init"));
   yield* project.write("confect/app.ts", app());
   yield* project.write("confect/callbacks.ts", callbacks);
   yield* project.write("confect/tables/hooks.ts", hooks);
@@ -79,6 +104,8 @@ layer(NodeServices.layer)("codegen's generated component subject", (it) => {
         expect(testing).toContain(
           '"mailer/onEvent": $TestComponent.slot($callbacks["OnEvent"]),',
         );
+        expect(testing).toContain('import $descriptor from "../../client.js";');
+        expect(testing).toContain("  init: $descriptor.init,");
         expect(testing).not.toContain("groups");
         const subject = yield* subjectOf(project);
         expect(subject.kind).toBe("component");
@@ -94,6 +121,7 @@ layer(NodeServices.layer)("codegen's generated component subject", (it) => {
         expect(subject.slots["mailer/onEvent"].contract.id).toBe(
           "mailer/onEvent",
         );
+        expect(subject.init.convexFunctionName).toBe("install:init");
         expect(subject.obligations).toEqual([
           { kind: "export", ref: "notes:list" },
           { kind: "laws" },
@@ -112,6 +140,23 @@ layer(NodeServices.layer)("codegen's generated component subject", (it) => {
         expect(yield* Project.writtenFiles(project.run)).toEqual([]);
         expect(yield* project.read("confect/_generated/testing.ts")).toBe(
           testing,
+        );
+      }).pipe(Effect.scoped),
+    { timeout: 60000 },
+  );
+
+  it.effect(
+    "stops codegen at a descriptor whose init is no internal mutation",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* componentProject;
+        yield* project.write("client.ts", client("refs.public.notes.list"));
+        expect(yield* Effect.flip(project.run)).toEqual(
+          new InvalidDeclarationError({
+            declarationPath: "client.ts",
+            reason:
+              "the component's descriptor names notes:list its init, which is no internal mutation of the component.",
+          }),
         );
       }).pipe(Effect.scoped),
     { timeout: 60000 },
