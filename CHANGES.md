@@ -326,9 +326,13 @@ with `LoadRandomUnavailable`, and so does the open. `crypto.subtle`'s drawing
 operations, `generateKey`, RSA-OAEP `encrypt` and ECDSA or RSA-PSS `sign`,
 reject with the binary's error in a query, a mutation and a module load, and
 with `RequiresBinary` in an action. `kernelBoundaries.ts` records the action
-cases as `ActionCryptoRandomness` and `ActionLoadCryptoRandomness`. A function
-with no invocation bound, and a reference kept before the kernel ran any code,
-keep the host's. The fixture's system-table share measures 22 with the probe.
+cases as `ActionCryptoRandomness` and `ActionLoadCryptoRandomness`. A function with no invocation bound draws from the backend's own world, so an
+unbound `TestConfect.layer` call is seeded and replays, and with no world it
+refuses with `FunctionRandomUnavailable` rather than read the host's. Only a
+reference kept before the kernel ran any code keeps the host's. The bridge
+that pins a bound handler on the convex-test target refuses the same `subtle`
+operations by function type. The fixture's system-table share measures 22
+with the probe.
 This is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-randomness.md`. Upstream: fork only, as the kernel is
 fork-specific.

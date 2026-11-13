@@ -17,7 +17,12 @@ import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Invocation from "../src/internal/Invocation";
 import * as Json from "../src/internal/Json";
 import { call, localBackendWorld } from "./fixtures/localBackendWorld";
-import { calls, drawnFrom, streamFor } from "./fixtures/drawingBackend";
+import {
+  calls,
+  drawingBackend,
+  drawnFrom,
+  streamFor,
+} from "./fixtures/drawingBackend";
 import { expectedOnKernel, normalize } from "./fixtures/randomnessProbe";
 import { keptAtImport } from "./fixtures/randomKeptAtImport";
 
@@ -365,6 +370,59 @@ describe("randomness on the kernel", () => {
       ]),
     );
     expect(Json.parse(one.stdout)).toEqual(fromStreams);
+  }, 120_000);
+
+  it.effect(
+    "a function with no invocation bound draws from the backend's own world, a plain one and a component's in call order, and with no world refuses with FunctionRandomUnavailable",
+    () =>
+      Effect.gen(function* () {
+        const t = drawingBackend({
+          ...worldOf("own"),
+          random: streamFor(100),
+        });
+        const query = yield* settle(() => t.query(calls.query[1], {}));
+        const component = yield* settle(() => t.query(calls.component[1], {}));
+        const own = streamFor(100);
+        expect([query, component]).toEqual([
+          { value: drawnFrom(own) },
+          { value: drawnFrom(own) },
+        ]);
+        const refused = yield* settle(() =>
+          drawingBackend().query(calls.query[1], {}),
+        );
+        expect(refused).toMatchObject({
+          error: {
+            _tag: "FunctionRandomUnavailable",
+            componentPath: "",
+            udfPath: "draws:query",
+          },
+        });
+      }),
+  );
+
+  it("two processes running unbound functions through TestConfect.layer with one seed draw the same bytes from its world, and another seed moves them", () => {
+    const loader = pathToFileURL(
+      createRequire(import.meta.url).resolve("tsx/esm"),
+    ).href;
+    const script = fileURLToPath(
+      new URL("fixtures/unboundDrawReplay.ts", import.meta.url),
+    );
+    const replay = (...seed: Array<string>) =>
+      spawnSync(process.execPath, ["--import", loader, script, ...seed], {
+        encoding: "utf8",
+      });
+    const [one, two, other] = [replay(), replay(), replay("7")];
+    expect(
+      Arr.flatMap([one, two, other], ({ status, stderr }) => [status, stderr]),
+    ).toEqual([0, "", 0, "", 0, ""]);
+    expect(one.stdout).toBe(two.stdout);
+    expect(other.stdout).not.toBe(one.stdout);
+    // Nothing loads or schedules a draw first, so the first run's first draw
+    // is Mulberry32 from seed 0's first, 0.26642920868471265.
+    expect(Json.parse(one.stdout)).toMatchObject([
+      { random: 0.26642920868471265 },
+      {},
+    ]);
   }, 120_000);
 
   it("two processes opening a module that draws while it loads, through TestConfect.layer with one seed, replay its draws byte for byte, and another seed moves them", () => {

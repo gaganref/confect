@@ -66,8 +66,13 @@ export const calls = {
   lazy: ["action", makeFunctionReference<"action", {}, Drawn>("draws:lazy")],
 } as const;
 
-export const drawingBackend = (): KernelControls => {
+/**
+ * The backend, with `world` as its own when given, which an unbound call draws
+ * from.
+ */
+export const drawingBackend = (world?: Invocation.World): KernelControls => {
   const t = convexTest({
+    ...(world === undefined ? {} : { world }),
     schema: defineSchema({}),
     modules: {
       "_generated/server.ts": () => Promise.resolve({}),

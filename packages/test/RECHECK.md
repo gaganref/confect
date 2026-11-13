@@ -1140,13 +1140,26 @@ handler's stream rather than the load's, and one kept during an open with no
 world refuses nothing later. On the kernel the bridge leaves these in place.
 Elsewhere it pins a handler's to its invocation as before.
 
-Two references stay the host's. A function with no invocation bound draws the
-host's stream, still through the binary's `getRandomValues` checks, as it did
-before the kernel had a stream to give it. A reference taken outside every
-kernel copy, before the kernel ran any code, such as a module a test file
-imports, keeps what it read. That is the lazy-loading contract #136 states for
-`fetch` and timers. Its setup file is not on `main`, so there is no earlier
-point to install from yet.
+A function with no invocation bound draws from the backend's own world, the
+one the driver gave the backend, which for `TestConfect.layer` is the stream
+its `seed` starts. A deployment JWT's signing seed resolves the same way
+(#134): the bound invocation's world first, then the backend's. An unbound
+`TestConfect.layer` call is therefore seeded and replays. With neither stream,
+a draw refuses with `FunctionRandomUnavailable` (`componentPath`, `udfPath`),
+a kernel refusal that never reads the host's. Like `RequiresBinary`, a
+function can catch it, as it can the binary's own query error. The
+mock-backend kernel lane's `convex-test` is a shim
+(`packages/server/test/mock-backend/kernelShim.ts`) that opens each backend
+under a world seeded 0, as `TestConfect.layer` does by default, so its one
+case that draws, `integration.test.ts > ActionRunner > getNumberViaRunner`,
+runs on the kernel. No other kernel-lane case changes its outcome under that
+seed.
+
+One reference stays the host's. A reference taken outside every kernel copy,
+before the kernel ran any code, such as a module a test file imports, keeps
+what it read. That is the lazy-loading contract #136 states for `fetch` and
+timers. Its setup file is not on `main`, so there is no earlier point to
+install from yet.
 
 ### Cryptographic randomness
 

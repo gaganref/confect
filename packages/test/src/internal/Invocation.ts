@@ -199,7 +199,7 @@ const pin = (
       : Entropy.kernelMath(previous.Math, source),
     crypto: kernelEntropy
       ? previous.crypto
-      : Entropy.kernelCrypto(previous.crypto, source, invocation.random),
+      : Entropy.kernelCrypto(previous.crypto, source),
   };
   try {
     if (!kernelDate) host.Date = pinned.Date;

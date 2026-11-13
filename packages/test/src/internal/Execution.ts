@@ -368,17 +368,35 @@ const executions = new AsyncLocalStorage<Execution>();
 const moduleLoads = new AsyncLocalStorage<Entropy.Source>();
 
 /**
+ * The refusal a draw raises in `execution` when no stream reaches it.
+ */
+const randomUnavailable = (execution: Execution) => (): number => {
+  throw KernelRefusal.FunctionRandomUnavailable.make({
+    componentPath: execution.componentPath,
+    udfPath: execution.udfPath,
+    message: `Function "${execution.udfPath}"${execution.componentPath === ROOT ? "" : ` of component "${execution.componentPath}"`} draws a random value, which Convex draws from the function's seeded generator, and neither a test invocation bound to the call nor the backend's own world supplies a stream to draw from. The kernel holds no generator. Bind an invocation, or give the backend a world, as TestConfect.layer does.`,
+  });
+};
+
+/**
  * What a draw reads where it happens: the load running, or else the running
- * kernel function's type and its bound invocation's stream. A function with no
- * invocation bound draws the host's, as before the kernel had a stream to give
- * it. Outside both, test code's own.
+ * kernel function's type and a stream, the bound invocation's first and then
+ * the backend's own world's, as a deployment JWT's signing seed resolves
+ * (#134). With neither, the draw refuses with `FunctionRandomUnavailable`; it
+ * never reads the host's. Outside both, test code's own.
  */
 const entropySource: Entropy.Resolve = () => {
   const loading = moduleLoads.getStore();
   if (loading !== undefined) return loading;
   const execution = executions.getStore();
   if (execution === undefined) return undefined;
-  return { phase: execution.udfType, random: Invocation.current()?.random };
+  return {
+    phase: execution.udfType,
+    random:
+      Invocation.current()?.random ??
+      execution.world.ownRandom() ??
+      randomUnavailable(execution),
+  };
 };
 
 const kernelMaths = new WeakMap<Math, Math>();
@@ -405,13 +423,7 @@ const installEntropy = () => {
   }
   let crypto = kernelCryptos.get(host.crypto);
   if (crypto === undefined) {
-    const hostMath = host.Math;
-    crypto = Entropy.kernelCrypto(
-      host.crypto,
-      entropySource,
-      // oxlint-disable-next-line effecttsgo/global-random -- A function with no bound invocation fills from the host's stream, as it drew before the kernel had one to give it.
-      () => hostMath.random(),
-    );
+    crypto = Entropy.kernelCrypto(host.crypto, entropySource);
     kernelCryptos.set(host.crypto, crypto);
   }
   try {
@@ -783,6 +795,14 @@ export class World {
    */
   open(): Promise<void> {
     return this.openIn(Invocation.current()?.world ?? this.own);
+  }
+
+  /**
+   * The random stream of the world the driver gave the backend itself, which a
+   * function with no invocation bound draws from.
+   */
+  ownRandom(): (() => number) | undefined {
+    return this.own?.random;
   }
 
   private openIn(world: Invocation.World | undefined): Promise<void> {

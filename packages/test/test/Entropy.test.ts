@@ -14,11 +14,7 @@ const cycling = () => {
  * The kernel's `crypto` over the host's, answering `source` on every call.
  */
 const cryptoIn = (source: Entropy.Source | undefined) =>
-  Entropy.kernelCrypto(
-    crypto,
-    () => source,
-    () => 0.5,
-  );
+  Entropy.kernelCrypto(crypto, () => source);
 
 const settle = (thunk: () => Promise<unknown>) =>
   Effect.promise(() =>
@@ -101,11 +97,7 @@ describe("Entropy", () => {
       random: () => 0.125,
     };
     const math = Entropy.kernelMath(Math, () => source);
-    const kernelCrypto = Entropy.kernelCrypto(
-      crypto,
-      () => source,
-      () => 0.5,
-    );
+    const kernelCrypto = Entropy.kernelCrypto(crypto, () => source);
     const { random } = math;
     // oxlint-disable-next-line typescript/unbound-method -- The test keeps the method detached, as a module may.
     const { getRandomValues } = kernelCrypto;
@@ -116,9 +108,16 @@ describe("Entropy", () => {
     expect([random(), ...getRandomValues(new Uint8Array(1))]).toEqual([
       0.625, 160,
     ]);
-    // A source with no stream fills from the host, with the binary's checks.
-    source = { phase: "query", random: undefined };
-    expect(getRandomValues(new Uint8Array(1))).toEqual(new Uint8Array([128]));
+    // A source whose stream refuses throws its refusal, and never reads the
+    // host's.
+    source = {
+      phase: "query",
+      random: () => {
+        throw new RangeError("no stream");
+      },
+    };
+    expect(() => random()).toThrow("no stream");
+    expect(() => getRandomValues(new Uint8Array(1))).toThrow("no stream");
     expect(() => getRandomValues(new Uint8Array(65_537))).toThrow(TypeError);
     // Outside a source, both are the host's.
     source = undefined;

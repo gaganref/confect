@@ -9,11 +9,12 @@ export type Phase = "query" | "mutation" | "action" | "load";
 
 /**
  * What a draw reads: the phase it happens in, and the stream that phase draws
- * from. With no stream, it draws the host's.
+ * from. Where the driver supplied no stream, `random` throws the kernel's
+ * refusal; it never falls back to the host's.
  */
 export interface Source {
   readonly phase: Phase;
-  readonly random: (() => number) | undefined;
+  readonly random: () => number;
 }
 
 /**
@@ -199,16 +200,16 @@ const built = new WeakSet<object>();
 
 /**
  * `Math` over `base`, whose `random` resolves its source on every call: the
- * source's stream, or `base`'s own `random` when it has none or there is no
- * source. A reference to `random` taken anywhere keeps resolving, so a module
- * that keeps it while it loads draws from the function that later calls it.
+ * source's stream, or `base`'s own `random` outside any source. A reference to
+ * `random` taken anywhere keeps resolving, so a module that keeps it while it
+ * loads draws from the function that later calls it.
  */
 export const kernelMath = (base: Math, resolve: Resolve): Math => {
   const random = () => {
-    const stream = resolve()?.random;
-    return stream === undefined
+    const source = resolve();
+    return source === undefined
       ? Reflect.apply(Reflect.get(base, "random"), base, [])
-      : stream();
+      : source.random();
   };
   const math = new Proxy(base, {
     get: (target, property, receiver) =>
@@ -221,27 +222,22 @@ export const kernelMath = (base: Math, resolve: Resolve): Math => {
 /**
  * `crypto` over `base`, whose `getRandomValues` and `randomUUID` resolve their
  * source on every call. Inside a source they answer as the binary's, from its
- * stream or else from `hostRandom`. Outside one they are `base`'s own. Its
- * `subtle` refuses the operations that draw cryptographic randomness inside a
- * source, by phase.
+ * stream. Outside one they are `base`'s own. Its `subtle` refuses the
+ * operations that draw cryptographic randomness inside a source, by phase.
  */
-export const kernelCrypto = (
-  base: Crypto,
-  resolve: Resolve,
-  hostRandom: () => number,
-): Crypto => {
+export const kernelCrypto = (base: Crypto, resolve: Resolve): Crypto => {
   const getRandomValues = <T extends Fillable>(...args: Array<T>): T => {
     const source = resolve();
     return source === undefined
       ? (Reflect.apply(Reflect.get(base, "getRandomValues"), base, args) as T)
-      : fill(source.random ?? hostRandom, args);
+      : fill(source.random, args);
   };
   const randomUUID = (): ReturnType<Crypto["randomUUID"]> => {
     const source = resolve();
     return source === undefined
       ? // oxlint-disable-next-line effecttsgo/crypto-random-uuid -- Outside any kernel source this is the host's own randomUUID, which the kernel passes through unchanged.
         base.randomUUID()
-      : uuid(source.random ?? hostRandom);
+      : uuid(source.random);
   };
   const subtle = kernelSubtle(base.subtle, resolve);
   const wrapped = new Proxy(base, {

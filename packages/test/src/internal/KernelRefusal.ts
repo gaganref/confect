@@ -160,6 +160,20 @@ export class LoadRandomUnavailable extends Schema.TaggedError<
 }) {}
 
 /**
+ * A function drew a random value, and neither an invocation bound to it nor the
+ * backend's own world supplied a stream to draw from. The binary seeds every
+ * function; the kernel holds no generator of its own.
+ */
+export class FunctionRandomUnavailable extends Schema.TaggedError<
+  FunctionRandomUnavailable,
+  { readonly brand: unique symbol }
+>()("FunctionRandomUnavailable", {
+  componentPath: Schema.String,
+  udfPath: Schema.String,
+  message: Schema.String,
+}) {}
+
+/**
  * Computing a cron job's next run reaches arithmetic that aborts the Convex
  * binary, which is built with overflow checks.
  */
@@ -408,6 +422,7 @@ const refusals = Array.map(
   [
     RequiresBinary,
     KernelRowPending,
+    FunctionRandomUnavailable,
     RegisteredAfterOpen,
     ClosedAttempt,
     StaleAttempt,
