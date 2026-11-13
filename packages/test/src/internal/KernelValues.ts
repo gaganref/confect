@@ -722,7 +722,6 @@ export function createTestJwt(identity: Record<string, any>) {
   return `${header}.${payload}.`;
 }
 
-// Limits the backend puts on tokens from `ctx.auth.signJwt`.
 export function parseArgs(
   args: Record<string, Value> | undefined,
 ): Record<string, Value> {

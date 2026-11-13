@@ -16,6 +16,8 @@ export class RequiresBinary extends Schema.TaggedError<
     "subtleGenerateKey",
     "subtleEncrypt",
     "subtleSign",
+    "oidcDiscovery",
+    "remoteJwks",
   ]),
   message: Schema.String,
 }) {}
@@ -129,6 +131,41 @@ export class InvalidCron extends Schema.TaggedError<
   cronName: Schema.String,
   message: Schema.String,
 }) {}
+
+/**
+ * The token a test presented was refused before any function ran, as the binary
+ * answers a client's request with 401. `code` is the binary's: `NoAuthProvider`
+ * when no provider's issuer and audience match the token, and
+ * `InvalidAuthHeader` for every other failure.
+ */
+export class InvalidToken extends Schema.TaggedError<
+  InvalidToken,
+  { readonly brand: unique symbol }
+>()("InvalidToken", {
+  code: Schema.Literals(["NoAuthProvider", "InvalidAuthHeader"]),
+  message: Schema.String,
+}) {}
+
+export const isInvalidToken = Schema.is(InvalidToken);
+
+/**
+ * The app's `auth.config` declares a provider the binary would refuse at push.
+ * `index` is the provider's position, or -1 for the config itself.
+ */
+export class InvalidAuthConfig extends Schema.TaggedError<
+  InvalidAuthConfig,
+  { readonly brand: unique symbol }
+>()("InvalidAuthConfig", { index: Schema.Int, message: Schema.String }) {}
+
+/**
+ * The deployment's signing key is drawn on first use from a test world's random
+ * stream, and neither an invocation was bound nor the backend was given a world
+ * to draw it from. The kernel holds no generator of its own.
+ */
+export class SigningKeyRandomUnavailable extends Schema.TaggedError<
+  SigningKeyRandomUnavailable,
+  { readonly brand: unique symbol }
+>()("SigningKeyRandomUnavailable", { message: Schema.String }) {}
 
 /**
  * A cron job runs on a clock schedule, which Convex delays by a random draw,

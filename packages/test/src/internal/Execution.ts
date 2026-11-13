@@ -25,6 +25,7 @@ import * as Clock from "./Clock.js";
 import * as Crons from "./Crons.js";
 import * as Entropy from "./Entropy.js";
 import * as Globals from "./Globals.js";
+import * as Identity from "./Identity.js";
 import * as Http from "./Http.js";
 import * as Invocation from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
@@ -106,6 +107,11 @@ interface Component {
    * that runs one, or that one schedules, is never drain work.
    */
   readonly standing: ReadonlySet<string>;
+  /**
+   * The `auth.config` module beside the functions, which only the app's
+   * providers come from.
+   */
+  readonly authConfig: (() => Promise<any>) | undefined;
 }
 
 /**
@@ -304,6 +310,14 @@ interface Execution {
   readonly udfType: UdfType;
   readonly attempt: KernelAttempt | undefined;
   readonly identity: UserIdentity | null;
+  /**
+   * The verifier's refusal of the token its request presented, when an HTTP
+   * request's token was refused. The binary runs the request with an unknown
+   * identity that holds the error
+   * (`local_backend/src/http_actions.rs:165-169`), and a nested call in the
+   * host gets that identity unchanged (`model/src/components/auth.rs:6-19`).
+   */
+  readonly unverified: KernelRefusal.InvalidToken | undefined;
   readonly request: Request;
   /**
    * The kernel's time when the outermost query or mutation began. Its nested
@@ -517,11 +531,18 @@ const current = (): Execution => {
   return execution;
 };
 
+/**
+ * A request ID in the binary's format, 16 lowercase hex digits
+ * (`RequestId::new` in `crates/common/src/execution_context.rs:204-208`,
+ * convex-backend `cccbade4`). The binary draws 8 random bytes. The kernel
+ * counts instead, so every request in the process gets its own ID and a replay
+ * draws nothing from the supplied random stream.
+ */
 let nextRequestId = 0;
 const newRequest = (caller: Caller): Request => ({
   ip: caller.ip,
   userAgent: caller.userAgent,
-  requestId: `kernel-request-${nextRequestId++}`,
+  requestId: Str.padStart(16, "0")((nextRequestId++).toString(16)),
   scheduledFunctionId: null,
   authToken: caller.token,
 });
@@ -588,6 +609,9 @@ const makeComponent = (
     ),
     loaded: new Map(),
     standing: new Set(standing),
+    authConfig: Option.getOrUndefined(
+      Arr.findFirst(relative, ([file]) => /^auth\.config\.[jt]s$/.test(file)),
+    )?.[1],
   };
 };
 
@@ -752,6 +776,14 @@ export class World {
    * restored world never hands out a version its source already used.
    */
   private identityEpoch = 0;
+  /**
+   * The default export of the app's `auth.config`, loaded at open.
+   */
+  private authConfig: Promise<unknown> = Promise.resolve(undefined);
+  private providers: ReadonlyArray<Identity.Provider> | undefined;
+  readonly deploymentKey = new Identity.DeploymentKey(() =>
+    this.drawSigningSeed(),
+  );
 
   constructor(
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
@@ -816,9 +848,28 @@ export class World {
    * each component's cron declarations. Reading declarations draws nothing.
    */
   private load(world: Invocation.World | undefined): Promise<void> {
-    this.opened ??= this.loadModules(world)
-      .then(() => this.checkStanding())
-      .then(() => this.readDeclarations());
+    if (this.opened === undefined) {
+      const loadAuthConfig = this.component(ROOT).authConfig;
+      let authConfig: { readonly default?: unknown } | undefined;
+      const loaded = this.loadModules(
+        world,
+        loadAuthConfig === undefined
+          ? []
+          : [
+              {
+                modulePath: "auth.config",
+                load: loadAuthConfig,
+                keep: (module) => {
+                  authConfig = module;
+                },
+              },
+            ],
+      );
+      this.authConfig = loaded.then(() => authConfig?.default);
+      this.opened = Promise.all([loaded, this.authConfig])
+        .then(() => this.checkStanding())
+        .then(() => this.readDeclarations());
+    }
     return this.opened;
   }
 
@@ -842,7 +893,14 @@ export class World {
    * for one of those does. A module the host runtime already evaluated is not
    * evaluated again, so it draws nothing.
    */
-  private loadModules(world: Invocation.World | undefined): Promise<void> {
+  private loadModules(
+    world: Invocation.World | undefined,
+    extra: ReadonlyArray<{
+      readonly modulePath: string;
+      readonly load: () => Promise<any>;
+      readonly keep: (module: any) => void;
+    }> = [],
+  ): Promise<void> {
     let refused: KernelRefusal.LoadRandomUnavailable | undefined;
     const entries = Arr.flatMap(
       Array.from(this.components.values()),
@@ -851,12 +909,21 @@ export class World {
           component,
           modulePath,
           load,
+          keep: (module: any) => {
+            component.loaded.set(modulePath, module);
+          },
         })),
+    ).concat(
+      Arr.map(extra, (entry) => ({
+        ...entry,
+        component: this.component(ROOT),
+      })),
     );
     const loadOne = ({
       component,
       modulePath,
       load,
+      keep,
     }: (typeof entries)[number]): Promise<unknown> => {
       const random =
         world?.random ??
@@ -875,13 +942,71 @@ export class World {
             return load();
           }),
         )
-        .then((module) => component.loaded.set(modulePath, module));
+        .then(keep);
     };
     return Arr.reduce(
       entries,
       Promise.resolve<unknown>(undefined),
       (previous, entry) => previous.then(() => loadOne(entry)),
     ).then(() => (refused === undefined ? undefined : Promise.reject(refused)));
+  }
+
+  /**
+   * Open the backend, and the caller a call from the test runs as: `caller`, or
+   * the one a presented `token` makes. Each call from the test reaches its
+   * caller inside its own `during`, so verifying a token and running the call
+   * are one live call, and a snapshot refuses while either is pending.
+   */
+  private presenting(
+    caller: Caller,
+    token: string | undefined,
+  ): Promise<Caller> {
+    return token === undefined
+      ? this.open().then(() => caller)
+      : this.authenticate(caller, token);
+  }
+
+  /**
+   * The caller a presented token makes, verified against the app's
+   * `auth.config` providers at the kernel's time, before anything runs. The
+   * binary verifies a client's token on every request, so a token that expires
+   * fails the next call after it does.
+   */
+  private authenticate(caller: Caller, token: string): Promise<Caller> {
+    return this.open()
+      .then(() => this.authConfig)
+      .then((config) => {
+        this.providers ??= Identity.readProviders(config);
+        return Identity.verify(token, this.providers, this.now());
+      })
+      .then((identity) => ({ ...caller, identity, token }));
+  }
+
+  /**
+   * The deployment signing key's seed: 32 values from the random stream of the
+   * invocation's world bound now, or else the backend's own, as a cron delay
+   * draws. The seed is kept as a secret, so a snapshot writes it as a marker
+   * and no artifact shows it raw.
+   */
+  private drawSigningSeed(): Identity.Seed {
+    const world = Invocation.current()?.world ?? this.own;
+    if (world === undefined) {
+      throw KernelRefusal.SigningKeyRandomUnavailable.make({
+        message:
+          "The deployment's signing key is drawn from a test world's random stream, and no invocation is bound and this backend was given no world to draw it from. The kernel holds no generator. Pass `world` to `convexTest`, or use `TestConfect.layer`'s kernel target, whose world is seeded.",
+      });
+    }
+    const seed = pipe(
+      Arr.makeBy(32, () =>
+        pipe(
+          Math.floor(world.random() * 256).toString(16),
+          Str.padStart(2, "0"),
+        ),
+      ),
+      Arr.join(""),
+    );
+    this.secrets.keep(seed);
+    return seed;
   }
 
   private readDeclarations() {
@@ -1106,10 +1231,15 @@ export class World {
 
   // Calls from the test.
 
-  query(caller: Caller, reference: any, args: any): Promise<any> {
+  query(
+    caller: Caller,
+    reference: any,
+    args: any,
+    token?: string,
+  ): Promise<any> {
     return this.during(() =>
-      this.open().then(() => {
-        const from = { caller, request: newRequest(caller) };
+      this.presenting(caller, token).then((who) => {
+        const from = { caller: who, request: newRequest(who) };
         return typeof reference === "function"
           ? this.runQuery(
               { componentPath: ROOT, udfPath: "inline" },
@@ -1122,10 +1252,15 @@ export class World {
     );
   }
 
-  mutation(caller: Caller, reference: any, args: any): Promise<any> {
+  mutation(
+    caller: Caller,
+    reference: any,
+    args: any,
+    token?: string,
+  ): Promise<any> {
     return this.during(() =>
-      this.open().then(() => {
-        const from = { caller, request: newRequest(caller) };
+      this.presenting(caller, token).then((who) => {
+        const from = { caller: who, request: newRequest(who) };
         return typeof reference === "function"
           ? this.runMutation(
               { componentPath: ROOT, udfPath: "inline" },
@@ -1138,10 +1273,15 @@ export class World {
     );
   }
 
-  action(caller: Caller, reference: any, args: any): Promise<any> {
+  action(
+    caller: Caller,
+    reference: any,
+    args: any,
+    token?: string,
+  ): Promise<any> {
     return this.during(() =>
-      this.open().then(() => {
-        const from = { caller, request: newRequest(caller) };
+      this.presenting(caller, token).then((who) => {
+        const from = { caller: who, request: newRequest(who) };
         return typeof reference === "function"
           ? this.runAction(
               { componentPath: ROOT, udfPath: "inline" },
@@ -1158,15 +1298,16 @@ export class World {
     caller: Caller,
     componentPath: string,
     handler: (ctx: any) => any,
+    token?: string,
   ): Promise<any> {
     return this.during(() =>
-      this.open().then(() => {
+      this.presenting(caller, token).then((who) => {
         this.component(componentPath);
         return this.runMutation(
           { componentPath, udfPath: "custom" },
           { handler, args: { type: "any" }, returns: null },
           {},
-          { caller, request: newRequest(caller) },
+          { caller: who, request: newRequest(who) },
         );
       }),
     );
@@ -1177,10 +1318,35 @@ export class World {
    * request: the router's `lookup` picks the route by pathname and method, and
    * the route's handler runs as an action with the caller's identity. With no
    * route, the binary's 404, and for a handler that throws, its 500.
+   *
+   * A presented `token` is verified first, in the same live call. A token the
+   * verifier refuses does not refuse the request: the binary runs the handler
+   * with an unknown identity that holds the error
+   * (`local_backend/src/http_actions.rs:165-169`), and the handler's
+   * `getUserIdentity` throws it.
    */
-  fetch(caller: Caller, path: unknown, init?: RequestInit): Promise<Response> {
+  fetch(
+    caller: Caller,
+    path: unknown,
+    init?: RequestInit,
+    token?: string,
+  ): Promise<Response> {
     return this.during(() =>
-      this.open().then(() => this.route(caller, path, init)),
+      this.presenting(caller, token).then(
+        (verified) => this.route(verified, path, init),
+        (error: unknown) => {
+          if (!KernelRefusal.isInvalidToken(error)) throw error;
+          // The request runs as the binary's unknown identity: no user, no
+          // token to forward (`keybroker/src/broker.rs:165-175`), and the
+          // refusal for an action's `getUserIdentity` to throw.
+          return this.route(
+            { ...caller, identity: null, token: null },
+            path,
+            init,
+            error,
+          );
+        },
+      ),
     );
   }
 
@@ -1188,6 +1354,7 @@ export class World {
     caller: Caller,
     path: unknown,
     init: RequestInit | undefined,
+    refused?: KernelRefusal.InvalidToken,
   ): Promise<Response> {
     const url = orThrow(Http.requestUrl(path));
     const method = init?.method ?? "GET";
@@ -1217,7 +1384,7 @@ export class World {
       { componentPath: ROOT, udfPath: "http" },
       "action",
       undefined,
-      { caller, request: newRequest(caller) },
+      { caller, request: newRequest(caller), unverified: refused },
       undefined,
     );
     const action = httpActionGeneric((ctx, received) =>
@@ -1252,9 +1419,14 @@ export class World {
   /**
    * Run a mutation to its commit point and hold it as attempt 1.
    */
-  prepare(caller: Caller, reference: any, args: any): Promise<HeldAttempt> {
+  prepare(
+    caller: Caller,
+    reference: any,
+    args: any,
+    token?: string,
+  ): Promise<HeldAttempt> {
     return this.during(() =>
-      this.open().then(() => {
+      this.presenting(caller, token).then((who) => {
         const functionPath = pathOfReference(reference, ROOT);
         const resolved = this.resolve(functionPath, "mutation");
         this.keepArgs(functionPath, args);
@@ -1263,7 +1435,7 @@ export class World {
           functionPath,
           resolved,
           args,
-          { caller, request: newRequest(caller) },
+          { caller: who, request: newRequest(who) },
           1,
           Invocation.current(),
         ).then((held) => held.view);
@@ -1494,6 +1666,14 @@ export class World {
         jobs,
         files,
         crons,
+        signingKey:
+          this.deploymentKey.seed === undefined
+            ? null
+            : {
+                [Redaction.markerKey]: this.secrets.keep(
+                  this.deploymentKey.seed,
+                ),
+              },
       },
       (componentPath, table, json) =>
         Redaction.mark(
@@ -1614,6 +1794,13 @@ export class World {
     for (const [key, cron] of cronJobs) this.cronJobs.set(key, cron);
     this.cronsScheduled = true;
     this.secrets = secrets.copy();
+    // The snapshot's key, put back from the secrets, never a fresh draw.
+    // `Snapshot.decode` checked that it is a seed.
+    this.deploymentKey.install(
+      image.signingKey === null
+        ? undefined
+        : (image.signingKey as Identity.Seed),
+    );
   }
 
   /**
@@ -2212,7 +2399,10 @@ export class World {
     pagination: Pagination | undefined,
     startTime?: number,
   ): Execution {
-    const identity = callIdentity(from, functionPath.componentPath);
+    const { identity, unverified } = callIdentity(
+      from,
+      functionPath.componentPath,
+    );
     // A nested call runs under its caller's limits, which its budget can only
     // tighten, and gives them back when it ends (`run_udf`,
     // `crates/isolate/src/environment/udf/async_syscall.rs:700-706`, and
@@ -2232,6 +2422,7 @@ export class World {
       udfType,
       attempt,
       identity,
+      unverified,
       request: from.request,
       startTime:
         startTime ??
@@ -3584,6 +3775,7 @@ type From =
   | {
       readonly caller: Caller;
       readonly request: Request;
+      readonly unverified?: KernelRefusal.InvalidToken | undefined;
       readonly parent?: undefined;
       readonly budget?: undefined;
       readonly syscall?: undefined;
@@ -3611,19 +3803,29 @@ type From =
  * - A client reaches only the app's functions. A test that calls a component
  *   directly gets no identity, as a component's HTTP action does
  *   (`crates/function_runner/src/server.rs:450-455`).
+ *
+ * A refused HTTP token is part of the identity, the binary's unknown identity
+ * that holds the verifier's error, so `unverified` travels by the same rules.
  */
 const callIdentity = (
   from: From,
   componentPath: string,
-): UserIdentity | null => {
+): Pick<Execution, "identity" | "unverified"> => {
   if (from.parent === undefined) {
-    return componentPath === ROOT ? from.caller.identity : null;
+    return componentPath === ROOT
+      ? { identity: from.caller.identity, unverified: from.unverified }
+      : none;
   }
   const { parent } = from;
-  if (parent.udfType !== "action") return parent.identity;
+  if (parent.udfType !== "action") return parent;
   return parent.componentPath === ROOT && componentPath === ROOT
-    ? parent.identity
-    : null;
+    ? parent
+    : none;
+};
+
+const none: Pick<Execution, "identity" | "unverified"> = {
+  identity: null,
+  unverified: undefined,
 };
 
 /**
@@ -3773,8 +3975,23 @@ const transaction = (execution: Execution): KernelAttempt => {
   return execution.attempt;
 };
 
+/**
+ * `ctx.auth` as each kind of function reads it. Under a refused token, an
+ * action, the HTTP action itself or one it ran, throws the verifier's error
+ * (`isolate/src/environment/action/task_executor.rs:205-216`). It reaches the
+ * handler as a plain `Error` whose message is the error's own
+ * (`isolate/src/environment/helpers/promise.rs:74-76`,
+ * `errors/src/lib.rs:25-26`, `:989-994`), rethrown by `performAsyncSyscall`
+ * without `data` (`convex/src/server/impl/syscall.ts:47-52`). A query or a
+ * mutation reads its transaction's identity, and an unknown identity is none
+ * (`isolate/src/environment/udf/async_syscall.rs:1111-1142`,
+ * `database/src/transaction.rs:390-396`).
+ */
 const queryAuth = (execution: Execution) => ({
   getUserIdentity: () => {
+    if (execution.udfType === "action" && execution.unverified !== undefined) {
+      return Promise.reject(new Error(execution.unverified.message));
+    }
     execution.attempt?.observeIdentity();
     return Promise.resolve(execution.identity);
   },
@@ -3782,7 +3999,12 @@ const queryAuth = (execution: Execution) => ({
 
 const mutationAuth = (execution: Execution) => ({
   ...queryAuth(execution),
-  signJwt: () => Promise.reject(KernelRefusal.rowPending("JWT signing", 6)),
+  signJwt: (options: unknown) =>
+    execution.world.deploymentKey.sign(
+      execution.componentPath,
+      options,
+      execution.startTime,
+    ),
 });
 
 function validateId(

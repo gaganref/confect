@@ -16,17 +16,36 @@ export * from "../../../test/src/internal/ConvexTest";
  */
 export const laneSeed = 0;
 
+type Options = Exclude<
+  Parameters<typeof ConvexTest.convexTest>[0],
+  SchemaDefinition<GenericSchema, boolean> | undefined
+>;
+
 /**
- * Convex-test's `convexTest(schema, modules)`, on the test kernel with a seeded
- * world of its own.
+ * Whether `value` is the kernel's options object rather than a schema, as
+ * `TestConfect.layer`'s convex-test target passes one with its own world.
+ */
+const isOptions = (value: unknown): value is Options =>
+  typeof value === "object" &&
+  value !== null &&
+  !("tables" in value) &&
+  ("modules" in value || "schema" in value || "world" in value);
+
+/**
+ * Convex-test's `convexTest(schema, modules)`, or the kernel's options form, on
+ * the test kernel with a seeded world of its own unless the caller gave one.
  */
 export function convexTest(
-  schema?: SchemaDefinition<GenericSchema, boolean>,
+  schemaOrOptions?: SchemaDefinition<GenericSchema, boolean> | Options,
   modules?: Record<string, () => Promise<any>>,
 ): any {
+  const world = DriverWorld.make("kernel lane", laneSeed);
+  if (isOptions(schemaOrOptions)) {
+    return ConvexTest.convexTest({ world, ...schemaOrOptions });
+  }
   return ConvexTest.convexTest({
-    ...(schema === undefined ? {} : { schema }),
+    ...(schemaOrOptions === undefined ? {} : { schema: schemaOrOptions }),
     ...(modules === undefined ? {} : { modules }),
-    world: DriverWorld.make("kernel lane", laneSeed),
+    world,
   });
 }
