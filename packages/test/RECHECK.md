@@ -525,7 +525,42 @@ snapshot is neither, so there is no binary import to drive against it. Native
 import compatibility stays on the binary.
 
 The digest binds integrity, not origin. Bytes a writer rehashes after editing
-pass the digest and then meet the body's shape check, `SnapshotMalformed`.
+pass the digest, so a restore checks that the body is state the kernel could
+have reached before it installs any of it, each rule with its own refusal:
+
+- `SnapshotRowInconsistent`: replaying the write log from the empty world,
+  each change replacing the value the log last published, gives exactly the
+  rows, each at the version that last wrote it, under its ID's table and in a
+  registered component.
+- `SnapshotAllocatorBehind`: the next document ID is past every ID's counter,
+  the latest creation time at or past every document's, the next attempt ID
+  positive and the identity epoch non-negative. A rewound counter would hand
+  out an identity the state already holds, and the next insert would overwrite
+  its row.
+- `SnapshotTimestampInconsistent`: commit timestamps strictly increase through
+  the log, and the latest is the log's last.
+- `SnapshotJobInconsistent`: every job names a committed job row, a registered
+  component and a function that component exports, every job row has its job,
+  and no job is running.
+
+A world running a call from the test, a scheduler walk included, refuses to
+export or restore with `SnapshotWorldRunning`. A scheduled action awaiting
+something would otherwise commit after the export, and a restored world would
+hold its job `inProgress` with no run to finish it.
+
+The identity epoch is #125's identity version made world-wide. A subscriber
+starts at the world's epoch, and each `authenticate` advances it, so a
+restored world continues the versions its source handed out and replays the
+same identity transitions.
+
+`Snapshot.contract` lists every piece of kernel state as exported or excluded
+with its reason. A field added to `Kernel.State` or `Scheduling.Target`
+without an entry fails to compile. A `World`'s fields are private, so a test
+compares a fresh world's own fields with the contract. Subscriptions and their
+callers are live client state, so a restore starts with none. Owed when they
+land: cron state (#133); file bytes, storage ID mappings, `nextFile` and
+upload-token counters (#138); and component init markers. A restore never
+redeclares a cron and never draws a fresh random value.
 
 ## Transaction limits (row 6)
 

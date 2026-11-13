@@ -5,22 +5,26 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
-import type {
-  DocumentId,
-  FunctionPath,
-  StoredDocument,
+import type * as Scheduling from "./Scheduling.js";
+import {
+  tableNameFromId,
+  type DocumentId,
+  type FunctionPath,
+  type StoredDocument,
 } from "./KernelValues.js";
 
 /**
  * The counters the kernel allocates identities from: the next document ID, the
- * latest creation time handed out, and the next held attempt's ID. A restored
- * world continues each where its source stopped, so the same calls mint the
- * same identities.
+ * latest creation time handed out, the next held attempt's ID, and the identity
+ * epoch, which every subscriber's `authenticate` advances. A restored world
+ * continues each where its source stopped, so the same calls mint the same
+ * identities and the same identity versions.
  */
 export interface Identity {
   readonly nextDocumentId: number;
   readonly lastCreationTime: number;
   readonly nextAttemptId: number;
+  readonly identityEpoch: number;
 }
 
 /**
@@ -52,6 +56,94 @@ export interface Image {
   readonly jobs: ReadonlyMap<DocumentId, JobTarget>;
 }
 
+/**
+ * Whether a piece of kernel state is in a snapshot. `exported` names the
+ * snapshot field that carries it. `excluded` says why a restore starts without
+ * it.
+ */
+export type Participation =
+  | { readonly exported: string }
+  | { readonly excluded: string };
+
+/**
+ * The snapshot's contract with the kernel's state. Every field of the committed
+ * state, of a job's target and of a `World` is listed here as exported or
+ * excluded with its reason. The first two are checked by type: a field added to
+ * `Kernel.State` or `Scheduling.Target` without an entry fails to compile. A
+ * `World`'s fields are private, which no type can enumerate, so
+ * `Snapshot.test.ts` compares a fresh world's own fields with `world` below,
+ * and a field added without an entry fails that test.
+ *
+ * Owed by later rows, which add their state here when they land on `main`: cron
+ * state (#133), stored file bytes, storage ID mappings, `nextFile` and
+ * upload-token counters (#138), and component init markers. A restore never
+ * redeclares a cron and never draws a fresh random value: it installs the
+ * declared state as the snapshot holds it, so a row whose state comes from a
+ * declaration or a random draw exports what was declared or drawn.
+ */
+export const contract = {
+  state: {
+    tables: { exported: "tables" },
+    version: { exported: "version" },
+    commitTs: { exported: "commitTs" },
+    log: { exported: "log" },
+  } satisfies { readonly [K in keyof Kernel.State]-?: Participation },
+  target: {
+    functionPath: { exported: "jobs[].target" },
+    standing: { exported: "jobs[].standing" },
+    world: { exported: "jobs[].world, by name" },
+  } satisfies { readonly [K in keyof Scheduling.Target]-?: Participation },
+  world: {
+    components: {
+      excluded:
+        "Registered code, not state: the restoring world registers the same components, which `components` checks.",
+    },
+    state: { exported: "the committed state above" },
+    opened: {
+      excluded: "Whether modules loaded. A restore opens its world first.",
+    },
+    nextDocId: { exported: "identity.nextDocumentId" },
+    lastCreationTime: { exported: "identity.lastCreationTime" },
+    nextQueryId: {
+      excluded:
+        "Ids of query streams, which live only inside a running function, and a snapshot is never taken while one runs.",
+    },
+    queries: {
+      excluded:
+        "Open query streams, which live only inside a running function.",
+    },
+    holding: {
+      excluded:
+        "Held attempts are running closures. A world holding one refuses to export.",
+    },
+    nextAttemptId: { exported: "identity.nextAttemptId" },
+    floor: { exported: "floor" },
+    targets: { exported: "jobs" },
+    running: {
+      excluded:
+        "Calls in flight. A world running one refuses to export or restore.",
+    },
+    identityEpoch: { exported: "identity.identityEpoch" },
+    runtime: {
+      excluded:
+        "The driver's clock and commit timestamps. The restoring driver supplies its own.",
+    },
+  } satisfies Readonly<Record<string, Participation>>,
+  /**
+   * State outside the kernel's world, live per client or per process.
+   */
+  outside: {
+    subscriptions: {
+      excluded:
+        "Live client state: subscribers, their callers and runs. A restore starts with no subscriptions. Identity versions continue through `identityEpoch`.",
+    },
+    requestIds: {
+      excluded:
+        "Request IDs, a process-wide counter, reach no committed state.",
+    },
+  } satisfies Readonly<Record<string, Participation>>,
+} as const;
+
 const header = "confect-kernel-snapshot 1 sha256:";
 
 const FunctionPathJson = Schema.Struct({
@@ -68,6 +160,7 @@ const Body = Schema.Struct({
     nextDocumentId: Schema.Int,
     lastCreationTime: Schema.Finite,
     nextAttemptId: Schema.Int,
+    identityEpoch: Schema.Int,
   }),
   tables: Schema.Array(
     Schema.Struct({
@@ -149,6 +242,7 @@ export const encode = (image: Image): Uint8Array => {
       nextDocumentId: image.identity.nextDocumentId,
       lastCreationTime: image.identity.lastCreationTime,
       nextAttemptId: image.identity.nextAttemptId,
+      identityEpoch: image.identity.identityEpoch,
     },
     tables,
     jobs: sorted(image.jobs, ([id]) => id).map(([id, target]) => ({
@@ -247,6 +341,274 @@ const imageOf = (body: Body): Image => {
       ]),
     ),
   };
+};
+
+/**
+ * Why a decoded snapshot is not state the kernel could have reached.
+ */
+export type Inconsistency =
+  | KernelRefusal.SnapshotAllocatorBehind
+  | KernelRefusal.SnapshotRowInconsistent
+  | KernelRefusal.SnapshotTimestampInconsistent
+  | KernelRefusal.SnapshotJobInconsistent;
+
+const documentText = (doc: StoredDocument | null): string =>
+  doc === null ? "null" : JSON.stringify(convexToJson(doc as Value));
+
+/**
+ * The counter a kernel-minted document ID carries, or `undefined` for an ID the
+ * kernel never mints.
+ */
+const counterOf = (id: string): number | undefined => {
+  const table = tableNameFromId(id);
+  const digits = table === null ? "" : id.slice(0, id.length - table.length);
+  return /^[0-9]+$/.test(digits) ? Number(digits) : undefined;
+};
+
+const rowRefusal = (
+  componentPath: string,
+  id: string,
+  reason: KernelRefusal.SnapshotRowInconsistent["reason"],
+  detail: string,
+) =>
+  new KernelRefusal.SnapshotRowInconsistent({
+    componentPath,
+    id,
+    reason,
+    message: `The snapshot's document ${id} in "${componentPath}" ${detail}.`,
+  });
+
+/**
+ * Rows match the write log: replaying every commit from the empty world, each
+ * change replacing the value the log last published, gives exactly the
+ * snapshot's rows, each at the version that last wrote it, in a registered
+ * component and under its ID's table.
+ */
+export const checkRows = (
+  image: Image,
+): Result.Result<void, KernelRefusal.SnapshotRowInconsistent> => {
+  const components = new Set(image.components);
+  const replayed = new Map<string, { doc: StoredDocument; version: number }>();
+  const key = (componentPath: string, id: string) =>
+    `${componentPath}\u0000${id}`;
+  for (const commit of image.state.log) {
+    for (const change of commit.changes) {
+      const current = replayed.get(key(change.componentPath, change.id));
+      if (documentText(current?.doc ?? null) !== documentText(change.before)) {
+        return Result.fail(
+          rowRefusal(
+            change.componentPath,
+            change.id,
+            "log",
+            `changes at version ${commit.version} from a value the log never published`,
+          ),
+        );
+      }
+      if (change.after === null)
+        replayed.delete(key(change.componentPath, change.id));
+      else
+        replayed.set(key(change.componentPath, change.id), {
+          doc: change.after,
+          version: commit.version,
+        });
+    }
+  }
+  const filed = new Set<string>();
+  for (const [componentPath, byTable] of image.state.tables) {
+    for (const [table, byId] of byTable) {
+      for (const [id, row] of byId) {
+        filed.add(key(componentPath, id));
+        if (counterOf(id) === undefined || tableNameFromId(id) !== table) {
+          return Result.fail(
+            rowRefusal(componentPath, id, "id", `is filed under "${table}"`),
+          );
+        }
+        if (!components.has(componentPath)) {
+          return Result.fail(
+            rowRefusal(
+              componentPath,
+              id,
+              "component",
+              "belongs to no component the snapshot registers",
+            ),
+          );
+        }
+        const published = replayed.get(key(componentPath, id));
+        if (
+          published === undefined ||
+          published.version !== row.version ||
+          documentText(published.doc) !== documentText(row.doc)
+        ) {
+          return Result.fail(
+            rowRefusal(
+              componentPath,
+              id,
+              "row",
+              "is not the value at the version the write log last published for it",
+            ),
+          );
+        }
+      }
+    }
+  }
+  for (const published of replayed.keys()) {
+    if (filed.has(published)) continue;
+    const [componentPath, id] = published.split("\u0000") as [string, string];
+    return Result.fail(
+      rowRefusal(
+        componentPath,
+        id,
+        "row",
+        "is published by the log but missing",
+      ),
+    );
+  }
+  return Result.succeed(undefined);
+};
+
+/**
+ * Identity counters run ahead of every identity the state holds: the next
+ * document ID past every ID's counter, the latest creation time at or past
+ * every document's, a positive next attempt ID and a non-negative epoch.
+ */
+export const checkAllocators = (
+  image: Image,
+): Result.Result<void, KernelRefusal.SnapshotAllocatorBehind> => {
+  let maxCounter = -1;
+  let maxCreation = 0;
+  const see = (doc: StoredDocument | null) => {
+    if (doc === null) return;
+    maxCounter = Math.max(maxCounter, counterOf(doc._id) ?? -1);
+    maxCreation = Math.max(maxCreation, doc._creationTime);
+  };
+  for (const byTable of image.state.tables.values())
+    for (const byId of byTable.values())
+      for (const { doc } of byId.values()) see(doc);
+  for (const { changes } of image.state.log)
+    for (const { before, after } of changes) {
+      see(before);
+      see(after);
+    }
+  for (const id of image.jobs.keys())
+    maxCounter = Math.max(maxCounter, counterOf(id) ?? -1);
+  const { identity } = image;
+  const behind = (
+    allocator: KernelRefusal.SnapshotAllocatorBehind["allocator"],
+    value: number,
+    required: number,
+  ) =>
+    Result.fail(
+      new KernelRefusal.SnapshotAllocatorBehind({
+        allocator,
+        value,
+        required,
+        message: `The snapshot's ${allocator} is ${value}, but its state needs at least ${required}, or the next allocation would reuse an identity it already holds.`,
+      }),
+    );
+  if (identity.nextDocumentId <= maxCounter)
+    return behind("nextDocumentId", identity.nextDocumentId, maxCounter + 1);
+  if (identity.lastCreationTime < maxCreation)
+    return behind("lastCreationTime", identity.lastCreationTime, maxCreation);
+  if (identity.nextAttemptId < 1)
+    return behind("nextAttemptId", identity.nextAttemptId, 1);
+  if (identity.identityEpoch < 0)
+    return behind("identityEpoch", identity.identityEpoch, 0);
+  return Result.succeed(undefined);
+};
+
+/**
+ * Commit timestamps strictly increase through the write log, and the latest
+ * commit timestamp is the log's last, or zero before any commit.
+ */
+export const checkTimestamps = (
+  image: Image,
+): Result.Result<void, KernelRefusal.SnapshotTimestampInconsistent> => {
+  let previous = 0n;
+  const refuse = (version: number, commitTs: bigint, detail: string) =>
+    Result.fail(
+      new KernelRefusal.SnapshotTimestampInconsistent({
+        version,
+        commitTs: commitTs.toString(),
+        message: `The snapshot's commit timestamp ${commitTs} at version ${version} ${detail}.`,
+      }),
+    );
+  for (const { version, commitTs } of image.state.log) {
+    if (commitTs <= previous)
+      return refuse(version, commitTs, `is not past the previous ${previous}`);
+    previous = commitTs;
+  }
+  if (image.state.commitTs !== previous)
+    return refuse(
+      image.state.version,
+      image.state.commitTs,
+      `is not the write log's last, ${previous}`,
+    );
+  return Result.succeed(undefined);
+};
+
+/**
+ * Every job names a committed job row and a registered component, every job row
+ * has its job, and no job is left running: a snapshot is never taken while a
+ * job runs.
+ */
+export const checkJobs = (
+  image: Image,
+  table: string,
+): Result.Result<void, KernelRefusal.SnapshotJobInconsistent> => {
+  const refuse = (
+    id: string,
+    reason: KernelRefusal.SnapshotJobInconsistent["reason"],
+    detail: string,
+  ) =>
+    Result.fail(
+      new KernelRefusal.SnapshotJobInconsistent({
+        id,
+        reason,
+        message: `The snapshot's job ${id} ${detail}.`,
+      }),
+    );
+  const rows = new Map<string, StoredDocument>();
+  for (const byTable of image.state.tables.values())
+    for (const { doc } of byTable.get(table)?.values() ?? [])
+      rows.set(doc._id, doc);
+  const components = new Set(image.components);
+  for (const [id, target] of image.jobs) {
+    if (!rows.has(id)) return refuse(id, "row", "has no committed job row");
+    if (!components.has(target.functionPath.componentPath))
+      return refuse(
+        id,
+        "component",
+        `targets "${target.functionPath.componentPath}", which the snapshot does not register`,
+      );
+  }
+  for (const [id, doc] of rows) {
+    if (!image.jobs.has(id as DocumentId))
+      return refuse(id, "untargeted", "has a row but no target");
+    if ((doc["state"] as { kind?: unknown } | undefined)?.kind === "inProgress")
+      return refuse(id, "inProgress", "is recorded as running");
+  }
+  return Result.succeed(undefined);
+};
+
+/**
+ * Check a decoded image against every rule the kernel's own exports keep,
+ * before any of it is installed.
+ */
+export const check = (
+  image: Image,
+  jobTable: string,
+): Result.Result<void, Inconsistency> => {
+  const checks: ReadonlyArray<() => Result.Result<void, Inconsistency>> = [
+    () => checkRows(image),
+    () => checkAllocators(image),
+    () => checkTimestamps(image),
+    () => checkJobs(image, jobTable),
+  ];
+  for (const run of checks) {
+    const checked = run();
+    if (Result.isFailure(checked)) return checked;
+  }
+  return Result.succeed(undefined);
 };
 
 /**

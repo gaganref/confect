@@ -136,12 +136,14 @@ interface Live {
  * `authenticate` replaces, bumping the identity version.
  */
 export class Subscriber {
-  private version = 0;
+  private version: number;
 
   constructor(
     private readonly registry: Registry,
     private who: Execution.Caller,
-  ) {}
+  ) {
+    this.version = registry.identityEpoch();
+  }
 
   get caller(): Execution.Caller {
     return this.who;
@@ -164,7 +166,7 @@ export class Subscriber {
       identity === null
         ? { ...this.who, identity: null, token: null }
         : Execution.withIdentity(this.who, identity);
-    this.version++;
+    this.version = this.registry.nextIdentityEpoch();
   }
 }
 
@@ -181,6 +183,20 @@ export class Registry {
 
   subscriber(caller: Execution.Caller): Subscriber {
     return new Subscriber(this, caller);
+  }
+
+  /**
+   * The world's identity epoch, where a new subscriber's version starts.
+   */
+  identityEpoch(): number {
+    return this.world.currentIdentityEpoch();
+  }
+
+  /**
+   * Advance the world's identity epoch for a subscriber whose identity changed.
+   */
+  nextIdentityEpoch(): number {
+    return this.world.nextIdentityEpoch();
   }
 
   subscribe(

@@ -495,6 +495,17 @@ export class World {
    */
   private floor = Number.NEGATIVE_INFINITY;
   private readonly targets = new Map<DocumentId, Scheduling.Target>();
+  /**
+   * How many calls from the test, scheduler walks included, are running. A
+   * snapshot taken or restored under one would split its effects.
+   */
+  private running = 0;
+  /**
+   * The latest identity version a subscriber's `authenticate` reached. Each
+   * subscriber starts at the epoch, and each identity change advances it, so a
+   * restored world never hands out a version its source already used.
+   */
+  private identityEpoch = 0;
 
   constructor(
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
@@ -615,44 +626,50 @@ export class World {
   // Calls from the test.
 
   query(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.open().then(() => {
-      const from = { caller, request: newRequest(caller) };
-      return typeof reference === "function"
-        ? this.runQuery(
-            { componentPath: ROOT, udfPath: "inline" },
-            { handler: reference, args: { type: "any" }, returns: null },
-            args ?? {},
-            from,
-          )
-        : this.queryAt(pathOfReference(reference, ROOT), args, from);
+    return this.during(() => {
+      return this.open().then(() => {
+        const from = { caller, request: newRequest(caller) };
+        return typeof reference === "function"
+          ? this.runQuery(
+              { componentPath: ROOT, udfPath: "inline" },
+              { handler: reference, args: { type: "any" }, returns: null },
+              args ?? {},
+              from,
+            )
+          : this.queryAt(pathOfReference(reference, ROOT), args, from);
+      });
     });
   }
 
   mutation(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.open().then(() => {
-      const from = { caller, request: newRequest(caller) };
-      return typeof reference === "function"
-        ? this.runMutation(
-            { componentPath: ROOT, udfPath: "inline" },
-            { handler: reference, args: { type: "any" }, returns: null },
-            args ?? {},
-            from,
-          )
-        : this.mutationAt(pathOfReference(reference, ROOT), args, from);
+    return this.during(() => {
+      return this.open().then(() => {
+        const from = { caller, request: newRequest(caller) };
+        return typeof reference === "function"
+          ? this.runMutation(
+              { componentPath: ROOT, udfPath: "inline" },
+              { handler: reference, args: { type: "any" }, returns: null },
+              args ?? {},
+              from,
+            )
+          : this.mutationAt(pathOfReference(reference, ROOT), args, from);
+      });
     });
   }
 
   action(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.open().then(() => {
-      const from = { caller, request: newRequest(caller) };
-      return typeof reference === "function"
-        ? this.runAction(
-            { componentPath: ROOT, udfPath: "inline" },
-            { handler: reference, args: { type: "any" }, returns: null },
-            args ?? {},
-            from,
-          )
-        : this.actionAt(pathOfReference(reference, ROOT), args, from);
+    return this.during(() => {
+      return this.open().then(() => {
+        const from = { caller, request: newRequest(caller) };
+        return typeof reference === "function"
+          ? this.runAction(
+              { componentPath: ROOT, udfPath: "inline" },
+              { handler: reference, args: { type: "any" }, returns: null },
+              args ?? {},
+              from,
+            )
+          : this.actionAt(pathOfReference(reference, ROOT), args, from);
+      });
     });
   }
 
@@ -661,14 +678,16 @@ export class World {
     componentPath: string,
     handler: (ctx: any) => any,
   ): Promise<any> {
-    return this.open().then(() => {
-      this.component(componentPath);
-      return this.runMutation(
-        { componentPath, udfPath: "custom" },
-        { handler, args: { type: "any" }, returns: null },
-        {},
-        { caller, request: newRequest(caller) },
-      );
+    return this.during(() => {
+      return this.open().then(() => {
+        this.component(componentPath);
+        return this.runMutation(
+          { componentPath, udfPath: "custom" },
+          { handler, args: { type: "any" }, returns: null },
+          {},
+          { caller, request: newRequest(caller) },
+        );
+      });
     });
   }
 
@@ -678,31 +697,35 @@ export class World {
    * Run a mutation to its commit point and hold it as attempt 1.
    */
   prepare(caller: Caller, reference: any, args: any): Promise<HeldAttempt> {
-    return this.open().then(() => {
-      const functionPath = pathOfReference(reference, ROOT);
-      const resolved = this.resolve(functionPath, "mutation");
-      validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
-      return this.prepareMutation(
-        functionPath,
-        resolved,
-        args,
-        { caller, request: newRequest(caller) },
-        1,
-        Invocation.current(),
-      ).then((held) => held.view);
+    return this.during(() => {
+      return this.open().then(() => {
+        const functionPath = pathOfReference(reference, ROOT);
+        const resolved = this.resolve(functionPath, "mutation");
+        validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
+        return this.prepareMutation(
+          functionPath,
+          resolved,
+          args,
+          { caller, request: newRequest(caller) },
+          1,
+          Invocation.current(),
+        ).then((held) => held.view);
+      });
     });
   }
 
   apply(id: string): Promise<KernelApply> {
-    const held = this.holding.get(id);
-    return held === undefined
-      ? Promise.reject(
-          new KernelRefusal.StaleAttempt({
-            id,
-            message: `The test kernel holds no attempt "${id}". It was already applied, or never prepared.`,
-          }),
-        )
-      : this.applyHeld(held);
+    return this.during(() => {
+      const held = this.holding.get(id);
+      return held === undefined
+        ? Promise.reject(
+            new KernelRefusal.StaleAttempt({
+              id,
+              message: `The test kernel holds no attempt "${id}". It was already applied, or never prepared.`,
+            }),
+          )
+        : this.applyHeld(held);
+    });
   }
 
   /**
@@ -726,35 +749,63 @@ export class World {
     args: any,
     pinned: { readonly time?: number; readonly journal: string | null },
   ): Promise<QueryRun> {
-    return this.open().then(() => {
-      const functionPath = pathOfReference(reference, ROOT);
-      const resolved = this.resolve(functionPath, "query");
-      validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
-      const top: TopQuery = {
-        attempt: new KernelAttempt(this.state),
-        pagination: { calls: 0, journal: pinned.journal, end: null },
-        startTime: pinned.time,
-      };
-      const run = (outcome: Outcome): QueryRun => ({
-        outcome,
-        snapshot: top.attempt.snapshot.version,
-        reads: top.attempt.reads,
-        observedIdentity: top.attempt.observedIdentity,
-        time: top.attempt.observedTime,
-        journal: pinned.journal ?? top.pagination.end,
+    return this.during(() => {
+      return this.open().then(() => {
+        const functionPath = pathOfReference(reference, ROOT);
+        const resolved = this.resolve(functionPath, "query");
+        validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
+        const top: TopQuery = {
+          attempt: new KernelAttempt(this.state),
+          pagination: { calls: 0, journal: pinned.journal, end: null },
+          startTime: pinned.time,
+        };
+        const run = (outcome: Outcome): QueryRun => ({
+          outcome,
+          snapshot: top.attempt.snapshot.version,
+          reads: top.attempt.reads,
+          observedIdentity: top.attempt.observedIdentity,
+          time: top.attempt.observedTime,
+          journal: pinned.journal ?? top.pagination.end,
+        });
+        return this.runQuery(
+          functionPath,
+          resolved,
+          args,
+          { caller, request: newRequest(caller) },
+          false,
+          top,
+        ).then(
+          (value: Value) => run({ _tag: "returned", value }),
+          (error: unknown) => run({ _tag: "failed", error }),
+        );
       });
-      return this.runQuery(
-        functionPath,
-        resolved,
-        args,
-        { caller, request: newRequest(caller) },
-        false,
-        top,
-      ).then(
-        (value: Value) => run({ _tag: "returned", value }),
-        (error: unknown) => run({ _tag: "failed", error }),
-      );
     });
+  }
+
+  /**
+   * Run `call`, a call from the test, counted as running until it settles.
+   */
+  private during<A>(call: () => Promise<A>): Promise<A> {
+    this.running++;
+    return call().finally(() => {
+      this.running--;
+    });
+  }
+
+  // Identity versions.
+
+  /**
+   * The identity version a new subscriber starts at.
+   */
+  currentIdentityEpoch(): number {
+    return this.identityEpoch;
+  }
+
+  /**
+   * The next identity version, for a subscriber whose identity changed.
+   */
+  nextIdentityEpoch(): number {
+    return ++this.identityEpoch;
   }
 
   // Snapshots.
@@ -763,11 +814,11 @@ export class World {
    * The committed state as snapshot bytes: every component's rows and the
    * version that wrote each, the write log, the jobs and their targets, the
    * clock's floor and the identity counters. Each job's world is recorded by
-   * name. Two exports of the same state are the same bytes. A world holding
-   * attempts refuses, since a snapshot carries no held attempt.
+   * name. Two exports of the same state are the same bytes. A world running a
+   * call or holding attempts refuses, since a snapshot carries neither.
    */
   exportSnapshot(): Uint8Array {
-    this.refuseHeld(0);
+    this.refuseBusy(0);
     const names = new Map<string, Invocation.World>();
     const jobs = new Map<DocumentId, Snapshot.JobTarget>();
     for (const byTable of this.state.tables.values()) {
@@ -796,6 +847,7 @@ export class World {
         nextDocumentId: this.nextDocId,
         lastCreationTime: this.lastCreationTime,
         nextAttemptId: this.nextAttemptId,
+        identityEpoch: this.identityEpoch,
       },
       jobs,
     });
@@ -803,9 +855,10 @@ export class World {
 
   /**
    * Replace this world's state with a snapshot's. The world must register the
-   * snapshot's components and have committed nothing and hold nothing. Each
-   * job's world resolves by name among `worlds`. Bytes whose digest does not
-   * match refuse before anything changes.
+   * snapshot's components, run nothing, and have committed nothing and hold
+   * nothing. Each job's world resolves by name among `worlds`. Bytes whose
+   * digest does not match, and state the kernel could not have reached, refuse
+   * before anything changes.
    */
   restoreSnapshot(
     bytes: Uint8Array,
@@ -815,10 +868,12 @@ export class World {
   }
 
   private restore(bytes: Uint8Array, worlds: ReadonlyArray<Invocation.World>) {
-    this.refuseHeld(this.state.version);
+    this.refuseBusy(this.state.version);
     const decoded = Snapshot.decode(bytes);
     if (Result.isFailure(decoded)) throw decoded.failure;
     const image = decoded.success;
+    const checked = Snapshot.check(image, Scheduling.table);
+    if (Result.isFailure(checked)) throw checked.failure;
     const registered = [...this.components.keys()].sort();
     const snapshot = [...image.components].sort();
     if (registered.join("\u0000") !== snapshot.join("\u0000")) {
@@ -827,6 +882,15 @@ export class World {
         registered,
         message: `The snapshot holds components ${snapshot.map((p) => `"${p}"`).join(", ")}, but this test backend registers ${registered.map((p) => `"${p}"`).join(", ")}. Register the same components before restoring.`,
       });
+    }
+    for (const [id, { functionPath }] of image.jobs) {
+      if (!this.exports(functionPath)) {
+        throw new KernelRefusal.SnapshotJobInconsistent({
+          id,
+          reason: "function",
+          message: `The snapshot's job ${id} targets ${functionPath.udfPath} in "${functionPath.componentPath}", which that component does not export.`,
+        });
+      }
     }
     const byName = new Map<string, Invocation.World>();
     for (const world of worlds) {
@@ -853,15 +917,37 @@ export class World {
     this.nextDocId = image.identity.nextDocumentId;
     this.lastCreationTime = image.identity.lastCreationTime;
     this.nextAttemptId = image.identity.nextAttemptId;
+    this.identityEpoch = image.identity.identityEpoch;
     this.targets.clear();
     for (const [id, target] of targets) this.targets.set(id, target);
   }
 
   /**
-   * Refuse a snapshot while attempts are held, or, restoring, once `version`
-   * shows the world committed something of its own.
+   * Whether `functionPath`'s component exports a Convex function there.
    */
-  private refuseHeld(version: Kernel.Version) {
+  private exports({ componentPath, udfPath }: FunctionPath): boolean {
+    const [modulePath, exportName = "default"] = udfPath.split(":");
+    const func = this.components.get(componentPath)?.loaded.get(modulePath!)?.[
+      exportName
+    ];
+    return (
+      func?.isQuery === true ||
+      func?.isMutation === true ||
+      func?.isAction === true
+    );
+  }
+
+  /**
+   * Refuse a snapshot while a call runs or attempts are held, or, restoring,
+   * once `version` shows the world committed something of its own.
+   */
+  private refuseBusy(version: Kernel.Version) {
+    if (this.running > 0) {
+      throw new KernelRefusal.SnapshotWorldRunning({
+        running: this.running,
+        message: `The test backend is running ${this.running} calls, scheduler walks included, whose effects a snapshot would split. Await them first.`,
+      });
+    }
     const held = [...this.holding.keys()];
     if (held.length === 0 && version === 0) return;
     throw new KernelRefusal.SnapshotWorldBusy({
@@ -898,12 +984,14 @@ export class World {
    * crosses no future deadline.
    */
   advance(ms: number, budget = defaultBudget): Promise<void> {
-    return this.open().then(() => {
-      const until = this.now() + ms;
-      return this.walk(
-        (pending) => pending.filter((job) => job.scheduledTime <= until),
-        budget,
-      ).then(() => this.raiseFloor(until));
+    return this.during(() => {
+      return this.open().then(() => {
+        const until = this.now() + ms;
+        return this.walk(
+          (pending) => pending.filter((job) => job.scheduledTime <= until),
+          budget,
+        ).then(() => this.raiseFloor(until));
+      });
     });
   }
 
@@ -912,9 +1000,11 @@ export class World {
    * standing jobs are pending. Every job run counts against `budget`.
    */
   drain(budget = defaultBudget): Promise<void> {
-    return this.open().then(() =>
-      this.walk((pending) => pending.filter((job) => !job.standing), budget),
-    );
+    return this.during(() => {
+      return this.open().then(() =>
+        this.walk((pending) => pending.filter((job) => !job.standing), budget),
+      );
+    });
   }
 
   /**

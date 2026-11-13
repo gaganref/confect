@@ -168,3 +168,74 @@ export class SnapshotWorldBusy extends Schema.TaggedError<SnapshotWorldBusy>()(
     message: Schema.String,
   },
 ) {}
+
+/**
+ * A world is running functions or a scheduler walk, whose effects a snapshot
+ * taken or restored now would split.
+ */
+export class SnapshotWorldRunning extends Schema.TaggedError<SnapshotWorldRunning>()(
+  "SnapshotWorldRunning",
+  { running: Schema.Int, message: Schema.String },
+) {}
+
+/**
+ * A snapshot's identity counters stand at or behind an identity its state
+ * already holds, so the next allocation would reuse one.
+ */
+export class SnapshotAllocatorBehind extends Schema.TaggedError<SnapshotAllocatorBehind>()(
+  "SnapshotAllocatorBehind",
+  {
+    allocator: Schema.Literals([
+      "nextDocumentId",
+      "lastCreationTime",
+      "nextAttemptId",
+      "identityEpoch",
+    ]),
+    value: Schema.Finite,
+    required: Schema.Finite,
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * A snapshot's rows are not what its write log publishes: a row filed under
+ * another table or an unregistered component, a version the log does not give
+ * it, or a log change whose before value is not the row it replaced.
+ */
+export class SnapshotRowInconsistent extends Schema.TaggedError<SnapshotRowInconsistent>()(
+  "SnapshotRowInconsistent",
+  {
+    componentPath: Schema.String,
+    id: Schema.String,
+    reason: Schema.Literals(["id", "component", "log", "row"]),
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * A snapshot's commit timestamps do not strictly increase through its write
+ * log, or its latest commit timestamp is not the log's last.
+ */
+export class SnapshotTimestampInconsistent extends Schema.TaggedError<SnapshotTimestampInconsistent>()(
+  "SnapshotTimestampInconsistent",
+  { version: Schema.Int, commitTs: Schema.String, message: Schema.String },
+) {}
+
+/**
+ * A snapshot's jobs and job rows disagree: a job with no row, a row with no
+ * job, a job left running, or a target no registered component exports.
+ */
+export class SnapshotJobInconsistent extends Schema.TaggedError<SnapshotJobInconsistent>()(
+  "SnapshotJobInconsistent",
+  {
+    id: Schema.String,
+    reason: Schema.Literals([
+      "row",
+      "untargeted",
+      "inProgress",
+      "component",
+      "function",
+    ]),
+    message: Schema.String,
+  },
+) {}

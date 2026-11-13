@@ -3,6 +3,7 @@
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "@effect/vitest";
 import {
+  actionGeneric,
   componentsGeneric,
   createFunctionHandle,
   defineSchema,
@@ -17,7 +18,9 @@ import { v, type GenericId } from "convex/values";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
+import * as Execution from "../src/internal/Execution";
 import * as Invocation from "../src/internal/Invocation";
+import * as Snapshot from "../src/internal/Snapshot";
 
 const start = 1_767_225_600_000;
 
@@ -70,6 +73,9 @@ const app = {
   >("app:scheduleStored"),
   startTicking: makeFunctionReference<"mutation">("app:startTicking"),
   dump: makeFunctionReference<"query", {}, Record<string, unknown>>("app:dump"),
+  waitGate: makeFunctionReference<"action">("app:waitGate"),
+  scheduleGate: makeFunctionReference<"mutation">("app:scheduleGate"),
+  whoami: makeFunctionReference<"query", {}, string | null>("app:whoami"),
 };
 
 const store = (componentsGeneric() as any).store as {
@@ -187,6 +193,26 @@ const hostModules = {
         args: {},
         handler: (ctx) => ctx.runMutation(store.rows.tick, {}),
       }),
+      waitGate: actionGeneric({
+        args: {},
+        handler: async (ctx) => {
+          reached.release();
+          await gate.promise;
+          await ctx.runMutation(app.insert, { text: "gated" });
+          return null;
+        },
+      }),
+      scheduleGate: mutationGeneric({
+        args: {},
+        handler: (ctx) => ctx.scheduler.runAfter(0, app.waitGate, {}),
+      }),
+      whoami: queryGeneric({
+        args: {},
+        handler: (ctx) =>
+          ctx.auth
+            .getUserIdentity()
+            .then((identity) => identity?.subject ?? null),
+      }),
       dump: queryGeneric({
         args: {},
         handler: async (ctx) => ({
@@ -267,6 +293,18 @@ const underMail = <A>(run: () => Promise<A>) =>
     run,
   );
 
+type Latch = { readonly promise: Promise<void>; readonly release: () => void };
+
+const latch = (): Latch => {
+  const { promise, resolve } = Promise.withResolvers<void>();
+  return { promise, release: () => resolve() };
+};
+
+// The gated action waits on `gate` once it signals `reached`, so a test can
+// act while it runs.
+let gate = latch();
+let reached = latch();
+
 const call = <A>(thunk: () => Promise<A>) => Effect.promise(thunk);
 const failure = (thunk: () => Promise<unknown>) =>
   call(() =>
@@ -313,6 +351,7 @@ const before = (t: KernelControls, d: Driver) =>
     );
     yield* call(() => t.mutation(app.startTicking, {}));
     yield* call(() => t.advance(20));
+    t.subscriber().authenticate({ subject: "before" });
     return kept;
   });
 
@@ -342,11 +381,20 @@ const after = (t: KernelControls, d: Driver, kept: Note) =>
     yield* call(() => t.advance(1000));
     yield* call(() => t.mutation(app.stamp, { label: "after" }));
     const dump = yield* call(() => t.query(app.dump, {}));
+    const subscriber = t.subscriber();
+    yield* call(() => subscriber.subscribe(app.whoami, {}));
+    subscriber.authenticate({ subject: "after" });
+    const transitions = yield* call(() => t.refresh());
     return {
       ids: [fresh, first.id, second.id, conflict.next.id],
       steps: [applied.kind, conflict.kind, retried.kind],
       pending,
       dump,
+      identity: transitions.map(({ because, from, to }) => ({
+        because,
+        from,
+        to,
+      })),
     };
   });
 
@@ -569,6 +617,261 @@ describe("snapshot restore", () => {
           reason: "missing",
         });
         expect(worldless.jobs()).toEqual([]);
+      }),
+  );
+});
+
+/**
+ * `bytes` with its body edited and its digest recomputed, as a writer who
+ * rehashes would make them.
+ */
+const rehash = (bytes: Uint8Array, edit: (body: any) => void): Uint8Array => {
+  const snapshot = text(bytes);
+  const body = JSON.parse(snapshot.slice(snapshot.indexOf("\n") + 1));
+  edit(body);
+  const edited = JSON.stringify(body);
+  return bytesOf(
+    `confect-kernel-snapshot 1 sha256:${createHash("sha256")
+      .update(edited)
+      .digest("hex")}\n${edited}`,
+  );
+};
+
+const table = (body: any, name: string) =>
+  body.tables.find((entry: any) => entry.table === name);
+
+const jobRow = (body: any, id: string) =>
+  body.tables
+    .flatMap((entry: any) => entry.rows)
+    .find((row: any) => row.doc._id === id);
+
+describe("snapshot consistency", () => {
+  it.effect.each<{
+    readonly name: string;
+    readonly edit: (body: any) => void;
+    readonly refusal: Record<string, unknown>;
+  }>([
+    {
+      name: "a next document ID rewound onto an existing ID",
+      edit: (body) => {
+        body.identity.nextDocumentId = 10000;
+      },
+      refusal: {
+        _tag: "SnapshotAllocatorBehind",
+        allocator: "nextDocumentId",
+      },
+    },
+    {
+      name: "a latest creation time rewound",
+      edit: (body) => {
+        body.identity.lastCreationTime = 0;
+      },
+      refusal: {
+        _tag: "SnapshotAllocatorBehind",
+        allocator: "lastCreationTime",
+      },
+    },
+    {
+      name: "a next attempt ID of zero",
+      edit: (body) => {
+        body.identity.nextAttemptId = 0;
+      },
+      refusal: { _tag: "SnapshotAllocatorBehind", allocator: "nextAttemptId" },
+    },
+    {
+      name: "a negative identity epoch",
+      edit: (body) => {
+        body.identity.identityEpoch = -1;
+      },
+      refusal: { _tag: "SnapshotAllocatorBehind", allocator: "identityEpoch" },
+    },
+    {
+      name: "a row changed outside the write log",
+      edit: (body) => {
+        table(body, "notes").rows[0].doc.text = "forged";
+      },
+      refusal: { _tag: "SnapshotRowInconsistent", reason: "row" },
+    },
+    {
+      name: "a row at a version the log never gave it",
+      edit: (body) => {
+        table(body, "notes").rows[0].version += 1;
+      },
+      refusal: { _tag: "SnapshotRowInconsistent", reason: "row" },
+    },
+    {
+      name: "a row filed under another table",
+      edit: (body) => {
+        table(body, "notes").table = "misfiled";
+      },
+      refusal: { _tag: "SnapshotRowInconsistent", reason: "id" },
+    },
+    {
+      name: "a row in a component the snapshot does not register",
+      edit: (body) => {
+        table(body, "notes").componentPath = "ghost";
+      },
+      refusal: { _tag: "SnapshotRowInconsistent", reason: "component" },
+    },
+    {
+      name: "a row the log publishes but the snapshot drops",
+      edit: (body) => {
+        table(body, "handles").rows = [];
+      },
+      refusal: { _tag: "SnapshotRowInconsistent", reason: "row" },
+    },
+    {
+      name: "a log change from a value the log never published",
+      edit: (body) => {
+        const change = body.log
+          .flatMap((commit: any) => commit.changes)
+          .find((c: any) => c.before !== null);
+        change.before.text = "never";
+      },
+      refusal: { _tag: "SnapshotRowInconsistent", reason: "log" },
+    },
+    {
+      name: "commit timestamps that do not increase",
+      edit: (body) => {
+        body.log[1].commitTs = body.log[0].commitTs;
+      },
+      refusal: { _tag: "SnapshotTimestampInconsistent" },
+    },
+    {
+      name: "a latest commit timestamp that is not the log's last",
+      edit: (body) => {
+        body.commitTs = "1";
+      },
+      refusal: { _tag: "SnapshotTimestampInconsistent" },
+    },
+    {
+      name: "a job with no job row",
+      edit: (body) => {
+        body.jobs[0].id = table(body, "notes").rows[0].doc._id;
+      },
+      refusal: { _tag: "SnapshotJobInconsistent", reason: "row" },
+    },
+    {
+      name: "a job row with no job",
+      edit: (body) => {
+        body.jobs.pop();
+      },
+      refusal: { _tag: "SnapshotJobInconsistent", reason: "untargeted" },
+    },
+    {
+      name: "a job left running",
+      edit: (body) => {
+        const { id } = body.jobs[0];
+        jobRow(body, id).doc.state = { kind: "inProgress" };
+        const last = body.log
+          .flatMap((commit: any) => commit.changes)
+          .findLast((c: any) => c.after?._id === id);
+        last.after.state = { kind: "inProgress" };
+      },
+      refusal: { _tag: "SnapshotJobInconsistent", reason: "inProgress" },
+    },
+    {
+      name: "a job targeting a component the snapshot does not register",
+      edit: (body) => {
+        body.jobs[0].target.componentPath = "ghost";
+      },
+      refusal: { _tag: "SnapshotJobInconsistent", reason: "component" },
+    },
+    {
+      name: "a job targeting a function its component does not export",
+      edit: (body) => {
+        body.jobs[0].target.udfPath = "app:missing";
+      },
+      refusal: { _tag: "SnapshotJobInconsistent", reason: "function" },
+    },
+  ])(
+    "a rehashed snapshot with $name refuses before anything is installed",
+    ({ edit, refusal }) =>
+      Effect.gen(function* () {
+        const d = driver();
+        const t = backend(d);
+        yield* before(t, d);
+        const snapshot = t.exportSnapshot();
+        const control = backend(driver());
+        yield* call(() =>
+          control.restoreSnapshot(
+            rehash(snapshot, () => {}),
+            { worlds: [mail] },
+          ),
+        );
+        const restored = backend(driver());
+        expect(
+          yield* failure(() =>
+            restored.restoreSnapshot(rehash(snapshot, edit), {
+              worlds: [mail],
+            }),
+          ),
+        ).toMatchObject(refusal);
+        expect(restored.jobs()).toEqual([]);
+        expect(text(restored.exportSnapshot())).toBe(
+          text(backend(driver()).exportSnapshot()),
+        );
+      }),
+  );
+});
+
+describe("snapshot while running", () => {
+  it.effect(
+    "a backend running an action, or a scheduler walk running a job, refuses to export or restore until it settles",
+    () =>
+      Effect.gen(function* () {
+        gate = latch();
+        reached = latch();
+        const t = backend(driver());
+        const running = t.action(app.waitGate, {});
+        yield* call(() => reached.promise);
+        expect(thrown(() => t.exportSnapshot())).toMatchObject({
+          _tag: "SnapshotWorldRunning",
+          running: 1,
+        });
+        const snapshot = backend(driver()).exportSnapshot();
+        expect(yield* failure(() => t.restoreSnapshot(snapshot))).toMatchObject(
+          { _tag: "SnapshotWorldRunning" },
+        );
+        gate.release();
+        yield* call(() => running);
+
+        gate = latch();
+        reached = latch();
+        yield* call(() => t.mutation(app.scheduleGate, {}));
+        const walking = t.finishAllScheduledFunctions();
+        yield* call(() => reached.promise);
+        expect(thrown(() => t.exportSnapshot())).toMatchObject({
+          _tag: "SnapshotWorldRunning",
+        });
+        gate.release();
+        yield* call(() => walking);
+
+        const restored = backend(driver());
+        yield* call(() => restored.restoreSnapshot(t.exportSnapshot()));
+        expect(
+          (
+            (yield* call(() => restored.query(app.dump, {}))) as {
+              notes: Array<{ text: string }>;
+            }
+          ).notes.map((note) => note.text),
+        ).toEqual(["gated", "gated"]);
+        expect(restored.jobs()).toEqual([]);
+      }),
+  );
+});
+
+describe("snapshot contract", () => {
+  it.effect(
+    "every field of a world is exported or excluded with a reason, so new state cannot be left out of a snapshot by accident",
+    () =>
+      Effect.sync(() => {
+        const world = new Execution.World(null, {
+          "_generated/server.ts": () => Promise.resolve({}),
+        });
+        expect(Object.keys(world).sort()).toEqual(
+          Object.keys(Snapshot.contract.world).sort(),
+        );
       }),
   );
 });
