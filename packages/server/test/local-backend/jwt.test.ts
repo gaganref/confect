@@ -10,8 +10,10 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import {
   mint,
+  throughHop,
   type VerifierOutcome,
 } from "../../../../tools/local-backend/fixtures/minted";
+import * as TokenReviewHop from "../../../../tools/local-backend/fixtures/plain/convex/tokenReview";
 import * as TokenReview from "../../../../tools/local-backend/fixtures/tokenReview";
 import * as LocalBackend from "confect-local-backend/LocalBackend";
 
@@ -96,6 +98,51 @@ layer(
             Arr.map(Arr.range(before, after), review),
             name,
           ).toContainEqual(body);
+        }
+      }),
+  );
+});
+
+layer(
+  Layer.mergeAll(
+    LocalBackend.plainLayer,
+    NodeServices.layer,
+    FetchHttpClient.layer,
+  ),
+  { timeout: "120 seconds", excludeTestServices: true },
+)("JWT verification across an HTTP action's calls on a real backend", (it) => {
+  it.effect(
+    "a function an HTTP action calls through runQuery, runMutation or runAction sees the request's token as the binary hands it on",
+    () =>
+      Effect.gen(function* () {
+        const backend = yield* LocalBackend.LocalBackend;
+        const now = Math.floor((yield* Clock.currentTimeMillis) / 1000);
+        const { jwks, cases } = yield* mint(now);
+        yield* backend.setEnv("TEST_AUTH_JWKS", jwks);
+        yield* backend.redeploy;
+        const seconds = Effect.map(Clock.currentTimeMillis, (ms) =>
+          Math.floor(ms / 1000),
+        );
+        for (const { name, token, review } of cases) {
+          for (const hop of TokenReviewHop.hops) {
+            const before = yield* seconds;
+            const response = yield* HttpClient.get(
+              LocalBackend.siteUrl(
+                `${TokenReviewHop.path}?hop=${hop}`,
+                LocalBackend.ports.plain,
+              ),
+              { headers: { authorization: `Bearer ${token}` } },
+            );
+            const after = yield* seconds;
+            expect(response.status, `${name} ${hop}`).toBe(200);
+            const body = yield* response.json;
+            expect(
+              Arr.map(Arr.range(before, after), (at) =>
+                throughHop(review(at), hop),
+              ),
+              `${name} ${hop}`,
+            ).toContainEqual(body);
+          }
         }
       }),
   );

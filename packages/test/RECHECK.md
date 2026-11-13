@@ -142,10 +142,11 @@ query, range, pagination and validator rules come from convex-test 0.0.65
 kernel adds a `record` validator check, of every key and value, and refuses a
 validator kind it does not know rather than accepting it.
 
-A function in a component runs with no identity, whoever called it, since
-Convex gives a component no `ctx.auth` of its caller's. A nested call in the
-host takes its parent's identity, even when that is none, and a test's caller
-reaches only the function the test called.
+A nested call takes its caller's identity, even when that is none, and a
+test's caller reaches only the function the test called. Row 2 also gave every
+function in a component no identity. The component identity row (below)
+replaced that with the binary's rule: a component a query or a mutation calls
+sees the caller, and one an action calls sees none.
 
 Row 2 published one top-level mutation at a time. Row 3 replaced that with
 read-set validation and held attempts. Scheduling, storage, HTTP, JWT signing
@@ -930,8 +931,8 @@ negative: `Metering.ts` asserts it.
 difference by name. `SystemTableReadIntervals` is the one this row adds. The
 binary's `databaseQueries` also counts the system-table intervals it reads to
 run a function: the backend state, the module, the UDF config and the
-component. On the local-backend fixture a root mutation starts at 21, its first
-nested call adds 2, and a stale-snapshot query starts at 21 again. That share
+component. On the local-backend fixture a root mutation starts at 22, its first
+nested call adds 2, and a stale-snapshot query starts at 22 again. That share
 depends on the deployment, so the kernel does not simulate it.
 
 Each read maps a total `x` to `max(0, x - before) + after`, which never
@@ -941,8 +942,8 @@ the kernel's and the kernel's plus the system share:
 - While neither count saturates, the binary's is exactly the kernel's plus the
   share, and the binary refuses `TooManyReads` that many reads sooner.
 - A read that covers inserted IDs can saturate only the kernel's lower count,
-  and the gap shrinks. One insert and a read of its ID answer 21 on the binary
-  and 1 on the kernel, a gap of 20.
+  and the gap shrinks. One insert and a read of its ID answer 22 on the binary
+  and 1 on the kernel, a gap of 21.
 - Once a read saturates both, they agree. 100 inserts and a read of one answer
   100 on both.
 
@@ -1170,9 +1171,15 @@ A verified token gives `getUserIdentity` its identity. For a refused one,
 (`isolate/src/environment/action/task_executor.rs:205-216`), which reaches the
 handler as a plain `Error` with the verifier's message and no `data`
 (`isolate/src/environment/helpers/promise.rs:74-76`, `errors/src/lib.rs:25-26`,
-`convex` 1.49 `src/server/impl/syscall.ts:47-52`). A function the handler calls
-sees no identity, since an unknown identity carries no token
-(`database/src/transaction.rs:390-396`, `keybroker/src/broker.rs:165-175`).
+`convex` 1.49 `src/server/impl/syscall.ts:47-52`). A function in the host the
+handler calls through `ctx.runQuery`, `ctx.runMutation` or `ctx.runAction`
+gets the same unknown identity (`model/src/components/auth.rs:6-19`). An action
+throws the error again from `getUserIdentity`. A query or mutation reads its
+transaction's identity, which for an unknown identity is none, so it sees
+`null` (`isolate/src/environment/udf/async_syscall.rs:1111-1142`,
+`database/src/transaction.rs:390-396`). A component's function sees no
+identity either way. The local-backend suite's plain fixture checks each of the
+three calls on both targets, through `/token-review-hop`.
 
 `ctx.auth.signJwt` in a mutation now signs with an ES256 key, and `t.jwks()`
 answers its public half. The rules are convex-test 0.0.65's, which match the
@@ -1204,15 +1211,16 @@ export writes `signingKey` as a marker and no artifact shows the seed raw. A
 restore puts the seed back from the source's `secrets()` and installs it without
 drawing, so the restored backend verifies the tokens in its tables and signs
 under the same key. A restore without the secrets refuses with
-`SnapshotSecretMissing`. The field took the format to version 4. The snapshot
-contract lists `deploymentKey` as exported, and `authConfig` and `providers` as
-excluded, since the restoring backend loads its own `auth.config`.
+`SnapshotSecretMissing`. The field took the format to version 4. #134 keeps
+snapshot format 4, and #137 takes 5. The snapshot contract lists `deploymentKey`
+as exported, and `authConfig` and `providers` as excluded, since the restoring
+backend loads its own `auth.config`.
 
-`tools/local-backend/fixtures/minted.ts` mints five tokens with keys the test makes: a valid
-control, a wrong issuer, a wrong audience, a foreign key under the declared
-key's `kid`, and an expired token. `test/Identity.test.ts` runs them on the
-kernel, and `packages/server/test/local-backend/jwt.test.ts` runs them against
-the binary through the fixture's own `auth.config.ts` and its
+`tools/local-backend/fixtures/minted.ts` mints five tokens with keys the test
+makes: a valid control, a wrong issuer, a wrong audience, a foreign key under
+the declared key's `kid`, and an expired token. `test/Identity.test.ts` runs
+them on the kernel, and `packages/server/test/local-backend/jwt.test.ts` runs
+them against the binary through the fixture's own `auth.config.ts` and its
 `groups/components:identity` query. Both targets give the same outcome, the
 refusal code and the valid control's identity included. Both also send each
 token to an HTTP action at `/token-review`, which answers 200 with what
@@ -1220,13 +1228,94 @@ token to an HTTP action at `/token-review`, which answers 200 with what
 The thrown error's class, `data` and message are the same on both targets. An
 expired token's message counts the seconds on the verifier's clock, so the
 binary test accepts the message for any second between its clock reads before
-and after the request.
-`components.test.ts:84`, signing and the deployment JWKS, now runs in the
-kernel lane, and its placement is gone. Upstream's "rejects tokens from another
-TestConfect instance" builds its second layer with `seed: 1` through the lane's
-`TestConfect.layerWith`, so on the kernel the second backend draws another key,
-as a second deployment has its own. convex-test ignores the seed. The case runs
-in the kernel lane, and its placement is gone.
+and after the request. `components.test.ts:84`, signing and the deployment JWKS,
+now runs in the kernel lane, and its placement is gone. Upstream's "rejects
+tokens from another TestConfect instance" builds its second layer with `seed: 1`
+through the lane's `TestConfect.layerWith`, so on the kernel the second backend
+draws another key, as a second deployment has its own. convex-test ignores the
+seed. The case runs in the kernel lane, and its placement is gone.
+
+## Component identity (row 6)
+
+Row 2 gave every function in a mounted component no identity, on the premise
+that Convex gives a component no `ctx.auth` of its caller's. The binary
+disagrees, and the kernel now follows it (`callIdentity` in `Execution.ts`),
+convex-backend `cccbade4`:
+
+- A query's or mutation's nested call runs on its caller's transaction, and
+  `getUserIdentity` reads that transaction's identity in a component as in the
+  app (`crates/isolate/src/environment/udf/async_syscall.rs:629-724`,
+  `:1111-1141`). A component a query or a mutation calls sees the caller, at
+  every depth.
+- An action's call passes its identity through `propagate_component_auth`,
+  which keeps it only from the app to the app
+  (`crates/isolate/src/environment/action/async_syscall.rs:166`,
+  `crates/model/src/components/auth.rs:6-19`). A component an action calls
+  sees none, and so does every call below it.
+- A client reaches only the app's functions, so a test that calls a component
+  directly gets no identity, as a component's HTTP action does
+  (`crates/function_runner/src/server.rs:450-455`).
+
+Confect still drops `ctx.auth` from a Confect component's context. That is its
+API's rule, separate from parity, and the probe below reads `ctx.auth` through
+plain Convex functions for that reason.
+
+### Boundary check
+
+The local-backend fixture's `left` (parent), `left/deep` (middle) and
+`left/deep/child` (inner) mounts each expose a plain Convex `identityChain`
+query. It reads `ctx.auth.getUserIdentity()` and its component path, then calls
+the next mount's. `groups/componentIdentity` calls the chain from a query, a
+mutation and an action, beside the host's own reading.
+`test/fixtures/componentIdentityProbe.ts` holds the one answer both targets
+give: the caller at every depth from the query and the mutation, none from the
+action. `packages/server/test/local-backend/componentIdentity.test.ts` gets it
+from the binary with a token the fixture's `auth.config` accepts, measured on
+`precompiled-2026-10-28-cccbade`, and `test/ComponentIdentity.test.ts` from the
+kernel under `withIdentity`.
+
+## Request metadata (row 6)
+
+`ctx.meta.getRequestMetadata()` answers `ip`, `userAgent`, `requestId`,
+`scheduledFunctionId` and `authToken` in a mutation or an action; a query's
+`ctx.meta` has no such method (`convex/src/server/impl/meta_impl.ts`, 1.49). The
+binary's rules (convex-backend `cccbade4`):
+
+- A client's HTTP call is a request of its own. Its ID is 8 random bytes in
+  lowercase hex (`crates/common/src/execution_context.rs:204-208`), unless the
+  client sends `convex-request-id` (`common/src/http/mod.rs:1022-1041`). Its
+  address is `x-forwarded-for`'s first entry, or else the peer's, and its agent
+  is `user-agent` (`:1062-1092`).
+- A nested call keeps its caller's request: a mutation's nested call clones the
+  caller's context (`isolate/src/environment/udf/async_syscall.rs:715-735`), and
+  an action's calls pass its request ID and metadata on
+  (`application/src/application_function_runner/mod.rs:2206-2289`).
+- A scheduled job starts a fresh request with no address or agent
+  (`application/src/scheduled_jobs/mod.rs:743-758`), runs with no identity
+  (`:1072-1080`), and reports its own ID as `scheduledFunctionId`, which every call
+  under it inherits (`udf/async_syscall.rs:1053-1058`,
+  `action/async_syscall.rs:425-447`).
+- `authToken` is the token the request was authenticated with, or `null`.
+
+The kernel already followed every rule but the ID's format. Its request IDs
+were `kernel-request-N`; they are now a counter in the binary's format, 16
+lowercase hex digits, so each request in the process has its own and a replay
+draws nothing from the random stream. The real address and headers stay on the
+binary; a test sets them with `withRequestMetadata`.
+
+### Boundary check
+
+`groups/requests` in the local-backend fixture reads the request from a client
+mutation and its nested mutation, from a client action and its nested mutation
+and action, and from a mutation that schedules a mutation and an action, which
+record what they and the action's nested mutation read.
+`test/fixtures/requestProbe.ts` replaces each value a target chooses by its
+role, a request ID by `request N` in first-seen order or `malformed`, and holds
+the one literal both targets must answer.
+`packages/server/test/local-backend/requestMetadata.test.ts` calls the binary
+with a token its `auth.config` accepts, `x-forwarded-for` and `user-agent`, and
+`test/RequestMetadata.test.ts` calls the kernel with the same identity, address
+and agent.
 
 ## Sync protocol (row 7)
 

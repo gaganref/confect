@@ -309,6 +309,14 @@ interface Execution {
   readonly udfType: UdfType;
   readonly attempt: KernelAttempt | undefined;
   readonly identity: UserIdentity | null;
+  /**
+   * The verifier's refusal of the token its request presented, when an HTTP
+   * request's token was refused. The binary runs the request with an unknown
+   * identity that holds the error
+   * (`local_backend/src/http_actions.rs:165-169`), and a nested call in the
+   * host gets that identity unchanged (`model/src/components/auth.rs:6-19`).
+   */
+  readonly unverified: KernelRefusal.InvalidToken | undefined;
   readonly request: Request;
   /**
    * The kernel's time when the outermost query or mutation began. Its nested
@@ -446,11 +454,18 @@ const current = (): Execution => {
   return execution;
 };
 
+/**
+ * A request ID in the binary's format, 16 lowercase hex digits
+ * (`RequestId::new` in `crates/common/src/execution_context.rs:204-208`,
+ * convex-backend `cccbade4`). The binary draws 8 random bytes. The kernel
+ * counts instead, so every request in the process gets its own ID and a replay
+ * draws nothing from the supplied random stream.
+ */
 let nextRequestId = 0;
 const newRequest = (caller: Caller): Request => ({
   ip: caller.ip,
   userAgent: caller.userAgent,
-  requestId: `kernel-request-${nextRequestId++}`,
+  requestId: Str.padStart(16, "0")((nextRequestId++).toString(16)),
   scheduledFunctionId: null,
   authToken: caller.token,
 });
@@ -1173,9 +1188,9 @@ export class World {
         (verified) => this.route(verified, path, init),
         (error: unknown) => {
           if (!KernelRefusal.isInvalidToken(error)) throw error;
-          // No identity reaches a function the handler calls, and no
-          // token is forwarded (`database/src/transaction.rs:390-396`,
-          // `keybroker/src/broker.rs:165-175`).
+          // The request runs as the binary's unknown identity: no user, no
+          // token to forward (`keybroker/src/broker.rs:165-175`), and the
+          // refusal for an action's `getUserIdentity` to throw.
           return this.route(
             { ...caller, identity: null, token: null },
             path,
@@ -1221,13 +1236,11 @@ export class World {
       { componentPath: ROOT, udfPath: "http" },
       "action",
       undefined,
-      { caller, request: newRequest(caller) },
+      { caller, request: newRequest(caller), unverified: refused },
       undefined,
     );
-    const auth =
-      refused === undefined ? queryAuth(execution) : refusedAuth(refused);
     const action = httpActionGeneric((ctx, received) =>
-      handler({ ...ctx, auth }, received),
+      handler({ ...ctx, auth: queryAuth(execution) }, received),
     ) as unknown as {
       invokeHttpAction: (request: globalThis.Request) => Promise<Response>;
     };
@@ -2270,15 +2283,10 @@ export class World {
     pagination: Pagination | undefined,
     startTime?: number,
   ): Execution {
-    // A function in a component runs with no identity, whoever called it, as
-    // Convex gives a component no `ctx.auth` of the caller's. A nested call in
-    // the host takes its parent's identity, even when that is none.
-    const identity =
-      functionPath.componentPath !== ROOT
-        ? null
-        : from.parent !== undefined
-          ? from.parent.identity
-          : from.caller.identity;
+    const { identity, unverified } = callIdentity(
+      from,
+      functionPath.componentPath,
+    );
     // A nested call runs under its caller's limits, which its budget can only
     // tighten, and gives them back when it ends (`run_udf`,
     // `crates/isolate/src/environment/udf/async_syscall.rs:700-706`, and
@@ -2298,6 +2306,7 @@ export class World {
       udfType,
       attempt,
       identity,
+      unverified,
       request: from.request,
       startTime:
         startTime ??
@@ -3659,6 +3668,7 @@ type From =
   | {
       readonly caller: Caller;
       readonly request: Request;
+      readonly unverified?: KernelRefusal.InvalidToken | undefined;
       readonly parent?: undefined;
       readonly budget?: undefined;
       readonly syscall?: undefined;
@@ -3669,6 +3679,47 @@ type From =
       readonly budget?: Metering.Budget | undefined;
       readonly syscall?: true;
     };
+
+/**
+ * The identity a call runs with, by the binary's rules (convex-backend
+ * `cccbade4`).
+ *
+ * - A query's or mutation's nested call runs on its caller's transaction, and
+ *   `getUserIdentity` reads that transaction's identity in a component as in
+ *   the app (`crates/isolate/src/environment/udf/async_syscall.rs:629-724`,
+ *   `:1111-1141`). So a component a query or a mutation calls sees the caller,
+ *   at every depth.
+ * - An action's call passes its identity through `propagate_component_auth`,
+ *   which keeps it only from the app to the app
+ *   (`crates/isolate/src/environment/action/async_syscall.rs:166`,
+ *   `crates/model/src/components/auth.rs:6-19`).
+ * - A client reaches only the app's functions. A test that calls a component
+ *   directly gets no identity, as a component's HTTP action does
+ *   (`crates/function_runner/src/server.rs:450-455`).
+ *
+ * A refused HTTP token is part of the identity, the binary's unknown identity
+ * that holds the verifier's error, so `unverified` travels by the same rules.
+ */
+const callIdentity = (
+  from: From,
+  componentPath: string,
+): Pick<Execution, "identity" | "unverified"> => {
+  if (from.parent === undefined) {
+    return componentPath === ROOT
+      ? { identity: from.caller.identity, unverified: from.unverified }
+      : none;
+  }
+  const { parent } = from;
+  if (parent.udfType !== "action") return parent;
+  return parent.componentPath === ROOT && componentPath === ROOT
+    ? parent
+    : none;
+};
+
+const none: Pick<Execution, "identity" | "unverified"> = {
+  identity: null,
+  unverified: undefined,
+};
 
 /**
  * How a `ConvexError`'s data leaves a call from `from`: as Convex JSON across a
@@ -3817,24 +3868,26 @@ const transaction = (execution: Execution): KernelAttempt => {
   return execution.attempt;
 };
 
-const queryAuth = (execution: Execution) => ({
-  getUserIdentity: () => {
-    execution.attempt?.observeIdentity();
-    return Promise.resolve(execution.identity);
-  },
-});
-
 /**
- * An HTTP action's `ctx.auth` when its request presented a token the verifier
- * refused. `getUserIdentity` throws the verifier's error
+ * `ctx.auth` as each kind of function reads it. Under a refused token, an
+ * action, the HTTP action itself or one it ran, throws the verifier's error
  * (`isolate/src/environment/action/task_executor.rs:205-216`). It reaches the
  * handler as a plain `Error` whose message is the error's own
  * (`isolate/src/environment/helpers/promise.rs:74-76`,
  * `errors/src/lib.rs:25-26`, `:989-994`), rethrown by `performAsyncSyscall`
- * without `data` (`convex/src/server/impl/syscall.ts:47-52`).
+ * without `data` (`convex/src/server/impl/syscall.ts:47-52`). A query or a
+ * mutation reads its transaction's identity, and an unknown identity is none
+ * (`isolate/src/environment/udf/async_syscall.rs:1111-1142`,
+ * `database/src/transaction.rs:390-396`).
  */
-const refusedAuth = (refused: KernelRefusal.InvalidToken) => ({
-  getUserIdentity: () => Promise.reject(new Error(refused.message)),
+const queryAuth = (execution: Execution) => ({
+  getUserIdentity: () => {
+    if (execution.udfType === "action" && execution.unverified !== undefined) {
+      return Promise.reject(new Error(execution.unverified.message));
+    }
+    execution.attempt?.observeIdentity();
+    return Promise.resolve(execution.identity);
+  },
 });
 
 const mutationAuth = (execution: Execution) => ({
