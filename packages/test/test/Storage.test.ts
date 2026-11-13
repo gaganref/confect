@@ -19,6 +19,7 @@ import * as Schema from "effect/Schema";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Redaction from "../src/internal/Redaction";
 import * as Array from "effect/Array";
+import * as Json from "../src/internal/Json";
 
 // The binary answers these for one stored blob. The local-backend case
 // "keeps one stored blob's _storage row, metadata, URL and delete as the test
@@ -102,7 +103,7 @@ const allFiles = (ctx: QueryCtx) =>
   ctx.db.system
     .query("_storage")
     .collect()
-    .then((rows) => JSON.stringify(rows));
+    .then((rows) => Json.stringify(rows));
 
 describe("storage metadata", () => {
   it.effect(

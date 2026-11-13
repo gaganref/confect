@@ -1118,7 +1118,7 @@ export const checkFiles = (
           file.componentPath,
           id,
           "digest",
-          `holds bytes whose SHA-256 is not its row's ${JSON.stringify(row["sha256"])}`,
+          `holds bytes whose SHA-256 is not its row's ${Json.stringify(row["sha256"])}`,
         ),
       );
     if (row["size"] !== file.bytes.length)
@@ -1127,7 +1127,7 @@ export const checkFiles = (
           file.componentPath,
           id,
           "size",
-          `holds ${file.bytes.length} bytes, not its row's ${JSON.stringify(row["size"])}`,
+          `holds ${file.bytes.length} bytes, not its row's ${Json.stringify(row["size"])}`,
         ),
       );
     if (Storage.uuidCounter(file.uuid) === undefined || uuids.has(file.uuid))

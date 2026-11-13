@@ -369,7 +369,13 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
             client.query(getFunctionReference(storage.describe), {
               storageId,
             }),
-          ).pipe(Effect.map((json): any => JSON.parse(json)));
+          ).pipe(
+            Effect.flatMap((json) =>
+              Schema.decodeEffect(Schema.fromJsonString(Schema.Any))(json).pipe(
+                Effect.orDie,
+              ),
+            ),
+          );
         const deleteRaw = (storageId: GenericId<"_storage">) =>
           client.mutation(getFunctionReference(storage.deleteRaw), {
             storageId,

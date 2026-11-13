@@ -296,8 +296,11 @@ const describe = FunctionImpl.make(
         ]),
       );
 
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The probe hands the binary's raw answers to the test as they are, a null content type included.
-      return JSON.stringify({ doc, metadata, url });
+      return yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
+        doc,
+        metadata,
+        url,
+      }).pipe(Effect.orDie);
     }),
 );
 

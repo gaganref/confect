@@ -2793,7 +2793,7 @@ export class World {
     jsonArgs: string,
     execution: Execution,
   ): string {
-    const args = JSON.parse(jsonArgs);
+    const args = Json.parse(jsonArgs);
     if (execution.attempt?.closed === true) throw closed(execution, op);
     switch (op) {
       case "1.0/getSnapshotTs":
@@ -3027,14 +3027,14 @@ export class World {
         this.commitNow((attempt) =>
           this.cancelJob(attempt, execution, args.id),
         );
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/storageGetUrl": {
         const found = this.findFile(
           execution,
           "storage.getUrl",
           args.storageId,
         );
-        return JSON.stringify(
+        return Json.stringify(
           found === null ? null : Storage.fileUrl(found.file),
         );
       }
@@ -3044,7 +3044,7 @@ export class World {
           "storage.getMetadata",
           args.storageId,
         );
-        return JSON.stringify(
+        return Json.stringify(
           found === null ? null : Storage.metadata(found.doc, found.file),
         );
       }
@@ -3059,7 +3059,7 @@ export class World {
             ),
           );
         }
-        return JSON.stringify(
+        return Json.stringify(
           found === null
             ? null
             : {
@@ -3069,11 +3069,11 @@ export class World {
         );
       }
       case "1.0/storageGenerateUploadUrl":
-        return JSON.stringify(
+        return Json.stringify(
           Storage.uploadUrl(`kernel-unsigned-${this.nextUploadToken++}`),
         );
       case "1.0/storageStore":
-        return JSON.stringify(
+        return Json.stringify(
           this.storageWrite(execution, (attempt) =>
             this.storeFile(
               execution,
@@ -3088,7 +3088,7 @@ export class World {
         this.storageWrite(execution, (attempt) =>
           this.deleteFile(execution, attempt, args.storageId),
         );
-        return JSON.stringify(null);
+        return Json.stringify(null);
       case "1.0/getTransactionMetrics":
         // An action has no transaction, and the binary's action syscalls do
         // not know this one (`crates/isolate/src/environment/action/async_syscall.rs:105`).

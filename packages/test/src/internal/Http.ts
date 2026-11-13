@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import * as Array from "effect/Array";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
+import * as Json from "./Json.js";
 
 /**
  * The origin of a request the test sends to the kernel's HTTP routes, as
@@ -88,7 +89,7 @@ const isConvexError = (thrown: unknown): thrown is { readonly data: Value } =>
 const errorData = (data: Value): unknown => {
   if (typeof data !== "string") return convexToJson(data);
   try {
-    return JSON.parse(data);
+    return Json.parse(data);
   } catch {
     return data;
   }
@@ -118,7 +119,7 @@ export const serverError = (thrown: unknown, requestId: string): Response => {
     trace: `${Array.join([message, ...frames], "\n")}\n`,
   };
   if (isConvexError(thrown)) body["data"] = errorData(thrown.data);
-  return new Response(JSON.stringify(body), {
+  return new Response(Json.stringify(body), {
     status: 500,
     headers: { "content-type": "application/json" },
   });

@@ -6,8 +6,10 @@ import * as TestConfect from "./TestConfect";
 import * as Array from "effect/Array";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Schema from "effect/Schema";
 
 const encoder = new TextEncoder();
+// oxlint-disable-next-line effecttsgo/global-json -- A sender's envelope bytes, built at module scope and in the sync thunks of the cases' table.
 const json = (value: unknown) => encoder.encode(JSON.stringify(value));
 
 const accepted = { id: "evt_1", event: "paid" };
@@ -57,7 +59,12 @@ const send = (envelope: Envelope) =>
  */
 const protectedRows = Effect.flatMap(TestConfect.TestConfect, (c) =>
   c.query(refs.public.groups.notes.list),
-).pipe(Effect.map((rows) => JSON.stringify(rows)));
+).pipe(
+  Effect.flatMap((rows) =>
+    Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(rows),
+  ),
+  Effect.orDie,
+);
 
 const notFound = { status: 404, body: "" };
 
