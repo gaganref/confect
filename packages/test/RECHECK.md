@@ -1402,3 +1402,26 @@ without it:
 | The narrower identity invalidation was visible: a time query past the cache age changes on the binary after an auth update | Every query of a socket reruns on an identity change, through the cache model                   | leg 1 on both targets and on the kernel; the narrower rule, and no cache                                                                              |
 | The probe failed instead of skipping off Linux                                                                             | Skipped with its reason before any backend starts                                               | a run with `process.platform` set to `darwin` and `win32`                                                                                             |
 | A rejected transition could leave a leg waiting and an earlier `agree` record standing                                     | Deadlines on every step and side, an `incomplete` record first, partial observations on failure | `syncProbeRecord.test.ts`; no incomplete record first, a failure left unrecorded, no side deadline; and the probe under the wrong start-version plant |
+
+### Row 7 fix round 2
+
+- #134's round 2 (`2583a6cb`, on `main` `4fb64502`) is merged in, never
+  rebased. #134's own files take #134's version, without the temporary
+  disables row 7 had put on them. `Identity.test.ts`'s subscriber case no
+  longer expects #134's `KernelRowPending` naming row 7: a subscriber that
+  presents a token subscribes under the verified identity. Its HTTP case
+  stays #134's.
+- Sync never drew from `KernelRuntime.random`, which #134 removed: it signs
+  nothing and draws nothing, so the world stream needs no change here.
+- The snapshot body is unchanged by this row. Its contract gains the open
+  sockets, the commit watchers, Sync's sessions and the sync query cache, all
+  excluded or live, so this row takes no format version; #134's version 4
+  stands.
+- The legs, the probe and the tests are Effect programs under #140's rules.
+  Every step and side is bounded by `Effect.timeoutOrElse`, clients are
+  scoped resources, the binary's contention reads `convex logs` through
+  Effect's `ChildProcess`, records are encoded through `Schema`, and the
+  tests narrow with `assertIs`. The disables left sit on exact lines with
+  their rule and reason: the `on*` handlers of the kernel's socket, a Convex
+  query's `Date.now()`, and Node imports for `/proc`, hashing and temporary
+  directories.
