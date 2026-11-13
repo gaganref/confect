@@ -27,4 +27,29 @@ http.route({
   ),
 });
 
+http.route({
+  path: "/echo",
+  method: "OPTIONS",
+  handler: httpActionGeneric((_ctx, request) =>
+    request
+      .arrayBuffer()
+      .then((body) => new Response(`received ${body.byteLength}`)),
+  ),
+});
+
+http.route({
+  path: "/headers",
+  method: "GET",
+  handler: httpActionGeneric((_ctx, request) => {
+    const headers = new Headers();
+    headers.append("set-cookie", "a=1; Path=/");
+    headers.append("set-cookie", "b=2; Path=/");
+    headers.append("x-multi", "first");
+    headers.append("x-multi", "second");
+    return Promise.resolve(
+      new Response(request.headers.get("x-dup") ?? "none", { headers }),
+    );
+  }),
+});
+
 export default http;
