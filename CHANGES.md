@@ -141,17 +141,20 @@ fork-specific.
 On the kernel, a raw `fetch` in an action or a Node action dies with
 `BackendRefusal` `UndeclaredFetch`, naming the action's component path and
 `module:export` and the URL's host, with `failed`, `because`, `instead` and a
-`docs` anchor. The action fails with it whatever its handler catches and runs
-no later call. The binary performs this fetch, so this is the kernel's one
-deliberate departure, recorded as the convex-test lane's single conformance
-exception, which names one exact case, the binary behaviour, an owner, the
-convex-test version and its local-backend evidence. The lane refuses broad or
-stale entries and fails when an excepted case passes. Egress goes through an
-internal provider port: inside a kernel action its call is held as a
-`{ kind: "provider" }` command that the shim's `commands()` lists and
-`answer(id, output)` settles. This is the action egress row of Frame's backend
-testing kernel (Frame ADR 0012, row 6). Changeset:
-`test-kernel-action-egress.md`. Upstream: fork only, as the kernel is
+`docs` anchor. The action settles with it at once, whatever its handler catches
+and whether or not the handler settles, runs no later call, and logs nothing
+more, as the binary stops an ended function's JavaScript. The binary performs
+this fetch, so this is the kernel's one deliberate departure, recorded as the
+convex-test lane's single conformance exception. The entry names one exact case,
+the binary behaviour, each function's expected outcome there, an owner, the
+convex-test version and its local-backend evidence, and the lane refuses broad,
+stale or versionless entries, a skipped case, an unrelated failure and an
+excepted case that passes. Egress goes through an internal provider port: inside
+a kernel action its call is held as a `{ kind: "provider" }` command that the
+shim's `commands()` lists and `answer(id, output)` settles, until the action
+ends, when its commands are cancelled and a later call is refused. This is the
+action egress row of Frame's backend testing kernel (Frame ADR 0012, row 6).
+Changeset: `test-kernel-action-egress.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
 ## Test kernel I/O bans
