@@ -1,35 +1,4 @@
 {
-  "effecttsgo/global-json": {
-    "packages/alchemy/test/ConvexClient.test.ts": 2,
-    "packages/alchemy/test/integration/MountInit.test.ts": 1,
-    "packages/cli/test/ManifestSections.test.ts": 1,
-    "packages/cli/test/SectionFiles.test.ts": 1,
-    "packages/cli/test/codegen.test.ts": 1,
-    "packages/react/test/StreamPagination.test.ts": 4,
-    "packages/server/test/Callback.test.ts": 3,
-    "packages/server/test/MountInit.test.ts": 1,
-    "packages/server/test/RegisteredConvexFunction.test.ts": 1,
-    "scripts/stageForkPackages.test.ts": 1
-  },
-  "effecttsgo/schema-sync": {
-    "packages/alchemy/test/Code.test.ts": 1,
-    "packages/alchemy/test/FileLock.test.ts": 1,
-    "packages/alchemy/test/LocalBackend.test.ts": 1,
-    "packages/alchemy/test/PushLock.test.ts": 1,
-    "packages/cli/test/ComponentCodegen.test.ts": 1,
-    "packages/cli/test/codegen.test.ts": 1,
-    "packages/cli/test/integration/codegen.test.ts": 1,
-    "packages/core/test/Callback.test.ts": 7,
-    "packages/core/test/Component.test.ts": 13,
-    "packages/core/test/FunctionSpec.test.ts": 10,
-    "packages/core/test/GenericId.test.ts": 5,
-    "packages/core/test/IdScope.test.ts": 5,
-    "packages/core/test/Mount.test.ts": 3,
-    "packages/core/test/Profile.test.ts": 2,
-    "packages/server/test/local-backend/http.test.ts": 1,
-    "packages/server/test/local-backend/reservedArgument.test.ts": 1,
-    "scripts/stageForkPackages.test.ts": 1
-  },
   "effecttsgo/strict-effect-provide": {
     "packages/alchemy/test/Code.test.ts": 17,
     "packages/alchemy/test/ConvexClient.test.ts": 14,

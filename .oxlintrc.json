@@ -374,47 +374,6 @@
     },
     {
       "files": [
-        "packages/alchemy/test/ConvexClient.test.ts",
-        "packages/alchemy/test/integration/MountInit.test.ts",
-        "packages/cli/test/ManifestSections.test.ts",
-        "packages/cli/test/SectionFiles.test.ts",
-        "packages/cli/test/codegen.test.ts",
-        "packages/react/test/StreamPagination.test.ts",
-        "packages/server/test/Callback.test.ts",
-        "packages/server/test/MountInit.test.ts",
-        "packages/server/test/RegisteredConvexFunction.test.ts",
-        "scripts/stageForkPackages.test.ts"
-      ],
-      "rules": {
-        "effecttsgo/global-json": "off"
-      }
-    },
-    {
-      "files": [
-        "packages/alchemy/test/Code.test.ts",
-        "packages/alchemy/test/FileLock.test.ts",
-        "packages/alchemy/test/LocalBackend.test.ts",
-        "packages/alchemy/test/PushLock.test.ts",
-        "packages/cli/test/ComponentCodegen.test.ts",
-        "packages/cli/test/codegen.test.ts",
-        "packages/cli/test/integration/codegen.test.ts",
-        "packages/core/test/Callback.test.ts",
-        "packages/core/test/Component.test.ts",
-        "packages/core/test/FunctionSpec.test.ts",
-        "packages/core/test/GenericId.test.ts",
-        "packages/core/test/IdScope.test.ts",
-        "packages/core/test/Mount.test.ts",
-        "packages/core/test/Profile.test.ts",
-        "packages/server/test/local-backend/http.test.ts",
-        "packages/server/test/local-backend/reservedArgument.test.ts",
-        "scripts/stageForkPackages.test.ts"
-      ],
-      "rules": {
-        "effecttsgo/schema-sync": "off"
-      }
-    },
-    {
-      "files": [
         "packages/alchemy/test/Code.test.ts",
         "packages/alchemy/test/ConvexClient.test.ts",
         "packages/alchemy/test/DeployKey.test.ts",

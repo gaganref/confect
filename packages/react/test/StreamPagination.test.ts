@@ -12,6 +12,24 @@ const options = {
 };
 
 /**
+ * The key a scripted response is stored under: every field of its request.
+ */
+const requestKey = (request: StreamPagination.PageRequest) =>
+  Array.join(
+    Array.map(
+      [
+        request.numItems,
+        request.cursor,
+        request.endCursor,
+        request.maximumRowsRead,
+        request.maximumBytesRead,
+      ],
+      String,
+    ),
+    "|",
+  );
+
+/**
  * Serves each subscribed page from `responses`, keyed by its request, so tests
  * script the server by page range rather than by internal page key.
  */
@@ -20,7 +38,7 @@ const serve = (
   responses: ReadonlyMap<string, Response>,
 ): StreamPagination.Results =>
   StreamPagination.pageRequests(state, (page) =>
-    responses.get(JSON.stringify(page)),
+    responses.get(requestKey(page)),
   );
 
 /**
@@ -56,7 +74,7 @@ const respond = (
   request: StreamPagination.PageRequest,
   response: Response,
 ) => {
-  responses.set(JSON.stringify(request), response);
+  responses.set(requestKey(request), response);
 };
 
 const page = (
@@ -135,7 +153,7 @@ describe("interpret", () => {
     expect(failed.view.firstPageLoaded).toBe(true);
     expect(requests(failed.state)).toEqual([growing, pinned]);
 
-    responses.delete(JSON.stringify(pinned));
+    responses.delete(requestKey(pinned));
     const retrying = settle(failed.state, responses);
 
     assert(retrying.view._tag === "Interpreted");
@@ -274,7 +292,7 @@ describe("interpret", () => {
         secondHalf,
       ]);
 
-      responses.delete(JSON.stringify(firstHalf));
+      responses.delete(requestKey(firstHalf));
       const retrying = settle(failed.state, responses);
 
       assert(retrying.view._tag === "Interpreted");

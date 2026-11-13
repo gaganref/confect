@@ -6,7 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Option from "effect/Option";
 import * as Result from "effect/Result";
-import * as Schema from "effect/Schema";
+import { quote } from "@confect/cli/Json";
 import * as PlatformError from "effect/PlatformError";
 import * as Console from "effect/Console";
 import {
@@ -29,7 +29,6 @@ import * as Array from "effect/Array";
 import { assertIs } from "./internal/assertIs";
 
 const fixture = `${import.meta.dirname}/fixtures/authored-component`;
-const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 const freshFixture = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -316,7 +315,7 @@ it.effect(
       yield* fs.writeFileString(
         `${directory}/convex/convex.config.ts`,
         `import { defineComponent } from "convex/server";
-import counter from ${stringLiteral(`${fixture}/convex/convex.config`)};
+import counter from ${quote(`${fixture}/convex/convex.config`)};
 const parent = defineComponent("parent");
 parent.use(counter, { name: "child" });
 export default parent;
@@ -326,7 +325,7 @@ export default parent;
         `${directory}/confect/tables/foreign.ts`,
         `import { Component, Table } from "@confect/core";
 import * as Schema from "effect/Schema";
-import counter from ${stringLiteral(`${fixture}/confect/_generated/component`)};
+import counter from ${quote(`${fixture}/confect/_generated/component`)};
 import { components } from "../_generated/components";
 import { scope } from "../_generated/id";
 const child = Component.bind(counter, components.child, { parentScope: scope });

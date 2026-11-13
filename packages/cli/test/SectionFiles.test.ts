@@ -1,4 +1,5 @@
 import * as Result from "effect/Result";
+import { quote } from "@confect/cli/Json";
 import type { ManifestSection } from "@confect/core";
 import { describe, expect, it } from "@effect/vitest";
 import { builtIn, claims } from "@confect/cli/SectionFiles";
@@ -76,7 +77,7 @@ describe("SectionFiles", () => {
         _tag: "Failure",
         failure: {
           sectionKey: "observe",
-          reason: `claims ${JSON.stringify(file)}; name a .ts file directly inside confect/_generated.`,
+          reason: `claims ${quote(file)}; name a .ts file directly inside confect/_generated.`,
         },
       });
     },

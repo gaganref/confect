@@ -33,7 +33,10 @@ import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
 import { assertIs } from "./internal/assertIs";
 
-const serialize = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const serialize = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(
+    Effect.orDie,
+  );
 const props: CodeProps = {
   deployment: {
     name: "happy-otter-123",
@@ -145,7 +148,8 @@ describe("Code", () => {
       );
       expect(Result.isFailure(result)).toBe(true);
       expect(pushed).toBe(false);
-      expect(serialize(result)).not.toContain("test-secret");
+      const serializeResult = yield* serialize(result);
+      expect(serializeResult).not.toContain("test-secret");
     }),
   );
 
@@ -166,7 +170,8 @@ describe("Code", () => {
             deployKey: Redacted.make(key),
           }).pipe(Effect.provide(recorder(calls)), Effect.result);
           expect(Result.isFailure(result)).toBe(true);
-          expect(serialize(result)).not.toContain(key);
+          const serializeResult = yield* serialize(result);
+          expect(serializeResult).not.toContain(key);
         }
         expect(calls).toEqual([]);
       }),
@@ -227,10 +232,8 @@ const project = Effect.gen(function* () {
   ]) {
     const directory = path.join(cwd, "node_modules", name);
     yield* fs.makeDirectory(directory, { recursive: true });
-    yield* fs.writeFileString(
-      path.join(directory, "package.json"),
-      serialize({ name, bin: { [bin]: "cli.js" } }),
-    );
+    const manifest = yield* serialize({ name, bin: { [bin]: "cli.js" } });
+    yield* fs.writeFileString(path.join(directory, "package.json"), manifest);
   }
   return cwd;
 });
@@ -297,7 +300,8 @@ describe("Code command boundary", () => {
             exitCode: 6,
           }),
         );
-      expect(serialize(exited)).not.toContain("test-secret");
+      const serializeResult = yield* serialize(exited);
+      expect(serializeResult).not.toContain("test-secret");
       const failed = yield* runner
         .prepare({ command: path.join(cwd, "confect-test-secret"), args: [] })
         .pipe(Effect.result);
@@ -306,7 +310,8 @@ describe("Code command boundary", () => {
         expect(failed.failure).toEqual(
           CommandError.make({ operation: "prepare", reason: "spawn" }),
         );
-      expect(serialize(failed)).not.toContain("test-secret");
+      const serializeResult2 = yield* serialize(failed);
+      expect(serializeResult2).not.toContain("test-secret");
     }).pipe(
       Effect.provide(runnerLayer.pipe(Layer.provideMerge(NodeServices.layer))),
     ),
@@ -334,7 +339,8 @@ describe("Code command boundary", () => {
               expect(command.options.stdin).toBe("ignore");
               expect(command.options.stdout).toBe("ignore");
               expect(command.options.stderr).toBe("ignore");
-              expect(serialize(command)).not.toContain("test-secret");
+              const serializeResult = yield* serialize(command);
+              expect(serializeResult).not.toContain("test-secret");
               expect(command.options.env).not.toHaveProperty(
                 "CONVEX_ACCESS_TOKEN",
               );
@@ -426,7 +432,8 @@ describe("Code command boundary", () => {
           );
         const envFileExists = yield* fs.exists(envFile);
         expect(envFileExists).toBe(false);
-        expect(serialize(result)).not.toContain("test-secret");
+        const serializeResult = yield* serialize(result);
+        expect(serializeResult).not.toContain("test-secret");
       }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -518,9 +525,10 @@ describe("Code command boundary", () => {
         for (const name of ["convex", "@confect/cli"]) {
           const directory = path.join(cwd, "node_modules", name);
           yield* fs.makeDirectory(directory, { recursive: true });
+          const manifest = yield* serialize({ name, bin: {} });
           yield* fs.writeFileString(
             path.join(directory, "package.json"),
-            serialize({ name, bin: {} }),
+            manifest,
           );
         }
         const result = yield* deploy({ ...input, cwd }).pipe(

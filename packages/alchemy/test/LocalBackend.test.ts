@@ -22,7 +22,10 @@ import { fakeBackend } from "./fixtures/LocalBackend";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 
-const serialize = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const serialize = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(
+    Effect.orDie,
+  );
 const name = "confect-deployment-0123456789abcdef01234567";
 
 const occupy = (port: number) =>
@@ -110,7 +113,8 @@ describe("LocalBackend", () => {
           "--disable-beacon",
           path.join(directory, "convex_local_backend.sqlite3"),
         ]);
-        expect(serialize(backend)).not.toContain("0a1b2c1");
+        const serializeResult = yield* serialize(backend);
+        expect(serializeResult).not.toContain("0a1b2c1");
         if (process.platform !== "win32")
           expect(
             (yield* fs.stat(path.join(directory, "identity.json"))).mode &
@@ -146,16 +150,14 @@ describe("LocalBackend", () => {
       const { directory, run } = yield* harness(fake);
       const identity = path.join(directory, "identity.json");
       yield* fs.makeDirectory(directory, { recursive: true });
-      yield* fs.writeFileString(
-        identity,
-        serialize({
-          name,
-          version: backendVersion,
-          instanceSecret: "00ff",
-          adminKey: `${name}|0a1b2c`,
-          port: 3355,
-        }),
-      );
+      const serializeResult = yield* serialize({
+        name,
+        version: backendVersion,
+        instanceSecret: "00ff",
+        adminKey: `${name}|0a1b2c`,
+        port: 3355,
+      });
+      yield* fs.writeFileString(identity, serializeResult);
       const backend = yield* run(boot(name, directory));
       const identityContents = yield* fs.readFileString(identity);
       const saved = yield* Schema.decodeEffect(

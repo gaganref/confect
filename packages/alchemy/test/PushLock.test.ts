@@ -23,7 +23,10 @@ import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 
-const serialize = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const serialize = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(
+    Effect.orDie,
+  );
 
 // Locks live in the user's cache so every checkout on the machine shares
 // them: ~/.cache/confect/alchemy/locks on POSIX, %LOCALAPPDATA% on Windows.
@@ -149,10 +152,11 @@ setTimeout(() => process.exit(0), 600);`,
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const lock = yield* PushLock;
-        yield* fs.writeFileString(
-          lockFile,
-          serialize({ pid: yield* deadPid, token: "crashed" }),
-        );
+        const serializeResult = yield* serialize({
+          pid: yield* deadPid,
+          token: "crashed",
+        });
+        yield* fs.writeFileString(lockFile, serializeResult);
         const withLock2 = yield* lock.withLock(
           "happy-otter-123",
           Effect.succeed("pushed"),
@@ -169,10 +173,11 @@ setTimeout(() => process.exit(0), 600);`,
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const lock = yield* PushLock;
-        yield* fs.writeFileString(
-          lockFile,
-          serialize({ pid: process.pid, token: "other-fiber" }),
-        );
+        const serializeResult = yield* serialize({
+          pid: process.pid,
+          token: "other-fiber",
+        });
+        yield* fs.writeFileString(lockFile, serializeResult);
         const withLock2 = yield* lock
           .withLock("happy-otter-123", Effect.void)
           .pipe(Effect.result);
@@ -206,7 +211,10 @@ setTimeout(() => process.exit(0), 600);`,
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const lock = yield* PushLock;
-          const holder = serialize({ pid: process.pid, token: "other-fiber" });
+          const holder = yield* serialize({
+            pid: process.pid,
+            token: "other-fiber",
+          });
           yield* fs.writeFileString(lockFile, holder);
           const waiting = yield* lock
             .withLock("happy-otter-123", Effect.void)

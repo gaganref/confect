@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import { stringify } from "@confect/cli/Json";
 import * as Result from "effect/Result";
 import {
   FunctionSpec,
@@ -106,7 +107,7 @@ describe("ManifestSections", () => {
         collect(tags({ ...section, describe: ({ path }) => path }), ordered),
       ).get("tags")!;
       return {
-        bytes: JSON.stringify([entry.data, entry.sources]),
+        bytes: stringify([entry.data, entry.sources]),
         paths: Record.keys(entry.data.functions),
       };
     };

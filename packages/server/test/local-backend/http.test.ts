@@ -17,7 +17,10 @@ import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Array from "effect/Array";
 
-const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const encodeJson = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(
+    Effect.orDie,
+  );
 
 const LogEntry = Schema.fromJsonString(
   Schema.Struct({
@@ -170,18 +173,30 @@ layer(
       const jwks = {
         keys: [{ ...key, kid: "test", alg: "RS256", use: "sig" }],
       };
+      const json3 = yield* encodeJson(jwks);
       yield* backend.setEnv(
         "TEST_AUTH_JWKS",
-        `data:application/json;base64,${Buffer.from(encodeJson(jwks)).toString("base64")}`,
+        `data:application/json;base64,${Buffer.from(json3).toString("base64")}`,
       );
       yield* backend.redeploy;
       const issuer = "https://confect-auth.invalid";
       const expires =
         Math.floor((yield* Clock.currentTimeMillis) / 1000) + 3600;
       const encode = (value: unknown) =>
-        Buffer.from(encodeJson(value)).toString("base64url");
+        encodeJson(value).pipe(
+          Effect.map((json) => Buffer.from(json).toString("base64url")),
+        );
       const sign = Effect.fnUntraced(function* (iss: string) {
-        const unsigned = `${encode({ alg: "RS256", kid: "test" })}.${encode({ iss, aud: "confect-test", sub: "person", exp: expires, name: "Synthetic Person", role: "student" })}`;
+        const header = yield* encode({ alg: "RS256", kid: "test" });
+        const payload = yield* encode({
+          iss,
+          aud: "confect-test",
+          sub: "person",
+          exp: expires,
+          name: "Synthetic Person",
+          role: "student",
+        });
+        const unsigned = `${header}.${payload}`;
         const signature = yield* Effect.promise(() =>
           crypto.subtle.sign(
             "RSASSA-PKCS1-v1_5",

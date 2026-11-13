@@ -38,36 +38,40 @@ const Other = Callback.mutation("other/onEvent", {
 const handleText = "function://;callbacks:onEvent";
 
 describe("contract", () => {
-  test("declaring a contract and a spec that stores its handle builds no schema", () => {
-    const args = vi.fn(() => ({ run: Schema.String }));
-    const returns = vi.fn(() => Schema.Null);
-    const error = vi.fn(() => EventRejected);
-    const Lazy = Callback.action("lazy/onEvent", { args, returns, error });
+  it.effect(
+    "declaring a contract and a spec that stores its handle builds no schema",
+    () =>
+      Effect.gen(function* () {
+        const args = vi.fn(() => ({ run: Schema.String }));
+        const returns = vi.fn(() => Schema.Null);
+        const error = vi.fn(() => EventRejected);
+        const Lazy = Callback.action("lazy/onEvent", { args, returns, error });
 
-    const spec = TestSpec.fromGroups({
-      deliveries: GroupSpec.make().addFunction(
-        FunctionSpec.publicMutation({
-          name: "send",
-          args: () => ({ onEvent: Callback.handle(Lazy) }),
-          returns: () => Schema.Null,
-        }),
-      ),
-    });
-    const refs = Refs.make(spec);
-    const handle = Callback.handle(Lazy);
+        const spec = TestSpec.fromGroups({
+          deliveries: GroupSpec.make().addFunction(
+            FunctionSpec.publicMutation({
+              name: "send",
+              args: () => ({ onEvent: Callback.handle(Lazy) }),
+              returns: () => Schema.Null,
+            }),
+          ),
+        });
+        const refs = Refs.make(spec);
+        const handle = Callback.handle(Lazy);
 
-    expect([
-      args.mock.calls.length,
-      returns.mock.calls.length,
-      error.mock.calls.length,
-    ]).toEqual([0, 0, 0]);
-    expect(Ref.getConvexFunctionName(refs.public.deliveries.send)).toBe(
-      "deliveries:send",
-    );
-    expect(Schema.decodeSync(handle)(handleText).convexFunctionName).toBe(
-      handleText,
-    );
-  });
+        expect([
+          args.mock.calls.length,
+          returns.mock.calls.length,
+          error.mock.calls.length,
+        ]).toEqual([0, 0, 0]);
+        expect(Ref.getConvexFunctionName(refs.public.deliveries.send)).toBe(
+          "deliveries:send",
+        );
+        expect(
+          (yield* Schema.decodeEffect(handle)(handleText)).convexFunctionName,
+        ).toBe(handleText);
+      }),
+  );
 
   test("an id names the component and the event", () => {
     // @ts-expect-error a contract id is "<component>/<event>"
@@ -78,28 +82,42 @@ describe("contract", () => {
 });
 
 describe("handle", () => {
-  test("a handle opts into the reserved argument without changing its wire string", () => {
-    const codec = Callback.handle(OnEvent, { reservedArgument: "observe" });
-    const handle = Schema.decodeSync(codec)(handleText);
-    expect(handle.reservedArgument).toBe("observe");
-    expect(Schema.encodeSync(codec)(handle)).toBe(handleText);
-    expect(
-      Schema.decodeSync(Callback.handle(OnEvent))(handleText).reservedArgument,
-    ).toBeUndefined();
-    const query = Callback.query("test/read", { returns: () => Schema.Null });
-    // @ts-expect-error Query callbacks do not carry reserved arguments.
-    const queryCodec = Callback.handle(query, { reservedArgument: "observe" });
-    expect(
-      Schema.decodeSync(queryCodec)(handleText).reservedArgument,
-    ).toBeUndefined();
-  });
-  test("decoded handles preserve their dispatch type", () => {
-    for (const make of [Callback.query, Callback.mutation, Callback.action]) {
-      const contract = make("test/dispatch", { returns: () => Schema.Null });
-      const handle = Schema.decodeSync(Callback.handle(contract))(handleText);
-      expect(handle.functionType).toBe(contract.functionType);
-    }
-  });
+  it.effect(
+    "a handle opts into the reserved argument without changing its wire string",
+    () =>
+      Effect.gen(function* () {
+        const codec = Callback.handle(OnEvent, { reservedArgument: "observe" });
+        const handle = yield* Schema.decodeEffect(codec)(handleText);
+        expect(handle.reservedArgument).toBe("observe");
+        const encoded = yield* Schema.encodeEffect(codec)(handle);
+        expect(encoded).toBe(handleText);
+        expect(
+          (yield* Schema.decodeEffect(Callback.handle(OnEvent))(handleText))
+            .reservedArgument,
+        ).toBeUndefined();
+        const query = Callback.query("test/read", {
+          returns: () => Schema.Null,
+        });
+        const queryCodec = Callback.handle(query, {
+          // @ts-expect-error Query callbacks do not carry reserved arguments.
+          reservedArgument: "observe",
+        });
+        expect(
+          (yield* Schema.decodeEffect(queryCodec)(handleText)).reservedArgument,
+        ).toBeUndefined();
+      }),
+  );
+  it.effect("decoded handles preserve their dispatch type", () =>
+    Effect.gen(function* () {
+      for (const make of [Callback.query, Callback.mutation, Callback.action]) {
+        const contract = make("test/dispatch", { returns: () => Schema.Null });
+        const handle = yield* Schema.decodeEffect(Callback.handle(contract))(
+          handleText,
+        );
+        expect(handle.functionType).toBe(contract.functionType);
+      }
+    }),
+  );
   it.effect(
     "decodes a handle string to a ref that runs it through the contract's codecs",
     () =>
@@ -193,10 +211,14 @@ describe("handle", () => {
     });
   });
 
-  test("toFuture keeps the handle's reference", () => {
-    const handle = Schema.decodeSync(Callback.handle(OnEvent))(handleText);
-    expect(Callback.toFuture(handle)).toBe(handleText);
-  });
+  it.effect("toFuture keeps the handle's reference", () =>
+    Effect.gen(function* () {
+      const handle = yield* Schema.decodeEffect(Callback.handle(OnEvent))(
+        handleText,
+      );
+      expect(Callback.toFuture(handle)).toBe(handleText);
+    }),
+  );
 });
 
 describe("types", () => {

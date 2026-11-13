@@ -2,6 +2,7 @@ import * as NodeServices from "../fixtures/NodeTestServices";
 import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
 import * as Result from "effect/Result";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -98,15 +99,18 @@ const makeDeployment = (
       args: Args,
       ...rest: [tag?: string, events?: Array<string>, probe?: RealBackend.Probe]
     ) =>
-      fs
-        .writeFileString(
-          `${cwd}/confect/args.ts`,
-          `export default ${JSON.stringify(args)};\n`,
-        )
-        .pipe(
-          Effect.orDie,
-          Effect.andThen(RealBackend.push(outputs, { cwd, prepare }, ...rest)),
+      Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
+        args,
+      ).pipe(
+        Effect.flatMap((json) =>
+          fs.writeFileString(
+            `${cwd}/confect/args.ts`,
+            `export default ${json};\n`,
+          ),
         ),
+        Effect.orDie,
+        Effect.andThen(RealBackend.push(outputs, { cwd, prepare }, ...rest)),
+      ),
   };
 };
 

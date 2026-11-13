@@ -1,4 +1,5 @@
 import { fileURLToPath } from "node:url";
+import { quote } from "@confect/cli/Json";
 import { stripVTControlCharacters } from "node:util";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterEach, expect, layer } from "@effect/vitest";
@@ -23,8 +24,6 @@ import * as Array from "effect/Array";
 import * as Record from "effect/Record";
 
 afterEach(() => vi.unstubAllEnvs());
-
-const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
 layer(NodeServices.layer)("built confect codegen", (it) => {
   it.effect(
@@ -958,7 +957,7 @@ refs.public.g48;
             },
             "files": [${pipe(
               consumers,
-              Array.map((consumer) => stringLiteral(consumer)),
+              Array.map((consumer) => quote(consumer)),
               Array.join(","),
             )}]
           }`,

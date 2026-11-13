@@ -1,4 +1,5 @@
 import { pipe } from "effect/Function";
+import { quote } from "@confect/cli/Json";
 import * as Rec from "effect/Record";
 import { IdScope, Table } from "@confect/core";
 import * as FileSystem from "effect/FileSystem";
@@ -1895,7 +1896,7 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 const Api = HttpApi.make("host").add(
-  HttpApiGroup.make("meta").add(HttpApiEndpoint.get("status", ${JSON.stringify(routePath)}, { success: Schema.String })),
+  HttpApiGroup.make("meta").add(HttpApiEndpoint.get("status", ${quote(routePath)}, { success: Schema.String })),
 );
 const handlers = HttpApiBuilder.group(Api, "meta", (h) => h.handle("status", () => Effect.succeed("ok")));
 export default Http.make({ api: Api, handlers });
@@ -2086,8 +2087,6 @@ const withMount = (
     String.replace("  mounts: [", `  mounts: [\n    ${mount},`),
   );
 
-const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
-
 /**
  * A component package's test kit that registers the mount and `children` below
  * it, and records each registered path on `globalThis.registered`.
@@ -2098,7 +2097,7 @@ const modules = { "_generated/api.js": () => Promise.resolve({}) };
 export function register(t, name) {
   for (const path of [name, ...[${pipe(
     children,
-    Array.map((child) => stringLiteral(child)),
+    Array.map((child) => quote(child)),
     Array.join(", "),
   )}].map((child) => name + "/" + child)]) {
     (globalThis.registered ??= []).push(path);
@@ -2150,7 +2149,7 @@ const wrongKitProject = (testing: string | undefined) =>
           app,
           String.replace(
             'Component.make("pool", { client })',
-            `Component.make("pool", { client, testing: ${stringLiteral(testing)} })`,
+            `Component.make("pool", { client, testing: ${quote(testing)} })`,
           ),
         ),
       );
@@ -2451,7 +2450,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           expect(error).toEqual(
             InvalidDeclarationError.make({
               declarationPath: "confect/app.ts",
-              reason: `the mount "pool" names the test kit ${stringLiteral(testing)} in its component descriptor${problem}`,
+              reason: `the mount "pool" names the test kit ${quote(testing)} in its component descriptor${problem}`,
             }),
           );
         }).pipe(Effect.scoped),

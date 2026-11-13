@@ -2,6 +2,7 @@ import * as ConvexClient from "@confect/alchemy/ConvexClient";
 import { describe, expect, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
@@ -54,16 +55,24 @@ const mockHttp = (responses: readonly Response[]) => {
 
 const requestBody = (
   request: HttpClientRequest.HttpClientRequest | undefined,
-): unknown => {
-  if (request?.body._tag !== "Uint8Array") return undefined;
-  return JSON.parse(new TextDecoder().decode(request.body.body));
-};
+): Effect.Effect<unknown, Schema.SchemaError> =>
+  request?.body._tag === "Uint8Array"
+    ? Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
+        new TextDecoder().decode(request.body.body),
+      )
+    : Effect.undefined;
 
-const expectSecretSafe = (value: unknown, secret: string) => {
-  expect(JSON.stringify(value)).not.toContain(secret);
+const expectSecretSafe = Effect.fnUntraced(function* (
+  value: unknown,
+  secret: string,
+) {
+  const json = yield* Schema.encodeUnknownEffect(
+    Schema.fromJsonString(Schema.Unknown),
+  )(value);
+  expect(json).not.toContain(secret);
   expect(String(value)).not.toContain(secret);
   expect(inspect(value)).not.toContain(secret);
-};
+});
 
 describe("ConvexClient", () => {
   it.effect.each(["ap-southeast-2", "ca-central-1"] as const)(
@@ -186,8 +195,10 @@ describe("ConvexClient", () => {
           ["PATCH", "https://api.convex.dev/v1/projects/42"],
           ["POST", "https://api.convex.dev/v1/projects/42/delete"],
         ]);
-        expect(requestBody(http.requests[0])).toEqual(createInput);
-        expect(requestBody(http.requests[2])).toEqual(updateInput);
+        const requestBodyResult = yield* requestBody(http.requests[0]);
+        expect(requestBodyResult).toEqual(createInput);
+        const requestBodyResult2 = yield* requestBody(http.requests[2]);
+        expect(requestBodyResult2).toEqual(updateInput);
         expect(createInput).toEqual({ projectName: "Example" });
         expect(updateInput).toEqual({ name: "Renamed" });
       }).pipe(Effect.provide(clientLayer.pipe(Layer.provide(http.layer))));
@@ -255,8 +266,10 @@ describe("ConvexClient", () => {
             "https://api.convex.dev/v1/deployments/happy-otter-123/delete",
           ],
         ]);
-        expect(requestBody(http.requests[2])).toEqual(input);
-        expect(requestBody(http.requests[3])).toEqual(update);
+        const requestBodyResult = yield* requestBody(http.requests[2]);
+        expect(requestBodyResult).toEqual(input);
+        const requestBodyResult2 = yield* requestBody(http.requests[3]);
+        expect(requestBodyResult2).toEqual(update);
       }).pipe(Effect.provide(clientLayer.pipe(Layer.provide(http.layer))));
     },
   );
@@ -290,7 +303,7 @@ describe("ConvexClient", () => {
         expect(Redacted.value(created.deployKey)).toBe(
           Redacted.value(deployKey),
         );
-        expectSecretSafe(created, Redacted.value(deployKey));
+        yield* expectSecretSafe(created, Redacted.value(deployKey));
         const deployKeys = yield* client.listDeployKeys(deployment.name);
         expect(deployKeys).toEqual([key]);
         yield* client.deleteDeployKey(deployment.name, created.deployKey);
@@ -301,12 +314,17 @@ describe("ConvexClient", () => {
           "https://api.convex.dev/v1/deployments/happy-otter-123/delete_deploy_key",
           "https://api.convex.dev/v1/deployments/happy-otter-123/delete_deploy_key",
         ]);
-        expect(requestBody(http.requests[0])).toEqual(input);
-        expect(requestBody(http.requests[2])).toEqual({
+        const requestBodyResult = yield* requestBody(http.requests[0]);
+        expect(requestBodyResult).toEqual(input);
+        const requestBodyResult2 = yield* requestBody(http.requests[2]);
+        expect(requestBodyResult2).toEqual({
           id: Redacted.value(created.deployKey),
         });
-        expect(requestBody(http.requests[3])).toEqual({ id: "automation" });
-        expectSecretSafe(created, Redacted.value(deployKey));
+        const requestBodyResult3 = yield* requestBody(http.requests[3]);
+        expect(requestBodyResult3).toEqual({
+          id: "automation",
+        });
+        yield* expectSecretSafe(created, Redacted.value(deployKey));
       }).pipe(Effect.provide(clientLayer.pipe(Layer.provide(http.layer))));
     },
   );
@@ -320,7 +338,8 @@ describe("ConvexClient", () => {
       const error = yield* client
         .deleteDeployKey(deployment.name, deployKey)
         .pipe(Effect.flip);
-      expect(requestBody(http.requests[0])).toEqual({
+      const requestBodyResult = yield* requestBody(http.requests[0]);
+      expect(requestBodyResult).toEqual({
         id: Redacted.value(deployKey),
       });
       expect(error).toMatchObject({
@@ -328,7 +347,7 @@ describe("ConvexClient", () => {
         status: 500,
         code: "HttpError",
       });
-      expectSecretSafe(error, Redacted.value(deployKey));
+      yield* expectSecretSafe(error, Redacted.value(deployKey));
       expect(http.requests).toHaveLength(1);
     }).pipe(Effect.provide(clientLayer.pipe(Layer.provide(http.layer))));
   });
@@ -359,7 +378,7 @@ describe("ConvexClient", () => {
           return yield* Effect.die("Missing environment variables");
         expect(Redacted.value(apiKey)).toBe(secret);
         expect(Redacted.value(empty)).toBe("");
-        expectSecretSafe(values, secret);
+        yield* expectSecretSafe(values, secret);
         yield* client.updateEnvironmentVariables(
           deploymentUrl,
           deployKey,
@@ -374,7 +393,8 @@ describe("ConvexClient", () => {
             `Convex ${Redacted.value(deployKey)}`,
           );
         }
-        expect(requestBody(http.requests[1])).toEqual({
+        const requestBodyResult = yield* requestBody(http.requests[1]);
+        expect(requestBodyResult).toEqual({
           changes: [
             { name: "API_KEY", value: secret },
             { name: "PLAIN", value: "plain" },
@@ -463,8 +483,8 @@ describe("ConvexClient", () => {
             .pipe(Effect.flip);
           expect(readError).toMatchObject({ code: "InvalidRequest" });
           expect(writeError).toMatchObject({ code: "InvalidRequest" });
-          expectSecretSafe(readError, url);
-          expectSecretSafe(writeError, Redacted.value(deployKey));
+          yield* expectSecretSafe(readError, url);
+          yield* expectSecretSafe(writeError, Redacted.value(deployKey));
         }
         expect(http.requests).toHaveLength(0);
       }).pipe(Effect.provide(clientLayer.pipe(Layer.provide(http.layer))));
@@ -499,8 +519,8 @@ describe("ConvexClient", () => {
             operation: "createProject",
             code: "HttpError",
           });
-          expectSecretSafe(error, secret);
-          expectSecretSafe(error, Redacted.value(token));
+          yield* expectSecretSafe(error, secret);
+          yield* expectSecretSafe(error, Redacted.value(token));
         }
         expect(http.requests).toHaveLength(6);
       }).pipe(Effect.provide(clientLayer.pipe(Layer.provide(http.layer))));
@@ -554,7 +574,7 @@ describe("ConvexClient", () => {
           status: 200,
           code: "InvalidResponse",
         });
-        expectSecretSafe(error, secret);
+        yield* expectSecretSafe(error, secret);
       }
     }).pipe(Effect.provide(clientLayer.pipe(Layer.provide(http.layer))));
   });
@@ -580,8 +600,8 @@ describe("ConvexClient", () => {
           _tag: "ConvexApiError",
           code: "TransportError",
         });
-        expectSecretSafe(error, secret);
-        expectSecretSafe(error, Redacted.value(token));
+        yield* expectSecretSafe(error, secret);
+        yield* expectSecretSafe(error, Redacted.value(token));
       }).pipe(
         Effect.provide(
           clientLayer.pipe(

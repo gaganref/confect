@@ -70,19 +70,22 @@ describe("create", () => {
     "asks Convex for a handle to the ref and runs the component's calls through it",
     () =>
       Effect.gen(function* () {
-        const syscalls: Array<[string, unknown]> = [];
+        const syscalls: Array<readonly [string, string]> = [];
         vi.stubGlobal("Convex", {
           asyncSyscall: (op: string, arg: string) => {
-            syscalls.push([op, JSON.parse(arg)]);
-            return Promise.resolve(
-              JSON.stringify("function://;callbacks:onEvent"),
-            );
+            syscalls.push([op, arg]);
+            return Promise.resolve('"function://;callbacks:onEvent"');
           },
         });
         const handle = yield* Callback.create(OnEvent, onEvent).pipe(
           Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals())),
         );
-        expect(syscalls).toEqual([
+        const decodedSyscalls = yield* Effect.forEach(syscalls, ([op, arg]) =>
+          Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(arg).pipe(
+            Effect.map((parsed) => [op, parsed]),
+          ),
+        );
+        expect(decodedSyscalls).toEqual([
           [
             "1.0/createFunctionHandle",
             expect.objectContaining({ name: "callbacks:onEvent" }),
@@ -108,8 +111,7 @@ describe("create", () => {
 const created = <A, E>(effect: Effect.Effect<A, E>) =>
   Effect.suspend(() => {
     vi.stubGlobal("Convex", {
-      asyncSyscall: () =>
-        Promise.resolve(JSON.stringify("function://;callbacks:onEvent")),
+      asyncSyscall: () => Promise.resolve('"function://;callbacks:onEvent"'),
     });
     return Effect.result(effect);
   }).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals())));

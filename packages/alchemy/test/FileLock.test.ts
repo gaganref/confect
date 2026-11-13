@@ -10,7 +10,10 @@ import * as Schema from "effect/Schema";
 import * as FileLock from "../src/internal/FileLock";
 import { deadPid } from "./fixtures/Processes";
 
-const serialize = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const serialize = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(
+    Effect.orDie,
+  );
 
 const staleLock = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -19,10 +22,11 @@ const staleLock = Effect.gen(function* () {
     prefix: "confect-file-lock-",
   });
   const file = path.join(directory, "owner.lock");
-  yield* fs.writeFileString(
-    file,
-    serialize({ pid: yield* deadPid, token: "dead" }),
-  );
+  const serializeResult = yield* serialize({
+    pid: yield* deadPid,
+    token: "dead",
+  });
+  yield* fs.writeFileString(file, serializeResult);
   return file;
 });
 

@@ -418,37 +418,46 @@ const School = Mount.make(Notices, { name: "school", args: { title: "A" } });
 const Office = Mount.make(Notices, { name: "office", args: { title: "B" } });
 
 describe("Mount callbackArgs", () => {
-  it("returns the contract's args with ids typed for the mount", () => {
-    const fields = School.callbackArgs("onRead");
-    const encoded = { noticeId: "n1", reader: "ann" };
-    const decoded = Schema.decodeUnknownSync(Schema.Struct(fields))(encoded);
-    expect(decoded).toEqual(encoded);
-    expect(Schema.encodeSync(Schema.Struct(fields))(decoded)).toEqual(encoded);
-    expectTypeOf(decoded.reader).toEqualTypeOf<string>();
-    expectTypeOf(decoded.noticeId).toEqualTypeOf<
-      GenericId.GenericId<
-        "notices",
-        Component.MountScope<IdScope.App, "school">
-      >
-    >();
-  });
+  it.effect("returns the contract's args with ids typed for the mount", () =>
+    Effect.gen(function* () {
+      const fields = School.callbackArgs("onRead");
+      const encoded = { noticeId: "n1", reader: "ann" };
+      const decoded = yield* Schema.decodeUnknownEffect(Schema.Struct(fields))(
+        encoded,
+      );
+      expect(decoded).toEqual(encoded);
+      const encoded2 = yield* Schema.encodeEffect(Schema.Struct(fields))(
+        decoded,
+      );
+      expect(encoded2).toEqual(encoded);
+      expectTypeOf(decoded.reader).toEqualTypeOf<string>();
+      expectTypeOf(decoded.noticeId).toEqualTypeOf<
+        GenericId.GenericId<
+          "notices",
+          Component.MountScope<IdScope.App, "school">
+        >
+      >();
+    }),
+  );
 
-  it("refuses what the mount cannot rebase", () => {
-    const schoolId = Schema.decodeUnknownSync(
-      Schema.Struct(School.callbackArgs("onRead")),
-    )({ noticeId: "n1", reader: "ann" }).noticeId;
-    const officeFields = Office.callbackArgs("onRead");
-    // @ts-expect-error RULE callback-args-per-mount: an id rebased for one mount is not another's.
-    const officeId: typeof officeFields.noticeId.Type = schoolId;
-    void officeId;
-    const wrongSlot = () =>
-      // @ts-expect-error RULE callback-args-slot: title is not a callback slot.
-      School.callbackArgs("title");
-    void wrongSlot;
-    const plain = Mount.make(Mailer, { name: "m", args: { fromName: "x" } });
-    // @ts-expect-error RULE callback-args-contract: a descriptor without a contract has no callbackArgs.
-    void plain.callbackArgs;
-  });
+  it.effect("refuses what the mount cannot rebase", () =>
+    Effect.gen(function* () {
+      const schoolId = (yield* Schema.decodeUnknownEffect(
+        Schema.Struct(School.callbackArgs("onRead")),
+      )({ noticeId: "n1", reader: "ann" })).noticeId;
+      const officeFields = Office.callbackArgs("onRead");
+      // @ts-expect-error RULE callback-args-per-mount: an id rebased for one mount is not another's.
+      const officeId: typeof officeFields.noticeId.Type = schoolId;
+      void officeId;
+      const wrongSlot = () =>
+        // @ts-expect-error RULE callback-args-slot: title is not a callback slot.
+        School.callbackArgs("title");
+      void wrongSlot;
+      const plain = Mount.make(Mailer, { name: "m", args: { fromName: "x" } });
+      // @ts-expect-error RULE callback-args-contract: a descriptor without a contract has no callbackArgs.
+      void plain.callbackArgs;
+    }),
+  );
 });
 
 describe("Mount.initCall", () => {

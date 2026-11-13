@@ -19,7 +19,10 @@ import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Record from "effect/Record";
 
-const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const encodeJson = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(
+    Effect.orDie,
+  );
 
 const directories = await Effect.runPromise(
   publishedPackages().pipe(Effect.provide(BunServices.layer)),
@@ -40,7 +43,7 @@ test.each(directories)(
               Schema.decodeEffect(Schema.fromJsonString(PackageManifest)),
             ),
           );
-        const before = encodeJson(input);
+        const before = yield* encodeJson(input);
         const output = stageForkPackages(input, "10.2.0-fork.7");
         expect(output).toMatchObject({
           name: `@gaganref/confect-${pipe(input.name, String.slice("@confect/".length))}`,
@@ -78,7 +81,8 @@ test.each(directories)(
         }
         expect(output.devDependencies).toBeUndefined();
         expect(output.scripts).toBeUndefined();
-        expect(encodeJson(input)).toBe(before);
+        const json = yield* encodeJson(input);
+        expect(json).toBe(before);
       }).pipe(Effect.provide(BunServices.layer)),
     ),
 );
@@ -249,16 +253,15 @@ test.each([{ gaganref: "10.2.0-fork.1" }, {}])(
   "reads every published version without a latest tag %j",
   (tags) =>
     Effect.runPromise(
-      registryVersions(
-        JSON.stringify({
-          "dist-tags": tags,
-          versions: {
-            "10.2.0-fork.1": {},
-            "10.2.0-fork.4": {},
-            "10.1.0-fork.99": {},
-          },
-        }),
-      ).pipe(
+      encodeJson({
+        "dist-tags": tags,
+        versions: {
+          "10.2.0-fork.1": {},
+          "10.2.0-fork.4": {},
+          "10.1.0-fork.99": {},
+        },
+      }).pipe(
+        Effect.flatMap(registryVersions),
         Effect.map((versions) => {
           expect(versions).toEqual([
             "10.2.0-fork.1",
