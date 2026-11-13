@@ -17,25 +17,33 @@ export interface Placement {
 }
 
 export const placements: ReadonlyArray<Placement> = [
-  { file: "http.test.ts", row: 6, needs: "HTTP routes, after storage" },
-  {
-    file: "integration.test.ts",
-    name: "Storage",
-    row: 6,
-    needs: "storage",
-  },
-  {
-    file: "integration.test.ts",
-    name: "TestConfect Blob storage",
-    row: 6,
-    needs: "storage",
-  },
-  {
-    file: "integration.test.ts",
-    name: "mutation Blob transactions",
-    row: 6,
-    needs: "storage",
-  },
+  ...Array.map(
+    [
+      'mutation Blob transactions > preserves bytes, SHA256 and MIME type ""',
+      "mutation Blob transactions > rolls back stored bytes and restores deleted files on failure",
+    ],
+    (name): Placement => ({
+      file: "integration.test.ts",
+      name,
+      row: "binary",
+      needs:
+        "a file with no content type, which the binary and the kernel store with a null contentType that Confect's _storage schema refuses, where convex-test stores none",
+    }),
+  ),
+  ...Array.map(
+    [
+      "preserves write accounting after caught limit failures: { filesWritten: 1 }",
+      "preserves write accounting after caught limit failures: { fileWriteBytes: 4 }",
+      "counts distinct reads and excludes caught failures: { filesRead: 1 }",
+      "counts distinct reads and excludes caught failures: { fileReadBytes: 4 }",
+    ],
+    (name): Placement => ({
+      file: "integration.test.ts",
+      name: `mutation Blob transactions > ${name}`,
+      row: 6,
+      needs: "a deployment's transactionLimits option",
+    }),
+  ),
   {
     file: "integration.test.ts",
     name: "TestConfect JWT signing",
@@ -66,23 +74,4 @@ export const placements: ReadonlyArray<Placement> = [
     row: 6,
     needs: "JWT verification",
   },
-  ...Array.map(
-    [
-      "fetches each mounted component with its site URL at construction",
-      "routes mounted HTTP writes into the selected component database",
-      "keeps query strings and headers at the exact mount path",
-      "leaves unmounted paths and partial prefix matches to the root",
-      "restores the site URL after construction fails and accepts another fetch",
-      "preserves structured HTTP compatibility failures across the action boundary",
-      "uses the default site URL when the application variable is empty",
-      "loads component HTTP modules with convex-test's extension handling",
-      "fetches an installation mounted at the root prefix",
-    ],
-    (name): Placement => ({
-      file: "components.test.ts",
-      name,
-      row: 6,
-      needs: "HTTP routes, after storage",
-    }),
-  ),
 ];

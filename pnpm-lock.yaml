@@ -807,6 +807,12 @@ importers:
         specifier: workspace:*
         version: link:../../../packages/cli
 
+  tools/local-backend/fixtures/plain:
+    dependencies:
+      convex:
+        specifier: 1.49.0
+        version: 1.49.0(react@19.3.1)
+
   tools/oxlint-rules:
     devDependencies:
       '@effect/platform-node':

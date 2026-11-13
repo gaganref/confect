@@ -61,6 +61,9 @@ const notes = {
     "notes:metrics",
   ),
   ids: makeFunctionReference<"query", {}, Array<Id>>("notes:ids"),
+  storeThenFail: makeFunctionReference<"mutation", {}, null>(
+    "notes:storeThenFail",
+  ),
 };
 
 const modules = {
@@ -111,6 +114,13 @@ const modules = {
       metrics: queryGeneric({
         args: {},
         handler: (ctx) => ctx.meta.getTransactionMetrics(),
+      }),
+      storeThenFail: mutationGeneric({
+        args: {},
+        handler: async (ctx) => {
+          await ctx.storage.store(new Blob(["dropped"]));
+          throw new Error("The nested mutation failed after storing.");
+        },
       }),
       list: queryGeneric({
         args: {},
@@ -589,5 +599,133 @@ describe("what counts", () => {
       _tag: "returned",
       value: { read: 1, written: 1 },
     });
+  });
+});
+
+// The binary's file storage ceilings and messages: `file_storage_store`
+// (`crates/isolate/src/environment/udf/async_syscall.rs:478-497`) and
+// `check_file_read_limits` (`:1291-1311`), at the local backend's pin.
+describe("file storage", () => {
+  const bytes = (size: number) => new Blob([new Uint8Array(size)]);
+  const store = (ctx: Ctx, size = 1) => ctx.storage.store(bytes(size));
+  const storeFromAction = (t: ReturnType<typeof world>, size: number) =>
+    t.action((ctx: any) => ctx.storage.store(bytes(size)));
+  const files = (t: ReturnType<typeof world>) =>
+    t.query((ctx: QueryCtx) =>
+      ctx.db.system
+        .query("_storage")
+        .collect()
+        .then((rows) => rows.length),
+    );
+
+  it("filesWritten: 10 files stored, the 11th is refused and nothing commits", async () => {
+    const t = world();
+    const at = await t.run(async (ctx: Ctx) => {
+      await inOrder(10, () => store(ctx));
+      return (await metricsOf(ctx)).filesWritten;
+    });
+    expect(at).toEqual({ used: 10, remaining: 0 });
+    await expect(
+      t.run((ctx: Ctx) => inOrder(11, () => store(ctx))),
+    ).rejects.toThrow("Too many files stored by this mutation (limit: 10)");
+    expect(await files(t)).toBe(10);
+  });
+
+  it("fileWriteBytes: 16 MiB of files stored, one byte more is refused", async () => {
+    const t = world();
+    const at = await t.run(async (ctx: Ctx) => {
+      await store(ctx, 8 * MiB);
+      await store(ctx, 8 * MiB);
+      return (await metricsOf(ctx)).fileWriteBytes;
+    });
+    expect(at).toEqual({ used: 16 * MiB, remaining: 0 });
+    await expect(
+      t.run(async (ctx: Ctx) => {
+        await store(ctx, 8 * MiB);
+        await store(ctx, 8 * MiB + 1);
+      }),
+    ).rejects.toThrow(
+      `Too large total size of the files stored by this mutation (limit: ${16 * MiB} bytes)`,
+    );
+  });
+
+  it("filesRead: 10 files read, the 11th is refused, and a file read twice counts once", async () => {
+    const t = world();
+    const ids: Array<GenericId<"_storage">> = [];
+    await inOrder(11, () =>
+      storeFromAction(t, 1).then((id: GenericId<"_storage">) => ids.push(id)),
+    );
+    const at = await t.run(async (ctx: Ctx) => {
+      await inOrder(10, (i) => ctx.storage.get(ids[i]));
+      await ctx.storage.get(ids[0]);
+      return (await metricsOf(ctx)).filesRead;
+    });
+    expect(at).toEqual({ used: 10, remaining: 0 });
+    await expect(
+      t.run((ctx: Ctx) => inOrder(11, (i) => ctx.storage.get(ids[i]))),
+    ).rejects.toThrow("Too many files read by this mutation (limit: 10)");
+  });
+
+  it("fileReadBytes: 16 MiB of files read, one byte more is refused", async () => {
+    const t = world();
+    const half = await storeFromAction(t, 8 * MiB);
+    const other = await storeFromAction(t, 8 * MiB);
+    const over = await storeFromAction(t, 8 * MiB + 1);
+    const at = await t.run(async (ctx: Ctx) => {
+      await ctx.storage.get(half);
+      await ctx.storage.get(other);
+      return (await metricsOf(ctx)).fileReadBytes;
+    });
+    expect(at).toEqual({ used: 16 * MiB, remaining: 0 });
+    await expect(
+      t.run(async (ctx: Ctx) => {
+        await ctx.storage.get(half);
+        await ctx.storage.get(over);
+      }),
+    ).rejects.toThrow(
+      `Too large total size of the files read by this mutation (limit: ${16 * MiB} bytes)`,
+    );
+  });
+
+  it("a file the mutation stored reads for free, and deleting it frees its store", async () => {
+    const t = world();
+    const used = await t.run(async (ctx: Ctx) => {
+      const id = await store(ctx, 5);
+      await ctx.storage.get(id);
+      await ctx.storage.delete(id);
+      return usedOf(await metricsOf(ctx));
+    });
+    expect(used).toMatchObject({
+      filesWritten: 0,
+      fileWriteBytes: 0,
+      filesRead: 0,
+      fileReadBytes: 0,
+    });
+  });
+
+  it("a failed nested mutation's stored files drop from the count", async () => {
+    const t = world();
+    const used = await t.run(async (ctx: Ctx) => {
+      await inOrder(9, () => store(ctx));
+      await ctx.runMutation(notes.storeThenFail, {}).catch(() => null);
+      await store(ctx);
+      return (await metricsOf(ctx)).filesWritten;
+    });
+    expect(used).toEqual({ used: 10, remaining: 0 });
+    expect(await files(t)).toBe(10);
+  });
+
+  it("an action stores and reads files outside any transaction's limits", async () => {
+    const t = world();
+    // One file larger than a mutation's whole file write budget.
+    await storeFromAction(t, 16 * MiB + 1);
+    await t.action((ctx: any) =>
+      inOrder(11, () =>
+        ctx.storage
+          .store(bytes(1))
+          .then((id: GenericId<"_storage">) => ctx.storage.get(id)),
+      ).then(() => null),
+    );
+    expect(await files(t)).toBe(12);
   });
 });

@@ -949,7 +949,7 @@ describe("redaction routes", () => {
             if (change.after?._id === id) change.after._id = marker;
         const edited = yield* jsonText(body);
         const marked = new TextEncoder().encode(
-          `confect-kernel-snapshot 2 sha256:${createHash("sha256")
+          `confect-kernel-snapshot 3 sha256:${createHash("sha256")
             .update(edited)
             .digest("hex")}\n${edited}`,
         );

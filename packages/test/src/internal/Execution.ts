@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
   actionGeneric,
   getFunctionAddress,
+  httpActionGeneric,
   mutationGeneric,
   queryGeneric,
   type FunctionReference,
@@ -10,6 +11,7 @@ import {
   type UserIdentity,
 } from "convex/server";
 import {
+  Base64,
   CommitTsPlaceholder,
   compareValues,
   convexToJson,
@@ -22,6 +24,7 @@ import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
 import * as Crons from "./Crons.js";
 import * as Globals from "./Globals.js";
+import * as Http from "./Http.js";
 import * as Invocation from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
@@ -30,6 +33,7 @@ import * as Metering from "./Metering.js";
 import type * as ReadSet from "./ReadSet.js";
 import * as Redaction from "./Redaction.js";
 import * as Scheduling from "./Scheduling.js";
+import * as Storage from "./Storage.js";
 import * as Snapshot from "./Snapshot.js";
 import type {
   DocumentId,
@@ -311,6 +315,13 @@ interface Execution {
    * level, its caller's inside a nested call, tightened by the call's budget.
    */
   readonly limits: Metering.Limits;
+  /**
+   * The first kernel refusal a syscall of this call, or of a call nested in it,
+   * threw. Convex's `performAsyncSyscall` rethrows a syscall's error as a plain
+   * `Error`, so the refusal is kept here for whatever must surface it, such as
+   * an HTTP route that would otherwise answer 500.
+   */
+  readonly refused: { first?: unknown };
 }
 
 /**
@@ -626,6 +637,11 @@ export class World {
    */
   private floor = Number.NEGATIVE_INFINITY;
   private readonly targets = new Map<DocumentId, Scheduling.Target>();
+  private readonly files = new Map<DocumentId, Storage.File>();
+  private readonly legacyIds = new Map<string, DocumentId>();
+  private nextFile = 1;
+  private nextUploadToken = 1;
+  private nextErrorRequest = 1;
   private readonly cronJobs = new Map<string, CronJob>();
   /**
    * Every component's cron declarations, read once the modules load.
@@ -1017,6 +1033,81 @@ export class World {
     });
   }
 
+  /**
+   * Send `path` to the root component's HTTP router, as the binary routes a
+   * request: the router's `lookup` picks the route by pathname and method, and
+   * the route's handler runs as an action with the caller's identity. With no
+   * route, the binary's 404, and for a handler that throws, its 500.
+   */
+  fetch(caller: Caller, path: unknown, init?: RequestInit): Promise<Response> {
+    return this.during(() =>
+      this.open().then(() => this.route(caller, path, init)),
+    );
+  }
+
+  private route(
+    caller: Caller,
+    path: unknown,
+    init: RequestInit | undefined,
+  ): Promise<Response> {
+    const url = orThrow(Http.requestUrl(path));
+    const method = init?.method ?? "GET";
+    const request = new Request(
+      url,
+      Http.discardsBody(method) ? { ...init, body: null } : init,
+    );
+    const router = this.component(ROOT).loaded.get("http")?.["default"] as
+      | {
+          readonly lookup: (
+            path: string,
+            method: string,
+          ) => readonly [any, string, string] | null;
+        }
+      | undefined;
+    const route = router?.lookup(url.pathname, request.method) ?? null;
+    if (route === null) {
+      return Promise.resolve(Http.forMethod(request.method, Http.noRoute()));
+    }
+    const [endpoint] = route;
+    const handler: (
+      ctx: any,
+      request: globalThis.Request,
+    ) => Promise<Response> =
+      "_handler" in endpoint ? endpoint._handler : endpoint;
+    const execution = this.execution(
+      { componentPath: ROOT, udfPath: "http" },
+      "action",
+      undefined,
+      { caller, request: newRequest(caller) },
+      undefined,
+    );
+    const action = httpActionGeneric((ctx, received) =>
+      handler({ ...ctx, auth: queryAuth(execution) }, received),
+    ) as unknown as {
+      invokeHttpAction: (request: globalThis.Request) => Promise<Response>;
+    };
+    // A handler that throws gets the binary's 500, not a rejected fetch. A
+    // kernel refusal is no handler error: it surfaces as itself.
+    return this.track("functions", () =>
+      enter(execution, () => action.invokeHttpAction(request)),
+    ).then(
+      (response) => Http.forMethod(request.method, response),
+      (thrown: unknown) => {
+        const refusal = refusalOf(thrown, execution);
+        if (refusal !== undefined) throw refusal;
+        // The report is an artifact, so it leaves through the failure
+        // redaction a rejected call's report does.
+        return Http.forMethod(
+          request.method,
+          Http.serverError(
+            this.redactFailure(thrown),
+            Http.errorRequestId(this.nextErrorRequest++),
+          ),
+        );
+      },
+    );
+  }
+
   // Held attempts.
 
   /**
@@ -1206,6 +1297,15 @@ export class World {
         });
       }
     }
+    // A file's bytes travel with its committed row. Bytes a rolled-back or
+    // deleted file left behind are unreachable, so no export carries them.
+    const files = new Map<DocumentId, Storage.File>();
+    for (const byTable of this.state.tables.values()) {
+      for (const id of byTable.get(Storage.table)?.keys() ?? []) {
+        const file = this.files.get(id);
+        if (file !== undefined) files.set(id, file);
+      }
+    }
     const crons = Array.from(this.cronJobs.values(), (cron) => {
       if (cron.world !== undefined) {
         if ((names.get(cron.world.name) ?? cron.world) !== cron.world) {
@@ -1249,8 +1349,11 @@ export class World {
           lastCreationTime: this.lastCreationTime,
           nextAttemptId: this.nextAttemptId,
           identityEpoch: this.identityEpoch,
+          nextFile: this.nextFile,
+          nextUploadToken: this.nextUploadToken,
         },
         jobs,
+        files,
         crons,
       },
       (componentPath, table, json) =>
@@ -1263,6 +1366,7 @@ export class World {
           ),
           this.secrets,
         ),
+      (bytes) => Redaction.markBytes(bytes, this.secrets),
     );
   }
 
@@ -1357,6 +1461,14 @@ export class World {
     this.lastCreationTime = image.identity.lastCreationTime;
     this.nextAttemptId = image.identity.nextAttemptId;
     this.identityEpoch = image.identity.identityEpoch;
+    this.nextFile = image.identity.nextFile;
+    this.nextUploadToken = image.identity.nextUploadToken;
+    this.files.clear();
+    this.legacyIds.clear();
+    for (const [id, file] of image.files) {
+      this.files.set(id, file);
+      this.legacyIds.set(file.uuid, id);
+    }
     this.targets.clear();
     for (const [id, target] of targets) this.targets.set(id, target);
     this.cronJobs.clear();
@@ -1998,6 +2110,7 @@ export class World {
       pagination,
       turn: new Turn(),
       limits,
+      refused: from.parent?.refused ?? {},
     };
   }
 
@@ -2667,8 +2780,20 @@ export class World {
   }
 
   syscall(op: string, jsonArgs: string): string {
-    const args = Json.parse(jsonArgs);
     const execution = current();
+    try {
+      return this.syncSyscall(op, jsonArgs, execution);
+    } catch (error) {
+      throw keepRefusal(error, execution);
+    }
+  }
+
+  private syncSyscall(
+    op: string,
+    jsonArgs: string,
+    execution: Execution,
+  ): string {
+    const args = JSON.parse(jsonArgs);
     if (execution.attempt?.closed === true) throw closed(execution, op);
     switch (op) {
       case "1.0/getSnapshotTs":
@@ -2714,6 +2839,18 @@ export class World {
    */
   asyncSyscall(op: string, jsonArgs: string): Promise<string> {
     const execution = current();
+    return this.queueSyscall(op, jsonArgs, execution).catch(
+      (error: unknown) => {
+        throw keepRefusal(error, execution);
+      },
+    );
+  }
+
+  private queueSyscall(
+    op: string,
+    jsonArgs: string,
+    execution: Execution,
+  ): Promise<string> {
     const attempt = execution.attempt;
     if (attempt === undefined) {
       return Promise.resolve().then(() =>
@@ -2890,11 +3027,68 @@ export class World {
         this.commitNow((attempt) =>
           this.cancelJob(attempt, execution, args.id),
         );
-        return Json.stringify({});
-      case "1.0/storageDelete":
-      case "1.0/storageGetUrl":
+        return JSON.stringify({});
+      case "1.0/storageGetUrl": {
+        const found = this.findFile(
+          execution,
+          "storage.getUrl",
+          args.storageId,
+        );
+        return JSON.stringify(
+          found === null ? null : Storage.fileUrl(found.file),
+        );
+      }
+      case "1.0/storageGetMetadata": {
+        const found = this.findFile(
+          execution,
+          "storage.getMetadata",
+          args.storageId,
+        );
+        return JSON.stringify(
+          found === null ? null : Storage.metadata(found.doc, found.file),
+        );
+      }
+      case "1.0/storageGet": {
+        const found = this.findFile(execution, "storage.get", args.storageId);
+        if (found !== null) {
+          refuse(
+            transaction(execution).meter.readFile(
+              found.id,
+              found.file.bytes.length,
+              execution.limits,
+            ),
+          );
+        }
+        return JSON.stringify(
+          found === null
+            ? null
+            : {
+                blob: Base64.fromByteArray(found.file.bytes),
+                contentType: found.doc["contentType"],
+              },
+        );
+      }
       case "1.0/storageGenerateUploadUrl":
-        throw KernelRefusal.rowPending("storage", 6);
+        return JSON.stringify(
+          Storage.uploadUrl(`kernel-unsigned-${this.nextUploadToken++}`),
+        );
+      case "1.0/storageStore":
+        return JSON.stringify(
+          this.storageWrite(execution, (attempt) =>
+            this.storeFile(
+              execution,
+              attempt,
+              Base64.toByteArray(args.blob),
+              args.contentType,
+              args.sha256,
+            ),
+          ),
+        );
+      case "1.0/storageDelete":
+        this.storageWrite(execution, (attempt) =>
+          this.deleteFile(execution, attempt, args.storageId),
+        );
+        return JSON.stringify(null);
       case "1.0/getTransactionMetrics":
         // An action has no transaction, and the binary's action syscalls do
         // not know this one (`crates/isolate/src/environment/action/async_syscall.rs:105`).
@@ -2913,12 +3107,185 @@ export class World {
     }
   }
 
-  jsSyscall(op: string): Promise<never> {
-    return Promise.reject(
-      pipe(op, Str.startsWith("storage/"))
-        ? KernelRefusal.rowPending("storage", 6)
-        : new Error(`The test kernel does not support js syscall: "${op}"`),
+  /**
+   * An action's `storage.store` and `storage.get`. The binary streams the blob
+   * through its upload and download paths (`storeBlob` and `getBlob` in
+   * `npm-packages/udf-runtime/src/storage.ts`). The kernel holds the bytes in
+   * memory and keeps the same rows and refusals.
+   */
+  jsSyscall(op: string, args: any): Promise<any> {
+    return Promise.resolve().then((): unknown => {
+      const execution = current();
+      switch (op) {
+        case "storage/storeBlob": {
+          const { blob, options } = args as {
+            blob: unknown;
+            options?: { sha256?: string };
+          };
+          if (!(blob instanceof Blob)) {
+            throw new Error(
+              "store() expects a Blob. If you are trying to store a Request, `await request.blob()` will give you the correct input.",
+            );
+          }
+          return blob
+            .arrayBuffer()
+            .then((buffer) =>
+              this.storageWrite(execution, (attempt) =>
+                this.storeFile(
+                  execution,
+                  attempt,
+                  new Uint8Array(buffer),
+                  blob.type,
+                  options?.sha256,
+                ),
+              ),
+            );
+        }
+        case "storage/getBlob": {
+          const { storageId } = args as { storageId: unknown };
+          if (typeof storageId !== "string") {
+            throw new Error(
+              `storage.get requires a string storageId but received ${String(storageId)}`,
+            );
+          }
+          const found = this.findFile(execution, "storage.get", storageId);
+          return found === null
+            ? null
+            : new Blob([found.file.bytes as Uint8Array<ArrayBuffer>], {
+                type: (found.doc["contentType"] as string | null) ?? "",
+              });
+        }
+        default:
+          throw new Error(
+            `The test kernel does not support js syscall: "${op}"`,
+          );
+      }
+    });
+  }
+
+  // File storage. A file is a row in its component's `_storage` table, read
+  // and written through the attempt like any document, and its bytes beside it.
+
+  /**
+   * Where a function reads storage: its attempt, or, from an action, the latest
+   * commit, as the binary's action callbacks read it.
+   */
+  private reader(execution: Execution): KernelAttempt {
+    return execution.attempt ?? new KernelAttempt(this.state);
+  }
+
+  /**
+   * Write through the function's attempt, or, from an action, commit at once.
+   */
+  private storageWrite<A>(
+    execution: Execution,
+    write: (attempt: KernelAttempt) => A,
+  ): A {
+    return execution.attempt === undefined
+      ? this.commitNow(write)
+      : write(execution.attempt);
+  }
+
+  /**
+   * The file a storage ID names in the function's component, read through
+   * `attempt`, or `null` when it names none.
+   */
+  private findFile(
+    execution: Execution,
+    operation: string,
+    storageId: unknown,
+    attempt: KernelAttempt = this.reader(execution),
+  ): {
+    readonly id: DocumentId;
+    readonly doc: StoredDocument;
+    readonly file: Storage.File;
+  } | null {
+    const parsed = orThrow(Storage.parseId(operation, storageId));
+    const id =
+      parsed.kind === "document" ? parsed.id : this.legacyIds.get(parsed.uuid);
+    if (id === undefined) return null;
+    attempt.readDocument(execution.componentPath, id);
+    const doc = attempt.get(execution.componentPath, id);
+    const file = this.files.get(id);
+    return doc === null || file === undefined ? null : { id, doc, file };
+  }
+
+  /**
+   * Store `bytes` as a new file in the function's component. The content type
+   * and the declared digest are checked before anything is written.
+   */
+  private storeFile(
+    execution: Execution,
+    attempt: KernelAttempt,
+    bytes: Uint8Array,
+    type: unknown,
+    expectedSha256: unknown,
+  ): DocumentId {
+    const contentType = orThrow(
+      Storage.contentType(
+        execution.udfType === "action" ? "action" : "mutation",
+        type,
+      ),
     );
+    orThrow(
+      Storage.checkDigest(
+        "storage.store",
+        expectedSha256,
+        Storage.digest(bytes),
+      ),
+    );
+    // A query or mutation stores within its transaction's file limits. An
+    // action's store is no transaction, and the binary counts it toward none.
+    const metered = execution.attempt !== undefined;
+    if (metered)
+      refuse(attempt.meter.checkStore(bytes.length, execution.limits));
+    const id = this.generateId(Storage.table);
+    if (metered) attempt.meter.storeFile(id, bytes.length);
+    const file: Storage.File = {
+      componentPath: execution.componentPath,
+      uuid: Storage.uuid(this.nextFile++),
+      bytes,
+    };
+    this.files.set(id, file);
+    this.legacyIds.set(file.uuid, id);
+    attempt.write(
+      execution.componentPath,
+      id,
+      Storage.row(
+        id,
+        this.creationTime(
+          execution.udfType === "action" ? this.now() : execution.startTime,
+        ),
+        bytes,
+        contentType,
+      ),
+    );
+    return id;
+  }
+
+  /**
+   * Delete a file's row. A storage ID that names no file is refused, as the
+   * binary's `FileStorage::delete` refuses it.
+   */
+  private deleteFile(
+    execution: Execution,
+    attempt: KernelAttempt,
+    storageId: unknown,
+  ) {
+    const found = this.findFile(
+      execution,
+      "storage.delete",
+      storageId,
+      attempt,
+    );
+    if (found === null) {
+      throw new Storage.StorageIdNotFound({
+        storageId: String(storageId),
+        message: `storage id ${String(storageId)} not found`,
+      });
+    }
+    attempt.write(execution.componentPath, found.id, null);
+    attempt.meter.deleteFile(found.id);
   }
 
   // Documents. The checks and messages are convex-test's.
@@ -3178,6 +3545,44 @@ const closed = (execution: Execution, operation: string) =>
     operation,
     message: `"${operation}" reached mutation ${execution.udfPath} after it returned and its syscalls settled. Await every read and write inside the handler.`,
   });
+
+const orThrow = <A, E>(result: Result.Result<A, E>): A => {
+  if (Result.isFailure(result)) throw result.failure;
+  return result.success;
+};
+
+/**
+ * Keep `error` as `execution`'s refusal if it is one, and hand it back.
+ */
+const keepRefusal = (error: unknown, execution: Execution): unknown => {
+  if (KernelRefusal.isKernelRefusal(error)) execution.refused.first ??= error;
+  return error;
+};
+
+/**
+ * The kernel refusal behind a function's failure, if any: the thrown value
+ * itself, or the first refusal one of its syscalls threw.
+ */
+const refusalOf = (thrown: unknown, execution: Execution): unknown =>
+  KernelRefusal.isKernelRefusal(thrown) ? thrown : execution.refused.first;
+
+/**
+ * `thrown` as the running kernel function's world reports a failure: a copy
+ * with every kept secret marked. Outside a kernel function, as on convex-test,
+ * `thrown` itself.
+ */
+export const redactCurrentFailure = (thrown: unknown): unknown =>
+  executions.getStore()?.world.redactFailure(thrown) ?? thrown;
+
+/**
+ * The kernel refusal behind a failure inside the running kernel function, if
+ * any. Outside one, as on convex-test, only a refusal thrown as itself.
+ */
+export const currentRefusal = (thrown: unknown): unknown => {
+  const execution = executions.getStore();
+  if (execution !== undefined) return refusalOf(thrown, execution);
+  return KernelRefusal.isKernelRefusal(thrown) ? thrown : undefined;
+};
 
 const transaction = (execution: Execution): KernelAttempt => {
   if (execution.attempt === undefined) {
