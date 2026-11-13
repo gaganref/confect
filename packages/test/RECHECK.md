@@ -461,7 +461,7 @@ target that is missing, a query or an HTTP action
 are created in name order, each with its first run computed from the kernel's
 time at open.
 
-Each run's time is `compute_next_ts` (`crates/model/src/cron_jobs/next_ts.rs:132-189`).
+Each run's time is `compute_next_ts` (`crates/model/src/cron_jobs/next_ts.rs:129-189`).
 An interval's first run is due at once, and each later one an interval after the
 previous run's time, not its finish. A clock schedule's run is saffron's next
 occurrence strictly after the minute holding `now` less the previous run's

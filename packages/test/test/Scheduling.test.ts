@@ -920,6 +920,28 @@ describe("declared cron jobs", () => {
       }),
   );
 
+  it.effect(
+    "a cron run's commit makes a subscription that read its table stale, and refresh catches it up",
+    () =>
+      Effect.gen(function* () {
+        const t = cronWorld((crons) =>
+          crons.interval("pulse", { seconds: 30 }, ticks.log, {
+            label: "pulse",
+          }),
+        );
+        const subscription = yield* call(() =>
+          t.subscriber().subscribe(jobs.marks, {}),
+        );
+        yield* call(() => t.advance(0));
+        expect(yield* call(() => t.refresh())).toHaveLength(1);
+        expect(subscription.current().outcome).toEqual({
+          _tag: "returned",
+          value: [{ label: "pulse", at: cronStart }],
+        });
+        expect(yield* call(() => t.reference())).toEqual([]);
+      }),
+  );
+
   it.effect("a component's crons.ts runs in that component", () =>
     Effect.gen(function* () {
       const t = cronWorld(

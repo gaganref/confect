@@ -4,7 +4,7 @@
  * The binary turns that list into one standing job per name at push
  * (`crates/model/src/cron_jobs/mod.rs:151-223`, convex-backend
  * `precompiled-2026-10-28-cccbade`) and computes each run's time with
- * `compute_next_ts` (`crates/model/src/cron_jobs/next_ts.rs:132-189`). This
+ * `compute_next_ts` (`crates/model/src/cron_jobs/next_ts.rs:129-189`). This
  * module is that computation with no clock of its own: the caller passes the
  * time and a random draw.
  */
@@ -798,7 +798,7 @@ const splay = (
 /**
  * The time of the run after `previous`, or of the first run when there is none,
  * at time `now`, as `compute_next_ts` computes it
- * (`crates/model/src/cron_jobs/next_ts.rs:132-189`). An interval's first run is
+ * (`crates/model/src/cron_jobs/next_ts.rs:129-189`). An interval's first run is
  * due at once, and each later one an interval after the previous run's time. A
  * clock schedule's run is its next occurrence after `now`, less the previous
  * run's delay, plus the next run's delay. `draw(bound)` answers a whole number
