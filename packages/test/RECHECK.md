@@ -344,6 +344,14 @@ calls starts at the kernel's time when it is called, the kernel's form of row
 1's rule. A record's own start time and its world's clock apply only on
 convex-test.
 
+A kernel subscription's reruns reach Convex's server library through the same
+`globalThis.Convex` dispatcher and pinned-global accessors that a live
+convex-test layer uses (row 5's `TestConfect` target). Beside such a layer it
+ignores the other target's commits, reruns on a kernel commit to what it read,
+agrees with the reference, and leaves each accessor as it found it
+(`test/TestConfectTargets.test.ts`). `TestConfect` itself has no subscription
+surface yet, so a test opens subscriptions on the kernel's `convexTest` shim.
+
 No inventory case is placed in row 4, and no refusal named row 4, so the lane's
 placements are unchanged.
 
