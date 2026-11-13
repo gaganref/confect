@@ -160,8 +160,9 @@ const startup = Semaphore.makeUnsafe(1);
 export const dataDirectories = Effect.gen(function* () {
   const path = yield* Path.Path;
   const stack = yield* Stack;
+  const dotAlchemyDirectoryValue = yield* dotAlchemyDirectory;
   const root = path.resolve(
-    yield* dotAlchemyDirectory,
+    dotAlchemyDirectoryValue,
     "convex",
     stack.name,
     stack.stage,
@@ -334,9 +335,8 @@ export const boot = Effect.fn("LocalBackend.boot")(function* (
 
   const generate = (binary: string) =>
     Effect.gen(function* () {
-      const instanceSecret = Buffer.from(
-        yield* random.randomBytes(32),
-      ).toString("hex");
+      const randomBytes2 = yield* random.randomBytes(32);
+      const instanceSecret = Buffer.from(randomBytes2).toString("hex");
       const output = yield* spawner.string(
         ChildProcess.make(
           binary,
@@ -363,11 +363,8 @@ export const boot = Effect.fn("LocalBackend.boot")(function* (
     Effect.gen(function* () {
       const file = path.join(directory, "identity.json");
       const temp = `${file}.${process.pid}.tmp`;
-      yield* fs.writeFileString(
-        temp,
-        yield* Schema.encodeEffect(Identity)(identity),
-        { mode: 0o600 },
-      );
+      const encoded = yield* Schema.encodeEffect(Identity)(identity);
+      yield* fs.writeFileString(temp, encoded, { mode: 0o600 });
       yield* fs.rename(temp, file);
     }).pipe(
       // Node cannot cancel a write or rename it has started; finishing it

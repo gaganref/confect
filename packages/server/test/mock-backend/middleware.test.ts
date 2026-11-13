@@ -603,10 +603,14 @@ it.layer(TestConfect.layer, { buildPerTest: true })("middleware", (test) => {
           expectTypeOf<
             Ref.Error<typeof group.profiledMutation>
           >().toEqualTypeOf<NoViewer | NameRejected>();
-          expect(yield* c.query(group.profiledQuery)).toBe("ada");
-          expect(
-            yield* Effect.result(c.mutation(group.profiledMutation)),
-          ).toEqual(Result.fail(NameRejected.make({ minLength: 4 })));
+          const query2 = yield* c.query(group.profiledQuery);
+          expect(query2).toBe("ada");
+          const result2 = yield* Effect.result(
+            c.mutation(group.profiledMutation),
+          );
+          expect(result2).toEqual(
+            Result.fail(NameRejected.make({ minLength: 4 })),
+          );
         }).pipe(Effect.provide(TestConfect.layer)),
     );
   });

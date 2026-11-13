@@ -81,16 +81,15 @@ it.effect(
       });
       assert(observed);
       expect(Redacted.value(observed.variables.MANAGED)).toBe("drift");
-      expect(
-        yield* provider.diff({
-          ...lifecycle,
-          olds: props,
-          news: props,
-          output: first,
-          oldBindings: [],
-          newBindings: [],
-        }),
-      ).toEqual({ action: "update" });
+      const diff2 = yield* provider.diff({
+        ...lifecycle,
+        olds: props,
+        news: props,
+        output: first,
+        oldBindings: [],
+        newBindings: [],
+      });
+      expect(diff2).toEqual({ action: "update" });
       yield* provider.reconcile({
         ...lifecycle,
         news: props,
@@ -100,16 +99,14 @@ it.effect(
       expect(Redacted.value(mock.state.variables.MANAGED)).toBe(
         "desired-secret",
       );
-      expect(
-        yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
-          first,
-        ),
-      ).not.toContain("desired-secret");
-      expect(
-        yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
-          first,
-        ),
-      ).not.toContain("test-key");
+      const encoded = yield* Schema.encodeEffect(
+        Schema.fromJsonString(Schema.Unknown),
+      )(first);
+      expect(encoded).not.toContain("desired-secret");
+      const encoded2 = yield* Schema.encodeEffect(
+        Schema.fromJsonString(Schema.Unknown),
+      )(first);
+      expect(encoded2).not.toContain("test-key");
       yield* provider.delete({ ...lifecycle, olds: props, output: first });
       yield* provider.delete({ ...lifecycle, olds: props, output: first });
       expect(Record.keys(mock.state.variables)).toEqual(["OTHER"]);
@@ -260,25 +257,27 @@ it.effect(
           toString: "string-value",
         },
       };
-      expect(
-        yield* provider.read({ ...lifecycle, olds: news, output: undefined }),
-      ).toBeUndefined();
+      const read2 = yield* provider.read({
+        ...lifecycle,
+        olds: news,
+        output: undefined,
+      });
+      expect(read2).toBeUndefined();
       const output = yield* provider.reconcile({
         ...lifecycle,
         news,
         olds: undefined,
         output: undefined,
       });
-      expect(
-        yield* provider.diff({
-          ...lifecycle,
-          olds: news,
-          news,
-          output,
-          oldBindings: [],
-          newBindings: [],
-        }),
-      ).toBeUndefined();
+      const diff2 = yield* provider.diff({
+        ...lifecycle,
+        olds: news,
+        news,
+        output,
+        oldBindings: [],
+        newBindings: [],
+      });
+      expect(diff2).toBeUndefined();
       yield* provider.delete({ ...lifecycle, olds: news, output });
       expect(Record.keys(mock.state.variables)).toEqual([]);
     }).pipe(Effect.provide(mock.layer));
@@ -316,10 +315,16 @@ it.effect(
       });
     });
     return Effect.gen(function* () {
-      expect(
-        yield* remove.pipe(failure("TransportError"), Effect.result),
-      ).toEqual(Result.succeed(undefined));
-      expect(yield* remove.pipe(failure("HttpError"), Effect.result)).toEqual(
+      const removeResult = yield* remove.pipe(
+        failure("TransportError"),
+        Effect.result,
+      );
+      expect(removeResult).toEqual(Result.succeed(undefined));
+      const removeResult2 = yield* remove.pipe(
+        failure("HttpError"),
+        Effect.result,
+      );
+      expect(removeResult2).toEqual(
         Result.fail(
           ConvexApiError.make({
             operation: "listEnvironmentVariables",

@@ -33,11 +33,11 @@ describe("FileLock", () => {
       const file = yield* staleLock;
       yield* Effect.gen(function* () {
         yield* FileLock.acquire(file);
-        expect(yield* fs.readFileString(file)).toContain(
-          `"pid":${process.pid}`,
-        );
+        const fileContents = yield* fs.readFileString(file);
+        expect(fileContents).toContain(`"pid":${process.pid}`);
       }).pipe(Effect.scoped);
-      expect(yield* fs.exists(file)).toBe(false);
+      const fileExists = yield* fs.exists(file);
+      expect(fileExists).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -50,9 +50,8 @@ describe("FileLock", () => {
         const recovery = `${file}.recovery`;
         const entered = yield* Deferred.make<void>();
         const gate = Promise.withResolvers<void>();
-        const runDetached = Effect.runPromiseWith(
-          yield* Effect.context<never>(),
-        );
+        const context2 = yield* Effect.context<never>();
+        const runDetached = Effect.runPromiseWith(context2);
         // Node cannot cancel an unlink it has started: interrupting the
         // effect abandons the callback while the removal still happens.
         const slowRemoval = Layer.effect(
@@ -86,11 +85,14 @@ describe("FileLock", () => {
           Effect.forkChild,
         );
         yield* Effect.sleep("50 millis");
-        expect(yield* fs.exists(recovery)).toBe(true);
+        const recoveryExists = yield* fs.exists(recovery);
+        expect(recoveryExists).toBe(true);
         gate.resolve();
         yield* Fiber.join(interrupting);
-        expect(yield* fs.exists(recovery)).toBe(false);
-        expect(yield* fs.exists(file)).toBe(false);
+        const recoveryExists2 = yield* fs.exists(recovery);
+        expect(recoveryExists2).toBe(false);
+        const fileExists = yield* fs.exists(file);
+        expect(fileExists).toBe(false);
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

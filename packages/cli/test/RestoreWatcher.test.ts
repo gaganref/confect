@@ -44,7 +44,8 @@ it.effect(
       const watcher = yield* RestoreWatcher.make(
         watchConfect((event) => Queue.offer(events, event).pipe(Effect.asVoid)),
       ).pipe(Effect.provideService(FileSystem.FileSystem, fs));
-      expect(yield* Queue.take(acquisitions)).toBe(1);
+      const acquisitions2 = yield* Queue.take(acquisitions);
+      expect(acquisitions2).toBe(1);
       const result = yield* Effect.gen(function* () {
         yield* watcher.duringRestore;
         expect(active).toBe(0);
@@ -52,18 +53,22 @@ it.effect(
         return yield* Effect.fail("rejected");
       }).pipe(Effect.scoped, Effect.flip);
       expect(result).toBe("rejected");
-      expect(yield* Queue.take(acquisitions)).toBe(1);
+      const acquisitions3 = yield* Queue.take(acquisitions);
+      expect(acquisitions3).toBe(1);
       yield* emit({ _tag: "Create", path: "notes.spec.ts" });
-      expect(yield* Queue.take(events)).toEqual({
+      const events2 = yield* Queue.take(events);
+      expect(events2).toEqual({
         _tag: "Create",
         path: "notes.spec.ts",
       });
-      expect(yield* Queue.clear(events)).toEqual([]);
+      const clear2 = yield* Queue.clear(events);
+      expect(clear2).toEqual([]);
       yield* Effect.gen(function* () {
         yield* watcher.duringRestore;
         expect(active).toBe(0);
       }).pipe(Effect.scoped);
-      expect(yield* Queue.take(acquisitions)).toBe(1);
+      const acquisitions4 = yield* Queue.take(acquisitions);
+      expect(acquisitions4).toBe(1);
     }).pipe(Effect.scoped),
 );
 
@@ -95,9 +100,8 @@ it.effect("propagates watcher acquisition defects after resume", () =>
       Effect.forkChild,
     );
     yield* TestClock.adjust("1 second");
-    expect(yield* Fiber.join(fiber)).toEqual(
-      Option.some(Exit.die("watcher acquisition failed")),
-    );
+    const joined = yield* Fiber.join(fiber);
+    expect(joined).toEqual(Option.some(Exit.die("watcher acquisition failed")));
     expect(starts).toBe(2);
   }).pipe(Effect.scoped),
 );

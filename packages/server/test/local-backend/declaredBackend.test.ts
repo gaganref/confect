@@ -17,24 +17,23 @@ layer(Layer.merge(LocalBackend.consumerLayer, FetchHttpClient.layer), {
         "http://127.0.0.1:3221/counter/health",
       );
       expect(response.status).toBe(200);
-      expect(yield* response.text).toBe("component ready");
-      expect(
-        yield* Effect.promise(() =>
-          client.mutation(
-            makeFunctionReference<"mutation", { value: number }, number>(
-              "hello:notify",
-            ),
-            { value: 21 },
+      const text2 = yield* response.text;
+      expect(text2).toBe("component ready");
+      const resolved = yield* Effect.promise(() =>
+        client.mutation(
+          makeFunctionReference<"mutation", { value: number }, number>(
+            "hello:notify",
           ),
+          { value: 21 },
         ),
-      ).toBe(43);
-      expect(
-        yield* Effect.promise(() =>
-          client.query(
-            makeFunctionReference<"query", {}, string>("hello:readMarker"),
-          ),
+      );
+      expect(resolved).toBe(43);
+      const resolved2 = yield* Effect.promise(() =>
+        client.query(
+          makeFunctionReference<"query", {}, string>("hello:readMarker"),
         ),
-      ).toBe("declared-consumer");
+      );
+      expect(resolved2).toBe("declared-consumer");
     }),
   );
 });

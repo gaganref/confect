@@ -79,9 +79,8 @@ it.effect(
 it.effect("keeps the existing service member's missing-identity error", () =>
   Effect.gen(function* () {
     const auth = yield* Auth.Auth;
-    expect(yield* Effect.flip(auth.getUserIdentity)).toBeInstanceOf(
-      Auth.NoUserIdentityFoundError,
-    );
+    const error = yield* Effect.flip(auth.getUserIdentity);
+    expect(error).toBeInstanceOf(Auth.NoUserIdentityFoundError);
   }).pipe(
     Effect.provide(
       Auth.layer({ getUserIdentity: () => Promise.resolve(null) }),

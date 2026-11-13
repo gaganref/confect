@@ -25,15 +25,15 @@ describe("one-call actions", () => {
         assert(Exit.isFailure(exit));
         expect(Cause.pretty(exit.cause)).toContain("SchedulingNotAllowed");
       }
-      expect(yield* c.query(refs.public.groups.notes.list)).toEqual([]);
+      const query2 = yield* c.query(refs.public.groups.notes.list);
+      expect(query2).toEqual([]);
       yield* c.run(
         Effect.gen(function* () {
           const ctx = yield* MutationCtx;
-          expect(
-            yield* Effect.promise(() =>
-              ctx.db.system.query("_scheduled_functions").collect(),
-            ),
-          ).toEqual([]);
+          const resolved = yield* Effect.promise(() =>
+            ctx.db.system.query("_scheduled_functions").collect(),
+          );
+          expect(resolved).toEqual([]);
         }),
       );
     }).pipe(Effect.provide(TestConfect.layer)),
@@ -41,18 +41,20 @@ describe("one-call actions", () => {
   it.effect("calls one mutation or query with fresh state per invocation", () =>
     Effect.gen(function* () {
       const c = yield* TestConfect.TestConfect;
-      expect(yield* execute("inspect")).toBe(true);
+      const executeResult = yield* execute("inspect");
+      expect(executeResult).toBe(true);
       const id = yield* execute("write");
       expect(typeof id).toBe("string");
-      expect(yield* execute("read")).toBe(1);
+      const executeResult2 = yield* execute("read");
+      expect(executeResult2).toBe(1);
       yield* execute("write");
-      expect(yield* execute("read")).toBe(2);
-      expect(
-        Array.map(
-          yield* c.query(refs.public.groups.notes.list),
-          (row) => row.text,
-        ),
-      ).toEqual(["one call", "one call"]);
+      const executeResult3 = yield* execute("read");
+      expect(executeResult3).toBe(2);
+      const query2 = yield* c.query(refs.public.groups.notes.list);
+      expect(Array.map(query2, (row) => row.text)).toEqual([
+        "one call",
+        "one call",
+      ]);
     }).pipe(Effect.provide(TestConfect.layer)),
   );
 
@@ -62,12 +64,8 @@ describe("one-call actions", () => {
       const exit = yield* Effect.exit(execute("twice"));
       assert(Exit.isFailure(exit));
       expect(Cause.pretty(exit.cause)).toContain("ActionCallAlreadyUsed");
-      expect(
-        Array.map(
-          yield* c.query(refs.public.groups.notes.list),
-          (row) => row.text,
-        ),
-      ).toEqual(["first only"]);
+      const query2 = yield* c.query(refs.public.groups.notes.list);
+      expect(Array.map(query2, (row) => row.text)).toEqual(["first only"]);
     }).pipe(Effect.provide(TestConfect.layer)),
   );
 

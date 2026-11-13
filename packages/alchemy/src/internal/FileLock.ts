@@ -51,7 +51,8 @@ export const acquire = Effect.fn("FileLock.acquire")(function* (
   const path = yield* Path.Path;
   const random = yield* SecureRandom.SecureRandom;
   const failed = () => FileLockError.make({ reason: "filesystem" });
-  const token = Buffer.from(yield* random.randomBytes(16)).toString("hex");
+  const randomBytes2 = yield* random.randomBytes(16);
+  const token = Buffer.from(randomBytes2).toString("hex");
   const holder = yield* Schema.encodeEffect(Holder)({
     pid: process.pid,
     token,

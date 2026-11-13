@@ -39,27 +39,24 @@ it.effect(
       });
       expect(output.name).toBe("example");
       expect(output.keyId).toBe(1);
-      expect(
-        yield* provider.diff({
-          ...lifecycle,
-          oldBindings: [],
-          newBindings: [],
-          news: props,
-          olds: props,
-          output,
-        }),
-      ).toBeUndefined();
-      expect(
-        yield* provider.reconcile({
-          ...lifecycle,
-          news: props,
-          olds: props,
-          output,
-        }),
-      ).toEqual(output);
-      expect(
-        yield* provider.read({ ...lifecycle, olds: props, output }),
-      ).toEqual(output);
+      const diff2 = yield* provider.diff({
+        ...lifecycle,
+        oldBindings: [],
+        newBindings: [],
+        news: props,
+        olds: props,
+        output,
+      });
+      expect(diff2).toBeUndefined();
+      const reconcile2 = yield* provider.reconcile({
+        ...lifecycle,
+        news: props,
+        olds: props,
+        output,
+      });
+      expect(reconcile2).toEqual(output);
+      const read2 = yield* provider.read({ ...lifecycle, olds: props, output });
+      expect(read2).toEqual(output);
       const missingState = yield* Effect.flip(
         provider.read({ ...lifecycle, olds: props, output: undefined }),
       );
@@ -86,9 +83,12 @@ it.effect("does not confuse similar key labels with the requested name", () => {
   ];
   return Effect.gen(function* () {
     const provider = yield* DeployKey.provider;
-    expect(
-      yield* provider.read({ ...lifecycle, olds: props, output: undefined }),
-    ).toBeUndefined();
+    const read2 = yield* provider.read({
+      ...lifecycle,
+      olds: props,
+      output: undefined,
+    });
+    expect(read2).toBeUndefined();
     mock.state.keys = [
       key({ name: "example (1d26168f)" }),
       key({ id: 2, name: "example (a1b2c3d4)" }),
@@ -130,11 +130,10 @@ it.effect(
       });
       expect(observed?.deployKey).toBe(first.deployKey);
       expect(mock.client.createDeployKey).toHaveBeenCalledTimes(1);
-      expect(
-        yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
-          second,
-        ),
-      ).not.toContain("test-secret");
+      const encoded = yield* Schema.encodeEffect(
+        Schema.fromJsonString(Schema.Unknown),
+      )(second);
+      expect(encoded).not.toContain("test-secret");
     }).pipe(Effect.provide(mock.layer));
   },
 );
@@ -249,7 +248,8 @@ it.effect(
         oldBindings: [],
         newBindings: [],
       };
-      expect(yield* provider.diff(input)).toBeUndefined();
+      const diff2 = yield* provider.diff(input);
+      expect(diff2).toBeUndefined();
       mock.state.keys = [key({ allowedActions: ["deployment:env:view"] })];
       expect((yield* Effect.flip(provider.diff(input)))._tag).toBe(
         "DeployKeyChangeRequiresNewResource",
@@ -303,23 +303,28 @@ it.effect(
           output: undefined,
         })
         .pipe(Effect.result);
-      expect(yield* reconcile).toEqual(
+      const reconcileValue = yield* reconcile;
+      expect(reconcileValue).toEqual(
         Result.fail(
           LocalBackendError.make({ deploymentName, reason: "identity" }),
         ),
       );
       yield* fs.makeDirectory(directory, { recursive: true });
+      const identity = yield* Schema.encodeEffect(
+        Schema.fromJsonString(Schema.Unknown),
+      )({
+        name: deploymentName,
+        version: "precompiled-2026-10-28-cccbade",
+        instanceSecret: "00ff",
+        adminKey: `${deploymentName}|0a1b2c`,
+        ports: { port: 3300, sitePort: 3301 },
+      });
       yield* fs.writeFileString(
         path.join(directory, "identity.json"),
-        yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))({
-          name: deploymentName,
-          version: "precompiled-2026-10-28-cccbade",
-          instanceSecret: "00ff",
-          adminKey: `${deploymentName}|0a1b2c`,
-          ports: { port: 3300, sitePort: 3301 },
-        }),
+        identity,
       );
-      const output = Result.getOrThrow(yield* reconcile);
+      const reconcileValue2 = yield* reconcile;
+      const output = Result.getOrThrow(reconcileValue2);
       expect(Redacted.value(output.deployKey)).toBe(`${deploymentName}|0a1b2c`);
       expect(output.deploymentName).toBe(deploymentName);
     }).pipe(Effect.provide(NodeServices.layer)),

@@ -32,12 +32,14 @@ it.effect(
       const callbacks = refs.public.groups.callbacks;
       const id = yield* test.mutation(callbacks.send, { run: "declared-app" });
       yield* test.mutation(callbacks.setStatus, { id, status: "delivered" });
-      expect(
-        yield* test.query(callbacks.events, { run: "declared-app" }),
-      ).toEqual(["delivered"]);
+      const query2 = yield* test.query(callbacks.events, {
+        run: "declared-app",
+      });
+      expect(query2).toEqual(["delivered"]);
       const response = yield* test.fetch("/first/members/42");
       expect(response.status).toBe(200);
-      expect(yield* Effect.promise(() => response.json())).toBe("42");
+      const resolved = yield* Effect.promise(() => response.json());
+      expect(resolved).toBe("42");
     }).pipe(Effect.provide(TestConfect.layer(registry))),
 );
 
@@ -57,7 +59,8 @@ it.effect("fetches a nested route under a local mount", () =>
     const test = yield* TestConfect.TestConfect<typeof registry.schema>();
     const response = yield* test.fetch("/right/child/members/5");
     expect(response.status).toBe(200);
-    expect(yield* Effect.promise(() => response.json())).toBe("5");
+    const resolved = yield* Effect.promise(() => response.json());
+    expect(resolved).toBe("5");
   }).pipe(Effect.provide(TestConfect.layer(registry))),
 );
 
@@ -116,7 +119,8 @@ it.effect("takes HTTP prefixes from an App value", () =>
     const test = yield* TestConfect.TestConfect<typeof registry.schema>();
     const response = yield* test.fetch("/test-counter/members/7");
     expect(response.status).toBe(200);
-    expect(yield* Effect.promise(() => response.json())).toBe("7");
+    const resolved = yield* Effect.promise(() => response.json());
+    expect(resolved).toBe("7");
   }).pipe(Effect.provide(TestConfect.layer(app, registry))),
 );
 
@@ -125,7 +129,8 @@ it.effect("fetches a nested installation through its declared prefixes", () =>
     const test = yield* TestConfect.TestConfect<typeof registry.schema>();
     const response = yield* test.fetch("/left/deep/child/child/members/9");
     expect(response.status).toBe(200);
-    expect(yield* Effect.promise(() => response.json())).toBe("9");
+    const resolved = yield* Effect.promise(() => response.json());
+    expect(resolved).toBe("9");
   }).pipe(Effect.provide(TestConfect.layer(registry))),
 );
 
@@ -134,7 +139,8 @@ it.effect("registers a component through its test entry's register", () =>
     const test = yield* TestConfect.TestConfect<typeof registry.schema>();
     const response = yield* test.fetch("/first/members/3");
     expect(response.status).toBe(200);
-    expect(yield* Effect.promise(() => response.json())).toBe("3");
+    const resolved = yield* Effect.promise(() => response.json());
+    expect(resolved).toBe("3");
   }).pipe(
     Effect.provide(
       TestConfect.layer({

@@ -116,10 +116,11 @@ export const inspectRelease = Effect.fn("MergeRelease.inspect")(function* (
   directory: string,
   forkRef: string,
 ) {
-  const tags = pipe(
-    yield* git(["tag", "--list", "@confect/core@*"], directory),
-    String.split("\n"),
+  const gitResult2 = yield* git(
+    ["tag", "--list", "@confect/core@*"],
+    directory,
   );
+  const tags = pipe(gitResult2, String.split("\n"));
   const tag = yield* Effect.fromResult(selectReleaseTag(tags));
   const forkHead = yield* git(["rev-parse", `${forkRef}^{commit}`], directory);
   const target = yield* git(["rev-parse", `${tag}^{commit}`], directory);
@@ -166,13 +167,11 @@ export const checkMerge = Effect.fn("MergeRelease.check")(function* (
     scratch,
   );
   if (result.exitCode !== 0) {
-    const files = Arr.filter(
-      pipe(
-        yield* git(["diff", "--name-only", "--diff-filter=U"], scratch),
-        String.split("\n"),
-      ),
-      Boolean,
+    const gitResult2 = yield* git(
+      ["diff", "--name-only", "--diff-filter=U"],
+      scratch,
     );
+    const files = Arr.filter(pipe(gitResult2, String.split("\n")), Boolean);
     yield* Console.error(
       `Merging ${plan.tag} into ${forkRef} failed. Conflicting files:\n${Arr.join(files, "\n") || "(none; see git output)"}`,
     );

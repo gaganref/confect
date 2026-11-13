@@ -45,10 +45,11 @@ const inline = FunctionImpl.make(schema, spec, "inline", (args) =>
 const write = FunctionImpl.make(schema, spec, "write", (args) =>
   Effect.gen(function* () {
     const writer = yield* DatabaseWriter;
+    const captured = yield* capture(args);
     yield* writer.table("transactionNotes").insert({
       caseId: `reserved:${args.run}`,
       value: yield* Schema.encodeEffect(Schema.fromJsonString(snapshot()))(
-        yield* capture(args),
+        captured,
       ),
     });
     return null;

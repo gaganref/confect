@@ -69,10 +69,8 @@ export const provider = Effect.gen(function* () {
     teamId: number,
     name: string,
   ) {
-    const matches = Array.filter(
-      yield* client.listProjects(teamId),
-      (project) => project.name === name,
-    );
+    const projects = yield* client.listProjects(teamId);
+    const matches = Array.filter(projects, (project) => project.name === name);
     if (matches.length > 1)
       return yield* AmbiguousProject.make({
         teamId,

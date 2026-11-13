@@ -118,7 +118,8 @@ test("computes the merge base with the release from git history", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       const { root, base, target, forkHead } = yield* makeHistory();
-      expect(yield* inspectRelease(root, "fork")).toEqual({
+      const inspectReleaseResult = yield* inspectRelease(root, "fork");
+      expect(inspectReleaseResult).toEqual({
         _tag: "Merge",
         tag: "@confect/core@10.3.0",
         base,
@@ -149,12 +150,10 @@ test.each([false, true])(
         }
         expect(git(["rev-parse", "fork"])).toBe(forkHead);
         expect(git(["rev-parse", "HEAD"])).toBe(target);
-        expect(yield* fs.readFileString(`${root}/shared.txt`)).toBe(
-          "uncommitted work\n",
-        );
-        expect(yield* fs.readFileString(`${root}/untracked.txt`)).toBe(
-          "untracked work\n",
-        );
+        const contents = yield* fs.readFileString(`${root}/shared.txt`);
+        expect(contents).toBe("uncommitted work\n");
+        const contents2 = yield* fs.readFileString(`${root}/untracked.txt`);
+        expect(contents2).toBe("untracked work\n");
         expect(git(["status", "--porcelain"])).toBe(
           "M shared.txt\n?? untracked.txt",
         );
@@ -177,7 +176,8 @@ test("treats a release merged into the fork as current, with fork patches after 
       git(["commit", "--allow-empty", "-m", "Fork patch after the merge"]);
       const forkHead = git(["rev-parse", "fork"]);
       git(["switch", "upstream"]);
-      expect(yield* checkMerge(root, "fork")).toMatchObject({
+      const checkMergeResult = yield* checkMerge(root, "fork");
+      expect(checkMergeResult).toMatchObject({
         _tag: "AlreadyMerged",
         tag: "@confect/core@10.3.0",
       });
@@ -194,7 +194,8 @@ test("treats the newest tag as current when the fork merged untagged upstream co
       git(["switch", "fork"]);
       git(["merge", "--no-edit", target]);
       git(["switch", "upstream"]);
-      expect(yield* inspectRelease(root, "fork")).toMatchObject({
+      const inspectReleaseResult = yield* inspectRelease(root, "fork");
+      expect(inspectReleaseResult).toMatchObject({
         _tag: "AlreadyMerged",
         tag: "@confect/core@10.2.0",
       });
@@ -213,7 +214,8 @@ test("merges the stable tag while upstream main has a conflicting later commit",
       git(["add", "."]);
       git(["commit", "-m", "Unreleased conflicting change"]);
       const upstreamHead = git(["rev-parse", "upstream"]);
-      expect(yield* checkMerge(root, "fork")).toMatchObject({
+      const checkMergeResult = yield* checkMerge(root, "fork");
+      expect(checkMergeResult).toMatchObject({
         _tag: "Merge",
         tag: "@confect/core@10.3.0",
       });

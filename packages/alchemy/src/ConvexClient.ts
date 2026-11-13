@@ -297,11 +297,12 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     schema: Schema.Decoder<A>,
     body?: unknown,
   ) {
+    const managementAuthorizationValue = yield* managementAuthorization;
     const response = yield* send(
       operation,
       method,
       `${baseUrl}${path}`,
-      yield* managementAuthorization,
+      managementAuthorizationValue,
       body,
     );
     return yield* decode(operation, response, schema);
@@ -313,11 +314,12 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     path: string,
     body?: unknown,
   ) {
+    const managementAuthorizationValue = yield* managementAuthorization;
     yield* send(
       operation,
       method,
       `${baseUrl}${path}`,
-      yield* managementAuthorization,
+      managementAuthorizationValue,
       body,
     );
   });
@@ -367,8 +369,9 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       componentPath?: string,
     ) {
       const operation = "runFunction";
+      const deploymentUrlResult = yield* deploymentUrl(operation, url);
       const origin = pipe(
-        yield* deploymentUrl(operation, url),
+        deploymentUrlResult,
         String.replace(/\/api\/v1$/, ""),
       );
       const request = yield* HttpClientRequest.post(

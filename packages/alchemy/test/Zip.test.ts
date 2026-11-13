@@ -40,7 +40,8 @@ describe("Zip", () => {
         const path = yield* Path.Path;
         const destination = path.join(directory, "convex-local-backend");
         yield* extract(zip, "convex-local-backend", destination);
-        expect(yield* fs.readFileString(destination)).toBe(
+        const destinationContents = yield* fs.readFileString(destination);
+        expect(destinationContents).toBe(
           pipe("#!/bin/sh\necho local backend\n", Str.repeat(20)),
         );
       }),
@@ -53,19 +54,26 @@ describe("Zip", () => {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
         const destination = path.join(directory, "out");
-        expect(
-          yield* extract(zip, "convex-local-backend.exe", destination).pipe(
-            Effect.result,
-          ),
-        ).toEqual(Result.fail(ZipError.make({ reason: "entry" })));
+        const extractResult = yield* extract(
+          zip,
+          "convex-local-backend.exe",
+          destination,
+        ).pipe(Effect.result);
+        expect(extractResult).toEqual(
+          Result.fail(ZipError.make({ reason: "entry" })),
+        );
         const garbage = path.join(directory, "garbage.zip");
         yield* fs.writeFileString(garbage, "not a zip archive");
-        expect(
-          yield* extract(garbage, "convex-local-backend", destination).pipe(
-            Effect.result,
-          ),
-        ).toEqual(Result.fail(ZipError.make({ reason: "format" })));
-        expect(yield* fs.exists(destination)).toBe(false);
+        const extractResult2 = yield* extract(
+          garbage,
+          "convex-local-backend",
+          destination,
+        ).pipe(Effect.result);
+        expect(extractResult2).toEqual(
+          Result.fail(ZipError.make({ reason: "format" })),
+        );
+        const destinationExists = yield* fs.exists(destination);
+        expect(destinationExists).toBe(false);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),
   );

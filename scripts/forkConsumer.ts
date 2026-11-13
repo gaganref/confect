@@ -88,10 +88,8 @@ export const writeConsumer = Effect.fn("ConsumerFixture.write")(function* (
       pipe(file, String.replace(/\.template$/, "")),
     );
     yield* fs.makeDirectory(path.dirname(target), { recursive: true });
-    yield* fs.writeFileString(
-      target,
-      yield* fs.readFileString(path.join(template, file)),
-    );
+    const contents = yield* fs.readFileString(path.join(template, file));
+    yield* fs.writeFileString(target, contents);
   }
   yield* fs.writeFileString(
     path.join(destination, "package.json"),

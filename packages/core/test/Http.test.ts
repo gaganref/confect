@@ -83,7 +83,8 @@ describe("Http", () => {
             const expected = yield* Effect.promise(() =>
               effect.handler(new Request("https://example.com/docs")),
             );
-            expect(body).toBe(yield* Effect.promise(() => expected.text()));
+            const resolved = yield* Effect.promise(() => expected.text());
+            expect(body).toBe(resolved);
             expect(Record.fromEntries(response.headers)).toEqual(
               Record.fromEntries(expected.headers),
             );
@@ -94,7 +95,8 @@ describe("Http", () => {
             const endpoint = yield* Effect.promise(() =>
               web.handler(new Request("https://example.com/meta")),
             );
-            expect(yield* Effect.promise(() => endpoint.text())).toBe('"ok"');
+            const resolved2 = yield* Effect.promise(() => endpoint.text());
+            expect(resolved2).toBe('"ok"');
           }),
         (web) => Effect.promise(web.dispose),
       );

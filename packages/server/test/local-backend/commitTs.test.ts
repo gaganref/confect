@@ -17,14 +17,13 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
       () =>
         Effect.gen(function* () {
           const { client } = yield* LocalBackend.LocalBackend;
-          expect(
-            yield* Effect.promise(() =>
-              client.mutation(getFunctionReference(functions.stamp), {
-                caseId: "read-back",
-                label: "only",
-              }),
-            ),
-          ).toBe("placeholder");
+          const resolved = yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(functions.stamp), {
+              caseId: "read-back",
+              label: "only",
+            }),
+          );
+          expect(resolved).toBe("placeholder");
         }),
     );
 

@@ -76,12 +76,12 @@ export const fakeBackend = (options?: Partial<FakeBehaviour>) => {
           let stdout = Stream.empty as Stream.Stream<Uint8Array>;
           let stop = Effect.void;
           if (command.command === process.execPath) {
-            if (args[1] === "deploy")
-              pushes.push(
-                yield* fs
-                  .readFileString(args[args.indexOf("--env-file") + 1])
-                  .pipe(Effect.orDie),
-              );
+            if (args[1] === "deploy") {
+              const envFile = yield* fs
+                .readFileString(args[args.indexOf("--env-file") + 1])
+                .pipe(Effect.orDie);
+              pushes.push(envFile);
+            }
             yield* Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0));
           } else if (args[0] === "keygen") {
             keys++;

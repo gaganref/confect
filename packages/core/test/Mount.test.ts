@@ -104,7 +104,8 @@ describe("Mount.make", () => {
       expect(getFunctionAddress(transactional.ref)).toEqual({
         reference: "_reference/childComponent/transactionalEmail/delivery/send",
       });
-      expect(yield* bulk.send("hello")).toBe("sent hello");
+      const send2 = yield* bulk.send("hello");
+      expect(send2).toBe("sent hello");
       expect((yield* ImportsPool).options).toEqual({ maxParallelism: 10 });
       expect((yield* DefaultPool).options).toBeUndefined();
     }),
@@ -120,7 +121,8 @@ describe("Mount.make", () => {
         return yield* (yield* BulkEmail).send("hello");
       }).pipe(Effect.provideService(BulkEmail, fake));
       expect(sent).toBe("fake hello");
-      expect(yield* (yield* BulkEmail).send("hello")).toBe("sent hello");
+      const send2 = yield* (yield* BulkEmail).send("hello");
+      expect(send2).toBe("sent hello");
     }),
   );
 
@@ -463,7 +465,8 @@ describe("Mount.initCall", () => {
           name: "mailer",
           args: { fromName: "School office", onEvent },
         });
-        expect(yield* Mount.initCall(mailer, handleFor)).toEqual(
+        const initCall2 = yield* Mount.initCall(mailer, handleFor);
+        expect(initCall2).toEqual(
           Option.some({
             componentPath: "mailer",
             functionName: "install:init",
@@ -547,22 +550,21 @@ describe("Mount.initCall", () => {
         Mount.initCall(mount, handleFor).pipe(
           Effect.map(Option.map(({ args }) => args)),
         );
-      expect(yield* argsOf(notify)).toEqual(
+      const argsOfResult = yield* argsOf(notify);
+      expect(argsOfResult).toEqual(
         Option.some({
           route: { kind: "notify", onEvent: "handle for callbacks:onEvent" },
         }),
       );
-      expect(yield* argsOf(drop)).toEqual(
-        Option.some({ route: { kind: "drop" } }),
-      );
+      const argsOfResult2 = yield* argsOf(drop);
+      expect(argsOfResult2).toEqual(Option.some({ route: { kind: "drop" } }));
     }),
   );
 
   it.effect("is none for a component without init", () =>
     Effect.gen(function* () {
-      expect(yield* Mount.initCall(BulkEmail, handleFor)).toEqual(
-        Option.none(),
-      );
+      const initCall2 = yield* Mount.initCall(BulkEmail, handleFor);
+      expect(initCall2).toEqual(Option.none());
     }),
   );
 });

@@ -44,7 +44,8 @@ const GENERATOR_FORMAT = "2";
 
 const confectPath = Effect.fnUntraced(function* (file: string) {
   const path = yield* Path.Path;
-  return path.join(yield* ConfectDirectory.get, file);
+  const confectDirectory = yield* ConfectDirectory.get;
+  return path.join(confectDirectory, file);
 });
 
 /**
@@ -54,12 +55,14 @@ const confectPath = Effect.fnUntraced(function* (file: string) {
  */
 export const isDeclared = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
-  return yield* fs.exists(yield* confectPath("app.ts"));
+  const confectPathResult = yield* confectPath("app.ts");
+  return yield* fs.exists(confectPathResult);
 });
 
 const displayPath = Effect.fnUntraced(function* (absolutePath: string) {
   const path = yield* Path.Path;
-  return toPosixPath(path, path.relative(yield* ProjectRoot.get, absolutePath));
+  const projectRoot = yield* ProjectRoot.get;
+  return toPosixPath(path, path.relative(projectRoot, absolutePath));
 });
 
 const bundleDeclaration = Effect.fnUntraced(function* (file: string) {
@@ -90,7 +93,8 @@ const assertOwned = Effect.fnUntraced(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   if (!(yield* fs.exists(convexPath))) return;
-  if (Declaration.isGenerated(yield* fs.readFileString(convexPath), legacy)) {
+  const convexPathContents = yield* fs.readFileString(convexPath);
+  if (Declaration.isGenerated(convexPathContents, legacy)) {
     return;
   }
   return yield* HandWrittenConvexFileError.make({
@@ -140,11 +144,8 @@ const declarationInputs = Effect.fnUntraced(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const projectRoot = yield* ProjectRoot.get;
-  const registry = path.join(
-    yield* ConfectDirectory.get,
-    "_generated",
-    "components.ts",
-  );
+  const confectDirectory = yield* ConfectDirectory.get;
+  const registry = path.join(confectDirectory, "_generated", "components.ts");
   const files = new Set<string>();
   for (const { metafile } of bundles) {
     for (const input of Rec.keys(metafile.inputs)) {
@@ -206,7 +207,8 @@ const componentImport = Effect.fnUntraced(function* () {
 
 const manifestPath = Effect.gen(function* () {
   const path = yield* Path.Path;
-  return path.join(yield* ConfectDirectory.get, "_generated", "manifest.ts");
+  const confectDirectory = yield* ConfectDirectory.get;
+  return path.join(confectDirectory, "_generated", "manifest.ts");
 });
 
 /**
@@ -218,7 +220,8 @@ const removeGenerated = Effect.fnUntraced(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   if (!(yield* fs.exists(filePath))) return;
-  if (!Declaration.isGenerated(yield* fs.readFileString(filePath), legacy)) {
+  const filePathContents = yield* fs.readFileString(filePath);
+  if (!Declaration.isGenerated(filePathContents, legacy)) {
     return;
   }
   yield* removePathIfExists(filePath);
@@ -226,7 +229,8 @@ const removeGenerated = Effect.fnUntraced(function* (
 });
 
 const removeManifest = Effect.gen(function* () {
-  yield* removeGenerated(yield* manifestPath, []);
+  const manifestPathValue = yield* manifestPath;
+  yield* removeGenerated(manifestPathValue, []);
 });
 
 const readManifest = Effect.gen(function* () {
@@ -290,8 +294,9 @@ export const syncManifestSections = Effect.fnUntraced(
     );
     const { name, env, http } = current;
     const digest = sectionDigest(baseDigest, sections);
+    const manifestPathValue = yield* manifestPath;
     yield* writeFileStringAndLog(
-      yield* manifestPath,
+      manifestPathValue,
       Declaration.renderManifest({ name, env, http, digest, ...sections }),
     );
   },
@@ -300,15 +305,13 @@ export const syncManifestSections = Effect.fnUntraced(
 
 const authProvidersPath = Effect.gen(function* () {
   const path = yield* Path.Path;
-  return path.join(
-    yield* ConfectDirectory.get,
-    "_generated",
-    "auth.providers.ts",
-  );
+  const confectDirectory = yield* ConfectDirectory.get;
+  return path.join(confectDirectory, "_generated", "auth.providers.ts");
 });
 
 const removeAuthProviders = Effect.gen(function* () {
-  yield* removeGenerated(yield* authProvidersPath, []);
+  const authProvidersPathValue = yield* authProvidersPath;
+  yield* removeGenerated(authProvidersPathValue, []);
 });
 
 const writeDeclaration = Effect.fnUntraced(function* (
@@ -331,7 +334,7 @@ const writeDeclaration = Effect.fnUntraced(function* (
   }
   const authPath = yield* confectPath("auth.ts");
   const auth = (yield* fs.exists(authPath))
-    ? Option.some(yield* bundleDeclaration("auth.ts"))
+    ? yield* Effect.asSome(bundleDeclaration("auth.ts"))
     : Option.none();
 
   const declaration = yield* Declaration.parse({
@@ -376,8 +379,9 @@ const writeDeclaration = Effect.fnUntraced(function* (
       ],
     });
     const sections = ManifestSections.sections(previous);
+    const manifestPathValue = yield* manifestPath;
     yield* writeFileStringAndLog(
-      yield* manifestPath,
+      manifestPathValue,
       Declaration.manifest(
         declaration,
         sectionDigest(digest, sections),
@@ -404,8 +408,9 @@ const writeDeclaration = Effect.fnUntraced(function* (
           authConfigPath,
           Declaration.authConfig(providers),
         );
+        const authProvidersPathValue = yield* authProvidersPath;
         yield* writeFileStringAndLog(
-          yield* authProvidersPath,
+          authProvidersPathValue,
           Declaration.authProviders(providers),
         );
       }),
@@ -613,10 +618,14 @@ export const syncDeployModule = Effect.fnUntraced(function* (
   );
   const installed =
     Option.isSome(app) && (yield* fs.exists(config))
-      ? yield* ConvexConfig.discoverInstalledComponents(
-          config,
-          yield* displayPath(config),
-          (yield* ConvexDirectory.target).kind,
+      ? yield* Effect.flatMap(
+          Effect.all([displayPath(config), ConvexDirectory.target]),
+          ([shown, target]) =>
+            ConvexConfig.discoverInstalledComponents(
+              config,
+              shown,
+              target.kind,
+            ),
         )
       : [];
   const entries: Array<string> = [];

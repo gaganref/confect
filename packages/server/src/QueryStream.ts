@@ -2399,8 +2399,10 @@ export const collect: {
         budget,
       ),
     );
-    if (yield* budget.isStopped)
-      return yield* ReadBudgetExceededError.make(yield* budget.getReadCounts);
+    if (yield* budget.isStopped) {
+      const readCounts = yield* budget.getReadCounts;
+      return yield* ReadBudgetExceededError.make(readCounts);
+    }
     return rows;
   }),
 );

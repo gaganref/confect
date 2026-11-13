@@ -143,7 +143,8 @@ describe("local deployment lifecycle", () => {
           "dev",
           first?.name ?? "",
         );
-        expect(yield* fs.exists(path.join(data, "identity.json"))).toBe(true);
+        const found = yield* fs.exists(path.join(data, "identity.json"));
+        expect(found).toBe(true);
 
         const [restarted] = yield* session(stack(paths.cwd, "destroy"));
         expect(restarted).toEqual(first);
@@ -151,7 +152,8 @@ describe("local deployment lifecycle", () => {
         expect(fake.pushes.at(-1)).toBe(selection);
 
         yield* session(Effect.succeed({}));
-        expect(yield* fs.exists(data)).toBe(false);
+        const dataExists = yield* fs.exists(data);
+        expect(dataExists).toBe(false);
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -163,18 +165,17 @@ describe("local deployment lifecycle", () => {
       const { session } = makeSession(paths);
       const [created] = yield* session(stack(paths.cwd, "retain"));
       yield* session(Effect.succeed({}));
-      expect(
-        yield* fs.exists(
-          path.join(
-            paths.dotAlchemy,
-            "convex",
-            "notes",
-            "dev",
-            created?.name ?? "",
-            "identity.json",
-          ),
+      const found = yield* fs.exists(
+        path.join(
+          paths.dotAlchemy,
+          "convex",
+          "notes",
+          "dev",
+          created?.name ?? "",
+          "identity.json",
         ),
-      ).toBe(true);
+      );
+      expect(found).toBe(true);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 });

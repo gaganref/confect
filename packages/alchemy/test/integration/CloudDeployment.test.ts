@@ -176,14 +176,14 @@ describe("cloud deployment lifecycle", () => {
           });
           return { url: backend.url };
         });
-        expect(
-          Result.isFailure(yield* deploy(resources).pipe(Effect.result)),
-        ).toBe(true);
+        const deployResult = yield* deploy(resources).pipe(Effect.result);
+        expect(Result.isFailure(deployResult)).toBe(true);
         expect(fixture.state.projects).toHaveLength(1);
         expect(fixture.state.keys).toHaveLength(0);
         expect(pushes).toBe(0);
         if (retry) {
-          expect(yield* deploy(resources)).toEqual({
+          const deployResult2 = yield* deploy(resources);
+          expect(deployResult2).toEqual({
             url: "https://happy-otter-123.convex.cloud",
           });
           expect(pushes).toBe(1);
@@ -240,9 +240,8 @@ describe("cloud deployment lifecycle", () => {
           });
           return { keyId: key.keyId };
         });
-        expect(
-          Result.isFailure(yield* deploy(resources).pipe(Effect.result)),
-        ).toBe(true);
+        const deployResult = yield* deploy(resources).pipe(Effect.result);
+        expect(Result.isFailure(deployResult)).toBe(true);
         const retried = yield* deploy(resources).pipe(Effect.result);
         expect(retried).toMatchObject({
           _tag: "Failure",
@@ -289,7 +288,8 @@ describe("cloud deployment lifecycle", () => {
       const result = yield* deploy(resources).pipe(Effect.result);
       if (scenario.succeeds) {
         expect(result).toEqual(Result.succeed({ name: "happy-otter-123" }));
-        expect(yield* deploy(resources)).toEqual({
+        const deployResult = yield* deploy(resources);
+        expect(deployResult).toEqual({
           name: "happy-otter-123",
         });
       } else {
@@ -361,9 +361,8 @@ describe("cloud deployment lifecycle", () => {
           });
           return { url: backend.url };
         });
-        expect(
-          Result.isFailure(yield* deploy(resources).pipe(Effect.result)),
-        ).toBe(true);
+        const deployResult = yield* deploy(resources).pipe(Effect.result);
+        expect(Result.isFailure(deployResult)).toBe(true);
         yield* deploy(resources);
         expect(Redacted.value(fixture.state.variables.ORIGIN)).toBe(
           "replacement",

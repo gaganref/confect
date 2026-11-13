@@ -74,11 +74,10 @@ describe("Backend", () => {
       const expression = inspect(url);
       expect(expression).toContain("variables");
       expect(expression).toContain("url");
-      expect(
-        yield* Output.evaluate(url, {
-          [environment.FQN]: { url: props.deployment.url, variables: {} },
-        }),
-      ).toBe(props.deployment.url);
+      const evaluate2 = yield* Output.evaluate(url, {
+        [environment.FQN]: { url: props.deployment.url, variables: {} },
+      });
+      expect(evaluate2).toBe(props.deployment.url);
       const unresolved = yield* Output.evaluate(url, {}).pipe(Effect.result);
       expect(Result.isFailure(unresolved)).toBe(true);
     }).pipe(Effect.provide([stack(), providers, inMemoryState()])),

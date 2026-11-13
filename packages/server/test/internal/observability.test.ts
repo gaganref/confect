@@ -14,7 +14,8 @@ describe("memoized", () => {
         ),
       );
       const use = Effect.scoped(Layer.build(memoized(layer)));
-      expect(Exit.isFailure(yield* Effect.exit(use))).toBe(true);
+      const exit2 = yield* Effect.exit(use);
+      expect(Exit.isFailure(exit2)).toBe(true);
       yield* use;
       yield* use;
       expect(attempts).toBe(2);

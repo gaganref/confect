@@ -191,9 +191,9 @@ export const provider = Effect.gen(function* () {
           allowedActions: key.allowedActions,
         };
       }
-      const existing = Array.filter(
-        yield* client.listDeployKeys(news.deploymentName),
-        (key) => hasName(key.name, name),
+      const deployKeys = yield* client.listDeployKeys(news.deploymentName);
+      const existing = Array.filter(deployKeys, (key) =>
+        hasName(key.name, name),
       );
       if (existing.length > 0)
         return yield* recover(
@@ -207,9 +207,9 @@ export const provider = Effect.gen(function* () {
           ? {}
           : { allowedActions: [...news.allowedActions] }),
       });
-      const matches = Array.filter(
-        yield* client.listDeployKeys(news.deploymentName),
-        (key) => hasName(key.name, name),
+      const deployKeys2 = yield* client.listDeployKeys(news.deploymentName);
+      const matches = Array.filter(deployKeys2, (key) =>
+        hasName(key.name, name),
       );
       const key = matches[0];
       if (matches.length !== 1 || !key)

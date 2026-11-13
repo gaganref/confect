@@ -194,10 +194,11 @@ describe("create checks the host's validators", () => {
             error: () => Unrelated,
           }),
         );
-        expect(
+        const unrelatedResult = yield* created(
           // @ts-expect-error the host's Unrelated error is outside the contract's declared set
-          yield* created(Callback.create(OnEvent, unrelated)),
-        ).toEqual(
+          Callback.create(OnEvent, unrelated),
+        );
+        expect(unrelatedResult).toEqual(
           mismatch(
             "counter/onEvent",
             "error",
@@ -235,9 +236,8 @@ describe("create checks the host's validators", () => {
             error: () => EventRejected,
           }),
         );
-        const handle = Result.getOrThrow(
-          yield* created(Callback.create(Declared, subset)),
-        );
+        const createdResult = yield* created(Callback.create(Declared, subset));
+        const handle = Result.getOrThrow(createdResult);
         expect(getFunctionReference(handle)).toBe(
           "function://;callbacks:onEvent",
         );
@@ -263,7 +263,8 @@ describe("create checks the host's validators", () => {
           returns: () => Schema.Null,
         }),
       );
-      expect(yield* created(Callback.create(Keyed, keyed))).toEqual(
+      const createdResult = yield* created(Callback.create(Keyed, keyed));
+      expect(createdResult).toEqual(
         mismatch(
           "counter/onKeyed",
           "args",
@@ -296,7 +297,8 @@ describe("create checks the host's validators", () => {
           returns: () => Schema.Null,
         }),
       );
-      expect(yield* created(Callback.create(Keyed, keyed))).toEqual(
+      const createdResult = yield* created(Callback.create(Keyed, keyed));
+      expect(createdResult).toEqual(
         mismatch(
           "counter/onKeyed",
           "args",
@@ -330,7 +332,8 @@ describe("create checks the host's validators", () => {
           returns: () => Schema.Struct(hostFields),
         }),
       );
-      expect(yield* created(Callback.create(Keyed, keyed))).toEqual(
+      const createdResult = yield* created(Callback.create(Keyed, keyed));
+      expect(createdResult).toEqual(
         mismatch(
           "counter/onKeyed",
           "returns",
@@ -354,10 +357,11 @@ describe("create checks the host's validators", () => {
           returns: () => Schema.Null,
         }),
       );
-      expect(
+      const namedResult = yield* created(
         // @ts-expect-error the host's validator accepts only IDs of users
-        yield* created(Callback.create(Named, named)),
-      ).toEqual(
+        Callback.create(Named, named),
+      );
+      expect(namedResult).toEqual(
         mismatch(
           "counter/onNamed",
           "args",
@@ -393,10 +397,11 @@ describe("create checks the host's validators", () => {
         }),
         attachments,
       );
-      expect(
+      const groupedResult = yield* created(
         // @ts-expect-error the erased attachments may fail with any error
-        yield* created(Callback.create(Guarded, grouped)),
-      ).toEqual(
+        Callback.create(Guarded, grouped),
+      );
+      expect(groupedResult).toEqual(
         mismatch(
           "counter/onGuarded",
           "error",
@@ -437,7 +442,8 @@ describe("create checks the host's validators", () => {
         kind: "unsupported",
         reason: "Unsupported schema type 'TemplateLiteral'",
       };
-      expect(yield* created(Callback.create(Reasoning, rebuilt))).toEqual(
+      const createdResult = yield* created(Callback.create(Reasoning, rebuilt));
+      expect(createdResult).toEqual(
         mismatch("counter/onReasoning", "error", unsupported, unsupported),
       );
     }),
@@ -470,9 +476,8 @@ describe("create checks the host's validators", () => {
             error: () => Unrelated,
           }),
         );
-        expect(
-          Result.isSuccess(yield* created(Callback.create(Mixed, mixed))),
-        ).toBe(true);
+        const createdResult = yield* created(Callback.create(Mixed, mixed));
+        expect(Result.isSuccess(createdResult)).toBe(true);
       }),
   );
 
@@ -492,9 +497,8 @@ describe("create checks the host's validators", () => {
           returns: () => Schema.Null,
         }),
       );
-      expect(
-        Result.isSuccess(yield* created(Callback.create(Flagged, flagged))),
-      ).toBe(true);
+      const createdResult = yield* created(Callback.create(Flagged, flagged));
+      expect(Result.isSuccess(createdResult)).toBe(true);
     }),
   );
 
@@ -519,11 +523,10 @@ describe("create checks the host's validators", () => {
             error: () => Schema.Union([Rebuilt, Reasoned]),
           }),
         );
-        expect(
-          Result.isSuccess(
-            yield* created(Callback.create(Reasoning, reasoning)),
-          ),
-        ).toBe(true);
+        const createdResult = yield* created(
+          Callback.create(Reasoning, reasoning),
+        );
+        expect(Result.isSuccess(createdResult)).toBe(true);
       }),
   );
 });
@@ -1063,7 +1066,8 @@ describe("callback carrier", () => {
             ],
             ["ActionRunner.runAction", action.runAction(actionHandle, args)],
           ] as const) {
-            expect(yield* call).toEqual({
+            const callValue = yield* call;
+            expect(callValue).toEqual({
               count: "1",
               ...(enabled && options ? { observe: { boundary } } : {}),
             });

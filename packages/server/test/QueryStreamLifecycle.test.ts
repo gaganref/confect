@@ -641,9 +641,10 @@ describe("QueryStream.collect", () => {
   it.effect("collects every row when the row count equals the budget", () =>
     Effect.gen(function* () {
       const reader = makeReader();
-      expect(
-        yield* QueryStream.collect(reader.stream, { maximumRowsRead: 4 }),
-      ).toEqual(documents);
+      const collected = yield* QueryStream.collect(reader.stream, {
+        maximumRowsRead: 4,
+      });
+      expect(collected).toEqual(documents);
       expect(reader.documentsRead).toBe(4);
       expect(reader.runs).toEqual([
         { order: "asc", next: 5, returned: 1, settled: 5 },
@@ -676,9 +677,10 @@ describe("QueryStream.collect", () => {
         Arr.reduce(rows, 0, (sum, row) => sum + getDocumentSize(row)),
       ).toBe(126);
       const reader = makeReader(undefined, rows);
-      expect(
-        yield* QueryStream.collect(reader.stream, { maximumBytesRead: 126 }),
-      ).toEqual(rows);
+      const collected = yield* QueryStream.collect(reader.stream, {
+        maximumBytesRead: 126,
+      });
+      expect(collected).toEqual(rows);
       expect(reader.documentsRead).toBe(3);
       expect(reader.runs).toEqual([
         { order: "asc", next: 4, returned: 1, settled: 4 },
@@ -741,9 +743,10 @@ describe("QueryStream.collect", () => {
     (limit) =>
       Effect.gen(function* () {
         const empty = makeReader(undefined, []);
-        expect(
-          yield* QueryStream.collect(empty.stream, { [limit]: 0 }),
-        ).toEqual([]);
+        const collected = yield* QueryStream.collect(empty.stream, {
+          [limit]: 0,
+        });
+        expect(collected).toEqual([]);
         expect(empty.documentsRead).toBe(0);
         const emptyPage = yield* QueryStream.paginate(empty.stream, {
           cursor: null,
@@ -788,11 +791,10 @@ describe("QueryStream.collect", () => {
             group: "a",
           }));
         const holidays = makeReader(undefined, rows(40));
-        expect(
-          yield* QueryStream.collect(holidays.stream, {
-            maximumRowsRead: 2_000,
-          }),
-        ).toHaveLength(40);
+        const collected = yield* QueryStream.collect(holidays.stream, {
+          maximumRowsRead: 2_000,
+        });
+        expect(collected).toHaveLength(40);
         expect(holidays.documentsRead).toBe(40);
         const demands = makeReader(undefined, rows(2_001));
         let returned = false;
@@ -837,11 +839,10 @@ describe("QueryStream.collect", () => {
 it.effect("QueryStream.collect respects an enclosing read budget", () =>
   Effect.gen(function* () {
     const reader = makeReader();
-    const budget = yield* QueryStreamReadBudget.make(
-      yield* Schema.decodeEffect(QueryStreamReadBudget.Limits)({
-        maximumRowsRead: 2,
-      }),
-    );
+    const decoded = yield* Schema.decodeEffect(QueryStreamReadBudget.Limits)({
+      maximumRowsRead: 2,
+    });
+    const budget = yield* QueryStreamReadBudget.make(decoded);
     const error = yield* QueryStream.collect(reader.stream).pipe(
       Effect.provideService(
         QueryStreamReadBudget.QueryStreamReadBudget,
@@ -854,7 +855,8 @@ it.effect("QueryStream.collect respects an enclosing read budget", () =>
       rowsRead: 3,
     });
     expect(reader.documentsRead).toBe(3);
-    expect(yield* budget.isStopped).toBe(true);
+    const isStopped2 = yield* budget.isStopped;
+    expect(isStopped2).toBe(true);
   }),
 );
 
@@ -875,9 +877,11 @@ it.effect(
           ),
         );
       const unbudgeted = makeReader(undefined, rows);
-      expect(
-        yield* rare(unbudgeted).pipe(Stream.take(20), Stream.runCollect),
-      ).toHaveLength(20);
+      const rareResult = yield* rare(unbudgeted).pipe(
+        Stream.take(20),
+        Stream.runCollect,
+      );
+      expect(rareResult).toHaveLength(20);
       expect(unbudgeted.documentsRead).toBe(22_803);
       const reader = makeReader(undefined, rows);
       const first = yield* QueryStream.paginate(rare(reader), {
@@ -926,7 +930,8 @@ it.effect.each(["collect", "paginate"] as const)(
       }));
       const reader = makeReader(undefined, rows);
       if (sink === "collect") {
-        expect(yield* QueryStream.collect(reader.stream)).toEqual(rows);
+        const collected = yield* QueryStream.collect(reader.stream);
+        expect(collected).toEqual(rows);
       } else {
         const result = yield* QueryStream.paginate(reader.stream, {
           cursor: null,
@@ -1003,9 +1008,10 @@ it.effect.each(["asc", "desc"] as const)(
       ] as const;
       const campus = source(rows);
       const overlapping = [campus, ...sections] as const;
-      expect(
-        yield* Stream.runCollect(QueryStream.merge(overlapping)),
-      ).toHaveLength(178);
+      const collected2 = yield* Stream.runCollect(
+        QueryStream.merge(overlapping),
+      );
+      expect(collected2).toHaveLength(178);
       for (const [streams, count] of [
         [sections, 60],
         [overlapping, 118],
@@ -1030,9 +1036,10 @@ it.effect.each(["asc", "desc"] as const)(
             : rows.slice(0, count);
         expect(collected).toEqual(expected);
         expect(new Set(Arr.map(collected, (doc) => doc._id)).size).toBe(count);
-        expect(yield* Stream.runCollect(QueryStream.reverse(merged))).toEqual(
-          Arr.reverse(expected),
+        const collected3 = yield* Stream.runCollect(
+          QueryStream.reverse(merged),
         );
+        expect(collected3).toEqual(Arr.reverse(expected));
       }
     }),
 );
@@ -1047,7 +1054,8 @@ it.effect(
         source,
       ]);
       const merged = QueryStream.merge([nested, source], { dedupe: true });
-      expect(yield* Stream.runCollect(merged)).toEqual(documents);
+      const collected = yield* Stream.runCollect(merged);
+      expect(collected).toEqual(documents);
       const left = source.pipe(
         QueryStream.map((doc) => ({ ...doc, group: "left" })),
       );
@@ -1058,29 +1066,28 @@ it.effect(
         source.pipe(QueryStream.filter(() => false)),
         left,
       ]);
-      expect(
-        yield* Stream.runCollect(
-          QueryStream.merge([first, right], { dedupe: true }),
-        ),
-      ).toEqual(Arr.map(documents, (doc) => ({ ...doc, group: "left" })));
+      const collected2 = yield* Stream.runCollect(
+        QueryStream.merge([first, right], { dedupe: true }),
+      );
+      expect(collected2).toEqual(
+        Arr.map(documents, (doc) => ({ ...doc, group: "left" })),
+      );
       const ties = [
         { ...documents[0]!, _id: "x" },
         { ...documents[0]!, _id: "y" },
       ];
       const tied = makeReader(undefined, ties).stream;
-      expect(
-        yield* Stream.runCollect(
-          QueryStream.merge([tied, tied], { dedupe: true }),
-        ),
-      ).toEqual(ties);
+      const collected3 = yield* Stream.runCollect(
+        QueryStream.merge([tied, tied], { dedupe: true }),
+      );
+      expect(collected3).toEqual(ties);
 
-      expect(
-        yield* Stream.runCollect(
-          QueryStream.narrow(merged, {
-            start: { keyValues: ["b"], inclusive: true },
-          }),
-        ),
-      ).toEqual(documents.slice(2));
+      const collected4 = yield* Stream.runCollect(
+        QueryStream.narrow(merged, {
+          start: { keyValues: ["b"], inclusive: true },
+        }),
+      );
+      expect(collected4).toEqual(documents.slice(2));
     }),
 );
 

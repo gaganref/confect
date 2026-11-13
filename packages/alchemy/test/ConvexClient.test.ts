@@ -81,10 +81,13 @@ describe("ConvexClient", () => {
       ]);
       return Effect.gen(function* () {
         const client = yield* ConvexClient.ConvexClient;
-        expect(yield* client.getDeployment(deployment.name)).toEqual(regional);
-        expect(yield* client.listEnvironmentVariables(url, deployKey)).toEqual(
-          {},
+        const deployment2 = yield* client.getDeployment(deployment.name);
+        expect(deployment2).toEqual(regional);
+        const environmentVariables = yield* client.listEnvironmentVariables(
+          url,
+          deployKey,
         );
+        expect(environmentVariables).toEqual({});
         expect(http.requests[1]?.url).toBe(
           `${url}/api/v1/list_environment_variables`,
         );
@@ -108,7 +111,8 @@ describe("ConvexClient", () => {
       ]);
       return Effect.gen(function* () {
         const client = yield* ConvexClient.ConvexClient;
-        expect(yield* client.listProjects(7)).toEqual([project, secondProject]);
+        const projects = yield* client.listProjects(7);
+        expect(projects).toEqual([project, secondProject]);
         expect(Arr.map(http.requests, (request) => request.url)).toEqual([
           "https://api.convex.dev/v1/teams/7/projects",
           "https://api.convex.dev/v1/teams/7/projects?cursor=next%2F%2B",
@@ -137,10 +141,12 @@ describe("ConvexClient", () => {
     ]);
     return Effect.gen(function* () {
       const client = yield* ConvexClient.ConvexClient;
-      expect(yield* client.listProjects(7).pipe(Effect.flip)).toMatchObject({
+      const projects = yield* client.listProjects(7).pipe(Effect.flip);
+      expect(projects).toMatchObject({
         code: "InvalidPagination",
       });
-      expect(yield* client.listProjects(7).pipe(Effect.flip)).toMatchObject({
+      const projects2 = yield* client.listProjects(7).pipe(Effect.flip);
+      expect(projects2).toMatchObject({
         code: "InvalidPagination",
       });
       expect(http.requests).toHaveLength(3);
@@ -161,13 +167,17 @@ describe("ConvexClient", () => {
       const updateInput = { name: "Renamed" };
       return Effect.gen(function* () {
         const client = yield* ConvexClient.ConvexClient;
-        expect(yield* client.createProject(7, createInput)).toEqual(created);
-        expect(yield* client.getProject(42)).toEqual(project);
-        expect(yield* client.updateProject(42, updateInput)).toEqual({
+        const project2 = yield* client.createProject(7, createInput);
+        expect(project2).toEqual(created);
+        const project3 = yield* client.getProject(42);
+        expect(project3).toEqual(project);
+        const updateProject2 = yield* client.updateProject(42, updateInput);
+        expect(updateProject2).toEqual({
           ...project,
           name: "Renamed",
         });
-        expect(yield* client.deleteProject(42)).toBeUndefined();
+        const deleteProject2 = yield* client.deleteProject(42);
+        expect(deleteProject2).toBeUndefined();
         expect(
           Arr.map(http.requests, ({ method, url }) => [method, url]),
         ).toEqual([
@@ -218,15 +228,21 @@ describe("ConvexClient", () => {
       };
       return Effect.gen(function* () {
         const client = yield* ConvexClient.ConvexClient;
-        expect(yield* client.listDeployments(42)).toEqual([deployment, local]);
-        expect(yield* client.getDeployment("name/with slash")).toEqual(
-          deployment,
+        const deployments = yield* client.listDeployments(42);
+        expect(deployments).toEqual([deployment, local]);
+        const deployment2 = yield* client.getDeployment("name/with slash");
+        expect(deployment2).toEqual(deployment);
+        const deployment3 = yield* client.createDeployment(42, input);
+        expect(deployment3).toEqual(deployment);
+        const updateDeployment2 = yield* client.updateDeployment(
+          deployment.name,
+          update,
         );
-        expect(yield* client.createDeployment(42, input)).toEqual(deployment);
-        expect(
-          yield* client.updateDeployment(deployment.name, update),
-        ).toBeUndefined();
-        expect(yield* client.deleteDeployment(deployment.name)).toBeUndefined();
+        expect(updateDeployment2).toBeUndefined();
+        const deleteDeployment2 = yield* client.deleteDeployment(
+          deployment.name,
+        );
+        expect(deleteDeployment2).toBeUndefined();
         expect(
           Arr.map(http.requests, ({ method, url }) => [method, url]),
         ).toEqual([
@@ -275,7 +291,8 @@ describe("ConvexClient", () => {
           Redacted.value(deployKey),
         );
         expectSecretSafe(created, Redacted.value(deployKey));
-        expect(yield* client.listDeployKeys(deployment.name)).toEqual([key]);
+        const deployKeys = yield* client.listDeployKeys(deployment.name);
+        expect(deployKeys).toEqual([key]);
         yield* client.deleteDeployKey(deployment.name, created.deployKey);
         yield* client.deleteDeployKey(deployment.name, key.name);
         expect(Arr.map(http.requests, ({ url }) => url)).toEqual([
@@ -404,7 +421,8 @@ describe("ConvexClient", () => {
       const http = mockHttp([]);
       return Effect.gen(function* () {
         const client = yield* ConvexClient.ConvexClient;
-        expect(yield* client.getProject(42).pipe(Effect.flip)).toMatchObject({
+        const project2 = yield* client.getProject(42).pipe(Effect.flip);
+        expect(project2).toMatchObject({
           _tag: "ConvexApiError",
           code: "InvalidConfiguration",
         });
@@ -503,9 +521,8 @@ describe("ConvexClient", () => {
           client.getDeployment(deployment.name).pipe(Effect.asVoid),
           client.deleteDeployment(deployment.name),
         ]) {
-          expect(yield* operation.pipe(Effect.flip)).toBeInstanceOf(
-            ConvexClient.ConvexNotFound,
-          );
+          const operationResult = yield* operation.pipe(Effect.flip);
+          expect(operationResult).toBeInstanceOf(ConvexClient.ConvexNotFound);
         }
       }).pipe(Effect.provide(clientLayer.pipe(Layer.provide(http.layer))));
     },

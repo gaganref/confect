@@ -242,7 +242,8 @@ describe("ID scopes", () => {
         };
         const decoded = yield* Schema.decodeUnknownEffect(bound)(wire);
         expect(decoded).toEqual(wire);
-        expect(yield* Schema.encodeEffect(bound)(decoded)).toEqual(wire);
+        const encoded = yield* Schema.encodeEffect(bound)(decoded);
+        expect(encoded).toEqual(wire);
         expect(evaluations).toBe(1);
         assert(SchemaAST.isSuspend(left.type));
         const reboundNode = left.type.thunk();
@@ -287,7 +288,8 @@ describe("ID scopes", () => {
         expect(decoded).toEqual(
           new Map([["key", new Set([{ own: "own", foreign: "foreign" }])]]),
         );
-        expect(yield* Schema.encodeEffect(bound)(decoded)).toEqual(wire);
+        const encoded = yield* Schema.encodeEffect(bound)(decoded);
+        expect(encoded).toEqual(wire);
         for (const [key, values] of decoded) {
           expectTypeOf(key).toEqualTypeOf<FirstId>();
           expect(decoded.get(key)).toBe(values);
@@ -331,7 +333,8 @@ describe("ID scopes", () => {
       const wire = Option.some({ id: "one", count: "3" });
       const decoded = yield* Schema.decodeUnknownEffect(bound)(wire);
       expect(decoded).toEqual(Option.some({ id: "one", count: 3 }));
-      expect(yield* Schema.encodeEffect(bound)(decoded)).toEqual(wire);
+      const encoded = yield* Schema.encodeEffect(bound)(decoded);
+      expect(encoded).toEqual(wire);
       expect(SchemaAST.resolveIdentifier(bound.ast)).toBe("OptionalUser");
       assert(SchemaAST.isDeclaration(bound.ast));
       const [item] = bound.ast.typeParameters;

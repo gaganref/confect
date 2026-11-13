@@ -139,13 +139,10 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           );
           const manifestWrites = (files: ReadonlyArray<string>) =>
             Array.filter(files, (file) => file === manifest);
-          expect(
-            manifestWrites(
-              yield* Project.writtenFiles(
-                project.provide(generateWithSnapshot),
-              ),
-            ),
-          ).toEqual([]);
+          const writtenFiles2 = yield* Project.writtenFiles(
+            project.provide(generateWithSnapshot),
+          );
+          expect(manifestWrites(writtenFiles2)).toEqual([]);
           yield* project.write(
             "confect/notes.spec.ts",
             project.sectionSpec("second"),
@@ -224,9 +221,10 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
                 reason: "check failed: Error: check threw",
               },
             });
-          expect(
-            yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
-          ).toBe(!sectionFailure);
+          const found = yield* fs.exists(
+            `${project.root}/confect/_generated/manifest.ts`,
+          );
+          expect(found).toBe(!sectionFailure);
         }).pipe(Effect.scoped),
     );
 
@@ -279,13 +277,15 @@ export default App.make({ env: Env.make("other", {}), manifestSections: [{ key: 
             Effect.map(({ digest }) => digest),
           );
           const declared = yield* runDigest;
-          expect(yield* runDigest).toBe(declared);
+          const digest2 = yield* runDigest;
+          expect(digest2).toBe(declared);
           yield* project.undeclare;
           const undeclared = yield* runDigest;
           expect(undeclared).not.toBe(declared);
           yield* project.write("confect/stock.spec.ts", stockSpec);
           yield* project.write("confect/stock.impl.ts", stockImpl);
-          expect(yield* runDigest).toBe(undeclared);
+          const digest3 = yield* runDigest;
+          expect(digest3).toBe(undeclared);
           yield* project.declare('{ key: "tags", section: tags }');
           const described = yield* runDigest;
           expect([declared, undeclared]).not.toContain(described);
@@ -523,9 +523,8 @@ export class Observe extends MiddlewareSpec.MiddlewareSpec<Observe>()("Observe",
         yield* project.declare(
           '{ key: "tags", section: tags }, { key: "tags", section: tags }',
         );
-        expect(
-          yield* Effect.flip(project.provide(generateWithSnapshot)),
-        ).toMatchObject({
+        const error = yield* Effect.flip(project.provide(generateWithSnapshot));
+        expect(error).toMatchObject({
           _tag: "InvalidDeclarationError",
           declarationPath: "confect/app.ts",
           reason: 'Manifest section "tags" is declared twice.',
@@ -658,9 +657,10 @@ check: (next) => ({ errors: "stock:list" in next.functions ? ["notes:list and st
           expect(renderCodegenError(error)).not.toContain(
             "could not describe as JSON",
           );
-          expect(
-            yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
-          ).toBe(false);
+          const found = yield* fs.exists(
+            `${project.root}/confect/_generated/manifest.ts`,
+          );
+          expect(found).toBe(false);
         }).pipe(Effect.scoped),
     );
 
@@ -723,9 +723,10 @@ check: (next) => ({ errors: "stock:list" in next.functions ? ["notes:list and st
           expect(renderCodegenError(error)).toContain(
             `could not describe as JSON: Expected JSON data at ${path}`,
           );
-          expect(
-            yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
-          ).toBe(false);
+          const found = yield* fs.exists(
+            `${project.root}/confect/_generated/manifest.ts`,
+          );
+          expect(found).toBe(false);
         }).pipe(Effect.scoped),
     );
 
@@ -741,16 +742,16 @@ check: (next) => ({ errors: "stock:list" in next.functions ? ["notes:list and st
           "confect/tags.ts",
           `export const tags = { owner: "test/tags", format: 1, describe: () => null, summarize: () => ({ format: 1, at: ${value} }) };`,
         );
-        expect(
-          yield* Effect.flip(project.provide(generateWithSnapshot)),
-        ).toMatchObject({
+        const error = yield* Effect.flip(project.provide(generateWithSnapshot));
+        expect(error).toMatchObject({
           _tag: "InvalidManifestSectionError",
           sectionKey: "tags",
           reason: 'could not summarize as JSON: Expected JSON data at $["at"]',
         });
-        expect(
-          yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
-        ).toBe(false);
+        const found = yield* fs.exists(
+          `${project.root}/confect/_generated/manifest.ts`,
+        );
+        expect(found).toBe(false);
       }).pipe(Effect.scoped),
     );
 
@@ -779,7 +780,8 @@ export default ${nested ? "GroupSpec.addGroupsAt(GroupSpec.make(), { child: grou
             "confect/notes.impl.ts",
             'throw new Error("impl must not load");',
           );
-          expect(yield* Effect.flip(project.provide(codegenHandler))).toEqual(
+          const error = yield* Effect.flip(project.provide(codegenHandler));
+          expect(error).toEqual(
             InvalidDeclarationError.make({
               declarationPath: "confect/notes.spec.ts",
               reason: `${nested ? "notes/child:save" : "notes:list"} declares the argument "context", which its profile reserves. Rename the argument.`,
@@ -827,22 +829,21 @@ import * as Schema from "effect/Schema";
 const profile = FunctionSpec.extend()({ middleware: [], reservedArgument: "context" });
 export default GroupSpec.make().addFunction(profile.publicMutation({ name: "list", args: () => ({ context: Schema.String }) }));`,
           );
-          expect(
-            yield* Effect.flip(
-              project.provide(
-                updateDeclarations(
-                  snapshot,
-                  [
-                    {
-                      _tag: "Spec",
-                      relativePath: SpecModulePath.make("notes.spec.ts"),
-                    },
-                  ],
-                  [],
-                ),
+          const error = yield* Effect.flip(
+            project.provide(
+              updateDeclarations(
+                snapshot,
+                [
+                  {
+                    _tag: "Spec",
+                    relativePath: SpecModulePath.make("notes.spec.ts"),
+                  },
+                ],
+                [],
               ),
             ),
-          ).toEqual(
+          );
+          expect(error).toEqual(
             InvalidDeclarationError.make({
               declarationPath: "confect/notes.spec.ts",
               reason:
@@ -2041,10 +2042,11 @@ const kitProject = (files: Readonly<Record<string, string>>) =>
     })) {
       yield* project.write(`node_modules/pool-kit/${file}`, source);
     }
+    const app = yield* project.read("confect/app.ts");
     yield* project.write(
       "confect/app.ts",
       withMount(
-        yield* project.read("confect/app.ts"),
+        app,
         "workpool",
         "pool-kit/convex.config",
         'Mount.make(Component.make("pool", { client }), { name: "pool" })',
@@ -2140,10 +2142,11 @@ const wrongKitProject = (testing: string | undefined) =>
       'import { defineSchema } from "convex/server";\nexport default defineSchema({});\n',
     );
     if (testing !== undefined) {
+      const app = yield* project.read("confect/app.ts");
       yield* project.write(
         "confect/app.ts",
         pipe(
-          yield* project.read("confect/app.ts"),
+          app,
           String.replace(
             'Component.make("pool", { client })',
             `Component.make("pool", { client, testing: ${stringLiteral(testing)} })`,
@@ -2165,21 +2168,22 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       () =>
         Effect.gen(function* () {
           const project = yield* declarationProject;
-          expect(yield* Project.writtenFiles(project.run)).not.toEqual([]);
-          expect(yield* project.read("convex/convex.config.ts")).toBe(
-            expectedConvexConfig,
-          );
-          expect(yield* project.read("convex/auth.config.ts")).toBe(
-            expectedAuthConfig,
-          );
-          expect(yield* project.read("convex/http.ts")).toBe(expectedHttp);
+          const writtenFiles2 = yield* Project.writtenFiles(project.run);
+          expect(writtenFiles2).not.toEqual([]);
+          const convexConfig = yield* project.read("convex/convex.config.ts");
+          expect(convexConfig).toBe(expectedConvexConfig);
+          const authConfig = yield* project.read("convex/auth.config.ts");
+          expect(authConfig).toBe(expectedAuthConfig);
+          const http = yield* project.read("convex/http.ts");
+          expect(http).toBe(expectedHttp);
           const manifest = yield* project.read(
             "confect/_generated/manifest.ts",
           );
           expect(manifest).toBe(expectedManifest(digestOf(manifest)));
-          expect(
-            yield* project.read("confect/_generated/components.ts"),
-          ).toContain('"first": import(');
+          const components = yield* project.read(
+            "confect/_generated/components.ts",
+          );
+          expect(components).toContain('"first": import(');
           const testing = yield* project.read("confect/_generated/testing.ts");
           expect(testing).toContain('import schema from "./schema.js"');
           expect(testing).toContain('"first": firstKit');
@@ -2191,10 +2195,10 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             '"notes.ts": () => import("../../convex/notes.js")',
           );
           expect(testing).toContain("() => import(");
-          expect(
-            yield* project.read("confect/_generated/schema.ts"),
-          ).not.toContain("testing");
-          expect(yield* Project.writtenFiles(project.run)).toEqual([]);
+          const schema = yield* project.read("confect/_generated/schema.ts");
+          expect(schema).not.toContain("testing");
+          const writtenFiles3 = yield* Project.writtenFiles(project.run);
+          expect(writtenFiles3).toEqual([]);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -2211,17 +2215,17 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             "components/counter/convex/http.ts",
             "export default {};\n",
           );
+          const app = yield* project.read("confect/app.ts");
           yield* project.write(
             "confect/app.ts",
             pipe(
-              yield* project.read("confect/app.ts"),
+              app,
               String.replace('httpPrefix: "/first"', 'httpPrefix: "/"'),
             ),
           );
           yield* project.run;
-          expect(
-            yield* project.read("confect/_generated/testing.ts"),
-          ).toContain('httpPrefix: "/"');
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(testing).toContain('httpPrefix: "/"');
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -2232,10 +2236,11 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
         Effect.gen(function* () {
           const path = yield* Path.Path;
           const project = yield* declarationProject;
+          const app = yield* project.read("confect/app.ts");
           yield* project.write(
             "confect/app.ts",
             withMount(
-              yield* project.read("confect/app.ts"),
+              app,
               "workpool",
               "@convex-dev/workpool/convex.config",
               'Mount.make(Component.make("workpool", { client }), { name: "pool" })',
@@ -2371,9 +2376,10 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
         Effect.gen(function* () {
           const project = yield* kitProject(files);
           yield* project.run;
-          expect(
-            yield* project.read("confect/_generated/testing.ts"),
-          ).toContain('import * as poolKit from "pool-kit/testing";');
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(testing).toContain(
+            'import * as poolKit from "pool-kit/testing";',
+          );
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -2440,7 +2446,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       ({ testing, problem }) =>
         Effect.gen(function* () {
           const project = yield* wrongKitProject(testing);
-          expect(yield* Effect.flip(project.run)).toEqual(
+          const error = yield* Effect.flip(project.run);
+          expect(error).toEqual(
             InvalidDeclarationError.make({
               declarationPath: "confect/app.ts",
               reason: `the mount "pool" names the test kit ${stringLiteral(testing)} in its component descriptor${problem}`,
@@ -2478,10 +2485,11 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             "components/parent/convex/convex.config.ts",
             'import { defineComponent } from "convex/server";\nimport child from "../../child/convex/convex.config.js";\nconst parent = defineComponent("parent");\nparent.use(child, { name: "b", httpPrefix: "/b" });\nexport default parent;\n',
           );
+          const app = yield* project.read("confect/app.ts");
           yield* project.write(
             "confect/app.ts",
             pipe(
-              yield* project.read("confect/app.ts"),
+              app,
               String.replace(
                 'import env from "./env";',
                 'import env from "./env";\nimport parent from "../components/parent/convex/convex.config.js";',
@@ -2525,11 +2533,12 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             "components/parent/convex/convex.config.ts",
             'import { defineComponent } from "convex/server";\nimport child from "../../child/convex/convex.config.js";\nconst parent = defineComponent("parent");\nparent.use(child, { name: "b" });\nexport default parent;\n',
           );
+          const app = yield* project.read("confect/app.ts");
           yield* project.write(
             "confect/app.ts",
             pipe(
               withMount(
-                yield* project.read("confect/app.ts"),
+                app,
                 "parent",
                 "../components/parent/convex/convex.config.js",
                 'Mount.make(Component.make("parent", { client }), { name: "a" })',
@@ -2584,16 +2593,18 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             "node_modules/no-test-kit/convex.config.js",
             'import { defineComponent } from "convex/server";\nexport default defineComponent("noTestKit");\n',
           );
+          const app = yield* project.read("confect/app.ts");
           yield* project.write(
             "confect/app.ts",
             withMount(
-              yield* project.read("confect/app.ts"),
+              app,
               "kit",
               "no-test-kit/convex.config",
               'Mount.make(Component.make("noTestKit", { client }), { name: "kit" })',
             ),
           );
-          expect(yield* Effect.flip(project.run)).toEqual(
+          const error = yield* Effect.flip(project.run);
+          expect(error).toEqual(
             InvalidConvexConfigError.make({
               configPath: "../../convex/convex.config.ts",
               reason:
@@ -2610,17 +2621,19 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
         Effect.gen(function* () {
           const project = yield* declarationProject;
           yield* project.run;
-          const before = digestOf(
-            yield* project.read("confect/_generated/manifest.ts"),
+          const manifest = yield* project.read(
+            "confect/_generated/manifest.ts",
           );
+          const before = digestOf(manifest);
           yield* project.write(
             "confect/env.ts",
             `${yield* project.read("confect/env.ts")}// edited\n`,
           );
           yield* project.run;
-          const after = digestOf(
-            yield* project.read("confect/_generated/manifest.ts"),
+          const manifest2 = yield* project.read(
+            "confect/_generated/manifest.ts",
           );
+          const after = digestOf(manifest2);
           expect(after).not.toBe(before);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
@@ -2634,12 +2647,10 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const project = yield* declarationProject;
           const fs = yield* FileSystem.FileSystem;
           yield* fs.remove(path.join(project.root, "confect/auth.ts"));
+          const app = yield* project.read("confect/app.ts");
           yield* project.write(
             "confect/app.ts",
-            pipe(
-              yield* project.read("confect/app.ts"),
-              String.replace("  env,", '  kind: "component",\n  env,'),
-            ),
+            pipe(app, String.replace("  env,", '  kind: "component",\n  env,')),
           );
           yield* project.write(
             "confect/http.ts",
@@ -2667,7 +2678,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
               target: { kind: "component", scope: IdScope.component("host") },
             }),
           );
-          expect(yield* Effect.flip(run)).toEqual(
+          const error = yield* Effect.flip(run);
+          expect(error).toEqual(
             InvalidDeclarationError.make({
               declarationPath: "confect/http.ts",
               reason: "GET /items/:key is declared twice (app and app).",
@@ -2686,7 +2698,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             "confect/http.ts",
             project.http("/first/status"),
           );
-          expect(yield* Effect.flip(project.run)).toEqual(
+          const error = yield* Effect.flip(project.run);
+          expect(error).toEqual(
             InvalidDeclarationError.make({
               declarationPath: "confect/http.ts",
               reason:
@@ -2705,26 +2718,27 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const path = yield* Path.Path;
           const project = yield* declarationProject;
           yield* fs.remove(path.join(project.root, "confect/http.ts"));
+          const app = yield* project.read("confect/app.ts");
           yield* project.write(
             "confect/app.ts",
             pipe(
-              yield* project.read("confect/app.ts"),
+              app,
               String.replace(
                 "env: { REQUIRED: env.API_KEY }",
                 'httpPrefix: "/first/nested", env: { REQUIRED: env.API_KEY }',
               ),
             ),
           );
-          expect(yield* Effect.flip(project.run)).toEqual(
+          const error = yield* Effect.flip(project.run);
+          expect(error).toEqual(
             InvalidDeclarationError.make({
               declarationPath: "confect/app.ts",
               reason:
                 'The mounts "first" (/first) and "second" (/first/nested) have overlapping HTTP prefixes.',
             }),
           );
-          expect(yield* project.exists("confect/_generated/manifest.ts")).toBe(
-            false,
-          );
+          const found = yield* project.exists("confect/_generated/manifest.ts");
+          expect(found).toBe(false);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -2736,15 +2750,15 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const project = yield* declarationProject;
           const handWritten = `import { defineApp } from "convex/server";\nexport default defineApp();\n`;
           yield* project.write("convex/convex.config.ts", handWritten);
-          expect(yield* Effect.flip(project.run)).toEqual(
+          const error = yield* Effect.flip(project.run);
+          expect(error).toEqual(
             HandWrittenConvexFileError.make({
               convexPath: "convex/convex.config.ts",
               declarationPath: "confect/app.ts",
             }),
           );
-          expect(yield* project.read("convex/convex.config.ts")).toBe(
-            handWritten,
-          );
+          const convexConfig = yield* project.read("convex/convex.config.ts");
+          expect(convexConfig).toBe(handWritten);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -2756,15 +2770,15 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const project = yield* declarationProject;
           const handWritten = "export default { providers: [] };\n";
           yield* project.write("convex/auth.config.ts", handWritten);
-          expect(yield* Effect.flip(project.run)).toEqual(
+          const error = yield* Effect.flip(project.run);
+          expect(error).toEqual(
             HandWrittenConvexFileError.make({
               convexPath: "convex/auth.config.ts",
               declarationPath: "confect/auth.ts",
             }),
           );
-          expect(yield* project.read("convex/auth.config.ts")).toBe(
-            handWritten,
-          );
+          const authConfig = yield* project.read("convex/auth.config.ts");
+          expect(authConfig).toBe(handWritten);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -2774,14 +2788,13 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       () =>
         Effect.gen(function* () {
           const project = yield* declarationProject;
+          const app = yield* project.read("confect/app.ts");
           yield* project.write(
             "confect/app.ts",
-            pipe(
-              yield* project.read("confect/app.ts"),
-              String.replace('name: "first"', 'name: "first-mount"'),
-            ),
+            pipe(app, String.replace('name: "first"', 'name: "first-mount"')),
           );
-          expect(yield* Effect.flip(project.run)).toEqual(
+          const error = yield* Effect.flip(project.run);
+          expect(error).toEqual(
             InvalidDeclarationError.make({
               declarationPath: "confect/app.ts",
               reason:
@@ -2802,9 +2815,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             `import auth from "../confect/auth${extension}";\n\nexport default auth;\n`,
           );
           yield* project.run;
-          expect(yield* project.read("convex/auth.config.ts")).toBe(
-            expectedAuthConfig,
-          );
+          const authConfig = yield* project.read("convex/auth.config.ts");
+          expect(authConfig).toBe(expectedAuthConfig);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -2819,7 +2831,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           yield* project.run;
           yield* fs.remove(path.join(project.root, "confect/http.ts"));
           yield* project.run;
-          expect(yield* project.exists("convex/http.ts")).toBe(false);
+          const found = yield* project.exists("convex/http.ts");
+          expect(found).toBe(false);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -2836,9 +2849,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             yield* fs.remove(path.join(project.root, "confect", file));
           }
           yield* project.run;
-          expect(yield* project.exists("confect/_generated/manifest.ts")).toBe(
-            false,
-          );
+          const found = yield* project.exists("confect/_generated/manifest.ts");
+          expect(found).toBe(false);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -2860,9 +2872,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           expect((yield* Effect.flip(project.run))._tag).toBe(
             "InvalidDeclarationError",
           );
-          expect(yield* project.exists("confect/_generated/manifest.ts")).toBe(
-            false,
-          );
+          const found = yield* project.exists("confect/_generated/manifest.ts");
+          expect(found).toBe(false);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -2885,10 +2896,8 @@ export const manifestSections = [{ key: "observe", section: observe }${sections}
     yield* declare(
       `, generate: { file: "observe.ts", match: (path) => path.endsWith("/log.ts"), render: ${render} }`,
     );
-    yield* project.write(
-      "confect/app.ts",
-      declaring(yield* project.read("confect/app.ts")),
-    );
+    const app = yield* project.read("confect/app.ts");
+    yield* project.write("confect/app.ts", declaring(app));
     const fs = yield* FileSystem.FileSystem;
     for (const directory of ["billing", "fees"])
       yield* fs.makeDirectory(`${project.root}/confect/${directory}`);
@@ -2937,10 +2946,11 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const project = yield* sectionProject(
             "(input) => ({ contents: `export default ${JSON.stringify(input)};\\n`, errors: [] })",
           );
+          const app = yield* project.read("confect/app.ts");
           yield* project.write(
             "confect/app.ts",
             withMount(
-              yield* project.read("confect/app.ts"),
+              app,
               "workpool",
               "@convex-dev/workpool/convex.config",
               'Mount.make(Component.make("workpool", { client }), { name: "pool" })',
@@ -2985,7 +2995,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             target: { kind: "app" },
             confectDirectory: path.join(project.root, "confect"),
           });
-          expect(yield* Project.writtenFiles(project.run)).toEqual([]);
+          const writtenFiles2 = yield* Project.writtenFiles(project.run);
+          expect(writtenFiles2).toEqual([]);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -2997,10 +3008,11 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const project = yield* sectionProject(
             "({ files }) => ({ contents: `export default ${JSON.stringify(files)};\\n`, errors: [] })",
           );
+          const sections = yield* project.read("confect/sections.ts");
           yield* project.write(
             "confect/sections.ts",
             pipe(
-              yield* project.read("confect/sections.ts"),
+              sections,
               String.replace(
                 'match: (path) => path.endsWith("/log.ts")',
                 "match: () => false",
@@ -3045,10 +3057,11 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const project = yield* sectionProject(
             '() => ({ contents: "export {};\\n", errors: [] })',
           );
+          const sections = yield* project.read("confect/sections.ts");
           yield* project.write(
             "confect/sections.ts",
             pipe(
-              yield* project.read("confect/sections.ts"),
+              sections,
               String.replace(
                 "describe: () => null",
                 `describe: ({ path }) => path,
@@ -3068,7 +3081,8 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
           const { snapshot } = yield* project.provide(generateWithSnapshot);
           yield* owner("fees");
           yield* project.run;
-          expect(yield* observe).toEqual({
+          const observeValue = yield* observe;
+          expect(observeValue).toEqual({
             format: 1,
             owners: ["fees"],
             functions: { "notes:list": "notes:list" },
@@ -3086,9 +3100,11 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
               [],
             ),
           );
-          expect(yield* observe).toMatchObject({ owners: ["billing"] });
+          const observeValue2 = yield* observe;
+          expect(observeValue2).toMatchObject({ owners: ["billing"] });
           yield* owner("stale");
-          expect(yield* Effect.flip(project.run)).toMatchObject({
+          const error = yield* Effect.flip(project.run);
+          expect(error).toMatchObject({
             _tag: "InvalidManifestSectionError",
             sectionKey: "observe",
             reason: "stale owner",
@@ -3128,9 +3144,8 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
             expect(Array.join(messages, "\n")).toContain(
               `Manifest section "trace" is invalid: ${reason}`,
             );
-          expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
-            false,
-          );
+          const found = yield* project.exists("confect/_generated/observe.ts");
+          expect(found).toBe(false);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -3152,7 +3167,8 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
               pipe(http, String.split("\n"))[1],
             ]),
           );
-          expect(yield* imports).toEqual([
+          const importsValue = yield* imports;
+          expect(importsValue).toEqual([
             'import "../observe.js";',
             'import "../confect/_generated/observe.js";',
           ]);
@@ -3166,10 +3182,11 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
             ],
             [],
           );
+          const notesSpec = yield* project.read("confect/notes.spec.ts");
           yield* project.write(
             "confect/notes.spec.ts",
             pipe(
-              yield* project.read("confect/notes.spec.ts"),
+              notesSpec,
               String.replace(
                 'name: "list"',
                 'name: "list", description: "edited"',
@@ -3177,16 +3194,17 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
             ),
           );
           yield* project.provide(update);
-          expect(yield* imports).toEqual([
+          const importsValue2 = yield* imports;
+          expect(importsValue2).toEqual([
             'import "../observe.js";',
             'import "../confect/_generated/observe.js";',
           ]);
           yield* project.withoutGenerate;
           yield* project.provide(update);
-          expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
-            false,
-          );
-          expect(yield* imports).toEqual([
+          const found = yield* project.exists("confect/_generated/observe.ts");
+          expect(found).toBe(false);
+          const importsValue3 = yield* imports;
+          expect(importsValue3).toEqual([
             'import { ConvexFunctionDefinitions, RegisteredConvexFunction, type RegisteredFunctions } from "@confect/server";',
             'import { HttpRouter } from "@confect/server";',
           ]);
@@ -3205,11 +3223,13 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
           yield* project.write("confect/_generated/manual.ts", "export {};\n");
           const router = `import "../confect/_generated/manual.js";\n${yield* project.read("convex/http.ts")}`;
           yield* project.write("convex/http.ts", router);
-          expect(yield* Effect.flip(project.run)).toMatchObject({
+          const error = yield* Effect.flip(project.run);
+          expect(error).toMatchObject({
             _tag: "UnownedConvexEntrypointError",
             filePaths: ["convex/http.ts"],
           });
-          expect(yield* project.read("convex/http.ts")).toBe(router);
+          const http = yield* project.read("convex/http.ts");
+          expect(http).toBe(router);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -3228,7 +3248,8 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
             recursive: true,
           });
           yield* project.run;
-          expect(yield* project.read("convex/http.ts")).toBe(router);
+          const http = yield* project.read("convex/http.ts");
+          expect(http).toBe(router);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -3247,20 +3268,19 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
           );
           yield* Effect.flip(project.run);
           const record = "confect/_generated/sectionInputs.json";
-          expect(yield* project.read(record)).toBe(
-            '["billing/helper.ts","billing/log.ts"]',
-          );
+          const read2 = yield* project.read(record);
+          expect(read2).toBe('["billing/helper.ts","billing/log.ts"]');
           yield* project.write(
             "confect/billing/helper.ts",
             "export const = ;\n",
           );
           yield* Effect.flip(project.run);
-          expect(yield* project.read(record)).toBe(
-            '["billing/helper.ts","billing/log.ts"]',
-          );
+          const read3 = yield* project.read(record);
+          expect(read3).toBe('["billing/helper.ts","billing/log.ts"]');
           yield* project.withoutGenerate;
           yield* project.run;
-          expect(yield* project.exists(record)).toBe(false);
+          const recordExists = yield* project.exists(record);
+          expect(recordExists).toBe(false);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -3274,17 +3294,14 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
           );
           yield* project.run;
           yield* project.write("confect/_generated/kept.ts", "export {};\n");
-          expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
-            true,
-          );
+          const found = yield* project.exists("confect/_generated/observe.ts");
+          expect(found).toBe(true);
           yield* project.withoutGenerate;
           yield* project.run;
-          expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
-            false,
-          );
-          expect(yield* project.exists("confect/_generated/kept.ts")).toBe(
-            true,
-          );
+          const found2 = yield* project.exists("confect/_generated/observe.ts");
+          expect(found2).toBe(false);
+          const found3 = yield* project.exists("confect/_generated/kept.ts");
+          expect(found3).toBe(true);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -3320,17 +3337,14 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
             'throw new Error("broken impl");\n',
           );
           yield* Effect.flip(rerun);
-          expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
-            true,
-          );
+          const found = yield* project.exists("confect/_generated/observe.ts");
+          expect(found).toBe(true);
           yield* project.write("confect/notes.impl.ts", impl);
           yield* rerun;
-          expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
-            false,
-          );
-          expect(yield* project.read("convex/http.ts")).not.toContain(
-            "observe",
-          );
+          const found2 = yield* project.exists("confect/_generated/observe.ts");
+          expect(found2).toBe(false);
+          const http = yield* project.read("convex/http.ts");
+          expect(http).not.toContain("observe");
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -3342,14 +3356,13 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
           const project = yield* sectionProject(
             '() => ({ contents: "export {};\\n", errors: [] })',
           );
+          const sections = yield* project.read("confect/sections.ts");
           yield* project.write(
             "confect/sections.ts",
-            pipe(
-              yield* project.read("confect/sections.ts"),
-              String.replace('"observe.ts"', '"spec.ts"'),
-            ),
+            pipe(sections, String.replace('"observe.ts"', '"spec.ts"')),
           );
-          expect(yield* Effect.flip(project.run)).toMatchObject({
+          const error = yield* Effect.flip(project.run);
+          expect(error).toMatchObject({
             _tag: "InvalidManifestSectionError",
             sectionKey: "observe",
             reason:
@@ -3392,12 +3405,12 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
           for (const file of ["notes.spec.ts", "notes.impl.ts"])
             yield* fs.remove(`${project.root}/confect/${file}`);
           yield* project.run;
-          expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
-            true,
+          const found = yield* project.exists("confect/_generated/observe.ts");
+          expect(found).toBe(true);
+          const http = yield* project.read("convex/http.ts");
+          expect(pipe(http, String.split("\n"))[1]).toBe(
+            'import "../confect/_generated/observe.js";',
           );
-          expect(
-            pipe(yield* project.read("convex/http.ts"), String.split("\n"))[1],
-          ).toBe('import "../confect/_generated/observe.js";');
           const { module } = yield* Bundler.bundle(
             `${project.root}/confect/_generated/manifest.ts`,
           );
@@ -3460,10 +3473,14 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
         Effect.gen(function* () {
           const project = yield* verifyProject(refusing);
           yield* project.run;
-          expect(
-            yield* project.read("confect/_generated/verifyInputs.json"),
-          ).toBe('["app.ts","door.ts","env.ts","sections.ts"]');
-          expect(yield* Project.writtenFiles(project.run)).toEqual([]);
+          const verifyInputs = yield* project.read(
+            "confect/_generated/verifyInputs.json",
+          );
+          expect(verifyInputs).toBe(
+            '["app.ts","door.ts","env.ts","sections.ts"]',
+          );
+          const writtenFiles2 = yield* Project.writtenFiles(project.run);
+          expect(writtenFiles2).toEqual([]);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -3477,11 +3494,10 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
           );
           const error = yield* Effect.flip(project.run);
           assert(error._tag === "InvalidManifestSectionError");
-          expect(
-            yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
-              error.reason,
-            ),
-          ).toEqual({
+          const decoded = yield* Schema.decodeEffect(
+            Schema.fromJsonString(Schema.Unknown),
+          )(error.reason);
+          expect(decoded).toEqual({
             modules: [["door.ts", false]],
             mounts: [
               { name: "first", definition: "../../components/counter/convex" },
@@ -3500,7 +3516,8 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
           const project = yield* verifyProject(
             "({ modules }) => [`door read ${modules[0].exports.door.rendered}`]",
           );
-          expect(yield* Effect.flip(project.run)).toMatchObject({
+          const error = yield* Effect.flip(project.run);
+          expect(error).toMatchObject({
             _tag: "InvalidManifestSectionError",
             sectionKey: "doors",
             reason: "door read rendered",
@@ -3518,7 +3535,8 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
           for (const file of ["notes.spec.ts", "notes.impl.ts"])
             yield* fs.remove(`${project.root}/confect/${file}`);
           yield* project.door(true);
-          expect(yield* Effect.flip(project.run)).toMatchObject({
+          const error = yield* Effect.flip(project.run);
+          expect(error).toMatchObject({
             _tag: "InvalidManifestSectionError",
             sectionKey: "doors",
             reason: "first refusal",
@@ -3533,18 +3551,18 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
         Effect.gen(function* () {
           const project = yield* verifyProject(refusing);
           yield* project.run;
+          const sections = yield* project.read("confect/sections.ts");
           yield* project.write(
             "confect/sections.ts",
-            pipe(
-              yield* project.read("confect/sections.ts"),
-              String.replace(/, verify: .*$/m, " } } }];"),
-            ),
+            pipe(sections, String.replace(/, verify: .*$/m, " } } }];")),
           );
           yield* project.run;
-          expect(
-            yield* project.exists("confect/_generated/verifyInputs.json"),
-          ).toBe(false);
-          expect(yield* Project.writtenFiles(project.run)).toEqual([]);
+          const found = yield* project.exists(
+            "confect/_generated/verifyInputs.json",
+          );
+          expect(found).toBe(false);
+          const writtenFiles2 = yield* Project.writtenFiles(project.run);
+          expect(writtenFiles2).toEqual([]);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -3558,7 +3576,8 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
           yield* project.write("confect/billing/log.ts", "export {};\n");
           yield* project.run;
           yield* project.write("confect/fees/log.ts", "export {};\n");
-          expect(yield* Project.writtenFiles(project.run)).toEqual([]);
+          const writtenFiles2 = yield* Project.writtenFiles(project.run);
+          expect(writtenFiles2).toEqual([]);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -3630,13 +3649,14 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
         Effect.gen(function* () {
           const project = yield* initProject;
           yield* project.run;
-          expect(yield* project.read("convex/confectDeploy.ts")).toBe(
-            expectedDeploy(false),
-          );
-          expect(yield* Project.writtenFiles(project.run)).toEqual([]);
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(expectedDeploy(false));
+          const writtenFiles2 = yield* Project.writtenFiles(project.run);
+          expect(writtenFiles2).toEqual([]);
           yield* project.write("confect/app.ts", project.original);
           yield* project.run;
-          expect(yield* project.exists("convex/confectDeploy.ts")).toBe(false);
+          const found = yield* project.exists("convex/confectDeploy.ts");
+          expect(found).toBe(false);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -3651,9 +3671,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             expectedDeploy(false),
           );
           yield* project.run;
-          expect(yield* project.read("convex/confectDeploy.ts")).toBe(
-            expectedDeploy(true),
-          );
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(expectedDeploy(true));
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -3678,10 +3697,11 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
               String.replace("export const Notice =", "export default"),
             ),
           );
+          const app = yield* project.read("confect/app.ts");
           yield* project.write(
             "confect/app.ts",
             pipe(
-              yield* project.read("confect/app.ts"),
+              app,
               String.replace(
                 'import { BulkEmail } from "./bulkEmail";',
                 Array.join(
@@ -3700,7 +3720,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             ),
           );
           yield* project.run;
-          expect(yield* project.read("convex/confectDeploy.ts")).toBe(
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(
             `// Generated by \`confect codegen\` from confect/app.ts. Do not edit.
 import { MountInit } from "@confect/server";
 import { MountInit as mount0 } from "../confect/bulkEmail.js";
@@ -3731,9 +3752,10 @@ export const steps = MountInit.mutation([
               String.replace("./notes.spec", "./confectDeploy.spec"),
             ),
           );
-          expect(
-            yield* Project.writtenFiles(project.run.pipe(Effect.ignore)),
-          ).toEqual([]);
+          const writtenFiles2 = yield* Project.writtenFiles(
+            project.run.pipe(Effect.ignore),
+          );
+          expect(writtenFiles2).toEqual([]);
           const error = yield* Effect.flip(project.run);
           expect(error).toMatchObject({
             _tag: "InvalidDeclarationError",
@@ -3767,9 +3789,8 @@ export const steps = MountInit.mutation([
             ),
           );
           yield* project.run;
-          expect(yield* project.exists("convex/jobs/confectDeploy.ts")).toBe(
-            true,
-          );
+          const found = yield* project.exists("convex/jobs/confectDeploy.ts");
+          expect(found).toBe(true);
           yield* fs.remove(
             path.join(project.root, "confect/jobs/confectDeploy.spec.ts"),
           );
@@ -3777,12 +3798,10 @@ export const steps = MountInit.mutation([
             path.join(project.root, "confect/jobs/confectDeploy.impl.ts"),
           );
           yield* project.run;
-          expect(yield* project.exists("convex/jobs/confectDeploy.ts")).toBe(
-            false,
-          );
-          expect(yield* project.read("convex/confectDeploy.ts")).toBe(
-            expectedDeploy(false),
-          );
+          const found2 = yield* project.exists("convex/jobs/confectDeploy.ts");
+          expect(found2).toBe(false);
+          const confectDeploy = yield* project.read("convex/confectDeploy.ts");
+          expect(confectDeploy).toBe(expectedDeploy(false));
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

@@ -157,7 +157,8 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             bulkEmail: settings("bulkEmail"),
             transactionalEmail: settings("transactionalEmail"),
           });
-          expect(yield* node(appA, tsc, "-p", ".")).toBe("");
+          const nodeResult = yield* node(appA, tsc, "-p", ".");
+          expect(nodeResult).toBe("");
           const first = yield* both;
           expect(first.bulkEmail).toMatchObject(initial.bulkEmail);
           expect(first.bulkEmail.onEvent).toEqual(expect.any(String));
@@ -165,14 +166,17 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             initial.transactionalEmail,
           );
 
-          expect(Result.isSuccess(yield* push(appA, initial))).toBe(true);
-          expect(yield* both).toEqual(first);
+          const pushResult = yield* push(appA, initial);
+          expect(Result.isSuccess(pushResult)).toBe(true);
+          const bothValue = yield* both;
+          expect(bothValue).toEqual(first);
 
           const trimmed = {
             ...initial,
             bulkEmail: { fromName: "School office" },
           };
-          expect(Result.isSuccess(yield* push(appA, trimmed))).toBe(true);
+          const pushResult2 = yield* push(appA, trimmed);
+          expect(Result.isSuccess(pushResult2)).toBe(true);
           const removed = yield* settings("bulkEmail");
           expect(removed._id).toBe(first.bulkEmail._id);
           expect(Rec.has(removed, "maxAttempts")).toBe(false);
@@ -190,7 +194,8 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             mount: "bulkEmail",
             detail: expect.stringContaining("SyntheticInitAfterWrite"),
           });
-          expect(yield* settings("bulkEmail")).toEqual(removed);
+          const settingsResult = yield* settings("bulkEmail");
+          expect(settingsResult).toEqual(removed);
         }),
       ),
     600_000,
@@ -217,11 +222,11 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
           expect(first.relay).toMatchObject({ label: "Relay" });
           expect(first.inbox).toMatchObject({ fromName: "Relay inbox" });
           const events: Array<string> = [];
-          expect(
-            Result.isSuccess(yield* push(appA, initial, "A", events)),
-          ).toBe(true);
+          const pushResult = yield* push(appA, initial, "A", events);
+          expect(Result.isSuccess(pushResult)).toBe(true);
           expect(events).toEqual(steps("A"));
-          expect(yield* all).toEqual(first);
+          const allValue = yield* all;
+          expect(allValue).toEqual(first);
 
           const second = {
             ...initial,
@@ -245,7 +250,8 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             ...second,
             transactionalEmail: { fromName: "Receipts v2" },
           };
-          expect(Result.isSuccess(yield* push(appA, clean))).toBe(true);
+          const pushResult2 = yield* push(appA, clean);
+          expect(Result.isSuccess(pushResult2)).toBe(true);
           const converged = yield* all;
           expect(converged.bulkEmail).toMatchObject(clean.bulkEmail);
           expect(converged.transactionalEmail).toMatchObject(
@@ -255,7 +261,8 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
           expect(converged.inbox).toEqual(first.inbox);
 
           const gone = { ...clean, bulkTarget: "gone" as const };
-          expect(Result.isSuccess(yield* push(appA, gone))).toBe(true);
+          const pushResult3 = yield* push(appA, gone);
+          expect(Result.isSuccess(pushResult3)).toBe(true);
           const target = yield* settings("bulkEmail");
           expect(target.onEvent).not.toBe(converged.bulkEmail.onEvent);
           const deleted: Array<string> = [];
@@ -277,7 +284,8 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             "D code",
             "D release",
           ]);
-          expect(yield* settings("bulkEmail")).toEqual(target);
+          const settingsResult = yield* settings("bulkEmail");
+          expect(settingsResult).toEqual(target);
         }),
       ),
     600_000,

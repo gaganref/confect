@@ -184,7 +184,8 @@ it.layer(TestConfect.layer, { buildPerTest: true })("HttpRouter", (test) => {
             label,
           ]);
           expect(response.status).toBe(200);
-          expect(yield* Effect.promise(() => response.json())).toBe(body);
+          const resolved = yield* Effect.promise(() => response.json());
+          expect(resolved).toBe(body);
         }
         const missing = yield* c.fetch("/literal/ready", { method: "POST" });
         expect(fixtureHttp.lookup("/literal/ready", "POST")?.slice(1)).toEqual([
@@ -192,7 +193,8 @@ it.layer(TestConfect.layer, { buildPerTest: true })("HttpRouter", (test) => {
           "/*",
         ]);
         expect(missing.status).toBe(404);
-        expect(yield* Effect.promise(() => missing.text())).toBe("");
+        const resolved2 = yield* Effect.promise(() => missing.text());
+        expect(resolved2).toBe("");
       }),
   );
 
@@ -202,7 +204,8 @@ it.layer(TestConfect.layer, { buildPerTest: true })("HttpRouter", (test) => {
 
       const response = yield* c.fetch("/no-such-route");
       assertEquals(response.status, 404);
-      assertEquals(yield* Effect.promise(() => response.text()), "");
+      const resolved = yield* Effect.promise(() => response.text());
+      assertEquals(resolved, "");
     }),
   );
 });

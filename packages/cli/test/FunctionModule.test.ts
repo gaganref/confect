@@ -333,9 +333,10 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
           pipe(source, Str.replaceAll('"', "'"), Str.replaceAll(";", ""));
       yield* fs.makeDirectory(path.join(project.root, "convex/system"));
       yield* project.write("convex/system/status.ts", source);
-      expect(
-        yield* project.provide(assertOwnedEntrypoints).pipe(Effect.as("owned")),
-      ).toBe("owned");
+      const provide2 = yield* project
+        .provide(assertOwnedEntrypoints)
+        .pipe(Effect.as("owned"));
+      expect(provide2).toBe("owned");
     }).pipe(Effect.scoped),
   );
 
@@ -360,9 +361,10 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
     Effect.gen(function* () {
       const project = yield* Project.make;
       yield* project.write(`convex/${file}`, source);
-      expect(
-        yield* project.provide(assertOwnedEntrypoints).pipe(Effect.as("owned")),
-      ).toBe("owned");
+      const provide2 = yield* project
+        .provide(assertOwnedEntrypoints)
+        .pipe(Effect.as("owned"));
+      expect(provide2).toBe("owned");
     }).pipe(Effect.scoped),
   );
 
@@ -473,10 +475,12 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
         yield* project.provide(assertOwnedEntrypoints);
         const snapshot = yield* Effect.fromResult(GenerationSnapshot.parse([]));
         yield* project.provide(generateFunctions(snapshot));
-        for (const file of files)
-          expect(
-            yield* fs.readFileString(path.join(project.root, "convex", file)),
-          ).toBe("export const authored = 1;\n");
+        for (const file of files) {
+          const contents = yield* fs.readFileString(
+            path.join(project.root, "convex", file),
+          );
+          expect(contents).toBe("export const authored = 1;\n");
+        }
       }).pipe(Effect.scoped),
   );
 });

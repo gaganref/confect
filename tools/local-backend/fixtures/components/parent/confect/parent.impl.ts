@@ -30,10 +30,8 @@ const deepCreate = FunctionImpl.make(schema, parent, "deepCreate", (args) =>
 const deepList = FunctionImpl.make(schema, parent, "deepList", (args) =>
   Effect.gen(function* () {
     const runner = yield* QueryRunner;
-    return Array.map(
-      yield* runner.runQuery(deep.parent.list, args),
-      (doc) => doc.count,
-    );
+    const query = yield* runner.runQuery(deep.parent.list, args);
+    return Array.map(query, (doc) => doc.count);
   }).pipe(Effect.orDie),
 );
 const deepLocation = FunctionImpl.make(schema, parent, "deepLocation", () =>

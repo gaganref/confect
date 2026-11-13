@@ -46,16 +46,15 @@ it.effect(
         output: first,
       });
       expect(observed?.reference).toBe("drift");
-      expect(
-        yield* provider.diff({
-          ...lifecycle,
-          olds: props,
-          news: props,
-          output: first,
-          oldBindings: [],
-          newBindings: [],
-        }),
-      ).toEqual({ action: "update" });
+      const diff2 = yield* provider.diff({
+        ...lifecycle,
+        olds: props,
+        news: props,
+        output: first,
+        oldBindings: [],
+        newBindings: [],
+      });
+      expect(diff2).toEqual({ action: "update" });
       const updated = yield* provider.reconcile({
         ...lifecycle,
         news: props,
@@ -132,9 +131,12 @@ it.effect("never replaces data when project, type, or region changes", () => {
     expect(mock.client.updateDeployment).not.toHaveBeenCalled();
     yield* provider.delete({ ...lifecycle, olds: props, output: attrs });
     yield* provider.delete({ ...lifecycle, olds: props, output: attrs });
-    expect(
-      yield* provider.read({ ...lifecycle, olds: props, output: attrs }),
-    ).toBeUndefined();
+    const read2 = yield* provider.read({
+      ...lifecycle,
+      olds: props,
+      output: attrs,
+    });
+    expect(read2).toBeUndefined();
   }).pipe(Effect.provide(mock.layer));
 });
 
@@ -153,9 +155,11 @@ it.effect(
         oldBindings: [],
         newBindings: [],
       };
-      expect(yield* provider.diff(input)).toBeUndefined();
+      const diff2 = yield* provider.diff(input);
+      expect(diff2).toBeUndefined();
       mock.state.deployments = [];
-      expect(yield* provider.diff(input)).toEqual({ action: "update" });
+      const diff3 = yield* provider.diff(input);
+      expect(diff3).toEqual({ action: "update" });
       mock.state.deployments = [deployment({ projectId: 2 })];
       expect((yield* Effect.flip(provider.diff(input)))._tag).toBe(
         "DeploymentIdentityChange",

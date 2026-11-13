@@ -96,7 +96,8 @@ describe("Code", () => {
             .pipe(Effect.orDie);
           expect(output).toEqual(props.deployment);
           for (let run = 0; run < 2; run++) {
-            expect(yield* provider.diff()).toEqual({ action: "update" });
+            const diff2 = yield* provider.diff();
+            expect(diff2).toEqual({ action: "update" });
             yield* provider
               .reconcile({
                 ...lifecycle,
@@ -192,13 +193,12 @@ describe("Code", () => {
           name: props.deployment.name,
           url: "https://happy-otter-123.eu-west-1.convex.cloud",
         };
-        expect(
-          yield* deploy({
-            ...props,
-            deployment: regional,
-            deployKey: Redacted.make("custom:happy-otter-123|secret"),
-          }).pipe(Effect.provide(recorder(calls))),
-        ).toEqual(regional);
+        const deployResult = yield* deploy({
+          ...props,
+          deployment: regional,
+          deployKey: Redacted.make("custom:happy-otter-123|secret"),
+        }).pipe(Effect.provide(recorder(calls)));
+        expect(deployResult).toEqual(regional);
       }),
   );
 
@@ -354,7 +354,8 @@ describe("Code command boundary", () => {
                 expect(command.options.env?.USERPROFILE).toBe(
                   command.options.env?.HOME,
                 );
-                expect(yield* fs.readFileString(envFile)).toBe(
+                const envFileContents = yield* fs.readFileString(envFile);
+                expect(envFileContents).toBe(
                   "CONVEX_DEPLOY_KEY=prod:happy-otter-123|test-secret\n",
                 );
                 if (process.platform !== "win32") {
@@ -383,7 +384,8 @@ describe("Code command boundary", () => {
           ]),
         );
         expect(calls).toEqual(["codegen", "deploy"]);
-        expect(yield* fs.exists(envFile)).toBe(false);
+        const envFileExists = yield* fs.exists(envFile);
+        expect(envFileExists).toBe(false);
       }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -421,7 +423,8 @@ describe("Code command boundary", () => {
               exitCode: 7,
             }),
           );
-        expect(yield* fs.exists(envFile)).toBe(false);
+        const envFileExists = yield* fs.exists(envFile);
+        expect(envFileExists).toBe(false);
         expect(serialize(result)).not.toContain("test-secret");
       }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -453,9 +456,11 @@ describe("Code command boundary", () => {
         Effect.forkScoped,
       );
       const envFile = yield* Deferred.await(started);
-      expect(yield* fs.exists(envFile)).toBe(true);
+      const envFileExists = yield* fs.exists(envFile);
+      expect(envFileExists).toBe(true);
       yield* Fiber.interrupt(fiber);
-      expect(yield* fs.exists(envFile)).toBe(false);
+      const envFileExists2 = yield* fs.exists(envFile);
+      expect(envFileExists2).toBe(false);
     }).pipe(Effect.provide(NodeServices.layer)),
   );
 
@@ -586,14 +591,13 @@ describe("Code local target", () => {
               return ChildProcessSpawner.ExitCode(0);
             }),
         });
-        expect(
-          yield* deploy({ ...localProps, cwd }, "local").pipe(
-            Effect.provide([
-              runnerLayer.pipe(Layer.provide(spawner)),
-              unlocked,
-            ]),
-          ),
-        ).toEqual(localProps.deployment);
+        const deployResult = yield* deploy(
+          { ...localProps, cwd },
+          "local",
+        ).pipe(
+          Effect.provide([runnerLayer.pipe(Layer.provide(spawner)), unlocked]),
+        );
+        expect(deployResult).toEqual(localProps.deployment);
         expect(selection).toBe(
           "CONVEX_SELF_HOSTED_URL=http://127.0.0.1:3300\nCONVEX_SELF_HOSTED_ADMIN_KEY=confect-deployment-abc|0123456789abcdef\n",
         );

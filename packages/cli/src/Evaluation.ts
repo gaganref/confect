@@ -145,11 +145,15 @@ const withWorker = Effect.fn("Evaluation.withWorker")(function* <A>(
     EvaluationError | ComponentNodeGroupError | RpcClientError
   >,
 ) {
+  const projectRoot = yield* ProjectRoot.get;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const convexDirectory = yield* ConvexDirectory.get;
+  const target = yield* ConvexDirectory.target;
   const requestContext = {
-    projectRoot: yield* ProjectRoot.get,
-    confectDirectory: yield* ConfectDirectory.get,
-    convexDirectory: yield* ConvexDirectory.get,
-    target: Match.value(yield* ConvexDirectory.target).pipe(
+    projectRoot,
+    confectDirectory,
+    convexDirectory,
+    target: Match.value(target).pipe(
       Match.when({ kind: "app" }, () => ({ kind: "app" as const })),
       Match.when({ kind: "component" }, ({ scope }) => ({
         kind: "component" as const,

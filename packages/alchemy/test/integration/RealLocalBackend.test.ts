@@ -61,9 +61,8 @@ describe.skipIf(process.platform === "win32")("real local backend", () => {
             yield* Effect.log(
               `backend ${outputs.name} ready at ${outputs.url}`,
             );
-            expect(yield* RealBackend.call(outputs, "greeting:get")).toBe(
-              "set before the first push",
-            );
+            const call2 = yield* RealBackend.call(outputs, "greeting:get");
+            expect(call2).toBe("set before the first push");
             yield* RealBackend.call(outputs, "notes:add", undefined, {
               text: "kept across restarts",
             });
@@ -94,22 +93,21 @@ describe.skipIf(process.platform === "win32")("real local backend", () => {
             `${tag} release`,
           ]),
         );
-        expect(
-          yield* HttpClient.get(`${first.url}/instance_name`).pipe(
-            Effect.as("answered"),
-            Effect.orElseSucceed(() => "stopped"),
-            Effect.provide(FetchHttpClient.layer),
-          ),
-        ).toBe("stopped");
+        const response = yield* HttpClient.get(
+          `${first.url}/instance_name`,
+        ).pipe(
+          Effect.as("answered"),
+          Effect.orElseSucceed(() => "stopped"),
+          Effect.provide(FetchHttpClient.layer),
+        );
+        expect(response).toBe("stopped");
 
         const restarted = yield* backend.session(code(appA), (outputs) =>
           Effect.gen(function* () {
-            expect(yield* RealBackend.call(outputs, "notes:list")).toEqual([
-              "kept across restarts",
-            ]);
-            expect(yield* RealBackend.call(outputs, "greeting:get")).toBe(
-              "set before the first push",
-            );
+            const call2 = yield* RealBackend.call(outputs, "notes:list");
+            expect(call2).toEqual(["kept across restarts"]);
+            const call3 = yield* RealBackend.call(outputs, "greeting:get");
+            expect(call3).toBe("set before the first push");
             return outputs;
           }),
         );

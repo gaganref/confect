@@ -63,7 +63,8 @@ layer(
             `http://127.0.0.1:3211${requestPath}`,
           );
           expect(response.status).toBe(200);
-          expect(yield* response.json).toBe("42");
+          const json2 = yield* response.json;
+          expect(json2).toBe("42");
         }
         const path = yield* Path.Path;
         const spawner = yield* ChildProcessSpawner;
@@ -112,7 +113,8 @@ layer(
           `http://127.0.0.1:3211${requestPath}`,
         );
         expect(response.status).toBe(404);
-        expect(yield* response.text).toBe("");
+        const text2 = yield* response.text;
+        expect(text2).toBe("");
       }
     }),
   );
@@ -228,7 +230,8 @@ layer(
             : { headers: { authorization: `Bearer ${token}` } },
         );
         expect(response.status, label).toBe(200);
-        expect(yield* response.json, label).toEqual(expected);
+        const json2 = yield* response.json;
+        expect(json2, label).toEqual(expected);
       }
     }),
   );

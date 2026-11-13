@@ -34,16 +34,15 @@ it.effect(
         output: first,
       });
       expect(observed?.name).toBe("drift");
-      expect(
-        yield* provider.diff({
-          ...lifecycle,
-          olds: news,
-          news,
-          output: first,
-          oldBindings: [],
-          newBindings: [],
-        }),
-      ).toEqual({ action: "update" });
+      const diff2 = yield* provider.diff({
+        ...lifecycle,
+        olds: news,
+        news,
+        output: first,
+        oldBindings: [],
+        newBindings: [],
+      });
+      expect(diff2).toEqual({ action: "update" });
       const restored = yield* provider.reconcile({
         ...lifecycle,
         news,
@@ -160,9 +159,8 @@ it.effect(
       yield* provider.delete({ ...lifecycle, olds, output });
       yield* provider.delete({ ...lifecycle, olds, output });
       expect(mock.state.projects).toEqual([]);
-      expect(
-        yield* provider.read({ ...lifecycle, olds, output }),
-      ).toBeUndefined();
+      const read2 = yield* provider.read({ ...lifecycle, olds, output });
+      expect(read2).toBeUndefined();
     }).pipe(Effect.provide(mock.layer));
   },
 );
@@ -189,9 +187,11 @@ it.effect(
         oldBindings: [],
         newBindings: [],
       };
-      expect(yield* provider.diff(input)).toBeUndefined();
+      const diff2 = yield* provider.diff(input);
+      expect(diff2).toBeUndefined();
       mock.state.projects = [];
-      expect(yield* provider.diff(input)).toEqual({ action: "update" });
+      const diff3 = yield* provider.diff(input);
+      expect(diff3).toEqual({ action: "update" });
       mock.state.projects = [project({ teamId: 20 })];
       expect((yield* Effect.flip(provider.diff(input)))._tag).toBe(
         "ProjectTeamChange",

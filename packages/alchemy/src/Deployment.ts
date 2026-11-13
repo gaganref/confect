@@ -92,8 +92,9 @@ export const provider = Effect.gen(function* () {
     projectId: number,
     reference: string,
   ) {
+    const deployments = yield* client.listDeployments(projectId);
     const matches = Array.filter(
-      yield* client.listDeployments(projectId),
+      deployments,
       (deployment) =>
         deployment.kind === "cloud" && deployment.reference === reference,
     );
@@ -145,7 +146,9 @@ export const provider = Effect.gen(function* () {
         olds.projectId,
         olds.reference ?? (yield* resourceName("deployment", fqn, instanceId)),
       );
-      return deployment ? Unowned(yield* attributes(deployment)) : undefined;
+      return deployment
+        ? yield* Effect.map(attributes(deployment), Unowned)
+        : undefined;
     }),
     reconcile: Effect.fn("Deployment.reconcile")(function* ({
       fqn,

@@ -159,11 +159,12 @@ describe("LocalBackend", () => {
         }),
       );
       const backend = yield* run(boot(name, directory));
+      const identityContents = yield* fs.readFileString(identity);
       const saved = yield* Schema.decodeEffect(
         Schema.fromJsonString(
           Schema.Struct({ ports: Schema.optionalKey(Schema.Unknown) }),
         ),
-      )(yield* fs.readFileString(identity));
+      )(identityContents);
       expect(saved.ports).toEqual({
         port: port(backend.url),
         sitePort: port(backend.siteUrl),
@@ -179,10 +180,11 @@ describe("LocalBackend", () => {
       const { directory, run } = yield* harness(fake);
       const first = yield* run(boot(name, directory)).pipe(Effect.scoped);
       const identity = path.join(directory, "identity.json");
+      const identityContents = yield* fs.readFileString(identity);
       yield* fs.writeFileString(
         identity,
         pipe(
-          yield* fs.readFileString(identity),
+          identityContents,
           Str.replace(backendVersion, "precompiled-2020-01-01-0000000"),
         ),
       );
@@ -197,9 +199,11 @@ describe("LocalBackend", () => {
   it.live("fails typed when the backend exits before it answers", () =>
     Effect.gen(function* () {
       const { directory, run } = yield* harness(fakeBackend({ exitCode: 3 }));
-      expect(
-        yield* run(boot(name, directory)).pipe(Effect.scoped, Effect.result),
-      ).toEqual(
+      const runResult = yield* run(boot(name, directory)).pipe(
+        Effect.scoped,
+        Effect.result,
+      );
+      expect(runResult).toEqual(
         Result.fail(
           LocalBackendError.make({
             deploymentName: name,
@@ -221,17 +225,21 @@ describe("LocalBackend", () => {
         const scope = yield* Scope.make();
         yield* occupy(port(first.url)).pipe(Scope.provide(scope));
         fake.answers.set(first.url, "someone-else");
-        expect(
-          yield* run(boot(name, directory)).pipe(Effect.scoped, Effect.result),
-        ).toEqual(
+        const runResult = yield* run(boot(name, directory)).pipe(
+          Effect.scoped,
+          Effect.result,
+        );
+        expect(runResult).toEqual(
           Result.fail(
             LocalBackendError.make({ deploymentName: name, reason: "ports" }),
           ),
         );
         fake.answers.set(first.url, name);
-        expect(
-          yield* run(boot(name, directory)).pipe(Effect.scoped, Effect.result),
-        ).toEqual(
+        const runResult2 = yield* run(boot(name, directory)).pipe(
+          Effect.scoped,
+          Effect.result,
+        );
+        expect(runResult2).toEqual(
           Result.fail(
             LocalBackendError.make({ deploymentName: name, reason: "running" }),
           ),
@@ -248,9 +256,11 @@ describe("LocalBackend", () => {
       const fake = fakeBackend();
       const { directory, run } = yield* harness(fake);
       yield* run(boot(name, directory));
-      expect(
-        yield* run(boot(name, directory)).pipe(Effect.scoped, Effect.result),
-      ).toEqual(
+      const runResult = yield* run(boot(name, directory)).pipe(
+        Effect.scoped,
+        Effect.result,
+      );
+      expect(runResult).toEqual(
         Result.fail(
           LocalBackendError.make({ deploymentName: name, reason: "running" }),
         ),
@@ -278,12 +288,11 @@ describe("LocalBackend", () => {
         const { directory, run } = yield* harness(fake);
         // Alchemy keeps the instance scope of a failed start open.
         const session = yield* Scope.make();
-        expect(
-          yield* run(boot(name, directory)).pipe(
-            Scope.provide(session),
-            Effect.result,
-          ),
-        ).toEqual(
+        const runResult = yield* run(boot(name, directory)).pipe(
+          Scope.provide(session),
+          Effect.result,
+        );
+        expect(runResult).toEqual(
           Result.fail(
             LocalBackendError.make({
               deploymentName: name,
@@ -336,7 +345,8 @@ describe("LocalBackend", () => {
       yield* Scope.close(session, Exit.void);
       yield* backend.exited.pipe(Effect.timeout("1 second"));
       expect(fake.served[0].running()).toBe(false);
-      expect(yield* fs.exists(path.join(directory, "owner.lock"))).toBe(false);
+      const found = yield* fs.exists(path.join(directory, "owner.lock"));
+      expect(found).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
 
@@ -372,9 +382,8 @@ describe("LocalBackend", () => {
         const identity = path.join(directory, "identity.json");
         const entered = yield* Deferred.make<void>();
         const gate = Promise.withResolvers<void>();
-        const runDetached = Effect.runPromiseWith(
-          yield* Effect.context<never>(),
-        );
+        const context2 = yield* Effect.context<never>();
+        const runDetached = Effect.runPromiseWith(context2);
         // Node cannot cancel a rename it has started: interrupting the effect
         // abandons the callback while the rename still happens.
         const slowRename = Layer.effect(
@@ -406,13 +415,14 @@ describe("LocalBackend", () => {
           Effect.forkChild,
         );
         yield* Effect.sleep("50 millis");
-        expect(yield* fs.exists(path.join(directory, "owner.lock"))).toBe(true);
+        const found = yield* fs.exists(path.join(directory, "owner.lock"));
+        expect(found).toBe(true);
         gate.resolve();
         yield* Fiber.join(interrupting);
-        expect(yield* fs.exists(path.join(directory, "owner.lock"))).toBe(
-          false,
-        );
-        expect(yield* fs.exists(identity)).toBe(true);
+        const found2 = yield* fs.exists(path.join(directory, "owner.lock"));
+        expect(found2).toBe(false);
+        const identityExists = yield* fs.exists(identity);
+        expect(identityExists).toBe(true);
         yield* Scope.close(session, Exit.void);
       }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
   );
@@ -437,7 +447,8 @@ describe("LocalBackend", () => {
     Effect.gen(function* () {
       const fake = fakeBackend({ answerAs: "someone-else" });
       const { directory, run } = yield* harness(fake);
-      expect(yield* run(boot(name, directory)).pipe(Effect.result)).toEqual(
+      const runResult = yield* run(boot(name, directory)).pipe(Effect.result);
+      expect(runResult).toEqual(
         Result.fail(
           LocalBackendError.make({ deploymentName: name, reason: "ports" }),
         ),
@@ -455,24 +466,23 @@ describe("LocalBackend", () => {
         const home = yield* fs.makeTempDirectoryScoped({
           prefix: "confect-local-backend-",
         });
-        expect(
-          yield* boot(name, path.join(home, name)).pipe(
-            Effect.provide(
-              Layer.mergeAll(
-                fakeBackend().layer,
-                ConfigProvider.layer(
-                  ConfigProvider.fromUnknown({
-                    HOME: home,
-                    LOCALAPPDATA: home,
-                    CONFECT_LOCAL_BACKEND_PORTS: range,
-                  }),
-                ),
+        const bootResult = yield* boot(name, path.join(home, name)).pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              fakeBackend().layer,
+              ConfigProvider.layer(
+                ConfigProvider.fromUnknown({
+                  HOME: home,
+                  LOCALAPPDATA: home,
+                  CONFECT_LOCAL_BACKEND_PORTS: range,
+                }),
               ),
             ),
-            Effect.scoped,
-            Effect.result,
           ),
-        ).toEqual(
+          Effect.scoped,
+          Effect.result,
+        );
+        expect(bootResult).toEqual(
           Result.fail(
             LocalBackendError.make({
               deploymentName: name,
@@ -490,18 +500,17 @@ describe("LocalBackend", () => {
       const root = yield* fs.makeTempDirectoryScoped({
         prefix: "confect-local-backend-",
       });
-      expect(
-        yield* boot(name, path.join(root, name)).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              fakeBackend().layer,
-              ConfigProvider.layer(ConfigProvider.fromUnknown({})),
-            ),
+      const bootResult = yield* boot(name, path.join(root, name)).pipe(
+        Effect.provide(
+          Layer.mergeAll(
+            fakeBackend().layer,
+            ConfigProvider.layer(ConfigProvider.fromUnknown({})),
           ),
-          Effect.scoped,
-          Effect.result,
         ),
-      ).toEqual(
+        Effect.scoped,
+        Effect.result,
+      );
+      expect(bootResult).toEqual(
         Result.fail(
           LocalBackendError.make({
             deploymentName: name,

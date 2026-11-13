@@ -464,7 +464,8 @@ const nameUnwrittenSectionFiles = Effect.fnUntraced(function* (
   bundleDirectory: string,
 ) {
   const path = yield* Path.Path;
-  const generated = path.join(yield* ConfectDirectory.get, "_generated");
+  const confectDirectory = yield* ConfectDirectory.get;
+  const generated = path.join(confectDirectory, "_generated");
   const errors = Array.map(
     error.errors as ReadonlyArray<esbuild.Message>,
     (message) => {

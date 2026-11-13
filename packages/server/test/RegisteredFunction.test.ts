@@ -441,7 +441,8 @@ describe("runHandlerPromise", () => {
               yield* Effect.logTrace("hidden trace");
               yield* Effect.logDebug("hidden debug");
               yield* Effect.logInfo("visible");
-              expect(yield* References.MinimumLogLevel).toBe("Info");
+              const minimumLogLevel = yield* References.MinimumLogLevel;
+              expect(minimumLogLevel).toBe("Info");
               expect(
                 (yield* Effect.context<never>()).mapUnsafe.has(Clock.Clock.key),
               ).toBe(false);

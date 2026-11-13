@@ -42,8 +42,9 @@ export const readDirectorySorted = Effect.fnUntraced(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const directory2 = yield* fs.readDirectory(directory, { recursive: true });
   return Array.sort(
-    yield* fs.readDirectory(directory, { recursive: true }),
+    directory2,
     Order.mapInput(Order.String, (relativePath: string) =>
       toPosixPath(path, relativePath),
     ),

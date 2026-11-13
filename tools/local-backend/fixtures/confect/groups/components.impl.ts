@@ -25,23 +25,15 @@ const exercise = FunctionImpl.make(schema, spec, "exercise", ({ run }) =>
         ),
         Effect.catchTag("Rejected", (error) => Effect.succeed(error.id)),
       );
+    const query = yield* runQuery.runQuery(first.counter.list, { run });
+    const secondQuery = yield* runQuery.runQuery(second.counter.list, { run });
+    const leftQuery = yield* runQuery.runQuery(left.parent.list, { run });
+    const rightQuery = yield* runQuery.runQuery(right.parent.list, { run });
     return {
-      first: Array.map(
-        yield* runQuery.runQuery(first.counter.list, { run }),
-        (doc) => doc.count,
-      ),
-      second: Array.map(
-        yield* runQuery.runQuery(second.counter.list, { run }),
-        (doc) => doc.count,
-      ),
-      left: Array.map(
-        yield* runQuery.runQuery(left.parent.list, { run }),
-        (doc) => doc.count,
-      ),
-      right: Array.map(
-        yield* runQuery.runQuery(right.parent.list, { run }),
-        (doc) => doc.count,
-      ),
+      first: Array.map(query, (doc) => doc.count),
+      second: Array.map(secondQuery, (doc) => doc.count),
+      left: Array.map(leftQuery, (doc) => doc.count),
+      right: Array.map(rightQuery, (doc) => doc.count),
       rejectedId,
     };
   }).pipe(Effect.orDie),
@@ -74,15 +66,11 @@ const cancel = FunctionImpl.make(schema, spec, "cancel", (args) =>
 const list = FunctionImpl.make(schema, spec, "list", (args) =>
   Effect.gen(function* () {
     const runQuery = yield* QueryRunner;
+    const query = yield* runQuery.runQuery(first.counter.list, args);
+    const secondQuery = yield* runQuery.runQuery(second.counter.list, args);
     return {
-      first: Array.map(
-        yield* runQuery.runQuery(first.counter.list, args),
-        (doc) => doc.count,
-      ),
-      second: Array.map(
-        yield* runQuery.runQuery(second.counter.list, args),
-        (doc) => doc.count,
-      ),
+      first: Array.map(query, (doc) => doc.count),
+      second: Array.map(secondQuery, (doc) => doc.count),
     };
   }).pipe(Effect.orDie),
 );
@@ -149,15 +137,13 @@ const declaredError = FunctionImpl.make(
           ),
           Effect.catchTag("Rejected", Effect.succeed),
         );
+      const query2 = yield* query.runQuery(first.counter.list, { run });
       return {
         tag: error._tag,
         run: error.run,
         // oxlint-disable-next-line effecttsgo/instance-of-schema -- Class identity is the behavior under test.
         instance: error instanceof Rejected,
-        remaining: Array.map(
-          yield* query.runQuery(first.counter.list, { run }),
-          (doc) => doc.count,
-        ),
+        remaining: Array.map(query2, (doc) => doc.count),
       };
     }).pipe(Effect.orDie),
 );
@@ -180,15 +166,22 @@ const page = FunctionImpl.make(schema, spec, "page", (args) =>
 const environment = FunctionImpl.make(schema, spec, "environment", () =>
   Effect.gen(function* () {
     const query = yield* QueryRunner;
+    const firstEnvironment = yield* query.runQuery(
+      first.counter.environment,
+      {},
+    );
+    const secondEnvironment = yield* query.runQuery(
+      second.counter.environment,
+      {},
+    );
+    const marker = yield* env.COMPONENT_MARKER;
+    const hostOnly = yield* env.COMPONENT_HOST_ONLY;
     return {
-      first: yield* query.runQuery(first.counter.environment, {}),
-      second: yield* query.runQuery(second.counter.environment, {}),
+      first: firstEnvironment,
+      second: secondEnvironment,
       host: {
-        marker: Option.getOrElse(yield* env.COMPONENT_MARKER, () => "unset"),
-        hostOnly: Option.getOrElse(
-          yield* env.COMPONENT_HOST_ONLY,
-          () => "unset",
-        ),
+        marker: Option.getOrElse(marker, () => "unset"),
+        hostOnly: Option.getOrElse(hostOnly, () => "unset"),
       },
     };
   }).pipe(Effect.orDie),

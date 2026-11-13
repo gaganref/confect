@@ -162,9 +162,9 @@ const runCodegen = Effect.gen(function* () {
   // written before the declaration is bundled, even on a first run.
   yield* generateTableWrappers(tableModules);
   yield* removeObsoleteTableWrappers(tableModules);
-  yield* generateAssembledSpecs(
-    yield* Effect.forEach(yield* discoverLeafSpecFiles, toLeafModule),
-  );
+  const leafSpecFiles = yield* discoverLeafSpecFiles;
+  const forEach2 = yield* Effect.forEach(leafSpecFiles, toLeafModule);
+  yield* generateAssembledSpecs(forEach2);
   yield* generateRefs;
   // Specs and tables can import the components registry, but the registry
   // reads the `convex.config.ts` that the declaration writes. Only its type
@@ -398,14 +398,14 @@ const validateCallbackPrefixes = Effect.fnUntraced(function* (
   if ((yield* ConvexDirectory.target).kind !== "component") return;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const callbacksPath = path.join(yield* ConfectDirectory.get, "callbacks.ts");
+  const confectDirectory = yield* ConfectDirectory.get;
+  const callbacksPath = path.join(confectDirectory, "callbacks.ts");
   if (!(yield* fs.exists(callbacksPath))) return;
   const name = Option.isSome(declared)
     ? Env.name(App.env(declared.value))
-    : yield* ConvexConfig.componentName(
-        path.join(
-          yield* ConvexDirectory.get,
-          ConvexConfig.CONVEX_CONFIG_FILENAME,
+    : yield* Effect.flatMap(ConvexDirectory.get, (convexDirectory) =>
+        ConvexConfig.componentName(
+          path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
         ),
       );
   const { module } = yield* Bundler.bundle(callbacksPath).pipe(
@@ -790,7 +790,8 @@ const generateIdConstructor = Effect.fnUntraced(function* (
     tableModules,
     (tableModule) => tableModule.tableName,
   );
-  const contents = yield* Match.value(yield* ConvexDirectory.target).pipe(
+  const convexDirectory = yield* ConvexDirectory.target;
+  const contents = yield* Match.value(convexDirectory).pipe(
     Match.when({ kind: "app" }, () => templates.id({ tableNames })),
     Match.when({ kind: "component" }, ({ scope }) =>
       templates.id({ tableNames, scope }),
@@ -1082,8 +1083,9 @@ export const generateComponents = Effect.gen(function* () {
     })),
   });
 
+  const gENERATEDCOMPONENTSPATH = yield* GENERATED_COMPONENTS_PATH;
   yield* writeFileStringAndLog(
-    path.join(confectDirectory, yield* GENERATED_COMPONENTS_PATH),
+    path.join(confectDirectory, gENERATEDCOMPONENTSPATH),
     contents,
   );
   return mounts;
@@ -1092,15 +1094,12 @@ export const generateComponents = Effect.gen(function* () {
 const provisionalComponents = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const registry = path.join(
-    yield* ConfectDirectory.get,
-    yield* GENERATED_COMPONENTS_PATH,
-  );
+  const confectDirectory = yield* ConfectDirectory.get;
+  const gENERATEDCOMPONENTSPATH = yield* GENERATED_COMPONENTS_PATH;
+  const registry = path.join(confectDirectory, gENERATEDCOMPONENTSPATH);
   if (yield* fs.exists(registry)) return;
-  yield* writeFileStringAndLog(
-    registry,
-    yield* templates.components({ components: [] }),
-  );
+  const components2 = yield* templates.components({ components: [] });
+  yield* writeFileStringAndLog(registry, components2);
 });
 
 const logGenerated = <E, R>(
@@ -1174,10 +1173,11 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
   const confectDirectory = yield* ConfectDirectory.get;
   const convexDirectory = yield* ConvexDirectory.get;
   const generated = path.join(confectDirectory, "_generated");
+  const projectRoot = yield* ProjectRoot.get;
   const configDisplay = Array.join(
     pipe(
       path.relative(
-        yield* ProjectRoot.get,
+        projectRoot,
         path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
       ),
       String.split(path.sep),
@@ -1196,8 +1196,9 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
     'import convexSchema from "./convexSchema.js";',
   ];
   const moduleMap = Effect.fnUntraced(function* (directory: string) {
+    const directory2 = yield* fs.readDirectory(directory, { recursive: true });
     const files = Array.filter(
-      yield* fs.readDirectory(directory, { recursive: true }),
+      directory2,
       (file) =>
         /\.[cm]?[jt]s$/.test(file) &&
         !pipe(file, String.endsWith(".d.ts")) &&
@@ -1272,20 +1273,20 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
         ),
       );
       const resolved = fromPackage
-        ? path.dirname(
-            yield* ConvexConfig.resolveDefinition(
-              `${component.componentDefinitionPath}/convex.config`,
-              config,
-              path,
-            ).pipe(
-              Effect.fromOption,
-              Effect.mapError(() =>
+        ? yield* ConvexConfig.resolveDefinition(
+            `${component.componentDefinitionPath}/convex.config`,
+            config,
+            path,
+          ).pipe(
+            Effect.fromOption,
+            Effect.mapBoth({
+              onFailure: () =>
                 CodegenError.InvalidConvexConfigError.make({
                   configPath: relative(config),
                   reason: `Cannot resolve component ${component.componentDefinitionPath} for testing.`,
                 }),
-              ),
-            ),
+              onSuccess: (definition) => path.dirname(definition),
+            }),
           )
         : component.componentDefinitionPath;
       const localPrefix =

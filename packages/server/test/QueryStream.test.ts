@@ -1000,11 +1000,14 @@ describe("QueryStream.defer", () => {
           ),
         );
         expect(checked).toEqual([]);
-        expect(yield* joined.pipe(Stream.take(2), Stream.runCollect)).toEqual([
-          10, 20,
-        ]);
+        const joinedResult = yield* joined.pipe(
+          Stream.take(2),
+          Stream.runCollect,
+        );
+        expect(joinedResult).toEqual([10, 20]);
         expect(checked).toEqual([1, 2]);
-        expect(yield* Stream.runCollect(joined)).toEqual([10, 20, 30]);
+        const collected = yield* Stream.runCollect(joined);
+        expect(collected).toEqual([10, 20, 30]);
         expect(checked).toEqual([1, 2, 1, 2, 3]);
       }),
   );
@@ -1015,9 +1018,8 @@ describe("QueryStream.defer", () => {
         options,
         Effect.fail("refused" as const),
       );
-      expect(yield* Stream.runCollect(deferred).pipe(Effect.result)).toEqual(
-        Result.fail("refused"),
-      );
+      const collected = yield* Stream.runCollect(deferred).pipe(Effect.result);
+      expect(collected).toEqual(Result.fail("refused"));
     }),
   );
 });
@@ -1151,9 +1153,8 @@ describe("QueryStream cursor envelope", () => {
           cursorEnvelope,
         });
         expect(done.isDone).toBe(true);
-        expect(yield* cursorEnvelope.open(done.continueCursor)).toEqual(
-          Option.some(QueryStreamCursor.END_CURSOR),
-        );
+        const open2 = yield* cursorEnvelope.open(done.continueCursor);
+        expect(open2).toEqual(Option.some(QueryStreamCursor.END_CURSOR));
         const pinned = yield* QueryStream.paginate(source(), {
           ...options,
           endCursor: done.continueCursor,

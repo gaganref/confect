@@ -19,7 +19,8 @@ layer(LocalBackend.layer, {
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
-        const run = String(yield* Random.next);
+        const random = yield* Random.next;
+        const run = String(random);
         yield* Effect.promise(() =>
           client.mutation(api.groups.components.seed, {
             run,
@@ -47,7 +48,8 @@ layer(LocalBackend.layer, {
   it.effect("pages search results inside a component", () =>
     Effect.gen(function* () {
       const { client } = yield* LocalBackend.LocalBackend;
-      const run = `search${pipe(String(yield* Random.next), Str.replaceAll(".", ""))}`;
+      const random = yield* Random.next;
+      const run = `search${pipe(String(random), Str.replaceAll(".", ""))}`;
       yield* Effect.promise(() =>
         client.mutation(api.groups.components.seed, {
           run,
@@ -72,7 +74,8 @@ layer(LocalBackend.layer, {
   it.effect("updates a subscribed component page after an insert", () =>
     Effect.gen(function* () {
       const { client } = yield* LocalBackend.LocalBackend;
-      const run = String(yield* Random.next);
+      const random = yield* Random.next;
+      const run = String(random);
       yield* Effect.scoped(
         Effect.gen(function* () {
           const reactive = yield* Effect.acquireRelease(
@@ -81,7 +84,8 @@ layer(LocalBackend.layer, {
           );
           const initial = yield* Deferred.make<ReadonlyArray<number>>();
           const updated = yield* Deferred.make<ReadonlyArray<number>>();
-          const complete = Effect.runSyncWith(yield* Effect.context<never>());
+          const context2 = yield* Effect.context<never>();
+          const complete = Effect.runSyncWith(context2);
           let first = true;
           yield* Effect.acquireRelease(
             Effect.sync(() =>
@@ -102,11 +106,13 @@ layer(LocalBackend.layer, {
             ),
             (stop) => Effect.sync(stop),
           );
-          expect(yield* Deferred.await(initial)).toEqual([]);
+          const awaitValue = yield* Deferred.await(initial);
+          expect(awaitValue).toEqual([]);
           yield* Effect.promise(() =>
             client.mutation(api.groups.components.seed, { run, counts: [7] }),
           );
-          expect(yield* Deferred.await(updated)).toEqual([7]);
+          const awaitValue2 = yield* Deferred.await(updated);
+          expect(awaitValue2).toEqual([7]);
         }).pipe(Effect.timeout("10 seconds")),
       );
     }),
@@ -132,7 +138,8 @@ layer(LocalBackend.layer, {
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
-        const run = String(yield* Random.next);
+        const random = yield* Random.next;
+        const run = String(random);
         const counts = Array.from({ length: 50 }, (_, i) => i + 100);
         for (let offset = 0; offset < counts.length; offset += 10) {
           yield* Effect.promise(() =>
@@ -142,11 +149,10 @@ layer(LocalBackend.layer, {
             }),
           );
         }
-        expect(
-          yield* Effect.promise(() =>
-            client.query(api.groups.pagination.streams, { run }),
-          ),
-        ).toEqual({
+        const resolved = yield* Effect.promise(() =>
+          client.query(api.groups.pagination.streams, { run }),
+        );
+        expect(resolved).toEqual({
           deferred: counts,
           merged: counts,
           budget: 2001,
@@ -156,11 +162,10 @@ layer(LocalBackend.layer, {
   it.effect("observes decoded component writes through the writer hook", () =>
     Effect.gen(function* () {
       const { client } = yield* LocalBackend.LocalBackend;
-      expect(
-        yield* Effect.promise(() =>
-          client.mutation(api.groups.pagination.hook, { run: "hook" }),
-        ),
-      ).toEqual([
+      const resolved = yield* Effect.promise(() =>
+        client.mutation(api.groups.pagination.hook, { run: "hook" }),
+      );
+      expect(resolved).toEqual([
         { operation: "insert", count: 1 },
         { operation: "update", count: 2 },
         { operation: "delete", count: 2 },

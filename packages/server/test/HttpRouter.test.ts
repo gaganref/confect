@@ -315,7 +315,8 @@ it.effect("uses one labeled request span and the supplied logger", () =>
         Promise.resolve({ default: router }),
     });
     const response = yield* Effect.promise(() => t.fetch("/mounted/users/42"));
-    expect(yield* Effect.promise(() => response.json())).toBe("42");
+    const resolved = yield* Effect.promise(() => response.json());
+    expect(resolved).toBe("42");
     expect(messages).toEqual([["request"]]);
     expect(
       Arr.map(spans, (span) => [
@@ -547,11 +548,10 @@ it.effect("keeps ConvexLogger for HTTP without a runtime layer", () =>
         "./mock-backend/fixtures/convex/http.ts": () =>
           Promise.resolve({ default: router }),
       });
-      expect(
-        yield* Effect.promise(() =>
-          t.fetch("/log").then((response) => response.text()),
-        ),
-      ).toBe("no span");
+      const resolved = yield* Effect.promise(() =>
+        t.fetch("/log").then((response) => response.text()),
+      );
+      expect(resolved).toBe("no span");
       expect(info).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ message: "default http" }),
       );
@@ -666,8 +666,10 @@ it.effect(
           { api: optionsApi },
         ),
       );
-      expect(yield* send("/probe", "POST")).toEqual([401, ""]);
-      expect(yield* send("/probe", "OPTIONS")).toEqual([204, ""]);
+      const sendResult = yield* send("/probe", "POST");
+      expect(sendResult).toEqual([401, ""]);
+      const sendResult2 = yield* send("/probe", "OPTIONS");
+      expect(sendResult2).toEqual([204, ""]);
       for (const [path, method] of [
         ["/trigger", undefined],
         ["/trigger", "POST"],
@@ -677,10 +679,13 @@ it.effect(
         ["/raw", "POST"],
         ["/grouped", "POST"],
         ["/missing", undefined],
-      ] as const)
-        expect(yield* send(path, "OPTIONS", method)).toEqual([404, ""]);
+      ] as const) {
+        const preflight = yield* send(path, "OPTIONS", method);
+        expect(preflight).toEqual([404, ""]);
+      }
       expect(calls).toBe(0);
-      expect(yield* send("/trigger", "POST")).toEqual([200, '"handler ran"']);
+      const sendResult3 = yield* send("/trigger", "POST");
+      expect(sendResult3).toEqual([200, '"handler ran"']);
       expect(calls).toBe(1);
     }),
 );
@@ -699,7 +704,8 @@ const answering = (
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
           if (request.method !== "OPTIONS") return yield* next;
-          const params = Record.toEntries(yield* HttpRouter.params).flat();
+          const params2 = yield* HttpRouter.params;
+          const params = Record.toEntries(params2).flat();
           return HttpServerResponse.text(
             Arr.join([method, ...Arr.map(params, (param) => param ?? "")], " "),
           );
@@ -812,11 +818,12 @@ it.effect.each([
         ConfectHttpRouter.make(DatabaseSchema.make({}), layer),
       );
       const [method, path, body] = request;
-      expect(yield* send(path, method)).toEqual([200, body]);
-      for (const [preflightPath, requested, ...expected] of preflights)
-        expect(yield* send(preflightPath, "OPTIONS", requested)).toEqual(
-          expected,
-        );
+      const sendResult = yield* send(path, method);
+      expect(sendResult).toEqual([200, body]);
+      for (const [preflightPath, requested, ...expected] of preflights) {
+        const preflight = yield* send(preflightPath, "OPTIONS", requested);
+        expect(preflight).toEqual(expected);
+      }
     }),
 );
 

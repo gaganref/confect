@@ -152,19 +152,19 @@ it.effect(
         ],
       ] as const) {
         const [header, payload, signature] = token.split(".");
-        expect(
-          yield* Effect.promise(() =>
-            crypto.subtle.verify(
-              { name: "ECDSA", hash: "SHA-256" },
-              key,
-              Buffer.from(signature!, "base64url"),
-              new TextEncoder().encode(`${header}.${payload}`),
-            ),
+        const resolved = yield* Effect.promise(() =>
+          crypto.subtle.verify(
+            { name: "ECDSA", hash: "SHA-256" },
+            key,
+            Buffer.from(signature!, "base64url"),
+            new TextEncoder().encode(`${header}.${payload}`),
           ),
-        ).toBe(true);
-        expect(
-          yield* decodeHeader(Buffer.from(header!, "base64url").toString()),
-        ).toMatchObject({ alg: "ES256" });
+        );
+        expect(resolved).toBe(true);
+        const header2 = yield* decodeHeader(
+          Buffer.from(header!, "base64url").toString(),
+        );
+        expect(header2).toMatchObject({ alg: "ES256" });
         const claims = yield* decodeClaims(
           Buffer.from(payload!, "base64url").toString(),
         );
@@ -253,9 +253,8 @@ it.effect("registers components with TestConfect", () =>
     const t = yield* TestConfect.TestConfect<typeof hostSchema>();
     yield* t.registerComponent("first", componentSchema, componentModules);
     yield* t.mutation(first.counter.create, { count: 11 });
-    expect(
-      Array.map(yield* t.query(first.counter.list), (row) => row.count),
-    ).toEqual([11]);
+    const query2 = yield* t.query(first.counter.list);
+    expect(Array.map(query2, (row) => row.count)).toEqual([11]);
   }).pipe(
     Effect.provide(
       TestConfect.layer(hostSchema, hostConvexSchema, hostModules),
@@ -324,11 +323,13 @@ it.effect("keeps nominal class methods after component and host decoding", () =>
       "class:component",
       "class:host",
     ]);
-    expect(
-      yield* t.query(hostRefs.public.groups.componentAuthoring.render, {
+    const query2 = yield* t.query(
+      hostRefs.public.groups.componentAuthoring.render,
+      {
         value: "shared",
-      }),
-    ).toBe("class:shared");
+      },
+    );
+    expect(query2).toBe("class:shared");
   }).pipe(
     Effect.provide(
       TestConfect.layer(hostSchema, hostConvexSchema, hostModules),
@@ -357,12 +358,10 @@ it.effect(
       });
       expect(leftRows).toEqual([23]);
       expect(rightRows).toEqual([29]);
-      expect(yield* t.query(mounts.left.parent.deepLocation)).toBe(
-        "left/deep/child/child",
-      );
-      expect(yield* t.query(mounts.right.parent.deepLocation)).toBe(
-        "right/deep/child/child",
-      );
+      const query2 = yield* t.query(mounts.left.parent.deepLocation);
+      expect(query2).toBe("left/deep/child/child");
+      const query3 = yield* t.query(mounts.right.parent.deepLocation);
+      expect(query3).toBe("right/deep/child/child");
     }).pipe(
       Effect.provide(
         TestConfect.layer(hostSchema, hostConvexSchema, hostModules),
@@ -391,15 +390,14 @@ it.effect(
           id: expect.any(String),
         });
       }
-      expect(
-        Array.map(
-          yield* t.query(mounts.first.counter.list, { run: "rollback" }),
-          (row) => row.count,
-        ),
-      ).toEqual([5]);
-      expect(
-        yield* t.query(mounts.second.counter.list, { run: "rollback" }),
-      ).toEqual([]);
+      const query2 = yield* t.query(mounts.first.counter.list, {
+        run: "rollback",
+      });
+      expect(Array.map(query2, (row) => row.count)).toEqual([5]);
+      const query3 = yield* t.query(mounts.second.counter.list, {
+        run: "rollback",
+      });
+      expect(query3).toEqual([]);
     }).pipe(
       Effect.provide(
         TestConfect.layer(hostSchema, hostConvexSchema, hostModules),
@@ -422,15 +420,14 @@ it.effect(
         control: expect.any(String),
       });
       yield* t.finishAllScheduledFunctions(() => vi.runAllTimers());
-      expect(
-        Array.map(
-          yield* t.query(mounts.first.counter.list, { run: "cancel" }),
-          (doc) => doc.count,
-        ),
-      ).toEqual([17]);
-      expect(
-        yield* t.query(mounts.second.counter.list, { run: "cancel" }),
-      ).toEqual([]);
+      const query2 = yield* t.query(mounts.first.counter.list, {
+        run: "cancel",
+      });
+      expect(Array.map(query2, (doc) => doc.count)).toEqual([17]);
+      const query3 = yield* t.query(mounts.second.counter.list, {
+        run: "cancel",
+      });
+      expect(query3).toEqual([]);
       const failure = yield* Effect.exit(
         t.mutation(mounts.first.counter.cancel, { id: "invalid-scheduled-id" }),
       );
@@ -483,12 +480,10 @@ it.effect(
         false,
         true,
       ]);
-      expect(
-        Array.map(
-          yield* t.query(mounts.second.counter.list, { run: "pages" }),
-          (row) => row.count,
-        ),
-      ).toEqual([99]);
+      const query2 = yield* t.query(mounts.second.counter.list, {
+        run: "pages",
+      });
+      expect(Array.map(query2, (row) => row.count)).toEqual([99]);
     }).pipe(
       Effect.provide(
         TestConfect.layer(hostSchema, hostConvexSchema, hostModules),
@@ -502,9 +497,8 @@ it.effect(
     Effect.gen(function* () {
       const t = yield* TestConfect.TestConfect<typeof hostSchema>();
       yield* t.mutation(first.counter.create, { count: 17 });
-      expect(
-        Array.map(yield* t.query(first.counter.list), (row) => row.count),
-      ).toEqual([17]);
+      const query2 = yield* t.query(first.counter.list);
+      expect(Array.map(query2, (row) => row.count)).toEqual([17]);
     }).pipe(
       Effect.provide(
         TestConfect.layer(hostSchema, hostConvexSchema, hostModules, {
@@ -550,11 +544,10 @@ it.effect(
       expect(Array.map(responses, (response) => response.status)).toEqual([
         200, 200, 200,
       ]);
-      expect(
-        yield* Effect.promise(() =>
-          Promise.all(Array.map(responses, (response) => response.json())),
-        ),
-      ).toEqual([
+      const resolved = yield* Effect.promise(() =>
+        Promise.all(Array.map(responses, (response) => response.json())),
+      );
+      expect(resolved).toEqual([
         { siteUrl: "https://app.convex.site/email" },
         { siteUrl: "https://app.convex.site/other" },
         { siteUrl: "https://app.convex.site/email/nested" },
@@ -577,10 +570,10 @@ it.effect(
         body: "31",
       });
       expect(response.status).toBe(204);
-      expect(
-        Array.map(yield* t.query(first.counter.list), (row) => row.count),
-      ).toEqual([31]);
-      expect(yield* t.query(second.counter.list)).toEqual([]);
+      const query2 = yield* t.query(first.counter.list);
+      expect(Array.map(query2, (row) => row.count)).toEqual([31]);
+      const query3 = yield* t.query(second.counter.list);
+      expect(query3).toEqual([]);
     }).pipe(Effect.provide(mountedLayer)),
 );
 
@@ -591,7 +584,8 @@ it.effect("keeps query strings and headers at the exact mount path", () =>
       headers: { "x-test": "present" },
     });
     expect(response.status).toBe(200);
-    expect(yield* Effect.promise(() => response.json())).toEqual({
+    const resolved = yield* Effect.promise(() => response.json());
+    expect(resolved).toEqual({
       siteUrl: "https://some.convex.site/other",
       url: "/?key=value",
       originalUrl: "https://some.convex.site/other?key=value",
@@ -641,7 +635,8 @@ it.effect(
         });
       }
       const response = yield* t.fetch("/other/ping");
-      expect(yield* Effect.promise(() => response.json())).toEqual({
+      const resolved = yield* Effect.promise(() => response.json());
+      expect(resolved).toEqual({
         siteUrl: "https://failure.convex.site/other",
       });
       // oxlint-disable-next-line effecttsgo/process-env-in-effect -- The adapter must restore the actual process variable after a rejected module loader.
@@ -700,7 +695,8 @@ it.effect(
       vi.stubEnv("CONVEX_SITE_URL", "");
       const t = yield* TestConfect.TestConfect<typeof hostSchema>();
       const response = yield* t.fetch("/email/ping");
-      expect(yield* Effect.promise(() => response.json())).toEqual({
+      const resolved = yield* Effect.promise(() => response.json());
+      expect(resolved).toEqual({
         siteUrl: "https://some.convex.site/email",
       });
     }).pipe(
@@ -715,7 +711,8 @@ it.effect(
     Effect.gen(function* () {
       const t = yield* TestConfect.TestConfect<typeof hostSchema>();
       const response = yield* t.fetch("/email/ping");
-      expect(yield* Effect.promise(() => response.json())).toEqual({
+      const resolved = yield* Effect.promise(() => response.json());
+      expect(resolved).toEqual({
         siteUrl: "https://some.convex.site/email",
       });
     }).pipe(
@@ -745,7 +742,8 @@ it.effect("fetches an installation mounted at the root prefix", () =>
   Effect.gen(function* () {
     const t = yield* TestConfect.TestConfect<typeof hostSchema>();
     const response = yield* t.fetch("/ping");
-    expect(yield* Effect.promise(() => response.json())).toEqual({
+    const resolved = yield* Effect.promise(() => response.json());
+    expect(resolved).toEqual({
       siteUrl: "https://some.convex.site",
     });
   }).pipe(
@@ -781,30 +779,33 @@ it.effect(
       vi.useFakeTimers();
       const id = yield* t.mutation(callbacks.send, { run: "callbacks" });
       yield* t.finishAllScheduledFunctions(() => vi.runAllTimers());
-      expect(yield* t.query(callbacks.events, { run: "callbacks" })).toEqual([
-        "sent",
-      ]);
-      expect(yield* t.query(callbacks.get, { id })).toEqual({
+      const query2 = yield* t.query(callbacks.events, { run: "callbacks" });
+      expect(query2).toEqual(["sent"]);
+      const query3 = yield* t.query(callbacks.get, { id });
+      expect(query3).toEqual({
         run: "callbacks",
         status: "sent",
       });
 
-      expect(
-        yield* t.mutation(callbacks.setStatus, { id, status: "delivered" }),
-      ).toBeNull();
-      expect(
-        yield* t.mutation(callbacks.setStatus, { id, status: "bounced" }),
-      ).toBe("host refuses bounced for callbacks");
+      const mutation2 = yield* t.mutation(callbacks.setStatus, {
+        id,
+        status: "delivered",
+      });
+      expect(mutation2).toBeNull();
+      const mutation3 = yield* t.mutation(callbacks.setStatus, {
+        id,
+        status: "bounced",
+      });
+      expect(mutation3).toBe("host refuses bounced for callbacks");
+      const query4 = yield* t.query(callbacks.get, { id });
       // The component's catch path commits its patch; the host's failed
       // call rolls back the event it recorded before rejecting.
-      expect(yield* t.query(callbacks.get, { id })).toEqual({
+      expect(query4).toEqual({
         run: "callbacks",
         status: "bounced",
       });
-      expect(yield* t.query(callbacks.events, { run: "callbacks" })).toEqual([
-        "sent",
-        "delivered",
-      ]);
+      const query5 = yield* t.query(callbacks.events, { run: "callbacks" });
+      expect(query5).toEqual(["sent", "delivered"]);
     }).pipe(
       Effect.ensuring(Effect.sync(() => vi.useRealTimers())),
       Effect.provide(localHostLayer),
@@ -818,8 +819,10 @@ it.effect(
       const t = yield* LocalHost;
       yield* t.registerComponent("first", counterConvexSchema, counterModules);
       const id = yield* t.mutation(callbacks.send, { run: "breach" });
-      expect(yield* t.mutation(callbacks.breach, { id })).toBe("defect");
-      expect(yield* t.mutation(callbacks.sameHandle, { id })).toBe(true);
+      const mutation2 = yield* t.mutation(callbacks.breach, { id });
+      expect(mutation2).toBe("defect");
+      const mutation3 = yield* t.mutation(callbacks.sameHandle, { id });
+      expect(mutation3).toBe(true);
     }).pipe(Effect.provide(localHostLayer)),
 );
 
@@ -828,7 +831,8 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const t = yield* LocalHost;
-      expect(yield* t.mutation(callbacks.createMismatched, {})).toEqual({
+      const mutation2 = yield* t.mutation(callbacks.createMismatched, {});
+      expect(mutation2).toEqual({
         outcome: "failure",
         message: `The host function does not satisfy callback contract "counter/onReported": its args compile to {"kind":"object","fields":{"state":{"kind":"string"}}}, the contract's to {"kind":"object","fields":{"status":{"kind":"string"}}}.`,
       });
@@ -843,16 +847,13 @@ it.effect("a profiled component action calls a decoded host callback", () =>
     const id = yield* t.mutation(callbacks.send, { run: "action-call" });
     yield* t.finishAllScheduledFunctions(() => vi.runAllTimers());
     const { onEvent } = yield* t.query(mounts.first.deliveries.get, { id });
-    expect(
-      yield* t.action(mounts.first.deliveries.notify, {
-        run: "action-call",
-        onEvent,
-      }),
-    ).toBeNull();
-    expect(yield* t.query(callbacks.events, { run: "action-call" })).toEqual([
-      "sent",
-      "delivered",
-    ]);
+    const action2 = yield* t.action(mounts.first.deliveries.notify, {
+      run: "action-call",
+      onEvent,
+    });
+    expect(action2).toBeNull();
+    const query2 = yield* t.query(callbacks.events, { run: "action-call" });
+    expect(query2).toEqual(["sent", "delivered"]);
   }).pipe(
     Effect.ensuring(Effect.sync(() => vi.useRealTimers())),
     Effect.provide(localHostLayer),

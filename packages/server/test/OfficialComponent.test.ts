@@ -315,11 +315,10 @@ describe("encodeCall", () => {
         );
 
         expect(getFunctionName(call.reference)).toBe("jobs:run");
-        expect(
-          yield* Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(
-            call.args,
-          ),
-        ).toBe('{"value":"42"}');
+        const encoded = yield* Schema.encodeEffect(
+          Schema.fromJsonString(Schema.Unknown),
+        )(call.args);
+        expect(encoded).toBe('{"value":"42"}');
       }).pipe(
         Effect.withSpan("enqueue"),
         Effect.provideService(RegisteredFunction.Forward, (span) => ({
@@ -332,9 +331,8 @@ describe("encodeCall", () => {
 describe("encodeField", () => {
   it.effect("encodes one declared field through its codec", () =>
     Effect.gen(function* () {
-      expect(yield* OfficialComponent.encodeField(record, "value", 42)).toBe(
-        "42",
-      );
+      const field = yield* OfficialComponent.encodeField(record, "value", 42);
+      expect(field).toBe("42");
     }),
   );
 });

@@ -150,7 +150,8 @@ describe("handle", () => {
     Effect.gen(function* () {
       const codec = Callback.handle(OnEvent);
       const handle = yield* Schema.decodeEffect(codec)(handleText);
-      expect(yield* Schema.encodeEffect(codec)(handle)).toBe(handleText);
+      const encoded = yield* Schema.encodeEffect(codec)(handle);
+      expect(encoded).toBe(handleText);
     }),
   );
 
@@ -166,9 +167,8 @@ describe("handle", () => {
       const own = yield* Schema.decodeEffect(Callback.handle(Other))(
         handleText,
       );
-      expect(yield* Schema.encodeEffect(Callback.handle(Other))(own)).toBe(
-        handleText,
-      );
+      const encoded = yield* Schema.encodeEffect(Callback.handle(Other))(own);
+      expect(encoded).toBe(handleText);
     }),
   );
 

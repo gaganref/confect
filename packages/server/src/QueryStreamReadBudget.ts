@@ -152,7 +152,9 @@ export const make = Effect.fnUntraced(function* (
               // Iterators expose completion only through a pull. Count a
               // lookahead row, but never publish it beyond either limit.
               const counts = canProbeEnd
-                ? record(state, yield* pull)
+                ? yield* Effect.map(pull, (documents) =>
+                    record(state, documents),
+                  )
                 : readCounts(state);
               return Tuple.make(Option.none(), State.Stopped(counts));
             }

@@ -58,7 +58,8 @@ layer(LocalBackend.layer, {
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
-        const run = String(yield* Random.next);
+        const random = yield* Random.next;
+        const run = String(random);
         const result = yield* Ref.runWithCodec(
           refs.public.groups.reserved.chain,
           { run },

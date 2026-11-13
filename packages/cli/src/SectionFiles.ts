@@ -122,8 +122,11 @@ const sourceFiles = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
+  const directory = yield* fs.readDirectory(confectDirectory, {
+    recursive: true,
+  });
   return pipe(
-    yield* fs.readDirectory(confectDirectory, { recursive: true }),
+    directory,
     Arr.map((file) => toPosixPath(path, file)),
     Arr.filter(
       (file) =>
@@ -235,12 +238,12 @@ const render = Effect.fnUntraced(function* (
 export const written = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const generated = path.join(yield* ConfectDirectory.get, "_generated");
+  const confectDirectory = yield* ConfectDirectory.get;
+  const generated = path.join(confectDirectory, "_generated");
   if (!(yield* fs.exists(generated))) return [];
+  const directory = yield* fs.readDirectory(generated);
   return yield* Effect.filter(
-    Arr.filter(yield* fs.readDirectory(generated), (file) =>
-      pipe(file, Str.endsWith(".ts")),
-    ),
+    Arr.filter(directory, (file) => pipe(file, Str.endsWith(".ts"))),
     (file) =>
       fs
         .readFileString(path.join(generated, file))
@@ -251,13 +254,12 @@ export const written = Effect.gen(function* () {
 const record = Effect.fnUntraced(function* (name: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const file = path.join(yield* ConfectDirectory.get, "_generated", name);
+  const confectDirectory = yield* ConfectDirectory.get;
+  const file = path.join(confectDirectory, "_generated", name);
   const none: ReadonlyArray<string> = [];
   if (!(yield* fs.exists(file))) return none;
-  return Option.getOrElse(
-    decodeSources(yield* fs.readFileString(file)),
-    () => none,
-  );
+  const fileContents = yield* fs.readFileString(file);
+  return Option.getOrElse(decodeSources(fileContents), () => none);
 });
 
 /**
@@ -285,11 +287,12 @@ export const sync = Effect.fnUntraced(function* (
   mounts: ManifestSection.GenerateInput["mounts"],
 ) {
   const path = yield* Path.Path;
-  const generated = path.join(yield* ConfectDirectory.get, "_generated");
+  const confectDirectory = yield* ConfectDirectory.get;
+  const generated = path.join(confectDirectory, "_generated");
   const claimed = Option.isSome(backend)
-    ? Arr.map(
-        yield* Effect.fromResult(claims(backend.value.sections)),
-        (claim) => ({ claim, target: backend.value.target }),
+    ? yield* Effect.map(
+        Effect.fromResult(claims(backend.value.sections)),
+        Arr.map((claim) => ({ claim, target: backend.value.target })),
       )
     : [];
   const functions: Array<{ path: string; source: string }> = [];
@@ -343,11 +346,8 @@ export const verify = Effect.fnUntraced(function* (
   mounts: ManifestSection.VerifyInput["mounts"],
 ) {
   const path = yield* Path.Path;
-  const recorded = path.join(
-    yield* ConfectDirectory.get,
-    "_generated",
-    VERIFY_INPUTS,
-  );
+  const confectDirectory = yield* ConfectDirectory.get;
+  const recorded = path.join(confectDirectory, "_generated", VERIFY_INPUTS);
   const checks = Option.match(backend, {
     onNone: () => [],
     onSome: ({ sections }) =>
@@ -376,13 +376,11 @@ export const verify = Effect.fnUntraced(function* (
       const modules = yield* load(matched, watched, [
         ConvexConfig.componentConfigPlugin(path),
       ]);
-      yield* refuse(
-        key,
-        yield* Effect.try({
-          try: () => verifier.check({ modules, mounts, target }),
-          catch: failed,
-        }),
-      );
+      const tryValue = yield* Effect.try({
+        try: () => verifier.check({ modules, mounts, target }),
+        catch: failed,
+      });
+      yield* refuse(key, tryValue);
     }),
   );
   if (failures.length > 0)
@@ -402,7 +400,8 @@ export const removeUnclaimed = Effect.fnUntraced(function* (
   files: ReadonlyArray<string>,
 ) {
   const path = yield* Path.Path;
-  const generated = path.join(yield* ConfectDirectory.get, "_generated");
+  const confectDirectory = yield* ConfectDirectory.get;
+  const generated = path.join(confectDirectory, "_generated");
   for (const file of yield* written)
     if (!files.includes(file)) {
       yield* removePathIfExists(path.join(generated, file));

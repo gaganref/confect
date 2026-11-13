@@ -2032,7 +2032,8 @@ describe("OfficialComponent", () => {
         yield* Effect.promise(() =>
           t.run((ctx) => ctx.db.insert("notes", { text: "query note" })),
         );
-        expect(yield* Effect.promise(() => invoke(t))).toBe(expected);
+        const resolved = yield* Effect.promise(() => invoke(t));
+        expect(resolved).toBe(expected);
       }),
   );
 });
@@ -2299,7 +2300,12 @@ describe("DatabaseWriter patch", () => {
       ];
 
       for (const { fields, stored, patch, error } of cases) {
-        expect(yield* patchStoredNote(fields, stored, patch)).toStrictEqual({
+        const patchStoredNoteResult = yield* patchStoredNote(
+          fields,
+          stored,
+          patch,
+        );
+        expect(patchStoredNoteResult).toStrictEqual({
           error,
           stored,
         });
@@ -2430,15 +2436,20 @@ it.effect.each([
       yield* c.run(
         Effect.gen(function* () {
           const reader = yield* DatabaseReader;
-          expect(
-            yield* reader.table("demands").index("by_creation_time").collect(),
-          ).toEqual([]);
-          expect(
-            yield* reader.table("totals").index("by_creation_time").collect(),
-          ).toEqual([]);
+          const collected = yield* reader
+            .table("demands")
+            .index("by_creation_time")
+            .collect();
+          expect(collected).toEqual([]);
+          const collected2 = yield* reader
+            .table("totals")
+            .index("by_creation_time")
+            .collect();
+          expect(collected2).toEqual([]);
         }),
       );
-      expect(yield* c.mutation(ref, { fail: false })).toEqual([
+      const mutation2 = yield* c.mutation(ref, { fail: false });
+      expect(mutation2).toEqual([
         { operation: "insert", count: 1, sum: 100 },
         { operation: "update", count: 1, sum: 150 },
         { operation: "update", count: 1, sum: 200 },
