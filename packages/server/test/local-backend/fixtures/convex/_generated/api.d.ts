@@ -221,6 +221,41 @@ export declare const api: {
       >;
       uploadUrl: FunctionReference<"mutation", "public", {}, string>;
     };
+    ioBans: {
+      clearInQuery: FunctionReference<"query", "public", {}, string>;
+      fetchInAction: FunctionReference<
+        "action",
+        "public",
+        { url: string },
+        string
+      >;
+      fetchInMutation: FunctionReference<
+        "mutation",
+        "public",
+        { url: string },
+        { message: string; name: string }
+      >;
+      fetchInQuery: FunctionReference<
+        "query",
+        "public",
+        { url: string },
+        { message: string; name: string }
+      >;
+      immediateInQuery: FunctionReference<"query", "public", {}, string>;
+      timerInMutation: FunctionReference<
+        "mutation",
+        "public",
+        { name: "setTimeout" | "setInterval" },
+        string
+      >;
+      timerInQuery: FunctionReference<
+        "query",
+        "public",
+        { name: "setTimeout" | "setInterval" },
+        string
+      >;
+      timersInAction: FunctionReference<"action", "public", {}, Array<string>>;
+    };
     metadata: {
       actionMetadata: FunctionReference<
         "action",
