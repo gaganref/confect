@@ -5,6 +5,8 @@ import firstSchema from "../../components/counter/convex/schema.js";
 import leftSchema from "../../components/parent/convex/schema.js";
 import left_deepSchema from "../../components/middle/convex/schema.js";
 import left_deep_childSchema from "../../components/inner/convex/schema.js";
+import { TestBackend as $TestBackend } from "@confect/test";
+import refs from "./refs.js";
 const firstKit = { schema: firstSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "authoring.ts": () => import("../../components/counter/convex/authoring.js"),
 "counter.ts": () => import("../../components/counter/convex/counter.js"),
@@ -27,7 +29,7 @@ const left_deep_childKit = { schema: left_deep_childSchema, modules: { "_generat
 "parent.ts": () => import("../../components/inner/convex/parent.js"),
 "schema.ts": () => import("../../components/inner/convex/schema.js"),
 } };
-export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{ componentPath: "left/child", httpPrefix: "/left/child" },{ componentPath: "left/deep/child/child", httpPrefix: "/left/deep/child/child" },{ componentPath: "right/child", httpPrefix: "/right/child" },{ componentPath: "right/deep/child/child", httpPrefix: "/right/deep/child/child" },{ componentPath: "second", httpPrefix: "/second" }], schema, convexSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
+const backend = { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{ componentPath: "left/child", httpPrefix: "/left/child" },{ componentPath: "left/deep/child/child", httpPrefix: "/left/deep/child/child" },{ componentPath: "right/child", httpPrefix: "/right/child" },{ componentPath: "right/deep/child/child", httpPrefix: "/right/deep/child/child" },{ componentPath: "second", httpPrefix: "/second" }], schema, convexSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "groups/cacheControl.ts": () => import("../../convex/groups/cacheControl.js"),
 "groups/cacheStubbed.ts": () => import("../../convex/groups/cacheStubbed.js"),
 "groups/callbacks.ts": () => import("../../convex/groups/callbacks.js"),
@@ -57,3 +59,31 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "right/deep/child": left_deep_childKit,
 "right/deep/child/child": firstKit,
 "second": firstKit,} };
+export default backend;
+export const TestBackend = $TestBackend.make(backend, {
+  refs,
+  groups: {
+    "groups/cacheControl": $TestBackend.group({ path: "groups/cacheControl", owner: "product", functions: { "control": refs.public.groups.cacheControl.control }, open: [] }),
+    "groups/cacheStubbed": $TestBackend.group({ path: "groups/cacheStubbed", owner: "product", functions: { "confectNoTime": refs.public.groups.cacheStubbed.confectNoTime, "confectWithClock": refs.public.groups.cacheStubbed.confectWithClock, "confectWithLog": refs.public.groups.cacheStubbed.confectWithLog, "confectWithRawDateNow": refs.public.groups.cacheStubbed.confectWithRawDateNow, "confectWithSpan": refs.public.groups.cacheStubbed.confectWithSpan }, open: [] }),
+    "groups/callbacks": $TestBackend.group({ path: "groups/callbacks", owner: "product", functions: { "breach": refs.public.groups.callbacks.breach, "createMismatched": refs.public.groups.callbacks.createMismatched, "createRetired": refs.public.groups.callbacks.createRetired, "events": refs.public.groups.callbacks.events, "get": refs.public.groups.callbacks.get, "sameHandle": refs.public.groups.callbacks.sameHandle, "send": refs.public.groups.callbacks.send, "setStatus": refs.public.groups.callbacks.setStatus, "storeMalformed": refs.public.groups.callbacks.storeMalformed }, open: [] }),
+    "groups/commitTs": $TestBackend.group({ path: "groups/commitTs", owner: "product", functions: { "maxAfterPending": refs.public.groups.commitTs.maxAfterPending, "newestFirst": refs.public.groups.commitTs.newestFirst, "stamp": refs.public.groups.commitTs.stamp }, open: [] }),
+    "groups/componentAuthoring": $TestBackend.group({ path: "groups/componentAuthoring", owner: "product", functions: { "probe": refs.public.groups.componentAuthoring.probe, "read": refs.public.groups.componentAuthoring.read, "render": refs.public.groups.componentAuthoring.render, "save": refs.public.groups.componentAuthoring.save }, open: [] }),
+    "groups/components": $TestBackend.group({ path: "groups/components", owner: "product", functions: { "cancel": refs.public.groups.components.cancel, "declaredError": refs.public.groups.components.declaredError, "deepCreate": refs.public.groups.components.deepCreate, "deepRead": refs.public.groups.components.deepRead, "environment": refs.public.groups.components.environment, "exercise": refs.public.groups.components.exercise, "hasAuth": refs.public.groups.components.hasAuth, "list": refs.public.groups.components.list, "page": refs.public.groups.components.page, "schedule": refs.public.groups.components.schedule, "scheduleAndCancel": refs.public.groups.components.scheduleAndCancel, "seed": refs.public.groups.components.seed, "storageUrl": refs.public.groups.components.storageUrl, "ticks": refs.public.groups.components.ticks, "uploadUrl": refs.public.groups.components.uploadUrl }, open: [] }),
+    "groups/metadata": $TestBackend.group({ path: "groups/metadata", owner: "product", functions: { "actionMetadata": refs.public.groups.metadata.actionMetadata, "mutationMetadata": refs.public.groups.metadata.mutationMetadata, "queryMetadata": refs.public.groups.metadata.queryMetadata }, open: [] }),
+    "groups/mounts": $TestBackend.group({ path: "groups/mounts", owner: "product", functions: { "counts": refs.public.groups.mounts.counts, "create": refs.public.groups.mounts.create, "replaced": refs.public.groups.mounts.replaced }, open: [] }),
+    "groups/nativeComponents": $TestBackend.group({ path: "groups/nativeComponents", owner: "product", functions: { "roundTrip": refs.public.groups.nativeComponents.roundTrip }, open: [] }),
+    "groups/pagination": $TestBackend.group({ path: "groups/pagination", owner: "product", functions: { "hook": refs.public.groups.pagination.hook, "page": refs.public.groups.pagination.page, "searchPage": refs.public.groups.pagination.searchPage, "streams": refs.public.groups.pagination.streams, "twice": refs.public.groups.pagination.twice }, open: [] }),
+    "groups/reserved": $TestBackend.group({ path: "groups/reserved", owner: "product", functions: { "chain": refs.public.groups.reserved.chain, "echo": refs.public.groups.reserved.echo, "echoAction": refs.public.groups.reserved.echoAction, "inline": refs.public.groups.reserved.inline, "read": refs.public.groups.reserved.read, "write": refs.public.groups.reserved.write }, open: [] }),
+    "groups/scheduling": $TestBackend.group({ path: "groups/scheduling", owner: "product", functions: { "manyOpsMutation": refs.public.groups.scheduling.manyOpsMutation, "manyOpsQuery": refs.public.groups.scheduling.manyOpsQuery }, open: [] }),
+    "groups/storage": $TestBackend.group({ path: "groups/storage", owner: "product", functions: { "deleteBlob": refs.public.groups.storage.deleteBlob, "generateUploadUrl": refs.public.groups.storage.generateUploadUrl, "get": refs.public.groups.storage.get, "getUrl": refs.public.groups.storage.getUrl, "store": refs.public.groups.storage.store }, open: [] }),
+    "groups/transactions": $TestBackend.group({ path: "groups/transactions", owner: "product", functions: { "insertedIntervals": refs.public.groups.transactions.insertedIntervals, "limitedRead": refs.public.groups.transactions.limitedRead, "limitedReadFromMutation": refs.public.groups.transactions.limitedReadFromMutation, "limitedWrite": refs.public.groups.transactions.limitedWrite, "metrics": refs.public.groups.transactions.metrics, "rollback": refs.public.groups.transactions.rollback, "seed": refs.public.groups.transactions.seed, "staleMetrics": refs.public.groups.transactions.staleMetrics, "staleRead": refs.public.groups.transactions.staleRead }, open: [] }),
+    "metadataNode": $TestBackend.group({ path: "metadataNode", owner: "product", functions: { "metadata": refs.public.metadataNode.metadata }, open: [] }),
+  },
+  ports: {},
+  laws: [{"law":"decodes","table":"callbackEvents"},{"law":"idScope","table":"callbackEvents"},{"law":"decodes","table":"commitStamps"},{"law":"idScope","table":"commitStamps"},{"law":"decodes","table":"transactionNotes"},{"law":"idScope","table":"transactionNotes"}],
+  obligations: [{"kind":"access","group":"groups/cacheControl"},{"kind":"access","group":"groups/cacheStubbed"},{"kind":"access","group":"groups/callbacks"},{"kind":"access","group":"groups/commitTs"},{"kind":"access","group":"groups/componentAuthoring"},{"kind":"access","group":"groups/components"},{"kind":"access","group":"groups/metadata"},{"kind":"access","group":"groups/mounts"},{"kind":"access","group":"groups/nativeComponents"},{"kind":"access","group":"groups/pagination"},{"kind":"access","group":"groups/reserved"},{"kind":"access","group":"groups/scheduling"},{"kind":"access","group":"groups/storage"},{"kind":"access","group":"groups/transactions"},{"kind":"access","group":"metadataNode"},{"kind":"realm"}],
+  manifestDigest: "sha256:4837ddd4f7e5d815279056be2dda6b2d922f4ff63a804064cdfc276ba1ca26fa",
+  mounts: [{"path":"first","kit":"local"},{"path":"left/child","kit":"local"},{"path":"left/deep/child/child","kit":"local"},{"path":"left/deep/child","kit":"local"},{"path":"left/deep","kit":"local"},{"path":"left","kit":"local"},{"path":"right/child","kit":"local"},{"path":"right/deep/child/child","kit":"local"},{"path":"right/deep/child","kit":"local"},{"path":"right/deep","kit":"local"},{"path":"right","kit":"local"},{"path":"second","kit":"local"}],
+  settings: [{"name":"TEST_AUTH_JWKS","owner":"host","optional":false},{"name":"COMPONENT_MARKER","owner":"host","optional":true},{"name":"COMPONENT_HOST_ONLY","owner":"host","optional":true}],
+  secrets: {"tables":{},"functions":{}},
+});

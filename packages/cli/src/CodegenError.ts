@@ -228,7 +228,22 @@ export class CallbackPrefixError extends Schema.TaggedError<CallbackPrefixError>
   },
 ) {}
 
+/**
+ * A mount whose component comes from a package that exports no test kit, so the
+ * generated test backend could not register what production mounts.
+ */
+export class MissingTestKitError extends Schema.TaggedError<MissingTestKitError>()(
+  "MissingTestKitError",
+  {
+    configPath: Schema.String,
+    mount: Schema.String,
+    component: Schema.String,
+    entries: Schema.Array(Schema.String),
+  },
+) {}
+
 export const CodegenError = Schema.Union([
+  MissingTestKitError,
   SnapshotError,
   BuildError,
   MissingImplFileError,
@@ -512,6 +527,13 @@ export const renderCodegenError = (error: CodegenError): string => {
       ". `confect codegen` writes it from ",
       formatPath(error.declarationPath),
       " now; move its contents there and delete the file.",
+    );
+  }
+  if (error._tag === "MissingTestKitError") {
+    return singleLine(
+      `The mount "${error.mount}" in `,
+      formatPath(error.configPath),
+      ` installs the component package "${error.component}", which exports no test kit at ${error.entries.map((entry) => `"${entry}"`).join(" or ")}. The generated test backend registers every mount through its kit's \`register(t, name)\`; name one with the component descriptor's \`testing\` option.`,
     );
   }
   if (error._tag === "UnownedConvexEntrypointError") {

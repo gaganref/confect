@@ -38,9 +38,10 @@ import {
 } from "@confect/cli/TableModule";
 import {
   HandWrittenConvexFileError,
-  InvalidConvexConfigError,
   InvalidDeclarationError,
   isCodegenError,
+  MissingTestKitError,
+  UnownedConvexEntrypointError,
   renderCodegenError,
 } from "@confect/cli/CodegenError";
 import * as Project from "./integration/Project";
@@ -1893,6 +1894,369 @@ const wrongKitProject = (testing: string | undefined) =>
 const digestOf = (manifest: string) =>
   /"digest": "(sha256:[0-9a-f]{64})"/.exec(manifest)?.[1] ?? "missing";
 
+const emptySchema =
+  'import { defineSchema } from "convex/server";\nexport default defineSchema({});\n';
+
+/**
+ * The declaration project, with the counter component's Convex schema.
+ */
+const subjectProject = Effect.gen(function* () {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const project = yield* declarationProject;
+  yield* project.write("components/counter/convex/schema.ts", emptySchema);
+  yield* fs.makeDirectory(path.join(project.root, "components/inner/convex"), {
+    recursive: true,
+  });
+  return project;
+});
+
+/**
+ * The generated `TestBackend` export, read as data.
+ */
+const testBackendOf = (project: { readonly root: string }) =>
+  Bundler.bundle(`${project.root}/confect/_generated/testing.ts`).pipe(
+    Effect.map(({ module }) => module["TestBackend"]),
+  );
+
+const rawSpec = `import { FunctionSpec, GroupSpec } from "@confect/core";
+import type { RegisteredQuery } from "convex/server";
+export default GroupSpec.make().addFunction(
+  FunctionSpec.convexPublicQuery<RegisteredQuery<"public", {}, null>>()("ping"),
+);
+`;
+
+const rawImpl = `import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Layer from "effect/Layer";
+import { queryGeneric } from "convex/server";
+import databaseSchema from "./_generated/schema";
+import raw from "./raw.spec";
+const ping = FunctionImpl.make(databaseSchema, raw, "ping", queryGeneric({ args: {}, handler: () => null }));
+export default GroupImpl.make(databaseSchema, raw).pipe(Layer.provide(ping), GroupImpl.finalize);
+`;
+
+const keysImpl = `import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import databaseSchema from "./_generated/schema";
+import keys from "./keys.spec";
+const rotate = FunctionImpl.make(databaseSchema, keys, "rotate", () => Effect.succeed({}));
+export default GroupImpl.make(databaseSchema, keys).pipe(Layer.provide(rotate), GroupImpl.finalize);
+`;
+
+/**
+ * A section that owns the `raw` group and opens `notes:list`.
+ */
+const testingSection = `const section = {
+  owner: "fixture-door",
+  format: 1,
+  describe: () => null,
+  testing: () => ({
+    owners: { raw: "door:fixture" },
+    open: ["notes:list"],
+    obligations: [{ kind: "roles" }],
+    laws: [{ law: "unique", table: "notes", index: "by_text" }],
+  }),
+};
+`;
+
+const withTestingSection = (app: string) =>
+  `${testingSection}${app.replace(
+    "  env,\n  components",
+    '  env,\n  manifestSections: [{ key: "fixture", section }],\n  components',
+  )}`;
+
+layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
+  "codegen's generated TestBackend",
+  (it) => {
+    it.effect(
+      "holds each public group with its owner, the obligations, laws, digest, mounts and settings",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* subjectProject;
+          yield* project.run;
+          const backend = yield* testBackendOf(project);
+          expect(backend.groups).toEqual({
+            notes: {
+              path: "notes",
+              owner: "product",
+              functions: { list: expect.objectContaining({ _tag: "Confect" }) },
+              open: [],
+            },
+          });
+          expect(backend.obligations).toEqual([
+            { kind: "access", group: "notes" },
+            { kind: "realm" },
+          ]);
+          expect(backend.laws).toEqual([
+            { law: "decodes", table: "notes" },
+            { law: "idScope", table: "notes" },
+          ]);
+          expect(backend.manifestDigest).toBe(
+            digestOf(yield* project.read("confect/_generated/manifest.ts")),
+          );
+          expect(backend.mounts).toEqual([
+            { path: "first", kit: "local" },
+            { path: "second", kit: "local" },
+          ]);
+          expect(backend.settings).toEqual([
+            { name: "MARKER", owner: "host", optional: true },
+            { name: "API_KEY", owner: "host", optional: false },
+            { name: "MODE", owner: "host", optional: false },
+          ]);
+          expect(backend.ports).toEqual({});
+          expect(yield* Project.writtenFiles(project.run)).toEqual([]);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "owes an access proof for a new public group",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* subjectProject;
+          yield* project.write(
+            "confect/archive.spec.ts",
+            Project.spec.replace('name: "list"', 'name: "archive"'),
+          );
+          yield* project.write(
+            "confect/archive.impl.ts",
+            Project.impl
+              .replaceAll("notes.spec", "archive.spec")
+              .replaceAll('"list"', '"archive"'),
+          );
+          yield* project.run;
+          expect((yield* testBackendOf(project)).obligations).toEqual([
+            { kind: "access", group: "archive" },
+            { kind: "access", group: "notes" },
+            { kind: "realm" },
+          ]);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "keeps a raw public function in its product group, which owes its access proof",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* subjectProject;
+          yield* project.write("confect/raw.spec.ts", rawSpec);
+          yield* project.write("confect/raw.impl.ts", rawImpl);
+          yield* project.run;
+          const backend = yield* testBackendOf(project);
+          expect(backend.groups.raw).toMatchObject({
+            owner: "product",
+            functions: { ping: expect.objectContaining({ _tag: "Convex" }) },
+          });
+          expect(backend.obligations).toContainEqual({
+            kind: "access",
+            group: "raw",
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "stops at an unknown raw export in convex/",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* subjectProject;
+          yield* project.write(
+            "convex/legacy.ts",
+            'import { mutationGeneric } from "convex/server";\nexport const wipe = mutationGeneric({ args: {}, handler: async () => null });\n',
+          );
+          expect(yield* Effect.flip(project.run)).toEqual(
+            new UnownedConvexEntrypointError({
+              filePaths: ["convex/legacy.ts"],
+            }),
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "registers only the modules a push registers",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* subjectProject;
+          yield* project.write(
+            "convex/notes.helpers.ts",
+            "export const helper = 1;\n",
+          );
+          yield* project.run;
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/testing.ts`,
+          );
+          expect(Object.keys(module.default.modules)).toEqual([
+            "_generated/testing.ts",
+            "http.ts",
+            "notes.ts",
+            "schema.ts",
+          ]);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "takes a door's owner, open functions, obligations and laws from a section's testing facts",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* subjectProject;
+          yield* project.write("confect/raw.spec.ts", rawSpec);
+          yield* project.write("confect/raw.impl.ts", rawImpl);
+          yield* project.write(
+            "confect/app.ts",
+            withTestingSection(yield* project.read("confect/app.ts")),
+          );
+          yield* project.run;
+          const backend = yield* testBackendOf(project);
+          expect(backend.groups.raw).toMatchObject({
+            owner: "door:fixture",
+            open: [],
+          });
+          expect(backend.groups.notes.open).toEqual(["list"]);
+          expect(backend.obligations).toEqual([
+            { kind: "access", group: "notes" },
+            { kind: "access", group: "raw" },
+            { kind: "realm" },
+            { kind: "roles" },
+          ]);
+          expect(backend.laws).toContainEqual({
+            law: "unique",
+            table: "notes",
+            index: "by_text",
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "refuses a section fact that names no public group",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* subjectProject;
+          yield* project.write(
+            "confect/app.ts",
+            withTestingSection(yield* project.read("confect/app.ts")),
+          );
+          const error = yield* Effect.flip(project.run);
+          expect(error).toMatchObject({
+            _tag: "InvalidManifestSectionError",
+            sectionKey: "fixture",
+          });
+          expect(error).toHaveProperty(
+            "reason",
+            "testing names door:fixture the owner of raw, which is no public group.",
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "lists a nested mount with its own kit before its parent, in mount order",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* subjectProject;
+          yield* project.write(
+            "components/inner/convex/convex.config.ts",
+            'import { defineComponent } from "convex/server";\nexport default defineComponent("inner");\n',
+          );
+          yield* project.write(
+            "components/inner/convex/schema.ts",
+            emptySchema,
+          );
+          yield* project.write(
+            "components/counter/convex/convex.config.ts",
+            (yield* project.read(
+              "components/counter/convex/convex.config.ts",
+            )).replace(
+              "export default defineComponent(",
+              'import inner from "../../inner/convex/convex.config";\nconst component = defineComponent(',
+            ) + "component.use(inner);\nexport default component;\n",
+          );
+          yield* project.run;
+          const generated = yield* project.read(
+            "confect/_generated/testing.ts",
+          );
+          expect(generated).toContain('"first/inner": first_innerKit,');
+          expect((yield* testBackendOf(project)).mounts).toEqual([
+            { path: "first/inner", kit: "local" },
+            { path: "first", kit: "local" },
+            { path: "second/inner", kit: "local" },
+            { path: "second", kit: "local" },
+          ]);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "holds every Schema.Redacted path of the app's and each mount's tables and functions",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* subjectProject;
+          yield* project.write(
+            "confect/tables/keys.ts",
+            `import { Table } from "@confect/core";
+import * as Schema from "effect/Schema";
+export default Table.make(() => Schema.Struct({ label: Schema.String, token: Schema.RedactedFromValue(Schema.String), backups: Schema.Array(Schema.RedactedFromValue(Schema.String)) }));
+`,
+          );
+          yield* project.write(
+            "confect/keys.spec.ts",
+            `import { FunctionSpec, GroupSpec } from "@confect/core";
+import * as Schema from "effect/Schema";
+export default GroupSpec.make().addFunction(FunctionSpec.publicMutation({ name: "rotate", args: () => ({ next: Schema.RedactedFromValue(Schema.String), label: Schema.String }), returns: () => Schema.Struct({ previous: Schema.optionalKey(Schema.RedactedFromValue(Schema.String)) }) }));
+`,
+          );
+          yield* project.write("confect/keys.impl.ts", keysImpl);
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.makeDirectory(
+            `${project.root}/components/counter/confect/_generated`,
+            { recursive: true },
+          );
+          yield* project.write(
+            "components/counter/confect/_generated/schema.ts",
+            `import { Table } from "@confect/core";
+import { DatabaseSchema } from "@confect/server";
+import * as Schema from "effect/Schema";
+const vault = Table.make(() => Schema.Struct({ key: Schema.RedactedFromValue(Schema.String) }))("vault");
+export default DatabaseSchema.make({ vault });
+`,
+          );
+          yield* project.write(
+            "components/counter/confect/_generated/spec.ts",
+            `import { FunctionSpec, GroupSpec, Spec } from "@confect/core";
+import * as Schema from "effect/Schema";
+const vault = GroupSpec.make().addFunction(FunctionSpec.internalQuery({ name: "reveal", args: () => ({}), returns: () => Schema.RedactedFromValue(Schema.String) }));
+export default Spec.fromGroups({ vault });
+`,
+          );
+          yield* project.run;
+          const backend = yield* testBackendOf(project);
+          const vault = {
+            tables: { vault: [["key"]] },
+            functions: { "vault:reveal": { args: [], returns: [[]] } },
+          };
+          expect(backend.secrets).toEqual({
+            tables: {
+              "": { keys: [["token"], ["backups", "*"]] },
+              first: vault.tables,
+              second: vault.tables,
+            },
+            functions: {
+              "": {
+                "keys:rotate": { args: [["next"]], returns: [["previous"]] },
+              },
+              first: vault.functions,
+              second: vault.functions,
+            },
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+  },
+);
+
 layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
   "codegenHandler with a backend declaration",
   (it) => {
@@ -2298,10 +2662,11 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             ),
           );
           expect(yield* Effect.flip(project.run)).toEqual(
-            new InvalidConvexConfigError({
+            new MissingTestKitError({
               configPath: "../../convex/convex.config.ts",
-              reason:
-                'the component package "no-test-kit" has no "no-test-kit/testing" or "no-test-kit/test" export. Tests register a component from another package through that entry\'s `register(t, name)`.',
+              mount: "kit",
+              component: "no-test-kit",
+              entries: ["no-test-kit/testing", "no-test-kit/test"],
             }),
           );
         }).pipe(Effect.scoped),

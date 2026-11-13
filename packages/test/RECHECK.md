@@ -564,3 +564,17 @@ on the local backend and on `TestConfect.layer(registry, { target: "kernel" })`.
   counters, 1 function and 4 bytes.
 - `groups/commitTs:maxAfterPending` pins that a pending timestamp patched to
   `9223372036854775807n` is a second write that stores the integer.
+
+## Generated test backend (row 8)
+
+- `TestBackend.layer` opens on the kernel target only. It runs each mount's
+  `init` through the `confectDeploy:steps` mutation production registers, with
+  `runInComponent` at each component path, so the subject adds no function.
+- Open on `main`: the order. The ADR and the kernel run a nested mount's `init`
+  before its parent's. Alchemy's `MountInit.run` runs a parent's `init`, then
+  visits its nested steps (`packages/alchemy/src/internal/MountInit.ts:96-106`).
+  The binary push and a kernel session therefore disagree for a nested
+  component whose parent's `init` reads it.
+- `secrets` carries static `Schema.Redacted` paths per component, table and
+  `module:export`. The kernel's artifact redaction (row 6, #142) does not read
+  it yet. `TestBackend.secretPolicy` gives its `table`, `args` and `returns`.

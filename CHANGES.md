@@ -154,6 +154,25 @@ The option is removed at promotion, when the kernel replaces convex-test.
 Changeset: `testconfect-kernel-target.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Generated test backend
+
+For an app, codegen writes `TestBackend` into `_generated/testing.ts` from the
+same `App.make` mounts and specs as the production entrypoints. It holds each
+public group with its owner and open list, an access obligation per public
+group, a realm obligation when `confect/auth.ts` declares verifiers, the
+schema laws `decodes` and `idScope` per table, ports, the manifest digest, the
+mounts in init order, the app settings, and every `Schema.Redacted` path in the
+tables and function codecs of the app and its mounts. A manifest section's new
+`testing` hook adds owners, open functions, obligations, laws and ports, which
+codegen checks against the specs. `TestBackend.layer` opens a kernel session:
+every module loads, each mount's `init` runs through the deploy modules a push
+runs, nested before parent, then the seed runs in one mutation. A missing app
+setting fails `TestConfigMissing`. The registry now lists only the modules a
+push registers, and a package mount with no test kit fails
+`MissingTestKitError`. This is row 8 of Frame's backend testing kernel (Frame
+ADR 0012). Changeset: `generated-test-backend.md`. Upstream: fork only, as the
+kernel is fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector

@@ -363,3 +363,31 @@ TestConfect.layer(schema, convexSchema, modules, {
 ```
 
 On the kernel, scheduled functions run on the kernel's own clock and never on a host timer, so `finishAllScheduledFunctions` does not call its `advanceTimers` callback. The default kernel clock follows the test's `Date`, fake timers included, so advancing fake timers and then calling `finishInProgressScheduledFunctions` runs the jobs that came due. A layer on one target can be provided inside a layer on the other, and each keeps its own backend while both are live. The option goes away once the kernel replaces convex-test.
+
+## The generated test backend
+
+For an app, `confect codegen` writes `TestBackend` into `confect/_generated/testing.ts`, beside the registry. It follows the same `confect/app.ts` mounts and specs as the production entrypoints, and it holds:
+
+- `groups`: every group with a public function, keyed by its path, such as `tasks/tasks`. Each has its `owner`, `"product"` or the door that hosts it, its public functions' refs, and `open`, the functions a role held for `public`, `signedIn` or `self` admits.
+- `obligations`: an `access` proof per public group, `realm` when `confect/auth.ts` declares verifiers, and whatever a manifest section declares.
+- `laws`: `decodes` and `idScope` for every table, and any law a section declares.
+- `ports`, `manifestDigest`, `mounts` (in the order their `init` runs), `settings` and `secrets`, every `Schema.Redacted` path in each table and each function's args and return value, mounted components included.
+
+A manifest section adds what Confect cannot know through `testing`, which returns owners, open functions, obligations, laws and ports. Codegen refuses a fact that names no such group, public function or table.
+
+```ts
+import { TestBackend } from "../confect/_generated/testing";
+
+it.effect("assigns a task", () =>
+  Effect.gen(function* () {
+    const t = yield* TestConfect.TestConfect<typeof TestBackend.app.schema>();
+    // ...
+  }).pipe(Effect.provide(TestBackend.layer({ config, seed }))),
+);
+```
+
+`TestBackend.layer` opens a fresh session on the test kernel. Every module of every mount loads. Then each mount's `init` runs through the deploy modules a push runs, nested mounts before their parent. Then `seed` runs in one mutation. `TestBackend.Session` reports each kit's standing sources and the inits that ran.
+
+### Configuration
+
+A session takes every app setting from `config`, and a required one is required by type. Codegen never reads `.env` or deployment state. A missing setting fails `TestConfigMissing` with the setting, the backend that declares it and this section's link. The session sets the values for its lifetime and restores the previous ones when it closes.
