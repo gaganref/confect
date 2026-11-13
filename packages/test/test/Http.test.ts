@@ -8,6 +8,7 @@ import {
   makeFunctionReference,
   mutationGeneric,
   queryGeneric,
+  type UserIdentity,
 } from "convex/server";
 import { v } from "convex/values";
 import * as Effect from "effect/Effect";
@@ -95,7 +96,7 @@ const modules = {
 
 interface HttpWorld extends KernelControls {
   readonly fetch: (path: string, init?: RequestInit) => Promise<Response>;
-  readonly withIdentity: (identity: { subject: string }) => HttpWorld;
+  readonly withIdentity: (identity: Partial<UserIdentity>) => HttpWorld;
 }
 
 const httpWorld = (): HttpWorld => convexTest(schema, modules);
