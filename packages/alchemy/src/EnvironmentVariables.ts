@@ -65,7 +65,7 @@ export const provider = Effect.gen(function* () {
     );
   return {
     diff: Effect.fn("EnvironmentVariables.diff")(function* ({ news, output }) {
-      if (!isResolved(news) || !output) return;
+      if (!isResolved(news) || output === undefined) return;
       if (news.url !== output.url)
         return yield* EnvironmentTargetChange.make({
           url: output.url,
@@ -98,7 +98,8 @@ export const provider = Effect.gen(function* () {
       );
       const ownedNames = output?.ownedNames ?? Rec.keys(olds.variables);
       const variables = select(observed, ownedNames);
-      if (output) return { ...output, deployKey: olds.deployKey, variables };
+      if (output !== undefined)
+        return { ...output, deployKey: olds.deployKey, variables };
       if (Rec.keys(variables).length === 0) return undefined;
       return Unowned({
         url,
@@ -114,8 +115,8 @@ export const provider = Effect.gen(function* () {
       news,
       output,
     }) {
-      if (!output) yield* checkpointCreate(fqn, instanceId, news);
-      if (output && output.url !== news.url)
+      if (output === undefined) yield* checkpointCreate(fqn, instanceId, news);
+      if (output !== undefined && output.url !== news.url)
         return yield* EnvironmentTargetChange.make({
           url: output.url,
         });
@@ -124,7 +125,7 @@ export const provider = Effect.gen(function* () {
         news.deployKey,
       );
       const ownedNames = Rec.keys(news.variables);
-      if (!output && (yield* shouldAdopt(fqn))) {
+      if (output === undefined && (yield* shouldAdopt(fqn))) {
         const variables = select(observed, ownedNames);
         output = {
           url: news.url,
@@ -168,7 +169,8 @@ export const provider = Effect.gen(function* () {
       }
       for (const name of previousNames) {
         if (Rec.has(desired, name)) continue;
-        const original = output ? valueAt(output.originals, name) : undefined;
+        const original =
+          output !== undefined ? valueAt(output.originals, name) : undefined;
         const current = valueAt(observed, name);
         if (original !== undefined) {
           if (

@@ -54,7 +54,7 @@ export const scalarDocs = <
         if (response !== undefined) return response;
         const spec = OpenApi.fromApi(api);
         const description = (tag: string) =>
-          !spec.info.description
+          spec.info.description === undefined || spec.info.description === ""
             ? ""
             : `<meta name="${tag}" content="${escapeAttribute(spec.info.description)}"/>`;
         response = HttpServerResponse.html(`<!doctype html>

@@ -142,7 +142,7 @@ export const writeConsumer = Effect.fn("ConsumerFixture.write")(function* (
 if (import.meta.main) {
   const [destination, version, tarballs] = Bun.argv.slice(2);
   const manifest = consumerManifest(version ?? "", tarballs);
-  if (!destination || Result.isFailure(manifest)) {
+  if (destination === "" || Result.isFailure(manifest)) {
     Console.error(
       "Usage: bun scripts/forkConsumer.ts <new-directory> <build-version> [absolute-tarball-directory]",
       Result.isFailure(manifest) ? manifest.failure : undefined,

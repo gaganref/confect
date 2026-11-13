@@ -431,7 +431,12 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
         projects.push(...page.items);
         if (!page.pagination.hasMore) return projects;
         const nextCursor = page.pagination.nextCursor;
-        if (!nextCursor || seenCursors.has(nextCursor)) {
+        if (
+          nextCursor === undefined ||
+          nextCursor === null ||
+          nextCursor === "" ||
+          seenCursors.has(nextCursor)
+        ) {
           return yield* ConvexApiError.make({
             operation: "listProjects",
             code: "InvalidPagination",

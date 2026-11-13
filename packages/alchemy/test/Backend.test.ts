@@ -63,7 +63,7 @@ describe("Backend", () => {
       const backend = yield* Backend("Backend", { ...props, env });
       const environment = backend.environment;
       expect(environment).toBeDefined();
-      if (!environment) return;
+      if (environment === undefined) return;
       expect(environment.LogicalId).toBe("Environment");
       expect(environment.Namespace?.Id).toBe("Backend");
       expect(environment.Props.variables).toBe(env);

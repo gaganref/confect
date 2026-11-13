@@ -132,7 +132,7 @@ const listen = (port: number) =>
       server.once("error", () => resume(Effect.undefined));
       server.listen(port, "127.0.0.1", () => resume(Effect.succeed(server)));
     }),
-    (server) => (server ? close(server) : Effect.void),
+    (server) => (server !== undefined ? close(server) : Effect.void),
   );
 
 const isFree = (port: number) =>

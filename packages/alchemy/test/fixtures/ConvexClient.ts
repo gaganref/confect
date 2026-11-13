@@ -80,7 +80,9 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
         const found = Option.getOrUndefined(
           Array.findFirst(state.projects, (value) => value.id === id),
         );
-        return found ? Effect.succeed(found) : Effect.fail(missing());
+        return found !== undefined
+          ? Effect.succeed(found)
+          : Effect.fail(missing());
       }),
     ),
     createProject: vi.fn((_teamId: number, input: { projectName: string }) =>
@@ -119,7 +121,9 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
         const found = Option.getOrUndefined(
           Array.findFirst(state.deployments, (value) => value.name === name),
         );
-        return found ? Effect.succeed(found) : Effect.fail(missing());
+        return found !== undefined
+          ? Effect.succeed(found)
+          : Effect.fail(missing());
       }),
     ),
     createDeployment: vi.fn(

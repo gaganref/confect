@@ -48,7 +48,7 @@ const nonJsonPath = (
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (
       key === "__proto__" ||
-      !descriptor?.enumerable ||
+      descriptor?.enumerable !== true ||
       !("value" in descriptor)
     )
       return at;

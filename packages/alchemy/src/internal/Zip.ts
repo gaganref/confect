@@ -77,7 +77,7 @@ const inflate = (data: Uint8Array) =>
   Effect.callback<Uint8Array, ZipError>((resume) => {
     inflateRaw(data, (error, output) =>
       resume(
-        error
+        error !== null
           ? Effect.fail(ZipError.make({ reason: "format" }))
           : Effect.succeed(output),
       ),

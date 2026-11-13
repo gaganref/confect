@@ -32,7 +32,7 @@ const cloudTarget = (
     /^(?:dev|prod|preview|custom):([a-z0-9]+(?:-[a-z0-9]+)*)\|[a-zA-Z0-9+/=_-]+$/.exec(
       Redacted.value(props.deployKey),
     );
-  if (!key || key[1] !== name)
+  if (key === null || key[1] !== name)
     return Result.fail(InvalidDeploymentTarget.make({ reason: "deployKey" }));
   return Result.succeed({
     _tag: "Cloud",
@@ -50,7 +50,7 @@ const localTarget = (
   const key = /^([a-z0-9]+(?:-[a-z0-9]+)*)\|[0-9a-f]+$/.exec(
     Redacted.value(props.deployKey),
   );
-  if (!key || key[1] !== name)
+  if (key === null || key[1] !== name)
     return Result.fail(InvalidDeploymentTarget.make({ reason: "deployKey" }));
   return Result.succeed({
     _tag: "SelfHosted",
@@ -76,7 +76,8 @@ export const deploy = Effect.fn("Code.deploy")(function* (
   yield* lock.withLock(
     target.deploymentName,
     Effect.gen(function* () {
-      if (props.prepare) yield* runner.prepare(props.prepare, props.cwd);
+      if (props.prepare !== undefined)
+        yield* runner.prepare(props.prepare, props.cwd);
       yield* runner.deploy(target, props.cwd);
       // WORKAROUND: Convex has no component `init` or install `args` in a
       // stable release, so each push runs every mount's `init` itself, inside

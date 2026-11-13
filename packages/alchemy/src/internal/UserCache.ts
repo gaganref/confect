@@ -20,8 +20,15 @@ export const userCache = Effect.gen(function* () {
   });
   const root =
     process.platform === "win32"
-      ? LOCALAPPDATA ||
-        (USERPROFILE && path.join(USERPROFILE, "AppData", "Local"))
-      : HOME && path.join(HOME, ".cache");
-  return root && path.isAbsolute(root) ? Option.some(root) : Option.none();
+      ? LOCALAPPDATA !== ""
+        ? LOCALAPPDATA
+        : USERPROFILE === ""
+          ? ""
+          : path.join(USERPROFILE, "AppData", "Local")
+      : HOME === ""
+        ? ""
+        : path.join(HOME, ".cache");
+  return root !== "" && path.isAbsolute(root)
+    ? Option.some(root)
+    : Option.none();
 });

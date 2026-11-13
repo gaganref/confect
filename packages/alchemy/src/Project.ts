@@ -81,7 +81,7 @@ export const provider = Effect.gen(function* () {
   });
   return {
     diff: Effect.fn("Project.diff")(function* ({ news, output }) {
-      if (!isResolved(news) || !output) return;
+      if (!isResolved(news) || output === undefined) return;
       if (output.teamId !== news.teamId)
         return yield* ProjectTeamChange.make({
           projectId: output.projectId,
@@ -91,7 +91,7 @@ export const provider = Effect.gen(function* () {
       const project = yield* client
         .getProject(output.projectId)
         .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
-      if (!project) return { action: "update" };
+      if (project === undefined) return { action: "update" };
       if (project.teamId !== news.teamId)
         return yield* ProjectTeamChange.make({
           projectId: project.id,
@@ -107,18 +107,18 @@ export const provider = Effect.gen(function* () {
       olds,
       output,
     }) {
-      if (output) {
+      if (output !== undefined) {
         const project = yield* client
           .getProject(output.projectId)
           .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
-        return project ? attributes(project) : undefined;
+        return project !== undefined ? attributes(project) : undefined;
       }
       if (olds.teamId === undefined) return;
       const project = yield* find(
         olds.teamId,
         olds.name ?? (yield* resourceName("project", fqn, instanceId)),
       );
-      return project ? Unowned(attributes(project)) : undefined;
+      return project !== undefined ? Unowned(attributes(project)) : undefined;
     }),
     reconcile: Effect.fn("Project.reconcile")(function* ({
       fqn,
@@ -126,31 +126,32 @@ export const provider = Effect.gen(function* () {
       news,
       output,
     }) {
-      if (!output) yield* checkpointCreate(fqn, instanceId, news);
-      if (output && output.teamId !== news.teamId)
+      if (output === undefined) yield* checkpointCreate(fqn, instanceId, news);
+      if (output !== undefined && output.teamId !== news.teamId)
         return yield* ProjectTeamChange.make({
           projectId: output.projectId,
           teamId: output.teamId,
           requestedTeamId: news.teamId,
         });
-      let project = output
-        ? yield* client
-            .getProject(output.projectId)
-            .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void))
-        : undefined;
+      let project =
+        output !== undefined
+          ? yield* client
+              .getProject(output.projectId)
+              .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void))
+          : undefined;
       const name =
         news.name ??
         output?.name ??
         (yield* resourceName("project", fqn, instanceId));
-      if (!project) {
+      if (project === undefined) {
         const existing = yield* find(news.teamId, name);
-        if (existing && !(yield* shouldAdopt(fqn)))
+        if (existing !== undefined && !(yield* shouldAdopt(fqn)))
           return yield* new OwnedBySomeoneElse({
             message: "An existing project requires explicit adoption.",
             resourceType: Project.Type,
             physicalName: name,
           });
-        if (existing) {
+        if (existing !== undefined) {
           project = existing;
           yield* checkpointCreate(fqn, instanceId, news, attributes(existing));
         } else {

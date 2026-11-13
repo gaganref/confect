@@ -1302,7 +1302,8 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
           : pipe(
               `${pipe(parentHttpPrefix, String.replace(/\/+$/, ""))}${localPrefix}`,
               String.replace(/\/+$/, ""),
-            ) || "/";
+              (joined) => (joined === "" ? "/" : joined),
+            );
       if (
         httpPrefix !== undefined &&
         ((yield* fs.exists(path.join(resolved, "http.ts"))) ||

@@ -70,7 +70,7 @@ export const provider = Effect.gen(function* () {
   ) => DeployKeyRecoveryRequired.make({ deploymentName, name, keyIds });
   return {
     diff: Effect.fn("DeployKey.diff")(function* ({ news, output }) {
-      if (!isResolved(news) || !output) return;
+      if (!isResolved(news) || output === undefined) return;
       for (const field of ["deploymentName", "name"] as const) {
         if (news[field] !== undefined && news[field] !== output[field])
           return yield* DeployKeyChangeRequiresNewResource.make({
@@ -83,7 +83,7 @@ export const provider = Effect.gen(function* () {
       const key = Option.getOrUndefined(
         Array.findFirst(keys, (candidate) => candidate.id === output.keyId),
       );
-      if (!key || !Redacted.isRedacted(output.deployKey))
+      if (key === undefined || !Redacted.isRedacted(output.deployKey))
         return yield* recover(output.deploymentName, output.name, [
           output.keyId,
         ]);
@@ -120,11 +120,12 @@ export const provider = Effect.gen(function* () {
         olds.name ??
         (yield* resourceName("key", fqn, instanceId));
       const keys = yield* client.listDeployKeys(deploymentName);
-      if (output) {
+      if (output !== undefined) {
         const key = Option.getOrUndefined(
           Array.findFirst(keys, (candidate) => candidate.id === output.keyId),
         );
-        if (!key) return yield* recover(deploymentName, name, [output.keyId]);
+        if (key === undefined)
+          return yield* recover(deploymentName, name, [output.keyId]);
         if (!Redacted.isRedacted(output.deployKey))
           return yield* recover(deploymentName, name, [key.id]);
         return {
@@ -147,12 +148,12 @@ export const provider = Effect.gen(function* () {
       news,
       output,
     }) {
-      if (!output) yield* checkpointCreate(fqn, instanceId, news);
+      if (output === undefined) yield* checkpointCreate(fqn, instanceId, news);
       const name =
         news.name ??
         output?.name ??
         (yield* resourceName("key", fqn, instanceId));
-      if (output) {
+      if (output !== undefined) {
         for (const field of ["deploymentName", "name"] as const) {
           if (news[field] !== undefined && news[field] !== output[field])
             return yield* DeployKeyChangeRequiresNewResource.make({
@@ -165,7 +166,7 @@ export const provider = Effect.gen(function* () {
         const key = Option.getOrUndefined(
           Array.findFirst(keys, (candidate) => candidate.id === output.keyId),
         );
-        if (!key || !Redacted.isRedacted(output.deployKey))
+        if (key === undefined || !Redacted.isRedacted(output.deployKey))
           return yield* recover(output.deploymentName, name, [output.keyId]);
         if (!hasName(key.name, name))
           return yield* DeployKeyChangeRequiresNewResource.make({
@@ -212,7 +213,7 @@ export const provider = Effect.gen(function* () {
         hasName(key.name, name),
       );
       const key = matches[0];
-      if (matches.length !== 1 || !key)
+      if (matches.length !== 1 || key === undefined)
         return yield* recover(
           news.deploymentName,
           name,

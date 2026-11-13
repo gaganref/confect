@@ -20,7 +20,11 @@ export const checkpointCreate = Effect.fn("Lifecycle.checkpointCreate")(
     const store = yield* state.value;
     const key = { stack: stack.value.name, stage: stack.value.stage, fqn };
     const row = yield* store.get(key);
-    if (!row || row.kind === "action" || row.instanceId !== instanceId)
+    if (
+      row === undefined ||
+      row.kind === "action" ||
+      row.instanceId !== instanceId
+    )
       return yield* LifecycleStateError.make({ fqn });
     if (row.status !== "creating") return;
     yield* store.set({

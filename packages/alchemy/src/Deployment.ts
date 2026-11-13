@@ -118,12 +118,12 @@ export const provider = Effect.gen(function* () {
   });
   return {
     diff: Effect.fn("Deployment.diff")(function* ({ news, output }) {
-      if (!isResolved(news) || !output) return;
+      if (!isResolved(news) || output === undefined) return;
       yield* validate(output, news);
       const deployment = yield* client
         .getDeployment(output.name)
         .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
-      if (!deployment) return { action: "update" };
+      if (deployment === undefined) return { action: "update" };
       const current = yield* attributes(deployment);
       yield* validate(current, news);
       if ((news.reference ?? output.reference) !== current.reference)
@@ -135,18 +135,20 @@ export const provider = Effect.gen(function* () {
       olds,
       output,
     }) {
-      if (output) {
+      if (output !== undefined) {
         const deployment = yield* client
           .getDeployment(output.name)
           .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
-        return deployment ? yield* attributes(deployment) : undefined;
+        return deployment !== undefined
+          ? yield* attributes(deployment)
+          : undefined;
       }
       if (olds.projectId === undefined) return;
       const deployment = yield* find(
         olds.projectId,
         olds.reference ?? (yield* resourceName("deployment", fqn, instanceId)),
       );
-      return deployment
+      return deployment !== undefined
         ? yield* Effect.map(attributes(deployment), Unowned)
         : undefined;
     }),
@@ -156,26 +158,27 @@ export const provider = Effect.gen(function* () {
       news,
       output,
     }) {
-      if (!output) yield* checkpointCreate(fqn, instanceId, news);
-      if (output) yield* validate(output, news);
-      let deployment = output
-        ? yield* client
-            .getDeployment(output.name)
-            .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void))
-        : undefined;
+      if (output === undefined) yield* checkpointCreate(fqn, instanceId, news);
+      if (output !== undefined) yield* validate(output, news);
+      let deployment =
+        output !== undefined
+          ? yield* client
+              .getDeployment(output.name)
+              .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void))
+          : undefined;
       const reference =
         news.reference ??
         output?.reference ??
         (yield* resourceName("deployment", fqn, instanceId));
-      if (!deployment) {
+      if (deployment === undefined) {
         const existing = yield* find(news.projectId, reference);
-        if (existing && !(yield* shouldAdopt(fqn)))
+        if (existing !== undefined && !(yield* shouldAdopt(fqn)))
           return yield* new OwnedBySomeoneElse({
             message: "An existing deployment requires explicit adoption.",
             resourceType: Deployment.Type,
             physicalName: reference,
           });
-        if (existing) {
+        if (existing !== undefined) {
           const adopted = yield* attributes(existing);
           yield* validate(adopted, news);
           yield* checkpointCreate(fqn, instanceId, news, adopted);
@@ -192,7 +195,7 @@ export const provider = Effect.gen(function* () {
       yield* validate(current, news);
       if (current.reference !== reference) {
         const existing = yield* find(news.projectId, reference);
-        if (existing && existing.name !== current.name)
+        if (existing !== undefined && existing.name !== current.name)
           return yield* new OwnedBySomeoneElse({
             message: "The requested deployment reference is already in use.",
             resourceType: Deployment.Type,

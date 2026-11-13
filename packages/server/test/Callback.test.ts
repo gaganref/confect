@@ -1087,7 +1087,9 @@ describe("callback carrier", () => {
             const callValue = yield* call;
             expect(callValue).toEqual({
               count: "1",
-              ...(enabled && options ? { observe: { boundary } } : {}),
+              ...(enabled && options !== undefined
+                ? { observe: { boundary } }
+                : {}),
             });
           }
           for (const handle of [mutationHandle, actionHandle]) {
@@ -1098,7 +1100,7 @@ describe("callback carrier", () => {
             }).pipe(Effect.provide(schedulers));
             expect(scheduled.splice(0)).toEqual(
               Arr.map(["Scheduler.runAfter", "Scheduler.runAt"], (boundary) =>
-                enabled && options
+                enabled && options !== undefined
                   ? { count: "1", observe: { boundary } }
                   : { count: "1" },
               ),
