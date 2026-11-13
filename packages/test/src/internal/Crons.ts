@@ -961,7 +961,7 @@ export const parseSpec = (
     Result.fail(
       KernelRefusal.InvalidCron.make({
         componentPath,
-        name,
+        cronName: name,
         message: `Cron job "${name}" is invalid: ${reason}.`,
       }),
     );

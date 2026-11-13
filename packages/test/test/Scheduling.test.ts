@@ -680,7 +680,7 @@ describe("standing sources", () => {
         expect(failureResult).toMatchObject({
           _tag: "UnknownStandingSource",
           componentPath: "beat",
-          name: "public:rescheduler",
+          functionName: "public:rescheduler",
         });
       }),
   );
@@ -1087,7 +1087,7 @@ describe("declared cron jobs", () => {
         const failureResult = yield* failure(() => openIn(ofQuery));
         expect(failureResult).toMatchObject({
           _tag: "InvalidCron",
-          name: "reads",
+          cronName: "reads",
           message: expect.stringContaining(
             "schedules a query function, only actions and mutations can be scheduled",
           ),
@@ -1117,7 +1117,7 @@ describe("declared cron jobs", () => {
         const failureResult = yield* failure(() => daily.query(jobs.marks, {}));
         expect(failureResult).toMatchObject({
           _tag: "CronRandomUnavailable",
-          name: "report",
+          cronName: "report",
         });
         const interval = cronControls((crons) =>
           crons.interval("pulse", { seconds: 5 }, ticks.log, {

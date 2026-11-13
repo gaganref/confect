@@ -110,7 +110,7 @@ export class UnknownStandingSource extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("UnknownStandingSource", {
   componentPath: Schema.String,
-  name: Schema.String,
+  functionName: Schema.String,
   message: Schema.String,
 }) {}
 
@@ -123,7 +123,7 @@ export class InvalidCron extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("InvalidCron", {
   componentPath: Schema.String,
-  name: Schema.String,
+  cronName: Schema.String,
   message: Schema.String,
 }) {}
 
@@ -137,7 +137,7 @@ export class CronRandomUnavailable extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("CronRandomUnavailable", {
   componentPath: Schema.String,
-  name: Schema.String,
+  cronName: Schema.String,
   message: Schema.String,
 }) {}
 
@@ -150,7 +150,7 @@ export class CronAbortsBinary extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("CronAbortsBinary", {
   componentPath: Schema.String,
-  name: Schema.String,
+  cronName: Schema.String,
   date: Schema.String,
   message: Schema.String,
 }) {}
@@ -166,7 +166,7 @@ export class SnapshotCronMismatch extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("SnapshotCronMismatch", {
   componentPath: Schema.String,
-  name: Schema.String,
+  cronName: Schema.String,
   reason: Schema.Literals(["undeclared", "missing", "changed"]),
   message: Schema.String,
 }) {}
@@ -228,7 +228,7 @@ export class SnapshotWorldUnresolved extends Schema.TaggedError<
   SnapshotWorldUnresolved,
   { readonly brand: unique symbol }
 >()("SnapshotWorldUnresolved", {
-  name: Schema.String,
+  worldName: Schema.String,
   reason: Schema.Literals(["missing", "ambiguous"]),
   message: Schema.String,
 }) {}

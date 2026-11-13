@@ -682,7 +682,7 @@ describe("snapshot restore", () => {
         );
         expect(failureResult3).toMatchObject({
           _tag: "SnapshotWorldUnresolved",
-          name: "mail",
+          worldName: "mail",
           reason: "missing",
         });
         expect(worldless.jobs()).toEqual([]);
@@ -1482,7 +1482,7 @@ describe("snapshot cron state", () => {
         expect(intoResult).toMatchObject({
           error: {
             _tag: "SnapshotCronMismatch",
-            name: "expression",
+            cronName: "expression",
             reason: "undeclared",
           },
           draws: 0,
@@ -1496,7 +1496,7 @@ describe("snapshot cron state", () => {
         expect(intoResult2).toMatchObject({
           error: {
             _tag: "SnapshotCronMismatch",
-            name: "extra",
+            cronName: "extra",
             reason: "missing",
           },
           draws: 0,
@@ -1516,7 +1516,7 @@ describe("snapshot cron state", () => {
         expect(intoResult3).toMatchObject({
           error: {
             _tag: "SnapshotCronMismatch",
-            name: "interval",
+            cronName: "interval",
             reason: "changed",
           },
           draws: 0,
@@ -1532,7 +1532,7 @@ describe("snapshot cron state", () => {
         expect(intoResult4).toMatchObject({
           error: {
             _tag: "SnapshotCronMismatch",
-            name: "hourly",
+            cronName: "hourly",
             reason: "changed",
           },
           draws: 0,
@@ -1557,7 +1557,7 @@ describe("snapshot cron state", () => {
         );
         expect(failureResult).toMatchObject({
           _tag: "SnapshotWorldUnresolved",
-          name: "crons",
+          worldName: "crons",
           reason: "missing",
         });
         const named = convexTest({

@@ -401,7 +401,7 @@ const unresolvedWorld = (
   reason: "missing" | "ambiguous",
 ): KernelRefusal.SnapshotWorldUnresolved =>
   KernelRefusal.SnapshotWorldUnresolved.make({
-    name,
+    worldName: name,
     reason,
     message:
       reason === "missing"
@@ -764,7 +764,7 @@ export class World {
       const refuse = (message: string) =>
         KernelRefusal.InvalidCron.make({
           componentPath: component.path,
-          name: "",
+          cronName: "",
           message,
         });
       if (!("default" in module)) {
@@ -805,7 +805,7 @@ export class World {
       if (spec.schedule.kind !== "interval" && world === undefined) {
         throw KernelRefusal.CronRandomUnavailable.make({
           componentPath,
-          name: spec.name,
+          cronName: spec.name,
           message: `Cron job "${spec.name}" runs on a ${spec.schedule.kind} schedule, which Convex delays by a random number of seconds, and no test world was bound when the backend opened to draw it from. The kernel holds no generator. Open the backend under a bound invocation, whose world's random stream the delay draws from.`,
         });
       }
@@ -842,7 +842,7 @@ export class World {
     const refuse = (reason: string) =>
       KernelRefusal.InvalidCron.make({
         componentPath: component.path,
-        name: spec.name,
+        cronName: spec.name,
         message: `The cron job '${spec.name}' ${reason}: ${spec.udfPath}`,
       });
     if (func === undefined) {
@@ -885,7 +885,7 @@ export class World {
     throw result.failure._tag === "BinaryAborts"
       ? KernelRefusal.CronAbortsBinary.make({
           componentPath: cron.componentPath,
-          name,
+          cronName: name,
           date: result.failure.date,
           message: `Cron job "${name}" searches "${expression}" from ${result.failure.date}, a Monday, where saffron subtracts below zero (saffron/src/lib.rs:663). The Convex binary is built with overflow checks and aborts there, so the kernel refuses rather than answer.`,
         })
@@ -905,7 +905,7 @@ export class World {
         if (func?.isMutation !== true && func?.isAction !== true) {
           throw KernelRefusal.UnknownStandingSource.make({
             componentPath: component.path,
-            name,
+            functionName: name,
             message: `Component "${component.path}" declares "${name}" standing, but exports no mutation or action by that name. Name the self-rescheduling function as module:export.`,
           });
         }
@@ -1502,7 +1502,7 @@ export class World {
     ) =>
       KernelRefusal.SnapshotCronMismatch.make({
         componentPath,
-        name,
+        cronName: name,
         reason,
         message: `The snapshot's cron job "${name}" of component "${componentPath}" ${detail}. Restore into an app that declares the same cron jobs.`,
       });
@@ -1551,7 +1551,7 @@ export class World {
       ) {
         throw KernelRefusal.CronRandomUnavailable.make({
           componentPath: image.componentPath,
-          name: image.name,
+          cronName: image.name,
           message: `The snapshot's cron job "${image.name}" runs on a ${declaration.spec.schedule.kind} schedule but names no test world to draw its delays from.`,
         });
       }
