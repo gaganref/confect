@@ -15,10 +15,10 @@ export const origin = "https://some.convex.site";
 /**
  * A path given to `fetch` must start with `/`, as convex-test requires.
  */
-export class InvalidFetchPath extends Schema.TaggedError<InvalidFetchPath>()(
-  "InvalidFetchPath",
-  { path: Schema.String, message: Schema.String },
-) {}
+export class InvalidFetchPath extends Schema.TaggedError<
+  InvalidFetchPath,
+  { readonly brand: unique symbol }
+>()("InvalidFetchPath", { path: Schema.String, message: Schema.String }) {}
 
 /**
  * The URL a test's `fetch(path)` requests: the path, query and fragment on the
@@ -30,7 +30,7 @@ export const requestUrl = (
   typeof path === "string" && pipe(path, Str.startsWith("/"))
     ? Result.succeed(new URL(`${origin}${path}`))
     : Result.fail(
-        new InvalidFetchPath({
+        InvalidFetchPath.make({
           path: String(path),
           message: "Path given to `t.fetch` must start with a `/`",
         }),

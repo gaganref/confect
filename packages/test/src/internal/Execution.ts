@@ -400,7 +400,7 @@ const unresolvedWorld = (
   name: string,
   reason: "missing" | "ambiguous",
 ): KernelRefusal.SnapshotWorldUnresolved =>
-  new KernelRefusal.SnapshotWorldUnresolved({
+  KernelRefusal.SnapshotWorldUnresolved.make({
     name,
     reason,
     message:
@@ -423,7 +423,7 @@ const running = (
   count: number,
   what: string,
 ) =>
-  new KernelRefusal.SnapshotWorldRunning({
+  KernelRefusal.SnapshotWorldRunning.make({
     registry,
     count,
     message: `The test backend is running ${count} ${what}, whose effects a snapshot would split. Await them first.`,
@@ -698,7 +698,7 @@ export class World {
     standing: ReadonlyArray<string> = [],
   ) {
     if (this.opened !== undefined) {
-      throw new KernelRefusal.RegisteredAfterOpen({
+      throw KernelRefusal.RegisteredAfterOpen.make({
         componentPath,
         message: `Component "${componentPath}" was registered after the test backend opened. Register every component before the first call.`,
       });
@@ -762,7 +762,7 @@ export class World {
       const module = component.loaded.get("crons");
       if (module === undefined) continue;
       const refuse = (message: string) =>
-        new KernelRefusal.InvalidCron({
+        KernelRefusal.InvalidCron.make({
           componentPath: component.path,
           name: "",
           message,
@@ -803,7 +803,7 @@ export class World {
     const scheduled = new Map<string, CronJob>();
     for (const { componentPath, spec } of this.declared) {
       if (spec.schedule.kind !== "interval" && world === undefined) {
-        throw new KernelRefusal.CronRandomUnavailable({
+        throw KernelRefusal.CronRandomUnavailable.make({
           componentPath,
           name: spec.name,
           message: `Cron job "${spec.name}" runs on a ${spec.schedule.kind} schedule, which Convex delays by a random number of seconds, and no test world was bound when the backend opened to draw it from. The kernel holds no generator. Open the backend under a bound invocation, whose world's random stream the delay draws from.`,
@@ -840,7 +840,7 @@ export class World {
     );
     const func = component.loaded.get(modulePath!)?.[exportName];
     const refuse = (reason: string) =>
-      new KernelRefusal.InvalidCron({
+      KernelRefusal.InvalidCron.make({
         componentPath: component.path,
         name: spec.name,
         message: `The cron job '${spec.name}' ${reason}: ${spec.udfPath}`,
@@ -883,7 +883,7 @@ export class World {
     const { name, schedule } = cron.spec;
     const expression = schedule.kind === "cron" ? schedule.expression : name;
     throw result.failure._tag === "BinaryAborts"
-      ? new KernelRefusal.CronAbortsBinary({
+      ? KernelRefusal.CronAbortsBinary.make({
           componentPath: cron.componentPath,
           name,
           date: result.failure.date,
@@ -903,7 +903,7 @@ export class World {
         const [modulePath, exportName = "default"] = pipe(name, Str.split(":"));
         const func = component.loaded.get(modulePath!)?.[exportName];
         if (func?.isMutation !== true && func?.isAction !== true) {
-          throw new KernelRefusal.UnknownStandingSource({
+          throw KernelRefusal.UnknownStandingSource.make({
             componentPath: component.path,
             name,
             message: `Component "${component.path}" declares "${name}" standing, but exports no mutation or action by that name. Name the self-rescheduling function as module:export.`,
@@ -1137,7 +1137,7 @@ export class World {
       const held = this.holding.get(id);
       return held === undefined
         ? Promise.reject(
-            new KernelRefusal.StaleAttempt({
+            KernelRefusal.StaleAttempt.make({
               id,
               message: `The test kernel holds no attempt "${id}". It was already applied, or never prepared.`,
             }),
@@ -1409,7 +1409,7 @@ export class World {
     const registered = [...this.components.keys()].sort();
     const snapshot = [...image.components].sort();
     if (Arr.join(registered, "\u0000") !== Arr.join(snapshot, "\u0000")) {
-      throw new KernelRefusal.SnapshotComponentMismatch({
+      throw KernelRefusal.SnapshotComponentMismatch.make({
         snapshot,
         registered,
         message: `The snapshot holds components ${pipe(
@@ -1425,7 +1425,7 @@ export class World {
     }
     for (const [id, { functionPath }] of image.jobs) {
       if (!this.exports(functionPath)) {
-        throw new KernelRefusal.SnapshotJobInconsistent({
+        throw KernelRefusal.SnapshotJobInconsistent.make({
           id,
           reason: "function",
           message: `The snapshot's job ${id} targets ${functionPath.udfPath} in "${functionPath.componentPath}", which that component does not export.`,
@@ -1500,7 +1500,7 @@ export class World {
       reason: KernelRefusal.SnapshotCronMismatch["reason"],
       detail: string,
     ) =>
-      new KernelRefusal.SnapshotCronMismatch({
+      KernelRefusal.SnapshotCronMismatch.make({
         componentPath,
         name,
         reason,
@@ -1549,7 +1549,7 @@ export class World {
         declaration.spec.schedule.kind !== "interval" &&
         world === undefined
       ) {
-        throw new KernelRefusal.CronRandomUnavailable({
+        throw KernelRefusal.CronRandomUnavailable.make({
           componentPath: image.componentPath,
           name: image.name,
           message: `The snapshot's cron job "${image.name}" runs on a ${declaration.spec.schedule.kind} schedule but names no test world to draw its delays from.`,
@@ -1616,14 +1616,14 @@ export class World {
         ),
       held: () => {
         const held = [...this.holding.keys()];
-        return new KernelRefusal.SnapshotWorldBusy({
+        return KernelRefusal.SnapshotWorldBusy.make({
           version,
           held,
           message: `The test backend holds attempts ${Arr.join(held, ", ")}, which a snapshot does not carry. Apply them first.`,
         });
       },
       subscribers: (count) =>
-        new KernelRefusal.SnapshotSubscribed({
+        KernelRefusal.SnapshotSubscribed.make({
           subscribers: count,
           message: `The test backend has ${count} subscribers, whose identity versions a restore would rewind. Restore into a test backend no client has subscribed to.`,
         }),
@@ -1634,7 +1634,7 @@ export class World {
       if (counts[key] > 0) throw refusals[key](counts[key]);
     }
     if (operation === "restore" && version !== 0) {
-      throw new KernelRefusal.SnapshotWorldBusy({
+      throw KernelRefusal.SnapshotWorldBusy.make({
         version,
         held: [],
         message: `The test backend has committed ${version} versions of its own. Restore a snapshot into a fresh test backend.`,
@@ -1760,7 +1760,7 @@ export class World {
       if (ran === budget) {
         const pending = Scheduling.functions(left);
         return Promise.reject(
-          new KernelRefusal.DrainBudgetExceeded({
+          KernelRefusal.DrainBudgetExceeded.make({
             budget,
             pending,
             message: `Scheduled functions ran ${budget} jobs and work remains: ${pipe(
@@ -1932,7 +1932,7 @@ export class World {
     if (writes.length === 0) return this.state.commitTs;
     const commitTs = this.runtime.commitTs(this.state.version + 1);
     if (commitTs <= this.state.commitTs) {
-      throw new KernelRefusal.CommitTsNotIncreasing({
+      throw KernelRefusal.CommitTsNotIncreasing.make({
         version: this.state.version + 1,
         previous: this.state.commitTs,
         commitTs,
@@ -2345,7 +2345,7 @@ export class World {
       if (view.number === lastAttempt) {
         return Promise.resolve({
           kind: "exhausted",
-          error: new KernelRefusal.OptimisticConcurrencyControlFailure({
+          error: KernelRefusal.OptimisticConcurrencyControlFailure.make({
             attempts: lastAttempt,
             message: `Documents read by the mutation changed before each of its ${lastAttempt} attempts could commit.`,
           }),
@@ -3279,7 +3279,7 @@ export class World {
       attempt,
     );
     if (found === null) {
-      throw new Storage.StorageIdNotFound({
+      throw Storage.StorageIdNotFound.make({
         storageId: String(storageId),
         message: `storage id ${String(storageId)} not found`,
       });
@@ -3541,7 +3541,7 @@ const budgetOf = (limits: unknown): Metering.Budget | undefined => {
 };
 
 const closed = (execution: Execution, operation: string) =>
-  new KernelRefusal.ClosedAttempt({
+  KernelRefusal.ClosedAttempt.make({
     operation,
     message: `"${operation}" reached mutation ${execution.udfPath} after it returned and its syscalls settled. Await every read and write inside the handler.`,
   });

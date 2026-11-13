@@ -338,12 +338,15 @@ const storeInMutation = FunctionImpl.make(
     }),
 );
 
-class ProbeRefused extends Schema.TaggedError<ProbeRefused>()("ProbeRefused", {
+class ProbeRefused extends Schema.TaggedError<
+  ProbeRefused,
+  { readonly brand: unique symbol }
+>()("ProbeRefused", {
   message: Schema.String,
 }) {}
 
 const refused = (error: unknown) =>
-  new ProbeRefused({ message: (error as Error).message });
+  ProbeRefused.make({ message: (error as Error).message });
 
 // The file limit probes: store `count` files of `size` bytes, then read `ids`,
 // one call at a time so each is counted before the next is checked. A refusal

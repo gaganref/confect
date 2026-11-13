@@ -78,26 +78,26 @@ const overLimitHelp =
  * short message and `message` its text, which the function receives as a
  * catchable error.
  */
-export class TransactionLimitExceeded extends Schema.TaggedError<TransactionLimitExceeded>()(
-  "TransactionLimitExceeded",
-  {
-    code: Schema.Literals([
-      "TooManyReads",
-      "TooManyDocumentsRead",
-      "TooManyBytesRead",
-      "TooManyWrites",
-      "TooManyBytesWritten",
-      "TooManyFunctionsScheduled",
-      "ScheduledFunctionsArgumentsTooLarge",
-      "TooManyFilesWritten",
-      "FilesWrittenTooLarge",
-      "TooManyFilesRead",
-      "FilesReadTooLarge",
-    ]),
-    limit: Schema.Int,
-    message: Schema.String,
-  },
-) {}
+export class TransactionLimitExceeded extends Schema.TaggedError<
+  TransactionLimitExceeded,
+  { readonly brand: unique symbol }
+>()("TransactionLimitExceeded", {
+  code: Schema.Literals([
+    "TooManyReads",
+    "TooManyDocumentsRead",
+    "TooManyBytesRead",
+    "TooManyWrites",
+    "TooManyBytesWritten",
+    "TooManyFunctionsScheduled",
+    "ScheduledFunctionsArgumentsTooLarge",
+    "TooManyFilesWritten",
+    "FilesWrittenTooLarge",
+    "TooManyFilesRead",
+    "FilesReadTooLarge",
+  ]),
+  limit: Schema.Int,
+  message: Schema.String,
+}) {}
 
 const byteUnits: ReadonlyArray<readonly [number, string]> = [
   [2 ** 30, "GiB"],
@@ -440,7 +440,7 @@ export class Meter {
       );
     }
     return shared.intervals > limits.databaseQueries
-      ? new TransactionLimitExceeded({
+      ? TransactionLimitExceeded.make({
           code: "TooManyReads",
           limit: limits.databaseQueries,
           message: `Too many reads in a single function execution (limit: ${limits.databaseQueries}). ${overLimitHelp}`,
@@ -473,14 +473,14 @@ export class Meter {
     shared.documentsRead += 1;
     shared.bytesRead += getConvexSize(document);
     if (shared.documentsRead > limits.documentsRead) {
-      return new TransactionLimitExceeded({
+      return TransactionLimitExceeded.make({
         code: "TooManyDocumentsRead",
         limit: limits.documentsRead,
         message: `Too many documents read in a single function execution (limit: ${limits.documentsRead}). ${overLimitHelp}`,
       });
     }
     if (shared.bytesRead > limits.bytesRead) {
-      return new TransactionLimitExceeded({
+      return TransactionLimitExceeded.make({
         code: "TooManyBytesRead",
         limit: limits.bytesRead,
         message: `Too many bytes read in a single function execution (limit: ${limits.bytesRead} bytes). ${overLimitHelp}`,
@@ -502,14 +502,14 @@ export class Meter {
     this.bytesWritten += document === null ? 0 : getConvexSize(document);
     const used = this.used();
     if (used.documentsWritten > limits.documentsWritten) {
-      return new TransactionLimitExceeded({
+      return TransactionLimitExceeded.make({
         code: "TooManyWrites",
         limit: limits.documentsWritten,
         message: `Too many writes in a single function execution (limit: ${limits.documentsWritten})`,
       });
     }
     if (used.bytesWritten > limits.bytesWritten) {
-      return new TransactionLimitExceeded({
+      return TransactionLimitExceeded.make({
         code: "TooManyBytesWritten",
         limit: limits.bytesWritten,
         message: `Too many bytes written in a single function execution (limit: ${formatBytes(limits.bytesWritten)})`,
@@ -528,7 +528,7 @@ export class Meter {
     const shared = this.shared;
     const size = getConvexSize([args]);
     if (shared.functionsScheduled >= limits.functionsScheduled) {
-      return new TransactionLimitExceeded({
+      return TransactionLimitExceeded.make({
         code: "TooManyFunctionsScheduled",
         limit: limits.functionsScheduled,
         message: `Too many functions scheduled by this mutation (limit: ${limits.functionsScheduled})`,
@@ -538,7 +538,7 @@ export class Meter {
       shared.scheduledFunctionArgsBytes + size >
       limits.scheduledFunctionArgsBytes
     ) {
-      return new TransactionLimitExceeded({
+      return TransactionLimitExceeded.make({
         code: "ScheduledFunctionsArgumentsTooLarge",
         limit: limits.scheduledFunctionArgsBytes,
         message: `Too large total size of the arguments of scheduled functions from this mutation (limit: ${limits.scheduledFunctionArgsBytes} bytes)`,
@@ -561,14 +561,14 @@ export class Meter {
   ): TransactionLimitExceeded | undefined {
     const used = this.used();
     if (used.filesWritten >= limits.filesWritten) {
-      return new TransactionLimitExceeded({
+      return TransactionLimitExceeded.make({
         code: "TooManyFilesWritten",
         limit: limits.filesWritten,
         message: `Too many files stored by this mutation (limit: ${limits.filesWritten})`,
       });
     }
     if (used.fileWriteBytes + size > limits.fileWriteBytes) {
-      return new TransactionLimitExceeded({
+      return TransactionLimitExceeded.make({
         code: "FilesWrittenTooLarge",
         limit: limits.fileWriteBytes,
         message: `Too large total size of the files stored by this mutation (limit: ${limits.fileWriteBytes} bytes)`,
@@ -606,14 +606,14 @@ export class Meter {
     const shared = this.shared;
     if (this.files.has(id) || shared.downloaded.has(id)) return undefined;
     if (shared.filesRead >= limits.filesRead) {
-      return new TransactionLimitExceeded({
+      return TransactionLimitExceeded.make({
         code: "TooManyFilesRead",
         limit: limits.filesRead,
         message: `Too many files read by this mutation (limit: ${limits.filesRead})`,
       });
     }
     if (shared.fileReadBytes + size > limits.fileReadBytes) {
-      return new TransactionLimitExceeded({
+      return TransactionLimitExceeded.make({
         code: "FilesReadTooLarge",
         limit: limits.fileReadBytes,
         message: `Too large total size of the files read by this mutation (limit: ${limits.fileReadBytes} bytes)`,

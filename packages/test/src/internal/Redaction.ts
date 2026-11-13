@@ -668,7 +668,7 @@ export const unmark = (
   return missing === undefined
     ? Result.succeed(unmarked)
     : Result.fail(
-        new KernelRefusal.SnapshotSecretMissing({
+        KernelRefusal.SnapshotSecretMissing.make({
           ref: Json.stringify(missing),
           message: `The snapshot marks a secret at ${Json.stringify(missing)}, which the secrets passed to restore do not hold. Restore with the secrets of the backend that exported it.`,
         }),

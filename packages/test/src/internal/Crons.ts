@@ -959,7 +959,7 @@ export const parseSpec = (
 ): Result.Result<Spec, Refusal> => {
   const invalid = (reason: string) =>
     Result.fail(
-      new KernelRefusal.InvalidCron({
+      KernelRefusal.InvalidCron.make({
         componentPath,
         name,
         message: `Cron job "${name}" is invalid: ${reason}.`,

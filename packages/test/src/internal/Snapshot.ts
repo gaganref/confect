@@ -511,7 +511,7 @@ export const encode = (
 };
 
 const malformed = (reason: string, detail: string) =>
-  new KernelRefusal.SnapshotMalformed({
+  KernelRefusal.SnapshotMalformed.make({
     reason,
     message: `These bytes are not a test kernel snapshot this kernel reads (${reason}): ${detail}`,
   });
@@ -648,7 +648,7 @@ export const checkBody = (
   const job = once(body.jobs, ({ id }) => id);
   if (job !== undefined)
     return Result.fail(
-      new KernelRefusal.SnapshotJobInconsistent({
+      KernelRefusal.SnapshotJobInconsistent.make({
         id: job.id,
         reason: "duplicate",
         message: `The snapshot's job ${job.id} appears twice.`,
@@ -847,7 +847,7 @@ const fileRefusal = (
   reason: KernelRefusal.SnapshotFileInconsistent["reason"],
   detail: string,
 ) =>
-  new KernelRefusal.SnapshotFileInconsistent({
+  KernelRefusal.SnapshotFileInconsistent.make({
     componentPath,
     id,
     reason,
@@ -860,7 +860,7 @@ const rowRefusal = (
   reason: KernelRefusal.SnapshotRowInconsistent["reason"],
   detail: string,
 ) =>
-  new KernelRefusal.SnapshotRowInconsistent({
+  KernelRefusal.SnapshotRowInconsistent.make({
     componentPath,
     id,
     reason,
@@ -990,7 +990,7 @@ export const checkAllocators = (
     required: number,
   ) =>
     Result.fail(
-      new KernelRefusal.SnapshotAllocatorBehind({
+      KernelRefusal.SnapshotAllocatorBehind.make({
         allocator,
         value,
         required,
@@ -1025,7 +1025,7 @@ export const checkTimestamps = (
   let previous = 0n;
   const refuse = (version: number, commitTs: bigint, detail: string) =>
     Result.fail(
-      new KernelRefusal.SnapshotTimestampInconsistent({
+      KernelRefusal.SnapshotTimestampInconsistent.make({
         version,
         commitTs: commitTs.toString(),
         message: `The snapshot's commit timestamp ${commitTs} at version ${version} ${detail}.`,
@@ -1060,7 +1060,7 @@ export const checkJobs = (
     detail: string,
   ) =>
     Result.fail(
-      new KernelRefusal.SnapshotJobInconsistent({
+      KernelRefusal.SnapshotJobInconsistent.make({
         id,
         reason,
         message: `The snapshot's job ${id} ${detail}.`,
@@ -1208,7 +1208,7 @@ export const decode = (
   const actual = digestOf(bodyBytes);
   if (actual !== expected) {
     return Result.fail(
-      new KernelRefusal.SnapshotDigestMismatch({
+      KernelRefusal.SnapshotDigestMismatch.make({
         expected,
         actual,
         message: `The snapshot's body hashes to sha256:${actual}, not the sha256:${expected} its header names. Its bytes changed after export.`,

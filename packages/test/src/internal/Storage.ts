@@ -37,32 +37,39 @@ export interface File {
  * The storage ID named no file in its component, as the binary's
  * `FileStorage::delete` refuses (`StorageIdNotFound`).
  */
-export class StorageIdNotFound extends Schema.TaggedError<StorageIdNotFound>()(
-  "StorageIdNotFound",
-  { storageId: Schema.String, message: Schema.String },
-) {}
+export class StorageIdNotFound extends Schema.TaggedError<
+  StorageIdNotFound,
+  { readonly brand: unique symbol }
+>()("StorageIdNotFound", {
+  storageId: Schema.String,
+  message: Schema.String,
+}) {}
 
 /**
  * A storage operation's argument did not parse, as the binary's
  * `with_argument_error` refuses (`InvalidArgument`).
  */
-export class InvalidStorageArgument extends Schema.TaggedError<InvalidStorageArgument>()(
-  "InvalidStorageArgument",
-  {
-    operation: Schema.String,
-    argument: Schema.String,
-    message: Schema.String,
-  },
-) {}
+export class InvalidStorageArgument extends Schema.TaggedError<
+  InvalidStorageArgument,
+  { readonly brand: unique symbol }
+>()("InvalidStorageArgument", {
+  operation: Schema.String,
+  argument: Schema.String,
+  message: Schema.String,
+}) {}
 
 /**
  * The digest a caller declared is not the stored bytes' digest, as the binary's
  * `FileStorage::upload_file` refuses (`Sha256Mismatch`).
  */
-export class Sha256Mismatch extends Schema.TaggedError<Sha256Mismatch>()(
-  "Sha256Mismatch",
-  { expected: Schema.String, actual: Schema.String, message: Schema.String },
-) {}
+export class Sha256Mismatch extends Schema.TaggedError<
+  Sha256Mismatch,
+  { readonly brand: unique symbol }
+>()("Sha256Mismatch", {
+  expected: Schema.String,
+  actual: Schema.String,
+  message: Schema.String,
+}) {}
 
 export type StorageError =
   | StorageIdNotFound
@@ -71,7 +78,7 @@ export type StorageError =
   | Sha256Mismatch;
 
 const invalid = (operation: string, argument: string, cause: string) =>
-  new InvalidStorageArgument({
+  InvalidStorageArgument.make({
     operation,
     argument,
     message: `Invalid argument \`${argument}\` for \`${operation}\`: ${cause}`,
@@ -124,7 +131,7 @@ export const parseId = (
   }
   if (tableName !== table) {
     return Result.fail(
-      new InvalidStorageArgument({
+      InvalidStorageArgument.make({
         operation,
         argument: "storageId",
         message:
@@ -185,7 +192,7 @@ export const checkDigest = (
   return canonical === actual
     ? Result.void
     : Result.fail(
-        new Sha256Mismatch({
+        Sha256Mismatch.make({
           expected: canonical,
           actual,
           message: `Sha256 mismatch. Expected: ${canonical} Actual: ${actual}`,
@@ -367,10 +374,13 @@ export const parseMediaType = (
  * (`InvalidContentTypeHeader`, `run_storage_store`,
  * `crates/isolate/src/environment/action/storage.rs:55-60`).
  */
-export class InvalidContentType extends Schema.TaggedError<InvalidContentType>()(
-  "InvalidContentType",
-  { code: Schema.Literal("InvalidContentTypeHeader"), message: Schema.String },
-) {}
+export class InvalidContentType extends Schema.TaggedError<
+  InvalidContentType,
+  { readonly brand: unique symbol }
+>()("InvalidContentType", {
+  code: Schema.Literal("InvalidContentTypeHeader"),
+  message: Schema.String,
+}) {}
 
 /**
  * A file's content type: none for an empty one, as the binary filters it, and
@@ -405,7 +415,7 @@ export const contentType = (
   return Result.fail(
     path === "mutation"
       ? invalid("storage.store", "contentType", message)
-      : new InvalidContentType({ code: "InvalidContentTypeHeader", message }),
+      : InvalidContentType.make({ code: "InvalidContentTypeHeader", message }),
   );
 };
 
