@@ -730,7 +730,7 @@ it.effect("leaves host callback exports unchecked", () =>
 );
 
 it.effect(
-  "renders a section file for a declared component and imports it ahead of each impl",
+  "renders the section file a component's App.make declares, though no spec carries it, and imports it ahead of each impl",
   () =>
     Effect.gen(function* () {
       const project = yield* Project.make;
@@ -743,13 +743,13 @@ it.effect(
       yield* project.write(
         "confect/app.ts",
         `import { App, Env } from "@confect/core";
-export default App.make({ kind: "component", env: Env.make("ledger", {}) });
+import { observe } from "./observe";
+export default App.make({ kind: "component", env: Env.make("ledger", {}), manifestSections: [{ key: "observe", section: observe }] });
 `,
       );
       yield* project.write(
-        "confect/profile.ts",
-        `import { FunctionSpec } from "@confect/core";
-const observe = {
+        "confect/observe.ts",
+        `export const observe = {
   owner: "test/observe",
   format: 1,
   describe: () => null,
@@ -764,18 +764,9 @@ const observe = {
     }),
   },
 };
-export const profile = FunctionSpec.extend()({ middleware: [], manifest: { observe } });
 `,
       );
-      yield* project.write(
-        "confect/notes.spec.ts",
-        Project.spec
-          .replace(
-            "export default",
-            'import { profile } from "./profile";\nexport default',
-          )
-          .replace("FunctionSpec.publicQuery", "profile.publicQuery"),
-      );
+      yield* project.write("confect/notes.spec.ts", Project.spec);
       yield* fs.makeDirectory(`${project.root}/confect/ledger`);
       yield* project.write(
         "confect/ledger/log.ts",
