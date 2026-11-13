@@ -35,7 +35,7 @@ layer(
         const started = (yield* Clock.currentTimeMillis) / 1000;
         for (const requestPath of ["/users/42", "/first/members/42"]) {
           const response = yield* HttpClient.get(
-            `http://127.0.0.1:3211${requestPath}`,
+            LocalBackend.siteUrl(requestPath),
           );
           expect(response.status).toBe(200);
           expect(yield* response.json).toBe("42");
@@ -82,7 +82,7 @@ layer(
     Effect.gen(function* () {
       for (const requestPath of ["/no-such-route", "/first/no-such-route"]) {
         const response = yield* HttpClient.get(
-          `http://127.0.0.1:3211${requestPath}`,
+          LocalBackend.siteUrl(requestPath),
         );
         expect(response.status).toBe(404);
         expect(yield* response.text).toBe("");
@@ -94,7 +94,7 @@ layer(
       for (const requestPath of ["/users/42", "/first/members/42"]) {
         const response = yield* HttpClient.execute(
           HttpClientRequest.make("OPTIONS")(
-            `http://127.0.0.1:3211${requestPath}`,
+            LocalBackend.siteUrl(requestPath),
           ).pipe(
             HttpClientRequest.setHeader("Access-Control-Request-Method", "GET"),
           ),
@@ -110,7 +110,7 @@ layer(
         for (const requestPath of ["/prefix", "/first/prefix"]) {
           const response = yield* HttpClient.execute(
             HttpClientRequest.make("OPTIONS")(
-              `http://127.0.0.1:3211${requestPath}`,
+              LocalBackend.siteUrl(requestPath),
             ),
           );
           expect([response.status, yield* response.text]).toEqual([
@@ -190,7 +190,7 @@ layer(
       ] as const;
       for (const [label, token, expected] of cases) {
         const response = yield* HttpClient.get(
-          "http://127.0.0.1:3211/identity",
+          LocalBackend.siteUrl("/identity"),
           token === undefined
             ? {}
             : { headers: { authorization: `Bearer ${token}` } },

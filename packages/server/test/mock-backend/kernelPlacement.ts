@@ -19,12 +19,6 @@ export const placements: ReadonlyArray<Placement> = [
   { file: "http.test.ts", row: 6, needs: "HTTP routes, after storage" },
   {
     file: "integration.test.ts",
-    name: "Storage",
-    row: 6,
-    needs: "storage",
-  },
-  {
-    file: "integration.test.ts",
     name: "DatabaseReader > uses the canonical Doc decoder for a text search",
     row: "binary",
     needs: "text search, which the kernel never simulates (RequiresBinary)",

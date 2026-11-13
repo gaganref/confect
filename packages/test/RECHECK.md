@@ -150,9 +150,10 @@ reaches only the function the test called.
 Row 2 published one top-level mutation at a time. Row 3 replaced that with
 read-set validation and held attempts. Scheduling, storage, HTTP, JWT signing
 and transaction limits refuse with `KernelRowPending`, naming the row that
-supplies them. Row 5 lifts the scheduling refusals, and the limits row lifts
-the transaction limits refusal. Text and vector search
-refuse with `RequiresBinary`.
+supplies them. Row 5 lifts the scheduling refusals, the limits row the
+transaction limits refusal, and row 6's storage metadata the storage ones.
+Text and vector search, and storage uploads and downloads, refuse with
+`RequiresBinary`.
 
 `src/internal/ConvexTest.ts` gives the kernel convex-test's `convexTest`
 signature. `vitest.mock-backend.kernel.config.ts` in `@confect/server` aliases
@@ -559,10 +560,112 @@ deeper. The kernel now leaves an accessor in place when it already reads
 through one of the kernel's, which a sentinel in a fresh copy shows, and the
 chain settles after the first call on each target.
 
+## Storage metadata (row 6)
+
+`src/internal/Storage.ts` is the file model. A file is a row in its
+component's `_storage` table, read and written through the attempt like any
+document, so a mutation's file exists only once it commits, a rolled-back one
+never does, and `getUrl`, `getMetadata` and `get` join the read set. An
+action's store and delete commit at once, and its reads see the latest commit.
+Beside the row the kernel keeps the bytes and a storage UUID; the row holds
+only what the binary's virtual table shows.
+
+Pinned against convex-backend `precompiled-2026-10-28-cccbade`, the local
+backend's version:
+
+- The row is `{ _id, _creationTime, sha256, size, contentType }`
+  (`FileStorageDocMapper`, `crates/model/src/file_storage/virtual_table.rs`).
+  `sha256` is the base64 SHA-256 with padding (`Sha256Digest::as_base64`,
+  `crates/value/src/sha256.rs:24`). `contentType` is `null` when the file has
+  none, though the npm package's `_storage` schema declares it optional. An
+  empty content type is none (`crates/isolate/src/ops/storage.rs:29`).
+- `getMetadata` answers `{ storageId, sha256, size, contentType }` with a hex
+  digest and the storage UUID (`storage_get_metadata`,
+  `crates/isolate/src/environment/udf/async_syscall.rs:1365-1405`).
+- `getUrl` answers `<origin>/api/storage/<uuid>`, with `?component=<id>`
+  outside the root (`FileStorage::get_url_batch`,
+  `crates/file_storage/src/core.rs:158-206`). The kernel's origin is
+  `https://kernel.convex.cloud` and its component ID is the path.
+- A declared digest that differs fails `Sha256 mismatch. Expected: … Actual: …`
+  before the row is written (`FileStorage::upload_file`, `core.rs:395-419`).
+- `delete` of a missing file fails `storage id … not found`
+  (`FileStorage::delete`, `core.rs:209-221`).
+- A storage ID of another table, or a string that is neither an ID nor a UUID,
+  is refused as an argument (`FileStorageId::from_str` and
+  `query_for_storage_id`, `crates/model/src/file_storage/mod.rs:126-143`,
+  `:244-279`). A file's storage UUID still names it.
+
+`packages/server/test/local-backend/storage.test.ts` checks the row, metadata,
+URL, null content type, digest mismatch and delete answers for one stored blob
+on the binary, and `test/Storage.test.ts` checks the same answers on the
+kernel. The binary's `null` content type was the one answer the source left
+open; the local-backend run settled it.
+
+Not simulated: upload streaming, signed upload tokens and durability. An upload
+URL has the binary's shape with an unsigned token, and the kernel's `fetch`
+refuses an upload to it or a download from a file URL with `RequiresBinary`
+(`storageUpload`, `storageDownload`). The bytes are held in memory, not
+streamed, and a deleted file's bytes are only unreachable.
+
+Fix round 2, after the limits, snapshot and redaction rows merged:
+
+- **Limits.** File storage charges the four file counters through
+  `Metering.ts`'s one meter. A mutation's store checks
+  `filesWritten` and `fileWriteBytes` before it writes the row
+  (`file_storage_store`, `crates/isolate/src/environment/udf/async_syscall.rs:478-497`),
+  refusing with `TooManyFilesWritten` or `FilesWrittenTooLarge`. Stored files
+  are nested pending writes: a nested mutation starts from its caller's, a
+  commit keeps its own and a rollback drops them, and a delete frees a file
+  stored in the same transaction (`NestedWrites<FileUploads>`,
+  `crates/database/src/transaction.rs:186`, `:425-451`;
+  `crates/database/src/file_uploads.rs:68-79`; `async_syscall.rs:521-529`). A
+  query's or mutation's `storage.get` counts a file once per transaction, never
+  one it stored, against `filesRead` and `fileReadBytes`
+  (`check_file_read_limits`, `async_syscall.rs:1291-1311`; the download cache
+  reaches nested calls at `:732`). `getUrl` and `getMetadata` count nothing,
+  and an action's store and get count toward no transaction. The local-backend
+  probes in `storage.test.ts` cross each limit, at the deployment's ceiling and
+  under a nested budget, and the binary and the kernel give the same message.
+  A nested call's uncaught error reaches its caller as the binary rethrows it,
+  `Uncaught Error: ` and a stack around the message, where the kernel passes
+  the error itself, so nested probes compare the message.
+- **Snapshots.** A snapshot carries every committed `_storage` row's file:
+  bytes (base64), component and storage UUID, and `identity.nextFile` and
+  `identity.nextUploadToken`. `Snapshot.contract.file` covers `Storage.File`
+  by type, and `contract.world` lists `files`, `legacyIds`, `nextFile` and
+  `nextUploadToken`. A restore rebuilds the UUID mappings from the files, and
+  refuses with `SnapshotFileInconsistent` a file with no committed row, a row
+  with no file, bytes whose SHA-256 or size is not the row's, and a UUID the
+  kernel would not mint or two files share, and with `SnapshotAllocatorBehind`
+  a `nextFile` at or behind a stored UUID. Bytes a rolled-back or deleted file
+  left behind are unreachable and not exported.
+- **Redaction.** `_storage` rows pass through every projection as documents,
+  and a declared secret in a row that references a file stays marked. File
+  bytes have no schema, so the backstop's rule applies to them: bytes holding
+  a kept secret's text are written as a marker, which a restore given the
+  secrets puts back, and refuses with `SnapshotSecretMissing` without them.
+- **Content types.** A content type is parsed as the binary's `mime` 0.3.17
+  parses it (`src/parse.rs:111-305`): its tokens, quoted values, spaces after a
+  `;`, an empty subtype, and a bare trailing `;`, which it drops. A mutation's
+  store refuses a malformed one as an argument (`async_syscall.rs:1272-1276`),
+  ``Invalid argument `contentType` for `storage.store`: mime parse error: …``,
+  and an action's as its content type header
+  (`crates/isolate/src/environment/action/storage.rs:55-60`), `mime parse
+  error: …`. The kernel stores the type as `mime` prints it.
+
+`LocalBackend.ts` reads `CONFECT_LOCAL_BACKEND_PORT` (default 3210) for its
+backends' ports, so the local-backend suite can run beside another checkout's
+on one machine. Every anonymous local deployment is named `anonymous-agent`,
+and `convex dev` waits for its recorded port to stop whoever holds it
+(`cli/lib/localDeployment/run.ts:290-342` in the npm package), so a run on
+other ports also moves the fixtures' local deployment config.
+
+`integration.test.ts:61` `Storage` now runs in the kernel lane.
+
 ## Snapshots (row 6)
 
 `src/internal/Snapshot.ts` encodes the kernel's committed state and reads it
-back. A snapshot is a header line, `confect-kernel-snapshot 2 sha256:<digest>`,
+back. A snapshot is a header line, `confect-kernel-snapshot 3 sha256:<digest>`,
 then the body as JSON. The body holds the registered component paths, the
 version and latest commit timestamp, the clock's floor, the identity counters
 (the next document ID, the latest creation time handed out, the next held
@@ -652,14 +755,15 @@ same identity transitions.
 with its reason. Its comment names the limit of the fresh-world field test, which
 cannot see lazy, symbol-keyed, `#private` or closure-held state, so every live
 registry is also listed in `contract.live`, reported by a `liveCounts` typed
-against it, and refused on restore while non-empty. A field added to `Kernel.State` or `Scheduling.Target`
-without an entry fails to compile. A `World`'s fields are private, so a test
+against it, and refused on restore while non-empty. A field added to `Kernel.State`, `Scheduling.Target`,
+`Execution.CronJob` or `Storage.File` without an entry fails to compile. A `World`'s fields are private, so a test
 compares a fresh world's own fields with the contract. Subscriptions and their
 callers are live client state, so a restore starts with none. Owed when they
-land: file bytes, storage ID mappings, `nextFile` and upload-token counters
-(#138); and component init markers.
+land: component init markers.
 
-Cron state (#133) is in the snapshot, format version 2. Each declared job
+Cron state (#133) is in the snapshot, from format version 2. Storage state
+(#138) joined it as version 3: `files` and the identity counters `nextFile` and
+`nextUploadToken`. Each declared job
 exports its declaration (name, function, arguments as Convex JSON with secrets
 marked as a job's arguments are, and schedule, a cron expression by its text),
 its next run, its latest outcome and its world by name. A failed outcome's text
@@ -723,8 +827,9 @@ negative: `Metering.ts` asserts it.
 difference by name. `SystemTableReadIntervals` is the one this row adds. The
 binary's `databaseQueries` also counts the system-table intervals it reads to
 run a function: the backend state, the module, the UDF config and the
-component. On the local-backend fixture a root mutation starts at 19, its first
-nested call adds 2, and a stale-snapshot query starts at 19 again. That share
+component. On the local-backend fixture a root mutation starts at 18, its first
+nested call adds 2, and a stale-snapshot query starts at 18 again (19 before
+the storage row's probe functions joined the fixture). That share
 depends on the deployment, so the kernel does not simulate it.
 
 Each read maps a total `x` to `max(0, x - before) + after`, which never
@@ -734,8 +839,8 @@ the kernel's and the kernel's plus the system share:
 - While neither count saturates, the binary's is exactly the kernel's plus the
   share, and the binary refuses `TooManyReads` that many reads sooner.
 - A read that covers inserted IDs can saturate only the kernel's lower count,
-  and the gap shrinks. One insert and a read of its ID answer 19 on the binary
-  and 1 on the kernel, a gap of 18.
+  and the gap shrinks. One insert and a read of its ID answer 18 on the binary
+  and 1 on the kernel, a gap of 17.
 - Once a read saturates both, they agree. 100 inserts and a read of one answer
   100 on both.
 

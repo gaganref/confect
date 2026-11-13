@@ -6,7 +6,12 @@ import * as Schema from "effect/Schema";
 export class RequiresBinary extends Schema.TaggedError<RequiresBinary>()(
   "RequiresBinary",
   {
-    operation: Schema.Literals(["textSearch", "vectorSearch"]),
+    operation: Schema.Literals([
+      "textSearch",
+      "vectorSearch",
+      "storageUpload",
+      "storageDownload",
+    ]),
     message: Schema.String,
   },
 ) {}
@@ -262,6 +267,8 @@ export class SnapshotAllocatorBehind extends Schema.TaggedError<SnapshotAllocato
       "lastCreationTime",
       "nextAttemptId",
       "identityEpoch",
+      "nextFile",
+      "nextUploadToken",
     ]),
     value: Schema.Finite,
     required: Schema.Finite,
@@ -285,6 +292,29 @@ export class SnapshotRowInconsistent extends Schema.TaggedError<SnapshotRowIncon
       "log",
       "row",
       "systemFields",
+      "duplicate",
+    ]),
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * A snapshot's stored files and `_storage` rows disagree: a file with no
+ * committed row in its component, a row with no file, bytes whose SHA-256 or
+ * size is not the row's, a storage UUID the kernel would not mint or that two
+ * files share, or a file listed twice.
+ */
+export class SnapshotFileInconsistent extends Schema.TaggedError<SnapshotFileInconsistent>()(
+  "SnapshotFileInconsistent",
+  {
+    componentPath: Schema.String,
+    id: Schema.String,
+    reason: Schema.Literals([
+      "row",
+      "untracked",
+      "digest",
+      "size",
+      "uuid",
       "duplicate",
     ]),
     message: Schema.String,

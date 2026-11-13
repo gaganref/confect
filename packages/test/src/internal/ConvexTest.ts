@@ -11,6 +11,7 @@ import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import * as Subscriptions from "./Subscriptions.js";
 import type * as Scheduling from "./Scheduling.js";
+import * as Storage from "./Storage.js";
 
 type Modules = Record<string, () => Promise<any>>;
 
@@ -205,7 +206,18 @@ const accessor = (
         ip: metadata.ip ?? null,
         userAgent: metadata.userAgent ?? null,
       }),
-    fetch: () => Promise.reject(KernelRefusal.rowPending("HTTP routes", 6)),
+    // An upload to a URL from `generateUploadUrl`, or a download from one
+    // `getUrl` answered, streams through the binary's storage endpoints, which
+    // the kernel does not simulate.
+    fetch: (path: unknown) => {
+      const endpoint =
+        typeof path === "string" ? Storage.endpoint(path) : undefined;
+      return Promise.reject(
+        endpoint === undefined
+          ? KernelRefusal.rowPending("HTTP routes", 6)
+          : KernelRefusal.requiresBinary(endpoint),
+      );
+    },
     jwks: () => Promise.reject(KernelRefusal.rowPending("JWT verification", 6)),
     advance: (ms: number) => reported(() => world.advance(ms)),
     jobs: () => world.jobs(),
