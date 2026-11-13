@@ -85,12 +85,13 @@ const backend = (
       const code = yield* Code("Code", {
         deployment: {
           name: props.deployment.name,
-          url: environment
-            ? Output.map(
-                Output.all(environment.variables, environment.url),
-                ([, url]) => url,
-              )
-            : props.deployment.url,
+          url:
+            environment !== undefined
+              ? Output.map(
+                  Output.all(environment.variables, environment.url),
+                  ([, url]) => url,
+                )
+              : props.deployment.url,
         },
         deployKey: props.deployKey,
         ...(props.cwd === undefined ? {} : { cwd: props.cwd }),

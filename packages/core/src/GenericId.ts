@@ -1,12 +1,14 @@
 import type { GenericId as ConvexGenericId } from "convex/values";
 import * as Array from "effect/Array";
-import { memoize } from "effect/Function";
+import { memoize, pipe } from "effect/Function";
 import * as Match from "effect/Match";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import * as IdScope from "./IdScope.js";
 import type * as Ref from "./Ref.js";
+import * as String from "effect/String";
+import * as Record from "effect/Record";
 
 const ConvexId = "~@confect/core/ConvexId";
 const ConvexIdScope = "~@confect/core/ConvexIdScope";
@@ -34,14 +36,19 @@ export const GenericId = <
 >(
   tableName: TableName,
   scope?: Scope,
-): Schema.Codec<GenericId<TableName, Scope>> =>
+): Schema.toType<Schema.refine<GenericId<TableName, Scope>, Schema.String>> =>
   Schema.String.annotate({
     [ConvexId]: tableName,
     [ConvexIdScope]: scope ?? IdScope.app,
-  }) as unknown as Schema.Codec<GenericId<TableName, Scope>>;
+  }).pipe(
+    Schema.refine((_value): _value is GenericId<TableName, Scope> => true),
+    Schema.toType,
+  );
 
 export const scope = (ast: SchemaAST.AST): IdScope.IdScope =>
-  SchemaAST.resolveAt<IdScope.IdScope>(ConvexIdScope)(ast) ?? IdScope.app;
+  SchemaAST.resolveAt<IdScope.IdScope>(ConvexIdScope)(ast) ??
+  (ast.annotations?.[ConvexIdScope] as IdScope.IdScope | undefined) ??
+  IdScope.app;
 
 /**
  * Rebind only IDs owned by `From`; IDs belonging to other scopes survive. A ref
@@ -280,9 +287,10 @@ export const rebase = <
     const ownScope = scope(ast);
     const scoped =
       Option.isSome(tableName(ast)) &&
-      (ownScope === from || ownScope.startsWith(`${from}/instance:`))
+      (ownScope === from ||
+        pipe(ownScope, String.startsWith(`${from}/instance:`)))
         ? Schema.make<Schema.Codec<unknown>>(next).annotate({
-            [ConvexIdScope]: to + ownScope.slice(from.length),
+            [ConvexIdScope]: to + pipe(ownScope, String.slice(from.length)),
           }).ast
         : next;
     if (ast.encoding === undefined) {
@@ -314,8 +322,11 @@ export const rebase = <
     if ("fields" in input) {
       const fields = (input as { readonly fields: Schema.Struct.Fields })
         .fields;
-      const reboundFields = Object.fromEntries(
-        Reflect.ownKeys(fields).map((key) => [key, rebuild(fields[key]!)]),
+      const reboundFields = Record.fromEntries(
+        Array.map(Reflect.ownKeys(fields), (key) => [
+          key,
+          rebuild(fields[key]!),
+        ]),
       );
       if (
         ast.encoding === undefined &&
@@ -336,4 +347,7 @@ export const rebase = <
 export const tableName = <TableName extends string>(
   ast: SchemaAST.AST,
 ): Option.Option<TableName> =>
-  Option.fromNullishOr(SchemaAST.resolveAt<TableName>(ConvexId)(ast));
+  Option.fromNullishOr(
+    (ast.annotations?.[ConvexId] as TableName | undefined) ??
+      SchemaAST.resolveAt<TableName>(ConvexId)(ast),
+  );

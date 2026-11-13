@@ -1,0 +1,103 @@
+import { readFileSync } from "node:fs";
+import { Component } from "@confect/core";
+import { TestConfect } from "@confect/test";
+import * as Effect from "effect/Effect";
+import { expect, test } from "vitest";
+import { kitted } from "./confect/component.js";
+import registry from "./confect/_generated/testing.js";
+import auth from "./convex/auth.config.js";
+import counterContract from "./components/counter/confect/_generated/component.js";
+import manifest from "./confect/_generated/manifest.js";
+import refs from "./confect/_generated/refs.js";
+import databaseSchema from "./confect/_generated/schema.js";
+
+const Test = TestConfect.TestConfect<typeof databaseSchema>();
+const layer = TestConfect.layer(registry);
+
+test("installed fork executes a generated query with TestConfect", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const confect = yield* Test;
+      expect(yield* confect.query(refs.public.hello.greet)).toBe(
+        "hello from fork",
+      );
+    }).pipe(Effect.provide(layer)),
+  ));
+
+test("installed codegen emits the declared backend and auth providers", () => {
+  expect({
+    name: manifest.name,
+    env: manifest.env,
+    mounts: manifest.http.mounts,
+    providers: auth.providers,
+  }).toEqual({
+    name: "consumer",
+    env: { INSTALL_MARKER: { kind: "string", optional: true } },
+    mounts: { counter: "/counter" },
+    providers: [
+      { domain: "https://login.example.edu", applicationID: "consumer" },
+    ],
+  });
+});
+
+test("installed host calls a Confect-authored component", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const confect = yield* Test;
+      expect(
+        yield* confect.query(refs.public.hello.increment, { value: 7 }),
+      ).toBe(8);
+    }).pipe(Effect.provide(layer)),
+  ));
+
+test("callback handle round-trips with decoded arguments and returns", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const confect = yield* Test;
+      expect(
+        yield* confect.mutation(refs.public.hello.notify, { value: 21 }),
+      ).toBe(43);
+    }).pipe(Effect.provide(layer)),
+  ));
+
+test("callback creation rejects a host with different arguments", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const confect = yield* Test;
+      expect(yield* confect.mutation(refs.public.hello.checkArgs)).toBe("args");
+    }).pipe(Effect.provide(layer)),
+  ));
+
+test.each([
+  ["/health", "host ready"],
+  ["/counter/health", "component ready"],
+])("declared HTTP route %s responds", (path, expected) =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      const confect = yield* Test;
+      const response = yield* confect.fetch(path);
+      expect({
+        status: response.status,
+        body: yield* Effect.promise(() => response.text()),
+      }).toEqual({ status: 200, body: expected });
+    }).pipe(Effect.provide(layer)),
+  ),
+);
+
+test("installed codegen publishes a component table's group in its contract", () => {
+  const relation: {
+    readonly emails: { readonly key: "batchId"; readonly table: "batches" };
+  } = Component.groups(counterContract);
+  expect(relation).toEqual({ emails: { key: "batchId", table: "batches" } });
+});
+
+test("installed codegen discovers and executes the package test kit", () =>
+  Effect.runPromise(
+    Effect.gen(function* () {
+      expect(
+        readFileSync(new URL("./confect/_generated/testing.ts", import.meta.url), "utf8"),
+      ).toContain('from "counter-kit/testing"');
+      const confect = yield* Test;
+      expect(yield* confect.query(kitted.counter.increment, { value: 7 })).toBe(8);
+    }).pipe(Effect.provide(layer)),
+  ));

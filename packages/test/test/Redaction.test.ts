@@ -23,6 +23,14 @@ import * as Execution from "../src/internal/Execution";
 import * as Invocation from "../src/internal/Invocation";
 import * as Redaction from "../src/internal/Redaction";
 import type * as Subscriptions from "../src/internal/Subscriptions";
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
+import * as Rec from "effect/Record";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+
+const UnknownJson = Schema.fromJsonString(Schema.Unknown);
+import * as Json from "../src/internal/Json";
 
 // Each canary reaches the kernel by one route: a handler argument it never
 // stores, a stored row, a test provider's answer.
@@ -221,7 +229,7 @@ const modules = {
             .query("accounts")
             .collect()
             .then((accounts) =>
-              accounts.map(({ name, token }) => ({ name, token })),
+              Arr.map(accounts, ({ name, token }) => ({ name, token })),
             ),
       }),
       throwBare: mutationGeneric({
@@ -240,7 +248,9 @@ const modules = {
         args: {},
         handler: async (ctx) => {
           const accounts = await ctx.db.query("accounts").collect();
-          const failing = accounts.find(({ name }) => name === "fail");
+          const failing = Option.getOrUndefined(
+            Arr.findFirst(accounts, ({ name }) => name === "fail"),
+          );
           if (failing !== undefined)
             throw new Error(`failing on ${failing.token}`);
           return accounts.length;
@@ -258,7 +268,7 @@ const modules = {
             .query("vault")
             .collect()
             .then((rows) =>
-              rows.map(({ label, credential }) => ({ label, credential })),
+              Arr.map(rows, ({ label, credential }) => ({ label, credential })),
             ),
       }),
       nested: mutationGeneric({
@@ -319,7 +329,7 @@ const modules = {
           ctx.db
             .query("notes")
             .collect()
-            .then((notes) => notes.map(({ text }) => text)),
+            .then((notes) => Arr.map(notes, ({ text }) => text)),
       }),
     }),
 };
@@ -391,7 +401,7 @@ const report = (error: unknown): string => {
     stack?: string;
     data?: Value;
   };
-  return `${message}\n${stack ?? ""}\n${JSON.stringify(convexToJson(data ?? null))}`;
+  return `${message}\n${stack ?? ""}\n${Json.stringify(convexToJson(data ?? null))}`;
 };
 
 /**
@@ -404,18 +414,18 @@ const thrownText = (thrown: unknown): string =>
 
 const causeText = (because: Subscriptions.Invalidation): string =>
   because.kind === "commit"
-    ? JSON.stringify(
+    ? Json.stringify(
         convexToJson({
           ...because.change,
           before: because.change.before as Value,
           after: because.change.after as Value,
         } as unknown as Value),
       )
-    : JSON.stringify(because);
+    : Json.stringify(because);
 
 const outcomeText = (outcome: Execution.Outcome): string =>
   outcome._tag === "returned"
-    ? JSON.stringify(convexToJson(outcome.value))
+    ? Json.stringify(convexToJson(outcome.value))
     : report(outcome.error);
 
 /**
@@ -442,7 +452,11 @@ const plant = (t: Backend) =>
       t.run(async (ctx) => {
         const rows = await ctx.db.query("accounts").collect();
         throw new Error(
-          `stored ${rows.map((row: any) => row.token).join(", ")}`,
+          `stored ${pipe(
+            rows,
+            Arr.map((row: any) => row.token),
+            Arr.join(", "),
+          )}`,
         );
       }),
     );
@@ -462,13 +476,15 @@ const plant = (t: Backend) =>
     return {
       subscription,
       snapshot: new TextDecoder().decode(t.exportSnapshot()),
-      failures: [refused, readBack, connected].map(report),
-      diff: transitions
-        .map(
+      failures: Arr.map([refused, readBack, connected], report),
+      diff: pipe(
+        transitions,
+        Arr.map(
           ({ from, to, because }) =>
             `${outcomeText(from)}\n${outcomeText(to)}\n${causeText(because)}`,
-        )
-        .join("\n"),
+        ),
+        Arr.join("\n"),
+      ),
     };
   });
 
@@ -481,13 +497,16 @@ describe("redaction", () => {
         const artifacts: Record<string, string> = {
           snapshot,
           diff,
-          ...Object.fromEntries(
-            failures.map((text, i) => [`failure report ${i + 1}`, text]),
+          ...Rec.fromEntries(
+            Arr.map(failures, (text, i) => [`failure report ${i + 1}`, text]),
           ),
         };
-        for (const [name, text] of Object.entries(artifacts)) {
+        for (const [name, text] of Rec.toEntries(artifacts)) {
           for (const canary of canaries) {
-            expect(text.includes(canary), `${canary} in ${name}`).toBe(false);
+            expect(
+              pipe(text, Str.includes(canary)),
+              `${canary} in ${name}`,
+            ).toBe(false);
           }
         }
         expect(snapshot).toContain(`"${Redaction.markerKey}"`);
@@ -505,7 +524,10 @@ describe("redaction", () => {
         const current = subscription.current().outcome;
         if (current._tag !== "returned") throw current.error;
         expect(
-          (current.value as Array<{ token: string }>).map(({ token }) => token),
+          Arr.map(
+            current.value as Array<{ token: string }>,
+            ({ token }) => token,
+          ),
         ).toEqual([openedCanary, rowCanary, providerCanary]);
 
         const restored = backend();
@@ -524,7 +546,8 @@ describe("redaction", () => {
           ),
         ).toEqual([openedCanary, rowCanary, providerCanary]);
         yield* call(() => restored.advance(1000));
-        expect(yield* call(() => restored.query(app.notes, {}))).toEqual([
+        const callResult = yield* call(() => restored.query(app.notes, {}));
+        expect(callResult).toEqual([
           `copied ${openedCanary}`,
           "rotated raw",
           "rotated raw",
@@ -538,14 +561,14 @@ describe("redaction", () => {
       Effect.gen(function* () {
         const { snapshot } = yield* plant(backend());
         const restored = backend();
-        expect(
-          yield* failure(() =>
-            restored.restoreSnapshot(new TextEncoder().encode(snapshot), {
-              worlds: [provider],
-            }),
-          ),
-        ).toMatchObject({ _tag: "SnapshotSecretMissing" });
-        expect(yield* call(() => restored.query(app.accounts, {}))).toEqual([]);
+        const failureResult = yield* failure(() =>
+          restored.restoreSnapshot(new TextEncoder().encode(snapshot), {
+            worlds: [provider],
+          }),
+        );
+        expect(failureResult).toMatchObject({ _tag: "SnapshotSecretMissing" });
+        const callResult = yield* call(() => restored.query(app.accounts, {}));
+        expect(callResult).toEqual([]);
       }),
   );
 
@@ -641,18 +664,21 @@ describe("redaction routes", () => {
           t.mutation(app.open, { name: "fail", token: failingCanary }),
         );
         const transitions = yield* call(() => t.refresh());
-        const diff = transitions
-          .map(
+        const diff = pipe(
+          transitions,
+          Arr.map(
             ({ from, to, because }) =>
               `${outcomeText(from)}\n${outcomeText(to)}\n${causeText(because)}`,
-          )
-          .join("\n");
+          ),
+          Arr.join("\n"),
+        );
         expect(diff).not.toContain(failingCanary);
         expect(diff).toContain(Redaction.marker);
         const cached = subscription.current().outcome;
         if (cached._tag !== "failed") throw new Error("expected a failure");
         expect((cached.error as Error).message).toContain(failingCanary);
-        expect(yield* call(() => t.reference())).toEqual([]);
+        const callResult = yield* call(() => t.reference());
+        expect(callResult).toEqual([]);
       }),
   );
 
@@ -673,12 +699,14 @@ describe("redaction routes", () => {
           }),
         );
         const transitions = yield* call(() => t.refresh());
-        const diff = transitions
-          .map(
+        const diff = pipe(
+          transitions,
+          Arr.map(
             ({ from, to, because }) =>
               `${outcomeText(from)}\n${outcomeText(to)}\n${causeText(because)}`,
-          )
-          .join("\n");
+          ),
+          Arr.join("\n"),
+        );
         const reported = yield* failure(() =>
           t.run(async (ctx) => {
             const row = await ctx.db.query("vault").first();
@@ -702,11 +730,10 @@ describe("redaction routes", () => {
         yield* call(() =>
           restored.restoreSnapshot(snapshot, { secrets: t.secrets() }),
         );
-        expect(
-          yield* call(() =>
-            restored.run((ctx) => ctx.db.query("vault").first()),
-          ),
-        ).toMatchObject({
+        const callResult = yield* call(() =>
+          restored.run((ctx) => ctx.db.query("vault").first()),
+        );
+        expect(callResult).toMatchObject({
           credential: { key: compoundCanary },
           either: { token: unionCanary },
         });
@@ -743,10 +770,9 @@ describe("redaction routes", () => {
         const subscription = yield* call(() =>
           t.subscriber().subscribe(app.byToken, { token: indexCanary }),
         );
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The records are printed as a report would print them.
-        const records = JSON.stringify([
+        const records = yield* Schema.encodeEffect(UnknownJson)([
           prepared.reads,
-          t.held().map(({ reads }) => reads),
+          Arr.map(t.held(), ({ reads }) => reads),
           subscription.current().reads,
         ]);
         expect(records).not.toContain(indexCanary);
@@ -833,8 +859,7 @@ describe("redaction routes", () => {
         const prepared = yield* call(() =>
           t.prepare(app.findDeep, { token: deepIndexCanary }),
         );
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The records are printed as a report would print them.
-        const records = JSON.stringify(prepared.reads);
+        const records = yield* Schema.encodeEffect(UnknownJson)(prepared.reads);
         expect(records).not.toContain(deepIndexCanary);
         expect(records).toContain(Redaction.marker);
       }),
@@ -850,14 +875,16 @@ describe("redaction routes", () => {
           _tag: "returned",
           value: { token: Redaction.marker },
         });
-        expect(t.held().map(({ outcome }) => outcome)).toEqual([
+        expect(Arr.map(t.held(), ({ outcome }) => outcome)).toEqual([
           prepared.outcome,
         ]);
-        expect(yield* call(() => t.apply(prepared.id))).toMatchObject({
+        const callResult = yield* call(() => t.apply(prepared.id));
+        expect(callResult).toMatchObject({
           kind: "applied",
           result: { token: Redaction.marker },
         });
-        expect(yield* call(() => t.mutation(app.issue, {}))).toEqual({
+        const callResult2 = yield* call(() => t.mutation(app.issue, {}));
+        expect(callResult2).toEqual({
           token: "ab",
         });
       }),
@@ -882,15 +909,14 @@ describe("redaction routes", () => {
         yield* call(() =>
           restored.restoreSnapshot(snapshot, { secrets: t.secrets() }),
         );
-        expect(
-          yield* call(() =>
-            restored.run(async (ctx) => {
-              const link = await ctx.db.query("links").first();
-              const note = await ctx.db.get(link!.target);
-              return { target: link!.target, note: note?.text };
-            }),
-          ),
-        ).toEqual({ target: id, note: "target" });
+        const callResult = yield* call(() =>
+          restored.run(async (ctx) => {
+            const link = await ctx.db.query("links").first();
+            const note = await ctx.db.get(link!.target);
+            return { target: link!.target, note: note?.text };
+          }),
+        );
+        expect(callResult).toEqual({ target: id, note: "target" });
       }),
   );
 
@@ -906,16 +932,22 @@ describe("redaction routes", () => {
         const ref = secrets.keep(id);
         const marker = { [Redaction.markerKey]: ref };
         const snapshot = new TextDecoder().decode(t.exportSnapshot());
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The edit works on the body's raw JSON, as a writer of marked snapshots would.
-        const body = JSON.parse(snapshot.slice(snapshot.indexOf("\n") + 1));
+        const bodyStart =
+          pipe(
+            snapshot,
+            Str.indexOf("\n"),
+            Option.getOrElse(() => -1),
+          ) + 1;
+        const body = yield* Schema.decodeEffect(
+          Schema.fromJsonString(Schema.Any),
+        )(pipe(snapshot, Str.slice(bodyStart)));
         for (const entry of body.tables)
           for (const row of entry.rows)
             if (row.doc._id === id) row.doc._id = marker;
         for (const commit of body.log)
           for (const change of commit.changes)
             if (change.after?._id === id) change.after._id = marker;
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The marked body is written as raw bytes.
-        const edited = JSON.stringify(body);
+        const edited = yield* Schema.encodeEffect(UnknownJson)(body);
         const marked = new TextEncoder().encode(
           `confect-kernel-snapshot 4 sha256:${createHash("sha256")
             .update(edited)
@@ -923,9 +955,10 @@ describe("redaction routes", () => {
         );
         const restored = backend();
         yield* call(() => restored.restoreSnapshot(marked, { secrets }));
-        expect(
-          yield* call(() => restored.run((ctx) => ctx.db.get(id))),
-        ).toMatchObject({ _id: id, text: "marked" });
+        const callResult = yield* call(() =>
+          restored.run((ctx) => ctx.db.get(id)),
+        );
+        expect(callResult).toMatchObject({ _id: id, text: "marked" });
       }),
   );
 
@@ -998,15 +1031,15 @@ describe("cron outcomes", () => {
           kind: "failed",
           error: expect.stringContaining(`failed with ${Redaction.marker}`),
         });
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The canary is searched for in the text a runner would print.
-        expect(JSON.stringify(t.crons())).not.toContain(cronCanary);
+        const cronsText = yield* Schema.encodeEffect(UnknownJson)(t.crons());
+        expect(cronsText).not.toContain(cronCanary);
         const bytes = t.exportSnapshot();
         const exported = new TextDecoder().decode(bytes);
         expect(exported).not.toContain(cronCanary);
         expect(exported).toContain('"error":{"$redacted":');
         const after = t.crons();
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The canary is searched for in the text a runner would print.
-        expect(JSON.stringify(after)).not.toContain(cronCanary);
+        const afterText = yield* Schema.encodeEffect(UnknownJson)(after);
+        expect(afterText).not.toContain(cronCanary);
 
         const restored = cronBackend();
         yield* call(() =>

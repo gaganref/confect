@@ -18,10 +18,9 @@ import type {
   GenericValidator,
   Validator,
 } from "convex/values";
-import * as Data from "effect/Data";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
-import type * as Schema from "effect/Schema";
 
 export const TypeId = "~@confect/core/Table";
 export type TypeId = typeof TypeId;
@@ -61,10 +60,10 @@ export interface Group<
   readonly scope: Scope_;
 }
 
-export class GroupFieldError extends Data.TaggedError("GroupFieldError")<{
-  readonly tableName: string;
-  readonly key: string;
-}> {
+export class GroupFieldError extends Schema.TaggedError<
+  GroupFieldError,
+  { readonly brand: unique symbol }
+>()("GroupFieldError", { tableName: Schema.String, key: Schema.String }) {
   override get message(): string {
     return `Table '${this.tableName}' cannot be grouped by '${this.key}': it is not a field holding an id.`;
   }
@@ -125,7 +124,7 @@ const makeGroup = (
     const table =
       ast === undefined ? Option.none() : GenericId.tableName<string>(ast);
     if (ast === undefined || Option.isNone(table))
-      throw new GroupFieldError({ tableName, key });
+      throw GroupFieldError.make({ tableName, key });
     return { table: table.value, scope: GenericId.scope(ast) };
   };
   const group = { key };

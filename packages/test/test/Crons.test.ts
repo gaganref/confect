@@ -304,7 +304,7 @@ describe("declarations the binary refuses", () => {
   ])("%j is refused as invalid", (schedule, message) => {
     expect(refusal(schedule)).toMatchObject({
       _tag: "InvalidCron",
-      name: "job",
+      cronName: "job",
       message: expect.stringContaining(message),
     });
   });

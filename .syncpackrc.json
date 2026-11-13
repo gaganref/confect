@@ -56,15 +56,36 @@
       "pinVersion": "workspace:*"
     },
     {
-      "label": "The bench harness deliberately lags TypeScript, see tools/bench-harness/README.md",
-      "packages": ["confect-bench-harness"],
-      "dependencies": ["typescript"],
-      "dependencyTypes": ["dev"],
-      "isIgnored": true
-    },
-    {
       "label": "devDependencies must use the same version across the workspace",
       "dependencyTypes": ["dev"]
+    },
+    {
+      "label": "CLI, server, and Alchemy Effect integrations start at 4.1.4, the Effect floor of their @effect/ai-*, platform-node and Alchemy dependencies, and stay within the verified minor release",
+      "packages": ["@confect/cli", "@confect/server", "@confect/alchemy"],
+      "dependencies": ["effect", "@effect/platform-node"],
+      "dependencyTypes": ["prod", "peer"],
+      "pinVersion": "~4.1.4"
+    },
+    {
+      "label": "The test kit's Effect peer starts at the server's floor",
+      "packages": ["@confect/test"],
+      "dependencies": ["effect"],
+      "dependencyTypes": ["peer"],
+      "pinVersion": "^4.1.4"
+    },
+    {
+      "label": "The Foldkit adapter's Effect peer stays on its verified Foldkit pair's minor",
+      "packages": ["@confect/foldkit"],
+      "dependencies": ["effect"],
+      "dependencyTypes": ["peer"],
+      "pinVersion": "~4.1.0"
+    },
+    {
+      "label": "The Foldkit adapter supports patches within the verified pre-1.0 minor",
+      "packages": ["@confect/foldkit"],
+      "dependencies": ["foldkit"],
+      "dependencyTypes": ["peer"],
+      "pinVersion": "^0.170.0"
     },
     {
       "label": "External dependencies shared across @confect/* packages must use the same range in prod/peer",

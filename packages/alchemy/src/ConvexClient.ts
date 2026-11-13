@@ -12,6 +12,10 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import type * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Loopback from "./internal/Loopback.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
+import * as Rec from "effect/Record";
 
 export type Project = ManagementApi.ProjectResponse;
 export type CreatedProject = ManagementApi.PlatformCreateProjectResponse;
@@ -74,28 +78,31 @@ const errorFields = {
   ]),
 };
 
-export class ConvexApiError extends Schema.TaggedError<ConvexApiError>()(
-  "ConvexApiError",
-  errorFields,
-) {}
+export class ConvexApiError extends Schema.TaggedError<
+  ConvexApiError,
+  { readonly brand: unique symbol }
+>()("ConvexApiError", errorFields) {}
 
-export class ConvexNotFound extends Schema.TaggedError<ConvexNotFound>()(
-  "ConvexNotFound",
-  errorFields,
-) {}
+export class ConvexNotFound extends Schema.TaggedError<
+  ConvexNotFound,
+  { readonly brand: unique symbol }
+>()("ConvexNotFound", errorFields) {}
 
-export class ConvexConflict extends Schema.TaggedError<ConvexConflict>()(
-  "ConvexConflict",
-  errorFields,
-) {}
+export class ConvexConflict extends Schema.TaggedError<
+  ConvexConflict,
+  { readonly brand: unique symbol }
+>()("ConvexConflict", errorFields) {}
 
 /**
  * A function the deployment ran failed, with the message Convex reports.
  */
-export class ConvexFunctionError extends Schema.TaggedError<ConvexFunctionError>()(
-  "ConvexFunctionError",
-  { functionPath: Schema.String, errorMessage: Schema.String },
-) {}
+export class ConvexFunctionError extends Schema.TaggedError<
+  ConvexFunctionError,
+  { readonly brand: unique symbol }
+>()("ConvexFunctionError", {
+  functionPath: Schema.String,
+  errorMessage: Schema.String,
+}) {}
 
 const FunctionResponse = Schema.Union([
   Schema.Struct({ status: Schema.Literal("success"), value: Schema.Unknown }),
@@ -117,16 +124,16 @@ const ProjectSchema = Schema.Struct({
   teamId: Schema.Finite,
   teamSlug: Schema.String,
   createTime: Schema.Finite,
-  prodDeploymentName: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  devDeploymentName: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  prodDeploymentName: Schema.String.pipe(Schema.NullOr, Schema.optionalKey),
+  devDeploymentName: Schema.String.pipe(Schema.NullOr, Schema.optionalKey),
 }) satisfies Schema.Schema<Project>;
 
 const CreatedProjectSchema = Schema.Struct({
   id: Schema.Finite,
   projectId: Schema.Finite,
   slug: Schema.String,
-  deploymentName: Schema.optionalKey(Schema.NullOr(Schema.String)),
-  deploymentUrl: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  deploymentName: Schema.String.pipe(Schema.NullOr, Schema.optionalKey),
+  deploymentUrl: Schema.String.pipe(Schema.NullOr, Schema.optionalKey),
 }) satisfies Schema.Schema<CreatedProject>;
 
 const deploymentFields = {
@@ -134,7 +141,7 @@ const deploymentFields = {
   createTime: Schema.Finite,
   deploymentType: Schema.Literals(["dev", "prod", "preview", "custom"]),
   projectId: Schema.Finite,
-  previewIdentifier: Schema.optionalKey(Schema.NullOr(Schema.String)),
+  previewIdentifier: Schema.String.pipe(Schema.NullOr, Schema.optionalKey),
 };
 
 const DeploymentSchema = Schema.Union([
@@ -142,8 +149,8 @@ const DeploymentSchema = Schema.Union([
     ...deploymentFields,
     kind: Schema.Literal("cloud"),
     id: Schema.Finite,
-    lastDeployTime: Schema.optionalKey(Schema.NullOr(Schema.Finite)),
-    creator: Schema.optionalKey(Schema.NullOr(Schema.Finite)),
+    lastDeployTime: Schema.Finite.pipe(Schema.NullOr, Schema.optionalKey),
+    creator: Schema.Finite.pipe(Schema.NullOr, Schema.optionalKey),
     region: Schema.Literals([
       "aws-us-east-1",
       "aws-eu-west-1",
@@ -152,13 +159,14 @@ const DeploymentSchema = Schema.Union([
     ]),
     isDefault: Schema.Boolean,
     reference: Schema.String,
-    dashboardEditConfirmation: Schema.optionalKey(
-      Schema.NullOr(Schema.Boolean),
+    dashboardEditConfirmation: Schema.Boolean.pipe(
+      Schema.NullOr,
+      Schema.optionalKey,
     ),
     deploymentUrl: Schema.String,
-    expiresAt: Schema.optionalKey(Schema.NullOr(Schema.Finite)),
+    expiresAt: Schema.Finite.pipe(Schema.NullOr, Schema.optionalKey),
     class: Schema.String,
-    sendLogsToClient: Schema.optionalKey(Schema.NullOr(Schema.Boolean)),
+    sendLogsToClient: Schema.Boolean.pipe(Schema.NullOr, Schema.optionalKey),
   }),
   Schema.Struct({
     ...deploymentFields,
@@ -174,17 +182,13 @@ const DeployKeySchema = Schema.Struct({
   id: Schema.Finite,
   name: Schema.String,
   creationTime: Schema.Finite,
-  lastUsedTime: Schema.optionalKey(Schema.NullOr(Schema.Finite)),
-  expiresAt: Schema.optionalKey(Schema.NullOr(Schema.Finite)),
-  creator: Schema.optionalKey(Schema.NullOr(Schema.Finite)),
-  managedBy: Schema.optionalKey(
-    Schema.NullOr(
-      Schema.Union([
-        Schema.Literal("vercel"),
-        Schema.Struct({ oauthApp: Schema.String }),
-      ]),
-    ),
-  ),
+  lastUsedTime: Schema.Finite.pipe(Schema.NullOr, Schema.optionalKey),
+  expiresAt: Schema.Finite.pipe(Schema.NullOr, Schema.optionalKey),
+  creator: Schema.Finite.pipe(Schema.NullOr, Schema.optionalKey),
+  managedBy: Schema.Union([
+    Schema.Literal("vercel"),
+    Schema.Struct({ oauthApp: Schema.String }),
+  ]).pipe(Schema.NullOr, Schema.optionalKey),
   allowedActions: Schema.Array(Schema.String),
 }) satisfies Schema.Schema<DeployKey>;
 
@@ -192,7 +196,7 @@ const ProjectsPageSchema = Schema.Struct({
   items: Schema.Array(ProjectSchema),
   pagination: Schema.Struct({
     hasMore: Schema.Boolean,
-    nextCursor: Schema.optionalKey(Schema.NullOr(Schema.String)),
+    nextCursor: Schema.String.pipe(Schema.NullOr, Schema.optionalKey),
   }),
 });
 
@@ -205,12 +209,11 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     const token =
       options?.token ??
       (yield* Config.Redacted("CONVEX_ACCESS_TOKEN").pipe(
-        Effect.mapError(
-          () =>
-            new ConvexApiError({
-              operation: "configure",
-              code: "InvalidConfiguration",
-            }),
+        Effect.mapError(() =>
+          ConvexApiError.make({
+            operation: "configure",
+            code: "InvalidConfiguration",
+          }),
         ),
       ));
     return Redacted.make(`Bearer ${Redacted.value(token)}`);
@@ -233,8 +236,8 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     );
     if (body !== undefined) {
       request = yield* HttpClientRequest.bodyJson(request, body).pipe(
-        Effect.mapError(
-          () => new ConvexApiError({ operation, code: "InvalidRequest" }),
+        Effect.mapError(() =>
+          ConvexApiError.make({ operation, code: "InvalidRequest" }),
         ),
       );
     }
@@ -242,26 +245,26 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       Effect.provideService(FetchHttpClient.RequestInit, {
         redirect: "manual",
       }),
-      Effect.mapError(
-        () => new ConvexApiError({ operation, code: "TransportError" }),
+      Effect.mapError(() =>
+        ConvexApiError.make({ operation, code: "TransportError" }),
       ),
     );
     if (response.status === 404) {
-      return yield* new ConvexNotFound({
+      return yield* ConvexNotFound.make({
         operation,
         status: 404,
         code: "HttpError",
       });
     }
     if (response.status === 409) {
-      return yield* new ConvexConflict({
+      return yield* ConvexConflict.make({
         operation,
         status: 409,
         code: "HttpError",
       });
     }
     if (response.status < 200 || response.status >= 300) {
-      return yield* new ConvexApiError({
+      return yield* ConvexApiError.make({
         operation,
         status: response.status,
         code: "HttpError",
@@ -276,7 +279,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     schema: Schema.Decoder<A>,
   ) {
     const invalidResponse = () =>
-      new ConvexApiError({
+      ConvexApiError.make({
         operation,
         status: response.status,
         code: "InvalidResponse",
@@ -294,11 +297,12 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     schema: Schema.Decoder<A>,
     body?: unknown,
   ) {
+    const managementAuthorizationValue = yield* managementAuthorization;
     const response = yield* send(
       operation,
       method,
       `${baseUrl}${path}`,
-      yield* managementAuthorization,
+      managementAuthorizationValue,
       body,
     );
     return yield* decode(operation, response, schema);
@@ -310,11 +314,12 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     path: string,
     body?: unknown,
   ) {
+    const managementAuthorizationValue = yield* managementAuthorization;
     yield* send(
       operation,
       method,
       `${baseUrl}${path}`,
-      yield* managementAuthorization,
+      managementAuthorizationValue,
       body,
     );
   });
@@ -324,7 +329,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     url: string,
   ) {
     const invalidUrl = () =>
-      new ConvexApiError({ operation, code: "InvalidRequest" });
+      ConvexApiError.make({ operation, code: "InvalidRequest" });
     if (options?.mode === "local") {
       if (!Loopback.isOrigin(url)) return yield* invalidUrl();
       return `${url}/api/v1`;
@@ -344,7 +349,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       !/^[a-z0-9-]+(?:\.(?:eu-west-1|ap-southeast-2|ca-central-1))?\.convex\.cloud$/.test(
         parsed.hostname,
       ) ||
-      url.replace(/\/$/, "") !== parsed.origin
+      pipe(url, String.replace(/\/$/, "")) !== parsed.origin
     ) {
       return yield* invalidUrl();
     }
@@ -364,9 +369,10 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       componentPath?: string,
     ) {
       const operation = "runFunction";
-      const origin = (yield* deploymentUrl(operation, url)).replace(
-        /\/api\/v1$/,
-        "",
+      const deploymentUrlResult = yield* deploymentUrl(operation, url);
+      const origin = pipe(
+        deploymentUrlResult,
+        String.replace(/\/api\/v1$/, ""),
       );
       const request = yield* HttpClientRequest.post(
         `${origin}/api/function`,
@@ -382,28 +388,28 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
           format: "json",
           ...(componentPath === undefined ? {} : { componentPath }),
         }),
-        Effect.mapError(
-          () => new ConvexApiError({ operation, code: "InvalidRequest" }),
+        Effect.mapError(() =>
+          ConvexApiError.make({ operation, code: "InvalidRequest" }),
         ),
       );
       const response = yield* http.execute(request).pipe(
         Effect.provideService(FetchHttpClient.RequestInit, {
           redirect: "manual",
         }),
-        Effect.mapError(
-          () => new ConvexApiError({ operation, code: "TransportError" }),
+        Effect.mapError(() =>
+          ConvexApiError.make({ operation, code: "TransportError" }),
         ),
       );
       // Convex answers a function that threw with 560 and its message.
       if (response.status !== 200 && response.status !== 560)
-        return yield* new ConvexApiError({
+        return yield* ConvexApiError.make({
           operation,
           status: response.status,
           code: "HttpError",
         });
       const result = yield* decode(operation, response, FunctionResponse);
       if (result.status === "error")
-        return yield* new ConvexFunctionError({
+        return yield* ConvexFunctionError.make({
           functionPath,
           errorMessage: result.errorMessage,
         });
@@ -425,8 +431,13 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
         projects.push(...page.items);
         if (!page.pagination.hasMore) return projects;
         const nextCursor = page.pagination.nextCursor;
-        if (!nextCursor || seenCursors.has(nextCursor)) {
-          return yield* new ConvexApiError({
+        if (
+          nextCursor === undefined ||
+          nextCursor === null ||
+          nextCursor === "" ||
+          seenCursors.has(nextCursor)
+        ) {
+          return yield* ConvexApiError.make({
             operation: "listProjects",
             code: "InvalidPagination",
           });
@@ -561,11 +572,11 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
           environmentVariables: Schema.Record(Schema.String, Schema.String),
         }),
       );
-      return Object.fromEntries(
-        Object.entries(result.environmentVariables).map(([name, value]) => [
-          name,
-          Redacted.make(value),
-        ]),
+      return Rec.fromEntries(
+        Array.map(
+          Rec.toEntries(result.environmentVariables),
+          ([name, value]) => [name, Redacted.make(value)],
+        ),
       );
     }),
     updateEnvironmentVariables: Effect.fn(
@@ -581,7 +592,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
         `${yield* deploymentUrl("updateEnvironmentVariables", url)}/update_environment_variables`,
         Redacted.make(`Convex ${Redacted.value(key)}`),
         {
-          changes: changes.map(({ name, value }) => ({
+          changes: Array.map(changes, ({ name, value }) => ({
             name,
             ...(value === undefined
               ? {}
@@ -609,6 +620,8 @@ export class ConvexClient extends Context.Service<
 /**
  * `mode: "local"` sends deployment requests only to a loopback backend over
  * HTTP; the default accepts only Convex cloud HTTPS origins.
+ *
+ * @stability unstable
  */
 export const layer = (options?: {
   readonly token?: Redacted.Redacted<string>;

@@ -3,8 +3,9 @@ import { getFunctionReference } from "@confect/core/RefInternal";
 import { expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Random from "effect/Random";
-import refs from "./fixtures/confect/_generated/refs";
-import * as LocalBackend from "./LocalBackend";
+import refs from "confect-local-backend/refs";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
+import * as Array from "effect/Array";
 
 const functions = refs.public.groups.commitTs;
 
@@ -16,14 +17,13 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
       () =>
         Effect.gen(function* () {
           const { client } = yield* LocalBackend.LocalBackend;
-          expect(
-            yield* Effect.promise(() =>
-              client.mutation(getFunctionReference(functions.stamp), {
-                caseId: "read-back",
-                label: "only",
-              }),
-            ),
-          ).toBe("placeholder");
+          const resolved = yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(functions.stamp), {
+              caseId: "read-back",
+              label: "only",
+            }),
+          );
+          expect(resolved).toBe("placeholder");
         }),
     );
 
@@ -51,12 +51,12 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
             }),
           );
 
-          expect(stamps.map(({ label }) => label)).toEqual([
+          expect(Array.map(stamps, ({ label }) => label)).toEqual([
             "third",
             "second",
             "first",
           ]);
-          const [third, second, first] = stamps.flatMap(({ at }) =>
+          const [third, second, first] = Array.flatMap(stamps, ({ at }) =>
             typeof at === "bigint" ? [at] : [],
           );
           expect(first! < second! && second! < third!).toBe(true);

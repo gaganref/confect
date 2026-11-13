@@ -1,4 +1,4 @@
-import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeServices from "../fixtures/NodeTestServices";
 import { describe, expect, it } from "@effect/vitest";
 import { Convex } from "@confect/alchemy";
 import { AlchemyContext } from "alchemy/AlchemyContext";
@@ -81,18 +81,27 @@ const makeSession = (paths: {
     program: Effect.Effect<A, E, R>,
     applies = 1,
   ) =>
-    program.pipe(
-      Stack.make({ name: "notes", providers: Convex.providers(), state }),
-      Effect.flatMap((compiled) =>
-        Effect.forEach(Array.from({ length: applies }), () =>
-          Plan.make(compiled).pipe(Effect.flatMap(apply)),
-        ).pipe(Effect.provideContext(compiled.services)),
-      ),
-      Effect.provide(state),
-      provideFreshArtifactStore,
-      Effect.provide(fake.layer.pipe(Layer.provideMerge(context))),
-      Effect.scoped,
-    );
+    Effect.gen(function* () {
+      const services5 = yield* Layer.build(
+        fake.layer.pipe(Layer.provideMerge(context)),
+      );
+      return yield* Effect.gen(function* () {
+        const services2 = yield* Layer.build(state);
+        return yield* program.pipe(
+          Stack.make({ name: "notes", providers: Convex.providers(), state }),
+          Effect.flatMap((compiled) =>
+            Effect.forEach(Array.from({ length: applies }), () =>
+              Plan.make(compiled).pipe(Effect.flatMap(apply)),
+            ).pipe(Effect.provideContext(compiled.services)),
+          ),
+          Effect.provideContext(services2),
+        );
+      }).pipe(
+        Effect.scoped,
+        provideFreshArtifactStore,
+        Effect.provideContext(services5),
+      );
+    }).pipe(Effect.scoped, Effect.scoped);
   return { fake, session };
 };
 
@@ -124,47 +133,53 @@ describe("local deployment lifecycle", () => {
     "boots once per session, restarts on its saved data, and removes data only when destroyed",
     () =>
       Effect.gen(function* () {
-        const fs = yield* FileSystem.FileSystem;
-        const path = yield* Path.Path;
-        const paths = yield* workspace;
-        const { fake, session } = makeSession(paths);
+        const services3 = yield* Layer.build(NodeServices.layer);
+        return yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const paths = yield* workspace;
+          const { fake, session } = makeSession(paths);
 
-        const [first, again] = yield* session(stack(paths.cwd, "destroy"), 2);
-        expect(again).toEqual(first);
-        expect(first?.url).toMatch(/^http:\/\/127\.0\.0\.1:336\d$/);
-        expect(fake.served).toHaveLength(1);
-        expect(fake.served[0]?.running()).toBe(false);
-        const selection = `CONVEX_SELF_HOSTED_URL=${first?.url}\nCONVEX_SELF_HOSTED_ADMIN_KEY=${first?.name}|0a1b2c1\n`;
-        expect(fake.pushes).toEqual([selection, selection]);
-        const data = path.join(
-          paths.dotAlchemy,
-          "convex",
-          "notes",
-          "dev",
-          first?.name ?? "",
-        );
-        expect(yield* fs.exists(path.join(data, "identity.json"))).toBe(true);
+          const [first, again] = yield* session(stack(paths.cwd, "destroy"), 2);
+          expect(again).toEqual(first);
+          expect(first?.url).toMatch(/^http:\/\/127\.0\.0\.1:336\d$/);
+          expect(fake.served).toHaveLength(1);
+          expect(fake.served[0]?.running()).toBe(false);
+          const selection = `CONVEX_SELF_HOSTED_URL=${first?.url}\nCONVEX_SELF_HOSTED_ADMIN_KEY=${first?.name}|0a1b2c1\n`;
+          expect(fake.pushes).toEqual([selection, selection]);
+          const data = path.join(
+            paths.dotAlchemy,
+            "convex",
+            "notes",
+            "dev",
+            first?.name ?? "",
+          );
+          const found = yield* fs.exists(path.join(data, "identity.json"));
+          expect(found).toBe(true);
 
-        const [restarted] = yield* session(stack(paths.cwd, "destroy"));
-        expect(restarted).toEqual(first);
-        expect(fake.served).toHaveLength(2);
-        expect(fake.pushes.at(-1)).toBe(selection);
+          const [restarted] = yield* session(stack(paths.cwd, "destroy"));
+          expect(restarted).toEqual(first);
+          expect(fake.served).toHaveLength(2);
+          expect(fake.pushes.at(-1)).toBe(selection);
 
-        yield* session(Effect.succeed({}));
-        expect(yield* fs.exists(data)).toBe(false);
-      }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+          yield* session(Effect.succeed({}));
+          const dataExists = yield* fs.exists(data);
+          expect(dataExists).toBe(false);
+        }).pipe(Effect.scoped, Effect.provideContext(services3));
+      }),
   );
 
   it.live("keeps a retained deployment's data after it leaves the stack", () =>
     Effect.gen(function* () {
-      const fs = yield* FileSystem.FileSystem;
-      const path = yield* Path.Path;
-      const paths = yield* workspace;
-      const { session } = makeSession(paths);
-      const [created] = yield* session(stack(paths.cwd, "retain"));
-      yield* session(Effect.succeed({}));
-      expect(
-        yield* fs.exists(
+      const services4 = yield* Layer.build(NodeServices.layer);
+      return yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const paths = yield* workspace;
+        const { session } = makeSession(paths);
+        const [created] = yield* session(stack(paths.cwd, "retain"));
+        yield* session(Effect.succeed({}));
+        const found = yield* fs.exists(
           path.join(
             paths.dotAlchemy,
             "convex",
@@ -173,8 +188,9 @@ describe("local deployment lifecycle", () => {
             created?.name ?? "",
             "identity.json",
           ),
-        ),
-      ).toBe(true);
-    }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
+        );
+        expect(found).toBe(true);
+      }).pipe(Effect.scoped, Effect.provideContext(services4));
+    }),
   );
 });

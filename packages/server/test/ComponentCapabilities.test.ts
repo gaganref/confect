@@ -7,6 +7,7 @@ import {
 } from "@confect/core";
 import {
   Auth,
+  MutationAuth,
   DatabaseReader,
   DatabaseSchema,
   DatabaseWriter,
@@ -24,7 +25,7 @@ import type {
   QueryInitializer,
   BlobNotFoundError,
 } from "@confect/server";
-import { describe, expect, it } from "@effect/vitest";
+import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import type { GenericMutationCtx } from "convex/server";
 import { makeFunctionReference } from "convex/server";
 import * as Context from "effect/Context";
@@ -34,6 +35,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Router from "effect/http/HttpRouter";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import * as Record from "effect/Record";
 
 const scope = IdScope.component("@example/counter");
 const users = Table.make(() => Schema.Struct({ name: Schema.String }))(
@@ -57,7 +59,7 @@ const group = GroupSpec.make().addFunction(
 describe("component capabilities", () => {
   it("allows signing only in app and component mutations", () => {
     const mint = Effect.gen(function* () {
-      const auth = yield* Auth.MutationAuth;
+      const auth = yield* MutationAuth.MutationAuth;
       // @ts-expect-error Signing doesn't expose application identity in a component.
       void auth.getUserIdentity;
       return yield* auth.signJwt({
@@ -92,12 +94,12 @@ describe("component capabilities", () => {
       FunctionImpl.make(schema, functions, "action", () => mint);
     }
     const reserved = (
-      auth: Context.Service.Shape<typeof Auth.MutationAuth>,
-    ) => {
+      auth: Context.Service.Shape<typeof MutationAuth.MutationAuth>,
+    ) =>
       // @ts-expect-error Convex owns the issuer claim.
-      return auth.signJwt({ claims: { iss: "other" }, expiresInSeconds: 60 });
-    };
+      auth.signJwt({ claims: { iss: "other" }, expiresInSeconds: 60 });
     void reserved;
+    expectTypeOf(Auth).not.toHaveProperty("MutationAuth");
   });
 
   it("keeps the implementation builder while rejecting app authentication", () => {
@@ -187,8 +189,9 @@ describe("component capabilities", () => {
       Auth.Auth.pipe(Effect.as(HttpServerResponse.text("OK"))),
     );
     // @ts-expect-error Component HTTP handlers also cannot require application Auth.
-    HttpRouter.forSchema(databaseSchema)(routes);
-    HttpRouter.forSchema(databaseSchema)(
+    HttpRouter.make(databaseSchema, routes);
+    HttpRouter.make(
+      databaseSchema,
       Router.add("GET", "/", HttpServerResponse.text("OK")),
     );
   });
@@ -214,7 +217,7 @@ describe("component capabilities", () => {
           context,
           MutationCtx.MutationCtx<Model, typeof scope>(),
         );
-        expect(Object.hasOwn(raw, "auth")).toBe(false);
+        expect(Record.has<string, unknown>(raw, "auth")).toBe(false);
       }).pipe(Effect.scoped);
     },
   );

@@ -18,6 +18,7 @@ import * as Schema from "effect/Schema";
 import schema from "../_generated/schema";
 import refs from "../_generated/refs";
 import spec, { Preflight } from "./actionCall.spec";
+import * as Array from "effect/Array";
 
 const notes = refs.public.groups.notes;
 
@@ -56,7 +57,7 @@ const execute = FunctionImpl.make(schema, spec, "execute", ({ mode }) =>
           Effect.serviceOption(Scheduler.Scheduler),
         ]);
         yield* call(notes.list);
-        return raw.every((option) => option._tag === "None");
+        return Array.every(raw, (option) => option._tag === "None");
       }
       case "failedEncoding": {
         const target = Ref.make(

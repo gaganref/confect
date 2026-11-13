@@ -13,6 +13,7 @@ import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as HttpApiScalar from "effect/http-api/HttpApiScalar";
+import * as Record from "effect/Record";
 
 const components = [defineComponent("counter"), defineComponent("workpool")];
 const client = (native: unknown) => native;
@@ -82,9 +83,10 @@ describe("Http", () => {
             const expected = yield* Effect.promise(() =>
               effect.handler(new Request("https://example.com/docs")),
             );
-            expect(body).toBe(yield* Effect.promise(() => expected.text()));
-            expect(Object.fromEntries(response.headers)).toEqual(
-              Object.fromEntries(expected.headers),
+            const resolved = yield* Effect.promise(() => expected.text());
+            expect(body).toBe(resolved);
+            expect(Record.fromEntries(response.headers)).toEqual(
+              Record.fromEntries(expected.headers),
             );
             yield* Effect.promise(effect.dispose);
             expect(body).toContain(
@@ -93,7 +95,8 @@ describe("Http", () => {
             const endpoint = yield* Effect.promise(() =>
               web.handler(new Request("https://example.com/meta")),
             );
-            expect(yield* Effect.promise(() => endpoint.text())).toBe('"ok"');
+            const resolved2 = yield* Effect.promise(() => endpoint.text());
+            expect(resolved2).toBe('"ok"');
           }),
         (web) => Effect.promise(web.dispose),
       );
@@ -113,7 +116,7 @@ describe("Http", () => {
     for (const path of ["/first", "/first/", "/first/status"] as const) {
       expect(Http.routes(app, declare(path))).toEqual(
         Result.fail(
-          new Http.RouteUnderMountPrefix({
+          Http.RouteUnderMountPrefix.make({
             method: "GET",
             path,
             mount: "first",
@@ -128,7 +131,7 @@ describe("Http", () => {
   it("rejects the docs page under a mount prefix", () => {
     expect(Http.routes(app, declare("/meta", "/second/docs"))).toEqual(
       Result.fail(
-        new Http.RouteUnderMountPrefix({
+        Http.RouteUnderMountPrefix.make({
           method: "GET",
           path: "/second/docs",
           mount: "second",
@@ -165,7 +168,7 @@ describe("Http", () => {
       ),
     ).toEqual(
       Result.fail(
-        new Http.DuplicateRoute({
+        Http.DuplicateRoute.make({
           method: "GET",
           path: "/items/:key",
           first: { kind: "app" },
@@ -226,7 +229,25 @@ describe("Http", () => {
     });
     expect(Http.routes(overlapping)).toEqual(
       Result.fail(
-        new Http.OverlappingMountPrefixes({
+        Http.OverlappingMountPrefixes.make({
+          first: { mount: "outer", httpPrefix: "/jobs" },
+          second: { mount: "inner", httpPrefix: "/jobs/inner" },
+        }),
+      ),
+    );
+  });
+
+  it("skips the holes in a sparse list of mounts", () => {
+    const mounts: Array<Mount.Any> = [];
+    mounts[1] = Mount.make(Workpool, { name: "outer", httpPrefix: "/jobs" });
+    mounts[2] = Mount.make(Counter, {
+      name: "inner",
+      httpPrefix: "/jobs/inner",
+    });
+    const sparse = App.make({ env: Env.make("host", {}), components, mounts });
+    expect(Http.routes(sparse)).toEqual(
+      Result.fail(
+        Http.OverlappingMountPrefixes.make({
           first: { mount: "outer", httpPrefix: "/jobs" },
           second: { mount: "inner", httpPrefix: "/jobs/inner" },
         }),

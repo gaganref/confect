@@ -6,7 +6,7 @@ This fork takes no issues and no pull requests. Send changes to upstream Confect
 
 ## Upstream releases
 
-`main` tracks stable upstream releases and is based on upstream 10.3.1. Each release is taken by merge. A scheduled check dry-runs a merge of the newest stable release and lists conflicting files. A maintainer lands the merge through a pull request.
+`main` tracks stable upstream releases and is based on upstream 10.6.0. Each release is taken by merge. A scheduled check dry-runs a merge of the newest stable release and lists conflicting files. A maintainer lands the merge through a pull request.
 
 The two remotes are `origin` = <https://github.com/gaganref/confect> and `upstream` = <https://github.com/rjdellecese/confect>. Fork work and pull requests go to `origin`.
 
@@ -20,21 +20,25 @@ Choose a green [Packages run](https://github.com/gaganref/confect/actions/workfl
 pnpm add --strict-peer-dependencies '@confect/core@npm:@gaganref/confect-core@<version>' '@confect/server@npm:@gaganref/confect-server@<version>' '@confect/test@npm:@gaganref/confect-test@<version>' '@confect/cli@npm:@gaganref/confect-cli@<version>'
 ```
 
-The package set currently requires Effect below 4.1 because the CLI and Alchemy
-still use the removed Crypto API. An application that installs the CLI lists all
-three directly: `effect@">=4.0.4 <4.1.0"`, `@effect/platform-node@">=4.0.4 <4.1.0"`
-and `@effect/platform-node-shared@">=4.0.4 <4.1.0"`. With pnpm, leaving out
-`@effect/platform-node-shared` lets `@effect/platform-node` resolve a 4.1 copy,
-and the CLI fails at start with a missing `effect/dist` module.
+The package set runs on Effect 4.1. The server, CLI and Alchemy packages peer
+`effect`, and the server and CLI `@effect/platform-node`, at `~4.1.4`. The tilde
+keeps them within the verified minor, because they use APIs that may change
+between minor releases. The floor is 4.1.4 because the server's
+`@effect/ai-*` 4.1.4 dependencies, `@effect/platform-node` 4.1.4 and Alchemy
+beta.86 all peer `effect ^4.1.4`. `@confect/test` peers `^4.1.4` for the
+server it requires. Foldkit stays on `~4.1.0` with its Foldkit 0.170 pair, and
+core, JS and React keep `^4.0.0`. `scripts/effectPeerFloor.test.ts` fails when
+a package's Effect peer floor is below one its required packages need, or when
+the baseline consumer lane stops installing the advertised floor.
 
 PRs exercise all eight staged tarballs in a fresh strict-peer consumer before publication.
 Every public declaration entry typechecks with NodeNext and `skipLibCheck: false`.
 The probe uses TypeScript 6.0.3, within Alchemy's transitive compiler peer range.
 It keeps implicit-any checks but disables strict null checks because Alchemy
-beta.82 and Effect require incompatible optional-property settings. A second declaration pass checks all application libraries with strict null
+beta.86 and Effect require incompatible optional-property settings. A second declaration pass checks all application libraries with strict null
 checks and exact optional properties. Alchemy alone stays in the resolution pass.
 The generated application retains its separate strict typecheck.
-The consumer uses Effect 4.0.6 to cover Scalar's dynamic inline-script import.
+The consumer uses Effect 4.1.4 to cover Scalar's dynamic inline-script import.
 After codegen, `node checkSchemaBundle.mjs` bundles its table schema with
 Convex 1.49's schema options, including splitting and name preservation. It
 requires one JavaScript output with no static or dynamic imports and evaluates

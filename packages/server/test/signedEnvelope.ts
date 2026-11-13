@@ -9,6 +9,10 @@
  */
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Arr from "effect/Array";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
 
 export const path = "/ingress/events";
 export const signatureHeader = "x-confect-signature";
@@ -57,12 +61,22 @@ const hmacKey = (key: string) =>
   );
 
 const toHex = (bytes: ArrayBuffer) =>
-  Array.from(new Uint8Array(bytes), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
+  Arr.join(
+    Array.from(new Uint8Array(bytes), (byte) =>
+      pipe(byte.toString(16), String.padStart(2, "0")),
+    ),
+    "",
+  );
 
 const fromHex = (hex: string) =>
-  Uint8Array.from(hex.match(/../g) ?? [], (pair) => Number.parseInt(pair, 16));
+  Uint8Array.from(
+    pipe(
+      hex,
+      String.match(/../g),
+      Option.getOrElse((): ReadonlyArray<string> => []),
+    ),
+    (pair) => Number.parseInt(pair, 16),
+  );
 
 /**
  * The signature header value for `body`, with the test's secret unless another
@@ -75,12 +89,8 @@ export const sign = (body: Uint8Array, key: string = secret): Promise<string> =>
     )
     .then((signature) => `sha256=${toHex(signature)}`);
 
-const decodeJson = Schema.decodeUnknownResult(
-  Schema.fromJsonString(Schema.Unknown),
-);
-const decodeEnvelope = Schema.decodeUnknownResult(
-  Schema.Struct({ id: Schema.String, event: Schema.String }),
-);
+const UnknownJson = Schema.fromJsonString(Schema.Unknown);
+const Envelope = Schema.Struct({ id: Schema.String, event: Schema.String });
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 const refused = (refusal: Refusal): Verdict => ({ kind: "refused", refusal });
@@ -92,7 +102,17 @@ export const verify = (
   header: (name: string) => string | null | undefined,
   body: Uint8Array,
 ): Promise<Verdict> => {
-  const mediaType = header("content-type")?.split(";")[0]?.trim().toLowerCase();
+  const contentType = header("content-type");
+  const mediaType =
+    typeof contentType === "string"
+      ? pipe(
+          contentType,
+          String.split(";"),
+          Arr.headNonEmpty,
+          String.trim,
+          String.toLowerCase,
+        )
+      : undefined;
   if (mediaType !== "application/json") {
     return Promise.resolve(refused(refusals.contentType));
   }
@@ -121,9 +141,9 @@ export const verify = (
       } catch {
         return refused(refusals.malformedJson);
       }
-      const json = decodeJson(text);
+      const json = Schema.decodeResult(UnknownJson)(text);
       if (Result.isFailure(json)) return refused(refusals.malformedJson);
-      const envelope = decodeEnvelope(json.success);
+      const envelope = Schema.decodeUnknownResult(Envelope)(json.success);
       return Result.isFailure(envelope)
         ? refused(refusals.malformedEnvelope)
         : { kind: "accepted", ...envelope.success };

@@ -15,6 +15,7 @@ import * as Option from "effect/Option";
 import * as Random from "effect/Random";
 import * as Schema from "effect/Schema";
 import * as Invocation from "../src/internal/Invocation";
+import * as Arr from "effect/Array";
 
 class Mail extends Context.Service<Mail, { readonly answer: string }>()(
   "@confect/test/test/Invocation.test/Mail",
@@ -467,12 +468,11 @@ describe("bind", () => {
           low: number,
         ) => {
           const { before, after, nested, stamped } = seen;
-          const times = [before, after, nested, stamped].flatMap((read) => [
-            read.now,
-            read.dated,
-            read.clock,
-          ]);
-          expect(times).toEqual(times.map(() => millis));
+          const times = Arr.flatMap(
+            [before, after, nested, stamped],
+            (read) => [read.now, read.dated, read.clock],
+          );
+          expect(times).toEqual(Arr.map(times, () => millis));
           const draws = [
             before.random,
             before.effectRandom,
@@ -481,11 +481,12 @@ describe("bind", () => {
             nested.random,
             stamped.random,
           ];
-          expect(draws.filter(inBand(low))).toEqual(draws);
-          const bytes = [before, after, nested, stamped].flatMap(
-            (read) => read.bytes,
+          expect(Arr.filter(draws, inBand(low))).toEqual(draws);
+          const bytes = Arr.flatMap(
+            [before, after, nested, stamped],
+            (read): ReadonlyArray<number> => read.bytes,
           );
-          expect(bytes.filter(byteInBand(low))).toEqual(bytes);
+          expect(Arr.filter(bytes, byteInBand(low))).toEqual(bytes);
           expect(nested.unsafe).toBe(0);
           expect([before.mail, after.mail, nested.mail]).toEqual([
             `${name} mail`,
@@ -496,11 +497,8 @@ describe("bind", () => {
         };
         check(adaSeen, "ada", 1_000_000, 0);
         check(graceSeen, "grace", 2_000_000, 0.75);
-        expect(yield* Effect.promise(overlap)).toEqual([
-          adaSeen,
-          graceSeen,
-          kept,
-        ]);
+        const resolved = yield* Effect.promise(overlap);
+        expect(resolved).toEqual([adaSeen, graceSeen, kept]);
         expect(hostKept()).toEqual(kept);
       }),
   );

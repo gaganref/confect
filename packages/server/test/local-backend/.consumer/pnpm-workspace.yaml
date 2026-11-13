@@ -1,0 +1,18 @@
+minimumReleaseAgeExclude:
+  - "@gaganref/confect-alchemy@10.3.1-fork.0"
+  - "@gaganref/confect-core@10.3.1-fork.0"
+  - "@gaganref/confect-foldkit@10.3.1-fork.0"
+  - "@gaganref/confect-js@10.3.1-fork.0"
+  - "@gaganref/confect-react@10.3.1-fork.0"
+  - "@gaganref/confect-server@10.3.1-fork.0"
+  - "@gaganref/confect-test@10.3.1-fork.0"
+  - "@gaganref/confect-cli@10.3.1-fork.0"
+
+overrides:
+  effect: 4.0.6
+  convex: 1.49.0
+  "@effect/platform-node": 4.0.4
+  "@effect/platform-node-shared": 4.0.4
+allowBuilds:
+  esbuild: false
+  workerd: false
