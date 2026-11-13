@@ -81,7 +81,7 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
       Effect.gen(function* () {
         yield* LocalBackend.LocalBackend;
         const response = yield* HttpClient.get(
-          "http://127.0.0.1:3211/context-metadata",
+          LocalBackend.siteUrl("/context-metadata"),
         );
 
         expect(response.status).toBe(200);

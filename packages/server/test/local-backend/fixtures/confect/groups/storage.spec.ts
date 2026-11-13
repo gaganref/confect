@@ -60,4 +60,38 @@ export default GroupSpec.make()
       args: () => ({ storageId: GenericId.GenericId("_storage") }),
       returns: () => Schema.Null,
     }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
+      name: "storeInMutation",
+      args: () => ({ text: Schema.String, contentType: Schema.String }),
+      returns: () => Schema.String,
+    }),
+  )
+  .addFunction(
+    FunctionSpec.internalMutation({
+      name: "storeAndRead",
+      args: () => ({
+        count: Schema.Finite,
+        size: Schema.Finite,
+        ids: Schema.Array(GenericId.GenericId("_storage")),
+      }),
+      returns: () => Schema.Null,
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
+      name: "fileProbe",
+      args: () => ({
+        nested: Schema.Boolean,
+        count: Schema.Finite,
+        size: Schema.Finite,
+        ids: Schema.Array(GenericId.GenericId("_storage")),
+        filesWritten: Schema.Finite,
+        fileWriteBytes: Schema.Finite,
+        filesRead: Schema.Finite,
+        fileReadBytes: Schema.Finite,
+      }),
+      returns: () => Schema.String,
+    }),
   );

@@ -50,6 +50,35 @@ export class LocalBackend extends Context.Service<
 
 const READY_LINE = "Convex functions ready!";
 
+/**
+ * The local backends' first port. Setting `CONFECT_LOCAL_BACKEND_PORT` moves
+ * every backend this suite starts, so it can run beside another checkout's on
+ * one machine. The default is the suite's fixed 3210.
+ */
+// oxlint-disable-next-line effecttsgo/process-env -- The port is read once, at module load before any Effect runs, as the fixed ports were.
+const basePort = Number(process.env["CONFECT_LOCAL_BACKEND_PORT"] ?? 3210);
+
+/**
+ * Each backend's cloud port. Its site port is the next one.
+ */
+export const ports = {
+  app: basePort,
+  consumer: basePort + 10,
+  plain: basePort + 20,
+} as const;
+
+/**
+ * A backend's cloud URL.
+ */
+export const cloudUrl = (port: number = ports.app) =>
+  `http://127.0.0.1:${port}`;
+
+/**
+ * `path` on a backend's site URL, where its HTTP actions answer.
+ */
+export const siteUrl = (path = "", port: number = ports.app) =>
+  `http://127.0.0.1:${port + 1}${path}`;
+
 // Knobs read by `crates/common/src/knobs.rs` in convex-backend. Lowering
 // these shrinks `MAX_CACHE_AGE` (= `USER_TIMEOUT` + `SYSTEM_TIMEOUT` + 1s,
 // per `crates/application/src/cache/mod.rs`) to ~7s so a single test run
@@ -193,7 +222,7 @@ const make = Effect.fnUntraced(function* (options: {
             return yield* new BackendRedeployError({ exitCode: code });
         });
         return {
-          client: new ConvexHttpClient(`http://127.0.0.1:${options.port}`),
+          client: new ConvexHttpClient(cloudUrl(options.port)),
           setEnv,
           redeploy,
         };
@@ -238,7 +267,7 @@ export const layer = Layer.effect(
   LocalBackend,
   make({
     directory: "./fixtures",
-    port: 3210,
+    port: ports.app,
     env: [
       [
         "TEST_AUTH_JWKS",
@@ -255,7 +284,7 @@ export const consumerLayer = Layer.effect(
   LocalBackend,
   make({
     directory: "./.consumer",
-    port: 3220,
+    port: ports.consumer,
     env: [["INSTALL_MARKER", "declared-consumer"]],
     redeployFunction: "hello:greet",
   }),

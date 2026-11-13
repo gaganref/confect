@@ -15,7 +15,9 @@ import * as Schema from "effect/Schema";
 import * as HttpBody from "effect/http/HttpBody";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
+import { TestConfect } from "../../../test/src/index";
 import refs from "./fixtures/confect/_generated/refs";
+import registry from "./fixtures/confect/_generated/testing";
 import * as LocalBackend from "./LocalBackend";
 
 const UploadResponse = Schema.fromJsonString(
@@ -194,3 +196,223 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
     60_000,
   );
 });
+
+const storage = refs.public.groups.storage;
+
+/**
+ * Run `program` on a fresh test kernel loaded with the same fixture.
+ */
+const onKernel = <A, E>(
+  program: (
+    test: TestConfect.TestConfect<typeof registry.schema>,
+  ) => Effect.Effect<A, E>,
+) =>
+  Effect.gen(function* () {
+    return yield* program(
+      yield* TestConfect.TestConfect<typeof registry.schema>(),
+    );
+  }).pipe(Effect.provide(TestConfect.layer(registry, { target: "kernel" })));
+
+const MiB = 1 << 20;
+const deployment = {
+  filesWritten: 10,
+  fileWriteBytes: 16 * MiB,
+  filesRead: 10,
+  fileReadBytes: 16 * MiB,
+};
+const hello = { text: "hello", contentType: "", sha256: "" };
+
+layer(LocalBackend.layer, { timeout: "120 seconds" })(
+  "file limits and content types",
+  (it) => {
+    // `files` files of 5 bytes each are stored first, on each backend, and the
+    // probe reads the ones `read` picks.
+    const probe = (options: {
+      readonly files: number;
+      readonly read: (
+        ids: ReadonlyArray<GenericId<"_storage">>,
+      ) => ReadonlyArray<GenericId<"_storage">>;
+      readonly nested: boolean;
+      readonly count: number;
+      readonly size: number;
+      readonly budget?: Partial<typeof deployment>;
+    }) =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        const args = (ids: ReadonlyArray<GenericId<"_storage">>) => ({
+          nested: options.nested,
+          count: options.count,
+          size: options.size,
+          ids: options.read(ids),
+          ...deployment,
+          ...options.budget,
+        });
+        const binaryIds = yield* Effect.forEach(
+          Array.from({ length: options.files }),
+          () =>
+            Effect.promise(() =>
+              client.action(getFunctionReference(storage.storeWith), hello),
+            ),
+        );
+        const binary = yield* Effect.promise(() =>
+          client.mutation(
+            getFunctionReference(storage.fileProbe),
+            args(binaryIds),
+          ),
+        );
+        const kernel = yield* onKernel((test) =>
+          Effect.forEach(Array.from({ length: options.files }), () =>
+            test.action(storage.storeWith, hello),
+          ).pipe(
+            Effect.flatMap((ids) =>
+              test.mutation(storage.fileProbe, args(ids)),
+            ),
+          ),
+        );
+        return { binary, kernel };
+      });
+
+    it.effect.each([
+      {
+        name: "ten files stored at the deployment's limit",
+        options: { files: 0, nested: false, count: 10, size: 1 },
+        answer: "ok",
+      },
+      {
+        name: "an eleventh file stored",
+        options: { files: 0, nested: false, count: 11, size: 1 },
+        answer: "Too many files stored by this mutation (limit: 10)",
+      },
+      {
+        name: "a second file under a nested budget of one",
+        options: {
+          files: 0,
+          nested: true,
+          count: 2,
+          size: 1,
+          budget: { filesWritten: 1 },
+        },
+        answer: "Too many files stored by this mutation (limit: 1)",
+      },
+      {
+        name: "ten bytes stored under a nested budget of eight",
+        options: {
+          files: 0,
+          nested: true,
+          count: 2,
+          size: 5,
+          budget: { fileWriteBytes: 8 },
+        },
+        answer:
+          "Too large total size of the files stored by this mutation (limit: 8 bytes)",
+      },
+      {
+        name: "an eleventh file read",
+        options: { files: 11, nested: false, count: 0, size: 0 },
+        answer: "Too many files read by this mutation (limit: 10)",
+      },
+      {
+        name: "a second file read under a nested budget of one, after one read twice",
+        options: {
+          files: 2,
+          read: (ids: ReadonlyArray<GenericId<"_storage">>) => [
+            ids[0]!,
+            ids[0]!,
+            ids[1]!,
+          ],
+          nested: true,
+          count: 0,
+          size: 0,
+          budget: { filesRead: 1 },
+        },
+        answer: "Too many files read by this mutation (limit: 1)",
+      },
+      {
+        name: "ten bytes read under a nested budget of eight",
+        options: {
+          files: 2,
+          nested: true,
+          count: 0,
+          size: 0,
+          budget: { fileReadBytes: 8 },
+        },
+        answer:
+          "Too large total size of the files read by this mutation (limit: 8 bytes)",
+      },
+    ])("$name answers as the test kernel does", ({ options, answer }) =>
+      Effect.gen(function* () {
+        const { binary, kernel } = yield* probe({
+          read: (ids) => ids,
+          ...options,
+        });
+        expect(binary).toContain(answer);
+        if (options.nested) {
+          // A nested call's uncaught error reaches its caller as the binary
+          // rethrows it, "Uncaught Error: " and its stack around the message,
+          // where the kernel passes the error itself, as #135's nested limit
+          // probes find. The limit's message is the same.
+          expect(kernel).toContain(answer);
+        } else {
+          expect(kernel).toBe(binary);
+        }
+      }),
+    );
+
+    it.effect.each([
+      {
+        contentType: 'text/plain; charset="unterminated',
+        answer:
+          'refused Invalid argument `contentType` for `storage.store`: mime parse error: a quote (") was missing from a parameter value',
+      },
+      {
+        contentType: "text/plain ;charset=utf-8",
+        answer:
+          "refused Invalid argument `contentType` for `storage.store`: mime parse error: an invalid token was encountered, 20 at position 10",
+      },
+      { contentType: "text/plain;", answer: "stored text/plain" },
+    ])(
+      "a mutation storing a file typed $contentType answers as the test kernel does",
+      ({ contentType, answer }) =>
+        Effect.gen(function* () {
+          const { client } = yield* LocalBackend.LocalBackend;
+          const args = { text: "hello", contentType };
+          const binary = yield* Effect.promise(() =>
+            client.mutation(
+              getFunctionReference(storage.storeInMutation),
+              args,
+            ),
+          );
+          expect(binary).toContain(answer);
+          expect(
+            yield* onKernel((test) =>
+              test.mutation(storage.storeInMutation, args),
+            ),
+          ).toBe(binary);
+        }),
+    );
+
+    it.effect(
+      "an action storing a file typed with an unterminated quote is refused as its content type header",
+      () =>
+        Effect.gen(function* () {
+          const { client } = yield* LocalBackend.LocalBackend;
+          const args = {
+            text: "hello",
+            contentType: 'text/plain; charset="unterminated',
+            sha256: "",
+          };
+          const reason =
+            'mime parse error: a quote (") was missing from a parameter value';
+          yield* Effect.promise(() =>
+            expect(
+              client.action(getFunctionReference(storage.storeWith), args),
+            ).rejects.toThrow(reason),
+          );
+          const kernel = yield* onKernel((test) =>
+            Effect.exit(test.action(storage.storeWith, args)),
+          );
+          expect(String(kernel)).toContain(reason);
+        }),
+    );
+  },
+);
