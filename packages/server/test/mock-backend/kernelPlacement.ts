@@ -25,7 +25,37 @@ export const placements: ReadonlyArray<Placement> = [
   },
   {
     file: "integration.test.ts",
+    name: "TestConfect Blob storage",
+    row: 6,
+    needs: "storage",
+  },
+  {
+    file: "integration.test.ts",
+    name: "mutation Blob transactions",
+    row: 6,
+    needs: "storage",
+  },
+  {
+    file: "integration.test.ts",
+    name: "TestConfect JWT signing",
+    row: 6,
+    needs: "JWT signing and verification",
+  },
+  {
+    file: "integration.test.ts",
     name: "DatabaseReader > uses the canonical Doc decoder for a text search",
+    row: "binary",
+    needs: "text search, which the kernel never simulates (RequiresBinary)",
+  },
+  {
+    file: "integration.test.ts",
+    name: "mock search compatibility",
+    row: "binary",
+    needs: "text search, which the kernel never simulates (RequiresBinary)",
+  },
+  {
+    file: "integration.test.ts",
+    name: "mock query compatibility > enforces search candidate limits without blocking early reads",
     row: "binary",
     needs: "text search, which the kernel never simulates (RequiresBinary)",
   },

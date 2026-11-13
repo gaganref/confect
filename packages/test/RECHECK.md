@@ -854,3 +854,22 @@ answer, a bare throw and a frozen error. They also include a failing
 subscription, a compound secret, a reused suspension, a recursive value, two
 union members sharing a field, and an index read on a secret field. None
 reaches the snapshot, a failure report, a diff or a read record.
+
+## Upstream 10.6.0 on the kernel lane
+
+The fork moved to upstream Confect 10.6.0 and Effect 4.1.4 after row 6's
+first parts landed. Upstream's release adds mock-backend cases that the
+inventory above never placed, so the lane met them on the merge.
+
+- `TestConfect JWT signing` waits for row 6's JWT signing and verification.
+- `TestConfect Blob storage` and `mutation Blob transactions` wait for row 6's
+  storage.
+- `mock search compatibility` and the search case of `mock query
+  compatibility` read through a text search, so they are placed `binary`
+  beside the Doc decoder's search case.
+- `mock query compatibility > pins the Effect clock inside TestConfect.run`
+  fakes `Date` after its layer built the backend. The kernel wrapped the realm's
+  `Date` only when the backend opened, so the test's fake replaced the wrapper
+  and the run read the moved host time. Each kernel function now wraps the
+  realm's `Date` again as it enters, as it installs `globalThis.Convex` again,
+  and the case runs on the kernel.

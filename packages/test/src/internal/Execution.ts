@@ -346,10 +346,13 @@ const executions = new AsyncLocalStorage<Execution>();
 
 /**
  * Run a function's code as `execution`, with its own copy of the globals a test
- * invocation pins.
+ * invocation pins. A test that fakes `Date` after the backend opened replaced
+ * the kernel's wrapper, so each function wraps the realm's `Date` again, as it
+ * installs `globalThis.Convex` again.
  */
 const enter = <A>(execution: Execution, run: () => A): A => {
   installConvexGlobal();
+  installDate();
   return Globals.own(() => executions.run(execution, run));
 };
 const kernelBrand = Symbol.for("@confect/test/Kernel");
@@ -366,6 +369,9 @@ const pinnedTime = (): number | undefined => {
   execution.attempt?.observeTime(execution.startTime);
   return execution.startTime;
 };
+
+const installDate = () =>
+  Clock.install(pinnedTime, () => executions.getStore() !== undefined);
 
 /**
  * How many jobs one drain or advance runs before it gives up, as convex-test's
@@ -633,7 +639,7 @@ export class World {
     private readonly own?: Invocation.World,
   ) {
     installConvexGlobal();
-    Clock.install(pinnedTime, () => executions.getStore() !== undefined);
+    installDate();
     this.components.set(ROOT, makeComponent(ROOT, schema, modules));
   }
 
