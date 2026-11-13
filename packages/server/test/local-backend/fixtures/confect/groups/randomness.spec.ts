@@ -13,7 +13,9 @@ export const Use = Schema.Struct({
 });
 
 /**
- * Every random source a function may reach, each tried once in this order.
+ * Every random source a function may reach, each tried once in this order,
+ * then `Math.random` and a 4-byte fill as the module drew them while it
+ * loaded.
  */
 export const Sample = Schema.Struct({
   mathRandom: Use,
@@ -23,6 +25,8 @@ export const Sample = Schema.Struct({
   floatFill: Use,
   detachedFill: Use,
   randomUUID: Use,
+  loadMathRandom: Use,
+  loadGetRandomValues: Use,
 });
 
 export default GroupSpec.make()

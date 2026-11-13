@@ -22,6 +22,8 @@ export const normalize = (sample: typeof Sample.Type) => ({
   floatFill: outcome(sample.floatFill),
   detachedFill: outcome(sample.detachedFill),
   randomUUID: outcome(sample.randomUUID),
+  loadMathRandom: outcome(sample.loadMathRandom),
+  loadGetRandomValues: outcome(sample.loadGetRandomValues),
 });
 
 const permitted = (size: number) => ({
@@ -39,7 +41,10 @@ const permitted = (size: number) => ({
  * a `TypeError` (`ops/crypto.rs:22-29`) and a non-integer array with a
  * `TypeMismatchError` (`npm-packages/udf-runtime/src/00_crypto.ts:31-36`). It
  * never reads its receiver, so a detached call draws as an attached one does
- * (`00_crypto.ts:28-53`).
+ * (`00_crypto.ts:28-53`). A module may draw while it loads, from a generator
+ * seeded once per push (`crates/isolate/src/environment/udf/phase.rs:186-193`,
+ * `environment/analyze.rs:284`); only a module deployed without that seed
+ * refuses with `NoRandomDuringImport` (`udf/phase.rs:500-507`).
  */
 const sample = {
   mathRandom: permitted(1),
@@ -60,6 +65,8 @@ const sample = {
   },
   detachedFill: permitted(1),
   randomUUID: permitted(1),
+  loadMathRandom: permitted(1),
+  loadGetRandomValues: permitted(4),
 };
 
 export const expected = { query: sample, mutation: sample, action: sample };

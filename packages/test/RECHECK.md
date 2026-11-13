@@ -1070,8 +1070,13 @@ The binary gives every function a seeded generator, and `Math.random`,
 mutation and an action alike (`crates/isolate/src/ops/random.rs:7-11`,
 `ops/crypto.rs:8-31`, convex-backend `cccbade4`). A nested query or mutation
 gets its own seed from its caller's generator
-(`isolate/src/environment/udf/phase.rs:357-385`). Only a module's import refuses
-it, with `NoRandomDuringImport` (`phase.rs:500-507`).
+(`isolate/src/environment/udf/phase.rs:357-385`). A module may draw while it
+loads, from a generator each push seeds once and stores in the deployment's
+`UdfConfig` (`udf/phase.rs:186-193`, `action/phase.rs:184`,
+`environment/analyze.rs:284`, `model/src/udf_config/types.rs:21`). Only a
+module deployed without that seed refuses, with `NoRandomDuringImport`
+(`udf/phase.rs:500-507`). A push of a module that calls `Math.random` or
+`getRandomValues` at module scope deploys on `precompiled-2026-10-28-cccbade`.
 
 On the kernel a bound invocation's `Math.random` and `getRandomValues` draw from
 its supplied stream, as row 1 pinned them. `getRandomValues` now answers as the
@@ -1090,7 +1095,8 @@ binary's does rather than the host's (`npm-packages/udf-runtime/src/00_crypto.ts
 `groups/randomness` in the local-backend fixture is one Confect query, mutation
 and action that each try `Math.random`, a 4-byte and a 65,536-byte fill, a
 65,537-byte fill, a `Float64Array` fill, a detached fill and `randomUUID`, and
-record whether each ran and its error. `test/fixtures/randomnessProbe.ts` holds
+record whether each ran and its error. They also return the `Math.random` and
+the 4-byte fill their module drew while it loaded. `test/fixtures/randomnessProbe.ts` holds
 the binary's answer. `packages/server/test/local-backend/randomness.test.ts`
 gets it from the binary and `test/Randomness.test.ts` from the kernel, which
 also checks that `Math.random` and the 4-byte fill are the supplied stream's
@@ -1101,9 +1107,9 @@ first draws in all three function types.
 - The native seeding policy, as the design says.
 - `crypto.randomUUID` and `crypto.subtle` keep the host's; the design names
   neither.
-- Import-time randomness. The kernel loads modules outside any invocation, so
-  `Math.random` at module scope reads the host's where the binary refuses the
-  push. A probe for it cannot deploy on the binary, so no lane covers it.
+- The load-time seed. Both targets let a module draw while it loads, but the
+  binary draws from its per-push seed and the kernel, which loads modules
+  outside any invocation, from the host's.
 - A plain Convex function, such as an official component's, runs outside
   `runHandlerPromise` and so outside the row 1 pin: it reads the host's
   `Math.random` and `crypto` even under a bound invocation.

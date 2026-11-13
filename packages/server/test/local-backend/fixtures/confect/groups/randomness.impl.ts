@@ -16,7 +16,14 @@ const use = (draw: () => ReadonlyArray<number>) => {
   }
 };
 
-// oxlint-disable effecttsgo/global-random-in-effect -- The probe reads the ambient random sources the backend gives a function.
+// oxlint-disable effecttsgo/global-random-in-effect -- The probe reads the ambient random sources the backend gives a module and a function.
+const atLoad = {
+  loadMathRandom: use(() => [Math.random()]),
+  loadGetRandomValues: use(() => [
+    ...crypto.getRandomValues(new Uint8Array(4)),
+  ]),
+};
+
 const sample = Effect.sync(() => ({
   mathRandom: use(() => [Math.random()]),
   getRandomValues: use(() => [...crypto.getRandomValues(new Uint8Array(4))]),
@@ -31,6 +38,7 @@ const sample = Effect.sync(() => ({
     return [getRandomValues(new Uint8Array(4)).length];
   }),
   randomUUID: use(() => [crypto.randomUUID().length]),
+  ...atLoad,
 }));
 // oxlint-enable effecttsgo/global-random-in-effect
 

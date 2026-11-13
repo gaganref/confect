@@ -352,6 +352,18 @@ export declare const api: {
             permitted: boolean;
             value: Array<number>;
           };
+          loadGetRandomValues: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadMathRandom: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
           mathRandom: {
             message: string | null;
             name: string | null;
@@ -401,6 +413,18 @@ export declare const api: {
             permitted: boolean;
             value: Array<number>;
           };
+          loadGetRandomValues: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadMathRandom: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
           mathRandom: {
             message: string | null;
             name: string | null;
@@ -445,6 +469,18 @@ export declare const api: {
             value: Array<number>;
           };
           largestFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadGetRandomValues: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadMathRandom: {
             message: string | null;
             name: string | null;
             permitted: boolean;
