@@ -1,8 +1,15 @@
 import { Callback, type GroupSpec, type ManifestSection } from "@confect/core";
+import * as Array from "effect/Array";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
+import * as Order from "effect/Order";
+import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
+import * as String from "effect/String";
 import { InvalidManifestSectionError } from "./CodegenError.js";
+import { stringify } from "./Json.js";
 import type { Registry } from "./ManifestSections.js";
 
 /**
@@ -21,7 +28,7 @@ export interface Leaf {
 
 /**
  * Every group that holds a function, by the path its refs name, such as
- * `tasks/tasks`, in spec order.
+ * `tasks/tasks`, in path order.
  */
 export const groupsOf = (leaves: ReadonlyArray<Leaf>): Array<FoundGroup> => {
   const found: Array<FoundGroup> = [];
@@ -29,7 +36,8 @@ export const groupsOf = (leaves: ReadonlyArray<Leaf>): Array<FoundGroup> => {
     group: GroupSpec.AnyWithProps,
     segments: ReadonlyArray<string>,
   ) => {
-    const functions = Object.values(group.functions).map(
+    const functions = Array.map(
+      Record.values(group.functions),
       (spec): ManifestSection.TestingFunction => ({
         name: spec.name,
         kind: spec.runtimeAndFunctionType.functionType,
@@ -38,77 +46,64 @@ export const groupsOf = (leaves: ReadonlyArray<Leaf>): Array<FoundGroup> => {
       }),
     );
     if (functions.length > 0)
-      found.push({ path: segments.join("/"), segments, functions });
-    for (const [name, child] of Object.entries(group.groups))
+      found.push({ path: Array.join(segments, "/"), segments, functions });
+    for (const [name, child] of Record.toEntries(group.groups))
       visit(child, [...segments, name]);
   };
   for (const leaf of leaves) visit(leaf.spec, leaf.pathSegments);
-  return found.sort((a, b) => (a.path < b.path ? -1 : Number(a.path > b.path)));
+  return Array.sort(
+    found,
+    Order.mapInput(Order.String, (group: FoundGroup) => group.path),
+  );
 };
 
 const FunctionPath = Schema.String;
 const Facts = Schema.Struct({
-  owners: Schema.optional(
-    Schema.Record(
-      Schema.String,
-      Schema.TemplateLiteral(["door:", Schema.String]),
-    ),
-  ),
-  open: Schema.optional(Schema.Array(FunctionPath)),
-  obligations: Schema.optional(
-    Schema.Array(
-      Schema.Union([
-        Schema.Struct({ kind: Schema.Literal("roles") }),
-        Schema.Struct({
-          kind: Schema.Literals(["includeReach", "migration"]),
-          ref: FunctionPath,
-        }),
-      ]),
-    ),
-  ),
-  laws: Schema.optional(
-    Schema.Array(
-      Schema.Union([
-        Schema.Struct({
-          law: Schema.Literals(["placement", "audit"]),
-          table: Schema.String,
-        }),
-        Schema.Struct({
-          law: Schema.Literal("aggregate"),
-          table: Schema.String,
-          aggregate: Schema.String,
-        }),
-        Schema.Struct({
-          law: Schema.Literal("reference"),
-          table: Schema.String,
-          field: Schema.String,
-          policy: Schema.Literals(["restrict", "retain"]),
-        }),
-        Schema.Struct({
-          law: Schema.Literal("unique"),
-          table: Schema.String,
-          index: Schema.String,
-        }),
-        Schema.Struct({
-          law: Schema.Literal("fixed"),
-          table: Schema.String,
-          fields: Schema.Array(Schema.String),
-        }),
-        Schema.Struct({
-          law: Schema.Literals(["observeEvent", "atomic"]),
-        }),
-      ]),
-    ),
-  ),
-  ports: Schema.optional(
-    Schema.Array(
-      Schema.Struct({
-        name: Schema.String,
-        input: Schema.String,
-        outcomes: Schema.NonEmptyArray(Schema.String),
-      }),
-    ),
-  ),
+  owners: Schema.Record(
+    Schema.String,
+    Schema.TemplateLiteral(["door:", Schema.String]),
+  ).pipe(Schema.optional),
+  open: Schema.Array(FunctionPath).pipe(Schema.optional),
+  obligations: Schema.Union([
+    Schema.Struct({ kind: Schema.Literal("roles") }),
+    Schema.Struct({
+      kind: Schema.Literals(["includeReach", "migration"]),
+      ref: FunctionPath,
+    }),
+  ]).pipe(Schema.Array, Schema.optional),
+  laws: Schema.Union([
+    Schema.Struct({
+      law: Schema.Literals(["placement", "audit"]),
+      table: Schema.String,
+    }),
+    Schema.Struct({
+      law: Schema.Literal("aggregate"),
+      table: Schema.String,
+      aggregate: Schema.String,
+    }),
+    Schema.Struct({
+      law: Schema.Literal("reference"),
+      table: Schema.String,
+      field: Schema.String,
+      policy: Schema.Literals(["restrict", "retain"]),
+    }),
+    Schema.Struct({
+      law: Schema.Literal("unique"),
+      table: Schema.String,
+      index: Schema.String,
+    }),
+    Schema.Struct({
+      law: Schema.Literal("fixed"),
+      table: Schema.String,
+      fields: Schema.Array(Schema.String),
+    }),
+    Schema.Struct({ law: Schema.Literals(["observeEvent", "atomic"]) }),
+  ]).pipe(Schema.Array, Schema.optional),
+  ports: Schema.Struct({
+    name: Schema.String,
+    input: Schema.String,
+    outcomes: Schema.NonEmptyArray(Schema.String),
+  }).pipe(Schema.Array, Schema.optional),
 });
 
 type Facts = typeof Facts.Type;
@@ -127,15 +122,19 @@ export const collectFacts = (
     for (const [key, { section, data }] of registry) {
       if (section.testing === undefined) continue;
       const invalid = (reason: string) =>
-        new InvalidManifestSectionError({ sectionKey: key, reason });
+        InvalidManifestSectionError.make({ sectionKey: key, reason });
       const raw = yield* Result.try({
         try: () =>
           section.testing?.({
             modules: modules.get(key) ?? [],
             functions: data.functions,
-            groups: groups.map(({ path, functions }) => ({ path, functions })),
+            groups: Array.map(groups, ({ path, functions }) => ({
+              path,
+              functions,
+            })),
           }),
-        catch: (cause) => invalid(`testing failed: ${String(cause)}`),
+        catch: (cause) =>
+          invalid(`testing failed: ${globalThis.String(cause)}`),
       });
       const parsed = yield* Result.mapError(
         Schema.decodeUnknownResult(Facts)(raw),
@@ -173,26 +172,80 @@ export interface Plan {
   readonly ports: ReadonlyArray<ManifestSection.DeclaredPort>;
 }
 
-const split = (functionPath: string) => {
-  const colon = functionPath.lastIndexOf(":");
-  return colon < 0
-    ? undefined
-    : {
-        group: functionPath.slice(0, colon),
-        name: functionPath.slice(colon + 1),
-      };
+/**
+ * A function path's group and name, split at its last colon.
+ */
+const split = (functionPath: string) =>
+  pipe(
+    functionPath,
+    String.lastIndexOf(":"),
+    Option.map((colon) => ({
+      group: pipe(functionPath, String.slice(0, colon)),
+      name: pipe(functionPath, String.slice(colon + 1)),
+    })),
+  );
+
+/**
+ * An app table as a fact may name it: its fields and its declared indexes.
+ */
+export interface TableInfo {
+  readonly name: string;
+  readonly fields: ReadonlyArray<string>;
+  readonly indexes: ReadonlyArray<string>;
+}
+
+/**
+ * Why a declared law names something the backend does not have: a table, a
+ * field or index of it, or, for an aggregate, the mount that keeps it. An
+ * aggregate in the app profile is an official wrapper's mount; an engine
+ * aggregate is a component's, which the component profile plans.
+ */
+const lawRefusal = (
+  law: ManifestSection.DeclaredLaw,
+  tables: ReadonlyMap<string, TableInfo>,
+  mounts: ReadonlyArray<string>,
+): string | undefined => {
+  if (!("table" in law)) return undefined;
+  const table = tables.get(law.table);
+  if (table === undefined) return `on ${law.table}, which is no table`;
+  const missingField = (field: string) =>
+    table.fields.includes(field)
+      ? undefined
+      : `on ${law.table}.${field}, which is no field of it`;
+  switch (law.law) {
+    case "aggregate":
+      return mounts.includes(law.aggregate)
+        ? undefined
+        : `on ${law.table} kept by ${law.aggregate}, which is no mount`;
+    case "unique":
+      return table.indexes.includes(law.index)
+        ? undefined
+        : `on ${law.table} by ${law.index}, which is no index of it`;
+    case "reference":
+      return missingField(law.field);
+    case "fixed":
+      return pipe(
+        law.fields,
+        Array.findFirst((field) => Option.fromUndefinedOr(missingField(field))),
+        Option.getOrUndefined,
+      );
+    default:
+      return undefined;
+  }
 };
 
 /**
  * The subject's groups, owners, open lists, obligations and laws. Every public
  * group owes its access proof, a door's as a product's does, so a raw Convex
  * function stays in its group. A fact naming no such group, public function,
- * table or port stops the plan.
+ * table, field, index, mount or port stops the plan before anything is
+ * written.
  */
 export const plan = ({
   groups,
   facts,
   tables,
+  mounts,
   realm,
 }: {
   readonly groups: ReadonlyArray<FoundGroup>;
@@ -200,24 +253,27 @@ export const plan = ({
     readonly key: string;
     readonly facts: Facts;
   }>;
-  readonly tables: ReadonlyArray<string>;
+  readonly tables: ReadonlyArray<TableInfo>;
+  readonly mounts: ReadonlyArray<string>;
   readonly realm: boolean;
 }): Result.Result<Plan, InvalidManifestSectionError> =>
   Result.gen(function* () {
-    const byPath = new Map(groups.map((group) => [group.path, group]));
-    const isPublic = (functionPath: string) => {
-      const parts = split(functionPath);
-      return (
-        parts !== undefined &&
-        (byPath
-          .get(parts.group)
-          ?.functions.some(
+    const tableNamed = new Map(
+      Array.map(tables, (table) => [table.name, table] as const),
+    );
+    const byPath = new Map(
+      Array.map(groups, (group) => [group.path, group] as const),
+    );
+    const isPublic = (functionPath: string) =>
+      Option.match(split(functionPath), {
+        onNone: () => false,
+        onSome: (parts) =>
+          Array.some(
+            byPath.get(parts.group)?.functions ?? [],
             ({ name, visibility }) =>
               name === parts.name && visibility === "public",
-          ) ??
-          false)
-      );
-    };
+          ),
+      });
     const owners = new Map<string, { owner: Owner; key: string }>();
     const open = new Set<string>();
     const declared: Array<ManifestSection.DeclaredObligation> = [];
@@ -226,13 +282,16 @@ export const plan = ({
     for (const { key, facts: each } of facts) {
       const invalid = (reason: string) =>
         Result.fail(
-          new InvalidManifestSectionError({ sectionKey: key, reason }),
+          InvalidManifestSectionError.make({ sectionKey: key, reason }),
         );
-      for (const [path, owner] of Object.entries(each.owners ?? {})) {
+      for (const [path, owner] of Record.toEntries(each.owners ?? {})) {
         const group = byPath.get(path);
         if (
           group === undefined ||
-          !group.functions.some(({ visibility }) => visibility === "public")
+          !Array.some(
+            group.functions,
+            ({ visibility }) => visibility === "public",
+          )
         )
           return yield* invalid(
             `testing names ${owner} the owner of ${path}, which is no public group.`,
@@ -259,14 +318,15 @@ export const plan = ({
         declared.push(obligation);
       }
       for (const law of each.laws ?? []) {
-        if ("table" in law && !tables.includes(law.table))
+        const refused = lawRefusal(law, tableNamed, mounts);
+        if (refused !== undefined)
           return yield* invalid(
-            `testing declares the ${law.law} law on ${law.table}, which is no table.`,
+            `testing declares the ${law.law} law ${refused}.`,
           );
         declaredLaws.push(law);
       }
       for (const port of each.ports ?? []) {
-        if (ports.some(({ name }) => name === port.name))
+        if (Array.some(ports, ({ name }) => name === port.name))
           return yield* invalid(
             `testing declares the port ${port.name} twice.`,
           );
@@ -279,31 +339,36 @@ export const plan = ({
     }
     const planned: Array<PlannedGroup> = [];
     for (const group of groups) {
-      const publics = group.functions.filter(
+      const publics = Array.filter(
+        group.functions,
         ({ visibility }) => visibility === "public",
       );
       if (publics.length === 0) continue;
       const owner = owners.get(group.path)?.owner ?? "product";
-      const names = publics.map(({ name }) => name).sort();
+      const names = pipe(
+        publics,
+        Array.map(({ name }) => name),
+        Array.sort(Order.String),
+      );
       planned.push({
         path: group.path,
         segments: group.segments,
         owner,
         functions: names,
-        open: names.filter((name) => open.has(`${group.path}:${name}`)),
+        open: Array.filter(names, (name) => open.has(`${group.path}:${name}`)),
       });
     }
     const unique = <A>(values: ReadonlyArray<A>) => {
       const seen = new Set<string>();
-      return values.filter((value) => {
-        const text = JSON.stringify(value);
+      return Array.filter(values, (value) => {
+        const text = stringify(value);
         return seen.has(text) ? false : (seen.add(text), true);
       });
     };
     return {
       groups: planned,
       obligations: unique<Obligation>([
-        ...planned.map(({ path }) => ({
+        ...Array.map(planned, ({ path }) => ({
           kind: "access" as const,
           group: path,
         })),
@@ -311,51 +376,42 @@ export const plan = ({
         ...declared,
       ]),
       laws: unique<Law>([
-        ...[...tables].sort().flatMap((table) => [
-          { law: "decodes" as const, table },
-          { law: "idScope" as const, table },
-        ]),
+        ...pipe(
+          tables,
+          Array.map(({ name }) => name),
+          Array.sort(Order.String),
+          Array.flatMap((table) => [
+            { law: "decodes" as const, table },
+            { law: "idScope" as const, table },
+          ]),
+        ),
         ...declaredLaws,
       ]),
-      ports: [...ports].sort((a, b) => (a.name < b.name ? -1 : 1)),
+      ports: Array.sort(
+        ports,
+        Order.mapInput(
+          Order.String,
+          (port: ManifestSection.DeclaredPort) => port.name,
+        ),
+      ),
     };
   });
 
-const isSecretNode = (ast: SchemaAST.AST): boolean =>
-  ast._tag === "Declaration" &&
-  (SchemaAST.resolve(ast)?.["representation"] as { id?: unknown } | undefined)
-    ?.id === "effect/schema/Redacted";
+/**
+ * What a mount binds one of its component's settings to: a literal, or a
+ * setting of the backend that mounts it.
+ */
+export type Binding = { readonly value: string } | { readonly from: string };
 
 /**
- * Whether `schema` holds a `Schema.Redacted` node, which
- * `Schema.RedactedFromValue` decodes to, through structs, records, arrays,
- * tuples, unions and suspended schemas. The kernel's redaction reads the same
- * nodes, so codegen lists a schema in the secret policy only when it has one.
+ * A mount as the generated subject lists it, in the order a push runs inits.
  */
-export const hasSecret = (schema: Schema.Top): boolean => {
-  const seen = new Set<SchemaAST.AST>();
-  const walk = (ast: SchemaAST.AST): boolean => {
-    if (seen.has(ast)) return false;
-    if (isSecretNode(ast)) return true;
-    switch (ast._tag) {
-      case "Objects":
-        return (
-          ast.propertySignatures.some((property) => walk(property.type)) ||
-          ast.indexSignatures.some((index) => walk(index.type))
-        );
-      case "Arrays":
-        return ast.elements.some(walk) || ast.rest.some(walk);
-      case "Union":
-        return ast.types.some(walk);
-      case "Suspend":
-        seen.add(ast);
-        return walk(ast.thunk());
-      default:
-        return false;
-    }
-  };
-  return walk(schema.ast);
-};
+export interface MountEntry {
+  readonly path: string;
+  readonly kit: string;
+  readonly env: Readonly<Record<string, Binding>>;
+  readonly required: ReadonlyArray<string>;
+}
 
 /**
  * Every callback contract a handle in `schema` names, through structs, records,
@@ -368,11 +424,12 @@ export const callbackContracts = (schema: Schema.Top): Array<Callback.Any> => {
   const walk = (ast: SchemaAST.AST): void => {
     if (seen.has(ast)) return;
     seen.add(ast);
-    const contract = Object.values(SchemaAST.resolve(ast) ?? {}).find(
+    const contract = Array.findFirst(
+      Record.values(SchemaAST.resolve(ast) ?? {}),
       Callback.isContract,
     );
-    if (contract !== undefined) {
-      found.push(contract);
+    if (Option.isSome(contract)) {
+      found.push(contract.value);
       return;
     }
     switch (ast._tag) {
@@ -419,9 +476,9 @@ export const confectFunctions = (
   prefix: ReadonlyArray<string> = [],
 ): Array<ConfectFunction> => {
   const found: Array<ConfectFunction> = [];
-  for (const [name, group] of Object.entries(groups)) {
+  for (const [name, group] of Record.toEntries(groups)) {
     const segments = [...prefix, name];
-    for (const spec of Object.values(group.functions))
+    for (const spec of Record.values(group.functions))
       if (spec.functionProvenance._tag === "Confect")
         found.push({
           segments,

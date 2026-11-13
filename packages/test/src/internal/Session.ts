@@ -44,6 +44,10 @@ class TestConfectImplWithoutIdentity<
     private mountedHttp: ReturnType<typeof MountedHttp.make>,
   ) {}
 
+  readonly jwks = Effect.fn("TestConfect.jwks")(() =>
+    Effect.promise(() => this.testConvex.jwks()),
+  );
+
   readonly query = <QueryRef extends Ref.AnyQuery>(
     queryRef: QueryRef,
     ...args: Ref.OptionalArgs<QueryRef>
@@ -184,6 +188,8 @@ class TestConfectImpl<
         ),
     );
 
+  readonly jwks = () => this.testConfectImplWithoutIdentity.jwks();
+
   readonly query = <QueryRef extends Ref.AnyQuery>(
     queryRef: QueryRef,
     ...args: Ref.OptionalArgs<QueryRef>
@@ -222,10 +228,13 @@ class TestConfectImpl<
     );
 }
 
-class InvalidComponentKit extends Schema.TaggedError<InvalidComponentKit>()(
-  "InvalidComponentKit",
-  { componentPath: Schema.String, message: Schema.String },
-) {}
+class InvalidComponentKit extends Schema.TaggedError<
+  InvalidComponentKit,
+  { readonly brand: unique symbol }
+>()("InvalidComponentKit", {
+  componentPath: Schema.String,
+  message: Schema.String,
+}) {}
 
 export const registerKit = (
   registerComponent: RegisterComponent,
@@ -238,8 +247,9 @@ export const registerKit = (
     registerComponent(name, kit.schema, kit.modules);
   } else {
     // Codegen accepts a kit whose exports it cannot list, such as CommonJS.
-    throw new InvalidComponentKit({
+    throw InvalidComponentKit.make({
       componentPath: name,
+      // oxlint-disable-next-line effecttsgo/global-json -- Quotes the mount name in an error this sync registration throws; a string always serializes.
       message: `The test kit for ${JSON.stringify(name)} must export register(t, name), or schema and modules.`,
     });
   }

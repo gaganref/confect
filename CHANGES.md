@@ -168,6 +168,19 @@ binary as the named `SystemTableReadIntervals` boundary. File storage counters s
 limits row of Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-limits.md`. Upstream: fork only, as the kernel is fork-specific.
 
+## Metering limit test timeouts
+
+The kernel's `documentsRead` limit test seeds 32,001 notes and reads 64,001
+documents, each metered as the binary meters it. It took up to 6.1 s on Windows
+CI, where it timed out at Vitest's 5 s default on `main`, and 2.8 to 3.6 s on
+Ubuntu CI. The `documentsWritten` test reached 3.49 s on Windows and 2.17 s on
+Ubuntu. A profile spreads the cost over per-document work: the read-interval
+set's comparisons of each inserted ID, syscall JSON and document sizing. No
+bulk seeding path exists, so the two tests take explicit 15 s and 10 s
+timeouts, with the reason on the line. The assertions are unchanged. Changeset:
+none, as only a test changes. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## TestConfect kernel target
 
 `TestConfect.layer` takes `{ target: "kernel" }` in each of its three forms. It
@@ -289,22 +302,63 @@ row 6's HTTP parity row of Frame's backend testing kernel (Frame ADR 0012).
 Changeset: `test-kernel-http.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel on Effect 4.1 and upstream 10.6.0
+
+The test kernel moved onto the fork's Effect 4.1.4 and upstream 10.6.0
+stack, and its code lints clean under the stack's Effect rules with no
+baseline. Convex's syscalls carry JSON strings and the kernel answers them
+synchronously, so the kernel's JSON goes through one internal helper. Six
+refusals rename their `name` payload field, which hid the refusal's own
+name. Four cron refusals take `cronName`, `UnknownStandingSource` takes
+`functionName` and `SnapshotWorldUnresolved` takes `worldName`. Each kernel
+function now wraps the realm's `Date` again as it enters, so a test that
+fakes `Date` after its layer opened the backend still reads the pinned
+time. The kernel lane places upstream's new mock-backend cases. JWT signing
+and a deployment-wide `transactionLimits` wait for row 6, and text search
+and a file with no content type stay on the binary. The local-backend
+harness lives in `tools/local-backend` with main's configurable ports, and
+its fixture's system-table share measures 21. Changeset:
+`kernel-refusal-field-names.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
+## Test kernel nested ConvexError data
+
+A function calling another through `ctx.runQuery`, `ctx.runMutation` or
+`ctx.runAction` makes a syscall, and Convex's syscall wrapper decodes a rejected
+call's `ConvexError` data from Convex JSON (`convex`
+`src/server/impl/syscall.ts:46-51`). The binary hands it Convex JSON
+(convex-backend `cccbade4`, `crates/isolate/src/environment/helpers/promise.rs:77-88`).
+The kernel decoded the data to Convex values first, so the wrapper decoded it
+again: an int64 reached the caller as `Error: Unexpected type of 42`, and bytes
+as `{}`. A call made through a syscall now leaves its `ConvexError` data as
+Convex JSON, and the caller's one decode is the only one. A call from the test,
+or an action's own `ctx.run*`, which the kernel answers directly, still decodes
+to Convex values. A plain local-backend fixture runs every caller and payload on
+the binary and on the kernel. Changeset: `test-kernel-nested-convex-error.md`.
+Upstream: fork only, as the kernel is fork-specific.
+
 ## Generated test backend
 
 For an app that can import `@confect/test`, codegen writes `TestBackend` into
-`_generated/testing.ts` from the same `App.make` mounts and specs as the production entrypoints. It holds each
-public group with its owner and open list, an access obligation per public
-group, a realm obligation when `confect/auth.ts` declares verifiers, the
-schema laws `decodes` and `idScope` per table, ports, the manifest digest, the
-mounts in init order and the app settings. The registry gains `secrets`, a
-thunk of each codec holding a `Schema.Redacted` node among the app's functions
-and each local mount's tables and functions, which the kernel's redaction reads. A manifest section's new
-`testing` hook adds owners, open functions, obligations, laws and ports, which
-codegen checks against the specs. `TestBackend.layer` opens a kernel session:
-every module loads, each mount's `init` runs through the deploy modules a push
-runs, nested before parent, then the seed runs in one mutation. A missing app
-setting fails `TestConfigMissing`. The registry now lists only the modules a
-push registers, and a package mount with no test kit fails
+`_generated/testing.ts` from the same `App.make` mounts and specs as the
+production entrypoints. It holds each public group with its owner and open
+list, an access obligation per public group, a realm obligation when
+`confect/auth.ts` declares verifiers, the schema laws `decodes` and `idScope`
+per table, ports, the manifest digest, the app settings, and the mounts in push
+order with the settings each binds and its component requires. The registry
+gains `secrets`, a thunk of each codec holding a `Schema.Redacted` node among
+the app's functions and each local mount's tables and functions, which the
+kernel's redaction reads; `@confect/core/SecretSchema` is the one walk both
+use. A manifest section's new `testing` hook adds owners, open functions,
+obligations, laws and ports, which codegen checks against the specs, tables,
+fields, indexes and mounts. `TestBackend.layer` opens a kernel session: every
+module loads, each mount's `init` runs through `@confect/core/MountSteps`, the
+traversal Alchemy's push runs, parent before child, then the seed runs in one
+mutation. Each component reads only the settings its mount binds. A missing app
+or mount setting fails `TestConfigMissing`. A kit passes its component's
+secret policy to `registerComponent`, and a packaged Confect component whose
+kit exports none fails `TestKitSecretsMissingError`. The registry now lists
+only the modules a push registers, and a package mount with no test kit fails
 `MissingTestKitError`. This is row 8 of Frame's backend testing kernel (Frame
 ADR 0012). Changeset: `generated-test-backend.md`. Upstream: fork only, as the
 kernel is fork-specific.
@@ -321,8 +375,9 @@ function args or tables names, and a contract `confect/callbacks.ts` does not
 export stops codegen with `UndeclaredCallbackSlotError`. A manifest section may
 add only laws and ports to a component. `TestBackend.layer` opens it through
 the same session opener as an app's subject: modules load, the component's own
-`init` runs with the test's typed `install` args, each mount's `init` runs,
-then the seed. The kernel hands a call to a handle under its reserved `~sink`
+`init` runs with the test's typed `install` args as the root step of
+`MountSteps.run`, which now takes one, then each mount's `init`, then the
+seed. The kernel hands a call to a handle under its reserved `~sink`
 path, and a due job that targets one, to the session's sink, so the test adds
 no function. Each call after the seed is held as a pending `callback` command
 until the test answers it with `returned` or a declared error tag. The answer's
@@ -345,6 +400,21 @@ its tables as `Table<...> & Aggregated<...>`. `Indexes` stays inferred, because
 a generic table's index names resolve only that way. Changeset:
 `tableinfo-extended-table-scope.md`. Upstream: unrecorded.
 
+## Exact JSON Schema for IDs
+
+A `GenericId` ends in an always-true refinement that narrows only the
+TypeScript type. On Effect 4.1 a filter without a `toJsonSchema` annotation
+makes the JSON Schema approximate, so a reader that admits only checks their
+JSON Schema states refused every ID. Frame's dev admission is one such reader,
+and it cannot compare the refinement's predicate, because Effect wraps it in a
+fresh closure. The refinement now states `toJsonSchema: () => ({})`, an exact
+schema that adds nothing to the string. A plain ID still exports as
+`{ "type": "string" }`. A `oneOf` union that holds an ID, in JSON Schema or an
+OpenAPI document, now stays `oneOf` instead of falling back to `anyOf`. This
+replaces Frame's patch of `@gaganref/confect-core@10.6.0-fork.1`. Changeset:
+`generic-id-exact-json-schema.md`. Upstream: unrecorded; upstream's `GenericId`
+has the same refinement.
+
 ## Commit timestamps
 
 Add `CommitTs` in `@confect/core` and `vars.commitTs` on the database writer.
@@ -359,10 +429,14 @@ Frame's audit rows declare their commit-order column with it. Changeset:
 
 ## Counted HTTP bodies
 
-Add `HttpRouter.withBodyLimit` for endpoint middleware. Count bytes while reading,
-return 413 at the cap and 415 for non-identity content encoding. Verification and
-payload decoding share one buffer. Effect 4.0.4's Web readers do not provide these
-guarantees. Changeset: `counted-http-body.md`. Upstream: planned; no proposal submitted.
+Add `HttpRouter.withBodyLimit` for endpoint middleware. It returns 415 for
+non-identity content encoding and 413 past the cap, and verification and
+payload decoding share one buffer. Effect 4.1.4 now counts buffered reads
+against `MaxBodySize` and derives `text` from `arrayBuffer`, so the limiter reads
+through Effect under the endpoint's cap and keeps only the 413/415 mapping and
+the shared buffer. A declared `Content-Length` over the cap is refused before
+any byte is read. Changeset: `counted-http-body.md`. Upstream: planned; no
+proposal submitted.
 
 ## OPTIONS middleware dispatch
 
@@ -493,7 +567,7 @@ Upstream: unrecorded; submission goes through the maintainer.
 
 ### Refuse domain collisions in codegen
 
-Full and incremental codegen reject a domain argument reserved by its profile before loading its implementation. The diagnostic names the spec file, function and argument. Registration retains its load-time backstop. Changeset: `reserved-argument-fence.md`. Upstream: planned; no proposal submitted.
+Full and incremental codegen reject a domain argument reserved by its profile before loading its implementation. The diagnostic names the spec file, function and argument. Registration retains a backstop when its validator compiles, which Convex forces when it analyzes a push. Changeset: `reserved-argument-fence.md`. Upstream: planned; no proposal submitted.
 
 ### Forward context through callback handles
 
@@ -512,12 +586,37 @@ HTTP accepts the same layer explicitly on hand-built routers and receives `runti
 
 ## Base
 
-`main` tracks upstream 10.3.1
-([`eaa5da76`](https://github.com/rjdellecese/confect/commit/eaa5da76881455fe38d8d633eedbf79ebc5af01a)).
-The move from 10.2.0 (`1f75cb80`) landed by merge, and each later release lands
-the same way. Fork builds on this base use `10.3.1-fork.N`. The 10.3.1
+`main` tracks upstream 10.6.0
+([`278d68f8`](https://github.com/rjdellecese/confect/commit/278d68f877cd923bcea1fd53a215446eaf4db086)).
+The move from 10.3.1 (`eaa5da76`) landed by merge, and each later release lands
+the same way. Fork builds on this base use `10.6.0-fork.N`. The 10.6.0
 generator changes generated output, so consumers run `confect codegen` after
 upgrading.
+
+### Move to upstream 10.6.0
+
+Merge upstream 10.6.0, which runs on Effect 4.1, and carry the fork's patches
+onto it. Move Effect and every `@effect/*` package to 4.1.4 and Alchemy to
+2.0.0-beta.86. Combine upstream's lazy validators, `DocumentIds`, blob storage
+in mutations and `MutationAuth` with the fork's component targets, reserved
+arguments and invocation metadata in the function runner. The fork's
+`Auth.MutationAuth` gives way to upstream's service.
+Fold upstream's watch groups into the fork's lock-free `refreshCurrent`. Move
+the fork's local-backend fixtures, component codegen and auth seeding into
+upstream's `tools/local-backend` harness. Native `take()` and `first()` stay
+outside the stream read budget, as the fork's `OrderedQuery` always was.
+
+Upstream's "Enable every Effect lint rule" turns on rules the fork's code was
+never checked against. The fork fixes every finding rather than exempting
+files. A lint-disable comment remains only where the rule is wrong for that
+line or upstream disables it there too, and each names its reason. Some fixes
+change public types: errors move to `Schema.TaggedError`, published Schema
+classes carry a brand, two alchemy error fields lose the name `name`, and
+exports that expose unstable Effect APIs say so.
+
+Changesets: `effect-4-1.md`, `schema-tagged-errors.md`, `error-field-names.md`,
+`schema-class-brands.md` and `unstable-exports.md`.
+Upstream: fork only.
 
 ### Move to upstream 10.3.1
 
@@ -546,18 +645,13 @@ Raise the Convex peer floor to 1.49.0. Workspace and baseline consumer pins use 
 
 ### Bound the supported crypto API
 
-Cap the package set's Effect peers below 4.1, and cap the Node platform
-companions to the same minor. Effect 4.1 removes `effect/Crypto`, which the CLI,
-Alchemy providers and Alchemy's stack types still use. Remove the caps when
-Alchemy ships a release without `effect/Crypto` and the fork's CLI and Alchemy
-call sites move. An application that installs the CLI lists
-`@effect/platform-node-shared` directly, or pnpm resolves a 4.1 copy for
-`@effect/platform-node`.
-Fresh consumer checks request the CLI's published ranges and resolve their
-newest compatible releases without a lockfile or version override.
+Retired by the move to upstream 10.6.0. Upstream migrated the CLI off
+`effect/Crypto`, the fork's Alchemy package now uses
+`effect/crypto/SecureRandom`, and Alchemy 2.0.0-beta.86 runs on Effect 4.1. The
+`<4.1.0` caps and the `@effect/platform-node-shared` CLI peer are gone.
 
-Changeset: `effect-crypto-compatibility.md`.
-Upstream: planned; no proposal submitted.
+Changeset: `effect-4-1.md`.
+Upstream: superseded by upstream 10.5.0.
 
 ### Resolve declarations under NodeNext
 
@@ -912,6 +1006,19 @@ Changesets: `backend-declaration.md`, `app-mounts-list.md`,
 `remove-app-mount.md`, `unique-definition-names.md`, `first-codegen-refs.md`,
 `first-codegen-registry.md`.
 Upstream: planned; no linked proposal verified.
+
+### Take the schema first in HttpRouter.make
+
+Adopt upstream `main`'s router shape (c3ee2b3, 6a145ab): `HttpRouter.make(schema,
+routes, options?)` is the only constructor. The schema types the routes'
+services, including `VectorSearch`, and `schema.target.kind` selects application
+or component routing, as `forSchema` did. The fork keeps `{ api, observability }`
+as the third argument. `forSchema` and the schema-less `make` are gone. Codegen
+emits the new call and still owns a generated `convex/http.ts` in the old
+`forSchema` shape, so `confect codegen` rewrites it.
+
+Changeset: `http-router-schema-first.md`.
+Upstream: converges with upstream `main`, unreleased at 10.6.0.
 
 ### Label reflected HTTP routes
 
@@ -1422,14 +1529,12 @@ Upstream: planned; no linked proposal verified.
 
 ### Sign deployment JWTs from mutations
 
-Add mutation-only `Auth.MutationAuth.signJwt` in applications and components,
-with a generated service alias. Keep application identity out of components and
-signing out of query/action handlers. Verify generated component mutations and
-app mutations against convex-test 0.0.65 deployment JWKS in the component suite.
-Require convex-test 0.0.65 or later in `@confect/test` so signing support is available.
-Keep Confect's component registration callbacks void across the test-peer update.
-Generated provider descriptors match minted token issuers and audiences under
-test defaults and explicit deployment URL overrides.
+Upstream 10.6.0 ships `MutationAuth.signJwt` under `@confect/server/MutationAuth`,
+so the fork's `Auth.MutationAuth` (`@confect/server/Auth/MutationAuth`) is gone.
+What stays is the fork's component wiring: component mutations get upstream's
+service through the shared mutation layer, and generated component services
+export the same `MutationAuth` alias as applications. Application identity stays
+out of components and signing out of query and action handlers.
 
-Changeset: `mutation-auth-sign-jwt.md`.
-Upstream: planned; no linked proposal verified.
+Changesets: `mutation-auth-sign-jwt.md`, `mutation-auth-upstream.md`.
+Upstream: superseded by upstream 10.6.0 for applications; the component wiring is fork only.

@@ -4,8 +4,11 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Schema from "effect/Schema";
-import { openSession } from "./internal/Backend.js";
-import type { TestConfigMissing } from "./internal/Backend.js";
+import {
+  openSession,
+  type MountInitFailed,
+  type TestConfigMissing,
+} from "./internal/Backend.js";
 import { TestConfect, type DeclaredApp } from "./TestConfect.js";
 
 /**
@@ -74,14 +77,23 @@ export interface ProviderPort<N extends string, I, O extends string> {
 export type AnyPort = ProviderPort<string, any, string>;
 
 /**
+ * What a mount binds one of its component's settings to: a literal value, or a
+ * setting of the backend that mounts it, the app or a parent component.
+ */
+export type Binding = { readonly value: string } | { readonly from: string };
+
+/**
  * An installed component, by component path, with the kit that registers it:
- * `"local"` for a component in the repo, else the kit's package specifier. The
- * list is in the order a session runs `init`: nested mounts before their
- * parent, and siblings in mount order.
+ * `"local"` for a component in the repo, else the kit's package specifier.
+ * `env` is what the mount binds, and `required` names the component's settings
+ * a session cannot open without. The list is in the order a push runs `init`:
+ * each parent before the components it mounts, siblings in mount order.
  */
 export interface Mount {
   readonly path: string;
   readonly kit: string;
+  readonly env: Readonly<Record<string, Binding>>;
+  readonly required: ReadonlyArray<string>;
 }
 
 /**
@@ -106,7 +118,7 @@ export type Config<S extends ReadonlyArray<Setting>> = {
   ]?: string;
 };
 
-export { TestConfigMissing } from "./internal/Backend.js";
+export { MountInitFailed, TestConfigMissing } from "./internal/Backend.js";
 
 /**
  * What a session opened: each registered component's standing sources, as its
@@ -175,12 +187,15 @@ export interface GeneratedBackend<
   readonly app: GeneratedApp<S>;
   /**
    * Open a fresh session on the kernel. Every module of every mount loads, then
-   * each mount's `init` runs, nested mounts before their parent, then `seed`
-   * runs in one mutation.
+   * each mount's `init` runs in the order a push runs them, each parent before
+   * the components it mounts, then `seed` runs in one mutation.
    */
   readonly layer: (
     options: LayerOptions<S, C>,
-  ) => Layer.Layer<TestConfect<S> | Session, TestConfigMissing>;
+  ) => Layer.Layer<
+    TestConfect<S> | Session,
+    TestConfigMissing | MountInitFailed
+  >;
 }
 
 /**
@@ -242,13 +257,13 @@ export const make = <
   },
 ): GeneratedBackend<F, T, P, S, C, L, B> => ({
   ...declaration,
-  kind: "app",
   app,
+  kind: "app",
   layer: ({ config, seed }) => {
     const service = TestConfect<S>();
     return Layer.effectContext(
       Effect.map(
-        openSession(app, declaration.settings, config, seed),
+        openSession(app, declaration, config, seed),
         ({ service: opened, session }) =>
           Context.make(service, opened).pipe(Context.add(Session, session)),
       ),

@@ -1,6 +1,7 @@
+import * as Arr from "effect/Array";
 import type * as QueryStreamKeyLabels from "@confect/server/QueryStreamKeyLabels";
 import * as QueryStreamReadBudget from "@confect/server/QueryStreamReadBudget";
-import { identity } from "effect/Function";
+import { identity, pipe } from "effect/Function";
 import * as Result from "effect/Result";
 import * as QueryStreamKeyLayout from "@confect/server/QueryStreamKeyLayout";
 import type * as QueryStreamOrderDirection from "@confect/server/QueryStreamOrderDirection";
@@ -15,6 +16,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
+import * as String from "effect/String";
 
 const encodeCursor =
   (layout: QueryStreamKeyLayout.QueryStreamKeyLayout) =>
@@ -105,7 +107,8 @@ describe("QueryStream.merge", () => {
             direction,
             Result.getOrThrowWith(QueryStreamKeyLayout.fromIndex([]), identity),
             Stream.fromIterable(
-              ranks.map(
+              Arr.map(
+                ranks,
                 (rank) =>
                   new QueryStream.Element({
                     doc: Option.some(`${label}:${rank}`),
@@ -232,7 +235,8 @@ describe("QueryStream key layouts", () => {
         () => QueryStream.empty<string>()(layout),
         { innerKeyLayout: explicitFirst },
       );
-      expect(yield* Stream.runCollect(joined)).toEqual([]);
+      const runCollectResult = yield* Stream.runCollect(joined);
+      expect(runCollectResult).toEqual([]);
       layout = implicitFirst;
       const defect = yield* Stream.runCollect(joined).pipe(
         Effect.catchDefect(Effect.succeed),
@@ -355,7 +359,8 @@ describe.each(["asc", "desc"] as const)(
             order,
             Result.getOrThrowWith(QueryStreamKeyLayout.fromIndex([]), identity),
             Stream.fromIterable(
-              values.map(
+              Arr.map(
+                values,
                 (value) =>
                   new QueryStream.Element({
                     doc: Option.some(value),
@@ -462,7 +467,8 @@ describe.each(["asc", "desc"] as const)(
             identity,
           ),
           Stream.fromIterable(
-            ids.map(
+            Arr.map(
+              ids,
               (id) =>
                 new QueryStream.Element({
                   doc: Option.some(id),
@@ -485,13 +491,10 @@ describe.each(["asc", "desc"] as const)(
         });
 
         expect([...first.page, ...second.page]).toEqual(ids);
-        expect(
-          QueryStreamKey.values(
-            yield* Schema.decodeEffect(
-              QueryStreamCursor.fromKeyLayout(source.keyLayout),
-            )(first.continueCursor),
-          ),
-        ).toEqual(["apple", 1, ids[0]]);
+        const value2 = yield* Schema.decodeEffect(
+          QueryStreamCursor.fromKeyLayout(source.keyLayout),
+        )(first.continueCursor);
+        expect(QueryStreamKey.values(value2)).toEqual(["apple", 1, ids[0]]);
         expect(end).toMatchObject({
           page: [],
           isDone: true,
@@ -538,7 +541,8 @@ describe("QueryStream", () => {
 
   it.effect("consumes constructed elements as present documents only", () =>
     Effect.gen(function* () {
-      expect(yield* Stream.runCollect(source)).toEqual([1, 3]);
+      const runCollectResult2 = yield* Stream.runCollect(source);
+      expect(runCollectResult2).toEqual([1, 3]);
     }),
   );
 
@@ -804,7 +808,7 @@ describe("QueryStream.ReadBudgetExceededError", () => {
 
   it("accepts zero row and byte counts", () => {
     expect(
-      new QueryStream.ReadBudgetExceededError({
+      QueryStream.ReadBudgetExceededError.make({
         rowsRead: 0,
         bytesRead: 0,
       }),
@@ -812,7 +816,7 @@ describe("QueryStream.ReadBudgetExceededError", () => {
   });
 
   it("preserves the budget error tag and details", () => {
-    const error = new QueryStream.ReadBudgetExceededError({
+    const error = QueryStream.ReadBudgetExceededError.make({
       rowsRead: 2,
       bytesRead: 20,
     });
@@ -996,11 +1000,14 @@ describe("QueryStream.defer", () => {
           ),
         );
         expect(checked).toEqual([]);
-        expect(yield* joined.pipe(Stream.take(2), Stream.runCollect)).toEqual([
-          10, 20,
-        ]);
+        const joinedResult = yield* joined.pipe(
+          Stream.take(2),
+          Stream.runCollect,
+        );
+        expect(joinedResult).toEqual([10, 20]);
         expect(checked).toEqual([1, 2]);
-        expect(yield* Stream.runCollect(joined)).toEqual([10, 20, 30]);
+        const collected = yield* Stream.runCollect(joined);
+        expect(collected).toEqual([10, 20, 30]);
         expect(checked).toEqual([1, 2, 1, 2, 3]);
       }),
   );
@@ -1011,9 +1018,8 @@ describe("QueryStream.defer", () => {
         options,
         Effect.fail("refused" as const),
       );
-      expect(yield* Stream.runCollect(deferred).pipe(Effect.result)).toEqual(
-        Result.fail("refused"),
-      );
+      const collected = yield* Stream.runCollect(deferred).pipe(Effect.result);
+      expect(collected).toEqual(Result.fail("refused"));
     }),
   );
 });
@@ -1041,7 +1047,10 @@ describe("QueryStream cursor envelope", () => {
             ),
           ).pipe(
             Effect.map((bytes) =>
-              Buffer.from(bytes).toString("base64url").slice(0, 22),
+              pipe(
+                Buffer.from(bytes).toString("base64url"),
+                String.slice(0, 22),
+              ),
             ),
           );
         const envelope = (print: string): QueryStream.CursorEnvelope => ({
@@ -1049,18 +1058,30 @@ describe("QueryStream cursor envelope", () => {
             tag(print, raw).pipe(Effect.map((mac) => `${print}.${mac}.${raw}`)),
           open: (sealed) =>
             Effect.gen(function* () {
-              const first = sealed.indexOf(".");
-              const second = sealed.indexOf(".", first + 1);
+              const first = pipe(
+                sealed,
+                String.indexOf("."),
+                Option.getOrElse(() => -1),
+              );
+              const second = pipe(
+                sealed,
+                String.slice(first + 1),
+                String.indexOf("."),
+                Option.match({
+                  onNone: () => -1,
+                  onSome: (index) => first + 1 + index,
+                }),
+              );
               if (first < 0 || second < 0) return Option.none();
-              const claimed = sealed.slice(0, first);
-              const given = sealed.slice(first + 1, second);
-              const raw = sealed.slice(second + 1);
+              const claimed = pipe(sealed, String.slice(0, first));
+              const given = pipe(sealed, String.slice(first + 1, second));
+              const raw = pipe(sealed, String.slice(second + 1));
               return claimed === print && given === (yield* tag(claimed, raw))
                 ? Option.some(raw)
                 : Option.none();
             }),
         });
-        const cursorEnvelope = envelope("f".repeat(22));
+        const cursorEnvelope = envelope(pipe("f", String.repeat(22)));
         const layout = Result.getOrThrow(
           QueryStreamKeyLayout.fromIndex(["_creationTime"]),
         );
@@ -1092,17 +1113,21 @@ describe("QueryStream cursor envelope", () => {
         expect(secondSeal).toBe(firstSeal);
         expect(firstSeal).toBe(sealed.continueCursor);
         const tampered =
-          sealed.continueCursor.slice(0, 23) +
+          pipe(sealed.continueCursor, String.slice(0, 23)) +
           "!" +
-          sealed.continueCursor.slice(24);
-        const stale = yield* envelope("s".repeat(22)).seal(raw.continueCursor);
+          pipe(sealed.continueCursor, String.slice(24));
+        const stale = yield* envelope(pipe("s", String.repeat(22))).seal(
+          raw.continueCursor,
+        );
         const farAhead =
           '{"runtimeLabels":["_creationTime","_id"],"keyValues":[1000000000000,"zzzz"]}';
         for (const crafted of [
           { cursor: tampered },
           { cursor: stale },
           { endCursor: farAhead },
-          { endCursor: `${"f".repeat(22)}.${"A".repeat(22)}.${farAhead}` },
+          {
+            endCursor: `${pipe("f", String.repeat(22))}.${pipe("A", String.repeat(22))}.${farAhead}`,
+          },
         ]) {
           reads = 0;
           const error = yield* QueryStream.paginate(source(), {
@@ -1128,9 +1153,8 @@ describe("QueryStream cursor envelope", () => {
           cursorEnvelope,
         });
         expect(done.isDone).toBe(true);
-        expect(yield* cursorEnvelope.open(done.continueCursor)).toEqual(
-          Option.some(QueryStreamCursor.END_CURSOR),
-        );
+        const open2 = yield* cursorEnvelope.open(done.continueCursor);
+        expect(open2).toEqual(Option.some(QueryStreamCursor.END_CURSOR));
         const pinned = yield* QueryStream.paginate(source(), {
           ...options,
           endCursor: done.continueCursor,
@@ -1147,8 +1171,9 @@ it("QueryStream.paginate preserves envelope service requirements in both call fo
     open: Effect.succeedSome,
     seal: Effect.succeed,
   };
-  const source = QueryStream.empty<number>()(
-    Result.getOrThrow(QueryStreamKeyLayout.fromIndex([])),
+  const source = QueryStreamKeyLayout.fromIndex([]).pipe(
+    Result.getOrThrow,
+    QueryStream.empty<number>(),
   );
   const options = { cursor: null, numItems: 1, cursorEnvelope } as const;
   const direct = QueryStream.paginate(source, options);

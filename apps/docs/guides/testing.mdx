@@ -110,6 +110,18 @@ describe("notes", () => {
 });
 ```
 
+## Deployment signing keys
+
+`TestConfect.jwks()` wraps [`convex-test`](https://docs.convex.dev/testing/convex-test)'s `t.jwks()` in a lazy `Effect<DeploymentJwks>` instead of a Promise. Native rejections become defects. The `DeploymentJwk` and `DeploymentJwks` types are re-exported from `@confect/test/TestConfect`.
+
+```ts
+Effect.gen(function* () {
+  const c = yield* TestConfect.TestConfect;
+  const jwks = yield* c.jwks();
+  return jwks;
+});
+```
+
 ## Calling functions
 
 `TestConfect` provides `query`, `mutation`, and `action` methods that accept a ref and args, returning an `Effect` with the decoded result.
@@ -309,7 +321,7 @@ export const register = (
 };
 ```
 
-`makeHttp` must construct `HttpRouter.forSchema(componentSchema)(routes)` and any configuration-dependent route layers on each call. The production `confect/http.ts` can export `makeHttp()` as its default. TestConfect caches each mount's resulting router, including construction failures. A plain dynamic import of an already constructed router cannot provide separate construction-time configuration for two mounts.
+`makeHttp` must construct `HttpRouter.make(componentSchema, routes)` and any configuration-dependent route layers on each call. The production `confect/http.ts` can export `makeHttp()` as its default. TestConfect caches each mount's resulting router, including construction failures. A plain dynamic import of an already constructed router cannot provide separate construction-time configuration for two mounts.
 
 <Warning>
   Mounted HTTP tests share the process environment. Fetches through one layer,
@@ -405,28 +417,48 @@ For an app that can import `@confect/test`, `confect codegen` writes `TestBacken
 - `groups`: every group with a public function, keyed by its path, such as `tasks/tasks`. Each has its `owner`, `"product"` or the door that hosts it, its public functions' refs, and `open`, the functions a role held for `public`, `signedIn` or `self` admits.
 - `obligations`: an `access` proof per public group, `realm` when `confect/auth.ts` declares verifiers, and whatever a manifest section declares.
 - `laws`: `decodes` and `idScope` for every table, and any law a section declares.
-- `ports`, `manifestDigest`, `mounts` (in the order their `init` runs) and `settings`.
+- `ports`, `manifestDigest` and `settings`.
+- `mounts`: every installed component, in the order a push runs their `init`, with what each mount binds its component's settings to, a literal or a setting of the backend that mounts it, and which of them the component requires.
 
 `TestBackend.layer` passes the registry's `secrets` to the kernel, as `TestConfect.layer` does.
 
-A manifest section adds what Confect cannot know through `testing`, which returns owners, open functions, obligations, laws and ports. Codegen refuses a fact that names no such group, public function or table.
+A manifest section adds what Confect cannot know through `testing`, which returns owners, open functions, obligations, laws and ports. Codegen refuses a fact that names no such group, public function, table, field, index or mount, before it writes anything. In an app an `aggregate` law names the mount that keeps the aggregate.
 
 ```ts
 import { TestBackend } from "../confect/_generated/testing";
 
 it.effect("assigns a task", () =>
   Effect.gen(function* () {
-    const t = yield* TestConfect.TestConfect<typeof TestBackend.app.schema>();
-    // ...
-  }).pipe(Effect.provide(TestBackend.layer({ config, seed }))),
+    const services = yield* Layer.build(TestBackend.layer({ config, seed }));
+    yield* Effect.gen(function* () {
+      const t = yield* TestConfect.TestConfect<typeof TestBackend.app.schema>();
+      // ...
+    }).pipe(Effect.provideContext(services));
+  }),
 );
 ```
 
-`TestBackend.layer` opens a fresh session on the test kernel. Every module of every mount loads. Then each mount's `init` runs through the deploy modules a push runs, nested mounts before their parent. Then `seed` runs in one mutation. `TestBackend.Session` reports each kit's standing sources, the declared cron jobs and the inits that ran.
+`TestBackend.layer` opens a fresh session on the test kernel. Every module of every mount loads. Then each mount's `init` runs through the deploy modules a push runs, in the order Alchemy's push runs them: a parent's `init` before the components it mounts. So a parent's `init` sees its children before theirs ran, as on a deployment. A failing `init` stops the session with `MountInitFailed`. Then `seed` runs in one mutation. `TestBackend.Session` reports each kit's standing sources, the declared cron jobs and the inits that ran.
 
 ### Configuration
 
 A session takes every app setting from `config`, and a required one is required by type. Codegen never reads `.env` or deployment state. A missing setting fails `TestConfigMissing` with the setting, the backend that declares it and this section's link. The session sets the values for its lifetime and restores the previous ones when it closes.
+
+Each mount gets the settings it binds, as on Convex: a literal, or a setting of the backend that mounts it, the app's from `config` and a parent component's from what its own mount bound. A component's functions read only their own settings, beside `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL`, and the app never reads a component's. A required component setting left without a value fails `TestConfigMissing` naming the mount.
+
+### Packaged components keep their secrets
+
+A packaged Confect component's test kit hands the kernel its component's secret policy as it registers, keyed from the component: `""` for its own tables and functions, a child's name for a component it mounts. The kernel keys it at the path the kit registers.
+
+```ts
+export const secrets = {
+  tables: { "": { tokens: () => Tokens.Fields } },
+};
+export const register = (t, name) =>
+  t.registerComponent(name, schema, modules, { secrets });
+```
+
+When a mount's descriptor carries a Confect `contract`, codegen refuses a kit that exports no `secrets` with `TestKitSecretsMissingError`. Export `{}` when the component holds no secret.
 
 ## The generated component subject
 
@@ -440,7 +472,7 @@ For a component (`App.make({ kind: "component" })`) that can import `@confect/te
 
 A slot's contract must be exported from `confect/callbacks.ts`. A handle whose contract it does not export stops codegen with `UndeclaredCallbackSlotError`. A descriptor whose `init` is no internal mutation of the component stops codegen too. A manifest section may add laws and ports to a component, but no owner, open function or access obligation.
 
-`TestBackend.layer({ config, install, seed })` opens the component as a push initialises it. Every module loads. Then the component's own `init` runs with `install`, which is typed from `init`'s args, and each mount's `init` runs, in the order an app's subject runs them. Then `seed` runs. The session's runtime is `TestComponent.ComponentRuntime`, which has no `withIdentity`, since a component never sees its caller's identity.
+`TestBackend.layer({ config, install, seed })` opens the component as a push initialises it. Every module loads. Then the component's own `init` runs with `install`, which is typed from `init`'s args, then each of its mounts' `init`, through the same `MountSteps.run` traversal a push uses, as a parent's push runs a mounted component. Then `seed` runs. The session's runtime is `TestComponent.ComponentRuntime`, which has no `withIdentity`, since a component never sees its caller's identity.
 
 The test adds no backend function. A slot's handle names the session's sink. A call to it during `init` or `seed` returns at once. Every later call, including a scheduled job that runs a stored handle, is held as a pending `{ kind: "callback", slot, input }` command, and the component's call waits until the test answers it. `TestComponent.commands(subject)` lists the pending commands, and `TestComponent.answer(command, outcome)` settles one. `returned` gives a value drawn from the contract's return codec, and a declared error tag gives an error drawn from that alternative's codec. Both draws use the session's `draws` seed, and a declared error crosses as Convex JSON, as the binary sends it. Between a call and its answer, the test can make other calls.
 

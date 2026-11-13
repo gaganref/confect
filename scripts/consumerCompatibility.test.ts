@@ -1,3 +1,4 @@
+import * as Arr from "effect/Array";
 import { expect, test } from "bun:test";
 import {
   consumerDependencies,
@@ -85,20 +86,86 @@ test("both advertised profiles include the whole backend and CLI graph", () => {
     "js",
     "foldkit",
   ]);
-  expect(profiles.foldkit.blocker).toContain("Restore compatibility");
+  expect(consumerDependencies("foldkit", "baseline")).toMatchObject({
+    foldkit: "0.170.0",
+    effect: "4.1.4",
+    "@effect/platform-browser": "4.1.4",
+  });
+  expect(consumerDependencies("foldkit", "fresh")).toMatchObject({
+    foldkit: "^0.170.0",
+    effect: "~4.1.4",
+    "@effect/platform-browser": "~4.1.0",
+  });
 });
+
+test.each([
+  ["0.169.0", false],
+  ["0.170.0", true],
+  ["0.170.1", true],
+  ["0.171.0", false],
+] as const)("fresh Foldkit ranges admit %s: %s", (version, supported) => {
+  expect(Bun.semver.satisfies(version, profiles.foldkit.hosts.foldkit)).toBe(
+    supported,
+  );
+});
+
+test.each(["react", "foldkit"] as const)(
+  "%s consumers require mutation-capable Convex storage",
+  (profile) => {
+    expect(consumerDependencies(profile, "baseline").convex).toBe("1.49.0");
+    const range = consumerDependencies(profile, "fresh").convex;
+    expect(Bun.semver.satisfies("1.47.0", range)).toBe(false);
+    expect(Bun.semver.satisfies("1.49.0", range)).toBe(true);
+  },
+);
+
+test.each([
+  ["4.0.7", false, false],
+  ["4.1.0", false, true],
+  ["4.1.3", false, true],
+  ["4.1.4", true, true],
+  ["4.1.5", true, true],
+  ["4.2.0", false, false],
+] as const)(
+  "Foldkit consumers admit Effect %s: %s, and its browser platform: %s",
+  (version, admitsEffect, admitsBrowser) => {
+    const dependencies = consumerDependencies("foldkit", "fresh");
+    expect(Bun.semver.satisfies(version, dependencies.effect)).toBe(
+      admitsEffect,
+    );
+    expect(
+      Bun.semver.satisfies(
+        version,
+        profiles.foldkit.hosts["@effect/platform-browser"],
+      ),
+    ).toBe(admitsBrowser);
+  },
+);
 
 test("fresh resolution follows the CLI compatibility ranges without exact pins", () => {
   expect(consumerDependencies("react", "baseline")).toMatchObject({
-    effect: "4.0.4",
-    "@effect/platform-node": "4.0.4",
-    "@effect/platform-node-shared": "4.0.4",
+    effect: "4.1.4",
+    "@effect/platform-node": "4.1.4",
+    "@effect/platform-node-shared": "4.1.4",
   });
   expect(consumerDependencies("react", "fresh")).toMatchObject({
-    effect: ">=4.0.4 <4.1.0",
-    "@effect/platform-node": ">=4.0.4 <4.1.0",
-    "@effect/platform-node-shared": ">=4.0.4 <4.1.0",
+    effect: "~4.1.4",
+    "@effect/platform-node": "~4.1.4",
   });
+});
+
+test.each([
+  ["4.0.7", false],
+  ["4.1.3", false],
+  ["4.1.4", true],
+  ["4.1.5", true],
+  ["4.2.0", false],
+] as const)("fresh Effect ranges admit %s: %s", (version, supported) => {
+  const dependencies = consumerDependencies("react", "fresh");
+  expect(Bun.semver.satisfies(version, dependencies.effect)).toBe(supported);
+  expect(
+    Bun.semver.satisfies(version, dependencies["@effect/platform-node"]),
+  ).toBe(supported);
 });
 
 test.each(["4.0.0", "4.0.1", "4.0.3"])(
@@ -111,7 +178,7 @@ test.each(["4.0.0", "4.0.1", "4.0.3"])(
     ];
     const problems = graphProblems(graph, [], roots, "/app");
     expect(
-      problems.filter((problem) => problem._tag === "InvalidPeer"),
+      Arr.filter(problems, (problem) => problem._tag === "InvalidPeer"),
     ).toHaveLength(1);
   },
 );
@@ -206,12 +273,15 @@ test("rejects registry siblings, missing candidates, linked source, and split Ef
     { ...effect("4.0.1"), path: "/workspace/effect" },
   ];
   expect(
-    graphProblems(
-      graph,
-      [candidate],
-      { ...roots, "@confect/core": "/app/core" },
-      "/app",
-    ).map((problem) => problem._tag),
+    Arr.map(
+      graphProblems(
+        graph,
+        [candidate],
+        { ...roots, "@confect/core": "/app/core" },
+        "/app",
+      ),
+      (problem) => problem._tag,
+    ),
   ).toEqual([
     "WrongCandidate",
     "ExternalPath",

@@ -9,8 +9,12 @@ import * as DirectoryOptions from "@confect/cli/DirectoryOptions";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import { pipe } from "effect/Function";
 import * as FileSystem from "effect/FileSystem";
+import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Rec from "effect/Record";
+import * as Str from "effect/String";
 import * as Project from "./integration/Project";
 
 const app = (section = "") => `import { App, Env } from "@confect/core";
@@ -73,12 +77,15 @@ const componentProject = Effect.gen(function* () {
   yield* project.write("confect/app.ts", app());
   yield* project.write("confect/callbacks.ts", callbacks);
   yield* project.write("confect/tables/hooks.ts", hooks);
-  const run = codegenHandler.pipe(
-    Effect.provide(
-      DirectoryOptions.layer({
-        componentDir: Option.some(`${project.root}/convex`),
-      }),
-    ),
+  const run = Effect.scoped(
+    Effect.gen(function* () {
+      const services = yield* Layer.build(
+        DirectoryOptions.layer({
+          componentDir: Option.some(`${project.root}/convex`),
+        }),
+      );
+      return yield* codegenHandler.pipe(Effect.provideContext(services));
+    }),
   );
   const fs = yield* FileSystem.FileSystem;
   const read = (file: string) => fs.readFileString(`${project.root}/${file}`);
@@ -109,7 +116,7 @@ layer(NodeServices.layer)("codegen's generated component subject", (it) => {
         expect(testing).not.toContain("groups");
         const subject = yield* subjectOf(project);
         expect(subject.kind).toBe("component");
-        expect(Object.keys(subject.functions)).toEqual(["notes:list"]);
+        expect(Rec.keys(subject.functions)).toEqual(["notes:list"]);
         expect(subject.functions["notes:list"]).toMatchObject({
           _tag: "Confect",
           convexFunctionName: "notes:list",
@@ -137,10 +144,10 @@ layer(NodeServices.layer)("codegen's generated component subject", (it) => {
           { name: "REGION", owner: "mailer", optional: false },
         ]);
         expect(subject.ports).toEqual({});
-        expect(yield* Project.writtenFiles(project.run)).toEqual([]);
-        expect(yield* project.read("confect/_generated/testing.ts")).toBe(
-          testing,
-        );
+        const rewritten = yield* Project.writtenFiles(project.run);
+        expect(rewritten).toEqual([]);
+        const again = yield* project.read("confect/_generated/testing.ts");
+        expect(again).toBe(testing);
       }).pipe(Effect.scoped),
     { timeout: 60000 },
   );
@@ -151,8 +158,9 @@ layer(NodeServices.layer)("codegen's generated component subject", (it) => {
       Effect.gen(function* () {
         const project = yield* componentProject;
         yield* project.write("client.ts", client("refs.public.notes.list"));
-        expect(yield* Effect.flip(project.run)).toEqual(
-          new InvalidDeclarationError({
+        const refused = yield* Effect.flip(project.run);
+        expect(refused).toEqual(
+          InvalidDeclarationError.make({
             declarationPath: "client.ts",
             reason:
               "the component's descriptor names notes:list its init, which is no internal mutation of the component.",
@@ -169,16 +177,19 @@ layer(NodeServices.layer)("codegen's generated component subject", (it) => {
         const project = yield* componentProject;
         yield* project.write(
           "confect/tables/hooks.ts",
-          hooks
-            .replace('import { OnEvent } from "../callbacks";\n', "")
-            .replace(
+          pipe(
+            hooks,
+            Str.replace('import { OnEvent } from "../callbacks";\n', ""),
+            Str.replace(
               "export default",
               'const Inline = Callback.query("mailer/inline", { returns: () => Schema.Null });\nexport default',
-            )
-            .replace("Callback.handle(OnEvent)", "Callback.handle(Inline)"),
+            ),
+            Str.replace("Callback.handle(OnEvent)", "Callback.handle(Inline)"),
+          ),
         );
-        expect(yield* Effect.flip(project.run)).toEqual(
-          new UndeclaredCallbackSlotError({
+        const refused = yield* Effect.flip(project.run);
+        expect(refused).toEqual(
+          UndeclaredCallbackSlotError.make({
             declarationPath: "confect/callbacks.ts",
             contractId: "mailer/inline",
             heldBy: "the table hooks",
@@ -203,8 +214,9 @@ layer(NodeServices.layer)("codegen's generated component subject", (it) => {
 };
 `),
         );
-        expect(yield* Effect.flip(project.run)).toEqual(
-          new InvalidManifestSectionError({
+        const refused = yield* Effect.flip(project.run);
+        expect(refused).toEqual(
+          InvalidManifestSectionError.make({
             sectionKey: "fixture",
             reason:
               "testing declares notes:list for a component, which owes no access proof; a component's section may declare laws and ports only.",

@@ -1,9 +1,15 @@
 import type { DatabaseSchema, RegisteredConvexFunction } from "@confect/server";
+import * as MountSteps from "@confect/core/MountSteps";
 import { makeFunctionReference } from "convex/server";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
+import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import type { Scope } from "effect/Scope";
-import type { GeneratedApp, Opened, Setting } from "../TestBackend.js";
+import * as Str from "effect/String";
+import type { GeneratedApp, Mount, Opened, Setting } from "../TestBackend.js";
 import type {
   ComponentKit,
   RegisterComponent,
@@ -18,10 +24,14 @@ declare const process: { env: Record<string, string | undefined> };
  * A session needs an app setting the test did not pass. Codegen never reads
  * `.env` or deployment state, so a test names each value.
  */
-export class TestConfigMissing extends Schema.TaggedError<TestConfigMissing>()(
-  "TestConfigMissing",
-  { setting: Schema.String, owner: Schema.String, docs: Schema.String },
-) {
+export class TestConfigMissing extends Schema.TaggedError<
+  TestConfigMissing,
+  { readonly brand: unique symbol }
+>()("TestConfigMissing", {
+  setting: Schema.String,
+  owner: Schema.String,
+  docs: Schema.String,
+}) {
   override get message() {
     return `The test backend needs the setting ${this.setting}, which ${this.owner} declares. Pass it in layer({ config }). See ${this.docs}.`;
   }
@@ -29,83 +39,59 @@ export class TestConfigMissing extends Schema.TaggedError<TestConfigMissing>()(
 
 const docs = "https://confect.dev/guides/testing#configuration";
 
-const Steps = Schema.Array(
-  Schema.Union([
-    Schema.Struct({
-      componentPath: Schema.String,
-      nested: Schema.Boolean,
-      init: Schema.NullOr(
-        Schema.Struct({ functionName: Schema.String, args: Schema.Unknown }),
-      ),
-    }),
-    Schema.Struct({ componentPath: Schema.String, failure: Schema.String }),
-  ]),
-);
-
-const STEPS = "confectDeploy:steps";
-
-const hasDeployModule = (modules: Readonly<Record<string, unknown>>) =>
-  "confectDeploy.ts" in modules || "confectDeploy.js" in modules;
-
 /**
- * Run the inits a push runs, through the deploy modules production registers,
- * with each nested component's steps before its own `init`.
+ * A mount's `init` failed as a push would report it, so the session does not
+ * open.
  */
-/**
- * The `init` a push runs for the subject itself, at the root path: its function
- * and encoded install args.
- */
-export interface RootInit {
-  readonly functionName: string;
-  readonly args: unknown;
+export class MountInitFailed extends Schema.TaggedError<
+  MountInitFailed,
+  { readonly brand: unique symbol }
+>()("MountInitFailed", { mount: Schema.String, detail: Schema.String }) {
+  override get message() {
+    return `${this.mount}: init failed: ${this.detail}`;
+  }
 }
 
-const initialize = (
-  raw: any,
-  hasSteps: (componentPath: string) => boolean,
-  root: RootInit | undefined,
-  initialized: Array<string>,
-) => {
-  const call = (componentPath: string, functionName: string, args: unknown) =>
-    Effect.promise<unknown>(() =>
-      raw.runInComponent(componentPath, (ctx: any) =>
-        ctx.runMutation(makeFunctionReference<"mutation">(functionName), args),
-      ),
-    );
-  const run = (
-    path: string,
-    step: {
-      readonly nested: boolean;
-      readonly init: RootInit | null;
-    },
-  ): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      if (step.nested) yield* visit(path);
-      if (step.init === null) return;
-      yield* call(path, step.init.functionName, step.init.args);
-      initialized.push(path);
-    });
-  const visit = (prefix: string): Effect.Effect<void> =>
-    Effect.gen(function* () {
-      if (!hasSteps(prefix)) return;
-      const steps = yield* Schema.decodeUnknownEffect(Steps)(
-        yield* call(prefix, STEPS, {}),
-      ).pipe(Effect.orDie);
-      for (const step of steps) {
-        const path =
-          prefix === ""
-            ? step.componentPath
-            : `${prefix}/${step.componentPath}`;
-        if ("failure" in step)
-          return yield* Effect.die(
-            new Error(`${path}: init failed: ${step.failure}`),
-          );
-        yield* run(path, step);
+/**
+ * Each mount's environment, from what it binds: a literal, or a setting of the
+ * backend that mounts it, read from `config` for the app and from the parent's
+ * resolved environment for a nested mount. A required setting left without a
+ * value fails, naming the mount.
+ */
+const environments = (
+  mounts: ReadonlyArray<Mount>,
+  config: Readonly<Record<string, string | undefined>>,
+) =>
+  Effect.gen(function* () {
+    const resolved = new Map<string, Readonly<Record<string, string>>>();
+    const parentOf = (path: string) =>
+      pipe(
+        path,
+        Str.lastIndexOf("/"),
+        Option.map((slash) => pipe(path, Str.slice(0, slash))),
+      );
+    for (const mount of mounts) {
+      const from = Option.match(parentOf(mount.path), {
+        onNone: () => config,
+        onSome: (parent) => resolved.get(parent) ?? {},
+      });
+      const env: Record<string, string> = {};
+      for (const [slot, binding] of Rec.toEntries(mount.env)) {
+        const value = "value" in binding ? binding.value : from[binding.from];
+        if (value !== undefined) env[slot] = value;
       }
-    });
-  // The subject is the root step a push runs for its mount.
-  return run("", { nested: hasSteps(""), init: root ?? null });
-};
+      for (const slot of mount.required) {
+        if (env[slot] === undefined)
+          return yield* TestConfigMissing.make({
+            setting: slot,
+            owner: `the mount ${mount.path}`,
+            docs,
+          });
+      }
+      resolved.set(mount.path, env);
+    }
+    return resolved;
+  });
 
 const withSettings = (
   settings: ReadonlyArray<Setting>,
@@ -114,11 +100,12 @@ const withSettings = (
   Effect.gen(function* () {
     for (const { name, owner, optional } of settings) {
       if (!optional && config[name] === undefined)
-        return yield* new TestConfigMissing({ setting: name, owner, docs });
+        return yield* TestConfigMissing.make({ setting: name, owner, docs });
     }
     yield* Effect.acquireRelease(
       Effect.sync(() => {
-        const previous = settings.map(
+        const previous = Arr.map(
+          settings,
           ({ name }) => [name, process.env[name]] as const,
         );
         for (const { name } of settings) {
@@ -140,41 +127,45 @@ const withSettings = (
 
 /**
  * Open a generated subject's session on the kernel: check and set its settings,
- * register every kit, recording each one's standing sources, load every module,
- * run each mount's `init`, then `seed` in one mutation. `sink` answers the
- * calls a component makes to its callback slots, and `root` is a component
- * subject's own `init`, run as the root step.
+ * bind each mount's environment, register every kit, recording each one's
+ * standing sources, load every module, run each mount's `init` through
+ * `MountSteps.run`, then `seed` in one mutation. `sink` answers the calls a
+ * component makes to its callback slots, and `root` is a component subject's
+ * own `init`, the root step of the same traversal.
  */
 export const openSession = <S extends DatabaseSchema.AnyWithProps>(
   app: GeneratedApp<S>,
-  settings: ReadonlyArray<Setting>,
+  declaration: {
+    readonly settings: ReadonlyArray<Setting>;
+    readonly mounts: ReadonlyArray<Mount>;
+  },
   config: Readonly<Record<string, string | undefined>>,
   seed:
     | Effect.Effect<void, never, RegisteredConvexFunction.MutationServices<S>>
     | undefined,
-  sink?: Execution.Sink,
-  root?: RootInit,
+  options: {
+    readonly sink?: Execution.Sink;
+    readonly root?: NonNullable<MountSteps.Root["init"]>;
+  } = {},
 ): Effect.Effect<
   {
     readonly service: TestConfect<S>;
     readonly raw: any;
     readonly session: Opened;
   },
-  TestConfigMissing,
+  TestConfigMissing | MountInitFailed,
   Scope
 > =>
   Effect.gen(function* () {
-    yield* withSettings(settings, config);
+    yield* withSettings(declaration.settings, config);
     const standing: Record<string, ReadonlyArray<string>> = {};
     const record =
       (register: RegisterComponent): RegisterComponent =>
-      (componentPath, schema, modules, options) => {
-        standing[componentPath] = options?.standing ?? [];
-        register(componentPath, schema, modules, options);
+      (componentPath, schema, modules, registerOptions) => {
+        standing[componentPath] = registerOptions?.standing ?? [];
+        register(componentPath, schema, modules, registerOptions);
       };
-    const deployModules = new Set<string>(
-      hasDeployModule(app.modules) ? [""] : [],
-    );
+    const bound = yield* environments(declaration.mounts, config);
     const opened = open(
       app.schema,
       app.convexSchema,
@@ -185,23 +176,38 @@ export const openSession = <S extends DatabaseSchema.AnyWithProps>(
         ...(app.secrets === undefined ? {} : { secrets: app.secrets }),
         register: (registerComponent) => {
           const recording = record(registerComponent);
-          const seen: RegisterComponent = (path, schema, modules, options) => {
-            if (hasDeployModule(modules)) deployModules.add(path);
-            recording(path, schema, modules, options);
-          };
-          for (const [name, kit] of Object.entries(app.components)) {
-            registerKit(seen, name, kit as ComponentKit);
+          for (const [name, kit] of Rec.toEntries(app.components)) {
+            registerKit(recording, name, kit as ComponentKit);
           }
         },
       },
-      sink,
+      options.sink,
     );
+    for (const [path, env] of bound) opened.raw.setEnvironment(path, env);
+    // Every module of every mount loads before any init, even when no init or
+    // seed calls the kernel.
+    yield* Effect.promise(() => opened.raw.open());
     const initialized: Array<string> = [];
-    yield* initialize(
-      opened.raw,
-      (path) => deployModules.has(path),
-      root,
-      initialized,
+    const call = (componentPath: string, name: string, args: unknown) =>
+      Effect.promise<unknown>(() =>
+        opened.raw.runInComponent(componentPath, (ctx: any) =>
+          ctx.runMutation(makeFunctionReference<"mutation">(name), args),
+        ),
+      );
+    // A push runs the mounts' inits only when the backend has a deploy module.
+    yield* MountSteps.run(
+      {
+        steps: (prefix) => call(prefix ?? "", MountSteps.STEPS, {}),
+        init: (mount, functionName, args) =>
+          call(mount, functionName, args).pipe(
+            Effect.tap(() => Effect.sync(() => initialized.push(mount))),
+          ),
+        failed: (mount, detail) => MountInitFailed.make({ mount, detail }),
+      },
+      {
+        init: options.root ?? null,
+        nested: opened.raw.hasModule("", "confectDeploy") === true,
+      },
     );
     if (seed !== undefined) yield* opened.service.run(seed);
     return {

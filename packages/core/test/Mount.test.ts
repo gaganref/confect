@@ -104,7 +104,8 @@ describe("Mount.make", () => {
       expect(getFunctionAddress(transactional.ref)).toEqual({
         reference: "_reference/childComponent/transactionalEmail/delivery/send",
       });
-      expect(yield* bulk.send("hello")).toBe("sent hello");
+      const send2 = yield* bulk.send("hello");
+      expect(send2).toBe("sent hello");
       expect((yield* ImportsPool).options).toEqual({ maxParallelism: 10 });
       expect((yield* DefaultPool).options).toBeUndefined();
     }),
@@ -120,7 +121,8 @@ describe("Mount.make", () => {
         return yield* (yield* BulkEmail).send("hello");
       }).pipe(Effect.provideService(BulkEmail, fake));
       expect(sent).toBe("fake hello");
-      expect(yield* (yield* BulkEmail).send("hello")).toBe("sent hello");
+      const send2 = yield* (yield* BulkEmail).send("hello");
+      expect(send2).toBe("sent hello");
     }),
   );
 
@@ -416,37 +418,46 @@ const School = Mount.make(Notices, { name: "school", args: { title: "A" } });
 const Office = Mount.make(Notices, { name: "office", args: { title: "B" } });
 
 describe("Mount callbackArgs", () => {
-  it("returns the contract's args with ids typed for the mount", () => {
-    const fields = School.callbackArgs("onRead");
-    const encoded = { noticeId: "n1", reader: "ann" };
-    const decoded = Schema.decodeUnknownSync(Schema.Struct(fields))(encoded);
-    expect(decoded).toEqual(encoded);
-    expect(Schema.encodeSync(Schema.Struct(fields))(decoded)).toEqual(encoded);
-    expectTypeOf(decoded.reader).toEqualTypeOf<string>();
-    expectTypeOf(decoded.noticeId).toEqualTypeOf<
-      GenericId.GenericId<
-        "notices",
-        Component.MountScope<IdScope.App, "school">
-      >
-    >();
-  });
+  it.effect("returns the contract's args with ids typed for the mount", () =>
+    Effect.gen(function* () {
+      const fields = School.callbackArgs("onRead");
+      const encoded = { noticeId: "n1", reader: "ann" };
+      const decoded = yield* Schema.decodeUnknownEffect(Schema.Struct(fields))(
+        encoded,
+      );
+      expect(decoded).toEqual(encoded);
+      const encoded2 = yield* Schema.encodeEffect(Schema.Struct(fields))(
+        decoded,
+      );
+      expect(encoded2).toEqual(encoded);
+      expectTypeOf(decoded.reader).toEqualTypeOf<string>();
+      expectTypeOf(decoded.noticeId).toEqualTypeOf<
+        GenericId.GenericId<
+          "notices",
+          Component.MountScope<IdScope.App, "school">
+        >
+      >();
+    }),
+  );
 
-  it("refuses what the mount cannot rebase", () => {
-    const schoolId = Schema.decodeUnknownSync(
-      Schema.Struct(School.callbackArgs("onRead")),
-    )({ noticeId: "n1", reader: "ann" }).noticeId;
-    const officeFields = Office.callbackArgs("onRead");
-    // @ts-expect-error RULE callback-args-per-mount: an id rebased for one mount is not another's.
-    const officeId: Schema.Schema.Type<typeof officeFields.noticeId> = schoolId;
-    void officeId;
-    const wrongSlot = () =>
-      // @ts-expect-error RULE callback-args-slot: title is not a callback slot.
-      School.callbackArgs("title");
-    void wrongSlot;
-    const plain = Mount.make(Mailer, { name: "m", args: { fromName: "x" } });
-    // @ts-expect-error RULE callback-args-contract: a descriptor without a contract has no callbackArgs.
-    void plain.callbackArgs;
-  });
+  it.effect("refuses what the mount cannot rebase", () =>
+    Effect.gen(function* () {
+      const schoolId = (yield* Schema.decodeUnknownEffect(
+        Schema.Struct(School.callbackArgs("onRead")),
+      )({ noticeId: "n1", reader: "ann" })).noticeId;
+      const officeFields = Office.callbackArgs("onRead");
+      // @ts-expect-error RULE callback-args-per-mount: an id rebased for one mount is not another's.
+      const officeId: typeof officeFields.noticeId.Type = schoolId;
+      void officeId;
+      const wrongSlot = () =>
+        // @ts-expect-error RULE callback-args-slot: title is not a callback slot.
+        School.callbackArgs("title");
+      void wrongSlot;
+      const plain = Mount.make(Mailer, { name: "m", args: { fromName: "x" } });
+      // @ts-expect-error RULE callback-args-contract: a descriptor without a contract has no callbackArgs.
+      void plain.callbackArgs;
+    }),
+  );
 });
 
 describe("Mount.initCall", () => {
@@ -463,7 +474,8 @@ describe("Mount.initCall", () => {
           name: "mailer",
           args: { fromName: "School office", onEvent },
         });
-        expect(yield* Mount.initCall(mailer, handleFor)).toEqual(
+        const initCall2 = yield* Mount.initCall(mailer, handleFor);
+        expect(initCall2).toEqual(
           Option.some({
             componentPath: "mailer",
             functionName: "install:init",
@@ -547,22 +559,21 @@ describe("Mount.initCall", () => {
         Mount.initCall(mount, handleFor).pipe(
           Effect.map(Option.map(({ args }) => args)),
         );
-      expect(yield* argsOf(notify)).toEqual(
+      const argsOfResult = yield* argsOf(notify);
+      expect(argsOfResult).toEqual(
         Option.some({
           route: { kind: "notify", onEvent: "handle for callbacks:onEvent" },
         }),
       );
-      expect(yield* argsOf(drop)).toEqual(
-        Option.some({ route: { kind: "drop" } }),
-      );
+      const argsOfResult2 = yield* argsOf(drop);
+      expect(argsOfResult2).toEqual(Option.some({ route: { kind: "drop" } }));
     }),
   );
 
   it.effect("is none for a component without init", () =>
     Effect.gen(function* () {
-      expect(yield* Mount.initCall(BulkEmail, handleFor)).toEqual(
-        Option.none(),
-      );
+      const initCall2 = yield* Mount.initCall(BulkEmail, handleFor);
+      expect(initCall2).toEqual(Option.none());
     }),
   );
 });

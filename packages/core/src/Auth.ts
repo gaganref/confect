@@ -4,6 +4,8 @@ import type * as App from "./App.js";
 import type * as Env from "./Env.js";
 import * as Mount from "./Mount.js";
 import type { TypeError } from "./Types.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 const TypeId = "~@confect/core/Auth";
 const CloudUrlTypeId = "~@confect/core/Auth/CloudUrl";
@@ -98,7 +100,10 @@ export function siteUrl(
     path:
       typeof pathOrMount === "string" || pathOrMount === undefined
         ? (pathOrMount ?? "")
-        : (Mount.data(pathOrMount).httpPrefix ?? "").replace(/\/+$/, "") + path,
+        : pipe(
+            Mount.data(pathOrMount).httpPrefix ?? "",
+            String.replace(/\/+$/, ""),
+          ) + path,
   };
 }
 

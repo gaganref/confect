@@ -1,37 +1,22 @@
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Vitest config needs synchronous path resolution before an Effect runtime exists.
-import path from "node:path";
-import tsconfigPaths from "vite-tsconfig-paths";
-import { configDefaults, defineConfig } from "vitest/config";
+import { fileURLToPath } from "node:url";
+import { defineLocalBackendConfig } from "confect-local-backend/vitest";
+import { configDefaults, defineConfig, mergeConfig } from "vitest/config";
+import sharedConfig from "../../vitest.shared";
 
-export default defineConfig({
-  plugins: [tsconfigPaths()],
-  resolve: {
-    alias: [
-      {
-        find: /^@confect\/server$/,
-        replacement: path.resolve(import.meta.dirname, "./src/index.ts"),
-      },
-      {
-        find: /^@confect\/server\/(.*)$/,
-        replacement: path.resolve(import.meta.dirname, "./src/$1"),
-      },
-    ],
-  },
-  test: {
+export default mergeConfig(
+  defineLocalBackendConfig({
+    base: sharedConfig,
     root: import.meta.dirname,
-    name: "@confect/server (local-backend)",
-    include: ["test/local-backend/**/*.test.ts"],
-    exclude: [
-      ...configDefaults.exclude,
-      "**/*.spec.ts",
-      "test/local-backend/.consumer/**",
-    ],
-    fileParallelism: false,
-    globalSetup: [
-      "./test/local-backend/setup.ts",
-      "./test/local-backend/consumerSetup.ts",
-    ],
-    testTimeout: 60_000,
-    hookTimeout: 120_000,
-  },
-});
+    name: "@confect/server",
+  }),
+  defineConfig({
+    test: {
+      exclude: [...configDefaults.exclude, "**/*.spec.ts"],
+      globalSetup: [
+        fileURLToPath(
+          import.meta.resolve("confect-local-backend/consumerSetup"),
+        ),
+      ],
+    },
+  }),
+);

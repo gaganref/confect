@@ -1,5 +1,10 @@
 import type { GroupSpec } from "@confect/core";
 import { collect } from "@confect/cli/ManifestSections";
+import * as Option from "effect/Option";
+import { pipe } from "effect/Function";
+import * as Str from "effect/String";
+import * as Rec from "effect/Record";
+import * as Arr from "effect/Array";
 import { pathToFileURL } from "node:url";
 import * as FileSystem from "effect/FileSystem";
 import * as Console from "effect/Console";
@@ -15,20 +20,21 @@ import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
 import * as References from "effect/References";
 import * as Result from "effect/Result";
+import * as Match from "effect/Match";
 import * as Bundler from "@confect/cli/Bundler";
 
 const BundlerLayer = Layer.mergeAll(NodePath.layer, NodeFileSystem.layer);
 
-const tsconfigContents = JSON.stringify(
-  {
-    compilerOptions: {
-      moduleResolution: "Bundler",
-      paths: { "~/*": ["./*"] },
-    },
-  },
-  null,
-  2,
-);
+const tsconfigContents = `{
+  "compilerOptions": {
+    "moduleResolution": "Bundler",
+    "paths": {
+      "~/*": [
+        "./*"
+      ]
+    }
+  }
+}`;
 
 layer(BundlerLayer)("bundle", (it) => {
   it.effect(
@@ -179,7 +185,9 @@ layer(BundlerLayer)("bundle", (it) => {
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
         const path = yield* Path.Path;
-        const tempDir = yield* fs.makeTempDirectoryScoped();
+        const tempDir = yield* fs
+          .makeTempDirectoryScoped()
+          .pipe(Effect.flatMap((directory) => fs.realPath(directory)));
 
         const entry = path.join(tempDir, "entry.ts");
         yield* fs.writeFileString(entry, `export default import.meta.url;\n`);
@@ -266,9 +274,10 @@ layer(BundlerLayer)("importersOfPackage", (it) => {
         "@scope/lib",
         () => true,
       );
-      expect(
-        yield* Effect.forEach(importers, (importer) => fs.realPath(importer)),
-      ).toStrictEqual([yield* fs.realPath(entry)]);
+      const actual = yield* Effect.forEach(importers, (importer) =>
+        fs.realPath(importer),
+      );
+      expect(actual).toStrictEqual([yield* fs.realPath(entry)]);
     }).pipe(Effect.scoped),
   );
 
@@ -314,10 +323,10 @@ const fixture = Effect.fn("Bundler.test.fixture")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const directory = yield* fs.makeTempDirectoryScoped({
-    directory: import.meta.dirname,
-  });
-  for (const [name, contents] of Object.entries(files)) {
+  const directory = yield* fs
+    .makeTempDirectoryScoped({ directory: import.meta.dirname })
+    .pipe(Effect.flatMap((temporary) => fs.realPath(temporary)));
+  for (const [name, contents] of Rec.toEntries(files)) {
     const file = path.join(directory, name);
     yield* fs.makeDirectory(path.dirname(file), { recursive: true });
     yield* fs.writeFileString(file, contents);
@@ -330,7 +339,230 @@ const fixture = Effect.fn("Bundler.test.fixture")(function* (
   };
 });
 
+layer(BundlerLayer)("check", (it) => {
+  it.effect.each(["individual", "shared", "fallback"] as const)(
+    "checks aliases and dependencies without executing them in %s builds",
+    (mode) =>
+      Effect.gen(function* () {
+        const { file, fs, directory } = yield* fixture({
+          "tsconfig.json": '{"compilerOptions":{"paths":{"~/*":["./src/*"]}}}',
+          "entry.ts":
+            'import "~/dependency"; throw new Error("Entry must not execute"); export default {};',
+          "src/dependency.ts":
+            'throw new Error("Dependency must not execute"); export {};',
+          "broken.ts": "export default ;",
+        });
+        const entry = file("entry.ts");
+        const checked = Match.value(mode).pipe(
+          Match.when("individual", () => Bundler.check(entry)),
+          Match.when("shared", () =>
+            Bundler.withBatch([entry], Bundler.check(entry)),
+          ),
+          Match.when("fallback", () =>
+            Bundler.withBatch([entry, file("broken.ts")], Bundler.check(entry)),
+          ),
+          Match.exhaustive,
+        );
+        yield* checked;
+        const actual2 = yield* fs.readDirectory(directory);
+        expect(actual2).toHaveLength(4);
+        yield* fs.writeFileString(
+          file("src/dependency.ts"),
+          "export default ;",
+        );
+        const failed = yield* Effect.result(checked);
+        expect(failed).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag: "BundlerError",
+            cause: { errors: expect.any(Array) },
+          },
+        });
+        const actual3 = yield* fs.readDirectory(directory);
+        expect(actual3).toHaveLength(4);
+      }).pipe(Effect.scoped),
+  );
+});
+
 layer(BundlerLayer)("withBatch", (it) => {
+  it.effect("uses native node conditions for inherited package aliases", () =>
+    Effect.gen(function* () {
+      const { file } = yield* fixture({
+        "tsconfig.json": '{"extends":"fixture"}',
+        "entry.ts": 'export { value } from "node-alias";',
+        "node_modules/fixture/package.json":
+          '{"exports":{"types":"./types.json","node":"./node.json","require":"./require.json"}}',
+        "node_modules/fixture/types.json":
+          '{"compilerOptions":{"paths":{"types-alias":["./value.ts"]}}}',
+        "node_modules/fixture/node.json":
+          '{"compilerOptions":{"paths":{"node-alias":["./value.ts"]}}}',
+        "node_modules/fixture/require.json":
+          '{"compilerOptions":{"paths":{"require-alias":["./value.ts"]}}}',
+        "node_modules/fixture/value.ts": 'export const value = "native-node";',
+      });
+      const entry = file("entry.ts");
+      expect((yield* Bundler.bundle(entry)).module.value).toBe("native-node");
+      expect(
+        (yield* Bundler.withBatch([entry], Bundler.bundle(entry))).module.value,
+      ).toBe("native-node");
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "preserves local aliases when a missing relative base only produces a warning",
+    () =>
+      Effect.gen(function* () {
+        const { file } = yield* fixture({
+          "tsconfig.json":
+            '{"extends":"./missing.json","compilerOptions":{"paths":{"alias":["./value.ts"]}}}',
+          "value.ts": 'export const value = "local";',
+          "entry.ts": 'export { value } from "alias";',
+        });
+        const entry = file("entry.ts");
+        expect((yield* Bundler.bundle(entry)).module.value).toBe("local");
+        expect(
+          (yield* Bundler.withBatch([entry], Bundler.bundle(entry))).module
+            .value,
+        ).toBe("local");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "keeps entry-specific inherited transforms for a shared source",
+    () =>
+      Effect.gen(function* () {
+        const { file } = yield* fixture({
+          "base.json": '{"compilerOptions":{"useDefineForClassFields":false}}',
+          "tsconfig.json": '{"extends":"./base.json"}',
+          "nested/tsconfig.json":
+            '{"extends":"../base.json","compilerOptions":{"useDefineForClassFields":true}}',
+          "first.ts": 'export { value } from "./shared";',
+          "nested/second.ts": 'export { value } from "../shared";',
+          "shared.ts":
+            'class Base { set field(value) { this.received = value; } } class Derived extends Base { field = "assigned"; } export const value = new Derived().received ?? "defined";',
+        });
+        const first = file("first.ts");
+        const second = file("nested/second.ts");
+        const bundled = yield* Bundler.withBatch(
+          [first, second],
+          Effect.all([Bundler.bundle(first), Bundler.bundle(second)]),
+        );
+        expect(Arr.map(bundled, (result) => result.module.value)).toEqual([
+          "assigned",
+          "defined",
+        ]);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "does not discover imported nested configuration when the entry has none",
+    () =>
+      Effect.gen(function* () {
+        const { file } = yield* fixture({
+          "entry.ts": 'export { value } from "./nested/shared";',
+          "nested/tsconfig.json": '{"extends":',
+          "nested/shared.ts": "export const value = 1;",
+        });
+        expect((yield* Bundler.bundle(file("entry.ts"))).module.value).toBe(1);
+        expect(
+          (yield* Bundler.withBatch(
+            [file("entry.ts")],
+            Bundler.bundle(file("entry.ts")),
+          )).module.value,
+        ).toBe(1);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    { name: "absent exports", manifest: '{"tsconfig":"base.json"}' },
+    {
+      name: "null exports",
+      manifest: '{"exports":null,"main":"index.js","tsconfig":"base.json"}',
+    },
+  ])(
+    "uses inherited package configuration with $name for individual and shared bundles",
+    ({ manifest }) =>
+      Effect.gen(function* () {
+        const { file } = yield* fixture({
+          "tsconfig.json": '{"extends":"@fixture/config"}',
+          "node_modules/@fixture/config/package.json": manifest,
+          "node_modules/@fixture/config/index.js":
+            'export const value = "not-a-config";',
+          "node_modules/@fixture/config/base.json":
+            '{"compilerOptions":{"paths":{"alias":["./value.ts"]},"useDefineForClassFields":false}}',
+          "node_modules/@fixture/config/value.ts":
+            'export const value = "inherited";',
+          "entry.ts":
+            'import { value } from "alias"; class Base { set field(value) { this.received = value; } } class Derived extends Base { field = value; } export default new Derived().received;',
+        });
+        const entry = file("entry.ts");
+        expect((yield* Bundler.bundle(entry)).module.default).toBe("inherited");
+        expect(
+          (yield* Bundler.withBatch([entry], Bundler.bundle(entry))).module
+            .default,
+        ).toBe("inherited");
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "preserves native self-reference conditions in individual, batch and fallback builds",
+    () =>
+      Effect.gen(function* () {
+        const { file } = yield* fixture({
+          "package.json":
+            '{"name":"@fixture/backend.v1","type":"module","exports":{".":{"import":"./import.ts","require":"./require.ts"},"./*":"./*.ts"}}',
+          "tsconfig.json": tsconfigContents,
+          "import.ts": 'export const value = "import";',
+          "require.ts": 'export const value = "require";',
+          "leaf.ts": "export const shared = {};",
+          "shared.ts":
+            'import { value } from "@fixture/backend.v1"; import other from "@fixture/backend.v1-extra"; export { shared } from "@fixture/backend.v1/leaf"; export const values = [value, require("@fixture/backend.v1").value, other];',
+          "first.ts": 'export { shared, values } from "~/shared";',
+          "nested/second.ts": 'export { shared, values } from "~/shared";',
+          "node_modules/@fixture/backend.v1-extra/package.json":
+            '{"type":"module","exports":"./index.js"}',
+          "node_modules/@fixture/backend.v1-extra/index.js":
+            'export default "external";',
+        });
+        const individual = yield* Bundler.bundle(file("first.ts"));
+        const [first, second] = yield* Bundler.withBatch(
+          [file("first.ts"), file("nested/second.ts")],
+          Effect.all([
+            Bundler.bundle(file("first.ts")),
+            Bundler.bundle(file("nested/second.ts")),
+          ]),
+        );
+        const services = yield* ConfigProvider.fromUnknown({
+          NODE_OPTIONS: "--conditions=custom",
+        }).pipe(ConfigProvider.layer, Layer.build);
+        const fallback = yield* Bundler.withBatch(
+          [file("first.ts"), file("nested/second.ts")],
+          Bundler.bundle(file("nested/second.ts")),
+        ).pipe(Effect.provideContext(services));
+        for (const bundled of [individual, first, second, fallback]) {
+          expect(bundled.module.values).toEqual([
+            "import",
+            "require",
+            "external",
+          ]);
+          expect(
+            Bundler.importersOfPackage(
+              bundled,
+              "@fixture/backend.v1",
+              () => true,
+            ),
+          ).toEqual([file("shared.ts")]);
+          expect(bundled.metafile.inputs[file("leaf.ts")]).toBeDefined();
+          expect(
+            Arr.some(Rec.keys(bundled.metafile.inputs), (input) =>
+              pipe(input, Str.includes("node_modules")),
+            ),
+          ).toBe(false);
+        }
+        expect(first.module.shared).toBe(second.module.shared);
+      }).pipe(Effect.scoped),
+  );
+
   const incompatibilities: ReadonlyArray<{
     readonly reason: string;
     readonly nodeOptions: string;
@@ -389,6 +621,16 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
             concurrency: "unbounded",
           }),
         );
+        const services2 = yield* Layer.build(
+          Logger.layer([
+            Logger.make((event) => {
+              events.push(event);
+            }),
+          ]),
+        );
+        const services3 = yield* ConfigProvider.fromUnknown({
+          NODE_OPTIONS: nodeOptions,
+        }).pipe(ConfigProvider.layer, Layer.build);
         yield* Effect.gen(function* () {
           const results = yield* run;
           expect(results[0]?.module.shared).not.toBe(results[1]?.module.shared);
@@ -404,7 +646,7 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
                   },
                 },
               ],
-              results.map(({ module }, i) => ({
+              Arr.map(results, ({ module }, i) => ({
                 spec: module.shared as GroupSpec.AnyWithProps,
                 pathSegments: [String(i)],
                 relativePath: `${i}.spec.ts`,
@@ -430,19 +672,9 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
           yield* run;
           expect(events).toHaveLength(2);
         }).pipe(
-          Effect.provide(
-            Logger.layer([
-              Logger.make((event) => {
-                events.push(event);
-              }),
-            ]),
-          ),
+          Effect.provideContext(services2),
           Effect.provideService(References.MinimumLogLevel, "Debug"),
-          Effect.provide(
-            ConfigProvider.layer(
-              ConfigProvider.fromUnknown({ NODE_OPTIONS: nodeOptions }),
-            ),
-          ),
+          Effect.provideContext(services3),
         );
       }).pipe(Effect.scoped),
   );
@@ -451,6 +683,13 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
     Effect.gen(function* () {
       const { file } = yield* fixture({ "first.ts": "export default 1;" });
       const events: Logger.Options<unknown>[] = [];
+      const services4 = yield* Layer.build(
+        Logger.layer([
+          Logger.make((event) => {
+            events.push(event);
+          }),
+        ]),
+      );
       yield* Effect.gen(function* () {
         yield* Bundler.withBatch(["/missing/entry.ts"], Effect.void);
         yield* Bundler.withBatch(
@@ -458,13 +697,7 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
           Bundler.bundle(file("first.ts")),
         );
       }).pipe(
-        Effect.provide(
-          Logger.layer([
-            Logger.make((event) => {
-              events.push(event);
-            }),
-          ]),
-        ),
+        Effect.provideContext(services4),
         Effect.provideService(References.MinimumLogLevel, "Debug"),
       );
       expect(events).toEqual([]);
@@ -502,28 +735,31 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
             expect(messages).toEqual([]);
             const second = yield* Bundler.bundle(entries[1]);
             expect(first.module.shared).toBe(second.module.shared);
-            expect(Object.keys(first.metafile.inputs).sort()).toEqual(
+            expect(Rec.keys(first.metafile.inputs).sort()).toEqual(
               [
                 yield* fs.realPath(file("source/first.ts")),
                 yield* fs.realPath(file("source/shared.ts")),
               ].sort(),
             );
-            expect(
-              yield* Bundler.directlyImports(
-                first,
-                file("linked-source/first.ts"),
-                file("linked-source/shared.ts"),
-              ),
-            ).toBe(true);
+            const actual4 = yield* Bundler.directlyImports(
+              first,
+              file("linked-source/first.ts"),
+              file("linked-source/shared.ts"),
+            );
+            expect(actual4).toBe(true);
             expect(
               Bundler.importersOfPackage(first, "dependency", () => true),
             ).toEqual([yield* fs.realPath(file("source/shared.ts"))]);
             expect(messages).toHaveLength(1);
-            expect(messages.join("\n")).toContain("warning.ts");
-            const artifacts = Object.keys(second.metafile.outputs);
+            expect(Arr.join(Arr.map(messages, String), "\n")).toContain(
+              "warning.ts",
+            );
+            const artifacts = Rec.keys(second.metafile.outputs);
             expect(artifacts.length).toBeGreaterThan(1);
-            for (const output of artifacts)
-              expect(output).toBe(yield* fs.realPath(output));
+            for (const output of artifacts) {
+              const canonical = yield* fs.realPath(output);
+              expect(output).toBe(canonical);
+            }
             return artifacts;
           }),
         ).pipe(
@@ -544,8 +780,10 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
             }),
           ),
         );
-        for (const output of outputs)
-          expect(yield* fs.exists(path.dirname(output))).toBe(false);
+        for (const output of outputs) {
+          const exists = yield* fs.exists(path.dirname(output));
+          expect(exists).toBe(false);
+        }
       }).pipe(Effect.scoped),
   );
 
@@ -572,9 +810,11 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
 
   it.effect("does not touch unused entries and preserves the inner error", () =>
     Effect.gen(function* () {
-      expect(
-        yield* Bundler.withBatch(["/missing/entry.ts"], Effect.succeed(42)),
-      ).toBe(42);
+      const actual5 = yield* Bundler.withBatch(
+        ["/missing/entry.ts"],
+        Effect.succeed(42),
+      );
+      expect(actual5).toBe(42);
       const failure = yield* Bundler.withBatch(
         ["/missing/entry.ts"],
         Effect.fail("inner failure"),
@@ -607,7 +847,7 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
         expect(
           [first.module.count, second.module.count].sort((a, b) => a - b),
         ).toEqual([1, 2]);
-        expect(Object.keys(first.metafile.inputs).sort()).toEqual(
+        expect(Rec.keys(first.metafile.inputs).sort()).toEqual(
           [
             yield* fs.realPath(file("first.ts")),
             yield* fs.realPath(file("shared.ts")),
@@ -619,20 +859,18 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
         expect(
           Bundler.importersOfPackage(second, "node:os", () => true),
         ).toEqual([yield* fs.realPath(file("nested/server.ts"))]);
-        expect(
-          yield* Bundler.directlyImports(
-            first,
-            file("first.ts"),
-            file("shared.ts"),
-          ),
-        ).toBe(true);
-        expect(
-          yield* Bundler.directlyImports(
-            first,
-            file("first.ts"),
-            file("nested/server.ts"),
-          ),
-        ).toBe(false);
+        const actual6 = yield* Bundler.directlyImports(
+          first,
+          file("first.ts"),
+          file("shared.ts"),
+        );
+        expect(actual6).toBe(true);
+        const actual7 = yield* Bundler.directlyImports(
+          first,
+          file("first.ts"),
+          file("nested/server.ts"),
+        );
+        expect(actual7).toBe(false);
       }).pipe(Effect.scoped),
   );
 
@@ -660,41 +898,43 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
             const unrelated = yield* Bundler.bundle(entries[1]);
             const repeated = yield* Bundler.bundle(entries[0]);
 
-            expect(Object.keys(first.metafile.inputs)).toEqual(
-              yield* Effect.forEach(
-                ["first.ts", "left.ts", "right.ts", "shared.ts"],
-                (name) => fs.realPath(file(name)),
-              ),
+            const actual8 = yield* Effect.forEach(
+              ["first.ts", "left.ts", "right.ts", "shared.ts"],
+              (name) => fs.realPath(file(name)),
             );
-            expect(Object.keys(unrelated.metafile.inputs)).toEqual([
+            expect(Rec.keys(first.metafile.inputs)).toEqual(actual8);
+            expect(Rec.keys(unrelated.metafile.inputs)).toEqual([
               yield* fs.realPath(file("unrelated.ts")),
             ]);
             expect(
-              Object.values(first.metafile.outputs)
-                .map((output) =>
-                  output.entryPoint
-                    ? path.basename(output.entryPoint)
-                    : "shared",
-                )
-                .sort(),
+              Arr.map(Rec.values(first.metafile.outputs), (output) =>
+                output.entryPoint !== undefined && output.entryPoint !== ""
+                  ? path.basename(output.entryPoint)
+                  : "shared",
+              ).sort(),
             ).toEqual(["first.ts", "left.ts", "right.ts", "shared"]);
-            expect(Object.keys(unrelated.metafile.outputs)).toHaveLength(1);
+            expect(Rec.keys(unrelated.metafile.outputs)).toHaveLength(1);
             expect(
-              Object.keys(first.metafile.outputs).some(
+              Arr.some(
+                Rec.keys(first.metafile.outputs),
                 (key) => key in unrelated.metafile.outputs,
               ),
             ).toBe(false);
-            for (const output of Object.values(first.metafile.outputs)) {
+            for (const output of Rec.values(first.metafile.outputs)) {
               for (const imported of output.imports) {
-                if (!imported.external)
+                if (imported.external !== true)
                   expect(first.metafile.outputs).toHaveProperty([
                     path.resolve(path.dirname(entries[0]), imported.path),
                   ]);
               }
             }
             expect(
-              Object.values(first.metafile.outputs).find(
-                (output) => !output.entryPoint,
+              Option.getOrUndefined(
+                Arr.findFirst(
+                  Rec.values(first.metafile.outputs),
+                  (output) =>
+                    output.entryPoint === undefined || output.entryPoint === "",
+                ),
               ),
             ).toMatchObject({
               imports: expect.arrayContaining([
@@ -744,14 +984,16 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
           [file("first.ts"), file("second.ts")],
           Effect.gen(function* () {
             const first = yield* Bundler.bundle(file("first.ts"));
-            const outputs = Object.keys(first.metafile.outputs);
+            const outputs = Rec.keys(first.metafile.outputs);
             expect(
-              outputs.some((output) =>
-                path.basename(output).startsWith("chunk-"),
+              Arr.some(outputs, (output) =>
+                pipe(path.basename(output), Str.startsWith("chunk-")),
               ),
             ).toBe(true);
-            for (const output of outputs)
-              expect(yield* fs.exists(output)).toBe(true);
+            for (const output of outputs) {
+              const exists = yield* fs.exists(output);
+              expect(exists).toBe(true);
+            }
             const second = yield* Bundler.bundle(file("second.ts")).pipe(
               Effect.result,
             );
@@ -763,8 +1005,10 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
             return outputs;
           }),
         );
-        for (const output of artifacts)
-          expect(yield* fs.exists(path.dirname(output))).toBe(false);
+        for (const output of artifacts) {
+          const exists = yield* fs.exists(path.dirname(output));
+          expect(exists).toBe(false);
+        }
       }).pipe(Effect.scoped),
   );
 
@@ -842,10 +1086,10 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
             Bundler.bundle(file("nested/second.ts")),
           ]),
         );
-        expect(batch.map((entry) => entry.module.default)).toEqual(
-          originals.map((entry) => entry.module.default),
+        expect(Arr.map(batch, (entry) => entry.module.default)).toEqual(
+          Arr.map(originals, (entry) => entry.module.default),
         );
-        expect(batch.map((entry) => entry.module.default)).toEqual([
+        expect(Arr.map(batch, (entry) => entry.module.default)).toEqual([
           "root",
           "nested",
         ]);
@@ -886,9 +1130,9 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
           ]),
         );
         expect(first.module.shared).toBe(second.module.shared);
-        expect(yield* settle(first.module.load)).toBe(
-          yield* settle(original.module.load),
-        );
+        const actual9 = yield* settle(first.module.load);
+        const actual10 = yield* settle(original.module.load);
+        expect(actual9).toBe(actual10);
       }).pipe(Effect.scoped),
   );
 
@@ -930,19 +1174,16 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
         "second.ts": 'export { shared } from "./shared";',
         "shared.ts": "export const shared = {};",
       });
+      const services5 = yield* ConfigProvider.fromUnknown({
+        NODE_OPTIONS: nodeOptions,
+      }).pipe(ConfigProvider.layer, Layer.build);
       const [first, second] = yield* Bundler.withBatch(
         [file("first.ts"), file("second.ts")],
         Effect.all([
           Bundler.bundle(file("first.ts")),
           Bundler.bundle(file("second.ts")),
         ]),
-      ).pipe(
-        Effect.provide(
-          ConfigProvider.layer(
-            ConfigProvider.fromUnknown({ NODE_OPTIONS: nodeOptions }),
-          ),
-        ),
-      );
+      ).pipe(Effect.provideContext(services5));
       expect(first.module.shared).not.toBe(second.module.shared);
     }).pipe(Effect.scoped),
   );
@@ -966,7 +1207,7 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
             Bundler.bundle(file("nested/second.ts")),
           ]),
         );
-        expect(entries.map((entry) => entry.module.value)).toEqual([
+        expect(Arr.map(entries, (entry) => entry.module.value)).toEqual([
           "root",
           "nested",
         ]);
@@ -982,6 +1223,13 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
           "first.ts": 'export const value = "valid";',
           "broken.ts": "export const value = ;",
         });
+        const services6 = yield* Layer.build(
+          Logger.layer([
+            Logger.make((event) => {
+              events.push(event);
+            }),
+          ]),
+        );
         yield* Bundler.withBatch(
           [file("first.ts"), file("broken.ts")],
           Effect.gen(function* () {
@@ -1009,13 +1257,7 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
             ).toBe("fixed");
           }),
         ).pipe(
-          Effect.provide(
-            Logger.layer([
-              Logger.make((event) => {
-                events.push(event);
-              }),
-            ]),
-          ),
+          Effect.provideContext(services6),
           Effect.provideService(References.MinimumLogLevel, "Debug"),
         );
         expect(events).toHaveLength(1);
@@ -1030,10 +1272,13 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
           ],
         });
         expect(
-          events.map((event) => Cause.pretty(event.cause)).join("\n"),
+          Arr.join(
+            Arr.map(events, (event) => Cause.pretty(event.cause)),
+            "\n",
+          ),
         ).toContain("broken.ts");
         expect(
-          events.map((event) => Cause.findErrorOption(event.cause)),
+          Arr.map(events, (event) => Cause.findErrorOption(event.cause)),
         ).toEqual([
           expect.objectContaining({
             value: expect.objectContaining({
@@ -1110,6 +1355,62 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
   );
 
   it.effect(
+    "keeps batch metadata and warnings when real paths differ from esbuild paths",
+    () =>
+      Effect.gen(function* () {
+        const { file, fs, path } = yield* fixture({
+          "short/first.ts": 'export { value } from "./shared";',
+          "short/second.ts": 'export { value } from "./shared";',
+          "short/shared.ts":
+            "export const value = { duplicate: 1, duplicate: 2 };",
+        });
+        yield* fs.copy(file("short"), file("canonical"));
+        const messages: unknown[] = [];
+        const console = yield* Console.Console;
+        const bundled = yield* Bundler.withBatch(
+          [file("short/first.ts"), file("short/second.ts")],
+          Bundler.bundle(file("short/first.ts")),
+        ).pipe(
+          Effect.provideService(FileSystem.FileSystem, {
+            ...fs,
+            realPath: (source) =>
+              fs
+                .realPath(source)
+                .pipe(
+                  Effect.map((real) =>
+                    real === file("short") ||
+                    pipe(real, Str.startsWith(file("short") + path.sep))
+                      ? file("canonical") +
+                        pipe(real, Str.slice(file("short").length))
+                      : real,
+                  ),
+                ),
+          }),
+          Effect.provideService(
+            Console.Console,
+            Object.assign(Object.create(console), {
+              error: (...args: ReadonlyArray<unknown>) => {
+                messages.push(...args);
+              },
+            }),
+          ),
+        );
+        expect(Rec.keys(bundled.metafile.inputs).sort()).toEqual(
+          [file("canonical/first.ts"), file("canonical/shared.ts")].sort(),
+        );
+        expect(
+          bundled.metafile.inputs[file("canonical/first.ts")]?.imports,
+        ).toContainEqual(
+          expect.objectContaining({ path: file("canonical/shared.ts") }),
+        );
+        expect(messages).toHaveLength(1);
+        expect(Arr.join(Arr.map(messages, String), "\n")).toContain(
+          "Duplicate key",
+        );
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
     "logs warnings only for the requested entry's reachable sources",
     () =>
       Effect.gen(function* () {
@@ -1127,8 +1428,12 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
             expect(messages).toEqual([]);
             yield* Bundler.bundle(file("second.ts"));
             expect(messages).toHaveLength(1);
-            expect(messages.join("\n")).toContain("Duplicate key");
-            expect(messages.join("\n")).toContain("warning.ts");
+            expect(Arr.join(Arr.map(messages, String), "\n")).toContain(
+              "Duplicate key",
+            );
+            expect(Arr.join(Arr.map(messages, String), "\n")).toContain(
+              "warning.ts",
+            );
           }),
         ).pipe(
           Effect.provideService(
@@ -1177,8 +1482,10 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
         );
         expect(Exit.isFailure(exit)).toBe(true);
         expect(directories).toHaveLength(1);
-        for (const directory of directories)
-          expect(yield* fs.exists(directory)).toBe(false);
+        for (const directory of directories) {
+          const exists = yield* fs.exists(directory);
+          expect(exists).toBe(false);
+        }
       }).pipe(Effect.scoped),
   );
 

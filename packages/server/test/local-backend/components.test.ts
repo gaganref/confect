@@ -1,6 +1,6 @@
 import { Ref } from "@confect/core";
-import type { ClassProbe } from "./fixtures/components/counter/confect/authoring.spec";
-import refs from "./fixtures/confect/_generated/refs";
+import type { ClassProbe } from "../../../../tools/local-backend/fixtures/components/counter/confect/authoring.spec";
+import refs from "confect-local-backend/refs";
 import * as NodeHttpClient from "@effect/platform-node/NodeHttpClient";
 import { expect, expectTypeOf, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -16,9 +16,9 @@ import type {
   second,
   left,
   right,
-} from "./fixtures/confect/componentBindings";
-import { api } from "./fixtures/convex/_generated/api";
-import * as LocalBackend from "./LocalBackend";
+} from "../../../../tools/local-backend/fixtures/confect/componentBindings";
+import { api } from "../../../../tools/local-backend/fixtures/convex/_generated/api";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 // These identities come from Convex's generated ComponentApi<MountName>,
 // including the nested child's scope carried by the parent's contract.
@@ -42,7 +42,8 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
-        const run = String(yield* Random.next);
+        const random = yield* Random.next;
+        const run = String(random);
         const native = yield* Effect.promise(() =>
           client.mutation(api.groups.nativeComponents.roundTrip, { run }),
         );
@@ -94,11 +95,10 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
         const id = yield* Effect.promise(() =>
           client.mutation(api.groups.componentAuthoring.save, ids),
         );
-        expect(
-          yield* Effect.promise(() =>
-            client.query(api.groups.componentAuthoring.read, { id }),
-          ),
-        ).toEqual(ids);
+        const resolved = yield* Effect.promise(() =>
+          client.query(api.groups.componentAuthoring.read, { id }),
+        );
+        expect(resolved).toEqual(ids);
       }),
   );
 
@@ -141,7 +141,8 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
-        const run = String(yield* Random.next);
+        const random = yield* Random.next;
+        const run = String(random);
         const id = yield* Effect.promise(() =>
           client.mutation(api.groups.components.schedule, { run }),
         );
@@ -167,7 +168,8 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
-        const run = String(yield* Random.next);
+        const random = yield* Random.next;
+        const run = String(random);
         const ids = yield* Effect.promise(() =>
           client.mutation(api.groups.components.scheduleAndCancel, { run }),
         );
@@ -186,11 +188,10 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
           Effect.timeout("10 seconds"),
         );
         expect(result).toEqual({ first: [17], second: [] });
-        expect(
-          yield* Effect.promise(() =>
-            client.mutation(api.groups.components.cancel, { id: ids.control }),
-          ),
-        ).toBeNull();
+        const resolved = yield* Effect.promise(() =>
+          client.mutation(api.groups.components.cancel, { id: ids.control }),
+        );
+        expect(resolved).toBeNull();
         yield* Effect.promise(() =>
           expect(
             client.mutation(api.groups.components.cancel, {
@@ -229,11 +230,10 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
-        expect(
-          yield* Effect.promise(() =>
-            client.query(api.groups.components.hasAuth, {}),
-          ),
-        ).toBe(false);
+        const resolved = yield* Effect.promise(() =>
+          client.query(api.groups.components.hasAuth, {}),
+        );
+        expect(resolved).toBe(false);
         for (const mount of [
           "first",
           "second",
@@ -271,7 +271,8 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
-        const run = String(yield* Random.next);
+        const random = yield* Random.next;
+        const run = String(random);
         yield* Effect.promise(() =>
           client.mutation(api.groups.components.deepCreate, {
             run,
@@ -316,7 +317,8 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
-        const run = String(yield* Random.next);
+        const random = yield* Random.next;
+        const run = String(random);
         const result = yield* Effect.promise(() =>
           client.mutation(api.groups.components.declaredError, { run }),
         );
@@ -334,7 +336,8 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
-        const run = String(yield* Random.next);
+        const random = yield* Random.next;
+        const run = String(random);
         yield* Effect.promise(() =>
           client.mutation(api.groups.components.seed, {
             run,
@@ -437,57 +440,53 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
     () =>
       Effect.gen(function* () {
         const { client, redeploy } = yield* LocalBackend.LocalBackend;
-        const run = String(yield* Random.next);
+        const random = yield* Random.next;
+        const run = String(random);
         const events = Effect.promise(() =>
           client.query(api.groups.callbacks.events, { run }),
         );
         const id = yield* Effect.promise(() =>
           client.mutation(api.groups.callbacks.send, { run }),
         );
-        expect(
-          yield* events.pipe(
-            Effect.repeat({
-              schedule: Schedule.spaced("100 millis"),
-              until: (statuses) => statuses.length > 0,
-            }),
-            Effect.timeout("15 seconds"),
-          ),
-        ).toEqual(["sent"]);
+        const eventsResult = yield* events.pipe(
+          Effect.repeat({
+            schedule: Schedule.spaced("100 millis"),
+            until: (statuses) => statuses.length > 0,
+          }),
+          Effect.timeout("15 seconds"),
+        );
+        expect(eventsResult).toEqual(["sent"]);
 
-        expect(
-          yield* Effect.promise(() =>
-            client.mutation(api.groups.callbacks.setStatus, {
-              id,
-              status: "bounced",
-            }),
-          ),
-        ).toBe(`host refuses bounced for ${run}`);
-        expect(
-          yield* Effect.promise(() =>
-            client.query(api.groups.callbacks.get, { id }),
-          ),
-        ).toEqual({ run, status: "bounced" });
-        expect(
-          yield* Effect.promise(() =>
-            client.mutation(api.groups.callbacks.breach, { id }),
-          ),
-        ).toBe("defect");
+        const resolved = yield* Effect.promise(() =>
+          client.mutation(api.groups.callbacks.setStatus, {
+            id,
+            status: "bounced",
+          }),
+        );
+        expect(resolved).toBe(`host refuses bounced for ${run}`);
+        const resolved2 = yield* Effect.promise(() =>
+          client.query(api.groups.callbacks.get, { id }),
+        );
+        expect(resolved2).toEqual({ run, status: "bounced" });
+        const resolved3 = yield* Effect.promise(() =>
+          client.mutation(api.groups.callbacks.breach, { id }),
+        );
+        expect(resolved3).toBe("defect");
 
         yield* redeploy;
-        expect(
-          yield* Effect.promise(() =>
-            client.mutation(api.groups.callbacks.sameHandle, { id }),
-          ),
-        ).toBe(true);
-        expect(
-          yield* Effect.promise(() =>
-            client.mutation(api.groups.callbacks.setStatus, {
-              id,
-              status: "delivered",
-            }),
-          ),
-        ).toBeNull();
-        expect(yield* events).toEqual(["sent", "delivered"]);
+        const resolved4 = yield* Effect.promise(() =>
+          client.mutation(api.groups.callbacks.sameHandle, { id }),
+        );
+        expect(resolved4).toBe(true);
+        const resolved5 = yield* Effect.promise(() =>
+          client.mutation(api.groups.callbacks.setStatus, {
+            id,
+            status: "delivered",
+          }),
+        );
+        expect(resolved5).toBeNull();
+        const eventsValue = yield* events;
+        expect(eventsValue).toEqual(["sent", "delivered"]);
       }),
   );
 
@@ -509,11 +508,10 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
-        expect(
-          yield* Effect.promise(() =>
-            client.mutation(api.groups.callbacks.createMismatched, {}),
-          ),
-        ).toEqual({
+        const resolved = yield* Effect.promise(() =>
+          client.mutation(api.groups.callbacks.createMismatched, {}),
+        );
+        expect(resolved).toEqual({
           outcome: "failure",
           message: `The host function does not satisfy callback contract "counter/onReported": its args compile to {"kind":"object","fields":{"state":{"kind":"string"}}}, the contract's to {"kind":"object","fields":{"status":{"kind":"string"}}}.`,
         });

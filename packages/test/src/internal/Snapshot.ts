@@ -20,6 +20,10 @@ import {
   type FunctionPath,
   type StoredDocument,
 } from "./KernelValues.js";
+import * as Arr from "effect/Array";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Json from "./Json.js";
 
 /**
  * The counters the kernel allocates identities from: the next document ID, the
@@ -170,6 +174,10 @@ export const contract = {
     components: {
       excluded:
         "Registered code, not state: the restoring world registers the same components, which `components` checks.",
+    },
+    environments: {
+      excluded:
+        "Configuration, not state: each mount's bound settings, which the driver sets on the restoring world before it opens, as it registers its components.",
     },
     state: { exported: "the committed state above" },
     opened: {
@@ -442,10 +450,13 @@ export const encode = (
       tables.push({
         componentPath,
         table,
-        rows: sorted(rows, ([id]) => id).map(([, row]) => ({
-          version: row.version,
-          doc: encodeDocument(componentPath, row.doc),
-        })),
+        rows: Arr.map(
+          sorted(rows, ([id]) => id),
+          ([, row]) => ({
+            version: row.version,
+            doc: encodeDocument(componentPath, row.doc),
+          }),
+        ),
       });
     }
   }
@@ -463,29 +474,35 @@ export const encode = (
       nextUploadToken: image.identity.nextUploadToken,
     },
     tables,
-    jobs: sorted(image.jobs, ([id]) => id).map(([id, target]) => ({
-      id,
-      target: {
-        componentPath: target.functionPath.componentPath,
-        udfPath: target.functionPath.udfPath,
-      },
-      standing: target.standing,
-      world: target.world,
-    })),
-    files: sorted(image.files, ([id]) => id).map(([id, file]) => ({
-      id,
-      componentPath: file.componentPath,
-      uuid: file.uuid,
-      bytes: redactBytes(file.bytes),
-    })),
+    jobs: Arr.map(
+      sorted(image.jobs, ([id]) => id),
+      ([id, target]) => ({
+        id,
+        target: {
+          componentPath: target.functionPath.componentPath,
+          udfPath: target.functionPath.udfPath,
+        },
+        standing: target.standing,
+        world: target.world,
+      }),
+    ),
+    files: Arr.map(
+      sorted(image.files, ([id]) => id),
+      ([id, file]) => ({
+        id,
+        componentPath: file.componentPath,
+        uuid: file.uuid,
+        bytes: redactBytes(file.bytes),
+      }),
+    ),
     crons: sorted(
       image.crons,
       ({ componentPath, name }) => `${componentPath}\u0000${name}`,
     ) as Array<Body["crons"][number]>,
-    log: state.log.map((commit) => ({
+    log: Arr.map(state.log, (commit) => ({
       version: commit.version,
       commitTs: commit.commitTs.toString(),
-      changes: commit.changes.map((change) => ({
+      changes: Arr.map(commit.changes, (change) => ({
         componentPath: change.componentPath,
         id: change.id,
         before: encodeDocument(change.componentPath, change.before),
@@ -493,7 +510,7 @@ export const encode = (
       })),
     })),
   };
-  const bodyBytes = new TextEncoder().encode(JSON.stringify(body));
+  const bodyBytes = new TextEncoder().encode(Json.stringify(body));
   const head = new TextEncoder().encode(`${header}${digestOf(bodyBytes)}\n`);
   const bytes = new Uint8Array(head.length + bodyBytes.length);
   bytes.set(head);
@@ -502,7 +519,7 @@ export const encode = (
 };
 
 const malformed = (reason: string, detail: string) =>
-  new KernelRefusal.SnapshotMalformed({
+  KernelRefusal.SnapshotMalformed.make({
     reason,
     message: `These bytes are not a test kernel snapshot this kernel reads (${reason}): ${detail}`,
   });
@@ -518,7 +535,7 @@ const decodeDocument = (
   if (
     typeof doc !== "object" ||
     doc === null ||
-    Array.isArray(doc) ||
+    Arr.isArray(doc) ||
     typeof (doc as { _id?: unknown })._id !== "string"
   ) {
     throw new Error("a document is not an object with an `_id`");
@@ -536,7 +553,7 @@ const idOf = (doc: unknown): string => {
  * `_id` string and a finite, non-negative `_creationTime`.
  */
 const systemFieldsProblem = (doc: unknown): string | undefined => {
-  if (typeof doc !== "object" || doc === null || Array.isArray(doc))
+  if (typeof doc !== "object" || doc === null || Arr.isArray(doc))
     return "is not an object";
   const { _id, _creationTime } = doc as {
     readonly _id?: unknown;
@@ -606,7 +623,7 @@ export const checkBody = (
   for (const { componentPath, rows } of body.tables)
     byComponent.set(componentPath, [
       ...(byComponent.get(componentPath) ?? []),
-      ...rows.map(({ doc }) => (doc as { _id: string })._id),
+      ...Arr.map(rows, ({ doc }) => (doc as { _id: string })._id),
     ]);
   for (const [componentPath, ids] of byComponent) {
     const id = once(ids, (i) => i);
@@ -639,7 +656,7 @@ export const checkBody = (
   const job = once(body.jobs, ({ id }) => id);
   if (job !== undefined)
     return Result.fail(
-      new KernelRefusal.SnapshotJobInconsistent({
+      KernelRefusal.SnapshotJobInconsistent.make({
         id: job.id,
         reason: "duplicate",
         message: `The snapshot's job ${job.id} appears twice.`,
@@ -694,19 +711,19 @@ const unredactBody = (
   };
   const unredacted: Body = {
     ...body,
-    tables: body.tables.map((entry) => ({
+    tables: Arr.map(body.tables, (entry) => ({
       ...entry,
-      rows: entry.rows.map((row) => ({ ...row, doc: document(row.doc) })),
+      rows: Arr.map(entry.rows, (row) => ({ ...row, doc: document(row.doc) })),
     })),
-    log: body.log.map((commit) => ({
+    log: Arr.map(body.log, (commit) => ({
       ...commit,
-      changes: commit.changes.map((change) => ({
+      changes: Arr.map(commit.changes, (change) => ({
         ...change,
         before: document(change.before),
         after: document(change.after),
       })),
     })),
-    files: body.files.map((file) => {
+    files: Arr.map(body.files, (file) => {
       if (refusal !== undefined) return file;
       const bytes = unredact(file.bytes as JSONValue);
       if (Result.isFailure(bytes)) {
@@ -718,7 +735,7 @@ const unredactBody = (
       }
       return { ...file, bytes: bytes.success };
     }),
-    crons: body.crons.map((cron) => ({
+    crons: Arr.map(body.crons, (cron) => ({
       ...cron,
       args: document(cron.args),
       last:
@@ -744,17 +761,20 @@ const imageOf = (body: Body, unredact: Unredact): Image => {
       byId.set(decoded._id, { doc: decoded, version });
     }
   }
-  const log = body.log.map((commit): Kernel.Commit => ({
+  const log = Arr.map(body.log, (commit): Kernel.Commit => ({
     version: commit.version,
     commitTs: BigInt(commit.commitTs),
-    changes: commit.changes.map((change) => ({
+    changes: Arr.map(commit.changes, (change) => ({
       componentPath: change.componentPath,
       id: change.id as DocumentId,
       before: decodeDocument(change.before, unredact),
       after: decodeDocument(change.after, unredact),
     })),
   }));
-  if (log.length !== body.version || log.some((c, i) => c.version !== i + 1)) {
+  if (
+    log.length !== body.version ||
+    Arr.some(log, (c, i) => c.version !== i + 1)
+  ) {
     throw new Error(
       `the write log holds ${log.length} commits for version ${body.version}`,
     );
@@ -770,7 +790,7 @@ const imageOf = (body: Body, unredact: Unredact): Image => {
     floor: body.floor ?? Number.NEGATIVE_INFINITY,
     identity: body.identity,
     jobs: new Map(
-      body.jobs.map((job) => [
+      Arr.map(body.jobs, (job) => [
         job.id as DocumentId,
         {
           functionPath: job.target,
@@ -780,7 +800,7 @@ const imageOf = (body: Body, unredact: Unredact): Image => {
       ]),
     ),
     files: new Map(
-      body.files.map((file) => [
+      Arr.map(body.files, (file) => [
         file.id as DocumentId,
         {
           componentPath: file.componentPath,
@@ -789,7 +809,7 @@ const imageOf = (body: Body, unredact: Unredact): Image => {
         },
       ]),
     ),
-    crons: body.crons.map((cron) => {
+    crons: Arr.map(body.crons, (cron) => {
       if (cron.last?.kind === "failed" && typeof cron.last.error !== "string") {
         throw new Error(
           `cron job "${cron.name}" records a failure whose text is not a string`,
@@ -816,7 +836,7 @@ export type Inconsistency =
   | KernelRefusal.SnapshotFileInconsistent;
 
 const documentText = (doc: StoredDocument | null): string =>
-  doc === null ? "null" : JSON.stringify(convexToJson(doc as Value));
+  doc === null ? "null" : Json.stringify(convexToJson(doc as Value));
 
 /**
  * The counter a kernel-minted document ID carries, or `undefined` for an ID the
@@ -824,7 +844,8 @@ const documentText = (doc: StoredDocument | null): string =>
  */
 const counterOf = (id: string): number | undefined => {
   const table = tableNameFromId(id);
-  const digits = table === null ? "" : id.slice(0, id.length - table.length);
+  const digits =
+    table === null ? "" : pipe(id, Str.slice(0, id.length - table.length));
   return /^[0-9]+$/.test(digits) ? Number(digits) : undefined;
 };
 
@@ -834,7 +855,7 @@ const fileRefusal = (
   reason: KernelRefusal.SnapshotFileInconsistent["reason"],
   detail: string,
 ) =>
-  new KernelRefusal.SnapshotFileInconsistent({
+  KernelRefusal.SnapshotFileInconsistent.make({
     componentPath,
     id,
     reason,
@@ -847,7 +868,7 @@ const rowRefusal = (
   reason: KernelRefusal.SnapshotRowInconsistent["reason"],
   detail: string,
 ) =>
-  new KernelRefusal.SnapshotRowInconsistent({
+  KernelRefusal.SnapshotRowInconsistent.make({
     componentPath,
     id,
     reason,
@@ -929,7 +950,10 @@ export const checkRows = (
   }
   for (const published of replayed.keys()) {
     if (filed.has(published)) continue;
-    const [componentPath, id] = published.split("\u0000") as [string, string];
+    const [componentPath, id] = pipe(published, Str.split("\u0000")) as [
+      string,
+      string,
+    ];
     return Result.fail(
       rowRefusal(
         componentPath,
@@ -974,7 +998,7 @@ export const checkAllocators = (
     required: number,
   ) =>
     Result.fail(
-      new KernelRefusal.SnapshotAllocatorBehind({
+      KernelRefusal.SnapshotAllocatorBehind.make({
         allocator,
         value,
         required,
@@ -1009,7 +1033,7 @@ export const checkTimestamps = (
   let previous = 0n;
   const refuse = (version: number, commitTs: bigint, detail: string) =>
     Result.fail(
-      new KernelRefusal.SnapshotTimestampInconsistent({
+      KernelRefusal.SnapshotTimestampInconsistent.make({
         version,
         commitTs: commitTs.toString(),
         message: `The snapshot's commit timestamp ${commitTs} at version ${version} ${detail}.`,
@@ -1044,7 +1068,7 @@ export const checkJobs = (
     detail: string,
   ) =>
     Result.fail(
-      new KernelRefusal.SnapshotJobInconsistent({
+      KernelRefusal.SnapshotJobInconsistent.make({
         id,
         reason,
         message: `The snapshot's job ${id} ${detail}.`,
@@ -1102,7 +1126,7 @@ export const checkFiles = (
           file.componentPath,
           id,
           "digest",
-          `holds bytes whose SHA-256 is not its row's ${JSON.stringify(row["sha256"])}`,
+          `holds bytes whose SHA-256 is not its row's ${Json.stringify(row["sha256"])}`,
         ),
       );
     if (row["size"] !== file.bytes.length)
@@ -1111,7 +1135,7 @@ export const checkFiles = (
           file.componentPath,
           id,
           "size",
-          `holds ${file.bytes.length} bytes, not its row's ${JSON.stringify(row["size"])}`,
+          `holds ${file.bytes.length} bytes, not its row's ${Json.stringify(row["size"])}`,
         ),
       );
     if (Storage.uuidCounter(file.uuid) === undefined || uuids.has(file.uuid))
@@ -1180,7 +1204,9 @@ export const decode = (
       : new TextDecoder("utf-8", { fatal: false }).decode(
           bytes.subarray(0, newline),
         );
-  const expected = head.startsWith(header) ? head.slice(header.length) : "";
+  const expected = pipe(head, Str.startsWith(header))
+    ? pipe(head, Str.slice(header.length))
+    : "";
   if (!/^[0-9a-f]{64}$/.test(expected)) {
     return Result.fail(
       malformed("header", `the first line is not \`${header}<sha256>\``),
@@ -1190,7 +1216,7 @@ export const decode = (
   const actual = digestOf(bodyBytes);
   if (actual !== expected) {
     return Result.fail(
-      new KernelRefusal.SnapshotDigestMismatch({
+      KernelRefusal.SnapshotDigestMismatch.make({
         expected,
         actual,
         message: `The snapshot's body hashes to sha256:${actual}, not the sha256:${expected} its header names. Its bytes changed after export.`,
@@ -1199,7 +1225,7 @@ export const decode = (
   }
   let json: unknown;
   try {
-    json = JSON.parse(
+    json = Json.parse(
       new TextDecoder("utf-8", { fatal: true }).decode(bodyBytes),
     );
   } catch (error) {

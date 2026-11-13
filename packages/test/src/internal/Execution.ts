@@ -23,6 +23,7 @@ import * as Result from "effect/Result";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
 import * as Crons from "./Crons.js";
+import * as Environment from "./Environment.js";
 import * as Globals from "./Globals.js";
 import * as Http from "./Http.js";
 import * as Invocation from "./Invocation.js";
@@ -36,6 +37,7 @@ import * as Scheduling from "./Scheduling.js";
 import * as Storage from "./Storage.js";
 import * as Snapshot from "./Snapshot.js";
 import type {
+  ConvexErrorDataEncoding,
   DocumentId,
   FunctionPath,
   StoredDocument,
@@ -44,18 +46,24 @@ import type {
 import {
   createFunctionHandle,
   createTestJwt,
-  deserializeConvexErrorData,
   evaluateValue,
   hasPendingValues,
   isSimpleObject,
   parseArgs,
   parseFunctionHandle,
+  receiveConvexErrorData,
   resolveCommittedValues,
   simpleHash,
   tableNameFromId,
   validateFunctionArgs,
   validateReturnValue,
 } from "./KernelValues.js";
+import * as Option from "effect/Option";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Json from "./Json.js";
 
 const ROOT = "";
 
@@ -69,7 +77,9 @@ export const SINK = "~sink";
  * Answers a call to a handle under {@link SINK}, in place of a registered
  * function: `slot` is the udf path the handle names, and `caller` the function
  * that called it, or `undefined` for a scheduled job. The answer is the call's
- * encoded return, or a rejection the caller receives as the function's.
+ * encoded return, or a rejection shaped as a function's thrown error leaves it,
+ * a `ConvexError`'s data serialized to JSON text, which the caller receives as
+ * a nested call's error.
  */
 export type Sink = (command: {
   readonly slot: string;
@@ -184,7 +194,7 @@ export const withIdentity = (
   caller: Caller,
   identity: Partial<UserIdentity>,
 ): Caller => {
-  const subject = identity.subject ?? "" + simpleHash(JSON.stringify(identity));
+  const subject = identity.subject ?? "" + simpleHash(Json.stringify(identity));
   const issuer = identity.issuer ?? "https://convex.test";
   const tokenIdentifier = identity.tokenIdentifier ?? `${issuer}|${subject}`;
   const full = { ...identity, subject, issuer, tokenIdentifier };
@@ -377,10 +387,13 @@ const executions = new AsyncLocalStorage<Execution>();
 
 /**
  * Run a function's code as `execution`, with its own copy of the globals a test
- * invocation pins.
+ * invocation pins. A test that fakes `Date` after the backend opened replaced
+ * the kernel's wrapper, so each function wraps the realm's `Date` again, as it
+ * installs `globalThis.Convex` again.
  */
 const enter = <A>(execution: Execution, run: () => A): A => {
   installConvexGlobal();
+  installDate();
   return Globals.own(() => executions.run(execution, run));
 };
 const kernelBrand = Symbol.for("@confect/test/Kernel");
@@ -398,6 +411,9 @@ const pinnedTime = (): number | undefined => {
   return execution.startTime;
 };
 
+const installDate = () =>
+  Clock.install(pinnedTime, () => executions.getStore() !== undefined);
+
 /**
  * How many jobs one drain or advance runs before it gives up, as convex-test's
  * `finishAllScheduledFunctions` defaults to.
@@ -408,8 +424,8 @@ const unresolvedWorld = (
   name: string,
   reason: "missing" | "ambiguous",
 ): KernelRefusal.SnapshotWorldUnresolved =>
-  new KernelRefusal.SnapshotWorldUnresolved({
-    name,
+  KernelRefusal.SnapshotWorldUnresolved.make({
+    worldName: name,
     reason,
     message:
       reason === "missing"
@@ -431,7 +447,7 @@ const running = (
   count: number,
   what: string,
 ) =>
-  new KernelRefusal.SnapshotWorldRunning({
+  KernelRefusal.SnapshotWorldRunning.make({
     registry,
     count,
     message: `The test backend is running ${count} ${what}, whose effects a snapshot would split. Await them first.`,
@@ -466,7 +482,9 @@ const jobRequest = (jobId: DocumentId): Request => ({
 });
 
 const findModulesRoot = (paths: ReadonlyArray<string>): string => {
-  const generated = paths.find((path) => path.includes("_generated"));
+  const generated = Option.getOrUndefined(
+    Arr.findFirst(paths, (path) => pipe(path, Str.includes("_generated"))),
+  );
   if (generated === undefined) {
     throw new Error(
       'Could not find the "_generated" directory, make sure to run ' +
@@ -474,7 +492,7 @@ const findModulesRoot = (paths: ReadonlyArray<string>): string => {
         '`import.meta.glob` includes the files in the "_generated" directory',
     );
   }
-  return generated.split("_generated", 2)[0]!;
+  return pipe(generated, Str.split("_generated"))[0];
 };
 
 const makeComponent = (
@@ -483,25 +501,36 @@ const makeComponent = (
   modules: Modules,
   standing: ReadonlyArray<string> = [],
 ): Component => {
-  const root = findModulesRoot(Object.keys(modules));
-  const relative = Object.entries(modules)
-    .filter(([key]) => key.startsWith(root))
-    .map(([key, load]) => [key.slice(root.length), load] as const);
-  const nested = relative
-    .map(([file]) => file)
-    .filter((file) => file.endsWith("/convex.config.ts"))
-    .map((file) => file.slice(0, -"convex.config.ts".length));
+  const root = findModulesRoot(Rec.keys(modules));
+  const relative = pipe(
+    Rec.toEntries(modules),
+    Arr.filter(([key]) => pipe(key, Str.startsWith(root))),
+    Arr.map(
+      ([key, load]) => [pipe(key, Str.slice(root.length)), load] as const,
+    ),
+  );
+  const nested = pipe(
+    relative,
+    Arr.map(([file]) => file),
+    Arr.filter((file) => pipe(file, Str.endsWith("/convex.config.ts"))),
+    Arr.map((file) => pipe(file, Str.slice(0, -"convex.config.ts".length))),
+  );
   return {
     path,
     schema: KernelQuery.exportSchema(schema),
     loaders: new Map(
-      relative
-        .filter(
+      pipe(
+        relative,
+        Arr.filter(
           ([file]) =>
             isFunctionModule(file) &&
-            !nested.some((dir) => file.startsWith(dir)),
-        )
-        .map(([file, load]) => [file.replace(/\.[^.]+$/, ""), load]),
+            !Arr.some(nested, (dir) => pipe(file, Str.startsWith(dir))),
+        ),
+        Arr.map(([file, load]) => [
+          pipe(file, Str.replace(/\.[^.]+$/, "")),
+          load,
+        ]),
+      ),
     ),
     loaded: new Map(),
     standing: new Set(standing),
@@ -526,26 +555,39 @@ const entryExtensions = [
  * neither loads them nor resolves a function in them.
  */
 const isFunctionModule = (file: string): boolean => {
-  const base = file.split("/").pop()!;
+  const base = pipe(file, Str.split("/")).pop()!;
   return (
-    entryExtensions.some((extension) => file.endsWith(extension)) &&
-    !file.startsWith("_generated/") &&
-    !base.startsWith(".") &&
-    !base.startsWith("#") &&
+    Arr.some(entryExtensions, (extension) =>
+      pipe(file, Str.endsWith(extension)),
+    ) &&
+    !pipe(file, Str.startsWith("_generated/")) &&
+    !pipe(base, Str.startsWith(".")) &&
+    !pipe(base, Str.startsWith("#")) &&
     base !== "schema.ts" &&
     base !== "schema.js" &&
-    (base.match(/\./g) ?? []).length <= 1 &&
-    !file.includes(" ")
+    pipe(
+      base,
+      Str.match(/\./g),
+      Option.match({ onNone: () => 0, onSome: (dots) => dots.length }),
+    ) <= 1 &&
+    !pipe(file, Str.includes(" "))
   );
 };
 
 const unregistered = (world: World, componentPath: string) => {
-  const registered = [...world.components.keys()].filter((p) => p !== ROOT);
+  const registered = Arr.filter(
+    [...world.components.keys()],
+    (p) => p !== ROOT,
+  );
   return new Error(
     `Component "${componentPath}" is not registered on this test backend. ` +
       (registered.length === 0
         ? "No components have been registered."
-        : `Registered components: ${registered.map((p) => `"${p}"`).join(", ")}.`),
+        : `Registered components: ${pipe(
+            registered,
+            Arr.map((p) => `"${p}"`),
+            Arr.join(", "),
+          )}.`),
   );
 };
 
@@ -570,12 +612,12 @@ const functionPathOf = (
   }
   if (address.reference !== undefined) {
     // "_reference/childComponent/<child>/path/to/file/fn"
-    const parts = address.reference.split("/");
+    const parts = pipe(address.reference, Str.split("/"));
     const child = parts[2]!;
     const rest = parts.slice(3);
     return {
       componentPath: from.length > 0 ? `${from}/${child}` : child,
-      udfPath: `${rest.slice(0, -1).join("/")}:${rest[rest.length - 1]}`,
+      udfPath: `${Arr.join(rest.slice(0, -1), "/")}:${rest[rest.length - 1]}`,
     };
   }
   throw new Error("Function address not supported");
@@ -661,7 +703,7 @@ export class World {
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
     modules: Modules,
     private readonly runtime: Kernel.KernelRuntime = Kernel.wallClock(),
-    private readonly redaction: Redaction.Policy = Redaction.none,
+    private redaction: Redaction.Policy = Redaction.none,
     /**
      * The world the driver gives the backend itself, which a backend opened
      * with no invocation bound declares its cron jobs in.
@@ -674,18 +716,29 @@ export class World {
     private readonly sink?: Sink,
   ) {
     installConvexGlobal();
-    Clock.install(pinnedTime, () => executions.getStore() !== undefined);
+    installDate();
+    Environment.install(() => {
+      const execution = executions.getStore();
+      return execution?.world.environments.get(execution.componentPath);
+    });
     this.components.set(ROOT, makeComponent(ROOT, schema, modules));
   }
+
+  /**
+   * The environment each component's mount binds, by component path. A
+   * component's functions read only theirs, as on Convex.
+   */
+  readonly environments = new Map<string, Readonly<Record<string, string>>>();
 
   register(
     componentPath: string,
     schema: SchemaDefinition<GenericSchema, boolean>,
     modules: Modules,
     standing: ReadonlyArray<string> = [],
+    secrets?: Redaction.Declared,
   ) {
     if (this.opened !== undefined) {
-      throw new KernelRefusal.RegisteredAfterOpen({
+      throw KernelRefusal.RegisteredAfterOpen.make({
         componentPath,
         message: `Component "${componentPath}" was registered after the test backend opened. Register every component before the first call.`,
       });
@@ -694,6 +747,32 @@ export class World {
       componentPath,
       makeComponent(componentPath, schema, modules, standing),
     );
+    if (secrets !== undefined)
+      this.redaction = Redaction.extend(
+        this.redaction,
+        Redaction.qualify(secrets, componentPath),
+      );
+  }
+
+  /**
+   * Give a component the environment its mount binds, before the backend opens.
+   */
+  setEnvironment(componentPath: string, env: Readonly<Record<string, string>>) {
+    if (this.opened !== undefined) {
+      throw KernelRefusal.RegisteredAfterOpen.make({
+        componentPath,
+        message: `Component "${componentPath}"'s environment was set after the test backend opened. Set every environment before the first call.`,
+      });
+    }
+    this.environments.set(componentPath, env);
+  }
+
+  /**
+   * Whether a component registered the module at `modulePath`, without its
+   * extension.
+   */
+  hasModule(componentPath: string, modulePath: string): boolean {
+    return this.components.get(componentPath)?.loaders.has(modulePath) ?? false;
   }
 
   /**
@@ -749,9 +828,9 @@ export class World {
       const module = component.loaded.get("crons");
       if (module === undefined) continue;
       const refuse = (message: string) =>
-        new KernelRefusal.InvalidCron({
+        KernelRefusal.InvalidCron.make({
           componentPath: component.path,
-          name: "",
+          cronName: "",
           message,
         });
       if (!("default" in module)) {
@@ -765,8 +844,8 @@ export class World {
           "The default export of `convex/crons.js` is not a Crons object.",
         );
       }
-      const exported = JSON.parse(declared.export()) as Record<string, unknown>;
-      for (const name of Object.keys(exported).sort()) {
+      const exported = Json.parse(declared.export()) as Record<string, unknown>;
+      for (const name of Rec.keys(exported).sort()) {
         const parsed = Crons.parseSpec(component.path, name, exported[name]);
         if (Result.isFailure(parsed)) throw parsed.failure;
         this.checkCronTarget(component, parsed.success);
@@ -790,9 +869,9 @@ export class World {
     const scheduled = new Map<string, CronJob>();
     for (const { componentPath, spec } of this.declared) {
       if (spec.schedule.kind !== "interval" && world === undefined) {
-        throw new KernelRefusal.CronRandomUnavailable({
+        throw KernelRefusal.CronRandomUnavailable.make({
           componentPath,
-          name: spec.name,
+          cronName: spec.name,
           message: `Cron job "${spec.name}" runs on a ${spec.schedule.kind} schedule, which Convex delays by a random number of seconds, and no test world was bound when the backend opened to draw it from. The kernel holds no generator. Open the backend under a bound invocation, whose world's random stream the delay draws from.`,
         });
       }
@@ -821,12 +900,15 @@ export class World {
    * Refuse a cron job whose function is missing or is no mutation or action.
    */
   private checkCronTarget(component: Component, spec: Crons.Spec) {
-    const [modulePath, exportName = "default"] = spec.udfPath.split(":");
+    const [modulePath, exportName = "default"] = pipe(
+      spec.udfPath,
+      Str.split(":"),
+    );
     const func = component.loaded.get(modulePath!)?.[exportName];
     const refuse = (reason: string) =>
-      new KernelRefusal.InvalidCron({
+      KernelRefusal.InvalidCron.make({
         componentPath: component.path,
-        name: spec.name,
+        cronName: spec.name,
         message: `The cron job '${spec.name}' ${reason}: ${spec.udfPath}`,
       });
     if (func === undefined) {
@@ -867,9 +949,9 @@ export class World {
     const { name, schedule } = cron.spec;
     const expression = schedule.kind === "cron" ? schedule.expression : name;
     throw result.failure._tag === "BinaryAborts"
-      ? new KernelRefusal.CronAbortsBinary({
+      ? KernelRefusal.CronAbortsBinary.make({
           componentPath: cron.componentPath,
-          name,
+          cronName: name,
           date: result.failure.date,
           message: `Cron job "${name}" searches "${expression}" from ${result.failure.date}, a Monday, where saffron subtracts below zero (saffron/src/lib.rs:663). The Convex binary is built with overflow checks and aborts there, so the kernel refuses rather than answer.`,
         })
@@ -884,12 +966,12 @@ export class World {
   private checkStanding() {
     for (const component of this.components.values()) {
       for (const name of component.standing) {
-        const [modulePath, exportName = "default"] = name.split(":");
+        const [modulePath, exportName = "default"] = pipe(name, Str.split(":"));
         const func = component.loaded.get(modulePath!)?.[exportName];
         if (func?.isMutation !== true && func?.isAction !== true) {
-          throw new KernelRefusal.UnknownStandingSource({
+          throw KernelRefusal.UnknownStandingSource.make({
             componentPath: component.path,
-            name,
+            functionName: name,
             message: `Component "${component.path}" declares "${name}" standing, but exports no mutation or action by that name. Name the self-rescheduling function as module:export.`,
           });
         }
@@ -912,10 +994,10 @@ export class World {
   }
 
   private resolve(functionPath: FunctionPath, kind: UdfType | "any"): Resolved {
-    const [modulePath, maybeExport] = functionPath.udfPath.split(":") as [
-      string,
-      string | undefined,
-    ];
+    const [modulePath, maybeExport] = pipe(
+      functionPath.udfPath,
+      Str.split(":"),
+    ) as [string, string | undefined];
     const exportName = maybeExport ?? "default";
     const component = this.component(functionPath.componentPath);
     const module = component.loaded.get(modulePath);
@@ -934,26 +1016,26 @@ export class World {
         `Expected a Convex function exported from module "${modulePath}" as \`${exportName}\`, but got: ${func}`,
       );
     }
-    if (kind !== "any" && !func[kindCheck[kind]]) {
+    if (kind !== "any" && func[kindCheck[kind]] !== true) {
       throw new Error(
         `Expected a ${kind} function, but the function exported from module "${modulePath}" as \`${exportName}\` is not a ${kind}.`,
       );
     }
-    const args = JSON.parse(func.exportArgs()) as ValidatorJSON;
+    const args = Json.parse(func.exportArgs()) as ValidatorJSON;
     if (args.type !== "object" && args.type !== "any") {
       throw new Error(
         `Invalid JSON returned from ${modulePath}.js:${exportName}.exportArgs(): ` +
           `Args validator must be an object or any`,
       );
     }
-    return { func, handler, args, returns: JSON.parse(func.exportReturns()) };
+    return { func, handler, args, returns: Json.parse(func.exportReturns()) };
   }
 
   // Calls from the test.
 
   query(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         const from = { caller, request: newRequest(caller) };
         return typeof reference === "function"
           ? this.runQuery(
@@ -963,13 +1045,13 @@ export class World {
               from,
             )
           : this.queryAt(pathOfReference(reference, ROOT), args, from);
-      });
-    });
+      }),
+    );
   }
 
   mutation(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         const from = { caller, request: newRequest(caller) };
         return typeof reference === "function"
           ? this.runMutation(
@@ -979,13 +1061,13 @@ export class World {
               from,
             )
           : this.mutationAt(pathOfReference(reference, ROOT), args, from);
-      });
-    });
+      }),
+    );
   }
 
   action(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         const from = { caller, request: newRequest(caller) };
         return typeof reference === "function"
           ? this.runAction(
@@ -995,8 +1077,8 @@ export class World {
               from,
             )
           : this.actionAt(pathOfReference(reference, ROOT), args, from);
-      });
-    });
+      }),
+    );
   }
 
   run(
@@ -1004,8 +1086,8 @@ export class World {
     componentPath: string,
     handler: (ctx: any) => any,
   ): Promise<any> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         this.component(componentPath);
         return this.runMutation(
           { componentPath, udfPath: "custom" },
@@ -1013,8 +1095,8 @@ export class World {
           {},
           { caller, request: newRequest(caller) },
         );
-      });
-    });
+      }),
+    );
   }
 
   /**
@@ -1098,8 +1180,8 @@ export class World {
    * Run a mutation to its commit point and hold it as attempt 1.
    */
   prepare(caller: Caller, reference: any, args: any): Promise<HeldAttempt> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         const functionPath = pathOfReference(reference, ROOT);
         const resolved = this.resolve(functionPath, "mutation");
         this.keepArgs(functionPath, args);
@@ -1112,8 +1194,8 @@ export class World {
           1,
           Invocation.current(),
         ).then((held) => held.view);
-      });
-    });
+      }),
+    );
   }
 
   apply(id: string): Promise<KernelApply> {
@@ -1121,7 +1203,7 @@ export class World {
       const held = this.holding.get(id);
       return held === undefined
         ? Promise.reject(
-            new KernelRefusal.StaleAttempt({
+            KernelRefusal.StaleAttempt.make({
               id,
               message: `The test kernel holds no attempt "${id}". It was already applied, or never prepared.`,
             }),
@@ -1151,8 +1233,8 @@ export class World {
     args: any,
     pinned: { readonly time?: number; readonly journal: string | null },
   ): Promise<QueryRun> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         const functionPath = pathOfReference(reference, ROOT);
         const resolved = this.resolve(functionPath, "query");
         this.keepArgs(functionPath, args);
@@ -1181,8 +1263,8 @@ export class World {
           (value: Value) => run({ _tag: "returned", value }),
           (error: unknown) => run({ _tag: "failed", error }),
         );
-      });
-    });
+      }),
+    );
   }
 
   /**
@@ -1392,16 +1474,24 @@ export class World {
     if (Result.isFailure(checked)) throw checked.failure;
     const registered = [...this.components.keys()].sort();
     const snapshot = [...image.components].sort();
-    if (registered.join("\u0000") !== snapshot.join("\u0000")) {
-      throw new KernelRefusal.SnapshotComponentMismatch({
+    if (Arr.join(registered, "\u0000") !== Arr.join(snapshot, "\u0000")) {
+      throw KernelRefusal.SnapshotComponentMismatch.make({
         snapshot,
         registered,
-        message: `The snapshot holds components ${snapshot.map((p) => `"${p}"`).join(", ")}, but this test backend registers ${registered.map((p) => `"${p}"`).join(", ")}. Register the same components before restoring.`,
+        message: `The snapshot holds components ${pipe(
+          snapshot,
+          Arr.map((p) => `"${p}"`),
+          Arr.join(", "),
+        )}, but this test backend registers ${pipe(
+          registered,
+          Arr.map((p) => `"${p}"`),
+          Arr.join(", "),
+        )}. Register the same components before restoring.`,
       });
     }
     for (const [id, { functionPath }] of image.jobs) {
       if (!this.exports(functionPath)) {
-        throw new KernelRefusal.SnapshotJobInconsistent({
+        throw KernelRefusal.SnapshotJobInconsistent.make({
           id,
           reason: "function",
           message: `The snapshot's job ${id} targets ${functionPath.udfPath} in "${functionPath.componentPath}", which that component does not export.`,
@@ -1411,7 +1501,7 @@ export class World {
     const byName = new Map<string, Invocation.World>();
     for (const world of this.own === undefined
       ? worlds
-      : [...worlds.filter((w) => w.name !== this.own!.name), this.own]) {
+      : [...Arr.filter(worlds, (w) => w.name !== this.own!.name), this.own]) {
       if ((byName.get(world.name) ?? world) !== world) {
         throw unresolvedWorld(world.name, "ambiguous");
       }
@@ -1465,7 +1555,7 @@ export class World {
     byName: ReadonlyMap<string, Invocation.World>,
   ): Map<string, CronJob> {
     const declared = new Map(
-      this.declared.map((declaration) => [
+      Arr.map(this.declared, (declaration) => [
         cronKey(declaration.componentPath, declaration.spec.name),
         declaration,
       ]),
@@ -1476,9 +1566,9 @@ export class World {
       reason: KernelRefusal.SnapshotCronMismatch["reason"],
       detail: string,
     ) =>
-      new KernelRefusal.SnapshotCronMismatch({
+      KernelRefusal.SnapshotCronMismatch.make({
         componentPath,
-        name,
+        cronName: name,
         reason,
         message: `The snapshot's cron job "${name}" of component "${componentPath}" ${detail}. Restore into an app that declares the same cron jobs.`,
       });
@@ -1502,8 +1592,8 @@ export class World {
       };
       const ours = declarationJson(job, (json) => json);
       if (
-        JSON.stringify(ours) !==
-        JSON.stringify({
+        Json.stringify(ours) !==
+        Json.stringify({
           name: image.name,
           udfPath: image.udfPath,
           args: image.args,
@@ -1525,9 +1615,9 @@ export class World {
         declaration.spec.schedule.kind !== "interval" &&
         world === undefined
       ) {
-        throw new KernelRefusal.CronRandomUnavailable({
+        throw KernelRefusal.CronRandomUnavailable.make({
           componentPath: image.componentPath,
-          name: image.name,
+          cronName: image.name,
           message: `The snapshot's cron job "${image.name}" runs on a ${declaration.spec.schedule.kind} schedule but names no test world to draw its delays from.`,
         });
       }
@@ -1561,7 +1651,7 @@ export class World {
    * Whether `functionPath`'s component exports a Convex function there.
    */
   private exports({ componentPath, udfPath }: FunctionPath): boolean {
-    const [modulePath, exportName = "default"] = udfPath.split(":");
+    const [modulePath, exportName = "default"] = pipe(udfPath, Str.split(":"));
     const func = this.components.get(componentPath)?.loaded.get(modulePath!)?.[
       exportName
     ];
@@ -1592,25 +1682,25 @@ export class World {
         ),
       held: () => {
         const held = [...this.holding.keys()];
-        return new KernelRefusal.SnapshotWorldBusy({
+        return KernelRefusal.SnapshotWorldBusy.make({
           version,
           held,
-          message: `The test backend holds attempts ${held.join(", ")}, which a snapshot does not carry. Apply them first.`,
+          message: `The test backend holds attempts ${Arr.join(held, ", ")}, which a snapshot does not carry. Apply them first.`,
         });
       },
       subscribers: (count) =>
-        new KernelRefusal.SnapshotSubscribed({
+        KernelRefusal.SnapshotSubscribed.make({
           subscribers: count,
           message: `The test backend has ${count} subscribers, whose identity versions a restore would rewind. Restore into a test backend no client has subscribed to.`,
         }),
     };
-    for (const key of Object.keys(refusals) as Array<keyof typeof counts>) {
+    for (const key of Rec.keys(refusals) as Array<keyof typeof counts>) {
       const { blocks } = Snapshot.contract.live[key];
       if (operation === "export" && blocks === "restore") continue;
       if (counts[key] > 0) throw refusals[key](counts[key]);
     }
     if (operation === "restore" && version !== 0) {
-      throw new KernelRefusal.SnapshotWorldBusy({
+      throw KernelRefusal.SnapshotWorldBusy.make({
         version,
         held: [],
         message: `The test backend has committed ${version} versions of its own. Restore a snapshot into a fresh test backend.`,
@@ -1624,7 +1714,8 @@ export class World {
    * The committed pending jobs, earliest deadline first.
    */
   jobs(): ReadonlyArray<Scheduling.Job> {
-    return Scheduling.pending(this.state, this.targets).map(
+    return Arr.map(
+      Scheduling.pending(this.state, this.targets),
       ({ id, componentPath, name, scheduledTime, standing }) => ({
         id,
         componentPath,
@@ -1639,7 +1730,8 @@ export class World {
    * The declared cron jobs, earliest next run first.
    */
   crons(): ReadonlyArray<Cron> {
-    return this.cronsByNextRun().map(
+    return Arr.map(
+      this.cronsByNextRun(),
       ({ componentPath, spec, nextRun, last }) => ({
         componentPath,
         name: spec.name,
@@ -1672,16 +1764,16 @@ export class World {
    * each one moves its job's next run later.
    */
   advance(ms: number, budget = defaultBudget): Promise<void> {
-    return this.track("walks", () => {
-      return this.openIn(this.own).then(() => {
+    return this.track("walks", () =>
+      this.openIn(this.own).then(() => {
         const until = this.now() + ms;
         return this.walk(
-          (pending) => pending.filter((job) => job.scheduledTime <= until),
+          (pending) => Arr.filter(pending, (job) => job.scheduledTime <= until),
           budget,
           until,
         ).then(() => this.raiseFloor(until));
-      });
-    });
+      }),
+    );
   }
 
   /**
@@ -1689,11 +1781,14 @@ export class World {
    * standing jobs are pending. Every job run counts against `budget`.
    */
   drain(budget = defaultBudget): Promise<void> {
-    return this.track("walks", () => {
-      return this.openIn(this.own).then(() =>
-        this.walk((pending) => pending.filter((job) => !job.standing), budget),
-      );
-    });
+    return this.track("walks", () =>
+      this.openIn(this.own).then(() =>
+        this.walk(
+          (pending) => Arr.filter(pending, (job) => !job.standing),
+          budget,
+        ),
+      ),
+    );
   }
 
   /**
@@ -1714,7 +1809,12 @@ export class World {
       const cron =
         cronsUntil === undefined
           ? undefined
-          : this.cronsByNextRun().find(({ nextRun }) => nextRun <= cronsUntil);
+          : Option.getOrUndefined(
+              Arr.findFirst(
+                this.cronsByNextRun(),
+                ({ nextRun }) => nextRun <= cronsUntil,
+              ),
+            );
       if (
         cron !== undefined &&
         (next === undefined || cron.nextRun < next.scheduledTime)
@@ -1726,16 +1826,16 @@ export class World {
       if (ran === budget) {
         const pending = Scheduling.functions(left);
         return Promise.reject(
-          new KernelRefusal.DrainBudgetExceeded({
+          KernelRefusal.DrainBudgetExceeded.make({
             budget,
             pending,
-            message: `Scheduled functions ran ${budget} jobs and work remains: ${pending
-              .map(({ componentPath, name }) =>
+            message: `Scheduled functions ran ${budget} jobs and work remains: ${pipe(
+              pending,
+              Arr.map(({ componentPath, name }) =>
                 componentPath === ROOT ? name : `${name} in "${componentPath}"`,
-              )
-              .join(
-                ", ",
-              )}. A function that schedules its own next run never lets the drain end, so its kit declares it with registerComponent's \`standing\` option.`,
+              ),
+              Arr.join(", "),
+            )}. A function that schedules its own next run never lets the drain end, so its kit declares it with registerComponent's \`standing\` option.`,
           }),
         );
       }
@@ -1763,7 +1863,7 @@ export class World {
     };
     const run = () =>
       Promise.resolve().then(() =>
-        this.resolve(target, "any").func.isMutation
+        this.resolve(target, "any").func.isMutation === true
           ? this.mutationAt(target, cron.spec.args, from)
           : this.actionAt(target, cron.spec.args, from),
       );
@@ -1844,9 +1944,9 @@ export class World {
         const sunk = this.sunk(job.target, job.args, from);
         if (sunk !== undefined) return sunk;
         const { func } = this.resolve(job.target, "any");
-        return func.isQuery
+        return func.isQuery === true
           ? this.queryAt(job.target, job.args, from)
-          : func.isMutation
+          : func.isMutation === true
             ? this.mutationAt(job.target, job.args, from)
             : this.actionAt(job.target, job.args, from);
       });
@@ -1900,7 +2000,7 @@ export class World {
     if (writes.length === 0) return this.state.commitTs;
     const commitTs = this.runtime.commitTs(this.state.version + 1);
     if (commitTs <= this.state.commitTs) {
-      throw new KernelRefusal.CommitTsNotIncreasing({
+      throw KernelRefusal.CommitTsNotIncreasing.make({
         version: this.state.version + 1,
         previous: this.state.commitTs,
         commitTs,
@@ -2015,11 +2115,13 @@ export class World {
             componentPath: from.parent.componentPath,
             functionName: from.parent.udfPath,
           };
-    // A rejection carries a declared error's data as Convex JSON, which the
-    // caller's syscall reads back with `jsonToConvex` (convex 1.49,
-    // `src/server/impl/syscall.ts:46-51`), as a function's thrown error is
-    // serialized to it (`src/server/impl/registration_impl.ts:112-127`).
-    return this.sink({ slot: functionPath.udfPath, args, caller });
+    // The sink rejects as a function's thrown error leaves it, with its data
+    // serialized, and the caller receives it as a nested call's error.
+    return this.sink({ slot: functionPath.udfPath, args, caller }).catch(
+      (error: unknown) => {
+        throw receiveConvexErrorData(error, convexErrorDataFor(from));
+      },
+    );
   }
 
   private queryAt(
@@ -2151,11 +2253,11 @@ export class World {
           resolved.handler({ ...ctx, auth: queryAuth(execution) }, a),
       }) as unknown as { invokeQuery: (args: string) => Promise<string> };
       return enter(execution, () =>
-        q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
+        q.invokeQuery(Json.stringify(convexToJson([parseArgs(args)]))),
       )
         .then((raw) => settled(execution, raw))
         .then((raw) => {
-          const result = jsonToConvex(JSON.parse(raw));
+          const result = jsonToConvex(Json.parse(raw));
           if (!isNested && hasPendingValues(result)) {
             throw new Error(
               `Function ${functionPath.udfPath} return value invalid: queries ` +
@@ -2167,7 +2269,7 @@ export class World {
           return result;
         })
         .catch((error: unknown) => {
-          throw deserializeConvexErrorData(error);
+          throw receiveConvexErrorData(error, convexErrorDataFor(from));
         });
     });
   }
@@ -2182,11 +2284,11 @@ export class World {
         resolved.handler({ ...ctx, auth: mutationAuth(execution) }, a),
     }) as unknown as { invokeMutation: (args: string) => Promise<string> };
     return enter(execution, () =>
-      m.invokeMutation(JSON.stringify(convexToJson([parseArgs(args)]))),
+      m.invokeMutation(Json.stringify(convexToJson([parseArgs(args)]))),
     )
       .then((raw) => settled(execution, raw))
       .then((raw) => {
-        const result = jsonToConvex(JSON.parse(raw));
+        const result = jsonToConvex(Json.parse(raw));
         const functionPath = {
           componentPath: execution.componentPath,
           udfPath: execution.udfPath,
@@ -2228,7 +2330,7 @@ export class World {
             }),
           (error: unknown) => {
             frame.close();
-            throw deserializeConvexErrorData(error);
+            throw receiveConvexErrorData(error, convexErrorDataFor(from));
           },
         );
       }
@@ -2280,7 +2382,7 @@ export class World {
               .then((): Outcome => ({ _tag: "returned", value })),
           (error: unknown): Outcome => ({
             _tag: "failed",
-            error: deserializeConvexErrorData(error),
+            error: receiveConvexErrorData(error, convexErrorDataFor(from)),
           }),
         )
         .then((outcome) => {
@@ -2346,7 +2448,7 @@ export class World {
       if (view.number === lastAttempt) {
         return Promise.resolve({
           kind: "exhausted",
-          error: new KernelRefusal.OptimisticConcurrencyControlFailure({
+          error: KernelRefusal.OptimisticConcurrencyControlFailure.make({
             attempts: lastAttempt,
             message: `Documents read by the mutation changed before each of its ${lastAttempt} attempts could commit.`,
           }),
@@ -2435,7 +2537,7 @@ export class World {
         enter(execution, () =>
           a.invokeAction(
             from.request.requestId,
-            JSON.stringify(convexToJson([parseArgs(args)])),
+            Json.stringify(convexToJson([parseArgs(args)])),
           ),
         );
       // An action another function calls is an invocation of its own, with its
@@ -2456,13 +2558,13 @@ export class World {
             );
       return started
         .then((raw) => {
-          const result = jsonToConvex(JSON.parse(raw));
+          const result = jsonToConvex(Json.parse(raw));
           this.keepReturns(functionPath, result);
           validateReturnValue(resolved.returns, result, "action", functionPath);
           return result;
         })
         .catch((error: unknown) => {
-          throw deserializeConvexErrorData(error);
+          throw receiveConvexErrorData(error, convexErrorDataFor(from));
         });
     });
   }
@@ -2592,12 +2694,12 @@ export class World {
   projectReads(
     reads: ReadonlyArray<ReadSet.Read>,
   ): ReadonlyArray<ReadSet.Read> {
-    return reads.map((read) => {
+    return Arr.map(reads, (read) => {
       if (read.kind === "document") return read;
       const shape = this.redaction.table(read.componentPath, read.table);
       const sensitive = (fieldPath: string) =>
         shape !== undefined &&
-        Redaction.sensitiveAt(shape, fieldPath.split("."));
+        Redaction.sensitiveAt(shape, pipe(fieldPath, Str.split(".")));
       const value = (fieldPath: string, v: Value): Value =>
         sensitive(fieldPath)
           ? Redaction.marker
@@ -2605,12 +2707,12 @@ export class World {
       const key = (k: ReadSet.Key | null) =>
         k === null
           ? null
-          : k.map((v, i) =>
+          : Arr.map(k, (v, i) =>
               v === undefined ? undefined : value(read.fields[i] ?? "", v),
             );
       return {
         ...read,
-        range: read.range.map((bound) => ({
+        range: Arr.map(read.range, (bound) => ({
           ...bound,
           value: sensitive(bound.fieldPath)
             ? Redaction.marker
@@ -2773,9 +2875,9 @@ export class World {
   }
 
   private generateId(table: string): DocumentId {
-    const counter = String(this.nextDocId++).padStart(
-      TYPICAL_CONVEX_ID_LENGTH - table.length,
-      "0",
+    const counter = pipe(
+      String(this.nextDocId++),
+      Str.padStart(TYPICAL_CONVEX_ID_LENGTH - table.length, "0"),
     );
     return (counter + table) as DocumentId;
   }
@@ -2794,11 +2896,11 @@ export class World {
     jsonArgs: string,
     execution: Execution,
   ): string {
-    const args = JSON.parse(jsonArgs);
+    const args = Json.parse(jsonArgs);
     if (execution.attempt?.closed === true) throw closed(execution, op);
     switch (op) {
       case "1.0/getSnapshotTs":
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson(transaction(execution).snapshot.commitTs),
         );
       case "1.0/queryStream": {
@@ -2811,14 +2913,14 @@ export class World {
         this.queries.set(queryId, {
           next: () => (results ??= KernelQuery.stream(view, args.query)).next(),
         });
-        return JSON.stringify({ queryId });
+        return Json.stringify({ queryId });
       }
       case "1.0/queryCleanup":
         this.queries.delete(args.queryId);
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/db/normalizeId": {
         const tableName = tableNameFromId(args.idString);
-        return JSON.stringify({
+        return Json.stringify({
           id: tableName === args.table ? args.idString : null,
         });
       }
@@ -2855,7 +2957,7 @@ export class World {
     const attempt = execution.attempt;
     if (attempt === undefined) {
       return Promise.resolve().then(() =>
-        this.dispatchAsync(op, JSON.parse(jsonArgs), execution),
+        this.dispatchAsync(op, Json.parse(jsonArgs), execution),
       );
     }
     if (attempt.closed) return Promise.reject(closed(execution, op));
@@ -2863,7 +2965,7 @@ export class World {
     // queued, so a frame never closes with a write still waiting its turn.
     const end = attempt.begin();
     return execution.turn
-      .take(() => this.dispatchAsync(op, JSON.parse(jsonArgs), execution))
+      .take(() => this.dispatchAsync(op, Json.parse(jsonArgs), execution))
       .finally(end);
   }
 
@@ -2875,21 +2977,23 @@ export class World {
     switch (op) {
       case "1.0/get": {
         const { table, id } = args;
-        return JSON.stringify(convexToJson(this.get(execution, table, id)));
+        return Json.stringify(convexToJson(this.get(execution, table, id)));
       }
       case "1.0/queryStreamNext": {
         const results = this.queries.get(args.queryId);
         if (results === undefined) throw new Error("Bad queryId");
         const { value, done } = results.next();
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson(
-            done ? { value: null, done: true } : { value, done: false },
+            done === true
+              ? { value: null, done: true }
+              : { value, done: false },
           ),
         );
       }
       case "1.0/queryPage": {
         const pagination = execution.pagination;
-        if (pagination) {
+        if (pagination !== undefined) {
           pagination.calls += 1;
           if (pagination.calls > 1) {
             throw new Error(
@@ -2903,22 +3007,22 @@ export class World {
           ...args,
           endCursor: args.endCursor ?? pagination?.journal ?? null,
         });
-        if (pagination) pagination.end = page.continueCursor;
-        return JSON.stringify(convexToJson(page as any));
+        if (pagination !== undefined) pagination.end = page.continueCursor;
+        return Json.stringify(convexToJson(page as any));
       }
       case "1.0/insert":
-        return JSON.stringify({
+        return Json.stringify({
           _id: this.insert(execution, args.table, jsonToConvex(args.value)),
         });
       case "1.0/shallowMerge":
         this.patch(execution, args.table, args.id, args.value);
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/replace":
         this.replace(execution, args.table, args.id, args.value);
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/remove":
         this.remove(execution, args.table, args.id);
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/count": {
         const attempt = transaction(execution);
         // The binary counts a table by reading its whole `by_id` index, and no
@@ -2939,12 +3043,12 @@ export class World {
           range: [],
           after: null,
         })("end");
-        return JSON.stringify(
+        return Json.stringify(
           attempt.scan(execution.componentPath, args.table).length,
         );
       }
       case "1.0/getFunctionMetadata":
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson({
             name: execution.udfPath,
             componentPath: execution.componentPath,
@@ -2957,15 +3061,19 @@ export class World {
               "or HTTP action. It is not available in queries.",
           );
         }
-        return JSON.stringify(convexToJson(execution.request as any));
+        return Json.stringify(convexToJson(execution.request as any));
       case "1.0/getDeploymentMetadata":
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson({ name: "test", region: null, class: "s16" }),
         );
       case "1.0/actions/query":
       case "1.0/actions/mutation":
       case "1.0/actions/action": {
-        const from: From = { request: execution.request, parent: execution };
+        const from: From = {
+          request: execution.request,
+          parent: execution,
+          syscall: true,
+        };
         const functionPath = functionPathOf(args, execution.componentPath);
         const run =
           op === "1.0/actions/query"
@@ -2973,7 +3081,7 @@ export class World {
             : op === "1.0/actions/mutation"
               ? this.mutationAt(functionPath, args.args, from)
               : this.actionAt(functionPath, args.args, from);
-        return run.then((value) => JSON.stringify(convexToJson(value)));
+        return run.then((value) => Json.stringify(convexToJson(value)));
       }
       case "1.0/runUdf": {
         const { udfType, args: udfArgs, transactionLimits } = args;
@@ -2981,6 +3089,7 @@ export class World {
           request: execution.request,
           parent: execution,
           budget: budgetOf(transactionLimits),
+          syscall: true,
         };
         const functionPath = functionPathOf(args, execution.componentPath);
         const value = jsonToConvex(udfArgs);
@@ -2996,23 +3105,23 @@ export class World {
                       `The test kernel does not support udf type: "${udfType}"`,
                     ),
                   );
-        return run.then((result) => JSON.stringify(convexToJson(result)));
+        return run.then((result) => Json.stringify(convexToJson(result)));
       }
       case "1.0/createFunctionHandle": {
         const functionPath = functionPathOf(args, execution.componentPath);
         this.component(functionPath.componentPath);
-        return JSON.stringify(createFunctionHandle(functionPath));
+        return Json.stringify(createFunctionHandle(functionPath));
       }
       case "1.0/auditLog":
-        return JSON.stringify(null);
+        return Json.stringify(null);
       case "1.0/schedule":
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson(
             this.scheduleJob(transaction(execution), execution, args),
           ),
         );
       case "1.0/actions/schedule":
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson(
             this.commitNow((attempt) =>
               this.scheduleJob(attempt, execution, args),
@@ -3021,19 +3130,19 @@ export class World {
         );
       case "1.0/cancel_job":
         this.cancelJob(transaction(execution), execution, args.id);
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/actions/cancel_job":
         this.commitNow((attempt) =>
           this.cancelJob(attempt, execution, args.id),
         );
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/storageGetUrl": {
         const found = this.findFile(
           execution,
           "storage.getUrl",
           args.storageId,
         );
-        return JSON.stringify(
+        return Json.stringify(
           found === null ? null : Storage.fileUrl(found.file),
         );
       }
@@ -3043,7 +3152,7 @@ export class World {
           "storage.getMetadata",
           args.storageId,
         );
-        return JSON.stringify(
+        return Json.stringify(
           found === null ? null : Storage.metadata(found.doc, found.file),
         );
       }
@@ -3058,7 +3167,7 @@ export class World {
             ),
           );
         }
-        return JSON.stringify(
+        return Json.stringify(
           found === null
             ? null
             : {
@@ -3068,11 +3177,11 @@ export class World {
         );
       }
       case "1.0/storageGenerateUploadUrl":
-        return JSON.stringify(
+        return Json.stringify(
           Storage.uploadUrl(`kernel-unsigned-${this.nextUploadToken++}`),
         );
       case "1.0/storageStore":
-        return JSON.stringify(
+        return Json.stringify(
           this.storageWrite(execution, (attempt) =>
             this.storeFile(
               execution,
@@ -3087,14 +3196,14 @@ export class World {
         this.storageWrite(execution, (attempt) =>
           this.deleteFile(execution, attempt, args.storageId),
         );
-        return JSON.stringify(null);
+        return Json.stringify(null);
       case "1.0/getTransactionMetrics":
         // An action has no transaction, and the binary's action syscalls do
         // not know this one (`crates/isolate/src/environment/action/async_syscall.rs:105`).
         if (execution.attempt === undefined) {
           throw new Error(`Unknown async operation ${op}`);
         }
-        return JSON.stringify(
+        return Json.stringify(
           execution.attempt.meter.metrics(execution.limits),
         );
       case "1.0/actions/vectorSearch":
@@ -3278,7 +3387,7 @@ export class World {
       attempt,
     );
     if (found === null) {
-      throw new Storage.StorageIdNotFound({
+      throw Storage.StorageIdNotFound.make({
         storageId: String(storageId),
         message: `storage id ${String(storageId)} not found`,
       });
@@ -3368,7 +3477,7 @@ export class World {
       );
     }
     const convexValue: Record<string, Value | undefined> = {};
-    for (const [key, v] of Object.entries(value)) {
+    for (const [key, v] of Rec.toEntries(value)) {
       if (key !== "_id" && key !== "_creationTime") {
         convexValue[key] = evaluateValue(v);
       }
@@ -3438,6 +3547,10 @@ export class World {
 /**
  * Where a call comes from. A call from the test carries its accessor's caller.
  * A nested call carries its parent execution and takes its identity from it.
+ * `syscall` marks a nested call its parent made through `Convex.asyncSyscall`,
+ * whose answer the parent's syscall wrapper decodes. An action's own
+ * `ctx.runQuery`, `ctx.runMutation` and `ctx.runAction` call the kernel
+ * directly instead.
  */
 type From =
   | {
@@ -3445,12 +3558,21 @@ type From =
       readonly request: Request;
       readonly parent?: undefined;
       readonly budget?: undefined;
+      readonly syscall?: undefined;
     }
   | {
       readonly parent: Execution;
       readonly request: Request;
       readonly budget?: Metering.Budget | undefined;
+      readonly syscall?: true;
     };
+
+/**
+ * How a `ConvexError`'s data leaves a call from `from`: as Convex JSON across a
+ * syscall, whose wrapper decodes it once, and as a Convex value anywhere else.
+ */
+const convexErrorDataFor = (from: From): ConvexErrorDataEncoding =>
+  from.syscall === true ? "json" : "value";
 
 const refuse = (error: Metering.TransactionLimitExceeded | undefined) => {
   if (error !== undefined) throw error;
@@ -3462,7 +3584,7 @@ const refuse = (error: Metering.TransactionLimitExceeded | undefined) => {
 const indexKey = (componentPath: string, table: string, index: string) =>
   `${componentPath}\u0000${table}\u0000${index}`;
 
-const isSystemTable = (table: string) => table.startsWith("_");
+const isSystemTable = (table: string) => pipe(table, Str.startsWith("_"));
 
 const isFieldMap = (value: unknown): value is object =>
   typeof value === "object" && value !== null && isSimpleObject(value);
@@ -3482,23 +3604,24 @@ const sameValue = (a: unknown, b: unknown): boolean => {
   const aPending = a instanceof CommitTsPlaceholder;
   const bPending = b instanceof CommitTsPlaceholder;
   if (aPending || bPending) return aPending && bPending;
-  if (Array.isArray(a) || Array.isArray(b)) {
+  if (Arr.isArray(a) || Arr.isArray(b)) {
     return (
-      Array.isArray(a) &&
-      Array.isArray(b) &&
+      Arr.isArray(a) &&
+      Arr.isArray(b) &&
       a.length === b.length &&
-      a.every((value, i) => sameValue(value, b[i]))
+      Arr.every(a, (value, i) => sameValue(value, b[i]))
     );
   }
   if (isFieldMap(a) || isFieldMap(b)) {
     if (!isFieldMap(a) || !isFieldMap(b)) return false;
     const fields = (value: object) =>
-      Object.entries(value).filter(([, field]) => field !== undefined);
+      Arr.filter(Rec.toEntries(value), ([, field]) => field !== undefined);
     const aFields = fields(a);
     const bFields = new Map(fields(b));
     return (
       aFields.length === bFields.size &&
-      aFields.every(
+      Arr.every(
+        aFields,
         ([key, field]) =>
           bFields.has(key) && sameValue(field, bFields.get(key)),
       )
@@ -3523,14 +3646,14 @@ const sameDocument = (before: StoredDocument, after: StoredDocument) =>
 const budgetOf = (limits: unknown): Metering.Budget | undefined => {
   if (limits === undefined || limits === null) return undefined;
   const budget: Partial<Record<keyof Metering.Limits, number>> = {};
-  for (const metric of Object.keys(Metering.defaults) as Array<
+  for (const metric of Rec.keys(Metering.defaults) as Array<
     keyof Metering.Limits
   >) {
     const value = (limits as Record<string, unknown>)[metric];
     if (value === undefined) continue;
     if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
       throw new Error(
-        `Invalid arguments for \`runUdf\`: transactionLimits.${metric} must be a non-negative integer, got ${JSON.stringify(value)}`,
+        `Invalid arguments for \`runUdf\`: transactionLimits.${metric} must be a non-negative integer, got ${Json.stringify(value)}`,
       );
     }
     budget[metric] = value;
@@ -3539,7 +3662,7 @@ const budgetOf = (limits: unknown): Metering.Budget | undefined => {
 };
 
 const closed = (execution: Execution, operation: string) =>
-  new KernelRefusal.ClosedAttempt({
+  KernelRefusal.ClosedAttempt.make({
     operation,
     message: `"${operation}" reached mutation ${execution.udfPath} after it returned and its syscalls settled. Await every read and write inside the handler.`,
   });

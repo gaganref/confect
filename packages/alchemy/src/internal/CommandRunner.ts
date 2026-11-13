@@ -35,14 +35,14 @@ const selection = (target: PushTarget) =>
     ? `CONVEX_DEPLOY_KEY=${Redacted.value(target.deployKey)}\n`
     : `CONVEX_SELF_HOSTED_URL=${target.url}\nCONVEX_SELF_HOSTED_ADMIN_KEY=${Redacted.value(target.adminKey)}\n`;
 
-export class CommandError extends Schema.TaggedError<CommandError>()(
-  "CommandError",
-  {
-    operation: Schema.Literals(["prepare", "deploy"]),
-    reason: Schema.Literals(["configuration", "spawn", "exit"]),
-    exitCode: Schema.optionalKey(Schema.Finite),
-  },
-) {}
+export class CommandError extends Schema.TaggedError<
+  CommandError,
+  { readonly brand: unique symbol }
+>()("CommandError", {
+  operation: Schema.Literals(["prepare", "deploy"]),
+  reason: Schema.Literals(["configuration", "spawn", "exit"]),
+  exitCode: Schema.optionalKey(Schema.Finite),
+}) {}
 
 export class CommandRunner extends Context.Service<
   CommandRunner,
@@ -85,7 +85,7 @@ const packageBin = Effect.fn("CommandRunner.packageBin")(function* (
   binName: string,
 ) {
   const invalid = () =>
-    new CommandError({
+    CommandError.make({
       operation: packageName === "convex" ? "deploy" : "prepare",
       reason: "configuration",
     });
@@ -115,7 +115,7 @@ const packageBin = Effect.fn("CommandRunner.packageBin")(function* (
       );
       const relative =
         typeof manifest.bin === "string" ? manifest.bin : manifest.bin[binName];
-      if (!relative) return yield* invalid();
+      if (relative === undefined || relative === "") return yield* invalid();
       return path.resolve(path.dirname(manifestPath), relative);
     }
     const parent = path.dirname(directory);
@@ -124,6 +124,9 @@ const packageBin = Effect.fn("CommandRunner.packageBin")(function* (
   }
 });
 
+/**
+ * @internal
+ */
 export const layer = Layer.effect(
   CommandRunner,
   Effect.gen(function* () {
@@ -149,12 +152,12 @@ export const layer = Layer.effect(
           }),
         )
         .pipe(
-          Effect.mapError(
-            () => new CommandError({ operation, reason: "spawn" }),
+          Effect.mapError(() =>
+            CommandError.make({ operation, reason: "spawn" }),
           ),
         );
       if (code !== 0)
-        return yield* new CommandError({
+        return yield* CommandError.make({
           operation,
           reason: "exit",
           exitCode: Number(code),
@@ -170,12 +173,11 @@ export const layer = Layer.effect(
       ) {
         const directory = path.resolve(cwd);
         const env = yield* environment.pipe(
-          Effect.mapError(
-            () =>
-              new CommandError({
-                operation: "prepare",
-                reason: "configuration",
-              }),
+          Effect.mapError(() =>
+            CommandError.make({
+              operation: "prepare",
+              reason: "configuration",
+            }),
           ),
         );
         if (command.command === "confect") {
@@ -204,12 +206,11 @@ export const layer = Layer.effect(
         const directory = path.resolve(cwd);
         const bin = yield* packageBin(fs, path, directory, "convex", "convex");
         const env = yield* environment.pipe(
-          Effect.mapError(
-            () =>
-              new CommandError({
-                operation: "deploy",
-                reason: "configuration",
-              }),
+          Effect.mapError(() =>
+            CommandError.make({
+              operation: "deploy",
+              reason: "configuration",
+            }),
           ),
         );
         yield* Effect.scoped(
@@ -238,7 +239,7 @@ export const layer = Layer.effect(
             Effect.mapError((error) =>
               Schema.is(CommandError)(error)
                 ? error
-                : new CommandError({
+                : CommandError.make({
                     operation: "deploy",
                     reason: "configuration",
                   }),

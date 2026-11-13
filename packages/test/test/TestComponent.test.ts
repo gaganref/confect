@@ -1,10 +1,10 @@
-// oxlint-disable effecttsgo/async-function -- The fixtures are plain Convex functions, which are async as product code is.
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as MutationCtx from "@confect/server/MutationCtx";
 import { TestBackend, TestComponent } from "@confect/test";
 import { Callback, FunctionSpec, Ref } from "@confect/core";
 import { assert, describe, expect, expectTypeOf, it } from "@effect/vitest";
 import {
+  actionGeneric,
   componentsGeneric,
   defineSchema,
   defineTable,
@@ -15,8 +15,11 @@ import {
   type GenericDataModel,
 } from "convex/server";
 import { ConvexError, v } from "convex/values";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
 /**
@@ -26,23 +29,24 @@ const Code = Schema.BigInt.check(
   Schema.isBetweenBigInt({ minimum: -(2n ** 63n), maximum: 2n ** 63n - 1n }),
 );
 
-class Bounced extends Schema.TaggedError<Bounced>()("Bounced", {
-  code: Code,
-}) {}
+class Bounced extends Schema.TaggedError<
+  Bounced,
+  { readonly brand: unique symbol }
+>()("Bounced", { code: Code }) {}
 
-class NotConfigured extends Schema.TaggedError<NotConfigured>()(
-  "NotConfigured",
-  {},
-) {}
+class NotConfigured extends Schema.TaggedError<
+  NotConfigured,
+  { readonly brand: unique symbol }
+>()("NotConfigured", {}) {}
 
-class EmptyMessage extends Schema.TaggedError<EmptyMessage>()(
-  "EmptyMessage",
-  {},
-) {}
+class EmptyMessage extends Schema.TaggedError<
+  EmptyMessage,
+  { readonly brand: unique symbol }
+>()("EmptyMessage", {}) {}
 
 /**
  * The fixture component's one callback contract, as its `callbacks.ts` would
- * declare it. Its bounce carries a bigint, which crosses as Convex JSON.
+ * declare it. Its bounce carries an int64.
  */
 const OnEvent = Callback.mutation("mailer/onEvent", {
   args: () => ({ fromName: Schema.String, message: Schema.String }),
@@ -71,6 +75,19 @@ const init = FunctionSpec.internalMutation({
   returns: () => Schema.Null,
 });
 
+/**
+ * An action that calls a handle it is given, which reaches the kernel without a
+ * syscall, unlike a mutation's call.
+ */
+const relay = Ref.make(
+  "mail",
+  FunctionSpec.internalAction({
+    name: "relay",
+    args: () => ({ onEvent: Schema.String, message: Schema.String }),
+    returns: () => Schema.String,
+  }),
+);
+
 const functions = {
   "mail:count": Ref.make("mail", count),
   "mail:later": Ref.make("mail", later),
@@ -85,18 +102,47 @@ const components = componentsGeneric() as unknown as {
   };
 };
 
-const onEvent = Callback.handle(OnEvent);
+type Settings = { readonly fromName: string; readonly onEvent: string };
 
-const configuredBy = async (ctx: any) => {
-  const settings = await ctx.db.query("settings").first();
-  if (settings === null) throw new ConvexError({ _tag: "NotConfigured" });
-  return settings as { fromName: string; onEvent: string };
+/**
+ * The stored settings, or the declared `NotConfigured` before `init` ran.
+ */
+const configuredBy = (ctx: any): Promise<Settings> =>
+  ctx.db
+    .query("settings")
+    .first()
+    .then((settings: Settings | null) => {
+      if (settings === null) throw new ConvexError({ _tag: "NotConfigured" });
+      return settings;
+    });
+
+/**
+ * What the host's answer to a call of the stored handle left the caller with:
+ * the ticket it returned, or the declared error it failed with, decoded by the
+ * handle the slot names. Anything else is the caller's failure.
+ */
+const answerOf = (
+  call: Promise<unknown>,
+): Promise<{ readonly delivered: string } | { readonly bounced: string }> => {
+  const handle = subject.slots["mailer/onEvent"].handle;
+  return call.then(
+    (answer) => ({ delivered: (answer as { ticket: string }).ticket }),
+    (error: unknown) => {
+      const declared = Ref.isConvexError(error)
+        ? Ref.decodeErrorOption(handle, error.data)
+        : Option.none();
+      if (Option.isNone(declared)) throw error;
+      return {
+        bounced: `bounced: ${declared.value._tag} (${typeof declared.value.code})`,
+      };
+    },
+  );
 };
 
 /**
  * The `mailer` component: its own `init` stores the sender and the host's
- * handle, `send` calls the handle and records what the host answered, and
- * `later` schedules it.
+ * handle, `send` calls the handle and records what the host answered, `later`
+ * schedules it, and `relay` calls a handle from an action.
  */
 const mailer = {
   "_generated/server.ts": () => Promise.resolve({}),
@@ -104,68 +150,81 @@ const mailer = {
     Promise.resolve({
       steps: internalMutationGeneric({
         args: {},
-        handler: async () => [
-          {
-            componentPath: "audit",
-            nested: false,
-            init: { functionName: "init:run", args: { label: "audit" } },
-          },
-        ],
+        handler: () =>
+          Promise.resolve([
+            {
+              componentPath: "audit",
+              nested: false,
+              init: { functionName: "init:run", args: { label: "audit" } },
+            },
+          ]),
       }),
     }),
   "install.ts": () =>
     Promise.resolve({
       init: internalMutationGeneric({
         args: { fromName: v.string(), onEvent: v.string() },
-        handler: async (ctx, args) => {
-          await ctx.db.insert("settings", args);
-          return null;
-        },
+        handler: (ctx, args) =>
+          ctx.db.insert("settings", args).then(() => null),
       }),
     }),
   "mail.ts": () =>
     Promise.resolve({
       send: mutationGeneric({
         args: { message: v.string() },
-        handler: async (ctx, { message }) => {
-          if (message === "") throw new ConvexError({ _tag: "EmptyMessage" });
-          const settings = await configuredBy(ctx);
-          const handle = Schema.decodeSync(onEvent)(settings.onEvent);
-          try {
-            const answer = await ctx.runMutation(
-              handle.convexFunctionName as never,
-              { fromName: settings.fromName, message } as never,
-            );
-            await ctx.db.insert("sent", { message, status: "delivered" });
-            return (answer as { ticket: string }).ticket;
-          } catch (error) {
-            const declared = Ref.isConvexError(error)
-              ? Ref.decodeErrorOption(handle, error.data)
-              : undefined;
-            if (declared?._tag !== "Some") throw error;
-            await ctx.db.insert("sent", {
-              message,
-              status: `bounced: ${declared.value._tag} (${typeof declared.value.code})`,
-            });
-            return null;
-          }
+        handler: (ctx, { message }) => {
+          if (message === "")
+            return Promise.reject(new ConvexError({ _tag: "EmptyMessage" }));
+          return configuredBy(ctx).then((settings) =>
+            answerOf(
+              ctx.runMutation(
+                settings.onEvent as never,
+                { fromName: settings.fromName, message } as never,
+              ),
+            ).then((answer) =>
+              "delivered" in answer
+                ? ctx.db
+                    .insert("sent", { message, status: "delivered" })
+                    .then(() => answer.delivered)
+                : ctx.db
+                    .insert("sent", { message, status: answer.bounced })
+                    .then(() => null),
+            ),
+          );
         },
       }),
       later: mutationGeneric({
         args: { message: v.string() },
-        handler: async (ctx, { message }) => {
-          const settings = await configuredBy(ctx);
-          await ctx.scheduler.runAfter(
-            0,
-            settings.onEvent as never,
-            { fromName: settings.fromName, message } as never,
-          );
-          return null;
-        },
+        handler: (ctx, { message }) =>
+          configuredBy(ctx).then((settings) =>
+            ctx.scheduler
+              .runAfter(
+                0,
+                settings.onEvent as never,
+                { fromName: settings.fromName, message } as never,
+              )
+              .then(() => null),
+          ),
+      }),
+      relay: actionGeneric({
+        args: { onEvent: v.string(), message: v.string() },
+        handler: (ctx, { onEvent: stored, message }) =>
+          answerOf(
+            ctx.runMutation(
+              stored as never,
+              { fromName: "relay", message } as never,
+            ),
+          ).then((answer) =>
+            "delivered" in answer ? "delivered" : answer.bounced,
+          ),
       }),
       count: queryGeneric({
         args: {},
-        handler: async (ctx) => (await ctx.db.query("sent").collect()).length,
+        handler: (ctx) =>
+          ctx.db
+            .query("sent")
+            .collect()
+            .then((sent) => sent.length),
       }),
     }),
 };
@@ -176,17 +235,19 @@ const audit = {
     Promise.resolve({
       run: internalMutationGeneric({
         args: { label: v.string() },
-        handler: async (ctx, { label }) => {
-          await ctx.db.insert("log", { entry: `${label} ready` });
-        },
+        handler: (ctx, { label }) =>
+          ctx.db.insert("log", { entry: `${label} ready` }).then(() => null),
       }),
     }),
   "state.ts": () =>
     Promise.resolve({
       log: queryGeneric({
         args: {},
-        handler: async (ctx) =>
-          (await ctx.db.query("log").collect()).map(({ entry }) => entry),
+        handler: (ctx) =>
+          ctx.db
+            .query("log")
+            .collect()
+            .then((rows) => Arr.map(rows, ({ entry }) => entry)),
       }),
     }),
 };
@@ -231,7 +292,7 @@ const subject = TestComponent.make(
       { kind: "laws" },
       { kind: "callback", slot: "mailer/onEvent" },
     ],
-    mounts: [{ path: "audit", kit: "local" }],
+    mounts: [{ path: "audit", kit: "local", env: {}, required: [] }],
     settings,
   },
 );
@@ -250,50 +311,65 @@ const raw = MutationCtx.MutationCtx<GenericDataModel>();
 const runtime = TestComponent.ComponentRuntime<typeof schema>();
 
 /**
+ * Run `body` with the services `layer` builds, in the test's scope.
+ */
+const within = <A, E, R, ROut, E2>(
+  layer: Layer.Layer<ROut, E2>,
+  body: Effect.Effect<A, E, R>,
+) =>
+  Effect.gen(function* () {
+    const services = yield* Layer.build(layer);
+    return yield* body.pipe(Effect.provideContext(services));
+  });
+
+const opened =
+  (options: Parameters<typeof subject.layer>[0]) =>
+  <A, E, R>(body: Effect.Effect<A, E, R>) =>
+    within(subject.layer(options), body);
+
+/**
  * The command that arrives at position `at` of the session.
  */
 const arrival = (at: number) =>
   Effect.gen(function* () {
-    return yield* (yield* TestComponent.Callbacks).arrival(at);
+    const engine = yield* TestComponent.Callbacks;
+    return yield* engine.arrival(at);
   });
 
 describe("TestComponent.layer", () => {
   it.effect(
-    "runs the subject's own init with its install args and each mount's before the seed, which reads both",
+    "runs the subject's own init with its install args, then each mount's, then the seed, which reads both",
     () =>
       Effect.gen(function* () {
         const session = yield* TestBackend.Session;
-        // The shared traversal orders the subject's init against its mounts'.
-        expect([...session.initialized].sort()).toEqual(["", "audit"]);
+        // The subject's own init is the root step of the shared traversal, so
+        // it runs before its mounts', as a parent's push runs it.
+        expect(session.initialized).toEqual(["", "audit"]);
         expect(session.standing).toEqual({ audit: [] });
         const engine = yield* TestComponent.Callbacks;
-        expect(yield* engine.image).toEqual({
+        const image = yield* engine.image;
+        expect(image).toEqual({
           settings: [stored],
           seen: [{ entry: "seed saw Ada and [audit ready]" }],
         });
       }).pipe(
-        Effect.provide(
-          subject.layer({
-            config,
-            install,
-            seed: Effect.gen(function* () {
-              const ctx = yield* raw;
-              const log = yield* Effect.promise(() =>
-                ctx.runQuery(components.audit.state.log, {}),
-              );
-              const sender = yield* Effect.promise(() =>
-                ctx.db.query("settings").first(),
-              );
-              if (log.length === 0 || sender === null)
-                return yield* Effect.die(new Error("an init has not run"));
-              yield* Effect.promise(() =>
-                ctx.db.insert("seen", {
-                  entry: `seed saw ${sender["fromName"] as string} and [${log.join(",")}]`,
-                }),
-              );
-            }),
+        opened({
+          config,
+          install,
+          seed: Effect.gen(function* () {
+            const ctx = yield* raw;
+            const log = yield* Effect.promise(() =>
+              ctx.runQuery(components.audit.state.log, {}),
+            );
+            const sender = yield* Effect.promise(() =>
+              ctx.db.query("settings").first(),
+            );
+            if (log.length === 0 || sender === null)
+              return yield* Effect.die(new Error("an init has not run"));
+            const entry = `seed saw ${sender["fromName"] as string} and [${Arr.join(log, ",")}]`;
+            yield* Effect.promise(() => ctx.db.insert("seen", { entry }));
           }),
-        ),
+        }),
       ),
   );
 
@@ -306,7 +382,8 @@ describe("TestComponent.layer", () => {
           test.mutation(functions["mail:send"], { message: "hello" }),
         );
         const command = yield* arrival(0);
-        expect(yield* TestComponent.commands(subject)).toEqual([
+        const pending = yield* TestComponent.commands(subject);
+        expect(pending).toEqual([
           {
             id: command.id,
             kind: "callback",
@@ -318,41 +395,61 @@ describe("TestComponent.layer", () => {
           },
         ]);
         // The held send has not committed, so a call between sees no delivery.
-        expect(yield* test.query(functions["mail:count"])).toBe(0);
+        const before = yield* test.query(functions["mail:count"]);
+        expect(before).toBe(0);
         yield* TestComponent.answer(command, "returned");
         const ticket = yield* Fiber.join(sending);
         assert(typeof ticket === "string");
-        expect(yield* test.query(functions["mail:count"])).toBe(1);
-        expect(yield* TestComponent.commands(subject)).toEqual([]);
-        const again = yield* Effect.provide(
-          Effect.gen(function* () {
-            const other = yield* runtime;
-            const fiber = yield* Effect.forkChild(
-              other.mutation(functions["mail:send"], { message: "hello" }),
-            );
-            yield* TestComponent.answer(yield* arrival(0), "returned");
-            return yield* Fiber.join(fiber);
-          }),
-          subject.layer({ config, install }),
-        );
+        const after = yield* test.query(functions["mail:count"]);
+        expect(after).toBe(1);
+        const left = yield* TestComponent.commands(subject);
+        expect(left).toEqual([]);
+        const again = yield* Effect.gen(function* () {
+          const other = yield* runtime;
+          const fiber = yield* Effect.forkChild(
+            other.mutation(functions["mail:send"], { message: "hello" }),
+          );
+          const next = yield* arrival(0);
+          yield* TestComponent.answer(next, "returned");
+          return yield* Fiber.join(fiber);
+        }).pipe(opened({ config, install }));
         expect(again).toBe(ticket);
-      }).pipe(Effect.provide(subject.layer({ config, install }))),
+      }).pipe(opened({ config, install })),
   );
 
   it.effect(
-    "answers with a declared error as Convex JSON, so a bigint field reaches the component decoded",
+    "answers a mutation's call with a declared error, so its int64 field reaches the component decoded",
     () =>
       Effect.gen(function* () {
         const test = yield* runtime;
         const sending = yield* Effect.forkChild(
           test.mutation(functions["mail:send"], { message: "hello" }),
         );
-        yield* TestComponent.answer(yield* arrival(0), "Bounced");
-        expect(yield* Fiber.join(sending)).toBeNull();
-        expect(yield* (yield* TestComponent.Callbacks).image).toMatchObject({
+        const command = yield* arrival(0);
+        yield* TestComponent.answer(command, "Bounced");
+        const sent = yield* Fiber.join(sending);
+        expect(sent).toBeNull();
+        const engine = yield* TestComponent.Callbacks;
+        const image = yield* engine.image;
+        expect(image).toMatchObject({
           sent: [{ message: "hello", status: "bounced: Bounced (bigint)" }],
         });
-      }).pipe(Effect.provide(subject.layer({ config, install }))),
+      }).pipe(opened({ config, install })),
+  );
+
+  it.effect(
+    "answers an action's call with a declared error as a Convex value, so its int64 field arrives decoded",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* runtime;
+        const relaying = yield* Effect.forkChild(
+          test.action(relay, { onEvent: stored.onEvent, message: "hello" }),
+        );
+        const command = yield* arrival(0);
+        yield* TestComponent.answer(command, "Bounced");
+        const relayed = yield* Fiber.join(relaying);
+        expect(relayed).toBe("bounced: Bounced (bigint)");
+      }).pipe(opened({ config, install })),
   );
 
   it.effect(
@@ -366,22 +463,22 @@ describe("TestComponent.layer", () => {
         yield* arrival(0);
         const [command] = yield* TestComponent.commands(subject);
         assert(command !== undefined);
-        expect(
-          yield* Effect.flip(
-            // @ts-expect-error The contract declares no `Timeout`.
-            TestComponent.answer(command, "Timeout"),
-          ),
-        ).toMatchObject({
+        const undeclared = yield* Effect.flip(
+          // @ts-expect-error The contract declares no `Timeout`.
+          TestComponent.answer(command, "Timeout"),
+        );
+        expect(undeclared).toMatchObject({
           _tag: "UndeclaredOutcome",
           message:
             "The callback slot mailer/onEvent has no outcome Timeout; its contract allows returned, Bounced.",
         });
         yield* TestComponent.answer(command, "returned");
         yield* Fiber.join(sending);
-        expect(
-          yield* Effect.flip(TestComponent.answer(command, "returned")),
-        ).toMatchObject({ _tag: "StaleCommand", id: command.id });
-      }).pipe(Effect.provide(subject.layer({ config, install }))),
+        const stale = yield* Effect.flip(
+          TestComponent.answer(command, "returned"),
+        );
+        expect(stale).toMatchObject({ _tag: "StaleCommand", id: command.id });
+      }).pipe(opened({ config, install })),
   );
 
   it.effect(
@@ -402,8 +499,9 @@ describe("TestComponent.layer", () => {
         });
         yield* TestComponent.answer(command, "returned");
         yield* Fiber.join(draining);
-        expect(yield* TestComponent.commands(subject)).toEqual([]);
-      }).pipe(Effect.provide(subject.layer({ config, install }))),
+        const left = yield* TestComponent.commands(subject);
+        expect(left).toEqual([]);
+      }).pipe(opened({ config, install })),
   );
 
   it.effect("gives the component no caller identity", () =>
@@ -412,13 +510,22 @@ describe("TestComponent.layer", () => {
       expect("withIdentity" in test).toBe(false);
       // @ts-expect-error A component runtime has no `withIdentity`.
       expect(test.withIdentity).toBeUndefined();
-    }).pipe(Effect.provide(subject.layer({ config, install }))),
+    }).pipe(opened({ config, install })),
   );
 });
 
-class First extends Schema.TaggedError<First>()("First", {}) {}
-class Second extends Schema.TaggedError<Second>()("Second", {}) {}
-class Third extends Schema.TaggedError<Third>()("Third", {}) {}
+class First extends Schema.TaggedError<
+  First,
+  { readonly brand: unique symbol }
+>()("First", {}) {}
+class Second extends Schema.TaggedError<
+  Second,
+  { readonly brand: unique symbol }
+>()("Second", {}) {}
+class Third extends Schema.TaggedError<
+  Third,
+  { readonly brand: unique symbol }
+>()("Third", {}) {}
 
 describe("TestComponent.slot", () => {
   it("keeps every tag of a nested union of errors", () => {
@@ -492,12 +599,12 @@ describe("TestComponent.exports and callbacks", () => {
   });
 
   it("pays one obligation per case", () => {
-    expect(exported.map(({ owes }) => owes)).toEqual([
+    expect(Arr.map(exported, ({ owes }) => owes)).toEqual([
       { kind: "export", ref: "mail:count" },
       { kind: "export", ref: "mail:later" },
       { kind: "export", ref: "mail:send" },
     ]);
-    expect(answered.map(({ name, owes }) => [name, owes])).toEqual([
+    expect(Arr.map(answered, ({ name, owes }) => [name, owes])).toEqual([
       [
         "mailer/onEvent returned delivers",
         { kind: "callback", slot: "mailer/onEvent" },
@@ -549,23 +656,22 @@ describe("TestComponent.exports and callbacks", () => {
             Bounced: { name: "counts", call: "mail:count", postimage: {} },
           },
         });
-        expect(
-          yield* Effect.flip(
-            wrong!.run({
-              config,
-              install,
-              seed: Effect.gen(function* () {
-                const ctx = yield* raw;
-                yield* Effect.promise(() =>
-                  ctx.runMutation(
-                    stored.onEvent as unknown as FunctionReference<"mutation">,
-                    { fromName: "seed", message: "seeded" },
-                  ),
-                );
-              }),
+        const failed = yield* Effect.flip(
+          wrong!.run({
+            config,
+            install,
+            seed: Effect.gen(function* () {
+              const ctx = yield* raw;
+              yield* Effect.promise(() =>
+                ctx.runMutation(
+                  stored.onEvent as unknown as FunctionReference<"mutation">,
+                  { fromName: "seed", message: "seeded" },
+                ),
+              );
             }),
-          ),
-        ).toMatchObject({
+          }),
+        );
+        expect(failed).toMatchObject({
           reason: "mail:count never called the slot mailer/onEvent",
         });
       }),

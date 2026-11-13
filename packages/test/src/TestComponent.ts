@@ -2,14 +2,24 @@ import { Callback, type Ref } from "@confect/core";
 import type { DatabaseSchema, RegisteredConvexFunction } from "@confect/server";
 import { ConvexError, convexToJson, type Value } from "convex/values";
 import * as Arbitrary from "effect/Arbitrary";
+import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as Order from "effect/Order";
+import * as Predicate from "effect/Predicate";
+import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import type * as SchemaAST from "effect/SchemaAST";
 import * as Execution from "./internal/Execution.js";
-import { openSession, type TestConfigMissing } from "./internal/Backend.js";
+import { stringify } from "./internal/Json.js";
+import {
+  openSession,
+  type MountInitFailed,
+  type TestConfigMissing,
+} from "./internal/Backend.js";
 import {
   Session,
   type AnyPort,
@@ -88,10 +98,10 @@ export type CommandOf<C> = {
  * `answer` named a command the session does not hold: it was already answered,
  * or never held.
  */
-export class StaleCommand extends Schema.TaggedError<StaleCommand>()(
-  "StaleCommand",
-  { id: Schema.String },
-) {
+export class StaleCommand extends Schema.TaggedError<
+  StaleCommand,
+  { readonly brand: unique symbol }
+>()("StaleCommand", { id: Schema.String }) {
   override get message() {
     return `The session holds no callback command "${this.id}". It was already answered, or never held.`;
   }
@@ -100,17 +110,17 @@ export class StaleCommand extends Schema.TaggedError<StaleCommand>()(
 /**
  * `answer` gave a command an outcome its slot's contract does not declare.
  */
-export class UndeclaredOutcome extends Schema.TaggedError<UndeclaredOutcome>()(
-  "UndeclaredOutcome",
-  {
-    id: Schema.String,
-    slot: Schema.String,
-    outcome: Schema.String,
-    allowed: Schema.Array(Schema.String),
-  },
-) {
+export class UndeclaredOutcome extends Schema.TaggedError<
+  UndeclaredOutcome,
+  { readonly brand: unique symbol }
+>()("UndeclaredOutcome", {
+  id: Schema.String,
+  slot: Schema.String,
+  outcome: Schema.String,
+  allowed: Schema.Array(Schema.String),
+}) {
   override get message() {
-    return `The callback slot ${this.slot} has no outcome ${this.outcome}; its contract allows ${this.allowed.join(", ")}.`;
+    return `The callback slot ${this.slot} has no outcome ${this.outcome}; its contract allows ${Arr.join(this.allowed, ", ")}.`;
   }
 }
 
@@ -231,7 +241,7 @@ export interface GeneratedComponent<
     options: LayerOptions<S, G, I>,
   ) => Layer.Layer<
     ComponentRuntime<S> | Callbacks | Session,
-    TestConfigMissing
+    TestConfigMissing | MountInitFailed
   >;
 }
 
@@ -250,10 +260,15 @@ export type AnyGeneratedComponent = GeneratedComponent<
 const tagOf = (schema: Schema.Top): string | undefined => {
   const ast = Schema.toEncoded(schema).ast;
   if (ast._tag !== "Objects") return undefined;
-  const tag = ast.propertySignatures.find((p) => p.name === "_tag")?.type;
-  return tag?._tag === "Literal" && typeof tag.literal === "string"
-    ? tag.literal
-    : undefined;
+  return Arr.findFirst(ast.propertySignatures, (p) => p.name === "_tag").pipe(
+    Option.map(({ type }) => type),
+    Option.flatMap((type) =>
+      type._tag === "Literal" && Predicate.isString(type.literal)
+        ? Option.some(type.literal)
+        : Option.none(),
+    ),
+    Option.getOrUndefined,
+  );
 };
 
 /**
@@ -266,7 +281,7 @@ const alternatives = (
   if (seen.has(ast)) return [];
   seen.add(ast);
   if (ast._tag === "Union")
-    return ast.types.flatMap((member) => alternatives(member, seen));
+    return Arr.flatMap(ast.types, (member) => alternatives(member, seen));
   if (ast._tag === "Suspend") return alternatives(ast.thunk(), seen);
   return [ast];
 };
@@ -293,8 +308,13 @@ const errorsOf = (contract: Callback.Any): ReadonlyMap<string, Schema.Top> => {
  */
 export const slot = <C extends Callback.Any>(contract: C): Slot<C> => ({
   contract,
-  handle: Schema.decodeSync(Callback.handle(contract))(
-    `function://${Execution.SINK};${contract.id}`,
+  // A generated module builds its slots as it loads, outside an Effect. A
+  // handle decodes from any string, so the decode cannot fail.
+  handle: Option.getOrThrowWith(
+    Schema.decodeOption(Callback.handle(contract))(
+      `function://${Execution.SINK};${contract.id}`,
+    ),
+    () => new Error(`The sink handle for ${contract.id} did not decode.`),
   ) as Callback.Handle<C>,
   outcomes: ["returned", ...errorsOf(contract).keys()] as ReadonlyArray<
     Outcome<C>
@@ -350,9 +370,13 @@ const makeEngine = (
     return Effect.runPromise(
       draw(errorsOf(found.contract).get(chosen)!, provenance.error, seed),
     ).then((encoded) =>
-      // The caller reads the data back with `jsonToConvex`, so it crosses as
-      // Convex JSON, as the binary sends a function's declared error.
-      Promise.reject(new ConvexError(convexToJson(encoded as Value))),
+      // A function's thrown `ConvexError` leaves it with its data serialized
+      // (`serializeConvexErrorData`, convex 1.49
+      // `src/server/impl/registration_impl.ts:112-127`), and the kernel
+      // decodes it for the caller as it decodes any nested call's error.
+      Promise.reject(
+        new ConvexError(stringify(convexToJson(encoded as Value))),
+      ),
     );
   };
   const sink: Execution.Sink = ({ slot: id, args, caller }) => {
@@ -387,11 +411,11 @@ const makeEngine = (
     Effect.suspend(
       (): Effect.Effect<void, StaleCommand | UndeclaredOutcome> => {
         const held = pending.get(id);
-        if (held === undefined) return Effect.fail(new StaleCommand({ id }));
+        if (held === undefined) return Effect.fail(StaleCommand.make({ id }));
         const found = slots[held.command.slot]!;
-        if (!(found.outcomes as ReadonlyArray<string>).includes(chosen))
+        if (!Arr.contains(found.outcomes as ReadonlyArray<string>, chosen))
           return Effect.fail(
-            new UndeclaredOutcome({
+            UndeclaredOutcome.make({
               id,
               slot: held.command.slot,
               outcome: chosen,
@@ -482,28 +506,41 @@ export const make = <
               };
         const opened = yield* openSession(
           app,
-          declaration.settings,
+          declaration,
           options.config,
           options.seed,
-          engine.sink,
-          root,
+          root === undefined
+            ? { sink: engine.sink }
+            : { sink: engine.sink, root },
         );
         engine.open();
         const { withIdentity: _, ...service } = opened.service;
-        const tables = Object.keys(
-          (app.convexSchema as unknown as { tables: object }).tables,
-        ).sort();
+        const tables = Arr.sort(
+          Rec.keys(
+            (
+              app.convexSchema as unknown as {
+                tables: Readonly<Record<string, unknown>>;
+              }
+            ).tables,
+          ),
+          Order.String,
+        );
         const image = Effect.promise((): Promise<Postimage> =>
           opened.raw.run((ctx: any) =>
             Promise.all(
-              tables.map((table) => ctx.db.query(table).collect()),
+              Arr.map(tables, (table) => ctx.db.query(table).collect()),
             ).then(
               (all: ReadonlyArray<ReadonlyArray<Record<string, unknown>>>) =>
-                Object.fromEntries(
-                  tables.flatMap((table, index) =>
+                Rec.fromEntries(
+                  Arr.flatMap(tables, (table, index) =>
                     all[index]!.length === 0
                       ? []
-                      : [[table, all[index]!.map(withoutSystemFields)]],
+                      : [
+                          [
+                            table,
+                            Arr.map(all[index]!, withoutSystemFields),
+                          ] as const,
+                        ],
                   ),
                 ),
             ),
@@ -589,10 +626,10 @@ export type CallbackRows<T, C> = {
   };
 };
 
-export class CaseFailed extends Schema.TaggedError<CaseFailed>()("CaseFailed", {
-  case: Schema.String,
-  reason: Schema.String,
-}) {}
+export class CaseFailed extends Schema.TaggedError<
+  CaseFailed,
+  { readonly brand: unique symbol }
+>()("CaseFailed", { case: Schema.String, reason: Schema.String }) {}
 
 /**
  * One runnable case and the obligation it pays. Each run opens a fresh session
@@ -619,14 +656,28 @@ type OptionsOf<Subject> =
     ? LayerOptions<S, G, I>
     : never;
 
-const canonical = (value: unknown): string =>
-  JSON.stringify(convexToJson(value as Value), (_, v) =>
-    v !== null && typeof v === "object" && !Array.isArray(v)
-      ? Object.fromEntries(
-          Object.entries(v).sort(([a], [b]) => (a < b ? -1 : Number(a > b))),
+const byKey = Order.mapInput(
+  Order.String,
+  ([key]: readonly [string, unknown]) => key,
+);
+
+/**
+ * `value` with every object's keys in order, so equal values print alike.
+ */
+const sortedKeys = (value: unknown): unknown =>
+  Arr.isArray(value)
+    ? Arr.map(value, sortedKeys)
+    : Predicate.isObject(value)
+      ? Rec.fromEntries(
+          Arr.map(
+            Arr.sort(Rec.toEntries(value as Record<string, unknown>), byKey),
+            ([key, field]) => [key, sortedKeys(field)] as const,
+          ),
         )
-      : v,
-  );
+      : value;
+
+const canonical = (value: unknown): string =>
+  stringify(sortedKeys(convexToJson(value as Value)));
 
 const call = (
   service: ComponentRuntime<any>,
@@ -654,7 +705,7 @@ const invoke = (
 ) =>
   Effect.gen(function* () {
     const from = yield* engine.mark;
-    const fiber = yield* Effect.forkChild(Effect.result(exported));
+    const fiber = yield* exported.pipe(Effect.result, Effect.forkChild);
     const answered: Array<CallbackCommand> = [];
     for (;;) {
       const step = yield* Effect.raceFirst(
@@ -672,7 +723,9 @@ const invoke = (
   });
 
 const encodedReturn = (ref: Ref.AnyPublic, value: unknown) =>
-  ref._tag === "Confect" ? Schema.encodeUnknownSync(ref.returns)(value) : value;
+  ref._tag === "Confect"
+    ? Schema.encodeUnknownEffect(ref.returns)(value).pipe(Effect.orDie)
+    : Effect.succeed(value);
 
 const runCase = <Subject extends AnyGeneratedComponent>(
   subject: Subject,
@@ -683,26 +736,30 @@ const runCase = <Subject extends AnyGeneratedComponent>(
     engine: Engine,
   ) => Effect.Effect<void, CaseFailed>,
 ) =>
-  Effect.gen(function* () {
-    const service = yield* ComponentRuntime<any>();
-    const engine = yield* Callbacks;
-    yield* body(service, engine);
-  }).pipe(
-    Effect.provide(subject.layer(options as never)),
-    Effect.catchTag("TestConfigMissing", (error: TestConfigMissing) =>
-      Effect.fail(new CaseFailed({ case: name, reason: error.message })),
-    ),
+  Effect.scoped(
+    Effect.gen(function* () {
+      const context = yield* Layer.build(subject.layer(options as never));
+      yield* body(
+        Context.get(context, ComponentRuntime<any>()),
+        Context.get(context, Callbacks),
+      );
+    }),
+  ).pipe(
+    Effect.catchTags({
+      TestConfigMissing: (error: TestConfigMissing) =>
+        Effect.fail(CaseFailed.make({ case: name, reason: error.message })),
+      MountInitFailed: (error: MountInitFailed) =>
+        Effect.fail(CaseFailed.make({ case: name, reason: error.message })),
+    }),
   ) as Effect.Effect<void, CaseFailed>;
 
 const checkImage = (name: string, engine: Engine, expected: Postimage) =>
   Effect.flatMap(engine.image, (actual) => {
-    const wanted = Object.fromEntries(
-      Object.entries(expected).filter(([, docs]) => docs.length > 0),
-    );
+    const wanted = Rec.filter(expected, (docs) => docs.length > 0);
     return canonical(actual) === canonical(wanted)
       ? Effect.void
       : Effect.fail(
-          new CaseFailed({
+          CaseFailed.make({
             case: name,
             reason: `the postimage is ${canonical(actual)}, not ${canonical(wanted)}`,
           }),
@@ -719,9 +776,10 @@ export const exports = <Subject extends AnyGeneratedComponent>(
   subject: Subject,
   rows: ExportRows<Subject["functions"]>,
 ): ReadonlyArray<Case<OptionsOf<Subject>>> =>
-  Object.entries(rows as Record<string, ReadonlyArray<any>>).flatMap(
+  Arr.flatMap(
+    Rec.toEntries(rows as Record<string, ReadonlyArray<any>>),
     ([ref, cases]) =>
-      cases.map((row): Case<OptionsOf<Subject>> => {
+      Arr.map(cases, (row): Case<OptionsOf<Subject>> => {
         const name = `${ref} ${row.name}`;
         const fn = subject.functions[ref]!;
         return {
@@ -741,21 +799,23 @@ export const exports = <Subject extends AnyGeneratedComponent>(
                       ? result.failure._tag
                       : "a return";
                   if (tag !== row.fails)
-                    return yield* new CaseFailed({
+                    return yield* CaseFailed.make({
                       case: name,
                       reason: `expected ${row.fails}, got ${tag}`,
                     });
                   return;
                 }
                 if (result._tag === "Failure")
-                  return yield* new CaseFailed({
+                  return yield* CaseFailed.make({
                     case: name,
                     reason: `expected a return, got ${result.failure._tag}`,
                   });
-                const actual = canonical(encodedReturn(fn, result.success));
-                const expected = canonical(encodedReturn(fn, row.returns));
+                const returned = yield* encodedReturn(fn, result.success);
+                const stated = yield* encodedReturn(fn, row.returns);
+                const actual = canonical(returned);
+                const expected = canonical(stated);
                 if (actual !== expected)
-                  return yield* new CaseFailed({
+                  return yield* CaseFailed.make({
                     case: name,
                     reason: `returned ${actual}, not ${expected}`,
                   });
@@ -777,32 +837,38 @@ export const callbacks = <Subject extends AnyGeneratedComponent>(
   subject: Subject,
   rows: CallbackRows<Subject["functions"], Subject["slots"]>,
 ): ReadonlyArray<Case<OptionsOf<Subject>>> =>
-  Object.entries(
-    rows as Record<string, Record<string, CallbackCase<Record<string, any>>>>,
-  ).flatMap(([slotId, outcomes]) =>
-    Object.entries(outcomes).map(([outcome, row]): Case<OptionsOf<Subject>> => {
-      const name = `${slotId} ${outcome} ${row.name}`;
-      return {
-        name,
-        owes: { kind: "callback", slot: slotId },
-        run: (options) =>
-          runCase(subject, name, options, (service, engine) =>
-            Effect.gen(function* () {
-              const { answered } = yield* invoke(
-                engine,
-                call(service, subject.functions[row.call]!, row.args ?? {}),
-                (command) => (command.slot === slotId ? outcome : "returned"),
-              );
-              if (!answered.some((command) => command.slot === slotId))
-                return yield* new CaseFailed({
-                  case: name,
-                  reason: `${row.call} never called the slot ${slotId}`,
-                });
-              yield* checkImage(name, engine, row.postimage);
-            }),
-          ),
-      };
-    }),
+  Arr.flatMap(
+    Rec.toEntries(
+      rows as Record<string, Record<string, CallbackCase<Record<string, any>>>>,
+    ),
+    ([slotId, outcomes]) =>
+      Arr.map(
+        Rec.toEntries(outcomes),
+        ([outcome, row]): Case<OptionsOf<Subject>> => {
+          const name = `${slotId} ${outcome} ${row.name}`;
+          return {
+            name,
+            owes: { kind: "callback", slot: slotId },
+            run: (options) =>
+              runCase(subject, name, options, (service, engine) =>
+                Effect.gen(function* () {
+                  const { answered } = yield* invoke(
+                    engine,
+                    call(service, subject.functions[row.call]!, row.args ?? {}),
+                    (command) =>
+                      command.slot === slotId ? outcome : "returned",
+                  );
+                  if (!Arr.some(answered, (command) => command.slot === slotId))
+                    return yield* CaseFailed.make({
+                      case: name,
+                      reason: `${row.call} never called the slot ${slotId}`,
+                    });
+                  yield* checkImage(name, engine, row.postimage);
+                }),
+              ),
+          };
+        },
+      ),
   );
 
 /**

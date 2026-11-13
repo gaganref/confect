@@ -1,3 +1,4 @@
+import * as SecretSchema from "@confect/core/SecretSchema";
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import {
   Base64,
@@ -8,9 +9,15 @@ import {
 } from "convex/values";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import * as SchemaAST from "effect/SchemaAST";
+import type * as SchemaAST from "effect/SchemaAST";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type { FunctionPath } from "./KernelValues.js";
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
+import * as Rec from "effect/Record";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Json from "./Json.js";
 
 /**
  * What a marker writes in place of a secret in text and in values: a failure
@@ -48,63 +55,16 @@ export interface Placement {
   readonly shape: Shape;
 }
 
-const isSecretNode = (ast: SchemaAST.AST): boolean =>
-  ast._tag === "Declaration" &&
-  (SchemaAST.resolve(ast)?.["representation"] as { id?: unknown } | undefined)
-    ?.id === "effect/schema/Redacted";
+const { isSecretNode } = SecretSchema;
 
 /**
- * Whether a secret node is reachable from `ast`. A suspension is followed once
- * per ancestry, so a recursive schema ends, and a suspension reused at another
- * path is followed again there.
+ * Whether `shape` holds a secret anywhere beneath it, by the walk codegen's
+ * secret policy reads too.
  */
-const reachesSecret = (
-  ast: SchemaAST.AST,
-  ancestry: Set<SchemaAST.AST>,
-): boolean => {
-  if (isSecretNode(ast)) return true;
-  switch (ast._tag) {
-    case "Objects":
-      return (
-        ast.propertySignatures.some((p) => reachesSecret(p.type, ancestry)) ||
-        ast.indexSignatures.some((i) => reachesSecret(i.type, ancestry))
-      );
-    case "Arrays":
-      return [...ast.elements, ...ast.rest].some((e) =>
-        reachesSecret(e, ancestry),
-      );
-    case "Union":
-      return ast.types.some((t) => reachesSecret(t, ancestry));
-    case "Declaration":
-      return ast.typeParameters.some((t) => reachesSecret(t, ancestry));
-    case "Suspend": {
-      if (ancestry.has(ast)) return false;
-      ancestry.add(ast);
-      const found = reachesSecret(ast.thunk(), ancestry);
-      ancestry.delete(ast);
-      return found;
-    }
-    default:
-      return false;
-  }
-};
-
-const reaches = new WeakMap<SchemaAST.AST, boolean>();
-
-/**
- * Whether `shape` holds a secret anywhere beneath it.
- */
-export const hasSecret = (shape: Shape): boolean => {
-  let found = reaches.get(shape);
-  if (found === undefined) {
-    found = reachesSecret(shape, new Set());
-    reaches.set(shape, found);
-  }
-  return found;
-};
+export const hasSecret: (shape: Shape) => boolean = SecretSchema.hasSecret;
 
 const isObject = (json: JSONValue): json is { [key: string]: JSONValue } =>
-  typeof json === "object" && json !== null && !Array.isArray(json);
+  typeof json === "object" && json !== null && !Arr.isArray(json);
 
 /**
  * A Convex encoded leaf, such as `{"$integer": …}` or `{"$bytes": …}`, or a
@@ -112,12 +72,12 @@ const isObject = (json: JSONValue): json is { [key: string]: JSONValue } =>
  */
 const isWrapped = (json: JSONValue): boolean => {
   if (!isObject(json)) return false;
-  const keys = Object.keys(json);
-  return keys.length === 1 && keys[0]!.startsWith("$");
+  const keys = Rec.keys(json);
+  return keys.length === 1 && pipe(keys[0]!, Str.startsWith("$"));
 };
 
 const isMarker = (json: JSONValue): boolean =>
-  isObject(json) && Object.keys(json).length === 1 && markerKey in json;
+  isObject(json) && Rec.keys(json).length === 1 && markerKey in json;
 
 const isRecord = (json: JSONValue): json is { [key: string]: JSONValue } =>
   isObject(json) && !isWrapped(json);
@@ -135,7 +95,7 @@ const fits = (
     case "Objects":
       return isRecord(json);
     case "Arrays":
-      return Array.isArray(json);
+      return Arr.isArray(json);
     case "String":
     case "TemplateLiteral":
       return typeof json === "string";
@@ -152,7 +112,7 @@ const fits = (
         ? isObject(json) && "$integer" in json
         : json === ast.literal;
     case "Union":
-      return ast.types.some((t) => fits(t, json, ancestry));
+      return Arr.some(ast.types, (t) => fits(t, json, ancestry));
     case "Suspend": {
       if (ancestry.has(ast)) return true;
       ancestry.add(ast);
@@ -165,7 +125,7 @@ const fits = (
       // member that is a secret fits only those values.
       return (
         !isSecretNode(ast) ||
-        ast.typeParameters.some((t) => fits(t, json, ancestry))
+        Arr.some(ast.typeParameters, (t) => fits(t, json, ancestry))
       );
     default:
       return true;
@@ -192,27 +152,26 @@ const walk = (
     case "Objects": {
       if (!isRecord(json)) return onSecret(json);
       const named = new Map(
-        shape.propertySignatures.map((p) => [String(p.name), p.type]),
+        Arr.map(shape.propertySignatures, (p) => [String(p.name), p.type]),
       );
-      return Object.fromEntries(
-        Object.entries(json).map(([key, item]) => {
+      return Rec.fromEntries(
+        Arr.map(Rec.toEntries(json), ([key, item]) => {
           const type = named.get(key);
           return [
             key,
             type !== undefined
               ? walk(type, item, onSecret)
-              : shape.indexSignatures.reduce(
-                  (value, index) => walk(index.type, value, onSecret),
-                  item,
+              : Arr.reduce(shape.indexSignatures, item, (value, index) =>
+                  walk(index.type, value, onSecret),
                 ),
           ];
         }),
       );
     }
     case "Arrays": {
-      if (!Array.isArray(json)) return onSecret(json);
+      if (!Arr.isArray(json)) return onSecret(json);
       const [rest, ...post] = shape.rest;
-      return json.map((item, i) => {
+      return Arr.map(json, (item, i) => {
         if (i < shape.elements.length)
           return walk(shape.elements[i]!, item, onSecret);
         const fromEnd = json.length - i;
@@ -222,11 +181,10 @@ const walk = (
       });
     }
     case "Union": {
-      const members = shape.types.filter((t) => fits(t, json));
+      const members = Arr.filter(shape.types, (t) => fits(t, json));
       if (members.length === 0) return onSecret(json);
-      return members.reduce(
-        (value, member) => walk(member, value, onSecret, unconsumed),
-        json,
+      return Arr.reduce(members, json, (value, member) =>
+        walk(member, value, onSecret, unconsumed),
       );
     }
     case "Suspend": {
@@ -237,9 +195,8 @@ const walk = (
       return walked;
     }
     case "Declaration":
-      return shape.typeParameters.reduce(
-        (value, parameter) => walk(parameter, value, onSecret, unconsumed),
-        json,
+      return Arr.reduce(shape.typeParameters, json, (value, parameter) =>
+        walk(parameter, value, onSecret, unconsumed),
       );
     default:
       return onSecret(json);
@@ -253,14 +210,14 @@ const replaceAt = (
 ): JSONValue => {
   if (path.length === 0) return replace(json);
   const [head, ...rest] = path as [string, ...Array<string>];
-  if (Array.isArray(json)) {
-    return json.map((item, i) =>
+  if (Arr.isArray(json)) {
+    return Arr.map(json, (item, i) =>
       `${i}` === head ? replaceAt(item, rest, replace) : item,
     );
   }
   if (isRecord(json)) {
-    return Object.fromEntries(
-      Object.entries(json).map(([key, item]) => [
+    return Rec.fromEntries(
+      Arr.map(Rec.toEntries(json), ([key, item]) => [
         key,
         key === head ? replaceAt(item, rest, replace) : item,
       ]),
@@ -274,10 +231,8 @@ const walkPlaced = (
   placements: ReadonlyArray<Placement>,
   onSecret: (value: JSONValue) => JSONValue,
 ): JSONValue =>
-  placements.reduce(
-    (value, { at, shape }) =>
-      replaceAt(value, at, (inner) => walk(shape, inner, onSecret)),
-    json,
+  Arr.reduce(placements, json, (value, { at, shape }) =>
+    replaceAt(value, at, (inner) => walk(shape, inner, onSecret)),
   );
 
 /**
@@ -298,19 +253,19 @@ export const sensitiveAt = (
     const [head, ...rest] = path as [string, ...Array<string>];
     switch (ast._tag) {
       case "Objects": {
-        const property = ast.propertySignatures.find(
-          (p) => String(p.name) === head,
+        const property = Option.getOrUndefined(
+          Arr.findFirst(ast.propertySignatures, (p) => String(p.name) === head),
         );
         // A segment is consumed here, so a suspension met again further down
         // the path is a new descent, not a cycle.
         return property !== undefined
           ? at(property.type, rest, new Set())
-          : ast.indexSignatures.some((i) => at(i.type, rest, new Set()));
+          : Arr.some(ast.indexSignatures, (i) => at(i.type, rest, new Set()));
       }
       case "Union":
-        return ast.types.some((t) => at(t, path, ancestry));
+        return Arr.some(ast.types, (t) => at(t, path, ancestry));
       case "Declaration":
-        return ast.typeParameters.some((t) => at(t, path, ancestry));
+        return Arr.some(ast.typeParameters, (t) => at(t, path, ancestry));
       case "Suspend": {
         if (ancestry.has(ast)) return false;
         ancestry.add(ast);
@@ -371,7 +326,8 @@ const memo = <A>(compute: (key: string) => A) => {
  * shape is asked for.
  */
 export const policy = (declared: Declared): Policy => {
-  const split = (key: string) => key.split("\u0000") as [string, string];
+  const split = (key: string) =>
+    pipe(key, Str.split("\u0000")) as [string, string];
   const table = memo((key) => {
     const [componentPath, name] = split(key);
     return declared.tables?.[componentPath]?.[name]?.().ast;
@@ -403,8 +359,9 @@ export const merge = (first: Declared, second: Declared): Declared => {
     a: Readonly<Record<string, Readonly<Record<string, A>>>> | undefined,
     b: Readonly<Record<string, Readonly<Record<string, A>>>> | undefined,
   ) =>
-    Object.fromEntries(
-      [...new Set([...Object.keys(a ?? {}), ...Object.keys(b ?? {})])].map(
+    Rec.fromEntries(
+      Arr.map(
+        [...new Set([...Rec.keys(a ?? {}), ...Rec.keys(b ?? {})])],
         (componentPath) => [
           componentPath,
           { ...a?.[componentPath], ...b?.[componentPath] },
@@ -418,14 +375,50 @@ export const merge = (first: Declared, second: Declared): Declared => {
 };
 
 /**
+ * A component kit's declaration, keyed from the component (`""` for itself,
+ * `child` for a component it mounts), as the backend keys it at
+ * `componentPath`.
+ */
+export const qualify = (
+  declared: Declared,
+  componentPath: string,
+): Declared => {
+  const rekey = <A>(
+    record: Readonly<Record<string, A>> | undefined,
+  ): Record<string, A> =>
+    Rec.mapKeys(record ?? {}, (relative) =>
+      relative === "" ? componentPath : `${componentPath}/${relative}`,
+    );
+  return {
+    tables: rekey(declared.tables),
+    functions: rekey(declared.functions),
+  };
+};
+
+/**
+ * `base` with `declared`'s schemas added; `declared` wins where both name one.
+ */
+export const extend = (base: Policy, declared: Declared): Policy => {
+  const added = policy(declared);
+  return {
+    table: (componentPath, name) =>
+      added.table(componentPath, name) ?? base.table(componentPath, name),
+    args: (functionPath) => added.args(functionPath) ?? base.args(functionPath),
+    returns: (functionPath) =>
+      added.returns(functionPath) ?? base.returns(functionPath),
+  };
+};
+
+/**
  * A Confect database schema's tables, as a policy's `tables` entry for one
  * component. No table's schema is built until the kernel asks for its shape.
  */
 export const tablesOf = (
   databaseSchema: DatabaseSchema.AnyWithProps,
 ): Readonly<Record<string, Lazy>> =>
-  Object.fromEntries(
-    Object.values(DatabaseSchema.tables(databaseSchema)).map(
+  Rec.fromEntries(
+    Arr.map(
+      Rec.values(DatabaseSchema.tables(databaseSchema)),
       (table: { readonly tableName: string; readonly Fields: Schema.Top }) => [
         table.tableName,
         () => table.Fields,
@@ -439,7 +432,7 @@ export const tablesOf = (
  */
 const leafTexts = (json: JSONValue): Array<string> => {
   if (typeof json === "string") return [json];
-  if (Array.isArray(json)) return json.flatMap(leafTexts);
+  if (Arr.isArray(json)) return Arr.flatMap(json, leafTexts);
   if (isObject(json)) {
     if ("$integer" in json) {
       try {
@@ -450,7 +443,7 @@ const leafTexts = (json: JSONValue): Array<string> => {
       }
     }
     if (isWrapped(json)) return [];
-    return Object.values(json).flatMap(leafTexts);
+    return Arr.flatMap(Rec.values(json), leafTexts);
   }
   return [];
 };
@@ -471,7 +464,7 @@ export class Secrets {
    * position.
    */
   keep(value: JSONValue): number {
-    const key = JSON.stringify(value);
+    const key = Json.stringify(value);
     const known = this.refs.get(key);
     if (known !== undefined) return known;
     this.values.push(value);
@@ -489,9 +482,10 @@ export class Secrets {
    * first, so a secret inside another is never marked half.
    */
   searchable(): ReadonlyArray<string> {
-    return [...this.texts]
-      .filter((text) => text.length >= searchableLength)
-      .sort((a, b) => b.length - a.length);
+    return Arr.filter(
+      [...this.texts],
+      (text) => text.length >= searchableLength,
+    ).sort((a, b) => b.length - a.length);
   }
 
   copy(): Secrets {
@@ -526,7 +520,7 @@ export const keep = (
 };
 
 const containsSecret = (text: string, searchable: ReadonlyArray<string>) =>
-  searchable.some((secret) => text.includes(secret));
+  Arr.some(searchable, (secret) => pipe(text, Str.includes(secret)));
 
 /**
  * The backstop beneath every schema walk: each string, outside a marker, that
@@ -541,14 +535,14 @@ const backstop = (
   const go = (value: JSONValue): JSONValue => {
     if (typeof value === "string")
       return containsSecret(value, searchable) ? replace(value) : value;
-    if (Array.isArray(value)) return value.map(go);
+    if (Arr.isArray(value)) return Arr.map(value, go);
     if (isObject(value)) {
       if (isWrapped(value)) return value;
       // A document's ID and creation time are its identity, never a secret
       // value, even when a secret field holds the same ID. Convex reserves
       // these names for system fields, so no user value is skipped.
-      return Object.fromEntries(
-        Object.entries(value).map(([key, item]) => [
+      return Rec.fromEntries(
+        Arr.map(Rec.toEntries(value), ([key, item]) => [
           key,
           systemFields.has(key) ? item : go(item),
         ]),
@@ -604,9 +598,9 @@ const holds = (bytes: Uint8Array, needle: Uint8Array): boolean => {
  */
 export const markBytes = (bytes: Uint8Array, secrets: Secrets): JSONValue => {
   const base64 = Base64.fromByteArray(bytes);
-  return secrets
-    .searchable()
-    .some((secret) => holds(bytes, utf8.encode(secret)))
+  return Arr.some(secrets.searchable(), (secret) =>
+    holds(bytes, utf8.encode(secret)),
+  )
     ? { [markerKey]: secrets.keep(base64) }
     : base64;
 };
@@ -645,7 +639,7 @@ export const unmark = (
 ): Result.Result<JSONValue, KernelRefusal.SnapshotSecretMissing> => {
   let missing: unknown = undefined;
   const go = (value: JSONValue): JSONValue => {
-    if (Array.isArray(value)) return value.map(go);
+    if (Arr.isArray(value)) return Arr.map(value, go);
     if (!isObject(value)) return value;
     if (isMarker(value)) {
       const ref = value[markerKey];
@@ -653,17 +647,17 @@ export const unmark = (
       if (raw === undefined) missing ??= ref;
       return raw ?? null;
     }
-    return Object.fromEntries(
-      Object.entries(value).map(([key, item]) => [key, go(item)]),
+    return Rec.fromEntries(
+      Arr.map(Rec.toEntries(value), ([key, item]) => [key, go(item)]),
     );
   };
   const unmarked = go(json);
   return missing === undefined
     ? Result.succeed(unmarked)
     : Result.fail(
-        new KernelRefusal.SnapshotSecretMissing({
-          ref: JSON.stringify(missing),
-          message: `The snapshot marks a secret at ${JSON.stringify(missing)}, which the secrets passed to restore do not hold. Restore with the secrets of the backend that exported it.`,
+        KernelRefusal.SnapshotSecretMissing.make({
+          ref: Json.stringify(missing),
+          message: `The snapshot marks a secret at ${Json.stringify(missing)}, which the secrets passed to restore do not hold. Restore with the secrets of the backend that exported it.`,
         }),
       );
 };
@@ -673,10 +667,16 @@ export const unmark = (
  * replaced by the marker.
  */
 export const scrubText = (text: string, secrets: Secrets): string =>
-  secrets.searchable().reduce((scrubbed, secret) => {
-    const escaped = JSON.stringify(secret).slice(1, -1);
-    return scrubbed.split(secret).join(marker).split(escaped).join(marker);
-  }, text);
+  Arr.reduce(secrets.searchable(), text, (scrubbed, secret) => {
+    const escaped = pipe(Json.stringify(secret), Str.slice(1, -1));
+    return pipe(
+      scrubbed,
+      Str.split(secret),
+      Arr.join(marker),
+      Str.split(escaped),
+      Arr.join(marker),
+    );
+  });
 
 const isPlainObject = (value: object): boolean =>
   Object.getPrototypeOf(value) === Object.prototype ||
@@ -692,7 +692,7 @@ const isPlainObject = (value: object): boolean =>
 export const failure = (thrown: unknown, secrets: Secrets): unknown => {
   if (secrets.searchable().length === 0) return thrown;
   const copyable = (value: object) =>
-    Array.isArray(value) || value instanceof Error || isPlainObject(value);
+    Arr.isArray(value) || value instanceof Error || isPlainObject(value);
   const field = (value: object, key: string | symbol) => {
     const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
     return {
@@ -708,7 +708,7 @@ export const failure = (thrown: unknown, secrets: Secrets): unknown => {
     if (typeof value !== "object" || value === null) return false;
     if (visited.has(value) || !copyable(value)) return false;
     visited.add(value);
-    return Reflect.ownKeys(value).some((key) =>
+    return Arr.some(Reflect.ownKeys(value), (key) =>
       holdsSecret(field(value, key).raw),
     );
   };
@@ -722,7 +722,7 @@ export const failure = (thrown: unknown, secrets: Secrets): unknown => {
     if (typeof value !== "object" || value === null) return value;
     if (copies.has(value)) return copies.get(value);
     if (!copyable(value)) return value;
-    if (Array.isArray(value)) {
+    if (Arr.isArray(value)) {
       // The copy is registered first, so a cycle through it reaches the copy.
       // Its entries and its own other properties, such as a `code`, are copied.
       const items: Array<unknown> = [];
