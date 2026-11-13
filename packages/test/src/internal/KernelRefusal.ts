@@ -6,7 +6,12 @@ import * as Schema from "effect/Schema";
 export class RequiresBinary extends Schema.TaggedError<RequiresBinary>()(
   "RequiresBinary",
   {
-    operation: Schema.Literals(["textSearch", "vectorSearch"]),
+    operation: Schema.Literals([
+      "textSearch",
+      "vectorSearch",
+      "storageUpload",
+      "storageDownload",
+    ]),
     message: Schema.String,
   },
 ) {}

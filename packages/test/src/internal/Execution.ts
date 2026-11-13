@@ -9,7 +9,8 @@ import {
   type SchemaDefinition,
   type UserIdentity,
 } from "convex/server";
-import { convexToJson, jsonToConvex, type Value } from "convex/values";
+import { Base64, convexToJson, jsonToConvex, type Value } from "convex/values";
+import * as Result from "effect/Result";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
 import * as Globals from "./Globals.js";
@@ -19,6 +20,7 @@ import * as KernelQuery from "./KernelQuery.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type * as ReadSet from "./ReadSet.js";
 import * as Scheduling from "./Scheduling.js";
+import * as Storage from "./Storage.js";
 import type {
   DocumentId,
   FunctionPath,
@@ -425,6 +427,10 @@ export class World {
    */
   private floor = Number.NEGATIVE_INFINITY;
   private readonly targets = new Map<DocumentId, Scheduling.Target>();
+  private readonly files = new Map<DocumentId, Storage.File>();
+  private readonly legacyIds = new Map<string, DocumentId>();
+  private nextFile = 1;
+  private nextUploadToken = 1;
 
   constructor(
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
@@ -1509,10 +1515,58 @@ export class World {
           this.cancelJob(attempt, execution.componentPath, args.id),
         );
         return JSON.stringify({});
-      case "1.0/storageDelete":
-      case "1.0/storageGetUrl":
+      case "1.0/storageGetUrl": {
+        const found = this.findFile(
+          execution,
+          "storage.getUrl",
+          args.storageId,
+        );
+        return JSON.stringify(
+          found === null ? null : Storage.fileUrl(found.file),
+        );
+      }
+      case "1.0/storageGetMetadata": {
+        const found = this.findFile(
+          execution,
+          "storage.getMetadata",
+          args.storageId,
+        );
+        return JSON.stringify(
+          found === null ? null : Storage.metadata(found.doc, found.file),
+        );
+      }
+      case "1.0/storageGet": {
+        const found = this.findFile(execution, "storage.get", args.storageId);
+        return JSON.stringify(
+          found === null
+            ? null
+            : {
+                blob: Base64.fromByteArray(found.file.bytes),
+                contentType: found.doc["contentType"],
+              },
+        );
+      }
       case "1.0/storageGenerateUploadUrl":
-        throw KernelRefusal.rowPending("storage", 6);
+        return JSON.stringify(
+          Storage.uploadUrl(`kernel-unsigned-${this.nextUploadToken++}`),
+        );
+      case "1.0/storageStore":
+        return JSON.stringify(
+          this.storageWrite(execution, (attempt) =>
+            this.storeFile(
+              execution,
+              attempt,
+              Base64.toByteArray(args.blob),
+              args.contentType,
+              args.sha256,
+            ),
+          ),
+        );
+      case "1.0/storageDelete":
+        this.storageWrite(execution, (attempt) =>
+          this.deleteFile(execution, attempt, args.storageId),
+        );
+        return JSON.stringify(null);
       case "1.0/getTransactionMetrics":
         throw KernelRefusal.rowPending("transaction limits", 6);
       case "1.0/actions/vectorSearch":
@@ -1524,12 +1578,173 @@ export class World {
     }
   }
 
-  jsSyscall(op: string): Promise<never> {
-    return Promise.reject(
-      op.startsWith("storage/")
-        ? KernelRefusal.rowPending("storage", 6)
-        : new Error(`The test kernel does not support js syscall: "${op}"`),
+  /**
+   * An action's `storage.store` and `storage.get`. The binary streams the blob
+   * through its upload and download paths (`storeBlob` and `getBlob` in
+   * `npm-packages/udf-runtime/src/storage.ts`). The kernel holds the bytes in
+   * memory and keeps the same rows and refusals.
+   */
+  jsSyscall(op: string, args: any): Promise<any> {
+    return Promise.resolve().then((): unknown => {
+      const execution = current();
+      switch (op) {
+        case "storage/storeBlob": {
+          const { blob, options } = args as {
+            blob: unknown;
+            options?: { sha256?: string };
+          };
+          if (!(blob instanceof Blob)) {
+            throw new Error(
+              "store() expects a Blob. If you are trying to store a Request, `await request.blob()` will give you the correct input.",
+            );
+          }
+          return blob
+            .arrayBuffer()
+            .then((buffer) =>
+              this.storageWrite(execution, (attempt) =>
+                this.storeFile(
+                  execution,
+                  attempt,
+                  new Uint8Array(buffer),
+                  blob.type,
+                  options?.sha256,
+                ),
+              ),
+            );
+        }
+        case "storage/getBlob": {
+          const { storageId } = args as { storageId: unknown };
+          if (typeof storageId !== "string") {
+            throw new Error(
+              `storage.get requires a string storageId but received ${String(storageId)}`,
+            );
+          }
+          const found = this.findFile(execution, "storage.get", storageId);
+          return found === null
+            ? null
+            : new Blob([found.file.bytes as Uint8Array<ArrayBuffer>], {
+                type: (found.doc["contentType"] as string | null) ?? "",
+              });
+        }
+        default:
+          throw new Error(
+            `The test kernel does not support js syscall: "${op}"`,
+          );
+      }
+    });
+  }
+
+  // File storage. A file is a row in its component's `_storage` table, read
+  // and written through the attempt like any document, and its bytes beside it.
+
+  /**
+   * Where a function reads storage: its attempt, or, from an action, the latest
+   * commit, as the binary's action callbacks read it.
+   */
+  private reader(execution: Execution): KernelAttempt {
+    return execution.attempt ?? new KernelAttempt(this.state);
+  }
+
+  /**
+   * Write through the function's attempt, or, from an action, commit at once.
+   */
+  private storageWrite<A>(
+    execution: Execution,
+    write: (attempt: KernelAttempt) => A,
+  ): A {
+    return execution.attempt === undefined
+      ? this.commitNow(write)
+      : write(execution.attempt);
+  }
+
+  /**
+   * The file a storage ID names in the function's component, read through
+   * `attempt`, or `null` when it names none.
+   */
+  private findFile(
+    execution: Execution,
+    operation: string,
+    storageId: unknown,
+    attempt: KernelAttempt = this.reader(execution),
+  ): {
+    readonly id: DocumentId;
+    readonly doc: StoredDocument;
+    readonly file: Storage.File;
+  } | null {
+    const parsed = orThrow(Storage.parseId(operation, storageId));
+    const id =
+      parsed.kind === "document" ? parsed.id : this.legacyIds.get(parsed.uuid);
+    if (id === undefined) return null;
+    attempt.readDocument(execution.componentPath, id);
+    const doc = attempt.get(execution.componentPath, id);
+    const file = this.files.get(id);
+    return doc === null || file === undefined ? null : { id, doc, file };
+  }
+
+  /**
+   * Store `bytes` as a new file in the function's component. The content type
+   * and the declared digest are checked before anything is written.
+   */
+  private storeFile(
+    execution: Execution,
+    attempt: KernelAttempt,
+    bytes: Uint8Array,
+    type: unknown,
+    expectedSha256: unknown,
+  ): DocumentId {
+    const contentType = orThrow(Storage.contentType("storage.store", type));
+    orThrow(
+      Storage.checkDigest(
+        "storage.store",
+        expectedSha256,
+        Storage.digest(bytes),
+      ),
     );
+    const id = this.generateId(Storage.table);
+    const file: Storage.File = {
+      componentPath: execution.componentPath,
+      uuid: Storage.uuid(this.nextFile++),
+      bytes,
+    };
+    this.files.set(id, file);
+    this.legacyIds.set(file.uuid, id);
+    attempt.write(
+      execution.componentPath,
+      id,
+      Storage.row(
+        id,
+        this.creationTime(
+          execution.udfType === "action" ? this.now() : execution.startTime,
+        ),
+        bytes,
+        contentType,
+      ),
+    );
+    return id;
+  }
+
+  /**
+   * Delete a file's row. A storage ID that names no file is refused, as the
+   * binary's `FileStorage::delete` refuses it.
+   */
+  private deleteFile(
+    execution: Execution,
+    attempt: KernelAttempt,
+    storageId: unknown,
+  ) {
+    const found = this.findFile(
+      execution,
+      "storage.delete",
+      storageId,
+      attempt,
+    );
+    if (found === null) {
+      throw new Storage.StorageIdNotFound({
+        storageId: String(storageId),
+        message: `storage id ${String(storageId)} not found`,
+      });
+    }
+    attempt.write(execution.componentPath, found.id, null);
   }
 
   // Documents. The checks and messages are convex-test's.
@@ -1689,6 +1904,11 @@ const closed = (execution: Execution, operation: string) =>
     operation,
     message: `"${operation}" reached mutation ${execution.udfPath} after it returned and its syscalls settled. Await every read and write inside the handler.`,
   });
+
+const orThrow = <A, E>(result: Result.Result<A, E>): A => {
+  if (Result.isFailure(result)) throw result.failure;
+  return result.success;
+};
 
 const transaction = (execution: Execution): KernelAttempt => {
   if (execution.attempt === undefined) {

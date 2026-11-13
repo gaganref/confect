@@ -19,12 +19,6 @@ export const placements: ReadonlyArray<Placement> = [
   { file: "http.test.ts", row: 6, needs: "HTTP routes, after storage" },
   {
     file: "integration.test.ts",
-    name: "Storage",
-    row: 6,
-    needs: "storage",
-  },
-  {
-    file: "integration.test.ts",
     name: "TransactionMetadata",
     row: 6,
     needs: "transaction limits",
