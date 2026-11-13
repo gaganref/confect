@@ -29,7 +29,7 @@ class BackendEnvironmentSetupError extends Schema.TaggedError<
   BackendEnvironmentSetupError,
   { readonly brand: unique symbol }
 >()("BackendEnvironmentSetupError", {
-  name: Schema.String,
+  variable: Schema.String,
   exitCode: Schema.Finite,
 }) {}
 
@@ -113,7 +113,7 @@ const make = Effect.fnUntraced(function* (options: {
     const code = yield* spawner.exitCode(command).pipe(Effect.orDie);
     if (code !== 0)
       return yield* BackendEnvironmentSetupError.make({
-        name,
+        variable: name,
         exitCode: code,
       });
   });

@@ -47,7 +47,7 @@ export class AmbiguousProject extends Schema.TaggedError<AmbiguousProject>()(
   "AmbiguousProject",
   {
     teamId: Schema.Finite,
-    name: Schema.String,
+    projectName: Schema.String,
     projectIds: Schema.Array(Schema.Finite),
   },
 ) {}
@@ -74,7 +74,7 @@ export const provider = Effect.gen(function* () {
     if (matches.length > 1)
       return yield* AmbiguousProject.make({
         teamId,
-        name,
+        projectName: name,
         projectIds: Array.map(matches, (project) => project.id),
       });
     return matches[0];

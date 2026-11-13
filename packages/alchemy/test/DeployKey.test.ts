@@ -97,6 +97,7 @@ it.effect("does not confuse similar key labels with the requested name", () => {
       provider.read({ ...lifecycle, olds: props, output: undefined }),
     );
     assert(error._tag === "DeployKeyRecoveryRequired");
+    expect(error.keyName).toBe(props.name);
     expect(error.keyIds).toEqual([1, 2]);
     expect(mock.client.createDeployKey).not.toHaveBeenCalled();
   }).pipe(Effect.provide(mock.layer));

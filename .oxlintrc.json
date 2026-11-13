@@ -390,16 +390,6 @@
     },
     {
       "files": [
-        "packages/alchemy/src/DeployKey.ts",
-        "packages/alchemy/src/Project.ts",
-        "tools/local-backend/src/LocalBackend.ts"
-      ],
-      "rules": {
-        "effecttsgo/error-payload-shadows-name": "off"
-      }
-    },
-    {
-      "files": [
         "packages/alchemy/test/ConvexClient.test.ts",
         "packages/alchemy/test/integration/MountInit.test.ts",
         "packages/cli/src/Declaration.ts",

@@ -47,7 +47,7 @@ export class DeployKeyRecoveryRequired extends Schema.TaggedError<DeployKeyRecov
   "DeployKeyRecoveryRequired",
   {
     deploymentName: Schema.String,
-    name: Schema.String,
+    keyName: Schema.String,
     keyIds: Schema.Array(Schema.Finite),
   },
 ) {}
@@ -67,7 +67,8 @@ export const provider = Effect.gen(function* () {
     deploymentName: string,
     name: string,
     keyIds: ReadonlyArray<number>,
-  ) => DeployKeyRecoveryRequired.make({ deploymentName, name, keyIds });
+  ) =>
+    DeployKeyRecoveryRequired.make({ deploymentName, keyName: name, keyIds });
   return {
     diff: Effect.fn("DeployKey.diff")(function* ({ news, output }) {
       if (!isResolved(news) || output === undefined) return;

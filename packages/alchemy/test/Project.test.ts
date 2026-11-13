@@ -90,7 +90,12 @@ it.effect(
       const ambiguous = yield* Effect.flip(
         provider.read({ ...lifecycle, olds: news, output: undefined }),
       );
-      expect(ambiguous._tag).toBe("AmbiguousProject");
+      expect(ambiguous).toMatchObject({
+        _tag: "AmbiguousProject",
+        teamId: 10,
+        projectName: "example",
+        projectIds: [1, 2],
+      });
       expect(mock.client.createProject).not.toHaveBeenCalled();
     }).pipe(Effect.provide(mock.layer));
   },

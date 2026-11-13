@@ -10,11 +10,6 @@
     "packages/server/src/HttpRouter.ts": 1,
     "packages/server/src/internal/httpBody.ts": 1
   },
-  "effecttsgo/error-payload-shadows-name": {
-    "packages/alchemy/src/DeployKey.ts": 1,
-    "packages/alchemy/src/Project.ts": 1,
-    "tools/local-backend/src/LocalBackend.ts": 1
-  },
   "effecttsgo/global-json": {
     "packages/alchemy/test/ConvexClient.test.ts": 2,
     "packages/alchemy/test/integration/MountInit.test.ts": 1,
