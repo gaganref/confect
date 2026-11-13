@@ -4,6 +4,7 @@ import type { Attempt as AttemptNumber } from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
 import type { DocumentId, StoredDocument } from "./KernelValues.js";
 import { tableNameFromId } from "./KernelValues.js";
+import * as Metering from "./Metering.js";
 import type * as ReadSet from "./ReadSet.js";
 
 /**
@@ -44,6 +45,12 @@ export class KernelAttempt {
   private readonly overlay: Overlay = new Map();
   private readonly life: Life = { running: 0, started: 0, open: true };
   private readonly allReads: Array<ReadSet.Read>;
+  /**
+   * The attempt's transaction-limit accounting. A nested mutation's frame
+   * meters into its own child, so its writes merge or drop with it while its
+   * reads stay.
+   */
+  readonly meter: Metering.Meter;
 
   constructor(
     readonly snapshot: Kernel.State,
@@ -51,6 +58,7 @@ export class KernelAttempt {
     private readonly parent?: KernelAttempt,
   ) {
     this.allReads = parent?.allReads ?? [];
+    this.meter = parent?.meter.child() ?? new Metering.Meter();
   }
 
   get reads(): ReadonlyArray<ReadSet.Read> {
@@ -172,6 +180,7 @@ export class KernelAttempt {
     }
     for (const [componentPath, writes] of this.overlay)
       for (const [id, doc] of writes) this.parent.write(componentPath, id, doc);
+    this.meter.merge();
   }
 
   /**
