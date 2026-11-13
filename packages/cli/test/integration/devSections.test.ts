@@ -7,6 +7,8 @@ import * as Ref from "effect/Ref";
 import * as Schedule from "effect/Schedule";
 import * as Option from "effect/Option";
 import * as Project from "./Project";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 const success = "Generated files are up-to-date";
 
@@ -32,35 +34,41 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
           );
           const spec =
             'import { Policy } from "./policy";\n' +
-            Project.spec.replace(
-              "GroupSpec.make()",
-              "GroupSpec.make().middleware(Policy)",
+            pipe(
+              Project.spec,
+              String.replace(
+                "GroupSpec.make()",
+                "GroupSpec.make().middleware(Policy)",
+              ),
             );
           yield* project.write("confect/notes.spec.ts", spec);
           yield* project.write(
             "confect/notes.impl.ts",
             'import { MiddlewareImpl } from "@confect/server";\nimport { Policy } from "./policy";\n' +
-              Project.impl.replace(
-                "GroupImpl.finalize);",
-                "Layer.provide(MiddlewareImpl.make(databaseSchema, Policy, effect => effect)), GroupImpl.finalize);",
+              pipe(
+                Project.impl,
+                String.replace(
+                  "GroupImpl.finalize);",
+                  "Layer.provide(MiddlewareImpl.make(databaseSchema, Policy, effect => effect)), GroupImpl.finalize);",
+                ),
               ),
           );
           const watching = yield* project.start("dev");
           yield* watching.waitFor(success);
           const registrationPath = `${project.root}/confect/_generated/registeredFunctions/notes.ts`;
           const required = 'GroupImpl.finalize({ required: [{ key: "Policy" }]';
-          expect(yield* fs.readFileString(registrationPath)).toContain(
-            required,
-          );
+          const registrationPathContents =
+            yield* fs.readFileString(registrationPath);
+          expect(registrationPathContents).toContain(required);
           yield* project.write(
             "confect/notes.spec.ts",
             `${spec}\nconsole.log("REQUIRED_SPEC_EDIT");\n`,
           );
           yield* watching.waitFor("REQUIRED_SPEC_EDIT");
           yield* watching.waitFor(success);
-          expect(yield* fs.readFileString(registrationPath)).toContain(
-            required,
-          );
+          const registrationPathContents2 =
+            yield* fs.readFileString(registrationPath);
+          expect(registrationPathContents2).toContain(required);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -92,7 +100,10 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
           const standby = yield* Ref.get(watching.output).pipe(
             Effect.map((output) => {
               const matches = [
-                ...output.matchAll(/Evaluator ready[^\n]*pid: (\d+)/g),
+                ...pipe(
+                  output,
+                  String.matchAll(/Evaluator ready[^\n]*pid: (\d+)/g),
+                ),
               ];
               const pid = Number(matches.at(-1)?.[1]);
               return Number.isInteger(pid) && isAlive(pid) ? pid : undefined;
@@ -136,9 +147,11 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
             "confect/tasks.spec.ts",
             when === "initial sync"
               ? dependentSpec
-              : dependentSpec
-                  .replace("makeNode()", "make()")
-                  .replace("publicNodeAction", "publicAction"),
+              : pipe(
+                  dependentSpec,
+                  String.replace("makeNode()", "make()"),
+                  String.replace("publicNodeAction", "publicAction"),
+                ),
           );
           const watching = yield* project.start("dev", [
             "--component-dir",
@@ -154,35 +167,36 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
             'Group "tasks" in tasks.spec.ts uses the Node runtime. Convex components do not support Node.js functions.';
           yield* watching.waitFor(message);
           if (when === "initial sync") yield* watching.waitFor(message);
-          expect(yield* Ref.get(watching.output)).not.toContain(success);
-          expect(yield* Ref.get(watching.output)).toContain(
+          const output2 = yield* Ref.get(watching.output);
+          expect(output2).not.toContain(success);
+          const output3 = yield* Ref.get(watching.output);
+          expect(output3).toContain(
             "Restored generated output after rejecting the Node group.",
           );
           if (when === "initial sync") {
-            expect(yield* fs.exists(`${project.root}/confect/_generated`)).toBe(
-              false,
+            const found = yield* fs.exists(
+              `${project.root}/confect/_generated`,
             );
+            expect(found).toBe(false);
           } else {
-            expect(
-              yield* fs.readFileString(
-                `${project.root}/confect/_generated/component.ts`,
-              ),
-            ).toContain("$Component.contract($spec, $scope,");
+            const contents = yield* fs.readFileString(
+              `${project.root}/confect/_generated/component.ts`,
+            );
+            expect(contents).toContain("$Component.contract($spec, $scope,");
           }
           const settled = yield* Ref.get(watching.output);
           yield* Effect.sleep("6 seconds");
-          expect(yield* Ref.get(watching.output)).toBe(settled);
+          const output4 = yield* Ref.get(watching.output);
+          expect(output4).toBe(settled);
           yield* fs.remove(`${project.root}/confect/tasks.spec.ts`);
           yield* fs.remove(`${project.root}/confect/tasks.impl.ts`);
           yield* watching.waitFor(success);
-          expect(
-            yield* fs.readFileString(
-              `${project.root}/confect/_generated/component.ts`,
-            ),
-          ).toContain("$Component.contract($spec, $scope,");
-          expect(yield* fs.exists(`${project.root}/convex/tasks.ts`)).toBe(
-            false,
+          const contents2 = yield* fs.readFileString(
+            `${project.root}/confect/_generated/component.ts`,
           );
+          expect(contents2).toContain("$Component.contract($spec, $scope,");
+          const found2 = yield* fs.exists(`${project.root}/convex/tasks.ts`);
+          expect(found2).toBe(false);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -208,18 +222,15 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
           // Watchers start after the initial sync reports success; an edit
           // before they are up is not seen.
           yield* Effect.sleep("2 seconds");
-          expect(yield* read("convex/convex.config.ts")).toContain(
-            "FIRST: v.string(),",
-          );
+          const convexConfig = yield* read("convex/convex.config.ts");
+          expect(convexConfig).toContain("FIRST: v.string(),");
           yield* Ref.set(watching.output, "");
           yield* project.write("confect/env.ts", env("SECOND"));
           yield* watching.waitFor(success);
-          expect(yield* read("convex/convex.config.ts")).toContain(
-            "SECOND: v.string(),",
-          );
-          expect(yield* read("confect/_generated/manifest.ts")).toContain(
-            '"SECOND": {',
-          );
+          const convexConfig2 = yield* read("convex/convex.config.ts");
+          expect(convexConfig2).toContain("SECOND: v.string(),");
+          const manifest = yield* read("confect/_generated/manifest.ts");
+          expect(manifest).toContain('"SECOND": {');
           const auth = (applicationID: string) =>
             `import { Auth } from "@confect/core";\nimport app from "./app";\nexport default Auth.make(app, { providers: [{ domain: "https://login.example.test", applicationID: "${applicationID}" }] });\n`;
           yield* Ref.set(watching.output, "");
@@ -228,12 +239,12 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
           yield* Ref.set(watching.output, "");
           yield* project.write("confect/auth.ts", auth("second"));
           yield* watching.waitFor(success);
-          expect(yield* read("convex/auth.config.ts")).toContain(
-            'applicationID: "second",',
-          );
+          const authConfig = yield* read("convex/auth.config.ts");
+          expect(authConfig).toContain('applicationID: "second",');
           const settled = yield* Ref.get(watching.output);
           yield* Effect.sleep("2 seconds");
-          expect(yield* Ref.get(watching.output)).toBe(settled);
+          const output2 = yield* Ref.get(watching.output);
+          expect(output2).toBe(settled);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -282,9 +293,10 @@ export const observe = { owner: "test/observe", format: 1, describe: () => null,
           );
           yield* watching.waitFor(success);
           const fs = yield* FileSystem.FileSystem;
-          expect(
-            yield* fs.exists(`${project.root}/confect/_generated/observe.ts`),
-          ).toBe(true);
+          const found = yield* fs.exists(
+            `${project.root}/confect/_generated/observe.ts`,
+          );
+          expect(found).toBe(true);
         }).pipe(Effect.scoped),
       { timeout: 45000 },
     );

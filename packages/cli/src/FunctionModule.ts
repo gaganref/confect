@@ -5,7 +5,6 @@ import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as HashSet from "effect/HashSet";
 import * as Match from "effect/Match";
-import * as Schema from "effect/Schema";
 import * as String from "effect/String";
 import { UnownedConvexEntrypointError } from "./CodegenError.js";
 import * as Declaration from "./Declaration.js";
@@ -24,6 +23,8 @@ import {
   toPosixPath,
 } from "./utils.js";
 import { ProjectRoot } from "./ProjectRoot.js";
+import * as Option from "effect/Option";
+import { quote } from "./Json.js";
 
 const RESERVED_CONVEX_TS_FILE_NAMES = new Set([
   "schema.ts",
@@ -42,25 +43,33 @@ const getEntrypoints = Effect.gen(function* () {
   const path = yield* Path.Path;
   const convex = yield* ConvexDirectory.get;
   const files = yield* fs.readDirectory(convex, { recursive: true });
-  const components = files
-    .filter(
+  const components = pipe(
+    files,
+    Array.filter(
       (file) =>
         path.basename(file) === "convex.config.ts" &&
         path.dirname(file) !== ".",
-    )
-    .map((file) => path.dirname(file) + path.sep);
-  return files.filter((file) => {
+    ),
+    Array.map((file) => path.dirname(file) + path.sep),
+  );
+  return Array.filter(files, (file) => {
     const base = path.basename(file);
     return (
-      !file.startsWith("_generated" + path.sep) &&
-      !components.some((component) => file.startsWith(component)) &&
+      !pipe(file, String.startsWith("_generated" + path.sep)) &&
+      !Array.some(components, (component) =>
+        pipe(file, String.startsWith(component)),
+      ) &&
       /\.(?:js|mjs|cjs|ts|tsx|mts|cts|jsx)$/.test(base) &&
-      !base.startsWith(".") &&
-      !base.startsWith("#") &&
-      (base.match(/\./g)?.length ?? 0) === 1 &&
+      !pipe(base, String.startsWith(".")) &&
+      !pipe(base, String.startsWith("#")) &&
+      pipe(
+        base,
+        String.match(/\./g),
+        Option.match({ onNone: () => 0, onSome: (dots) => dots.length }),
+      ) === 1 &&
       base !== "schema.ts" &&
       base !== "schema.js" &&
-      !file.includes(" ")
+      !pipe(file, String.includes(" "))
     );
   });
 });
@@ -78,14 +87,17 @@ const tokenize = (
     if (match === null) return undefined;
     const value = match[0];
     if (/^\s|^\//.test(value)) continue;
-    if (value.startsWith('"') || value.startsWith("'")) {
-      const literal = value.slice(1, -1);
+    if (
+      pipe(value, String.startsWith('"')) ||
+      pipe(value, String.startsWith("'"))
+    ) {
+      const literal = pipe(value, String.slice(1, -1));
       tokens.push(
-        JSON.stringify(
-          literal.startsWith(".")
+        quote(
+          pipe(literal, String.startsWith("."))
             ? path.resolve(
                 path.dirname(modulePath),
-                literal.replace(/\.js$/, ""),
+                pipe(literal, String.replace(/\.js$/, "")),
               )
             : literal,
         ),
@@ -94,8 +106,6 @@ const tokenize = (
   }
   return tokens;
 };
-
-const encodeString = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
 const matchesShape = (
   actual: readonly string[],
@@ -117,6 +127,9 @@ const legacyRouter = String.replace(
   "HttpRouter.forSchema(schema)(http.routes, ",
 );
 
+/**
+ * @internal
+ */
 export const assertOwnedEntrypoints = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -156,12 +169,11 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
       ],
     ],
   ]);
+  const written2 = yield* SectionFiles.written;
   // The declared HTTP router first imports each file a manifest section wrote.
   const sectionImports = new Set(
-    (yield* SectionFiles.written).map((file) =>
-      encodeString(
-        path.join(confect, "_generated", path.basename(file, ".ts")),
-      ),
+    Array.map(written2, (file) =>
+      quote(path.join(confect, "_generated", path.basename(file, ".ts"))),
     ),
   );
   const withoutSectionImports = (
@@ -178,26 +190,27 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
       continue;
     const tokens = tokenize(contents, absolute, path);
     if (tokens !== undefined) {
+      const shapes = optional.get(relative);
       if (
-        optional
-          .get(relative)
-          ?.some((template) =>
-            matchesShape(
-              relative === "http.ts" ? withoutSectionImports(tokens) : tokens,
-              tokenize(template, absolute, path)!,
-            ),
-          )
+        shapes !== undefined &&
+        Array.some(shapes, (template) =>
+          matchesShape(
+            relative === "http.ts" ? withoutSectionImports(tokens) : tokens,
+            tokenize(template, absolute, path)!,
+          ),
+        )
       )
         continue;
       if (path.extname(relative) === ".ts") {
-        const names = tokens.flatMap((token, index) =>
+        const names = Array.flatMap(tokens, (token, index) =>
           token === "export" && tokens[index + 1] === "const"
             ? [tokens[index + 2]!]
             : [],
         );
         const group = yield* GroupPath.fromGroupModulePath(relative);
         const reusesContext = names.includes("experimental_reuseContext");
-        const functionNames = names.filter(
+        const functionNames = Array.filter(
+          names,
           (name) => name !== "experimental_reuseContext",
         );
         const template = yield* render({
@@ -218,7 +231,7 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
     refused.push(toPosixPath(path, path.relative(projectRoot, absolute)));
   }
   if (refused.length > 0)
-    return yield* new UnownedConvexEntrypointError({
+    return yield* UnownedConvexEntrypointError.make({
       filePaths: refused.sort(),
     });
 });

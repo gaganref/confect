@@ -421,7 +421,10 @@ describe("FunctionReference", () => {
   });
 
   test("keeps the declared returns and error codecs", () => {
-    class NotFound extends Schema.TaggedError<NotFound>()("NotFound", {
+    class NotFound extends Schema.TaggedError<
+      NotFound,
+      { readonly brand: unique symbol }
+    >()("NotFound", {
       id: Schema.String,
     }) {}
     const _spec = FunctionSpec.internalMutation({

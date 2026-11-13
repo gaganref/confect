@@ -11,6 +11,8 @@ import * as Schema from "effect/Schema";
 import * as ConvexClient from "./ConvexClient.js";
 import type { Providers } from "./Providers.js";
 import { checkpointCreate, shouldAdopt } from "./internal/Lifecycle.js";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
 
 export interface EnvironmentVariablesProps {
   readonly url: string;
@@ -39,10 +41,10 @@ export const EnvironmentVariables = Resource<EnvironmentVariables>(
   "Convex.EnvironmentVariables",
 );
 
-export class EnvironmentTargetChange extends Schema.TaggedError<EnvironmentTargetChange>()(
-  "EnvironmentTargetChange",
-  { url: Schema.String },
-) {}
+export class EnvironmentTargetChange extends Schema.TaggedError<
+  EnvironmentTargetChange,
+  { readonly brand: unique symbol }
+>()("EnvironmentTargetChange", { url: Schema.String }) {}
 
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient.ConvexClient;
@@ -51,34 +53,34 @@ export const provider = Effect.gen(function* () {
   const valueAt = (
     variables: Readonly<Record<string, Redacted.Redacted<string>>>,
     name: string,
-  ) => (Object.hasOwn(variables, name) ? variables[name] : undefined);
+  ) => (Rec.has(variables, name) ? variables[name] : undefined);
   const select = (
     variables: Readonly<Record<string, Redacted.Redacted<string>>>,
     names: ReadonlyArray<string>,
   ) =>
-    Object.fromEntries(
-      names.flatMap((name) =>
-        !Object.hasOwn(variables, name) ? [] : [[name, variables[name]]],
+    Rec.fromEntries(
+      Arr.flatMap(names, (name) =>
+        !Rec.has(variables, name) ? [] : [[name, variables[name]]],
       ),
     );
   return {
     diff: Effect.fn("EnvironmentVariables.diff")(function* ({ news, output }) {
-      if (!isResolved(news) || !output) return;
+      if (!isResolved(news) || output === undefined) return;
       if (news.url !== output.url)
-        return yield* new EnvironmentTargetChange({
+        return yield* EnvironmentTargetChange.make({
           url: output.url,
         });
-      const names = Object.keys(news.variables);
+      const names = Rec.keys(news.variables);
       if (
         names.length !== output.ownedNames.length ||
-        names.some((name) => !output.ownedNames.includes(name))
+        Arr.some(names, (name) => !output.ownedNames.includes(name))
       )
         return { action: "update" };
       const variables = yield* client.listEnvironmentVariables(
         news.url,
         news.deployKey,
       );
-      for (const [name, value] of Object.entries(news.variables)) {
+      for (const [name, value] of Rec.toEntries(news.variables)) {
         const observed = valueAt(variables, name);
         if (
           observed === undefined ||
@@ -94,10 +96,11 @@ export const provider = Effect.gen(function* () {
         url,
         olds.deployKey,
       );
-      const ownedNames = output?.ownedNames ?? Object.keys(olds.variables);
+      const ownedNames = output?.ownedNames ?? Rec.keys(olds.variables);
       const variables = select(observed, ownedNames);
-      if (output) return { ...output, deployKey: olds.deployKey, variables };
-      if (Object.keys(variables).length === 0) return undefined;
+      if (output !== undefined)
+        return { ...output, deployKey: olds.deployKey, variables };
+      if (Rec.keys(variables).length === 0) return undefined;
       return Unowned({
         url,
         deployKey: olds.deployKey,
@@ -112,17 +115,17 @@ export const provider = Effect.gen(function* () {
       news,
       output,
     }) {
-      if (!output) yield* checkpointCreate(fqn, instanceId, news);
-      if (output && output.url !== news.url)
-        return yield* new EnvironmentTargetChange({
+      if (output === undefined) yield* checkpointCreate(fqn, instanceId, news);
+      if (output !== undefined && output.url !== news.url)
+        return yield* EnvironmentTargetChange.make({
           url: output.url,
         });
       const observed = yield* client.listEnvironmentVariables(
         news.url,
         news.deployKey,
       );
-      const ownedNames = Object.keys(news.variables);
-      if (!output && (yield* shouldAdopt(fqn))) {
+      const ownedNames = Rec.keys(news.variables);
+      if (output === undefined && (yield* shouldAdopt(fqn))) {
         const variables = select(observed, ownedNames);
         output = {
           url: news.url,
@@ -146,8 +149,8 @@ export const provider = Effect.gen(function* () {
             physicalName: name,
           });
       }
-      const desired = Object.fromEntries(
-        Object.entries(news.variables).map(([name, value]) => [
+      const desired = Rec.fromEntries(
+        Arr.map(Rec.toEntries(news.variables), ([name, value]) => [
           name,
           redacted(value),
         ]),
@@ -156,7 +159,7 @@ export const provider = Effect.gen(function* () {
         name: string;
         value?: Redacted.Redacted<string>;
       }> = [];
-      for (const [name, value] of Object.entries(desired)) {
+      for (const [name, value] of Rec.toEntries(desired)) {
         const current = valueAt(observed, name);
         if (
           current === undefined ||
@@ -165,8 +168,9 @@ export const provider = Effect.gen(function* () {
           changes.push({ name, value });
       }
       for (const name of previousNames) {
-        if (Object.hasOwn(desired, name)) continue;
-        const original = output ? valueAt(output.originals, name) : undefined;
+        if (Rec.has(desired, name)) continue;
+        const original =
+          output !== undefined ? valueAt(output.originals, name) : undefined;
         const current = valueAt(observed, name);
         if (original !== undefined) {
           if (

@@ -12,8 +12,15 @@ import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as LocalBackend from "confect-local-backend/LocalBackend";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
+import * as Array from "effect/Array";
 
-const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const encodeJson = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(
+    Effect.orDie,
+  );
 
 const LogEntry = Schema.fromJsonString(
   Schema.Struct({
@@ -59,7 +66,8 @@ layer(
             `http://127.0.0.1:3211${requestPath}`,
           );
           expect(response.status).toBe(200);
-          expect(yield* response.json).toBe("42");
+          const json2 = yield* response.json;
+          expect(json2).toBe("42");
         }
         const path = yield* Path.Path;
         const spawner = yield* ChildProcessSpawner;
@@ -80,7 +88,7 @@ layer(
         const completions = yield* logs.stdout.pipe(
           Stream.decodeText(),
           Stream.splitLines,
-          Stream.filter((line) => line.startsWith("{")),
+          Stream.filter((line) => pipe(line, String.startsWith("{"))),
           Stream.mapEffect((line) => Schema.decodeEffect(LogEntry)(line)),
           Stream.filter(
             (entry) =>
@@ -92,7 +100,7 @@ layer(
           Stream.runCollect,
           Effect.timeout("20 seconds"),
         );
-        const labels = completions.map(({ identifier }) => identifier);
+        const labels = Array.map(completions, ({ identifier }) => identifier);
         expect(labels).toEqual(["GET /users/:id", "GET /members/:id"]);
         yield* Effect.sync(() => {
           for (const { kind, udfType, identifier } of completions) {
@@ -108,7 +116,8 @@ layer(
           `http://127.0.0.1:3211${requestPath}`,
         );
         expect(response.status).toBe(404);
-        expect(yield* response.text).toBe("");
+        const text2 = yield* response.text;
+        expect(text2).toBe("");
       }
     }),
   );
@@ -164,18 +173,30 @@ layer(
       const jwks = {
         keys: [{ ...key, kid: "test", alg: "RS256", use: "sig" }],
       };
+      const json3 = yield* encodeJson(jwks);
       yield* backend.setEnv(
         "TEST_AUTH_JWKS",
-        `data:application/json;base64,${Buffer.from(encodeJson(jwks)).toString("base64")}`,
+        `data:application/json;base64,${Buffer.from(json3).toString("base64")}`,
       );
       yield* backend.redeploy;
       const issuer = "https://confect-auth.invalid";
       const expires =
         Math.floor((yield* Clock.currentTimeMillis) / 1000) + 3600;
       const encode = (value: unknown) =>
-        Buffer.from(encodeJson(value)).toString("base64url");
+        encodeJson(value).pipe(
+          Effect.map((json) => Buffer.from(json).toString("base64url")),
+        );
       const sign = Effect.fnUntraced(function* (iss: string) {
-        const unsigned = `${encode({ alg: "RS256", kid: "test" })}.${encode({ iss, aud: "confect-test", sub: "person", exp: expires, name: "Synthetic Person", role: "student" })}`;
+        const header = yield* encode({ alg: "RS256", kid: "test" });
+        const payload = yield* encode({
+          iss,
+          aud: "confect-test",
+          sub: "person",
+          exp: expires,
+          name: "Synthetic Person",
+          role: "student",
+        });
+        const unsigned = `${header}.${payload}`;
         const signature = yield* Effect.promise(() =>
           crypto.subtle.sign(
             "RSASSA-PKCS1-v1_5",
@@ -186,11 +207,16 @@ layer(
         return `${unsigned}.${Buffer.from(signature).toString("base64url")}`;
       });
       const valid = yield* sign(issuer);
-      const signatureStart = valid.lastIndexOf(".") + 1;
+      const signatureStart =
+        pipe(
+          valid,
+          String.lastIndexOf("."),
+          Option.getOrElse(() => -1),
+        ) + 1;
       const badSignature =
-        valid.slice(0, signatureStart) +
+        pipe(valid, String.slice(0, signatureStart)) +
         (valid[signatureStart] === "A" ? "B" : "A") +
-        valid.slice(signatureStart + 1);
+        pipe(valid, String.slice(signatureStart + 1));
       const foreign = yield* sign("https://foreign.invalid");
       const cases = [
         ["absent", undefined, { _tag: "Absent" }],
@@ -219,7 +245,8 @@ layer(
             : { headers: { authorization: `Bearer ${token}` } },
         );
         expect(response.status, label).toBe(200);
-        expect(yield* response.json, label).toEqual(expected);
+        const json2 = yield* response.json;
+        expect(json2, label).toEqual(expected);
       }
     }),
   );

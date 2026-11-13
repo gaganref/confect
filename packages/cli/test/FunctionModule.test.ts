@@ -25,6 +25,7 @@ import {
   render,
   generateGroupModule,
 } from "@confect/cli/FunctionModule";
+import { assertIs } from "./internal/assertIs";
 
 const fixtureRoot = `${import.meta.dirname}/../../server/test/mock-backend/fixtures`;
 const fixtureConvex = `${fixtureRoot}/convex`;
@@ -127,7 +128,7 @@ const runGenerateForNodeGroupEffect = Effect.fnUntraced(function* ({
   assert(importMatch !== null, "expected a registry import in the module");
   const resolved = path.resolve(
     path.dirname(modulePath),
-    importMatch[1]!.replace(/\.js$/, ".ts"),
+    pipe(importMatch[1]!, Str.replace(/\.js$/, ".ts")),
   );
   const resolves = yield* fs.exists(resolved);
 
@@ -312,23 +313,31 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
         path.join(import.meta.dirname, "fixtures/codegen/status.ts.txt"),
       );
       if (format === "rewrapped")
-        source = source
-          .replaceAll("check", "fortyCharacterFunctionNameForCodegenTest")
-          .replace(" = registeredFunctions.", " =\n  registeredFunctions.");
-      if (format === "equivalent registry path")
-        source = source.replace(
-          "registeredFunctions/system/status",
-          "registeredFunctions/system/../system/status.js",
+        source = pipe(
+          source,
+          Str.replaceAll("check", "fortyCharacterFunctionNameForCodegenTest"),
+          Str.replace(" = registeredFunctions.", " =\n  registeredFunctions."),
         );
-      if (format === "CRLF") source = source.replaceAll("\n", "\r\n");
+      if (format === "equivalent registry path")
+        source = pipe(
+          source,
+          Str.replace(
+            "registeredFunctions/system/status",
+            "registeredFunctions/system/../system/status.js",
+          ),
+        );
+      if (format === "CRLF")
+        source = pipe(source, Str.replaceAll("\n", "\r\n"));
       if (format === "Node and single quotes")
         source =
-          "'use node'\n" + source.replaceAll('"', "'").replaceAll(";", "");
+          "'use node'\n" +
+          pipe(source, Str.replaceAll('"', "'"), Str.replaceAll(";", ""));
       yield* fs.makeDirectory(path.join(project.root, "convex/system"));
       yield* project.write("convex/system/status.ts", source);
-      expect(
-        yield* project.provide(assertOwnedEntrypoints).pipe(Effect.as("owned")),
-      ).toBe("owned");
+      const provide2 = yield* project
+        .provide(assertOwnedEntrypoints)
+        .pipe(Effect.as("owned"));
+      expect(provide2).toBe("owned");
     }).pipe(Effect.scoped),
   );
 
@@ -353,9 +362,10 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
     Effect.gen(function* () {
       const project = yield* Project.make;
       yield* project.write(`convex/${file}`, source);
-      expect(
-        yield* project.provide(assertOwnedEntrypoints).pipe(Effect.as("owned")),
-      ).toBe("owned");
+      const provide2 = yield* project
+        .provide(assertOwnedEntrypoints)
+        .pipe(Effect.as("owned"));
+      expect(provide2).toBe("owned");
     }).pipe(Effect.scoped),
   );
 
@@ -387,7 +397,7 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
         verdict === "accepts"
           ? Result.succeed(undefined)
           : Result.fail(
-              new UnownedConvexEntrypointError({
+              UnownedConvexEntrypointError.make({
                 filePaths: [`convex/${file}`],
               }),
             ),
@@ -413,7 +423,7 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
       const result = yield* project
         .provide(assertOwnedEntrypoints)
         .pipe(Effect.result);
-      assert(Result.isFailure(result));
+      assertIs(result, Result.isFailure);
       expect(result.failure).toMatchObject({
         _tag: "UnownedConvexEntrypointError",
       });
@@ -428,7 +438,7 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
       const result = yield* project
         .provide(assertOwnedEntrypoints)
         .pipe(Effect.result);
-      assert(Result.isFailure(result));
+      assertIs(result, Result.isFailure);
       expect(result.failure).toMatchObject({
         _tag: "UnownedConvexEntrypointError",
         filePaths: ["convex/one.ts", "convex/two.ts"],
@@ -466,10 +476,12 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
         yield* project.provide(assertOwnedEntrypoints);
         const snapshot = yield* Effect.fromResult(GenerationSnapshot.parse([]));
         yield* project.provide(generateFunctions(snapshot));
-        for (const file of files)
-          expect(
-            yield* fs.readFileString(path.join(project.root, "convex", file)),
-          ).toBe("export const authored = 1;\n");
+        for (const file of files) {
+          const contents = yield* fs.readFileString(
+            path.join(project.root, "convex", file),
+          );
+          expect(contents).toBe("export const authored = 1;\n");
+        }
       }).pipe(Effect.scoped),
   );
 });

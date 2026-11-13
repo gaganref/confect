@@ -25,11 +25,12 @@ const prepare = Effect.gen(function* () {
   );
   if (exitCode !== 0)
     return yield* Effect.die(new Error("Consumer fixture preparation failed"));
+  const packageJson = yield* fs.readFileString(
+    path.resolve(import.meta.dirname, "../fixtures/package.json"),
+  );
   yield* fs.writeFileString(
     path.join(destination, "package.json"),
-    yield* fs.readFileString(
-      path.resolve(import.meta.dirname, "../fixtures/package.json"),
-    ),
+    packageJson,
   );
   // Reuse the fixture's installed packages and the consumer's linked kit.
   const installed = path.resolve(

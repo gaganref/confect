@@ -1,11 +1,16 @@
 import * as NodeServices from "../fixtures/NodeTestServices";
-import { assert, describe, expect, it } from "@effect/vitest";
+import * as Layer from "effect/Layer";
+import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import * as FileSystem from "effect/FileSystem";
 import * as Result from "effect/Result";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as RealBackend from "./RealBackend";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
+import { assertIs } from "../internal/assertIs";
 
 // Runs the real pinned backend, as RealLocalBackend.test.ts does, on ports
 // 3400-3499. Every push runs the real codegen and `convex deploy`.
@@ -35,12 +40,15 @@ type Row = Record<string, unknown> & { readonly _id: string };
  */
 const node = (cwd: string, ...args: ReadonlyArray<string>) =>
   Effect.gen(function* () {
-    const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
-    return yield* spawner.string(
-      ChildProcess.make(process.execPath, args, { cwd, stdin: "ignore" }),
-      { includeStderr: true },
-    );
-  }).pipe(Effect.orDie, Effect.provide(NodeServices.layer));
+    const services = yield* Layer.build(NodeServices.layer);
+    return yield* Effect.gen(function* () {
+      const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
+      return yield* spawner.string(
+        ChildProcess.make(process.execPath, args, { cwd, stdin: "ignore" }),
+        { includeStderr: true },
+      );
+    }).pipe(Effect.orDie, Effect.provideContext(services));
+  }).pipe(Effect.scoped);
 
 /**
  * A copy of the fixture, linked to the built packages, with its components
@@ -53,8 +61,8 @@ const app = (root: string, name: string) =>
     yield* RealBackend.copyApp(fixture, directory, {
       "node_modules/convex": `${modules}/convex`,
       "node_modules/effect": `${modules}/effect`,
-      ...Object.fromEntries(
-        ["cli", "core", "server"].map((dependency) => [
+      ...Rec.fromEntries(
+        Arr.map(["cli", "core", "server"], (dependency) => [
           `node_modules/@confect/${dependency}`,
           `${packages}/${dependency}`,
         ]),
@@ -95,15 +103,18 @@ const makeDeployment = (
       args: Args,
       ...rest: [tag?: string, events?: Array<string>, probe?: RealBackend.Probe]
     ) =>
-      fs
-        .writeFileString(
-          `${cwd}/confect/args.ts`,
-          `export default ${JSON.stringify(args)};\n`,
-        )
-        .pipe(
-          Effect.orDie,
-          Effect.andThen(RealBackend.push(outputs, { cwd, prepare }, ...rest)),
+      Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
+        args,
+      ).pipe(
+        Effect.flatMap((json) =>
+          fs.writeFileString(
+            `${cwd}/confect/args.ts`,
+            `export default ${json};\n`,
+          ),
         ),
+        Effect.orDie,
+        Effect.andThen(RealBackend.push(outputs, { cwd, prepare }, ...rest)),
+      ),
   };
 };
 
@@ -131,19 +142,22 @@ const withDeployment = <A, E>(
   scenario: (deployment: Deployment) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    const backend = yield* RealBackend.make({
-      name: "init",
-      ports: "3400-3499",
-    });
-    const apps = [
-      yield* app(backend.root, "app-a"),
-      yield* app(backend.root, "app-b"),
-    ] as const;
-    return yield* backend.session({ cwd: apps[0], prepare }, (outputs) =>
-      scenario(makeDeployment(outputs, apps, fs)),
-    );
-  }).pipe(Effect.scoped, Effect.provide(NodeServices.layer));
+    const services2 = yield* Layer.build(NodeServices.layer);
+    return yield* Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const backend = yield* RealBackend.make({
+        name: "init",
+        ports: "3400-3499",
+      });
+      const apps = [
+        yield* app(backend.root, "app-a"),
+        yield* app(backend.root, "app-b"),
+      ] as const;
+      return yield* backend.session({ cwd: apps[0], prepare }, (outputs) =>
+        scenario(makeDeployment(outputs, apps, fs)),
+      );
+    }).pipe(Effect.scoped, Effect.provideContext(services2));
+  }).pipe(Effect.scoped);
 
 describe.skipIf(process.platform === "win32")("mount init on a push", () => {
   it.live(
@@ -155,7 +169,8 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             bulkEmail: settings("bulkEmail"),
             transactionalEmail: settings("transactionalEmail"),
           });
-          expect(yield* node(appA, tsc, "-p", ".")).toBe("");
+          const nodeResult = yield* node(appA, tsc, "-p", ".");
+          expect(nodeResult).toBe("");
           const first = yield* both;
           expect(first.bulkEmail).toMatchObject(initial.bulkEmail);
           expect(first.bulkEmail.onEvent).toEqual(expect.any(String));
@@ -163,17 +178,20 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             initial.transactionalEmail,
           );
 
-          expect(Result.isSuccess(yield* push(appA, initial))).toBe(true);
-          expect(yield* both).toEqual(first);
+          const pushResult = yield* push(appA, initial);
+          expect(Result.isSuccess(pushResult)).toBe(true);
+          const bothValue = yield* both;
+          expect(bothValue).toEqual(first);
 
           const trimmed = {
             ...initial,
             bulkEmail: { fromName: "School office" },
           };
-          expect(Result.isSuccess(yield* push(appA, trimmed))).toBe(true);
+          const pushResult2 = yield* push(appA, trimmed);
+          expect(Result.isSuccess(pushResult2)).toBe(true);
           const removed = yield* settings("bulkEmail");
           expect(removed._id).toBe(first.bulkEmail._id);
-          expect(Object.hasOwn(removed, "maxAttempts")).toBe(false);
+          expect(Rec.has(removed, "maxAttempts")).toBe(false);
           expect((yield* both).transactionalEmail).toEqual(
             first.transactionalEmail,
           );
@@ -182,13 +200,14 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             ...trimmed,
             bulkEmail: { fromName: "FAIL_AFTER_WRITE" },
           });
-          assert(Result.isFailure(failed));
+          assertIs(failed, Result.isFailure);
           expect(failed.failure).toMatchObject({
             _tag: "MountInitFailed",
             mount: "bulkEmail",
             detail: expect.stringContaining("SyntheticInitAfterWrite"),
           });
-          expect(yield* settings("bulkEmail")).toEqual(removed);
+          const settingsResult = yield* settings("bulkEmail");
+          expect(settingsResult).toEqual(removed);
         }),
       ),
     600_000,
@@ -202,7 +221,7 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
           yield* call("install:send", "bulkEmail", { message: "Synthetic" });
           const sent = (yield* call("events:list")) as ReadonlyArray<Row>;
           expect(
-            sent.map(({ fromName, message }) => ({ fromName, message })),
+            Arr.map(sent, ({ fromName, message }) => ({ fromName, message })),
           ).toEqual([{ fromName: "School office", message: "Synthetic" }]);
 
           const all = Effect.all({
@@ -215,11 +234,11 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
           expect(first.relay).toMatchObject({ label: "Relay" });
           expect(first.inbox).toMatchObject({ fromName: "Relay inbox" });
           const events: Array<string> = [];
-          expect(
-            Result.isSuccess(yield* push(appA, initial, "A", events)),
-          ).toBe(true);
+          const pushResult = yield* push(appA, initial, "A", events);
+          expect(Result.isSuccess(pushResult)).toBe(true);
           expect(events).toEqual(steps("A"));
-          expect(yield* all).toEqual(first);
+          const allValue = yield* all;
+          expect(allValue).toEqual(first);
 
           const second = {
             ...initial,
@@ -230,7 +249,7 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             ...second,
             transactionalEmail: { fromName: "FAIL_AFTER_WRITE" },
           });
-          assert(Result.isFailure(stopped));
+          assertIs(stopped, Result.isFailure);
           expect(stopped.failure).toMatchObject({
             message:
               "transactionalEmail: init failed; earlier mounts are applied, and the next push retries",
@@ -243,7 +262,8 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             ...second,
             transactionalEmail: { fromName: "Receipts v2" },
           };
-          expect(Result.isSuccess(yield* push(appA, clean))).toBe(true);
+          const pushResult2 = yield* push(appA, clean);
+          expect(Result.isSuccess(pushResult2)).toBe(true);
           const converged = yield* all;
           expect(converged.bulkEmail).toMatchObject(clean.bulkEmail);
           expect(converged.transactionalEmail).toMatchObject(
@@ -253,7 +273,8 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
           expect(converged.inbox).toEqual(first.inbox);
 
           const gone = { ...clean, bulkTarget: "gone" as const };
-          expect(Result.isSuccess(yield* push(appA, gone))).toBe(true);
+          const pushResult3 = yield* push(appA, gone);
+          expect(Result.isSuccess(pushResult3)).toBe(true);
           const target = yield* settings("bulkEmail");
           expect(target.onEvent).not.toBe(converged.bulkEmail.onEvent);
           const deleted: Array<string> = [];
@@ -263,7 +284,7 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             "D",
             deleted,
           );
-          assert(Result.isFailure(refused));
+          assertIs(refused, Result.isFailure);
           expect(refused.failure).toMatchObject({
             _tag: "MountInitFailed",
             mount: "bulkEmail",
@@ -275,7 +296,8 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             "D code",
             "D release",
           ]);
-          expect(yield* settings("bulkEmail")).toEqual(target);
+          const settingsResult = yield* settings("bulkEmail");
+          expect(settingsResult).toEqual(target);
         }),
       ),
     600_000,

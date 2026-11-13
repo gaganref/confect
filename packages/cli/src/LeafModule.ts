@@ -289,21 +289,21 @@ const validateReservedArguments = Effect.fnUntraced(function* (
   specPath: string,
   groupPath: string,
 ): Effect.fn.Return<void, InvalidDeclarationError> {
-  for (const spec of Object.values(group.functions)) {
+  for (const spec of Record.values(group.functions)) {
     const name = spec.reservedArgument;
     const provenance = spec.functionProvenance;
     if (
       name !== undefined &&
       provenance._tag === "Confect" &&
-      Object.hasOwn(provenance.args.fields, name)
+      Record.has(provenance.args.fields, name)
     ) {
-      return yield* new InvalidDeclarationError({
+      return yield* InvalidDeclarationError.make({
         declarationPath: `confect/${specPath}`,
         reason: `${groupPath}:${spec.name} declares the argument "${name}", which its profile reserves. Rename the argument.`,
       });
     }
   }
-  for (const [name, child] of Object.entries(group.groups)) {
+  for (const [name, child] of Record.toEntries(group.groups)) {
     yield* validateReservedArguments(child, specPath, `${groupPath}/${name}`);
   }
 });
@@ -337,7 +337,7 @@ export const loadSpec = Effect.fn("LeafModule.loadSpec")(function* (
   yield* validateReservedArguments(
     groupSpec,
     leaf.relativePath,
-    leaf.pathSegments.join("/"),
+    Array.join(leaf.pathSegments, "/"),
   );
 
   const warnings = yield* Effect.fromResult(
@@ -464,8 +464,10 @@ const nameUnwrittenSectionFiles = Effect.fnUntraced(function* (
   bundleDirectory: string,
 ) {
   const path = yield* Path.Path;
-  const generated = path.join(yield* ConfectDirectory.get, "_generated");
-  const errors = (error.errors as ReadonlyArray<esbuild.Message>).map(
+  const confectDirectory = yield* ConfectDirectory.get;
+  const generated = path.join(confectDirectory, "_generated");
+  const errors = Array.map(
+    error.errors as ReadonlyArray<esbuild.Message>,
     (message) => {
       const specifier = /^Could not resolve "(.+)"$/.exec(message.text)?.[1];
       if (specifier === undefined || message.location === null) return message;
@@ -477,14 +479,15 @@ const nameUnwrittenSectionFiles = Effect.fnUntraced(function* (
           specifier,
         ),
       );
-      if (file.startsWith("..") || path.isAbsolute(file)) return message;
+      if (pipe(file, String.startsWith("..")) || path.isAbsolute(file))
+        return message;
       const extension = path.extname(file);
       const name = toPosixPath(
         path,
         extension === ""
           ? `${file}.ts`
           : extension === ".js"
-            ? `${file.slice(0, -extension.length)}.ts`
+            ? `${pipe(file, String.slice(0, -extension.length))}.ts`
             : file,
       );
       return Object.assign({}, message, {
@@ -492,9 +495,12 @@ const nameUnwrittenSectionFiles = Effect.fnUntraced(function* (
       });
     },
   );
-  return new BundleFailedError({ file: error.file, errors });
+  return BundleFailedError.make({ file: error.file, errors });
 });
 
+/**
+ * @internal
+ */
 export const validateImpl = Effect.fn("LeafModule.validateImpl")(function* (
   leaf: LoadedLeafModule,
   required: ReadonlyArray<{ readonly key: string }> = [],
@@ -676,9 +682,11 @@ export const validateAllImpls = Effect.fnUntraced(function* (
     }),
   ))
     .flat()
-    .sort((left, right) => left.functionName.localeCompare(right.functionName));
+    .sort((left, right) =>
+      pipe(left.functionName, String.localeCompare(right.functionName)),
+    );
   if (missing.length > 0) {
-    return yield* new RequiredMiddlewareError({ missing });
+    return yield* RequiredMiddlewareError.make({ missing });
   }
 });
 

@@ -27,6 +27,8 @@ import { ConvexDirectory } from "./ConvexDirectory.js";
 import { FunctionPaths } from "./FunctionPaths.js";
 import { ImplModulePath } from "./ImplModulePath.js";
 import { ProjectRoot } from "./ProjectRoot.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 export const RequestContext = Schema.Struct({
   projectRoot: Schema.String,
@@ -143,15 +145,19 @@ const withWorker = Effect.fn("Evaluation.withWorker")(function* <A>(
     EvaluationError | ComponentNodeGroupError | RpcClientError
   >,
 ) {
+  const projectRoot = yield* ProjectRoot.get;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const convexDirectory = yield* ConvexDirectory.get;
+  const target = yield* ConvexDirectory.target;
   const requestContext = {
-    projectRoot: yield* ProjectRoot.get,
-    confectDirectory: yield* ConfectDirectory.get,
-    convexDirectory: yield* ConvexDirectory.get,
-    target: Match.value(yield* ConvexDirectory.target).pipe(
+    projectRoot,
+    confectDirectory,
+    convexDirectory,
+    target: Match.value(target).pipe(
       Match.when({ kind: "app" }, () => ({ kind: "app" as const })),
       Match.when({ kind: "component" }, ({ scope }) => ({
         kind: "component" as const,
-        definition: scope.slice("component:".length),
+        definition: pipe(scope, String.slice("component:".length)),
       })),
       Match.exhaustive,
     ),

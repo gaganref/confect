@@ -36,8 +36,7 @@ since their pins move with their ranges.
   the native benchmark harness. Every Effect rule except the intentionally
   disabled `missing-pipeable-signature` must stay enabled as an error, including
   newly introduced rules; `scripts/effectLint.test.ts` checks
-  the installed schema against the configuration, and requires the diagnostic
-  counts in `scripts/effectLintBaseline.json` for the exempt files. Fix new findings and review
+  the installed schema against the configuration. Fix new findings and review
   any new export-specific unstable-API grants rather than disabling rules.
   Verify the native type-benchmark harness too; its patched
   dependency and baselines are documented in `tools/bench-harness/README.md`.

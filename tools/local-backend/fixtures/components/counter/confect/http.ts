@@ -43,4 +43,7 @@ const http = Http.make({
   handlers: Layer.mergeAll(health, users, authoring),
 });
 
+/**
+ * @internal
+ */
 export default { ...http, routes: Layer.merge(http.routes, optionalPrefix) };

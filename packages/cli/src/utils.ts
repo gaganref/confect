@@ -36,14 +36,17 @@ export const toPosixPath = (path: Path.Path, pathStr: string): string =>
  * versions, and codegen writes what it discovers in that order, so reading
  * through here keeps the output the same on every Node and on every platform.
  * The paths keep the host's separator.
+ *
+ * @internal
  */
 export const readDirectorySorted = Effect.fnUntraced(function* (
   directory: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
+  const directory2 = yield* fs.readDirectory(directory, { recursive: true });
   return Array.sort(
-    yield* fs.readDirectory(directory, { recursive: true }),
+    directory2,
     Order.mapInput(Order.String, (relativePath: string) =>
       toPosixPath(path, relativePath),
     ),

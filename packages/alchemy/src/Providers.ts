@@ -21,6 +21,8 @@ export class Providers extends Provider.ProviderCollection<Providers>()(
  * `alchemy deploy` resolves each resource to its cloud provider; `alchemy dev`
  * resolves the same resources to local providers backed by a local Convex
  * backend, so one stack definition serves both.
+ *
+ * @stability unstable
  */
 export const providers = (options?: {
   readonly token?: Redacted.Redacted<string>;

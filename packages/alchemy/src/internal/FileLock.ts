@@ -8,10 +8,12 @@ import * as Predicate from "effect/Predicate";
 import * as Schedule from "effect/Schedule";
 import * as Schema from "effect/Schema";
 
-export class FileLockError extends Schema.TaggedError<FileLockError>()(
-  "FileLockError",
-  { reason: Schema.Literals(["held", "timeout", "filesystem"]) },
-) {}
+export class FileLockError extends Schema.TaggedError<
+  FileLockError,
+  { readonly brand: unique symbol }
+>()("FileLockError", {
+  reason: Schema.Literals(["held", "timeout", "filesystem"]),
+}) {}
 
 const Holder = Schema.fromJsonString(
   Schema.Struct({ pid: Schema.Finite, token: Schema.String }),
@@ -42,6 +44,8 @@ const isAlive = (pid: number) => {
  * leaves waiters timing out rather than overlapping. A timeout that lands while
  * an attempt succeeds still fails, and the published lock is removed only when
  * the ambient scope closes.
+ *
+ * @internal
  */
 export const acquire = Effect.fn("FileLock.acquire")(function* (
   file: string,
@@ -50,8 +54,9 @@ export const acquire = Effect.fn("FileLock.acquire")(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const random = yield* SecureRandom.SecureRandom;
-  const failed = () => new FileLockError({ reason: "filesystem" });
-  const token = Buffer.from(yield* random.randomBytes(16)).toString("hex");
+  const failed = () => FileLockError.make({ reason: "filesystem" });
+  const randomBytes2 = yield* random.randomBytes(16);
+  const token = Buffer.from(randomBytes2).toString("hex");
   const holder = yield* Schema.encodeEffect(Holder)({
     pid: process.pid,
     token,
@@ -117,7 +122,7 @@ export const acquire = Effect.fn("FileLock.acquire")(function* (
   );
 
   if (wait === undefined) {
-    if (!(yield* attempt)) return yield* new FileLockError({ reason: "held" });
+    if (!(yield* attempt)) return yield* FileLockError.make({ reason: "held" });
   } else {
     yield* attempt.pipe(
       Effect.repeat({
@@ -126,7 +131,7 @@ export const acquire = Effect.fn("FileLock.acquire")(function* (
       }),
       Effect.timeoutOrElse({
         duration: wait,
-        orElse: () => Effect.fail(new FileLockError({ reason: "timeout" })),
+        orElse: () => Effect.fail(FileLockError.make({ reason: "timeout" })),
       }),
     );
   }

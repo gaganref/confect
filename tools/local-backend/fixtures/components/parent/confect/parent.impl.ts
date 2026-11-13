@@ -5,6 +5,7 @@ import schema from "./_generated/schema";
 import { MutationRunner, QueryRunner } from "./_generated/services";
 import { child, deep } from "./child";
 import parent from "./parent.spec";
+import * as Array from "effect/Array";
 
 const create = FunctionImpl.make(schema, parent, "create", (args) =>
   Effect.gen(function* () {
@@ -29,9 +30,8 @@ const deepCreate = FunctionImpl.make(schema, parent, "deepCreate", (args) =>
 const deepList = FunctionImpl.make(schema, parent, "deepList", (args) =>
   Effect.gen(function* () {
     const runner = yield* QueryRunner;
-    return (yield* runner.runQuery(deep.parent.list, args)).map(
-      (doc) => doc.count,
-    );
+    const query = yield* runner.runQuery(deep.parent.list, args);
+    return Array.map(query, (doc) => doc.count);
   }).pipe(Effect.orDie),
 );
 const deepLocation = FunctionImpl.make(schema, parent, "deepLocation", () =>

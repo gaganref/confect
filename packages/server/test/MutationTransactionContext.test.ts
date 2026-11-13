@@ -166,23 +166,27 @@ describe("MutationTransactionContext", () => {
 it.effect.each(Forwarding.cases)(
   "MutationTransactionContext forwards $label only to a reserving target",
   ({ forward, enabled }) =>
-    Forwarding.check(
-      Forwarding.mutations,
-      (target) =>
-        Effect.flatMap(
-          MutationTransactionContext.MutationTransactionContext,
-          (runner) =>
-            runner.runMutation(target, { count: 1 }, { transactionLimits: {} }),
-        ),
-      "MutationTransactionContext.runMutation",
-      enabled,
-    ).pipe(
-      Effect.provide(
+    Effect.gen(function* () {
+      const services2 = yield* Layer.build(
         MutationTransactionContext.layer({
           runQuery: Forwarding.echo,
           runMutation: Forwarding.echo,
         }),
-      ),
-      Effect.provideService(RegisteredFunction.Forward, forward),
-    ),
+      );
+      return yield* Forwarding.check(
+        Forwarding.mutations,
+        (target) =>
+          Effect.flatMap(
+            MutationTransactionContext.MutationTransactionContext,
+            (runner) =>
+              runner.runMutation(
+                target,
+                { count: 1 },
+                { transactionLimits: {} },
+              ),
+          ),
+        "MutationTransactionContext.runMutation",
+        enabled,
+      ).pipe(Effect.provideContext(services2));
+    }).pipe(Effect.provideService(RegisteredFunction.Forward, forward)),
 );

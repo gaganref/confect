@@ -6,19 +6,24 @@ import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
+import * as Record from "effect/Record";
 
-const encodeJson = Schema.encodeSync(
-  Schema.fromJsonString(Schema.Unknown, { space: 2 }),
-);
+const encodeJson = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown, { space: 2 }))(
+    value,
+  ).pipe(Effect.orDie);
 
-export class InvalidConsumerVersion extends Schema.TaggedError<InvalidConsumerVersion>()(
-  "InvalidConsumerVersion",
-  { version: Schema.String },
-) {}
+export class InvalidConsumerVersion extends Schema.TaggedError<
+  InvalidConsumerVersion,
+  { readonly brand: unique symbol }
+>()("InvalidConsumerVersion", { version: Schema.String }) {}
 
 export const consumerManifest = (version: string, tarballs?: string) => {
   if (!/^\d+\.\d+\.\d+-fork\.(0|[1-9]\d*)$/.test(version))
-    return Result.fail(new InvalidConsumerVersion({ version }));
+    return Result.fail(InvalidConsumerVersion.make({ version }));
   const forkPackage = (name: string) =>
     tarballs === undefined
       ? `npm:@gaganref/confect-${name}@${version}`
@@ -62,11 +67,16 @@ type ConsumerManifest = Result.Result.Success<
 >;
 
 export const installCommand = (manifest: ConsumerManifest) =>
-  `pnpm add --strict-peer-dependencies ${Object.entries(manifest.dependencies)
-    .filter(([name]) => name.startsWith("@confect/"))
-    .map(([name, spec]) => `'${name}@${spec}'`)
-    .join(" ")}`;
+  `pnpm add --strict-peer-dependencies ${pipe(
+    Record.toEntries(manifest.dependencies),
+    Array.filter(([name]) => pipe(name, String.startsWith("@confect/"))),
+    Array.map(([name, spec]) => `'${name}@${spec}'`),
+    Array.join(" "),
+  )}`;
 
+/**
+ * @internal
+ */
 export const writeConsumer = Effect.fn("ConsumerFixture.write")(function* (
   destination: string,
   manifest: ConsumerManifest,
@@ -76,17 +86,19 @@ export const writeConsumer = Effect.fn("ConsumerFixture.write")(function* (
   yield* fs.makeDirectory(destination, { recursive: true });
   const template = path.join(import.meta.dir, "consumer");
   for (const file of yield* fs.readDirectory(template, { recursive: true })) {
-    if (!file.endsWith(".template")) continue;
-    const target = path.join(destination, file.replace(/\.template$/, ""));
-    yield* fs.makeDirectory(path.dirname(target), { recursive: true });
-    yield* fs.writeFileString(
-      target,
-      yield* fs.readFileString(path.join(template, file)),
+    if (!pipe(file, String.endsWith(".template"))) continue;
+    const target = path.join(
+      destination,
+      pipe(file, String.replace(/\.template$/, "")),
     );
+    yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+    const contents = yield* fs.readFileString(path.join(template, file));
+    yield* fs.writeFileString(target, contents);
   }
+  const manifestJson = yield* encodeJson(manifest);
   yield* fs.writeFileString(
     path.join(destination, "package.json"),
-    `${encodeJson(manifest)}\n`,
+    `${manifestJson}\n`,
   );
   yield* fs.writeFileString(
     path.join(destination, "install-command.txt"),
@@ -94,35 +106,45 @@ export const writeConsumer = Effect.fn("ConsumerFixture.write")(function* (
   );
   yield* fs.writeFileString(
     path.join(destination, "pnpm-workspace.yaml"),
-    [
-      "minimumReleaseAgeExclude:",
-      ...Object.values(manifest.dependencies)
-        .filter((spec) => spec.startsWith("npm:@gaganref/"))
-        .map((spec) => `  - "${spec.slice(4)}"`),
-      "",
-      "overrides:",
-      ...Object.entries(manifest.dependencies)
-        .filter(
-          ([name, spec]) =>
-            name.startsWith("@confect/") && spec.startsWith("file:"),
-        )
-        .map(([name, spec]) => `  "${name}": "${spec}"`),
-      `  effect: ${manifest.dependencies.effect}`,
-      `  convex: ${manifest.dependencies.convex}`,
-      `  "@effect/platform-node": ${manifest.dependencies["@effect/platform-node"]}`,
-      `  "@effect/platform-node-shared": ${manifest.dependencies["@effect/platform-node"]}`,
-      "allowBuilds:",
-      "  esbuild: false",
-      "  workerd: false",
-      "",
-    ].join("\n"),
+    Array.join(
+      [
+        "minimumReleaseAgeExclude:",
+        ...pipe(
+          Record.values(manifest.dependencies),
+          Array.filter((spec) =>
+            pipe(spec, String.startsWith("npm:@gaganref/")),
+          ),
+          Array.map((spec) => `  - "${pipe(spec, String.slice(4))}"`),
+        ),
+        "",
+        "overrides:",
+        ...pipe(
+          Record.toEntries(manifest.dependencies),
+          Array.filter(
+            ([name, spec]) =>
+              pipe(name, String.startsWith("@confect/")) &&
+              pipe(spec, String.startsWith("file:")),
+          ),
+          Array.map(([name, spec]) => `  "${name}": "${spec}"`),
+        ),
+        `  effect: ${manifest.dependencies.effect}`,
+        `  convex: ${manifest.dependencies.convex}`,
+        `  "@effect/platform-node": ${manifest.dependencies["@effect/platform-node"]}`,
+        `  "@effect/platform-node-shared": ${manifest.dependencies["@effect/platform-node"]}`,
+        "allowBuilds:",
+        "  esbuild: false",
+        "  workerd: false",
+        "",
+      ],
+      "\n",
+    ),
   );
 });
 
 if (import.meta.main) {
   const [destination, version, tarballs] = Bun.argv.slice(2);
   const manifest = consumerManifest(version ?? "", tarballs);
-  if (!destination || Result.isFailure(manifest)) {
+  if (destination === "" || Result.isFailure(manifest)) {
     Console.error(
       "Usage: bun scripts/forkConsumer.ts <new-directory> <build-version> [absolute-tarball-directory]",
       Result.isFailure(manifest) ? manifest.failure : undefined,

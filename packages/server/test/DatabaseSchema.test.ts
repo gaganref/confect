@@ -124,3 +124,25 @@ describe("DatabaseSchema", () => {
     });
   });
 });
+
+describe("DatabaseSchema errors", () => {
+  it.each([
+    [
+      DatabaseSchema.EmptyDatabaseScopeError.make({
+        databaseScope: IdScope.app,
+      }),
+      "EmptyDatabaseScopeError: A component database schema requires a nonempty ID scope.",
+    ],
+    [
+      DatabaseSchema.TableBindingMismatchError.make({
+        bindingName: "notes",
+        tableName: "tasks",
+        tableScope: IdScope.app,
+        databaseScope: IdScope.component("notes"),
+      }),
+      "TableBindingMismatchError: Table 'notes' must be bound to its database schema's name and ID scope.",
+    ],
+  ])("prints %s", (error, printed) => {
+    expect(String(error)).toBe(printed);
+  });
+});

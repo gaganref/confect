@@ -9,7 +9,10 @@ import refs from "confect-local-backend/refs";
 import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 const Hop = Schema.Struct({ hop: Schema.String });
-const hop = (value: unknown) => Schema.decodeUnknownSync(Hop)(value).hop;
+const hop = (value: unknown) =>
+  Schema.decodeUnknownEffect(Hop)(value).pipe(
+    Effect.map((decoded) => decoded.hop),
+  );
 
 layer(LocalBackend.layer, {
   timeout: "120 seconds",
@@ -58,7 +61,8 @@ layer(LocalBackend.layer, {
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
-        const run = String(yield* Random.next);
+        const random = yield* Random.next;
+        const run = String(random);
         const result = yield* Ref.runWithCodec(
           refs.public.groups.reserved.chain,
           { run },
@@ -66,14 +70,14 @@ layer(LocalBackend.layer, {
         );
         expect(result.mutation.args).toEqual({ run });
         expect(result.action.args).toEqual({ run });
-        expect(result.hops[hop(result.mutation.received.value)]).toBe(
+        expect(result.hops[yield* hop(result.mutation.received.value)]).toBe(
           "MutationRunner.runMutation",
         );
-        expect(result.hops[hop(result.action.received.value)]).toBe(
+        expect(result.hops[yield* hop(result.action.received.value)]).toBe(
           "ActionRunner.runAction",
         );
         expect(
-          result.inline.hops[hop(result.inline.child.received.value)],
+          result.inline.hops[yield* hop(result.inline.child.received.value)],
         ).toBe("MutationTransactionContext.runMutation");
         expect(result.inline.child.received.requestId).toBe(
           result.inline.parent.received.requestId,
@@ -92,7 +96,7 @@ layer(LocalBackend.layer, {
           Effect.timeout("20 seconds"),
         );
         expect(scheduled?.args).toEqual({ run });
-        expect(result.hops[hop(scheduled?.received.value)]).toBe(
+        expect(result.hops[yield* hop(scheduled?.received.value)]).toBe(
           "Scheduler.runAfter",
         );
         expect(result.jobId).not.toBe("");

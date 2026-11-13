@@ -1,8 +1,10 @@
 import { fileURLToPath } from "node:url";
+import { quote } from "@confect/cli/Json";
 import { stripVTControlCharacters } from "node:util";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { afterEach, expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as Ref from "effect/Ref";
@@ -16,10 +18,13 @@ import { DatabaseSchema, MutationAuth } from "@confect/server";
 import { TestConfect } from "../../../test/src";
 import { defineSchema } from "convex/server";
 import { vi } from "vitest";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
+import * as Array from "effect/Array";
+import * as Record from "effect/Record";
 
 afterEach(() => vi.unstubAllEnvs());
-
-const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
 layer(NodeServices.layer)("built confect codegen", (it) => {
   it.effect(
@@ -50,16 +55,18 @@ check: (next, previous) => ({ errors: Object.values(next.functions).includes("ba
 export const other = { ...tags, check: (next) => ({ errors: Object.values(next.functions).includes("bad") ? ["other failed"] : [], notes: [] }) };`,
         );
         const spec = (label: string) =>
-          Project.spec.replace(
-            'name: "list"',
-            `name: "list", description: "${label}"`,
+          pipe(
+            Project.spec,
+            Str.replace(
+              'name: "list"',
+              `name: "list", description: "${label}"`,
+            ),
           );
         const run = Effect.gen(function* () {
           const process = yield* project.start("codegen");
-          return {
-            exit: yield* process.handle.exitCode,
-            output: stripVTControlCharacters(yield* Ref.get(process.output)),
-          };
+          const exit = yield* process.handle.exitCode;
+          const output = yield* Ref.get(process.output);
+          return { exit, output: stripVTControlCharacters(output) };
         });
         yield* project.write("confect/notes.spec.ts", spec("first"));
         const first = yield* run;
@@ -74,7 +81,7 @@ export const other = { ...tags, check: (next) => ({ errors: Object.values(next.f
         const recovered = yield* run;
         expect(recovered.exit, recovered.output).toBe(0);
         expect(recovered.output).toContain("1 previous entries");
-        expect(recovered.output.split(manifest)).toHaveLength(2);
+        expect(pipe(recovered.output, Str.split(manifest))).toHaveLength(2);
         const unchanged = yield* run;
         expect(unchanged.exit, unchanged.output).toBe(0);
         expect(unchanged.output).not.toContain(manifest);
@@ -88,23 +95,23 @@ export const other = { ...tags, check: (next) => ({ errors: Object.values(next.f
           "1 previous entries",
           "tags checked",
         ])
-          expect(failed.output.split(message)).toHaveLength(2);
+          expect(pipe(failed.output, Str.split(message))).toHaveLength(2);
         expect(failed.output).toContain('Manifest section "tags" is invalid:');
         expect(failed.output).toContain('Manifest section "other" is invalid:');
-        expect(
-          yield* fs.exists(`${project.root}/confect/_generated/manifest.ts`),
-        ).toBe(false);
+        const found = yield* fs.exists(
+          `${project.root}/confect/_generated/manifest.ts`,
+        );
+        expect(found).toBe(false);
         yield* project.write("confect/notes.spec.ts", spec("restored"));
         expect((yield* run).exit).toBe(0);
         yield* declare("");
         const undeclared = yield* run;
         expect(undeclared.exit, undeclared.output).toBe(0);
         expect(undeclared.output).not.toContain("tags checked");
-        expect(
-          yield* fs.readFileString(
-            `${project.root}/confect/_generated/manifest.ts`,
-          ),
-        ).not.toContain('"tags"');
+        const contents = yield* fs.readFileString(
+          `${project.root}/confect/_generated/manifest.ts`,
+        );
+        expect(contents).not.toContain('"tags"');
       }),
     { timeout: 30000 },
   );
@@ -130,10 +137,9 @@ export default Auth.make(app, { providers: [
 ] });`,
         );
         const generated = yield* project.start("codegen");
-        expect(
-          yield* generated.handle.exitCode,
-          yield* Ref.get(generated.output),
-        ).toBe(0);
+        const exitCode2 = yield* generated.handle.exitCode;
+        const output2 = yield* Ref.get(generated.output);
+        expect(exitCode2, output2).toBe(0);
         const fs = yield* FileSystem.FileSystem;
         const configPath = `${project.root}/convex/auth.config.ts`;
         const config = yield* fs.readFileString(configPath);
@@ -207,54 +213,60 @@ export default Auth.make(app, { providers: [
 ] });`,
         );
         const generated = yield* project.start("codegen");
-        expect(
-          yield* generated.handle.exitCode,
-          yield* Ref.get(generated.output),
-        ).toBe(0);
+        const exitCode2 = yield* generated.handle.exitCode;
+        const output2 = yield* Ref.get(generated.output);
+        expect(exitCode2, output2).toBe(0);
         const databaseSchema = DatabaseSchema.make({});
         yield* Effect.gen(function* () {
-          const runtime = yield* Bundler.bundle(
-            `${project.root}/confect/_generated/auth.providers.ts`,
-          );
-          const test = yield* TestConfect.TestConfect<typeof databaseSchema>();
-          const provider = runtime.module.providers[0];
-          const token = yield* test.run(
-            Effect.gen(function* () {
-              const auth = yield* MutationAuth.MutationAuth;
-              return yield* auth.signJwt({
-                claims: { sub: "person", aud: provider.audience },
-                expiresInSeconds: 60,
-              });
-            }),
-            Schema.String,
-          );
-          const claims = yield* Schema.decodeEffect(
-            Schema.fromJsonString(
-              Schema.Struct({ iss: Schema.String, aud: Schema.String }),
-            ),
-          )(Buffer.from(token.split(".")[1]!, "base64url").toString());
-          expect(claims).toEqual({
-            iss: provider.issuer,
-            aud: provider.audience,
-          });
-          expect(runtime.module.providers).toEqual([
-            {
-              issuer: configured
-                ? "https://configured.convex.cloud"
-                : "https://some-deployment.convex.cloud",
-              audience: configured
-                ? "https://configured.convex.site"
-                : "https://some.convex.site",
-              family: "person",
-            },
-          ]);
-        }).pipe(
-          Effect.provide(
+          const services = yield* Layer.build(
             TestConfect.layer(databaseSchema, defineSchema({}), {
               "_generated/server.ts": () => Promise.resolve({}),
             }),
-          ),
-        );
+          );
+          return yield* Effect.gen(function* () {
+            const runtime = yield* Bundler.bundle(
+              `${project.root}/confect/_generated/auth.providers.ts`,
+            );
+            const test =
+              yield* TestConfect.TestConfect<typeof databaseSchema>();
+            const provider = runtime.module.providers[0];
+            const token = yield* test.run(
+              Effect.gen(function* () {
+                const auth = yield* MutationAuth.MutationAuth;
+                return yield* auth.signJwt({
+                  claims: { sub: "person", aud: provider.audience },
+                  expiresInSeconds: 60,
+                });
+              }),
+              Schema.String,
+            );
+            const claims = yield* Schema.decodeEffect(
+              Schema.fromJsonString(
+                Schema.Struct({ iss: Schema.String, aud: Schema.String }),
+              ),
+            )(
+              Buffer.from(
+                pipe(token, Str.split("."))[1]!,
+                "base64url",
+              ).toString(),
+            );
+            expect(claims).toEqual({
+              iss: provider.issuer,
+              aud: provider.audience,
+            });
+            expect(runtime.module.providers).toEqual([
+              {
+                issuer: configured
+                  ? "https://configured.convex.cloud"
+                  : "https://some-deployment.convex.cloud",
+                audience: configured
+                  ? "https://configured.convex.site"
+                  : "https://some.convex.site",
+                family: "person",
+              },
+            ]);
+          }).pipe(Effect.provideContext(services));
+        }).pipe(Effect.scoped);
       }),
     { timeout: 30000 },
   );
@@ -289,16 +301,18 @@ export default Auth.make(app, { providers: [
         yield* project.write(
           "confect/notes.impl.ts",
           'import { providers } from "./_generated/auth.providers";\n' +
-            Project.impl.replace(
-              "const reader =",
-              'if (providers[0].family !== "person") throw new Error("missing family"); const reader =',
+            pipe(
+              Project.impl,
+              Str.replace(
+                "const reader =",
+                'if (providers[0].family !== "person") throw new Error("missing family"); const reader =',
+              ),
             ),
         );
         const generated = yield* project.start("codegen");
-        expect(
-          yield* generated.handle.exitCode,
-          yield* Ref.get(generated.output),
-        ).toBe(0);
+        const exitCode2 = yield* generated.handle.exitCode;
+        const output2 = yield* Ref.get(generated.output);
+        expect(exitCode2, output2).toBe(0);
         const configPath = `${project.root}/convex/auth.config.ts`;
         const config = yield* fs.readFileString(configPath);
         expect(config).not.toMatch(/family:|name:/);
@@ -352,8 +366,8 @@ export default Auth.make(app, { providers: [
         expect(registered.module.default.list.isPublic).toBe(true);
         for (const file of definitions)
           expect(
-            Object.keys(registered.metafile.inputs).some((input) =>
-              input.endsWith(file),
+            Array.some(Record.keys(registered.metafile.inputs), (input) =>
+              pipe(input, Str.endsWith(file)),
             ),
           ).toBe(false);
         yield* project.write("confect/app.ts", app);
@@ -364,16 +378,15 @@ export default Auth.make(app, { providers: [
         yield* project.write("confect/notes.impl.ts", Project.impl);
         yield* fs.remove(`${project.root}/confect/auth.ts`);
         const removed = yield* project.start("codegen");
-        expect(
-          yield* removed.handle.exitCode,
-          yield* Ref.get(removed.output),
-        ).toBe(0);
-        expect(
-          yield* fs.exists(
-            `${project.root}/confect/_generated/auth.providers.ts`,
-          ),
-        ).toBe(false);
-        expect(yield* fs.exists(configPath)).toBe(false);
+        const exitCode3 = yield* removed.handle.exitCode;
+        const output3 = yield* Ref.get(removed.output);
+        expect(exitCode3, output3).toBe(0);
+        const found = yield* fs.exists(
+          `${project.root}/confect/_generated/auth.providers.ts`,
+        );
+        expect(found).toBe(false);
+        const configPathExists = yield* fs.exists(configPath);
+        expect(configPathExists).toBe(false);
       }),
     { timeout: 30000 },
   );
@@ -430,13 +443,13 @@ import { BulkEmail } from "./bulkEmail";
 export default App.make({ env: Env.make("host", {}), components: [email], mounts: [BulkEmail] });`,
         );
         const generated = yield* project.start("codegen");
-        expect(
-          yield* generated.handle.exitCode,
-          yield* Ref.get(generated.output),
-        ).toBe(0);
-        expect(
-          yield* fs.readFileString(`${project.root}/convex/convex.config.ts`),
-        ).toContain('name: "bulkEmail"');
+        const exitCode2 = yield* generated.handle.exitCode;
+        const output2 = yield* Ref.get(generated.output);
+        expect(exitCode2, output2).toBe(0);
+        const contents = yield* fs.readFileString(
+          `${project.root}/convex/convex.config.ts`,
+        );
+        expect(contents).toContain('name: "bulkEmail"');
       }),
     { timeout: 30000 },
   );
@@ -504,10 +517,9 @@ export default App.make({ env: Env.make("host", {}), components: [email], mounts
         );
         const run = Effect.gen(function* () {
           const generated = yield* project.start("codegen");
-          expect(
-            yield* generated.handle.exitCode,
-            yield* Ref.get(generated.output),
-          ).toBe(0);
+          const exitCode2 = yield* generated.handle.exitCode;
+          const output2 = yield* Ref.get(generated.output);
+          expect(exitCode2, output2).toBe(0);
           return yield* project.generatedFiles;
         });
         const first = yield* run;
@@ -519,7 +531,8 @@ export default App.make({ env: Env.make("host", {}), components: [email], mounts
         expect(first[path.join("convex", "convex.config.ts")]).toContain(
           'name: "bulkEmail"',
         );
-        expect(yield* run).toStrictEqual(first);
+        const runValue = yield* run;
+        expect(runValue).toStrictEqual(first);
       }),
     { timeout: 60000 },
   );
@@ -544,43 +557,58 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
           yield* project.write(
             "confect/notes.spec.ts",
             'import { Policy } from "./policy";\n' +
-              Project.spec.replace(
-                "GroupSpec.make()",
-                "GroupSpec.make().middleware(Policy)",
+              pipe(
+                Project.spec,
+                Str.replace(
+                  "GroupSpec.make()",
+                  "GroupSpec.make().middleware(Policy)",
+                ),
               ),
           );
           yield* project.write(
             "confect/notes.impl.ts",
             'import { MiddlewareImpl } from "@confect/server";\nimport { Policy } from "./policy";\n' +
-              Project.impl.replace(
-                "GroupImpl.finalize);",
-                "Layer.provide(MiddlewareImpl.make(databaseSchema, Policy, effect => effect)), GroupImpl.finalize);",
+              pipe(
+                Project.impl,
+                Str.replace(
+                  "GroupImpl.finalize);",
+                  "Layer.provide(MiddlewareImpl.make(databaseSchema, Policy, effect => effect)), GroupImpl.finalize);",
+                ),
               ),
           );
         }
         const fs = yield* FileSystem.FileSystem;
         yield* fs.makeDirectory(`${project.root}/confect/admin`);
+        const contents = yield* fs.readFileString(
+          `${project.root}/confect/notes.spec.ts`,
+        );
         yield* project.write(
           "confect/admin/tasks.spec.ts",
-          (yield* fs.readFileString(`${project.root}/confect/notes.spec.ts`))
-            .replace('"./policy"', '"../policy"')
-            .replace(
+          pipe(
+            contents,
+            Str.replace('"./policy"', '"../policy"'),
+            Str.replace(
               '"./_generated/tables/notes"',
               '"../_generated/tables/notes"',
             ),
+          ),
+        );
+        const contents2 = yield* fs.readFileString(
+          `${project.root}/confect/notes.impl.ts`,
         );
         yield* project.write(
           "confect/admin/tasks.impl.ts",
-          (yield* fs.readFileString(`${project.root}/confect/notes.impl.ts`))
-            .replace('"./policy"', '"../policy"')
-            .replaceAll('"./_generated/', '"../_generated/')
-            .replace('"./notes.spec"', '"./tasks.spec"'),
+          pipe(
+            contents2,
+            Str.replace('"./policy"', '"../policy"'),
+            Str.replaceAll('"./_generated/', '"../_generated/'),
+            Str.replace('"./notes.spec"', '"./tasks.spec"'),
+          ),
         );
         const generated = yield* project.start("codegen");
         const exitCode = yield* generated.handle.exitCode;
-        const output = stripVTControlCharacters(
-          yield* Ref.get(generated.output),
-        );
+        const output2 = yield* Ref.get(generated.output);
+        const output = stripVTControlCharacters(output2);
         if (covered) {
           expect(exitCode, output).toBe(0);
           const registrationPath = `${project.root}/confect/_generated/registeredFunctions/admin/tasks.ts`;
@@ -590,9 +618,12 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
           ).toBe(true);
           yield* project.write(
             "confect/admin/tasks.spec.ts",
-            Project.spec.replace(
-              '"./_generated/tables/notes"',
-              '"../_generated/tables/notes"',
+            pipe(
+              Project.spec,
+              Str.replace(
+                '"./_generated/tables/notes"',
+                '"../_generated/tables/notes"',
+              ),
             ),
           );
           expect(
@@ -605,9 +636,13 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
           expect(output).toContain(
             'Required middleware is missing:\nadmin.tasks.list requires middleware "Policy"\nnotes.list requires middleware "Policy"',
           );
-          expect(output.match(/Required middleware is missing:/g)).toHaveLength(
-            1,
-          );
+          expect(
+            pipe(
+              output,
+              Str.match(/Required middleware is missing:/g),
+              Option.getOrNull,
+            ),
+          ).toHaveLength(1);
         }
       }),
     { timeout: 30000 },
@@ -648,7 +683,7 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
       source:
         'throw new Error("must not evaluate");\nexport const helper = 1;\n',
     },
-    ...["http.ts", "crons.ts"].map((file) => ({
+    ...Array.map(["http.ts", "crons.ts"], (file) => ({
       name: "hand-written optional entrypoint",
       file,
       source: "export default {};\n",
@@ -662,16 +697,17 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
         const project = yield* Project.make;
         const initial = yield* project.start("codegen");
         yield* initial.waitFor("Generated files are up-to-date");
-        expect(yield* initial.handle.exitCode).toBe(0);
+        const exitCode2 = yield* initial.handle.exitCode;
+        expect(exitCode2).toBe(0);
         if (name === "re-added file") {
           yield* fs.remove(`${project.root}/confect/notes.spec.ts`);
           yield* fs.remove(`${project.root}/confect/notes.impl.ts`);
           const removed = yield* project.start("codegen");
           yield* removed.waitFor("Generated files are up-to-date");
-          expect(yield* removed.handle.exitCode).toBe(0);
-          expect(yield* fs.exists(`${project.root}/convex/notes.ts`)).toBe(
-            false,
-          );
+          const exitCode3 = yield* removed.handle.exitCode;
+          expect(exitCode3).toBe(0);
+          const found = yield* fs.exists(`${project.root}/convex/notes.ts`);
+          expect(found).toBe(false);
         }
         if (name === "re-export") {
           yield* project.write(
@@ -690,15 +726,15 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
         yield* project.write(`convex/${file}`, previous + source);
         const generated = yield* project.start("codegen");
         const exitCode = yield* generated.handle.exitCode;
-        const output = stripVTControlCharacters(
-          yield* Ref.get(generated.output),
-        );
+        const output2 = yield* Ref.get(generated.output);
+        const output = stripVTControlCharacters(output2);
         expect(exitCode, output).not.toBe(0);
         expect(output).toContain(`convex/${file}`);
         expect(output).toContain("not written by confect codegen");
-        expect(yield* fs.readFileString(`${project.root}/convex/${file}`)).toBe(
-          previous + source,
+        const contents = yield* fs.readFileString(
+          `${project.root}/convex/${file}`,
         );
+        expect(contents).toBe(previous + source);
       }).pipe(Effect.scoped),
     { timeout: 30000 },
   );
@@ -712,20 +748,23 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
         const project = yield* Project.make;
         const initial = yield* project.start("codegen");
         yield* initial.waitFor("Generated files are up-to-date");
-        expect(yield* initial.handle.exitCode).toBe(0);
+        const exitCode2 = yield* initial.handle.exitCode;
+        expect(exitCode2).toBe(0);
         yield* project.write("confect/removed.spec.ts", Project.spec);
         yield* project.write(
           "confect/removed.impl.ts",
-          Project.impl.replace('"./notes.spec"', '"./removed.spec"'),
+          pipe(Project.impl, Str.replace('"./notes.spec"', '"./removed.spec"')),
         );
         const added = yield* project.start("codegen");
         yield* added.waitFor("Generated files are up-to-date");
-        expect(yield* added.handle.exitCode).toBe(0);
+        const exitCode3 = yield* added.handle.exitCode;
+        expect(exitCode3).toBe(0);
         yield* fs.remove(path.join(project.root, "confect/removed.spec.ts"));
         yield* fs.remove(path.join(project.root, "confect/removed.impl.ts"));
         const removed = yield* project.start("codegen");
         yield* removed.waitFor("Generated files are up-to-date");
-        expect(yield* removed.handle.exitCode).toBe(0);
+        const exitCode4 = yield* removed.handle.exitCode;
+        expect(exitCode4).toBe(0);
         const files = {
           "raw.ts":
             'import { queryGeneric } from "convex/server"; export const raw = queryGeneric({ handler: () => null });',
@@ -738,7 +777,7 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
               path.join(project.root, "convex/notes.ts"),
             )) + "\nexport { list as unchecked };",
         };
-        for (const [file, source] of Object.entries(files)) {
+        for (const [file, source] of Record.toEntries(files)) {
           yield* fs.makeDirectory(
             path.dirname(path.join(project.root, "convex", file)),
             { recursive: true },
@@ -747,17 +786,23 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
         }
         const generated = yield* project.start("codegen");
         const exitCode = yield* generated.handle.exitCode;
-        const output = stripVTControlCharacters(
-          yield* Ref.get(generated.output),
-        );
+        const output2 = yield* Ref.get(generated.output);
+        const output = stripVTControlCharacters(output2);
         expect(exitCode, output).not.toBe(0);
-        for (const [file, source] of Object.entries(files)) {
+        for (const [file, source] of Record.toEntries(files)) {
           expect(output).toContain(`convex/${file}`);
-          expect(
-            yield* fs.readFileString(path.join(project.root, "convex", file)),
-          ).toBe(source);
+          const contents = yield* fs.readFileString(
+            path.join(project.root, "convex", file),
+          );
+          expect(contents).toBe(source);
         }
-        expect(output.match(/not written by confect codegen/g)).toHaveLength(1);
+        expect(
+          pipe(
+            output,
+            Str.match(/not written by confect codegen/g),
+            Option.getOrNull,
+          ),
+        ).toHaveLength(1);
       }).pipe(Effect.scoped),
     { timeout: 30000 },
   );
@@ -770,22 +815,23 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
         const project = yield* Project.make;
         yield* project.write(
           "confect/notes.spec.ts",
-          Project.spec.replace('name: "list"', 'name: "$list"'),
+          pipe(Project.spec, Str.replace('name: "list"', 'name: "$list"')),
         );
         yield* project.write(
           "confect/notes.impl.ts",
-          Project.impl.replace('"list"', '"$list"'),
+          pipe(Project.impl, Str.replace('"list"', '"$list"')),
         );
         const initial = yield* project.start("codegen");
         yield* initial.waitFor("Generated files are up-to-date");
-        expect(yield* initial.handle.exitCode).toBe(0);
+        const exitCode2 = yield* initial.handle.exitCode;
+        expect(exitCode2).toBe(0);
         const expected = yield* project.generatedFiles;
         const repeated = yield* project.start("codegen");
-        expect(
-          yield* repeated.handle.exitCode,
-          yield* Ref.get(repeated.output),
-        ).toBe(0);
-        expect(yield* project.generatedFiles).toEqual(expected);
+        const exitCode3 = yield* repeated.handle.exitCode;
+        const output2 = yield* Ref.get(repeated.output);
+        expect(exitCode3, output2).toBe(0);
+        const generatedFiles2 = yield* project.generatedFiles;
+        expect(generatedFiles2).toEqual(expected);
         expect(expected[path.join("convex", "notes.ts")]).toContain(
           "export const $list = registeredFunctions.$list;",
         );
@@ -806,24 +852,26 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
         yield* component.waitFor(
           'Group "tasks" in tasks.spec.ts uses the Node runtime. Convex components do not support Node.js functions.',
         );
-        expect(yield* component.handle.exitCode).not.toBe(0);
-        expect(yield* Ref.get(component.output)).not.toContain(
-          "Generated files are up-to-date",
-        );
-        expect(yield* fs.exists(`${project.root}/confect/_generated`)).toBe(
-          false,
-        );
-        expect(yield* fs.exists(`${project.root}/convex/tasks.ts`)).toBe(false);
+        const exitCode2 = yield* component.handle.exitCode;
+        expect(exitCode2).not.toBe(0);
+        const output2 = yield* Ref.get(component.output);
+        expect(output2).not.toContain("Generated files are up-to-date");
+        const found = yield* fs.exists(`${project.root}/confect/_generated`);
+        expect(found).toBe(false);
+        const found2 = yield* fs.exists(`${project.root}/convex/tasks.ts`);
+        expect(found2).toBe(false);
         yield* project.write(
           "convex/convex.config.ts",
           'import { defineApp } from "convex/server";\nexport default defineApp();\n',
         );
         const app = yield* project.start("codegen");
         yield* app.waitFor("Generated files are up-to-date");
-        expect(yield* app.handle.exitCode).toBe(0);
-        expect(
-          yield* fs.readFileString(`${project.root}/convex/tasks.ts`),
-        ).toContain('"use node"');
+        const exitCode3 = yield* app.handle.exitCode;
+        expect(exitCode3).toBe(0);
+        const contents = yield* fs.readFileString(
+          `${project.root}/convex/tasks.ts`,
+        );
+        expect(contents).toContain('"use node"');
       }).pipe(Effect.scoped),
     { timeout: 30000 },
   );
@@ -855,7 +903,7 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
             );
           }
           for (let index = 1; index <= 47; index++) {
-            const name = `g${String(index).padStart(2, "0")}`;
+            const name = `g${pipe(String(index), Str.padStart(2, "0"))}`;
             yield* project.write(
               `confect/${name}.spec.ts`,
               `import { FunctionSpec, GroupSpec } from "@confect/core";
@@ -882,7 +930,8 @@ export default GroupImpl.make(schema, group).pipe(Layer.provide(get), GroupImpl.
             kind === "component" ? ["--component-dir", "convex"] : [],
           );
           yield* codegen.waitFor("Generated files are up-to-date");
-          expect(yield* codegen.handle.exitCode).toBe(0);
+          const exitCode2 = yield* codegen.handle.exitCode;
+          expect(exitCode2).toBe(0);
           yield* project.write(
             "consumer.ts",
             `import { expectTypeOf } from "vitest";
@@ -909,7 +958,11 @@ refs.public.g48;
               "target": "ESNext",
               "verbatimModuleSyntax": true
             },
-            "files": [${consumers.map((consumer) => stringLiteral(consumer)).join(",")}]
+            "files": [${pipe(
+              consumers,
+              Array.map((consumer) => quote(consumer)),
+              Array.join(","),
+            )}]
           }`,
         );
         const compiler = yield* spawner.spawn(
@@ -928,7 +981,8 @@ refs.public.g48;
           Stream.decodeText(),
           Stream.mkString,
         );
-        expect(yield* compiler.exitCode, output).toBe(0);
+        const exitCode3 = yield* compiler.exitCode;
+        expect(exitCode3, output).toBe(0);
       }).pipe(Effect.scoped),
     { timeout: 60000 },
   );

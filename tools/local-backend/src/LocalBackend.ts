@@ -25,15 +25,18 @@ class BackendVersionLookupError extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("BackendVersionLookupError", { message: Schema.String }) {}
 
-class BackendEnvironmentSetupError extends Schema.TaggedError<BackendEnvironmentSetupError>()(
-  "BackendEnvironmentSetupError",
-  { name: Schema.String, exitCode: Schema.Finite },
-) {}
+class BackendEnvironmentSetupError extends Schema.TaggedError<
+  BackendEnvironmentSetupError,
+  { readonly brand: unique symbol }
+>()("BackendEnvironmentSetupError", {
+  variable: Schema.String,
+  exitCode: Schema.Finite,
+}) {}
 
-class BackendRedeployError extends Schema.TaggedError<BackendRedeployError>()(
-  "BackendRedeployError",
-  { exitCode: Schema.Finite },
-) {}
+class BackendRedeployError extends Schema.TaggedError<
+  BackendRedeployError,
+  { readonly brand: unique symbol }
+>()("BackendRedeployError", { exitCode: Schema.Finite }) {}
 
 export class LocalBackend extends Context.Service<
   LocalBackend,
@@ -109,8 +112,8 @@ const make = Effect.fnUntraced(function* (options: {
         : ChildProcess.make(words[0]!, words.slice(1), spawnOptions);
     const code = yield* spawner.exitCode(command).pipe(Effect.orDie);
     if (code !== 0)
-      return yield* new BackendEnvironmentSetupError({
-        name,
+      return yield* BackendEnvironmentSetupError.make({
+        variable: name,
         exitCode: code,
       });
   });
@@ -177,7 +180,7 @@ const make = Effect.fnUntraced(function* (options: {
             )
             .pipe(Effect.orDie);
           if (code !== 0)
-            return yield* new BackendRedeployError({ exitCode: code });
+            return yield* BackendRedeployError.make({ exitCode: code });
         });
         return {
           client: new ConvexHttpClient(`http://127.0.0.1:${options.port}`),

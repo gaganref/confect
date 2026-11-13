@@ -19,6 +19,7 @@ import { first } from "../componentBindings";
 import { capture } from "../reservedCapture";
 import { hops } from "../runtime";
 import spec from "./reserved.spec";
+import * as Record from "effect/Record";
 
 const echo = FunctionImpl.make(schema, spec, "echo", capture);
 const echoAction = FunctionImpl.make(schema, spec, "echoAction", capture);
@@ -37,17 +38,18 @@ const inline = FunctionImpl.make(schema, spec, "inline", (args) =>
       parent: yield* capture(args),
       child,
       plain,
-      hops: Object.fromEntries(hops),
+      hops: Record.fromEntries(hops),
     };
   }).pipe(Effect.orDie),
 );
 const write = FunctionImpl.make(schema, spec, "write", (args) =>
   Effect.gen(function* () {
     const writer = yield* DatabaseWriter;
+    const captured = yield* capture(args);
     yield* writer.table("transactionNotes").insert({
       caseId: `reserved:${args.run}`,
       value: yield* Schema.encodeEffect(Schema.fromJsonString(snapshot()))(
-        yield* capture(args),
+        captured,
       ),
     });
     return null;
@@ -94,7 +96,7 @@ const chain = FunctionImpl.make(schema, spec, "chain", (args) =>
       action,
       inline: component,
       jobId,
-      hops: Object.fromEntries(hops),
+      hops: Record.fromEntries(hops),
     };
   }).pipe(Effect.orDie),
 );

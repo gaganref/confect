@@ -842,12 +842,10 @@ describe("profile error wrappers", () => {
       expect([Ref.hasErrorSchema(profiled), Ref.hasErrorSchema(plain)]).toEqual(
         [true, false],
       );
-      expect(yield* Effect.promise(() => wrapped.result.current())).toEqual(
-        Result.succeed("saved"),
-      );
-      expect(yield* Effect.promise(() => unwrapped.result.current())).toBe(
-        "saved",
-      );
+      const resolved = yield* Effect.promise(() => wrapped.result.current());
+      expect(resolved).toEqual(Result.succeed("saved"));
+      const resolved2 = yield* Effect.promise(() => unwrapped.result.current());
+      expect(resolved2).toBe("saved");
     }),
   );
 
@@ -868,12 +866,10 @@ describe("profile error wrappers", () => {
       expect([Ref.hasErrorSchema(profiled), Ref.hasErrorSchema(plain)]).toEqual(
         [true, false],
       );
-      expect(yield* Effect.promise(() => wrapped.result.current())).toEqual(
-        Result.succeed("sent"),
-      );
-      expect(yield* Effect.promise(() => unwrapped.result.current())).toBe(
-        "sent",
-      );
+      const resolved = yield* Effect.promise(() => wrapped.result.current());
+      expect(resolved).toEqual(Result.succeed("sent"));
+      const resolved2 = yield* Effect.promise(() => unwrapped.result.current());
+      expect(resolved2).toBe("sent");
     }),
   );
 });

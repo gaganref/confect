@@ -4,6 +4,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import contract from "./confect/_generated/component";
 import type spec from "./confect/_generated/spec";
+import * as Array from "effect/Array";
 
 const client = (native: Component.Api<typeof spec>) => {
   const { counter } = Component.bind(contract, native);
@@ -19,7 +20,7 @@ const client = (native: Component.Api<typeof spec>) => {
       const docs = yield* runner
         .runQuery(counter.list, { run })
         .pipe(Effect.orDie);
-      return docs.map((doc) => doc.count);
+      return Array.map(docs, (doc) => doc.count);
     }),
   };
 };

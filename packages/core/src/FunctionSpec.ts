@@ -1004,17 +1004,18 @@ const makeExtended = (
           }
         }
       }
-      return middleware.reduce(
-        (spec: any, entry) =>
-          MiddlewareSpec.isMiddlewareSpec(entry)
-            ? spec.middleware(entry)
-            : spec.middleware(entry.spec, entry.options(info)),
+      return Array.reduce(
+        middleware,
         Object.assign(makeSpec({ name, description, ...thunks } as never), {
           fields,
           ...(reserves && reservedArgument !== undefined
             ? { reservedArgument }
             : {}),
         }),
+        (spec: any, entry) =>
+          MiddlewareSpec.isMiddlewareSpec(entry)
+            ? spec.middleware(entry)
+            : spec.middleware(entry.spec, entry.options(info)),
       );
     };
 

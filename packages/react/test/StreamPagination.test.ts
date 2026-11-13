@@ -1,6 +1,8 @@
 import { assert, describe, expect, expectTypeOf, test } from "@effect/vitest";
 
 import * as StreamPagination from "@confect/react/StreamPagination";
+import * as Array from "effect/Array";
+import * as Rec from "effect/Record";
 
 type Response = StreamPagination.PageResult | Error;
 
@@ -8,6 +10,24 @@ const options = {
   initialNumItems: 2,
   isInvalidCursorError: (error: Error) => error.message === "InvalidCursor",
 };
+
+/**
+ * The key a scripted response is stored under: every field of its request.
+ */
+const requestKey = (request: StreamPagination.PageRequest) =>
+  Array.join(
+    Array.map(
+      [
+        request.numItems,
+        request.cursor,
+        request.endCursor,
+        request.maximumRowsRead,
+        request.maximumBytesRead,
+      ],
+      String,
+    ),
+    "|",
+  );
 
 /**
  * Serves each subscribed page from `responses`, keyed by its request, so tests
@@ -18,7 +38,7 @@ const serve = (
   responses: ReadonlyMap<string, Response>,
 ): StreamPagination.Results =>
   StreamPagination.pageRequests(state, (page) =>
-    responses.get(JSON.stringify(page)),
+    responses.get(requestKey(page)),
   );
 
 /**
@@ -39,23 +59,22 @@ const settle = (
     if (view._tag !== "Interpreted" || view.transitions.length === 0) {
       return { state, view };
     }
-    state = view.transitions.reduce(
-      (current, transition) => transition(current),
-      state,
+    state = Array.reduce(view.transitions, state, (current, transition) =>
+      transition(current),
     );
   }
   throw new Error("transitions did not settle");
 };
 
 const requests = (state: StreamPagination.State) =>
-  Object.values(StreamPagination.pageRequests(state, (page) => page));
+  Rec.values(StreamPagination.pageRequests(state, (page) => page));
 
 const respond = (
   responses: Map<string, Response>,
   request: StreamPagination.PageRequest,
   response: Response,
 ) => {
-  responses.set(JSON.stringify(request), response);
+  responses.set(requestKey(request), response);
 };
 
 const page = (
@@ -86,7 +105,7 @@ const pageItems = [
 const threePages = () => {
   const responses = new Map<string, Response>();
   let state = StreamPagination.initial(2);
-  pinnedPages.forEach((pinned, index) => {
+  Array.forEach(pinnedPages, (pinned, index) => {
     const loaded = page(pageItems[index]!, pinned.endCursor);
     respond(responses, { numItems: 2, cursor: pinned.cursor }, loaded);
     respond(responses, pinned, loaded);
@@ -134,7 +153,7 @@ describe("interpret", () => {
     expect(failed.view.firstPageLoaded).toBe(true);
     expect(requests(failed.state)).toEqual([growing, pinned]);
 
-    responses.delete(JSON.stringify(pinned));
+    responses.delete(requestKey(pinned));
     const retrying = settle(failed.state, responses);
 
     assert(retrying.view._tag === "Interpreted");
@@ -273,7 +292,7 @@ describe("interpret", () => {
         secondHalf,
       ]);
 
-      responses.delete(JSON.stringify(firstHalf));
+      responses.delete(requestKey(firstHalf));
       const retrying = settle(failed.state, responses);
 
       assert(retrying.view._tag === "Interpreted");
@@ -288,9 +307,9 @@ describe("interpret", () => {
       assert(swapped.view._tag === "Interpreted");
       expect(swapped.view.items).toEqual(["1", "2", "3", "4", "5", "6"]);
       expect(requests(swapped.state)).toEqual(
-        pinnedPages
-          .flatMap((pinned, at) => (at === index ? [] : [pinned]))
-          .concat([firstHalf, secondHalf]),
+        Array.flatMap(pinnedPages, (pinned, at) =>
+          at === index ? [] : [pinned],
+        ).concat([firstHalf, secondHalf]),
       );
     },
   );

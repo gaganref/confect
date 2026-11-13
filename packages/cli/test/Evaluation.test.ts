@@ -29,6 +29,7 @@ import { ProjectRoot } from "@confect/cli/ProjectRoot";
 import * as GenerationSnapshot from "@confect/cli/GenerationSnapshot";
 import { SpecModulePath } from "@confect/cli/SpecModulePath";
 import * as Project from "./integration/Project";
+import { assertIs } from "./internal/assertIs";
 
 vi.mock("node:child_process", (importOriginal) =>
   importOriginal<typeof ChildProcess>().then((original) => ({
@@ -228,48 +229,53 @@ layer(NodeServices.layer, { excludeTestServices: true })("Evaluation", (it) => {
           return child;
         });
         yield* Effect.gen(function* () {
-          yield* Deferred.await(started);
-          const standby = vi.mocked(fork).mock.results[0];
-          assert(standby?.type === "return");
-          const first = yield* project.provide(Evaluation.generate);
-          expect([...first].map((fn) => fn.name)).toEqual(["list"]);
-          expect(
-            standby.value.exitCode !== null ||
-              standby.value.signalCode !== null,
-          ).toBe(true);
-          yield* project.write(
-            "confect/notes.impl.ts",
-            `${Project.impl}
+          const services = yield* Layer.build(Evaluation.prewarmedLayer);
+          return yield* Effect.gen(function* () {
+            yield* Deferred.await(started);
+            const standby = vi.mocked(fork).mock.results[0];
+            assert(standby?.type === "return");
+            const first = yield* project.provide(Evaluation.generate);
+            expect(Arr.map([...first], (fn) => fn.name)).toEqual(["list"]);
+            expect(
+              standby.value.exitCode !== null ||
+                standby.value.signalCode !== null,
+            ).toBe(true);
+            yield* project.write(
+              "confect/notes.impl.ts",
+              `${Project.impl}
           globalThis.__confectEvaluationCount = (globalThis.__confectEvaluationCount ?? 0) + 1;
           if (globalThis.__confectEvaluationCount !== 1) throw new Error("Evaluation leaked between passes");
         `,
-          );
-          const paths = [ImplModulePath.make("notes.impl.ts")];
-          yield* project.provide(Evaluation.validate(paths));
-          yield* project.provide(Evaluation.validate(paths));
-          yield* project.write(
-            "confect/notes.impl.ts",
-            `${Project.impl}\nprocess.exit(23);\n`,
-          );
-          const failed = yield* project
-            .provide(Evaluation.validate(paths))
-            .pipe(Effect.result);
-          assert(Result.isFailure(failed));
-          expect(failed.failure).toMatchObject({
-            _tag: "EvaluationError",
-            diagnostic: expect.stringContaining("23"),
-          });
-          yield* project.write(
-            "confect/notes.spec.ts",
-            Project.spec.replace('name: "list"', 'name: "latest"'),
-          );
-          yield* project.write(
-            "confect/notes.impl.ts",
-            Project.impl.replace('"list"', '"latest"'),
-          );
-          const recovered = yield* project.provide(Evaluation.generate);
-          expect([...recovered].map((fn) => fn.name)).toEqual(["latest"]);
-        }).pipe(Effect.provide(Evaluation.prewarmedLayer));
+            );
+            const paths = [ImplModulePath.make("notes.impl.ts")];
+            yield* project.provide(Evaluation.validate(paths));
+            yield* project.provide(Evaluation.validate(paths));
+            yield* project.write(
+              "confect/notes.impl.ts",
+              `${Project.impl}\nprocess.exit(23);\n`,
+            );
+            const failed = yield* project
+              .provide(Evaluation.validate(paths))
+              .pipe(Effect.result);
+            assertIs(failed, Result.isFailure);
+            expect(failed.failure).toMatchObject({
+              _tag: "EvaluationError",
+              diagnostic: expect.stringContaining("23"),
+            });
+            yield* project.write(
+              "confect/notes.spec.ts",
+              pipe(Project.spec, Str.replace('name: "list"', 'name: "latest"')),
+            );
+            yield* project.write(
+              "confect/notes.impl.ts",
+              pipe(Project.impl, Str.replace('"list"', '"latest"')),
+            );
+            const recovered = yield* project.provide(Evaluation.generate);
+            expect(Arr.map([...recovered], (fn) => fn.name)).toEqual([
+              "latest",
+            ]);
+          }).pipe(Effect.provideContext(services));
+        }).pipe(Effect.scoped);
         expectWorkersExited();
       }).pipe(Effect.scoped),
     { timeout: 30000 },
@@ -282,23 +288,13 @@ layer(NodeServices.layer, { excludeTestServices: true })("Evaluation", (it) => {
         const project = yield* setup;
         const ready = yield* Deferred.make<void>();
         yield* Effect.gen(function* () {
-          yield* Deferred.await(ready);
-          const standby = vi.mocked(fork).mock.results[0];
-          assert(standby?.type === "return");
-          yield* Effect.callback<void>((resume) => {
-            standby.value.once("exit", () => resume(Effect.void));
-            standby.value.kill("SIGKILL");
-          });
-          const recovered = yield* project.provide(Evaluation.generate);
-          expect([...recovered].map((fn) => fn.name)).toEqual(["list"]);
-        }).pipe(
-          Effect.provide(
+          const services2 = yield* Layer.build(
             Evaluation.prewarmedLayer.pipe(
               Layer.provideMerge(
                 Logger.layer([
                   Logger.make((event) => {
                     if (
-                      Array.isArray(event.message) &&
+                      Arr.isArray(event.message) &&
                       event.message[0] === "Evaluator ready"
                     )
                       Deferred.doneUnsafe(ready, Effect.void);
@@ -306,7 +302,20 @@ layer(NodeServices.layer, { excludeTestServices: true })("Evaluation", (it) => {
                 ]),
               ),
             ),
-          ),
+          );
+          return yield* Effect.gen(function* () {
+            yield* Deferred.await(ready);
+            const standby = vi.mocked(fork).mock.results[0];
+            assert(standby?.type === "return");
+            yield* Effect.callback<void>((resume) => {
+              standby.value.once("exit", () => resume(Effect.void));
+              standby.value.kill("SIGKILL");
+            });
+            const recovered = yield* project.provide(Evaluation.generate);
+            expect(Arr.map([...recovered], (fn) => fn.name)).toEqual(["list"]);
+          }).pipe(Effect.provideContext(services2));
+        }).pipe(
+          Effect.scoped,
           Effect.provideService(References.MinimumLogLevel, "Debug"),
         );
         expectWorkersExited();

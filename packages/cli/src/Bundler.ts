@@ -151,14 +151,19 @@ export const exportNames = (
         logLevel: "silent",
         outdir: "out",
       }),
-    catch: (cause) => new BundlerError({ cause }),
+    catch: (cause) => BundlerError.make({ cause }),
   }).pipe(
     Effect.map(({ metafile, outputFiles }) =>
-      Object.values(metafile.inputs).some(({ format }) => format === "cjs") ||
-      outputFiles.some(({ text }) => /^export \* from /m.test(text))
+      Array.some(
+        Record.values(metafile.inputs),
+        ({ format }) => format === "cjs",
+      ) || Array.some(outputFiles, ({ text }) => /^export \* from /m.test(text))
         ? Option.none()
         : Option.some(
-            Object.values(metafile.outputs).flatMap(({ exports }) => exports),
+            Array.flatMap(
+              Record.values(metafile.outputs),
+              ({ exports }) => exports,
+            ),
           ),
     ),
   );

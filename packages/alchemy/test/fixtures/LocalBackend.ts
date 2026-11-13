@@ -8,6 +8,8 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientError from "effect/http/HttpClientError";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { ChildProcessSpawner } from "effect/process";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 // Python's zipfile with ZIP_DEFLATED: convex-local-backend and
 // convex-local-backend.exe, each "#!/bin/sh\necho local backend\n" x 20.
@@ -47,6 +49,8 @@ export interface FakeBehaviour {
  * `behaviour` can change between boots, and `attempts` records the arguments of
  * every backend start, served or not. Node commands (codegen, `convex deploy`)
  * succeed and record the push target.
+ *
+ * @internal
  */
 export const fakeBackend = (options?: Partial<FakeBehaviour>) => {
   const behaviour: FakeBehaviour = {
@@ -74,12 +78,12 @@ export const fakeBackend = (options?: Partial<FakeBehaviour>) => {
           let stdout = Stream.empty as Stream.Stream<Uint8Array>;
           let stop = Effect.void;
           if (command.command === process.execPath) {
-            if (args[1] === "deploy")
-              pushes.push(
-                yield* fs
-                  .readFileString(args[args.indexOf("--env-file") + 1])
-                  .pipe(Effect.orDie),
-              );
+            if (args[1] === "deploy") {
+              const envFile = yield* fs
+                .readFileString(args[args.indexOf("--env-file") + 1])
+                .pipe(Effect.orDie);
+              pushes.push(envFile);
+            }
             yield* Deferred.succeed(exited, ChildProcessSpawner.ExitCode(0));
           } else if (args[0] === "keygen") {
             keys++;
@@ -156,7 +160,7 @@ export const fakeBackend = (options?: Partial<FakeBehaviour>) => {
   const http = Layer.succeed(
     HttpClient.HttpClient,
     HttpClient.make((request) => {
-      if (request.url.startsWith("https://github.com/")) {
+      if (pipe(request.url, String.startsWith("https://github.com/"))) {
         downloads.push(request.url);
         return Effect.succeed(
           HttpClientResponse.fromWeb(request, new Response(backendArchive)),

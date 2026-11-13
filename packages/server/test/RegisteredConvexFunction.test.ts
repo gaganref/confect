@@ -287,7 +287,14 @@ describe("invocation context", () => {
                   },
                 ],
           );
-          expect(JSON.stringify(roots)).not.toContain("fixture-private-token");
+          return Effect.runPromise(
+            Schema.encodeUnknownEffect(Schema.fromJsonString(Schema.Unknown))(
+              roots,
+            ),
+          );
+        })
+        .then((rootsJson) => {
+          expect(rootsJson).not.toContain("fixture-private-token");
           const plain = RegisteredConvexFunction.prepare(
             DatabaseSchema.make({}),
             item,

@@ -31,6 +31,10 @@ import {
   writeFileString,
   writeFileStringAndLog,
 } from "../utils.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
 
 /**
  * Bumped when the generated files change shape, so a manifest written by an
@@ -40,7 +44,8 @@ const GENERATOR_FORMAT = "2";
 
 const confectPath = Effect.fnUntraced(function* (file: string) {
   const path = yield* Path.Path;
-  return path.join(yield* ConfectDirectory.get, file);
+  const confectDirectory = yield* ConfectDirectory.get;
+  return path.join(confectDirectory, file);
 });
 
 /**
@@ -50,12 +55,14 @@ const confectPath = Effect.fnUntraced(function* (file: string) {
  */
 export const isDeclared = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
-  return yield* fs.exists(yield* confectPath("app.ts"));
+  const confectPathResult = yield* confectPath("app.ts");
+  return yield* fs.exists(confectPathResult);
 });
 
 const displayPath = Effect.fnUntraced(function* (absolutePath: string) {
   const path = yield* Path.Path;
-  return toPosixPath(path, path.relative(yield* ProjectRoot.get, absolutePath));
+  const projectRoot = yield* ProjectRoot.get;
+  return toPosixPath(path, path.relative(projectRoot, absolutePath));
 });
 
 const bundleDeclaration = Effect.fnUntraced(function* (file: string) {
@@ -69,7 +76,7 @@ const bundleDeclaration = Effect.fnUntraced(function* (file: string) {
 });
 
 const invalid = (file: string) => (error: { readonly message: string }) =>
-  new InvalidDeclarationError({
+  InvalidDeclarationError.make({
     declarationPath: `confect/${file}`,
     reason: error.message,
   });
@@ -86,10 +93,11 @@ const assertOwned = Effect.fnUntraced(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   if (!(yield* fs.exists(convexPath))) return;
-  if (Declaration.isGenerated(yield* fs.readFileString(convexPath), legacy)) {
+  const convexPathContents = yield* fs.readFileString(convexPath);
+  if (Declaration.isGenerated(convexPathContents, legacy)) {
     return;
   }
-  return yield* new HandWrittenConvexFileError({
+  return yield* HandWrittenConvexFileError.make({
     convexPath: yield* displayPath(convexPath),
     declarationPath: `confect/${declarationFile}`,
   });
@@ -136,19 +144,16 @@ const declarationInputs = Effect.fnUntraced(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const projectRoot = yield* ProjectRoot.get;
-  const registry = path.join(
-    yield* ConfectDirectory.get,
-    "_generated",
-    "components.ts",
-  );
+  const confectDirectory = yield* ConfectDirectory.get;
+  const registry = path.join(confectDirectory, "_generated", "components.ts");
   const files = new Set<string>();
   for (const { metafile } of bundles) {
-    for (const input of Object.keys(metafile.inputs)) {
+    for (const input of Rec.keys(metafile.inputs)) {
       const relative = path.relative(projectRoot, input);
       if (
         path.isAbsolute(input) &&
-        !relative.startsWith("..") &&
-        !relative.split(path.sep).includes("node_modules") &&
+        !pipe(relative, String.startsWith("..")) &&
+        !pipe(relative, String.split(path.sep)).includes("node_modules") &&
         path.resolve(input) !== registry
       ) {
         files.add(input);
@@ -179,16 +184,16 @@ const componentImport = Effect.fnUntraced(function* () {
   return (definition: unknown): Option.Option<Declaration.ComponentImport> =>
     Option.map(ConvexConfig.componentImportOf(definition), (recorded) => {
       const bare =
-        !recorded.specifier.startsWith(".") &&
+        !pipe(recorded.specifier, String.startsWith(".")) &&
         !path.isAbsolute(recorded.specifier);
-      const relative = toPosixPath(
-        path,
-        path.relative(convexDirectory, recorded.path),
-      ).replace(/\.([cm]?)[jt]s$/, ".$1js");
+      const relative = pipe(
+        toPosixPath(path, path.relative(convexDirectory, recorded.path)),
+        String.replace(/\.([cm]?)[jt]s$/, ".$1js"),
+      );
       return {
         importPath: bare
           ? recorded.specifier
-          : relative.startsWith(".")
+          : pipe(relative, String.startsWith("."))
             ? relative
             : `./${relative}`,
         componentName:
@@ -202,7 +207,8 @@ const componentImport = Effect.fnUntraced(function* () {
 
 const manifestPath = Effect.gen(function* () {
   const path = yield* Path.Path;
-  return path.join(yield* ConfectDirectory.get, "_generated", "manifest.ts");
+  const confectDirectory = yield* ConfectDirectory.get;
+  return path.join(confectDirectory, "_generated", "manifest.ts");
 });
 
 /**
@@ -214,7 +220,8 @@ const removeGenerated = Effect.fnUntraced(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   if (!(yield* fs.exists(filePath))) return;
-  if (!Declaration.isGenerated(yield* fs.readFileString(filePath), legacy)) {
+  const filePathContents = yield* fs.readFileString(filePath);
+  if (!Declaration.isGenerated(filePathContents, legacy)) {
     return;
   }
   yield* removePathIfExists(filePath);
@@ -222,7 +229,8 @@ const removeGenerated = Effect.fnUntraced(function* (
 });
 
 const removeManifest = Effect.gen(function* () {
-  yield* removeGenerated(yield* manifestPath, []);
+  const manifestPathValue = yield* manifestPath;
+  yield* removeGenerated(manifestPathValue, []);
 });
 
 const readManifest = Effect.gen(function* () {
@@ -248,7 +256,7 @@ const sectionDigest = (
   base: string,
   sections: Readonly<Record<string, unknown>>,
 ) =>
-  Object.keys(sections).length === 0
+  Rec.keys(sections).length === 0
     ? base
     : Declaration.digest({
         files: [["declaration", base]],
@@ -281,13 +289,14 @@ export const syncManifestSections = Effect.fnUntraced(
     const [error, ...more] = checked.errors;
     for (const other of more) yield* logCodegenError(other);
     if (error !== undefined) return yield* error;
-    const sections = Object.fromEntries(
-      [...registry].map(([key, { data }]) => [key, data]),
+    const sections = Rec.fromEntries(
+      Arr.map([...registry], ([key, { data }]) => [key, data]),
     );
     const { name, env, http } = current;
     const digest = sectionDigest(baseDigest, sections);
+    const manifestPathValue = yield* manifestPath;
     yield* writeFileStringAndLog(
-      yield* manifestPath,
+      manifestPathValue,
       Declaration.renderManifest({ name, env, http, digest, ...sections }),
     );
   },
@@ -296,15 +305,13 @@ export const syncManifestSections = Effect.fnUntraced(
 
 const authProvidersPath = Effect.gen(function* () {
   const path = yield* Path.Path;
-  return path.join(
-    yield* ConfectDirectory.get,
-    "_generated",
-    "auth.providers.ts",
-  );
+  const confectDirectory = yield* ConfectDirectory.get;
+  return path.join(confectDirectory, "_generated", "auth.providers.ts");
 });
 
 const removeAuthProviders = Effect.gen(function* () {
-  yield* removeGenerated(yield* authProvidersPath, []);
+  const authProvidersPathValue = yield* authProvidersPath;
+  yield* removeGenerated(authProvidersPathValue, []);
 });
 
 const writeDeclaration = Effect.fnUntraced(function* (
@@ -319,7 +326,7 @@ const writeDeclaration = Effect.fnUntraced(function* (
   const app = yield* bundleDeclaration("app.ts");
   const appValue: unknown = app.module.default;
   if (App.isApp(appValue) && appValue.kind !== target) {
-    return yield* new DeclarationKindMismatchError({
+    return yield* DeclarationKindMismatchError.make({
       declarationPath: "confect/app.ts",
       declaredKind: appValue.kind,
       targetKind: target,
@@ -327,7 +334,7 @@ const writeDeclaration = Effect.fnUntraced(function* (
   }
   const authPath = yield* confectPath("auth.ts");
   const auth = (yield* fs.exists(authPath))
-    ? Option.some(yield* bundleDeclaration("auth.ts"))
+    ? yield* Effect.asSome(bundleDeclaration("auth.ts"))
     : Option.none();
 
   const declaration = yield* Declaration.parse({
@@ -336,12 +343,11 @@ const writeDeclaration = Effect.fnUntraced(function* (
     auth: Option.map(auth, ({ module }) => module.default),
     componentImport: yield* componentImport(),
   }).pipe(
-    Result.mapError(
-      (error) =>
-        new InvalidDeclarationError({
-          declarationPath: Declaration.fileOf(error),
-          reason: error.message,
-        }),
+    Result.mapError((error) =>
+      InvalidDeclarationError.make({
+        declarationPath: Declaration.fileOf(error),
+        reason: error.message,
+      }),
     ),
     Effect.fromResult,
   );
@@ -357,7 +363,7 @@ const writeDeclaration = Effect.fnUntraced(function* (
     path.relative(convexDirectory, authPath),
   );
   const legacyAuthConfigs = yield* Effect.forEach(
-    [authImportPath, authImportPath.replace(/\.js$/, "")],
+    [authImportPath, pipe(authImportPath, String.replace(/\.js$/, ""))],
     (importPath) => templates.authConfig({ authImportPath: importPath }),
   );
   yield* assertOwned(convexConfigPath, "app.ts", []);
@@ -373,8 +379,9 @@ const writeDeclaration = Effect.fnUntraced(function* (
       ],
     });
     const sections = ManifestSections.sections(previous);
+    const manifestPathValue = yield* manifestPath;
     yield* writeFileStringAndLog(
-      yield* manifestPath,
+      manifestPathValue,
       Declaration.manifest(
         declaration,
         sectionDigest(digest, sections),
@@ -401,8 +408,9 @@ const writeDeclaration = Effect.fnUntraced(function* (
           authConfigPath,
           Declaration.authConfig(providers),
         );
+        const authProvidersPathValue = yield* authProvidersPath;
         yield* writeFileStringAndLog(
-          yield* authProvidersPath,
+          authProvidersPathValue,
           Declaration.authProviders(providers),
         );
       }),
@@ -491,7 +499,7 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
 
   const http = (yield* bundleDeclaration("http.ts")).module.default;
   if (!Http.isHttp(http)) {
-    return yield* new InvalidDeclarationError({
+    return yield* InvalidDeclarationError.make({
       declarationPath: "confect/http.ts",
       reason: "it must default-export Http.make(...).",
     });
@@ -569,7 +577,7 @@ const hasDeployModule = Effect.fnUntraced(function* (
 const mountExport = Effect.fnUntraced(function* (name: string) {
   const fs = yield* FileSystem.FileSystem;
   const file = yield* confectPath(`${name}.ts`);
-  const missing = new InvalidDeclarationError({
+  const missing = InvalidDeclarationError.make({
     declarationPath: "confect/app.ts",
     reason: `the mount ${name} runs at every push, so export it from confect/${name}.ts.`,
   });
@@ -577,10 +585,13 @@ const mountExport = Effect.fnUntraced(function* (name: string) {
   const exports: Record<string, unknown> = (yield* bundleDeclaration(
     `${name}.ts`,
   )).module;
-  const found = Object.entries(exports).find(
-    ([, value]) =>
-      Predicate.hasProperty(value, "~@confect/core/Mount") &&
-      Mount.data(value as Mount.Any).name === name,
+  const found = Option.getOrUndefined(
+    Arr.findFirst(
+      Rec.toEntries(exports),
+      ([, value]) =>
+        Predicate.hasProperty(value, "~@confect/core/Mount") &&
+        Mount.data(value as Mount.Any).name === name,
+    ),
   );
   if (found === undefined) return yield* missing;
   return { file, exportName: found[0] };
@@ -607,10 +618,14 @@ export const syncDeployModule = Effect.fnUntraced(function* (
   );
   const installed =
     Option.isSome(app) && (yield* fs.exists(config))
-      ? yield* ConvexConfig.discoverInstalledComponents(
-          config,
-          yield* displayPath(config),
-          (yield* ConvexDirectory.target).kind,
+      ? yield* Effect.flatMap(
+          Effect.all([displayPath(config), ConvexDirectory.target]),
+          ([shown, target]) =>
+            ConvexConfig.discoverInstalledComponents(
+              config,
+              shown,
+              target.kind,
+            ),
         )
       : [];
   const entries: Array<string> = [];
@@ -619,7 +634,9 @@ export const syncDeployModule = Effect.fnUntraced(function* (
     onNone: () => [],
     onSome: App.mounts,
   })) {
-    const component = installed.find(({ name }) => name === mount.name);
+    const component = Option.getOrUndefined(
+      Arr.findFirst(installed, ({ name }) => name === mount.name),
+    );
     const nested =
       component !== undefined && (yield* hasDeployModule(component, config));
     if (mount.component.init === undefined && !nested) continue;
@@ -633,15 +650,18 @@ export const syncDeployModule = Effect.fnUntraced(function* (
   if (entries.length === 0) return yield* removeGenerated(deployPath, []);
   yield* writeFileStringAndLog(
     deployPath,
-    [
-      "// Generated by `confect codegen` from confect/app.ts. Do not edit.",
-      'import { MountInit } from "@confect/server";',
-      ...imports,
-      "",
-      "export const steps = MountInit.mutation([",
-      ...entries,
-      "]);",
-      "",
-    ].join("\n"),
+    Arr.join(
+      [
+        "// Generated by `confect codegen` from confect/app.ts. Do not edit.",
+        'import { MountInit } from "@confect/server";',
+        ...imports,
+        "",
+        "export const steps = MountInit.mutation([",
+        ...entries,
+        "]);",
+        "",
+      ],
+      "\n",
+    ),
   );
 });

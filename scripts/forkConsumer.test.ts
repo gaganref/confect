@@ -12,7 +12,7 @@ import {
 } from "./forkConsumer";
 
 test("pins all eight public aliases to the requested fork build", () => {
-  expect(Result.getOrThrow(consumerManifest("10.2.0-fork.7"))).toEqual({
+  expect(consumerManifest("10.2.0-fork.7").pipe(Result.getOrThrow)).toEqual({
     name: "confect-install-check",
     private: true,
     type: "module",
@@ -69,10 +69,8 @@ test("writes and refreshes a consumer with aligned peers", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const directory = path.join(
-        yield* fs.makeTempDirectoryScoped(),
-        "consumer",
-      );
+      const tempDirectoryScoped = yield* fs.makeTempDirectoryScoped();
+      const directory = path.join(tempDirectoryScoped, "consumer");
       yield* writeConsumer(
         directory,
         Result.getOrThrow(consumerManifest("10.2.0-fork.0")),
@@ -84,11 +82,10 @@ test("writes and refreshes a consumer with aligned peers", () =>
       const manifest = yield* fs.readFileString(
         path.join(directory, "package.json"),
       );
-      expect(
-        yield* Schema.decodeEffect(Schema.fromJsonString(Schema.Unknown))(
-          manifest,
-        ),
-      ).toMatchObject({
+      const decoded = yield* Schema.decodeEffect(
+        Schema.fromJsonString(Schema.Unknown),
+      )(manifest);
+      expect(decoded).toMatchObject({
         dependencies: {
           "@confect/core": "npm:@gaganref/confect-core@10.2.0-fork.0",
           "@confect/server": "npm:@gaganref/confect-server@10.2.0-fork.0",
@@ -96,9 +93,10 @@ test("writes and refreshes a consumer with aligned peers", () =>
           "@confect/cli": "npm:@gaganref/confect-cli@10.2.0-fork.0",
         },
       });
-      expect(
-        yield* fs.readFileString(path.join(directory, "pnpm-workspace.yaml")),
-      ).toBe(`minimumReleaseAgeExclude:
+      const contents = yield* fs.readFileString(
+        path.join(directory, "pnpm-workspace.yaml"),
+      );
+      expect(contents).toBe(`minimumReleaseAgeExclude:
   - "@gaganref/confect-alchemy@10.2.0-fork.0"
   - "@gaganref/confect-core@10.2.0-fork.0"
   - "@gaganref/confect-foldkit@10.2.0-fork.0"
@@ -117,18 +115,20 @@ allowBuilds:
   esbuild: false
   workerd: false
 `);
-      expect(
-        yield* fs.exists(path.join(directory, "convex/_generated/api.ts")),
-      ).toBe(true);
-      expect(
-        yield* fs.exists(path.join(directory, "confect/hello.spec.ts")),
-      ).toBe(true);
-      expect(
-        yield* fs.exists(path.join(directory, "confect/hello.impl.ts")),
-      ).toBe(true);
-      expect(yield* fs.exists(path.join(directory, "pnpm-lock.yaml"))).toBe(
-        false,
+      const found = yield* fs.exists(
+        path.join(directory, "convex/_generated/api.ts"),
       );
+      expect(found).toBe(true);
+      const found2 = yield* fs.exists(
+        path.join(directory, "confect/hello.spec.ts"),
+      );
+      expect(found2).toBe(true);
+      const found3 = yield* fs.exists(
+        path.join(directory, "confect/hello.impl.ts"),
+      );
+      expect(found3).toBe(true);
+      const found4 = yield* fs.exists(path.join(directory, "pnpm-lock.yaml"));
+      expect(found4).toBe(false);
     }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
   ));
 
@@ -137,10 +137,8 @@ test("writes a declared host, mounted component and callback consumer", () =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const directory = path.join(
-        yield* fs.makeTempDirectoryScoped(),
-        "consumer",
-      );
+      const tempDirectoryScoped = yield* fs.makeTempDirectoryScoped();
+      const directory = path.join(tempDirectoryScoped, "consumer");
       yield* writeConsumer(
         directory,
         Result.getOrThrow(consumerManifest("10.2.0-fork.0")),
@@ -166,7 +164,8 @@ test("writes a declared host, mounted component and callback consumer", () =>
         "components/counter/convex/_generated/api.ts",
         "components/counter/convex/_generated/component.ts",
       ]) {
-        expect(yield* fs.exists(path.join(directory, file))).toBe(true);
+        const found = yield* fs.exists(path.join(directory, file));
+        expect(found).toBe(true);
       }
       for (const [file, contract] of [
         ["confect/app.ts", 'httpPrefix: "/counter"'],
@@ -179,9 +178,8 @@ test("writes a declared host, mounted component and callback consumer", () =>
         ["confect/hello.impl.ts", "Callback.create"],
         ["consumer.test.ts", "toBe(43)"],
       ] as const) {
-        expect(yield* fs.readFileString(path.join(directory, file))).toContain(
-          contract,
-        );
+        const contents = yield* fs.readFileString(path.join(directory, file));
+        expect(contents).toContain(contract);
       }
     }).pipe(Effect.scoped, Effect.provide(BunServices.layer)),
   ));

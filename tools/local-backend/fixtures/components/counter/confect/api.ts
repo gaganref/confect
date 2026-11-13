@@ -6,6 +6,9 @@ import * as HttpApiSchema from "effect/http-api/HttpApiSchema";
 
 const Text = Schema.String.pipe(HttpApiSchema.asText());
 
+/**
+ * @internal
+ */
 export const CounterApi = HttpApi.make("counter").add(
   HttpApiGroup.make("health").add(
     HttpApiEndpoint.get("health", "/health", { success: Text }),

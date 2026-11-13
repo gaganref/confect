@@ -202,6 +202,9 @@ export const make = Effect.gen(function* () {
   return { root, write, start, generatedFiles, provide };
 });
 
+/**
+ * @internal
+ */
 export const makeNodeComponent = Effect.gen(function* () {
   const project = yield* make;
   const fs = yield* FileSystem.FileSystem;

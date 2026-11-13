@@ -1,10 +1,10 @@
 import { Callback } from "@confect/core";
 import * as Schema from "effect/Schema";
 
-export class EventRejected extends Schema.TaggedError<EventRejected>()(
-  "EventRejected",
-  { reason: Schema.String },
-) {}
+export class EventRejected extends Schema.TaggedError<
+  EventRejected,
+  { readonly brand: unique symbol }
+>()("EventRejected", { reason: Schema.String }) {}
 
 export const Status = Schema.Literals([
   "queued",

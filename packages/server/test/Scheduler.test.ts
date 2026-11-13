@@ -15,6 +15,7 @@ import type { GenericId } from "convex/values";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { vi } from "vitest";
+import * as Arr from "effect/Array";
 
 const scheduledFunctionId =
   "scheduled-function-id" as GenericId<"_scheduled_functions">;
@@ -85,39 +86,44 @@ describe("Scheduler", () => {
       );
 
       return Effect.gen(function* () {
-        const scheduler = yield* Scheduler.forScope<typeof scope>();
-        const after = yield* scheduler.runAfter(Duration.zero, ref);
-        const at = yield* scheduler.runAt(DateTime.makeUnsafe(0), ref);
-        expectTypeOf<typeof scheduler.cancel>()
-          .parameter(0)
-          .toEqualTypeOf<
-            ScopedId.GenericId<"_scheduled_functions", typeof scope>
+        const services2 = yield* Layer.build(
+          Scheduler.layer(convexScheduler, scope),
+        );
+        return yield* Effect.gen(function* () {
+          const scheduler = yield* Scheduler.forScope<typeof scope>();
+          const after = yield* scheduler.runAfter(Duration.zero, ref);
+          const at = yield* scheduler.runAt(DateTime.makeUnsafe(0), ref);
+          expectTypeOf<typeof scheduler.cancel>()
+            .parameter(0)
+            .toEqualTypeOf<
+              ScopedId.GenericId<"_scheduled_functions", typeof scope>
+            >();
+          expectTypeOf(scheduler.cancel(after)).toEqualTypeOf<
+            Effect.Effect<void>
           >();
-        expectTypeOf(scheduler.cancel(after)).toEqualTypeOf<
-          Effect.Effect<void>
-        >();
-        yield* scheduler.cancel(after);
-        yield* scheduler.cancel(at);
-        expect(cancelled).toEqual([
-          "scheduled-function-id",
-          "scheduled-function-id",
-        ]);
-        const foreign = yield* Schema.decodeUnknownEffect(
-          ScopedId.GenericId(
-            "_scheduled_functions",
-            IdScope.component("@example/other"),
-          ),
-        )("foreign-id");
-        // @ts-expect-error Scheduled IDs from another component cannot be cancelled here.
-        void scheduler.cancel(foreign);
-        // @ts-expect-error Application scheduled IDs cannot be cancelled in a component.
-        void scheduler.cancel(scheduledFunctionId);
-        const documentId = yield* Schema.decodeUnknownEffect(
-          ScopedId.GenericId("counters", scope),
-        )("document-id");
-        // @ts-expect-error A component document ID is not a scheduled-function ID.
-        void scheduler.cancel(documentId);
-      }).pipe(Effect.provide(Scheduler.layer(convexScheduler, scope)));
+          yield* scheduler.cancel(after);
+          yield* scheduler.cancel(at);
+          expect(cancelled).toEqual([
+            "scheduled-function-id",
+            "scheduled-function-id",
+          ]);
+          const foreign = yield* Schema.decodeUnknownEffect(
+            ScopedId.GenericId(
+              "_scheduled_functions",
+              IdScope.component("@example/other"),
+            ),
+          )("foreign-id");
+          // @ts-expect-error Scheduled IDs from another component cannot be cancelled here.
+          void scheduler.cancel(foreign);
+          // @ts-expect-error Application scheduled IDs cannot be cancelled in a component.
+          void scheduler.cancel(scheduledFunctionId);
+          const documentId = yield* Schema.decodeUnknownEffect(
+            ScopedId.GenericId("counters", scope),
+          )("document-id");
+          // @ts-expect-error A component document ID is not a scheduled-function ID.
+          void scheduler.cancel(documentId);
+        }).pipe(Effect.provideContext(services2));
+      });
     },
   );
 });
@@ -137,40 +143,49 @@ it.effect.each(Forwarding.cases)(
       cancel: () => Promise.resolve(),
     };
     return Effect.gen(function* () {
-      const scheduler = yield* Scheduler.Scheduler;
-      const [reserved] = Forwarding.mutations;
-      const plain = Ref.fromFunctionReference(
-        makeFunctionReference<"mutation", { count: number }>("items:plain"),
+      const services4 = yield* Layer.build(observability);
+      return yield* Effect.gen(function* () {
+        const services3 = yield* Layer.build(Scheduler.layer(native));
+        return yield* Effect.gen(function* () {
+          const scheduler = yield* Scheduler.Scheduler;
+          const [reserved] = Forwarding.mutations;
+          const plain = Ref.fromFunctionReference(
+            makeFunctionReference<"mutation", { count: number }>("items:plain"),
+          );
+          yield* scheduler.runAfter(Duration.zero, reserved, { count: 1 });
+          yield* scheduler.runAt(DateTime.makeUnsafe(0), reserved, {
+            count: 1,
+          });
+          yield* scheduler.runAfter(Duration.zero, plain, { count: 1 });
+          expect(sent).toEqual([
+            {
+              count: "1",
+              ...(enabled
+                ? { context: { boundary: "Scheduler.runAfter" } }
+                : {}),
+            },
+            {
+              count: "1",
+              ...(enabled ? { context: { boundary: "Scheduler.runAt" } } : {}),
+            },
+            { count: 1 },
+          ]);
+          expect(
+            Arr.map(spans, ({ name, status }) => [
+              name,
+              status._tag === "Ended" && status.exit,
+            ]),
+          ).toEqual([
+            ["Scheduler.runAfter", Exit.succeed(scheduledFunctionId)],
+            ["Scheduler.runAt", Exit.succeed(scheduledFunctionId)],
+            ["Scheduler.runAfter", Exit.succeed(scheduledFunctionId)],
+          ]);
+        }).pipe(Effect.provideContext(services3));
+      }).pipe(
+        Effect.provideService(RegisteredFunction.Forward, forward),
+        Effect.provideContext(services4),
       );
-      yield* scheduler.runAfter(Duration.zero, reserved, { count: 1 });
-      yield* scheduler.runAt(DateTime.makeUnsafe(0), reserved, { count: 1 });
-      yield* scheduler.runAfter(Duration.zero, plain, { count: 1 });
-      expect(sent).toEqual([
-        {
-          count: "1",
-          ...(enabled ? { context: { boundary: "Scheduler.runAfter" } } : {}),
-        },
-        {
-          count: "1",
-          ...(enabled ? { context: { boundary: "Scheduler.runAt" } } : {}),
-        },
-        { count: 1 },
-      ]);
-      expect(
-        spans.map(({ name, status }) => [
-          name,
-          status._tag === "Ended" && status.exit,
-        ]),
-      ).toEqual([
-        ["Scheduler.runAfter", Exit.succeed(scheduledFunctionId)],
-        ["Scheduler.runAt", Exit.succeed(scheduledFunctionId)],
-        ["Scheduler.runAfter", Exit.succeed(scheduledFunctionId)],
-      ]);
-    }).pipe(
-      Effect.provide(Scheduler.layer(native)),
-      Effect.provideService(RegisteredFunction.Forward, forward),
-      Effect.provide(observability),
-    );
+    });
   },
 );
 

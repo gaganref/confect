@@ -43,6 +43,9 @@ export const findProjectRootFrom = Effect.fnUntraced(function* (
   );
 });
 
+/**
+ * @internal
+ */
 export const findProjectRoot = findProjectRootFrom(".");
 
 /**

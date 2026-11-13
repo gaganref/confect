@@ -215,15 +215,15 @@ upstream's `tools/local-backend` harness. Native `take()` and `first()` stay
 outside the stream read budget, as the fork's `OrderedQuery` always was.
 
 Upstream's "Enable every Effect lint rule" turns on rules the fork's code was
-never checked against. One override per rule in `.oxlintrc.json` exempts the
-files that failed it at the merge, by literal path.
-`scripts/effectLintBaseline.json` records how many diagnostics each exempt file
-had, and `scripts/effectLint.test.ts` lints the repository without the
-overrides and requires exactly those counts. New files meet the full rule set,
-new code in an exempt file fails the test, and a fix must lower the recorded
-count, so the baseline only shrinks.
+never checked against. The fork fixes every finding rather than exempting
+files. A lint-disable comment remains only where the rule is wrong for that
+line or upstream disables it there too, and each names its reason. Some fixes
+change public types: errors move to `Schema.TaggedError`, published Schema
+classes carry a brand, two alchemy error fields lose the name `name`, and
+exports that expose unstable Effect APIs say so.
 
-Changeset: `effect-4-1.md`.
+Changesets: `effect-4-1.md`, `schema-tagged-errors.md`, `error-field-names.md`,
+`schema-class-brands.md` and `unstable-exports.md`.
 Upstream: fork only.
 
 ### Move to upstream 10.3.1

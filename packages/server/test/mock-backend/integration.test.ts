@@ -70,6 +70,9 @@ import {
 import { NodeNotFound } from "./fixtures/confect/typedErrorsNode.spec";
 import * as TestConfect from "./TestConfect";
 import * as TestConfect_ from "../../../test/src/TestConfect";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import { assertIs } from "../internal/assertIs";
 
 it.layer(TestConfect.layer, { buildPerTest: true })(
   "TestConfect JWT signing",
@@ -2030,7 +2033,8 @@ describe("OfficialComponent", () => {
         yield* Effect.promise(() =>
           t.run((ctx) => ctx.db.insert("notes", { text: "query note" })),
         );
-        expect(yield* Effect.promise(() => invoke(t))).toBe(expected);
+        const resolved = yield* Effect.promise(() => invoke(t));
+        expect(resolved).toBe(expected);
       }),
   );
 });
@@ -2062,7 +2066,10 @@ describe("DatabaseWriter patch", () => {
             .pipe(
               Effect.as(null),
               Effect.catch(({ _tag, message }) =>
-                Effect.succeed({ _tag, message: message.replace(id, "<id>") }),
+                Effect.succeed({
+                  _tag,
+                  message: pipe(message, Str.replace(id, "<id>")),
+                }),
               ),
             );
           const { _id, _creationTime, ...storedFields } =
@@ -2086,296 +2093,331 @@ describe("DatabaseWriter patch", () => {
     "patch writes only the patched fields and leaves the rest of the stored document",
     () =>
       Effect.gen(function* () {
-        const result = yield* patchStoredNote(
-          NumericNote,
-          { text: "001.00", tag: "draft" },
-          { author: { role: "user", name: "Ada" } },
-        );
+        const services2 = yield* Layer.build(TestConfect.layer);
+        return yield* Effect.gen(function* () {
+          const result = yield* patchStoredNote(
+            NumericNote,
+            { text: "001.00", tag: "draft" },
+            { author: { role: "user", name: "Ada" } },
+          );
 
-        expect(result).toStrictEqual({
-          error: null,
-          stored: {
-            text: "001.00",
-            tag: "draft",
-            author: { role: "user", name: "Ada" },
-          },
-        });
-      }).pipe(Effect.provide(TestConfect.layer)),
+          expect(result).toStrictEqual({
+            error: null,
+            stored: {
+              text: "001.00",
+              tag: "draft",
+              author: { role: "user", name: "Ada" },
+            },
+          });
+        }).pipe(Effect.provideContext(services2));
+      }),
   );
 
   it.effect("patch removes an optional field set to undefined", () =>
     Effect.gen(function* () {
-      const result = yield* patchStoredNote(
-        NumericNote,
-        {
-          text: "001.00",
-          tag: "draft",
-          author: { role: "admin", name: "Grace" },
-        },
-        { author: undefined },
-      );
+      const services3 = yield* Layer.build(TestConfect.layer);
+      return yield* Effect.gen(function* () {
+        const result = yield* patchStoredNote(
+          NumericNote,
+          {
+            text: "001.00",
+            tag: "draft",
+            author: { role: "admin", name: "Grace" },
+          },
+          { author: undefined },
+        );
 
-      expect(result).toStrictEqual({
-        error: null,
-        stored: { text: "001.00", tag: "draft" },
-      });
-    }).pipe(Effect.provide(TestConfect.layer)),
+        expect(result).toStrictEqual({
+          error: null,
+          stored: { text: "001.00", tag: "draft" },
+        });
+      }).pipe(Effect.provideContext(services3));
+    }),
   );
 
   it.effect(
     "patch removes a field whose codec encodes the patched value as an absent key",
     () =>
       Effect.gen(function* () {
-        const result = yield* patchStoredNote(
-          Schema.Struct({
-            text: Schema.String,
-            tag: Schema.OptionFromOptionalKey(Schema.String),
-          }),
-          { text: "kept", tag: "draft" },
-          { tag: Option.none() },
-        );
+        const services4 = yield* Layer.build(TestConfect.layer);
+        return yield* Effect.gen(function* () {
+          const result = yield* patchStoredNote(
+            Schema.Struct({
+              text: Schema.String,
+              tag: Schema.OptionFromOptionalKey(Schema.String),
+            }),
+            { text: "kept", tag: "draft" },
+            { tag: Option.none() },
+          );
 
-        expect(result).toStrictEqual({
-          error: null,
-          stored: { text: "kept" },
-        });
-      }).pipe(Effect.provide(TestConfect.layer)),
+          expect(result).toStrictEqual({
+            error: null,
+            stored: { text: "kept" },
+          });
+        }).pipe(Effect.provideContext(services4));
+      }),
   );
 
   it.effect("patch repairs a stored field that no longer decodes", () =>
     Effect.gen(function* () {
-      const result = yield* patchStoredNote(
-        NumericNote,
-        { text: "not a number", tag: "draft" },
-        { text: 2 },
-      );
+      const services5 = yield* Layer.build(TestConfect.layer);
+      return yield* Effect.gen(function* () {
+        const result = yield* patchStoredNote(
+          NumericNote,
+          { text: "not a number", tag: "draft" },
+          { text: 2 },
+        );
 
-      expect(result).toStrictEqual({
-        error: null,
-        stored: { text: "2", tag: "draft" },
-      });
-    }).pipe(Effect.provide(TestConfect.layer)),
+        expect(result).toStrictEqual({
+          error: null,
+          stored: { text: "2", tag: "draft" },
+        });
+      }).pipe(Effect.provideContext(services5));
+    }),
   );
 
   it.effect("patch does not run the codec of a field it leaves out", () =>
     Effect.gen(function* () {
-      const RequiredString = Schema.String.pipe(
-        Schema.decodeTo(Schema.String, {
-          decode: SchemaGetter.passthrough<string>(),
-          encode: SchemaGetter.required<string>(),
-        }),
-      );
-      const result = yield* patchStoredNote(
-        Schema.Struct({ text: RequiredString, tag: Schema.String }),
-        { text: "kept", tag: "old" },
-        { tag: "new" },
-      );
+      const services6 = yield* Layer.build(TestConfect.layer);
+      return yield* Effect.gen(function* () {
+        const RequiredString = Schema.String.pipe(
+          Schema.decodeTo(Schema.String, {
+            decode: SchemaGetter.passthrough<string>(),
+            encode: SchemaGetter.required<string>(),
+          }),
+        );
+        const result = yield* patchStoredNote(
+          Schema.Struct({ text: RequiredString, tag: Schema.String }),
+          { text: "kept", tag: "old" },
+          { tag: "new" },
+        );
 
-      expect(result).toStrictEqual({
-        error: null,
-        stored: { text: "kept", tag: "new" },
-      });
-    }).pipe(Effect.provide(TestConfect.layer)),
+        expect(result).toStrictEqual({
+          error: null,
+          stored: { text: "kept", tag: "new" },
+        });
+      }).pipe(Effect.provideContext(services6));
+    }),
   );
 
   it.effect(
     "patch runs struct-level checks on the patched values before encoding them",
     () =>
       Effect.gen(function* () {
-        const TrimOnEncode = Schema.String.pipe(
-          Schema.decodeTo(
-            Schema.String,
-            SchemaTransformation.transform({
-              decode: (value) => value,
-              encode: (value) => value.trim(),
-            }),
-          ),
-        );
-        const result = yield* patchStoredNote(
-          Schema.Struct({ text: TrimOnEncode, tag: Schema.String }).check(
-            Schema.makeFilter(
-              ({ text, tag }) =>
-                text === tag || { path: ["text"], issue: "must match tag" },
+        const services7 = yield* Layer.build(TestConfect.layer);
+        return yield* Effect.gen(function* () {
+          const TrimOnEncode = Schema.String.pipe(
+            Schema.decodeTo(
+              Schema.String,
+              SchemaTransformation.transform({
+                decode: (value) => value,
+                encode: (value) => pipe(value, Str.trim),
+              }),
             ),
-          ),
-          { text: "ok", tag: "ok" },
-          { text: " ok " },
-        );
+          );
+          const result = yield* patchStoredNote(
+            Schema.Struct({ text: TrimOnEncode, tag: Schema.String }).check(
+              Schema.makeFilter(
+                ({ text, tag }) =>
+                  text === tag || { path: ["text"], issue: "must match tag" },
+              ),
+            ),
+            { text: "ok", tag: "ok" },
+            { text: " ok " },
+          );
 
-        expect(result).toStrictEqual({
-          error: {
-            _tag: "DocumentEncodeError",
-            message: `Document with ID '<id>' in table 'notes' could not be encoded:\n\nmust match tag\n  at ["text"]`,
-          },
-          stored: { text: "ok", tag: "ok" },
-        });
-      }).pipe(Effect.provide(TestConfect.layer)),
+          expect(result).toStrictEqual({
+            error: {
+              _tag: "DocumentEncodeError",
+              message: `Document with ID '<id>' in table 'notes' could not be encoded:\n\nmust match tag\n  at ["text"]`,
+            },
+            stored: { text: "ok", tag: "ok" },
+          });
+        }).pipe(Effect.provideContext(services7));
+      }),
   );
 
   it.effect(
     "patch reports a stored document that does not decode before a patched value that does not encode",
     () =>
       Effect.gen(function* () {
-        const result = yield* patchStoredNote(
-          NumericNote,
-          { text: "not a number", tag: "draft" },
-          { text: Number.NaN },
-        );
+        const services8 = yield* Layer.build(TestConfect.layer);
+        return yield* Effect.gen(function* () {
+          const result = yield* patchStoredNote(
+            NumericNote,
+            { text: "not a number", tag: "draft" },
+            { text: Number.NaN },
+          );
 
-        expect(result).toStrictEqual({
-          error: {
-            _tag: "DocumentDecodeError",
-            message: `Document with ID '<id>' in table 'notes' could not be decoded:\n\nExpected a finite number\n  at ["text"]`,
-          },
-          stored: { text: "not a number", tag: "draft" },
-        });
-      }).pipe(Effect.provide(TestConfect.layer)),
+          expect(result).toStrictEqual({
+            error: {
+              _tag: "DocumentDecodeError",
+              message: `Document with ID '<id>' in table 'notes' could not be decoded:\n\nExpected a finite number\n  at ["text"]`,
+            },
+            stored: { text: "not a number", tag: "draft" },
+          });
+        }).pipe(Effect.provideContext(services8));
+      }),
   );
 
   it.effect("patch updates a field under the table's index signature", () =>
     Effect.gen(function* () {
-      const result = yield* patchStoredNote(
-        Schema.StructWithRest(Schema.Struct({ text: Schema.String }), [
-          Schema.Record(Schema.String, Schema.Unknown),
-        ]),
-        { text: "kept", tag: "old" },
-        { tag: "new" },
-      );
+      const services9 = yield* Layer.build(TestConfect.layer);
+      return yield* Effect.gen(function* () {
+        const result = yield* patchStoredNote(
+          Schema.StructWithRest(Schema.Struct({ text: Schema.String }), [
+            Schema.Record(Schema.String, Schema.Unknown),
+          ]),
+          { text: "kept", tag: "old" },
+          { tag: "new" },
+        );
 
-      expect(result).toStrictEqual({
-        error: null,
-        stored: { text: "kept", tag: "new" },
-      });
-    }).pipe(Effect.provide(TestConfect.layer)),
+        expect(result).toStrictEqual({
+          error: null,
+          stored: { text: "kept", tag: "new" },
+        });
+      }).pipe(Effect.provideContext(services9));
+    }),
   );
 
   it.effect("patch failures keep their error and write nothing", () =>
     Effect.gen(function* () {
-      const CheckedNote = NumericNote.check(
-        Schema.makeFilter(({ text }) => text !== 2 || "text must not be 2"),
-      );
-      const cases = [
-        {
-          fields: NumericNote,
-          stored: { text: "001.00", tag: "draft" },
-          patch: { text: Number.NaN },
-          error: {
-            _tag: "DocumentEncodeError",
-            message: `Document with ID '<id>' in table 'notes' could not be encoded:\n\nExpected a finite number\n  at ["text"]`,
+      const services10 = yield* Layer.build(TestConfect.layer);
+      return yield* Effect.gen(function* () {
+        const CheckedNote = NumericNote.check(
+          Schema.makeFilter(({ text }) => text !== 2 || "text must not be 2"),
+        );
+        const cases = [
+          {
+            fields: NumericNote,
+            stored: { text: "001.00", tag: "draft" },
+            patch: { text: Number.NaN },
+            error: {
+              _tag: "DocumentEncodeError",
+              message: `Document with ID '<id>' in table 'notes' could not be encoded:\n\nExpected a finite number\n  at ["text"]`,
+            },
           },
-        },
-        {
-          fields: NumericNote,
-          stored: { text: "001.00", tag: "draft" },
-          patch: { text: undefined },
-          error: {
-            _tag: "DocumentEncodeError",
-            message: `Document with ID '<id>' in table 'notes' could not be encoded:\n\nMissing key\n  at ["text"]`,
+          {
+            fields: NumericNote,
+            stored: { text: "001.00", tag: "draft" },
+            patch: { text: undefined },
+            error: {
+              _tag: "DocumentEncodeError",
+              message: `Document with ID '<id>' in table 'notes' could not be encoded:\n\nMissing key\n  at ["text"]`,
+            },
           },
-        },
-        {
-          fields: CheckedNote,
-          stored: { text: "001.00", tag: "draft" },
-          patch: { text: 2 },
-          error: {
-            _tag: "DocumentEncodeError",
-            message: `Document with ID '<id>' in table 'notes' could not be encoded:\n\ntext must not be 2`,
+          {
+            fields: CheckedNote,
+            stored: { text: "001.00", tag: "draft" },
+            patch: { text: 2 },
+            error: {
+              _tag: "DocumentEncodeError",
+              message: `Document with ID '<id>' in table 'notes' could not be encoded:\n\ntext must not be 2`,
+            },
           },
-        },
-        {
-          fields: NumericNote,
-          stored: { text: "not a number", tag: "draft" },
-          patch: { author: { role: "user", name: "Ada" } },
-          error: {
-            _tag: "DocumentDecodeError",
-            message: `Document with ID '<id>' in table 'notes' could not be decoded:\n\nExpected a finite number\n  at ["text"]`,
+          {
+            fields: NumericNote,
+            stored: { text: "not a number", tag: "draft" },
+            patch: { author: { role: "user", name: "Ada" } },
+            error: {
+              _tag: "DocumentDecodeError",
+              message: `Document with ID '<id>' in table 'notes' could not be decoded:\n\nExpected a finite number\n  at ["text"]`,
+            },
           },
-        },
-      ];
+        ];
 
-      for (const { fields, stored, patch, error } of cases) {
-        expect(yield* patchStoredNote(fields, stored, patch)).toStrictEqual({
-          error,
-          stored,
-        });
-      }
-    }).pipe(Effect.provide(TestConfect.layer)),
+        for (const { fields, stored, patch, error } of cases) {
+          const patchStoredNoteResult = yield* patchStoredNote(
+            fields,
+            stored,
+            patch,
+          );
+          expect(patchStoredNoteResult).toStrictEqual({
+            error,
+            stored,
+          });
+        }
+      }).pipe(Effect.provideContext(services10));
+    }),
   );
 
   it.effect(
     "patch writes a delta for struct codecs and replaces the document when the codec spans fields",
     () =>
       Effect.gen(function* () {
-        const cases = [
-          {
-            shape: "struct",
-            fields: NumericNote,
-            stored: { text: "001.00", tag: "draft" },
-            patch: { author: { role: "user", name: "Ada" } },
-            expected: {
-              text: "001.00",
-              tag: "draft",
-              author: { role: "user", name: "Ada" },
+        const services11 = yield* Layer.build(TestConfect.layer);
+        return yield* Effect.gen(function* () {
+          const cases = [
+            {
+              shape: "struct",
+              fields: NumericNote,
+              stored: { text: "001.00", tag: "draft" },
+              patch: { author: { role: "user", name: "Ada" } },
+              expected: {
+                text: "001.00",
+                tag: "draft",
+                author: { role: "user", name: "Ada" },
+              },
             },
-          },
-          {
-            shape: "struct with a struct-level check",
-            fields: NumericNote.check(
-              Schema.makeFilter(({ text }) => text !== 2 || "text is 2"),
-            ),
-            stored: { text: "001.00", tag: "draft" },
-            patch: { author: { role: "user", name: "Ada" } },
-            expected: { text: "1", author: { role: "user", name: "Ada" } },
-          },
-          {
-            shape: "branded struct",
-            fields: NumericNote.pipe(Schema.brand("Note")),
-            stored: { text: "001.00", tag: "draft" },
-            patch: { author: { role: "user", name: "Ada" } },
-            expected: {
-              text: "001.00",
-              tag: "draft",
-              author: { role: "user", name: "Ada" },
+            {
+              shape: "struct with a struct-level check",
+              fields: NumericNote.check(
+                Schema.makeFilter(({ text }) => text !== 2 || "text is 2"),
+              ),
+              stored: { text: "001.00", tag: "draft" },
+              patch: { author: { role: "user", name: "Ada" } },
+              expected: { text: "1", author: { role: "user", name: "Ada" } },
             },
-          },
-          {
-            shape: "union",
-            fields: Schema.Union([
-              Schema.Struct({
-                tag: Schema.Literal("number"),
-                text: Schema.FiniteFromString,
-              }),
-              Schema.Struct({
-                tag: Schema.Literal("string"),
-                text: Schema.String,
-              }),
-            ]),
-            stored: {
-              text: "001.00",
-              tag: "number",
-              author: { role: "user", name: "Ada" },
+            {
+              shape: "branded struct",
+              fields: NumericNote.pipe(Schema.brand("Note")),
+              stored: { text: "001.00", tag: "draft" },
+              patch: { author: { role: "user", name: "Ada" } },
+              expected: {
+                text: "001.00",
+                tag: "draft",
+                author: { role: "user", name: "Ada" },
+              },
             },
-            patch: { tag: "string", text: "hello" },
-            expected: { text: "hello", tag: "string" },
-          },
-          {
-            shape: "struct with renamed keys",
-            fields: Schema.Struct({ body: Schema.String }).pipe(
-              Schema.encodeKeys({ body: "text" }),
-            ),
-            stored: { text: "old", tag: "draft" },
-            patch: { body: "new" },
-            expected: { text: "new" },
-          },
-        ];
+            {
+              shape: "union",
+              fields: Schema.Union([
+                Schema.Struct({
+                  tag: Schema.Literal("number"),
+                  text: Schema.FiniteFromString,
+                }),
+                Schema.Struct({
+                  tag: Schema.Literal("string"),
+                  text: Schema.String,
+                }),
+              ]),
+              stored: {
+                text: "001.00",
+                tag: "number",
+                author: { role: "user", name: "Ada" },
+              },
+              patch: { tag: "string", text: "hello" },
+              expected: { text: "hello", tag: "string" },
+            },
+            {
+              shape: "struct with renamed keys",
+              fields: Schema.Struct({ body: Schema.String }).pipe(
+                Schema.encodeKeys({ body: "text" }),
+              ),
+              stored: { text: "old", tag: "draft" },
+              patch: { body: "new" },
+              expected: { text: "new" },
+            },
+          ];
 
-        for (const { shape, fields, stored, patch, expected } of cases) {
-          expect({
-            shape,
-            ...(yield* patchStoredNote(fields, stored, patch)),
-          }).toStrictEqual({ shape, error: null, stored: expected });
-        }
-      }).pipe(Effect.provide(TestConfect.layer)),
+          for (const { shape, fields, stored, patch, expected } of cases) {
+            expect({
+              shape,
+              ...(yield* patchStoredNote(fields, stored, patch)),
+            }).toStrictEqual({ shape, error: null, stored: expected });
+          }
+        }).pipe(Effect.provideContext(services11));
+      }),
   );
 });
 
@@ -2383,32 +2425,35 @@ it.effect(
   "plain and hooked patches fail with GetByIdFailure for a deleted document",
   () =>
     Effect.gen(function* () {
-      const c = yield* TestConfect.TestConfect;
-      yield* c.run(
-        Effect.gen(function* () {
-          const ctx = yield* MutationCtx;
-          const plain = DatabaseWriter_.make(confectSchema, ctx.db).table(
-            "notes",
-          );
-          const hooked = DatabaseWriter_.make(confectSchema, ctx.db, () =>
-            Effect.die("hook must not run"),
-          ).table("notes");
-          const id = yield* plain.insert({ text: "deleted" });
-          yield* plain.delete(id);
-          for (const writer of [plain, hooked]) {
-            const result = yield* Effect.result(
-              writer.patch(id, { text: "missing" }),
+      const services12 = yield* Layer.build(TestConfect.layer);
+      return yield* Effect.gen(function* () {
+        const c = yield* TestConfect.TestConfect;
+        yield* c.run(
+          Effect.gen(function* () {
+            const ctx = yield* MutationCtx;
+            const plain = DatabaseWriter_.make(confectSchema, ctx.db).table(
+              "notes",
             );
-            assert(Result.isFailure(result));
-            expect(result.failure).toMatchObject({
-              _tag: "GetByIdFailure",
-              tableName: "notes",
-              id,
-            });
-          }
-        }),
-      );
-    }).pipe(Effect.provide(TestConfect.layer)),
+            const hooked = DatabaseWriter_.make(confectSchema, ctx.db, () =>
+              Effect.die("hook must not run"),
+            ).table("notes");
+            const id = yield* plain.insert({ text: "deleted" });
+            yield* plain.delete(id);
+            for (const writer of [plain, hooked]) {
+              const result = yield* Effect.result(
+                writer.patch(id, { text: "missing" }),
+              );
+              assertIs(result, Result.isFailure);
+              expect(result.failure).toMatchObject({
+                _tag: "GetByIdFailure",
+                tableName: "notes",
+                id,
+              });
+            }
+          }),
+        );
+      }).pipe(Effect.provideContext(services12));
+    }),
 );
 
 it.effect.each([
@@ -2418,38 +2463,46 @@ it.effect.each([
   "middleware observes writes and rolls back a failed hook in $convexFunctionName",
   (ref) =>
     Effect.gen(function* () {
-      const c = yield* TestConfect.TestConfect;
-      const failed = yield* Effect.exit(c.mutation(ref, { fail: true }));
-      assert(Exit.isFailure(failed));
-      expect(Cause.pretty(failed.cause)).toContain("hook refused write");
-      yield* c.run(
-        Effect.gen(function* () {
-          const reader = yield* DatabaseReader;
-          expect(
-            yield* reader.table("demands").index("by_creation_time").collect(),
-          ).toEqual([]);
-          expect(
-            yield* reader.table("totals").index("by_creation_time").collect(),
-          ).toEqual([]);
-        }),
-      );
-      expect(yield* c.mutation(ref, { fail: false })).toEqual([
-        { operation: "insert", count: 1, sum: 100 },
-        { operation: "update", count: 1, sum: 150 },
-        { operation: "update", count: 1, sum: 200 },
-        { operation: "delete", count: 0, sum: 0 },
-      ]);
-      yield* c.run(
-        Effect.gen(function* () {
-          const reader = yield* DatabaseReader;
-          const totals = yield* reader
-            .table("totals")
-            .index("by_creation_time")
-            .collect();
-          expect(totals.map(({ count, sum }) => ({ count, sum }))).toEqual([
-            { count: 0, sum: 0 },
-          ]);
-        }),
-      );
-    }).pipe(Effect.provide(TestConfect.layer)),
+      const services13 = yield* Layer.build(TestConfect.layer);
+      return yield* Effect.gen(function* () {
+        const c = yield* TestConfect.TestConfect;
+        const failed = yield* Effect.exit(c.mutation(ref, { fail: true }));
+        assertIs(failed, Exit.isFailure);
+        expect(Cause.pretty(failed.cause)).toContain("hook refused write");
+        yield* c.run(
+          Effect.gen(function* () {
+            const reader = yield* DatabaseReader;
+            const collected = yield* reader
+              .table("demands")
+              .index("by_creation_time")
+              .collect();
+            expect(collected).toEqual([]);
+            const collected2 = yield* reader
+              .table("totals")
+              .index("by_creation_time")
+              .collect();
+            expect(collected2).toEqual([]);
+          }),
+        );
+        const mutation2 = yield* c.mutation(ref, { fail: false });
+        expect(mutation2).toEqual([
+          { operation: "insert", count: 1, sum: 100 },
+          { operation: "update", count: 1, sum: 150 },
+          { operation: "update", count: 1, sum: 200 },
+          { operation: "delete", count: 0, sum: 0 },
+        ]);
+        yield* c.run(
+          Effect.gen(function* () {
+            const reader = yield* DatabaseReader;
+            const totals = yield* reader
+              .table("totals")
+              .index("by_creation_time")
+              .collect();
+            expect(
+              Array.map(totals, ({ count, sum }) => ({ count, sum })),
+            ).toEqual([{ count: 0, sum: 0 }]);
+          }),
+        );
+      }).pipe(Effect.provideContext(services13));
+    }),
 );

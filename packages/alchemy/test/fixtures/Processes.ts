@@ -3,6 +3,8 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 /**
  * The pid of a process that has already exited.
+ *
+ * @internal
  */
 export const deadPid = Effect.gen(function* () {
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;

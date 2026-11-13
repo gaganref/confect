@@ -11,13 +11,13 @@ import * as Scope from "effect/Scope";
 import * as FileLock from "./FileLock.js";
 import { userCache } from "./UserCache.js";
 
-export class PushLockError extends Schema.TaggedError<PushLockError>()(
-  "PushLockError",
-  {
-    deploymentName: Schema.String,
-    reason: Schema.Literals(["configuration", "timeout", "filesystem"]),
-  },
-) {
+export class PushLockError extends Schema.TaggedError<
+  PushLockError,
+  { readonly brand: unique symbol }
+>()("PushLockError", {
+  deploymentName: Schema.String,
+  reason: Schema.Literals(["configuration", "timeout", "filesystem"]),
+}) {
   override get message() {
     switch (this.reason) {
       case "configuration":
@@ -50,6 +50,8 @@ export class PushLock extends Context.Service<
  * `confect/alchemy/locks/<deployment>.lock`, so every checkout on the machine
  * shares it. A lock left by a process that exited is taken over; a holder that
  * never releases ends in a typed timeout.
+ *
+ * @internal
  */
 export const layer = (options?: { readonly timeout?: Duration.Input }) =>
   Layer.effect(
@@ -62,7 +64,7 @@ export const layer = (options?: { readonly timeout?: Duration.Input }) =>
       const lock = Effect.fn("PushLock.lock")(
         function* (deploymentName: string, scope: Scope.Scope) {
           const failed = (reason: PushLockError["reason"]) =>
-            new PushLockError({ deploymentName, reason });
+            PushLockError.make({ deploymentName, reason });
           const cache = yield* userCache.pipe(
             Effect.mapError(() => failed("configuration")),
           );

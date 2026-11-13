@@ -8,13 +8,18 @@ import {
   InvalidDeclarationError,
   InvalidManifestSectionError,
 } from "./CodegenError.js";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
+import { quote, stringify } from "./Json.js";
 
 const reserved = new Set(
-  "name env http digest __proto__ constructor prototype".split(" "),
+  pipe("name env http digest __proto__ constructor prototype", Str.split(" ")),
 );
 export const sections = (manifest: Readonly<Record<string, unknown>>) =>
-  Object.fromEntries(
-    Object.entries(manifest).filter(([key]) => !reserved.has(key)),
+  Rec.fromEntries(
+    Arr.filter(Rec.toEntries(manifest), ([key]) => !reserved.has(key)),
   );
 // Read only property descriptors, through static functions, so no getter,
 // `toJSON` or other method of the input runs before the check and nothing
@@ -29,7 +34,7 @@ const nonJsonPath = (
   if (typeof value === "number")
     return Number.isFinite(value) ? undefined : path;
   if (typeof value !== "object" || ancestors.includes(value)) return path;
-  const isArray = Array.isArray(value);
+  const isArray = Arr.isArray(value);
   const prototypes = isArray ? [Array.prototype] : [Object.prototype, null];
   if (!prototypes.includes(Object.getPrototypeOf(value))) return path;
   const keys = isArray
@@ -40,11 +45,11 @@ const nonJsonPath = (
     : Reflect.ownKeys(value);
   for (const key of keys) {
     if (typeof key === "symbol") return path;
-    const at = `${path}[${JSON.stringify(key)}]`;
+    const at = `${path}[${quote(key)}]`;
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (
       key === "__proto__" ||
-      !descriptor?.enumerable ||
+      descriptor?.enumerable !== true ||
       !("value" in descriptor)
     )
       return at;
@@ -60,7 +65,8 @@ const nonJsonPath = (
 const json = (value: unknown): Result.Result<unknown, string> => {
   const path = nonJsonPath(value);
   return path === undefined
-    ? Result.succeed(JSON.parse(JSON.stringify(value)))
+    ? // oxlint-disable-next-line effecttsgo/global-json -- A sync clone of data the path check above proved is JSON, so it cannot throw; json returns a Result for callers outside an Effect.
+      Result.succeed(JSON.parse(stringify(value)))
     : Result.fail(`Expected JSON data at ${path}`);
 };
 export type Registry = Map<
@@ -81,7 +87,7 @@ type Summarized = {
 type Leaf = Pick<LoadedLeafModule, "spec" | "pathSegments" | "relativePath">;
 
 const appDeclaration = (reason: string) =>
-  new InvalidDeclarationError({ declarationPath: "confect/app.ts", reason });
+  InvalidDeclarationError.make({ declarationPath: "confect/app.ts", reason });
 
 /**
  * Refuse a key `App.make` declares twice or that shadows one the manifest keeps
@@ -119,13 +125,17 @@ const visit = (
       source: string,
     ): Result.Result<void, InvalidDeclarationError> =>
       Result.gen(function* () {
-        for (const spec of Object.values(group.functions))
+        for (const spec of Rec.values(group.functions))
           yield* each(spec, group, `${path}:${spec.name}`, source);
-        for (const [name, child] of Object.entries(group.groups))
+        for (const [name, child] of Rec.toEntries(group.groups))
           yield* walk(child, `${path}/${name}`, source);
       });
     for (const leaf of leaves)
-      yield* walk(leaf.spec, leaf.pathSegments.join("/"), leaf.relativePath);
+      yield* walk(
+        leaf.spec,
+        Arr.join(leaf.pathSegments, "/"),
+        leaf.relativePath,
+      );
   });
 
 /**
@@ -136,7 +146,7 @@ export const refuseSpecSections = (leaves: ReadonlyArray<Leaf>) =>
   visit(leaves, (spec, _, path, source) =>
     Predicate.hasProperty(spec, "manifestSections")
       ? Result.fail(
-          new InvalidDeclarationError({
+          InvalidDeclarationError.make({
             declarationPath: `confect/${source}`,
             reason: `${path} carries manifestSections, which codegen no longer reads from a function spec. Declare the backend's manifest sections once, on App.make({ manifestSections }) in confect/app.ts.`,
           }),
@@ -156,7 +166,7 @@ export const collect = (
 ) =>
   Result.gen(function* () {
     const registry: Registry = new Map(
-      entries.map(({ key, section }) => [
+      Arr.map(entries, ({ key, section }) => [
         key,
         {
           section,
@@ -182,7 +192,7 @@ export const collect = (
     for (const { spec, group, path, source } of functions) {
       for (const [key, { section, data, sources }] of registry) {
         const invalid = (reason: string) =>
-          new InvalidDeclarationError({
+          InvalidDeclarationError.make({
             declarationPath: `confect/${source}`,
             reason: `Manifest section "${key}" (${path}): ${reason}`,
           });
@@ -223,7 +233,7 @@ export const summarize = (
         sources,
       };
       const invalid = (reason: string) =>
-        new InvalidManifestSectionError({ sectionKey: key, reason });
+        InvalidManifestSectionError.make({ sectionKey: key, reason });
       const summary = yield* Result.try({
         try: () => section.summarize?.(input),
         catch: (cause) => invalid(`summarize failed: ${String(cause)}`),
@@ -253,14 +263,14 @@ export const check = (
       notes.push(...checked.notes);
       if (checked.errors.length > 0)
         errors.push(
-          new InvalidManifestSectionError({
+          InvalidManifestSectionError.make({
             sectionKey: key,
-            reason: [...new Set(checked.errors)].join("\n"),
+            reason: Arr.join([...new Set(checked.errors)], "\n"),
           }),
         );
     } catch (cause) {
       errors.push(
-        new InvalidManifestSectionError({
+        InvalidManifestSectionError.make({
           sectionKey: key,
           reason: `check failed: ${String(cause)}`,
         }),

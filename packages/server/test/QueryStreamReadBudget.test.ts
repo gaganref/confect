@@ -268,19 +268,23 @@ describe("QueryStreamReadBudget", () => {
     "completes an empty stream under zero %s without recording reads",
     (limit) =>
       Effect.gen(function* () {
-        const budget = yield* QueryStreamReadBudget.make(
-          yield* Schema.decodeEffect(QueryStreamReadBudget.Limits)({
-            [limit]: 0,
-          }),
-        );
-        expect(
-          yield* budget.accountFor(Stream.empty).pipe(Stream.runCollect),
-        ).toEqual([]);
-        expect(yield* budget.getReadCounts).toEqual({
+        const decoded = yield* Schema.decodeEffect(
+          QueryStreamReadBudget.Limits,
+        )({
+          [limit]: 0,
+        });
+        const budget = yield* QueryStreamReadBudget.make(decoded);
+        const accountFor2 = yield* budget
+          .accountFor(Stream.empty)
+          .pipe(Stream.runCollect);
+        expect(accountFor2).toEqual([]);
+        const readCounts = yield* budget.getReadCounts;
+        expect(readCounts).toEqual({
           rowsRead: 0,
           bytesRead: 0,
         });
-        expect(yield* budget.isStopped).toBe(false);
+        const isStopped2 = yield* budget.isStopped;
+        expect(isStopped2).toBe(false);
       }),
   );
 

@@ -28,6 +28,10 @@ import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as HttpApiMiddleware from "effect/http-api/HttpApiMiddleware";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpApiError from "effect/http-api/HttpApiError";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
+import * as Record from "effect/Record";
 
 const api = HttpApi.make("users").add(
   HttpApiGroup.make("users").add(
@@ -51,7 +55,7 @@ const routes = HttpApiBuilder.layer(api).pipe(
 );
 
 const labels = (router: ReturnType<typeof ConfectHttpRouter.make>) =>
-  router.getRoutes().map(([path, method]) => [method, path]);
+  Arr.map(router.getRoutes(), ([path, method]) => [method, path]);
 
 const matchLabel = (
   router: ReturnType<typeof ConfectHttpRouter.make>,
@@ -311,10 +315,11 @@ it.effect("uses one labeled request span and the supplied logger", () =>
         Promise.resolve({ default: router }),
     });
     const response = yield* Effect.promise(() => t.fetch("/mounted/users/42"));
-    expect(yield* Effect.promise(() => response.json())).toBe("42");
+    const resolved = yield* Effect.promise(() => response.json());
+    expect(resolved).toBe("42");
     expect(messages).toEqual([["request"]]);
     expect(
-      spans.map((span) => [
+      Arr.map(spans, (span) => [
         span.name,
         span.attributes.get("kind"),
         span.parent._tag,
@@ -334,9 +339,12 @@ it.effect.each([
   "reports the original HTTP %s outcome on one request span",
   (scenario) =>
     Effect.gen(function* () {
-      class Denied extends Schema.TaggedError<Denied>()("Denied", {}) {}
-      const denied = new Denied();
-      const forbidden = new HttpApiError.Forbidden();
+      class Denied extends Schema.TaggedError<
+        Denied,
+        { readonly brand: unique symbol }
+      >()("Denied", {}) {}
+      const denied = Denied.make({});
+      const forbidden = HttpApiError.Forbidden.make({});
       const defect = new Error("broken");
       const recorder = recording();
       const { spans } = recorder;
@@ -477,7 +485,7 @@ it.effect.each([
             : [],
       );
       if (scenario === "decode") {
-        expect(reports.map(({ cause }) => Cause.squash(cause))).toEqual(
+        expect(Arr.map(reports, ({ cause }) => Cause.squash(cause))).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
               _tag: "HttpApiSchemaError",
@@ -543,11 +551,10 @@ it.effect("keeps ConvexLogger for HTTP without a runtime layer", () =>
         "./mock-backend/fixtures/convex/http.ts": () =>
           Promise.resolve({ default: router }),
       });
-      expect(
-        yield* Effect.promise(() =>
-          t.fetch("/log").then((response) => response.text()),
-        ),
-      ).toBe("no span");
+      const resolved = yield* Effect.promise(() =>
+        t.fetch("/log").then((response) => response.text()),
+      );
+      expect(resolved).toBe("no span");
       expect(info).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ message: "default http" }),
       );
@@ -662,8 +669,10 @@ it.effect(
           { api: optionsApi },
         ),
       );
-      expect(yield* send("/probe", "POST")).toEqual([401, ""]);
-      expect(yield* send("/probe", "OPTIONS")).toEqual([204, ""]);
+      const sendResult = yield* send("/probe", "POST");
+      expect(sendResult).toEqual([401, ""]);
+      const sendResult2 = yield* send("/probe", "OPTIONS");
+      expect(sendResult2).toEqual([204, ""]);
       for (const [path, method] of [
         ["/trigger", undefined],
         ["/trigger", "POST"],
@@ -673,10 +682,13 @@ it.effect(
         ["/raw", "POST"],
         ["/grouped", "POST"],
         ["/missing", undefined],
-      ] as const)
-        expect(yield* send(path, "OPTIONS", method)).toEqual([404, ""]);
+      ] as const) {
+        const preflight = yield* send(path, "OPTIONS", method);
+        expect(preflight).toEqual([404, ""]);
+      }
       expect(calls).toBe(0);
-      expect(yield* send("/trigger", "POST")).toEqual([200, '"handler ran"']);
+      const sendResult3 = yield* send("/trigger", "POST");
+      expect(sendResult3).toEqual([200, '"handler ran"']);
       expect(calls).toBe(1);
     }),
 );
@@ -695,8 +707,11 @@ const answering = (
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
           if (request.method !== "OPTIONS") return yield* next;
-          const params = Object.entries(yield* HttpRouter.params).flat();
-          return HttpServerResponse.text([method, ...params].join(" "));
+          const params2 = yield* HttpRouter.params;
+          const params = Record.toEntries(params2).flat();
+          return HttpServerResponse.text(
+            Arr.join([method, ...Arr.map(params, (param) => param ?? "")], " "),
+          );
         }),
       ).layer,
     ),
@@ -806,11 +821,12 @@ it.effect.each([
         ConfectHttpRouter.make(DatabaseSchema.make({}), layer),
       );
       const [method, path, body] = request;
-      expect(yield* send(path, method)).toEqual([200, body]);
-      for (const [preflightPath, requested, ...expected] of preflights)
-        expect(yield* send(preflightPath, "OPTIONS", requested)).toEqual(
-          expected,
-        );
+      const sendResult = yield* send(path, method);
+      expect(sendResult).toEqual([200, body]);
+      for (const [preflightPath, requested, ...expected] of preflights) {
+        const preflight = yield* send(preflightPath, "OPTIONS", requested);
+        expect(preflight).toEqual(expected);
+      }
     }),
 );
 
@@ -902,7 +918,7 @@ it.effect(
         ["/body", '{"value":"signed"}', "identity", 200, '"signed"'],
         ["/body", '{"value":"changed"}', "identity", 401, ""],
         ["/body", '{"value":"signed"}', "gzip", 415, ""],
-        ["/body", "x".repeat(65), "identity", 413, ""],
+        ["/body", pipe("x", Str.repeat(65)), "identity", 413, ""],
         ["/json", '{"value":"signed"}', "identity", 200, '"signed"'],
         ["/json", '{"value":"changed"}', "identity", 401, ""],
         [
@@ -1033,7 +1049,7 @@ it.effect(
 
 it("requires a byte size and preserves the downstream error type", () => {
   const limited = ConfectHttpRouter.withBodyLimit(
-    Effect.fail(new HttpApiError.Unauthorized()),
+    Effect.fail(HttpApiError.Unauthorized.make({})),
     { maxBytes: ByteSize.bytes(1) },
   );
   expectTypeOf(limited).toEqualTypeOf<

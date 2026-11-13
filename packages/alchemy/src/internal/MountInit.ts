@@ -5,10 +5,10 @@ import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { ConvexClient, ConvexFunctionError } from "../ConvexClient.js";
 
-export class MountInitFailed extends Schema.TaggedError<MountInitFailed>()(
-  "MountInitFailed",
-  { mount: Schema.String, detail: Schema.String },
-) {
+export class MountInitFailed extends Schema.TaggedError<
+  MountInitFailed,
+  { readonly brand: unique symbol }
+>()("MountInitFailed", { mount: Schema.String, detail: Schema.String }) {
   override get message() {
     return `${this.mount}: init failed; earlier mounts are applied, and the next push retries`;
   }
@@ -58,6 +58,8 @@ const hasDeployModule = Effect.fn("MountInit.hasDeployModule")(function* (
  * path, one at a time, and visit a nested component's own steps after its
  * `init`. The first failing mount stops the run. Each `init` is its own
  * transaction, so earlier mounts stay applied and a rerun converges.
+ *
+ * @internal
  */
 export const run = Effect.fn("MountInit.run")(function* (
   url: string,
@@ -67,7 +69,7 @@ export const run = Effect.fn("MountInit.run")(function* (
   const failed =
     (mount: string) =>
     (error: { readonly _tag: string }): MountInitFailed =>
-      new MountInitFailed({
+      MountInitFailed.make({
         mount,
         detail: Schema.is(ConvexFunctionError)(error)
           ? error.errorMessage
@@ -92,7 +94,7 @@ export const run = Effect.fn("MountInit.run")(function* (
             ? step.componentPath
             : `${prefix}/${step.componentPath}`;
         if ("failure" in step)
-          return yield* new MountInitFailed({ mount, detail: step.failure });
+          return yield* MountInitFailed.make({ mount, detail: step.failure });
         if (step.init !== null)
           yield* client
             .runFunction(

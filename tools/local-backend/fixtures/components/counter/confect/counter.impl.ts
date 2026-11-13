@@ -59,7 +59,7 @@ const reject = FunctionImpl.make(schema, counter, "reject", ({ run }) =>
       .table("counters")
       .insert({ run, count: 999 })
       .pipe(Effect.orDie);
-    return yield* new Rejected({ id, run });
+    return yield* Rejected.make({ id, run });
   }),
 );
 const schedule = FunctionImpl.make(schema, counter, "schedule", (args) =>
@@ -84,8 +84,9 @@ const scheduleAndCancel = FunctionImpl.make(
         refs.internal.counter.createInternal,
         { run, count: 999 },
       );
+      const now2 = yield* DateTime.now;
       const at = yield* scheduler.runAt(
-        DateTime.addDuration(yield* DateTime.now, Duration.millis(100)),
+        DateTime.addDuration(now2, Duration.millis(100)),
         refs.internal.counter.createInternal,
         { run, count: 998 },
       );
@@ -102,9 +103,10 @@ const scheduleAndCancel = FunctionImpl.make(
 const cancel = FunctionImpl.make(schema, counter, "cancel", ({ id }) =>
   Effect.gen(function* () {
     const scheduler = yield* Scheduler;
-    yield* scheduler.cancel(
-      yield* Schema.decodeUnknownEffect(ScheduledId)(id).pipe(Effect.orDie),
+    const decoded = yield* Schema.decodeUnknownEffect(ScheduledId)(id).pipe(
+      Effect.orDie,
     );
+    yield* scheduler.cancel(decoded);
     return null;
   }),
 );
@@ -155,9 +157,12 @@ const environment = FunctionImpl.make(schema, counter, "environment", () =>
   Effect.gen(function* () {
     const unset = Option.getOrElse(() => "unset");
     const required = yield* env.COMPONENT_REQUIRED;
-    const optional = unset(yield* env.COMPONENT_OPTIONAL);
-    const marker = unset(yield* env.COMPONENT_MARKER);
-    const unbound = unset(yield* env.COMPONENT_UNBOUND);
+    const cOMPONENTOPTIONAL = yield* env.COMPONENT_OPTIONAL;
+    const optional = unset(cOMPONENTOPTIONAL);
+    const cOMPONENTMARKER = yield* env.COMPONENT_MARKER;
+    const marker = unset(cOMPONENTMARKER);
+    const cOMPONENTUNBOUND = yield* env.COMPONENT_UNBOUND;
+    const unbound = unset(cOMPONENTUNBOUND);
     // The host declares this name; the component does not, so it must read as unset.
     const hostOnly = yield* Config.String("COMPONENT_HOST_ONLY").pipe(
       Config.withDefault("unset"),

@@ -8,6 +8,7 @@ import { MutationRunner, QueryRunner } from "../_generated/services";
 import { first, second, left, right } from "../componentBindings";
 import env from "../env";
 import spec from "./components.spec";
+import * as Array from "effect/Array";
 
 const exercise = FunctionImpl.make(schema, spec, "exercise", ({ run }) =>
   Effect.gen(function* () {
@@ -24,19 +25,15 @@ const exercise = FunctionImpl.make(schema, spec, "exercise", ({ run }) =>
         ),
         Effect.catchTag("Rejected", (error) => Effect.succeed(error.id)),
       );
+    const query = yield* runQuery.runQuery(first.counter.list, { run });
+    const secondQuery = yield* runQuery.runQuery(second.counter.list, { run });
+    const leftQuery = yield* runQuery.runQuery(left.parent.list, { run });
+    const rightQuery = yield* runQuery.runQuery(right.parent.list, { run });
     return {
-      first: (yield* runQuery.runQuery(first.counter.list, { run })).map(
-        (doc) => doc.count,
-      ),
-      second: (yield* runQuery.runQuery(second.counter.list, { run })).map(
-        (doc) => doc.count,
-      ),
-      left: (yield* runQuery.runQuery(left.parent.list, { run })).map(
-        (doc) => doc.count,
-      ),
-      right: (yield* runQuery.runQuery(right.parent.list, { run })).map(
-        (doc) => doc.count,
-      ),
+      first: Array.map(query, (doc) => doc.count),
+      second: Array.map(secondQuery, (doc) => doc.count),
+      left: Array.map(leftQuery, (doc) => doc.count),
+      right: Array.map(rightQuery, (doc) => doc.count),
       rejectedId,
     };
   }).pipe(Effect.orDie),
@@ -69,13 +66,11 @@ const cancel = FunctionImpl.make(schema, spec, "cancel", (args) =>
 const list = FunctionImpl.make(schema, spec, "list", (args) =>
   Effect.gen(function* () {
     const runQuery = yield* QueryRunner;
+    const query = yield* runQuery.runQuery(first.counter.list, args);
+    const secondQuery = yield* runQuery.runQuery(second.counter.list, args);
     return {
-      first: (yield* runQuery.runQuery(first.counter.list, args)).map(
-        (doc) => doc.count,
-      ),
-      second: (yield* runQuery.runQuery(second.counter.list, args)).map(
-        (doc) => doc.count,
-      ),
+      first: Array.map(query, (doc) => doc.count),
+      second: Array.map(secondQuery, (doc) => doc.count),
     };
   }).pipe(Effect.orDie),
 );
@@ -142,14 +137,13 @@ const declaredError = FunctionImpl.make(
           ),
           Effect.catchTag("Rejected", Effect.succeed),
         );
+      const query2 = yield* query.runQuery(first.counter.list, { run });
       return {
         tag: error._tag,
         run: error.run,
         // oxlint-disable-next-line effecttsgo/instance-of-schema -- Class identity is the behavior under test.
         instance: error instanceof Rejected,
-        remaining: (yield* query.runQuery(first.counter.list, { run })).map(
-          (doc) => doc.count,
-        ),
+        remaining: Array.map(query2, (doc) => doc.count),
       };
     }).pipe(Effect.orDie),
 );
@@ -166,21 +160,28 @@ const page = FunctionImpl.make(schema, spec, "page", (args) =>
   Effect.gen(function* () {
     const query = yield* QueryRunner;
     const result = yield* query.runQuery(first.counter.page, args);
-    return { ...result, page: result.page.map((doc) => doc.count) };
+    return { ...result, page: Array.map(result.page, (doc) => doc.count) };
   }).pipe(Effect.orDie),
 );
 const environment = FunctionImpl.make(schema, spec, "environment", () =>
   Effect.gen(function* () {
     const query = yield* QueryRunner;
+    const firstEnvironment = yield* query.runQuery(
+      first.counter.environment,
+      {},
+    );
+    const secondEnvironment = yield* query.runQuery(
+      second.counter.environment,
+      {},
+    );
+    const marker = yield* env.COMPONENT_MARKER;
+    const hostOnly = yield* env.COMPONENT_HOST_ONLY;
     return {
-      first: yield* query.runQuery(first.counter.environment, {}),
-      second: yield* query.runQuery(second.counter.environment, {}),
+      first: firstEnvironment,
+      second: secondEnvironment,
       host: {
-        marker: Option.getOrElse(yield* env.COMPONENT_MARKER, () => "unset"),
-        hostOnly: Option.getOrElse(
-          yield* env.COMPONENT_HOST_ONLY,
-          () => "unset",
-        ),
+        marker: Option.getOrElse(marker, () => "unset"),
+        hostOnly: Option.getOrElse(hostOnly, () => "unset"),
       },
     };
   }).pipe(Effect.orDie),

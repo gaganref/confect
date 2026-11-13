@@ -244,28 +244,26 @@ const queryFunction = <
           args: decodedArgs,
         },
       ).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            DatabaseReader.layer(databaseSchema, ctx.db),
-            DocumentIds.layer(databaseSchema, ctx.db),
-            ExecutionMetadata.layer(ctx.meta),
-            TransactionMetadata.layer(ctx.meta),
-            QueryTransactionContext.layer(ctx),
-            Auth.layerForTarget<DatabaseSchema_["target"]>(
-              databaseSchema.target,
-              ctx.auth,
-            ),
-            RegisteredFunction.storageLayer<
-              DatabaseSchema.Scope<DatabaseSchema_>
-            >(ctx.storage),
-            QueryRunner.layer(ctx.runQuery),
-            QueryCtx.layer<
-              DataModel.ToConvex<DataModel.FromSchema<DatabaseSchema_>>,
-              DatabaseSchema.Scope<DatabaseSchema_>
-            >(ctx, databaseSchema.target.scope),
-            ConvexConfigProvider.layer,
+        Effect.provide([
+          DatabaseReader.layer(databaseSchema, ctx.db),
+          DocumentIds.layer(databaseSchema, ctx.db),
+          ExecutionMetadata.layer(ctx.meta),
+          TransactionMetadata.layer(ctx.meta),
+          QueryTransactionContext.layer(ctx),
+          Auth.layerForTarget<DatabaseSchema_["target"]>(
+            databaseSchema.target,
+            ctx.auth,
           ),
-        ),
+          RegisteredFunction.storageLayer<
+            DatabaseSchema.Scope<DatabaseSchema_>
+          >(ctx.storage),
+          QueryRunner.layer(ctx.runQuery),
+          QueryCtx.layer<
+            DataModel.ToConvex<DataModel.FromSchema<DatabaseSchema_>>,
+            DatabaseSchema.Scope<DatabaseSchema_>
+          >(ctx, databaseSchema.target.scope),
+          ConvexConfigProvider.layer,
+        ]),
       );
       return yield* pipe(
         decodedReturns,
@@ -388,6 +386,7 @@ const mutationFunction = <
           functionVisibility,
           args: decodedArgs,
         },
+        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This Convex entry point provides invocation-local services before runHandlerPromise executes the handler.
       ).pipe(Effect.provide(mutationLayer(databaseSchema, ctx)));
       return yield* pipe(
         decodedReturns,

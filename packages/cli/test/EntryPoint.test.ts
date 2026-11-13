@@ -122,34 +122,42 @@ it.effect(
   "discovers a declaration and leaves its generated Convex config out",
   () =>
     Effect.gen(function* () {
-      const path = yield* Path.Path;
-      const confect = path.resolve("/project/confect");
-      const convex = path.resolve("/project/convex");
-      const existing = HashSet.make(
-        path.join(confect, "env.ts"),
-        path.join(confect, "app.ts"),
-        path.join(confect, "http.ts"),
-        path.join(convex, "convex.config.ts"),
-      );
-      const entries = yield* EntryPoint.discover.pipe(
-        Effect.provideService(ConfectDirectory, {
-          get: Effect.succeed(confect),
-        }),
-        Effect.provideService(ConvexDirectory, { get: Effect.succeed(convex) }),
-        Effect.provide(
-          FileSystem.layerNoop({
-            exists: (file) => Effect.succeed(HashSet.has(existing, file)),
-            readDirectory: () => Effect.succeed([]),
-            realPath: (file) => Effect.succeed(file),
-          }),
-        ),
-      );
-      expect(entries.map((entry) => entry._tag)).toEqual([
-        "Env",
-        "App",
-        "Http",
-      ]);
-    }).pipe(Effect.provide(NodePath.layer)),
+      const services4 = yield* Layer.build(NodePath.layer);
+      return yield* Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const confect = path.resolve("/project/confect");
+        const convex = path.resolve("/project/convex");
+        const existing = HashSet.make(
+          path.join(confect, "env.ts"),
+          path.join(confect, "app.ts"),
+          path.join(confect, "http.ts"),
+          path.join(convex, "convex.config.ts"),
+        );
+        const entries = yield* Effect.gen(function* () {
+          const services5 = yield* Layer.build(
+            FileSystem.layerNoop({
+              exists: (file) => Effect.succeed(HashSet.has(existing, file)),
+              readDirectory: () => Effect.succeed([]),
+              realPath: (file) => Effect.succeed(file),
+            }),
+          );
+          return yield* EntryPoint.discover.pipe(
+            Effect.provideService(ConfectDirectory, {
+              get: Effect.succeed(confect),
+            }),
+            Effect.provideService(ConvexDirectory, {
+              get: Effect.succeed(convex),
+            }),
+            Effect.provideContext(services5),
+          );
+        }).pipe(Effect.scoped);
+        expect(Arr.map(entries, (entry) => entry._tag)).toEqual([
+          "Env",
+          "App",
+          "Http",
+        ]);
+      }).pipe(Effect.provideContext(services4));
+    }),
 );
 
 it("parses declaration files as entries", () => {

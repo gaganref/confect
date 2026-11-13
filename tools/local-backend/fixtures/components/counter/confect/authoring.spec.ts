@@ -9,6 +9,7 @@ export const SystemIds = Schema.Struct({
 
 export const ProbeArgs = Schema.Struct({ value: Schema.String });
 
+// oxlint-disable-next-line effecttsgo/schema-class-missing-brand -- The private marker already makes this class nominal; the fixture checks that this survives component and host decoding, so a brand would hide what it tests.
 export class ClassProbe extends Schema.Class<ClassProbe>("ClassProbe")({
   value: Schema.String,
 }) {

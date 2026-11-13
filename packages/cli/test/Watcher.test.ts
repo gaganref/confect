@@ -768,7 +768,8 @@ layer(NodeServices.layer, { excludeTestServices: true })(
             paths: ["notes.impl.ts"],
           });
           yield* watcher.refresh;
-          expect(yield* watcher.pending).toEqual(SyncState.empty);
+          const pending2 = yield* watcher.pending;
+          expect(pending2).toEqual(SyncState.empty);
         }).pipe(Effect.scoped, Effect.timeout("10 seconds")),
       { timeout: 15000 },
     );
@@ -1158,7 +1159,8 @@ layer(NodeServices.layer, { excludeTestServices: true })(
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
-          const runPromise = Effect.runPromiseWith(yield* Effect.context());
+          const context2 = yield* Effect.context();
+          const runPromise = Effect.runPromiseWith(context2);
           let removeInput = false;
           const { watcher, running, project, events } =
             yield* controlledWatcher({
@@ -1190,9 +1192,11 @@ layer(NodeServices.layer, { excludeTestServices: true })(
             _tag: "Create",
             path: `${project.root}/confect/notes.impl.ts`,
           });
-          expect(
-            yield* Effect.raceFirst(watcher.next, Fiber.join(running)),
-          ).toMatchObject({
+          const raceFirst2 = yield* Effect.raceFirst(
+            watcher.next,
+            Fiber.join(running),
+          );
+          expect(raceFirst2).toMatchObject({
             work: { _tag: "Full" },
           });
           removeInput = false;
@@ -1205,9 +1209,8 @@ layer(NodeServices.layer, { excludeTestServices: true })(
             path: `${project.root}/confect/notes.spec.ts`,
           });
           expect((yield* watcher.next).work._tag).toBe("Declarations");
-          expect(Watcher.isRefreshSuccessful(yield* watcher.refresh)).toBe(
-            true,
-          );
+          const refresh2 = yield* watcher.refresh;
+          expect(Watcher.isRefreshSuccessful(refresh2)).toBe(true);
         }).pipe(Effect.scoped, Effect.timeout("10 seconds")),
       { timeout: 15000 },
     );

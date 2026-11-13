@@ -35,6 +35,8 @@ import {
   project as existingProject,
   deployment as existingDeployment,
 } from "../fixtures/ConvexClient";
+import * as Array from "effect/Array";
+import * as Record from "effect/Record";
 
 const makeHarness = (
   client: Layer.Layer<ConvexClient>,
@@ -87,19 +89,26 @@ const makeHarness = (
   const deploy = <A, E, R extends Providers | Stack.StackServices>(
     program: Effect.Effect<A, E, R>,
   ) =>
-    program.pipe(
-      Stack.make({ name: "integration", providers, state }),
-      Effect.flatMap((compiled) =>
-        Plan.make(compiled).pipe(
-          Effect.flatMap(apply),
-          Effect.provideContext(compiled.services),
-        ),
-      ),
-      Effect.provide(state),
-      provideFreshArtifactStore,
-      Effect.provide(context),
-      Effect.scoped,
-    );
+    Effect.gen(function* () {
+      const services3 = yield* Layer.build(context);
+      return yield* Effect.gen(function* () {
+        const services2 = yield* Layer.build(state);
+        return yield* program.pipe(
+          Stack.make({ name: "integration", providers, state }),
+          Effect.flatMap((compiled) =>
+            Plan.make(compiled).pipe(
+              Effect.flatMap(apply),
+              Effect.provideContext(compiled.services),
+            ),
+          ),
+          Effect.provideContext(services2),
+        );
+      }).pipe(
+        Effect.scoped,
+        provideFreshArtifactStore,
+        Effect.provideContext(services3),
+      );
+    }).pipe(Effect.scoped, Effect.scoped);
   return deploy;
 };
 
@@ -120,7 +129,7 @@ describe("cloud deployment lifecycle", () => {
               if (reject) {
                 reject = false;
                 return Effect.fail(
-                  new ConvexApiError({
+                  ConvexApiError.make({
                     operation: "createDeployKey",
                     status: 503,
                     code: "HttpError",
@@ -133,7 +142,7 @@ describe("cloud deployment lifecycle", () => {
             names.push(name);
             return name === undefined
               ? Effect.fail(
-                  new ConvexApiError({
+                  ConvexApiError.make({
                     operation: "listDeployKeys",
                     status: 400,
                     code: "HttpError",
@@ -174,20 +183,22 @@ describe("cloud deployment lifecycle", () => {
           });
           return { url: backend.url };
         });
-        expect(
-          Result.isFailure(yield* deploy(resources).pipe(Effect.result)),
-        ).toBe(true);
+        const deployResult = yield* deploy(resources).pipe(Effect.result);
+        expect(Result.isFailure(deployResult)).toBe(true);
         expect(fixture.state.projects).toHaveLength(1);
         expect(fixture.state.keys).toHaveLength(0);
         expect(pushes).toBe(0);
         if (retry) {
-          expect(yield* deploy(resources)).toEqual({
+          const deployResult2 = yield* deploy(resources);
+          expect(deployResult2).toEqual({
             url: "https://happy-otter-123.convex.cloud",
           });
           expect(pushes).toBe(1);
         }
         yield* deploy(Effect.succeed({}));
-        expect(names.every((name) => name === "happy-otter-123")).toBe(true);
+        expect(Array.every(names, (name) => name === "happy-otter-123")).toBe(
+          true,
+        );
         expect(fixture.state.projects).toHaveLength(0);
         expect(fixture.state.deployments).toHaveLength(0);
         expect(fixture.state.keys).toHaveLength(0);
@@ -207,7 +218,7 @@ describe("cloud deployment lifecycle", () => {
               fixture.client.createDeployKey(name, input).pipe(
                 Effect.andThen(
                   Effect.fail(
-                    new ConvexApiError({
+                    ConvexApiError.make({
                       operation: "createDeployKey",
                       code: "TransportError",
                     }),
@@ -236,9 +247,8 @@ describe("cloud deployment lifecycle", () => {
           });
           return { keyId: key.keyId };
         });
-        expect(
-          Result.isFailure(yield* deploy(resources).pipe(Effect.result)),
-        ).toBe(true);
+        const deployResult = yield* deploy(resources).pipe(Effect.result);
+        expect(Result.isFailure(deployResult)).toBe(true);
         const retried = yield* deploy(resources).pipe(Effect.result);
         expect(retried).toMatchObject({
           _tag: "Failure",
@@ -285,7 +295,8 @@ describe("cloud deployment lifecycle", () => {
       const result = yield* deploy(resources).pipe(Effect.result);
       if (scenario.succeeds) {
         expect(result).toEqual(Result.succeed({ name: "happy-otter-123" }));
-        expect(yield* deploy(resources)).toEqual({
+        const deployResult = yield* deploy(resources);
+        expect(deployResult).toEqual({
           name: "happy-otter-123",
         });
       } else {
@@ -321,7 +332,7 @@ describe("cloud deployment lifecycle", () => {
                     if (!loseResponse) return Effect.void;
                     loseResponse = false;
                     return Effect.fail(
-                      new ConvexApiError({
+                      ConvexApiError.make({
                         operation: "updateEnvironmentVariables",
                         code: "TransportError",
                       }),
@@ -357,9 +368,8 @@ describe("cloud deployment lifecycle", () => {
           });
           return { url: backend.url };
         });
-        expect(
-          Result.isFailure(yield* deploy(resources).pipe(Effect.result)),
-        ).toBe(true);
+        const deployResult = yield* deploy(resources).pipe(Effect.result);
+        expect(Result.isFailure(deployResult)).toBe(true);
         yield* deploy(resources);
         expect(Redacted.value(fixture.state.variables.ORIGIN)).toBe(
           "replacement",
@@ -439,7 +449,7 @@ describe("cloud deployment lifecycle", () => {
         expect(fixture.state.projects).toHaveLength(1);
         expect(fixture.state.deployments).toHaveLength(1);
         expect(fixture.state.keys).toHaveLength(0);
-        expect(Object.keys(fixture.state.variables)).toEqual(["UNRELATED"]);
+        expect(Record.keys(fixture.state.variables)).toEqual(["UNRELATED"]);
         expect(Redacted.value(fixture.state.variables.UNRELATED)).toBe(
           "preserve-me",
         );

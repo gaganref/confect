@@ -79,6 +79,8 @@ const CONVEX_CONFIG_SUFFIX = /[/\\]convex\.config(\.[cm]?[jt]s)?$/;
 /**
  * Resolve the same config spellings that Convex accepts, for configs and test
  * kits.
+ *
+ * @internal
  */
 export const resolveDefinition = (
   specifier: string,
@@ -88,13 +90,17 @@ export const resolveDefinition = (
   const extension = path.extname(specifier);
   const candidates = [
     specifier,
-    ...(extension === ".js" ? [specifier.slice(0, -3) + ".ts"] : []),
+    ...(extension === ".js"
+      ? [pipe(specifier, String.slice(0, -3)) + ".ts"]
+      : []),
     ...(extension !== ".js" && extension !== ".ts"
       ? [specifier + ".js", specifier + ".ts"]
       : []),
   ];
   return Option.firstSomeOf(
-    candidates.map((candidate) => Bundler.resolveModule(candidate, importer)),
+    Array.map(candidates, (candidate) =>
+      Bundler.resolveModule(candidate, importer),
+    ),
   );
 };
 
@@ -186,6 +192,7 @@ export const componentConfigPlugin = (path: Path.Path): esbuild.Plugin => ({
             contents: Array.join(
               [
                 `import real from ${modulePath};`,
+                // oxlint-disable-next-line effecttsgo/prefer-schema-over-json, effecttsgo/global-json-in-effect -- Emit an escaped JavaScript string and object literal into the virtual module, not a JSON payload.
                 `export default { ...real, componentDefinitionPath: ${definitionPath}, defaultName: real._name, [${JSON.stringify(COMPONENT_IMPORT_KEY)}]: ${JSON.stringify({ specifier, path: args.path })} };`,
               ],
               "\n",
@@ -297,15 +304,18 @@ export const discoverInstalledComponents = Effect.fn(
   const components = pipe(
     decoded.childComponents,
     Array.map(({ name, path: componentDefinitionPath }): InstalledComponent => {
-      const httpPrefix = Object.entries(decoded.httpMounts ?? {}).find(
-        ([, reference]) => reference === `_reference/childComponent/${name}`,
+      const httpPrefix = Option.getOrUndefined(
+        Array.findFirst(
+          Record.toEntries(decoded.httpMounts ?? {}),
+          ([, reference]) => reference === `_reference/childComponent/${name}`,
+        ),
       )?.[0];
       return {
         name,
         componentDefinitionPath,
         ...(httpPrefix === undefined
           ? {}
-          : { httpPrefix: httpPrefix.replace(/\/$/, "") }),
+          : { httpPrefix: pipe(httpPrefix, String.replace(/\/$/, "")) }),
       };
     }),
     Array.sort(byName),
@@ -363,7 +373,7 @@ export const componentName = Effect.fnUntraced(function* (configPath: string) {
     !Predicate.hasProperty(definition, "_name") ||
     !Predicate.isString(definition._name)
   ) {
-    return yield* new InvalidConvexConfigError({
+    return yield* InvalidConvexConfigError.make({
       configPath: "convex/convex.config.ts",
       reason: "the component definition must have a string name.",
     });

@@ -22,6 +22,9 @@ import * as FileLock from "./FileLock.js";
 import * as Loopback from "./Loopback.js";
 import { userCache } from "./UserCache.js";
 import { extract } from "./Zip.js";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
 
 /**
  * The backend release a new local deployment runs. An existing data directory
@@ -30,24 +33,24 @@ import { extract } from "./Zip.js";
  */
 export const backendVersion = "precompiled-2026-10-28-cccbade";
 
-export class LocalBackendError extends Schema.TaggedError<LocalBackendError>()(
-  "LocalBackendError",
-  {
-    deploymentName: Schema.String,
-    reason: Schema.Literals([
-      "configuration",
-      "filesystem",
-      "install",
-      "identity",
-      "ports",
-      "running",
-      "spawn",
-      "exit",
-      "timeout",
-    ]),
-    exitCode: Schema.optionalKey(Schema.Finite),
-  },
-) {
+export class LocalBackendError extends Schema.TaggedError<
+  LocalBackendError,
+  { readonly brand: unique symbol }
+>()("LocalBackendError", {
+  deploymentName: Schema.String,
+  reason: Schema.Literals([
+    "configuration",
+    "filesystem",
+    "install",
+    "identity",
+    "ports",
+    "running",
+    "spawn",
+    "exit",
+    "timeout",
+  ]),
+  exitCode: Schema.optionalKey(Schema.Finite),
+}) {
   override get message() {
     const subject = `Local backend for ${this.deploymentName}`;
     switch (this.reason) {
@@ -129,7 +132,7 @@ const listen = (port: number) =>
       server.once("error", () => resume(Effect.undefined));
       server.listen(port, "127.0.0.1", () => resume(Effect.succeed(server)));
     }),
-    (server) => (server ? close(server) : Effect.void),
+    (server) => (server !== undefined ? close(server) : Effect.void),
   );
 
 const isFree = (port: number) =>
@@ -153,12 +156,15 @@ const startup = Semaphore.makeUnsafe(1);
  * Resolves the directory that holds one local deployment's identity, database,
  * and file storage: `.alchemy/convex/<stack>/<stage>/<deployment>`. Keyed by
  * the deployment name because a deploy key resource only knows that name.
+ *
+ * @internal
  */
 export const dataDirectories = Effect.gen(function* () {
   const path = yield* Path.Path;
   const stack = yield* Stack;
+  const dotAlchemyDirectoryValue = yield* dotAlchemyDirectory;
   const root = path.resolve(
-    yield* dotAlchemyDirectory,
+    dotAlchemyDirectoryValue,
     "convex",
     stack.name,
     stack.stage,
@@ -174,7 +180,7 @@ const readIdentity = Effect.fn("LocalBackend.readIdentity")(function* (
   const path = yield* Path.Path;
   const file = path.join(directory, "identity.json");
   const invalid = () =>
-    new LocalBackendError({ deploymentName, reason: "identity" });
+    LocalBackendError.make({ deploymentName, reason: "identity" });
   if (!(yield* fs.exists(file).pipe(Effect.mapError(invalid))))
     return Option.none<Identity>();
   const identity = yield* fs
@@ -196,7 +202,10 @@ export const adminKey = Effect.fn("LocalBackend.adminKey")(function* (
 ) {
   const identity = yield* readIdentity(deploymentName, directory);
   if (Option.isNone(identity))
-    return yield* new LocalBackendError({ deploymentName, reason: "identity" });
+    return yield* LocalBackendError.make({
+      deploymentName,
+      reason: "identity",
+    });
   return Redacted.make(identity.value.adminKey);
 });
 
@@ -208,8 +217,8 @@ export const remove = Effect.fn("LocalBackend.remove")(function* (
   yield* fs
     .remove(directory, { recursive: true, force: true })
     .pipe(
-      Effect.mapError(
-        () => new LocalBackendError({ deploymentName, reason: "filesystem" }),
+      Effect.mapError(() =>
+        LocalBackendError.make({ deploymentName, reason: "filesystem" }),
       ),
     );
 });
@@ -227,7 +236,7 @@ const install = Effect.fn("LocalBackend.install")(function* (
   const path = yield* Path.Path;
   const http = yield* HttpClient.HttpClient;
   const failed = () =>
-    new LocalBackendError({ deploymentName, reason: "install" });
+    LocalBackendError.make({ deploymentName, reason: "install" });
   const binaries = path.join(cache, "convex", "binaries");
   const binary = path.join(binaries, version, executable);
   const artifact = artifacts[`${process.platform}-${process.arch}`];
@@ -274,7 +283,7 @@ export const boot = Effect.fn("LocalBackend.boot")(function* (
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const random = yield* SecureRandom.SecureRandom;
   const fail = (reason: LocalBackendError["reason"], exitCode?: number) =>
-    new LocalBackendError({
+    LocalBackendError.make({
       deploymentName,
       reason,
       ...(exitCode === undefined ? {} : { exitCode }),
@@ -308,7 +317,7 @@ export const boot = Effect.fn("LocalBackend.boot")(function* (
     if (Option.isNone(range) || Option.isNone(range.value)) {
       // A closed server no longer has an address.
       const [port, sitePort] = yield* Effect.all([listen(0), listen(0)]).pipe(
-        Effect.map((servers) => servers.map(portOf)),
+        Effect.map((servers) => Array.map(servers, portOf)),
         Effect.scoped,
       );
       if (port === undefined || sitePort === undefined)
@@ -328,9 +337,8 @@ export const boot = Effect.fn("LocalBackend.boot")(function* (
 
   const generate = (binary: string) =>
     Effect.gen(function* () {
-      const instanceSecret = Buffer.from(
-        yield* random.randomBytes(32),
-      ).toString("hex");
+      const randomBytes2 = yield* random.randomBytes(32);
+      const instanceSecret = Buffer.from(randomBytes2).toString("hex");
       const output = yield* spawner.string(
         ChildProcess.make(
           binary,
@@ -345,8 +353,9 @@ export const boot = Effect.fn("LocalBackend.boot")(function* (
           { env, extendEnv: false, stdin: "ignore", stderr: "ignore" },
         ),
       );
-      const key = output.trim();
-      if (!key.startsWith(`${deploymentName}|`)) return yield* fail("identity");
+      const key = pipe(output, Str.trim);
+      if (!pipe(key, Str.startsWith(`${deploymentName}|`)))
+        return yield* fail("identity");
       return { instanceSecret, adminKey: key };
     }).pipe(
       Effect.catchTag("PlatformError", () => Effect.fail(fail("identity"))),
@@ -356,11 +365,8 @@ export const boot = Effect.fn("LocalBackend.boot")(function* (
     Effect.gen(function* () {
       const file = path.join(directory, "identity.json");
       const temp = `${file}.${process.pid}.tmp`;
-      yield* fs.writeFileString(
-        temp,
-        yield* Schema.encodeEffect(Identity)(identity),
-        { mode: 0o600 },
-      );
+      const encoded = yield* Schema.encodeEffect(Identity)(identity);
+      yield* fs.writeFileString(temp, encoded, { mode: 0o600 });
       yield* fs.rename(temp, file);
     }).pipe(
       // Node cannot cancel a write or rename it has started; finishing it

@@ -59,6 +59,7 @@ import * as Tracer from "effect/Tracer";
 import * as ObservabilityRuntime from "./internal/observability.js";
 import * as VectorSearch from "./VectorSearch.js";
 import type * as Handler from "./Handler.js";
+import * as Record from "effect/Record";
 
 export interface ReceivedValue {
   readonly value: unknown;
@@ -86,6 +87,7 @@ export const invocationMetadata = (
     const deployment = yield* Config.String("CONVEX_CLOUD_URL").pipe(
       Config.option,
       Effect.map(Option.getOrUndefined),
+      // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This Convex entry point reads its deployment URL through Convex's environment before any service exists to compose it into.
       Effect.provide(ConvexConfigProvider.layer),
       Effect.orDie,
     );
@@ -304,8 +306,12 @@ export const runHandlerPromise =
     const observed = Effect.tapCause(effect, (cause) =>
       Effect.gen(function* () {
         const reason =
-          cause.reasons.find(Cause.isDieReason) ??
-          cause.reasons.find(Cause.isFailReason);
+          Option.getOrUndefined(
+            Array.findFirst(cause.reasons, Cause.isDieReason),
+          ) ??
+          Option.getOrUndefined(
+            Array.findFirst(cause.reasons, Cause.isFailReason),
+          );
         if (reason?._tag === "Fail" && errorSchema !== undefined) {
           encodedError = yield* Effect.exit(
             Schema.encodeEffect(errorSchema)(reason.error),
@@ -361,8 +367,12 @@ export const runHandlerPromise =
             ? encodedError.cause
             : exit.cause;
         const reason =
-          cause.reasons.find(Cause.isDieReason) ??
-          cause.reasons.find(Cause.isFailReason);
+          Option.getOrUndefined(
+            Array.findFirst(cause.reasons, Cause.isDieReason),
+          ) ??
+          Option.getOrUndefined(
+            Array.findFirst(cause.reasons, Cause.isFailReason),
+          );
         if (
           encodedError === undefined &&
           reason?._tag === "Die" &&
@@ -395,6 +405,7 @@ export const runHandlerPromise =
       });
     return Effect.runPromise(
       withConvexError.pipe(
+        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This Convex entry point provides the invocation's observability layer as Effect.runPromise runs the handler.
         Effect.provide(
           observability === undefined
             ? ConvexLogger.layer
@@ -422,8 +433,11 @@ export const domainArgs = (
 ): DefaultFunctionArgs =>
   reservedArgument === undefined
     ? args
-    : Object.fromEntries(
-        Object.entries(args).filter(([key]) => key !== reservedArgument),
+    : Record.fromEntries(
+        Array.filter(
+          Record.toEntries(args),
+          ([key]) => key !== reservedArgument,
+        ),
       );
 
 export const actionFunctionBase = <
@@ -473,7 +487,8 @@ export const actionFunctionBase = <
         Schema.decodeUnknownEffect(args),
         Effect.catchTag("SchemaError", Effect.die),
       );
-      const restricted = resolvedMiddlewares.some(
+      const restricted = Array.some(
+        resolvedMiddlewares,
         ({ middlewareSpec }) =>
           middlewareSpec.key === ActionCallSpec.Middleware.key,
       )
@@ -489,6 +504,7 @@ export const actionFunctionBase = <
           functionVisibility,
           args: decodedArgs,
         },
+        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This Convex entry point provides invocation-local services before runHandlerPromise executes the handler.
       ).pipe(Effect.provide(createLayer(restricted?.ctx ?? ctx)));
       if (restricted !== undefined) yield* restricted.check;
       return yield* pipe(
@@ -584,20 +600,20 @@ const restrict = <Model extends GenericDataModel>(
 ) => {
   let dispatched = false;
   const claim = () => {
-    if (dispatched) throw new ActionCall.ActionCallAlreadyUsed();
+    if (dispatched) throw ActionCall.ActionCallAlreadyUsed.make({});
     dispatched = true;
   };
   const restricted: GenericActionCtx<Model> = {
     ...ctx,
     scheduler: {
       runAfter: () => {
-        throw new ActionCall.SchedulingNotAllowed();
+        throw ActionCall.SchedulingNotAllowed.make({});
       },
       runAt: () => {
-        throw new ActionCall.SchedulingNotAllowed();
+        throw ActionCall.SchedulingNotAllowed.make({});
       },
       cancel: () => {
-        throw new ActionCall.SchedulingNotAllowed();
+        throw ActionCall.SchedulingNotAllowed.make({});
       },
     },
     runQuery: (...args) => {
@@ -609,13 +625,15 @@ const restrict = <Model extends GenericDataModel>(
       return ctx.runMutation(...args);
     },
     runAction: () => {
-      throw new ActionCall.NestedActionNotAllowed();
+      throw ActionCall.NestedActionNotAllowed.make({});
     },
   };
   return {
     ctx: restricted,
     check: Effect.suspend(() =>
-      dispatched ? Effect.void : Effect.die(new ActionCall.ActionCallNotUsed()),
+      dispatched
+        ? Effect.void
+        : Effect.die(ActionCall.ActionCallNotUsed.make({})),
     ),
   };
 };

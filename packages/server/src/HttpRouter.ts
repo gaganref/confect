@@ -35,6 +35,9 @@ import * as ObservabilityRuntime from "./internal/observability.js";
 import { withOptions } from "./internal/httpOptions.js";
 import * as ConvexLogger from "./ConvexLogger.js";
 import * as RegisteredFunction from "./RegisteredFunction.js";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
 
 /**
  * The Confect services available to HTTP route handlers and middleware,
@@ -153,14 +156,18 @@ const makeWithLayer = <
     HttpMiddleware.SpanNameGenerator,
     Effect.gen(function* () {
       const prefix = siteRelative
-        ? (yield* Config.schema(
-            Schema.URLFromString,
-            "CONVEX_SITE_URL",
-          )).pathname.replace(/\/$/, "")
+        ? pipe(
+            (yield* Config.schema(Schema.URLFromString, "CONVEX_SITE_URL"))
+              .pathname,
+            Str.replace(/\/$/, ""),
+          )
         : "";
       return (request: HttpServerRequest.HttpServerRequest) =>
         convexHttpRouter.lookup(
-          new URL(request.originalUrl).pathname.slice(prefix.length) || "/",
+          pipe(
+            new URL(request.originalUrl).pathname,
+            Str.slice(prefix.length),
+          ) || "/",
           request.method as (typeof ROUTABLE_HTTP_METHODS)[number],
         )?.[2] ?? "/*";
     }).pipe(Effect.orDie),
@@ -242,8 +249,11 @@ const makeWithLayer = <
     HttpApi.reflect(api, {
       onGroup: () => {},
       onEndpoint: ({ endpoint }) => {
-        const method = ROUTABLE_HTTP_METHODS.find(
-          (candidate) => candidate === endpoint.method,
+        const method = Option.getOrUndefined(
+          Array.findFirst(
+            ROUTABLE_HTTP_METHODS,
+            (candidate) => candidate === endpoint.method,
+          ),
         );
         if (method === undefined) return;
         const path = apiRouterPath(
@@ -252,15 +262,20 @@ const makeWithLayer = <
         );
         matcher.on(method, path, endpoint.path);
         // Effect also matches a wildcard route's base path without its slash.
-        if (path.endsWith("/*")) {
-          matcher.on(method, path.slice(0, -2) as `/${string}`, endpoint.path);
+        if (pipe(path, Str.endsWith("/*"))) {
+          matcher.on(
+            method,
+            pipe(path, Str.slice(0, -2)) as `/${string}`,
+            endpoint.path,
+          );
         }
         reflected.push([endpoint.path, method, httpAction]);
       },
     });
     reflected.sort(
       ([pathA, methodA], [pathB, methodB]) =>
-        pathA.localeCompare(pathB) || methodA.localeCompare(methodB),
+        pipe(pathA, Str.localeCompare(pathB)) ||
+        pipe(methodA, Str.localeCompare(methodB)),
     );
 
     const getRoutes = convexHttpRouter.getRoutes;
@@ -268,7 +283,10 @@ const makeWithLayer = <
       reflected.length === 0
         ? getRoutes()
         : [
-            ...getRoutes().filter(([, , action]) => action !== httpAction),
+            ...Array.filter(
+              getRoutes(),
+              ([, , action]) => action !== httpAction,
+            ),
             ...reflected,
           ];
     const lookup = convexHttpRouter.lookup;
@@ -318,7 +336,7 @@ const apiRouterPath = (
   path: FindMyWay.PathInput,
   params: Schema.Top | undefined,
 ): FindMyWay.PathInput => {
-  if (params === undefined || !path.includes(":")) return path;
+  if (params === undefined || !pipe(path, Str.includes(":"))) return path;
   let ast = params.ast;
   while (ast.encoding !== undefined) {
     ast = ast.encoding[ast.encoding.length - 1].to;
@@ -326,7 +344,7 @@ const apiRouterPath = (
   if (!SchemaAST.isObjects(ast) || ast.indexSignatures.length !== 0)
     return path;
   const names = new Set(
-    ast.propertySignatures.map((property) => String(property.name)),
+    Array.map(ast.propertySignatures, (property) => String(property.name)),
   );
   let normalized = "";
   let depth = 0;
@@ -344,13 +362,13 @@ const apiRouterPath = (
       normalized += "::";
       i++;
     } else {
-      const param = /^:(\w+)/.exec(path.slice(i));
+      const param = /^:(\w+)/.exec(pipe(path, Str.slice(i)));
       if (param !== null && names.has(param[1])) {
         normalized += param[0];
         i += param[0].length - 1;
         const next = path[i + 1];
         if (next === "(") regexStart = i + 1;
-        else if (next !== undefined && !"/.-?".includes(next))
+        else if (next !== undefined && !pipe("/.-?", Str.includes(next)))
           normalized += "(.*?)";
       } else {
         normalized += "::";

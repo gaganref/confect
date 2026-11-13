@@ -137,8 +137,12 @@ export const devHandler = Effect.gen(function* () {
   yield* Effect.all([watcher.run, syncLoop(previousFunctionPaths, watcher)], {
     concurrency: "unbounded",
   });
+  // oxlint-disable-next-line effecttsgo/strict-effect-provide -- `confect dev` is an entry point: its watch loop runs under the prewarmed evaluator for the whole session.
 }).pipe(Effect.provide(Evaluation.prewarmedLayer));
 
+/**
+ * @internal
+ */
 export const dev = Command.make(
   "dev",
   {
@@ -335,7 +339,7 @@ const syncLoop = Effect.fnUntraced(function* (
           Effect.catchTags({
             RemoveBusyError: (error) =>
               Effect.fail(
-                new Evaluation.EvaluationError({
+                Evaluation.EvaluationError.make({
                   diagnostic: renderCodegenError(error),
                 }),
               ),
@@ -359,13 +363,12 @@ const syncLoop = Effect.fnUntraced(function* (
           return SyncState.Outcome.Succeeded({ snapshot });
         });
       const outcome = yield* SyncState.Operation.$match(operation, {
-        Generate: () => regenerate(preserved(Evaluation.generateSnapshot)),
+        Generate: () => Evaluation.generateSnapshot.pipe(preserved, regenerate),
         Validate: ({ paths, snapshot }) => validate(paths, snapshot),
         Update: ({ snapshot, declarations, paths }) =>
-          regenerate(
-            preserved(
-              Evaluation.updateDeclarations(snapshot, declarations, paths),
-            ),
+          Evaluation.updateDeclarations(snapshot, declarations, paths).pipe(
+            preserved,
+            regenerate,
           ),
       });
       yield* Ref.set(phaseRef, SyncState.transition(outcome));

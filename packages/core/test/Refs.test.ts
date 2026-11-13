@@ -366,10 +366,16 @@ describe("make", () => {
 
 describe("middleware error unions", () => {
   it("carries the wire encoding of function and middleware errors", () => {
-    class Blocked extends Schema.TaggedError<Blocked>()("Blocked", {
+    class Blocked extends Schema.TaggedError<
+      Blocked,
+      { readonly brand: unique symbol }
+    >()("Blocked", {
       at: Schema.FiniteFromString,
     }) {}
-    class NotFound extends Schema.TaggedError<NotFound>()("NotFound", {
+    class NotFound extends Schema.TaggedError<
+      NotFound,
+      { readonly brand: unique symbol }
+    >()("NotFound", {
       id: Schema.String,
     }) {}
 

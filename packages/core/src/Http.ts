@@ -1,14 +1,18 @@
-import * as Data from "effect/Data";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
-import type * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import type * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import type * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import { scalarDocs } from "./internal/scalarDocs.js";
 import * as App from "./App.js";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
+import * as Option from "effect/Option";
+import * as Record from "effect/Record";
 
 const TypeId = "~@confect/core/Http";
 
@@ -20,6 +24,8 @@ const TypeId = "~@confect/core/Http";
  * It does not reference `confect/app.ts`: `http.ts` runs in every HTTP action,
  * and `app.ts` imports component definitions that only load in Convex's config
  * analysis. Codegen checks these routes against the app's mounts.
+ *
+ * @stability unstable
  */
 export interface Http<Api extends App.Api, Routes extends Layer.Any> {
   readonly [TypeId]: typeof TypeId;
@@ -28,6 +34,9 @@ export interface Http<Api extends App.Api, Routes extends Layer.Any> {
   readonly routes: Routes;
 }
 
+/**
+ * @stability unstable
+ */
 export type Any = Http<App.Api, Layer.Any>;
 
 /**
@@ -41,6 +50,8 @@ export type Any = Http<App.Api, Layer.Any>;
  *   docs: "/docs",
  * });
  * ```
+ *
+ * @stability unstable
  */
 export const make = <
   Id extends string,
@@ -72,42 +83,52 @@ export const isHttp = (u: unknown): u is Any =>
 
 export type Owner = { readonly kind: "app" } | { readonly kind: "docs" };
 
+const OwnerSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("app") }),
+  Schema.Struct({ kind: Schema.Literal("docs") }),
+]);
+
 export interface Route {
   readonly method: string;
   readonly path: string;
   readonly owner: Owner;
 }
 
-export class RouteUnderMountPrefix extends Data.TaggedError(
-  "RouteUnderMountPrefix",
-)<{
-  readonly method: string;
-  readonly path: string;
-  readonly mount: string;
-  readonly httpPrefix: string;
-}> {
+export class RouteUnderMountPrefix extends Schema.TaggedError<
+  RouteUnderMountPrefix,
+  { readonly brand: unique symbol }
+>()("RouteUnderMountPrefix", {
+  method: Schema.String,
+  path: Schema.String,
+  mount: Schema.String,
+  httpPrefix: Schema.String,
+}) {
   override get message(): string {
     return `The app route ${this.method} ${this.path} is under the HTTP prefix ${this.httpPrefix} of the mount "${this.mount}". Convex would let it shadow the component's routes; move it or change the prefix.`;
   }
 }
 
-export class DuplicateRoute extends Data.TaggedError("DuplicateRoute")<{
-  readonly method: string;
-  readonly path: string;
-  readonly first: Owner;
-  readonly second: Owner;
-}> {
+export class DuplicateRoute extends Schema.TaggedError<
+  DuplicateRoute,
+  { readonly brand: unique symbol }
+>()("DuplicateRoute", {
+  method: Schema.String,
+  path: Schema.String,
+  first: OwnerSchema,
+  second: OwnerSchema,
+}) {
   override get message(): string {
     return `${this.method} ${this.path} is declared twice (${this.first.kind} and ${this.second.kind}).`;
   }
 }
 
-export class OverlappingMountPrefixes extends Data.TaggedError(
-  "OverlappingMountPrefixes",
-)<{
-  readonly first: { readonly mount: string; readonly httpPrefix: string };
-  readonly second: { readonly mount: string; readonly httpPrefix: string };
-}> {
+export class OverlappingMountPrefixes extends Schema.TaggedError<
+  OverlappingMountPrefixes,
+  { readonly brand: unique symbol }
+>()("OverlappingMountPrefixes", {
+  first: Schema.Struct({ mount: Schema.String, httpPrefix: Schema.String }),
+  second: Schema.Struct({ mount: Schema.String, httpPrefix: Schema.String }),
+}) {
   override get message(): string {
     return `The mounts "${this.first.mount}" (${this.first.httpPrefix}) and "${this.second.mount}" (${this.second.httpPrefix}) have overlapping HTTP prefixes.`;
   }
@@ -119,13 +140,15 @@ export type RouteError =
   | OverlappingMountPrefixes;
 
 const trimSlash = (prefix: string): string =>
-  prefix.length > 1 && prefix.endsWith("/") ? prefix.slice(0, -1) : prefix;
+  prefix.length > 1 && pipe(prefix, Str.endsWith("/"))
+    ? pipe(prefix, Str.slice(0, -1))
+    : prefix;
 
 const isUnder = (path: string, prefix: string): boolean =>
   prefix === "/" ||
   path === prefix ||
   path === `${prefix}/` ||
-  path.startsWith(`${prefix}/`);
+  pipe(path, Str.startsWith(`${prefix}/`));
 
 /**
  * The parameter names an endpoint declares. As in Effect's router, a colon
@@ -139,7 +162,7 @@ const paramNames = (params: Schema.Top | undefined): ReadonlySet<string> => {
     ast = ast.encoding[ast.encoding.length - 1].to;
   }
   return SchemaAST.isObjects(ast)
-    ? new Set(ast.propertySignatures.map(({ name }) => String(name)))
+    ? new Set(Array.map(ast.propertySignatures, ({ name }) => String(name)))
     : new Set();
 };
 
@@ -152,12 +175,13 @@ interface KeyedRoute {
 }
 
 const apiRoutes = (api: App.Api, owner: Owner): ReadonlyArray<KeyedRoute> =>
-  Object.values<HttpApiGroup.Top>(api.groups).flatMap((group) =>
-    Object.values(group.endpoints).map((endpoint) => {
+  Array.flatMap(Record.values<string, HttpApiGroup.Top>(api.groups), (group) =>
+    Array.map(Record.values(group.endpoints), (endpoint) => {
       const path = endpoint.path;
       const declared = paramNames(endpoint.params);
       return {
         route: { method: endpoint.method, path, owner },
+        // oxlint-disable-next-line effecttsgo/prefer-effect-string -- This replaceAll takes a callback, which effect/String.replaceAll does not accept.
         key: `${endpoint.method} ${path.replaceAll(/:(\w+)/g, (param, name: string) => (declared.has(name) ? ":" : param))}`,
       };
     }),
@@ -168,15 +192,21 @@ const apiRoutes = (api: App.Api, owner: Owner): ReadonlyArray<KeyedRoute> =>
  * under a mount's prefix (Convex accepts that and lets the app route silently
  * shadow the component's), when two routes share a method and path, or when two
  * mount prefixes overlap.
+ *
+ * @stability unstable
  */
 export const routes = (
   app: App.Any,
   http?: Any,
 ): Result.Result<ReadonlyArray<Route>, RouteError> => {
-  const mounts = App.mounts(app).flatMap(({ name, httpPrefix }) =>
-    httpPrefix === undefined
-      ? []
-      : [{ name, httpPrefix: trimSlash(httpPrefix) }],
+  // reduce skips a sparse list's holes, which effect/Array's flatMap visits.
+  const mounts = Array.reduce(
+    App.mounts(app),
+    Array.empty<{ name: string; httpPrefix: string }>(),
+    (prefixed, { name, httpPrefix }) =>
+      httpPrefix === undefined
+        ? prefixed
+        : Array.append(prefixed, { name, httpPrefix: trimSlash(httpPrefix) }),
   );
 
   for (const [index, first] of mounts.entries()) {
@@ -186,7 +216,7 @@ export const routes = (
         isUnder(first.httpPrefix, second.httpPrefix)
       ) {
         return Result.fail(
-          new OverlappingMountPrefixes({
+          OverlappingMountPrefixes.make({
             first: { mount: first.name, httpPrefix: first.httpPrefix },
             second: { mount: second.name, httpPrefix: second.httpPrefix },
           }),
@@ -215,12 +245,14 @@ export const routes = (
         ];
 
   for (const { route } of own) {
-    const mount = mounts.find(({ httpPrefix }) =>
-      isUnder(route.path, httpPrefix),
+    const mount = Option.getOrUndefined(
+      Array.findFirst(mounts, ({ httpPrefix }) =>
+        isUnder(route.path, httpPrefix),
+      ),
     );
     if (mount !== undefined) {
       return Result.fail(
-        new RouteUnderMountPrefix({
+        RouteUnderMountPrefix.make({
           method: route.method,
           path: route.path,
           mount: mount.name,
@@ -235,7 +267,7 @@ export const routes = (
     const previous = seen.get(key);
     if (previous !== undefined) {
       return Result.fail(
-        new DuplicateRoute({
+        DuplicateRoute.make({
           method: route.method,
           path: route.path,
           first: previous.owner,
@@ -245,5 +277,5 @@ export const routes = (
     }
     seen.set(key, route);
   }
-  return Result.succeed(own.map(({ route }) => route));
+  return Result.succeed(Array.map(own, ({ route }) => route));
 };

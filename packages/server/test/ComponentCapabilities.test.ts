@@ -35,6 +35,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Router from "effect/http/HttpRouter";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import * as Record from "effect/Record";
 
 const scope = IdScope.component("@example/counter");
 const users = Table.make(() => Schema.Struct({ name: Schema.String }))(
@@ -94,10 +95,9 @@ describe("component capabilities", () => {
     }
     const reserved = (
       auth: Context.Service.Shape<typeof MutationAuth.MutationAuth>,
-    ) => {
+    ) =>
       // @ts-expect-error Convex owns the issuer claim.
-      return auth.signJwt({ claims: { iss: "other" }, expiresInSeconds: 60 });
-    };
+      auth.signJwt({ claims: { iss: "other" }, expiresInSeconds: 60 });
     void reserved;
     expectTypeOf(Auth).not.toHaveProperty("MutationAuth");
   });
@@ -217,7 +217,7 @@ describe("component capabilities", () => {
           context,
           MutationCtx.MutationCtx<Model, typeof scope>(),
         );
-        expect(Object.hasOwn(raw, "auth")).toBe(false);
+        expect(Record.has<string, unknown>(raw, "auth")).toBe(false);
       }).pipe(Effect.scoped);
     },
   );

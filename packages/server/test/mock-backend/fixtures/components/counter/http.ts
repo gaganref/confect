@@ -39,7 +39,8 @@ export const makeHttp = () =>
             Effect.gen(function* () {
               const request = yield* HttpServerRequest.HttpServerRequest;
               const mutation = yield* MutationRunner.MutationRunner;
-              const count = Number(yield* request.text);
+              const text2 = yield* request.text;
+              const count = Number(text2);
               yield* mutation.runMutation(refs.public.counter.create, {
                 count,
               });

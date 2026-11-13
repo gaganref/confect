@@ -499,7 +499,7 @@ export const fromProvenance = (
     kind: provenance.kind,
     middlewareAttachments,
     get middlewareSpecs() {
-      return middlewareAttachments.map(({ spec }) => spec);
+      return Array.map(middlewareAttachments, ({ spec }) => spec);
     },
   };
 

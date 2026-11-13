@@ -15,7 +15,7 @@ export const remove = Effect.fn("Remove.remove")(function* (path: string) {
     }),
     Effect.mapError((error) =>
       error.reason._tag === "Busy"
-        ? new RemoveBusyError({ path, attempts: MAX_ATTEMPTS, cause: error })
+        ? RemoveBusyError.make({ path, attempts: MAX_ATTEMPTS, cause: error })
         : error,
     ),
   );

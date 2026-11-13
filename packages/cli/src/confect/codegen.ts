@@ -69,6 +69,8 @@ import {
   syncDeployModule,
   syncDeclaredHttp,
 } from "./declaration.js";
+import * as String from "effect/String";
+import { quote } from "../Json.js";
 
 const GENERATED_DIRNAME = "_generated";
 
@@ -161,9 +163,9 @@ const runCodegen = Effect.gen(function* () {
   // written before the declaration is bundled, even on a first run.
   yield* generateTableWrappers(tableModules);
   yield* removeObsoleteTableWrappers(tableModules);
-  yield* generateAssembledSpecs(
-    yield* Effect.forEach(yield* discoverLeafSpecFiles, toLeafModule),
-  );
+  const leafSpecFiles = yield* discoverLeafSpecFiles;
+  const forEach2 = yield* Effect.forEach(leafSpecFiles, toLeafModule);
+  yield* generateAssembledSpecs(forEach2);
   yield* generateRefs;
   // Specs and tables can import the components registry, but the registry
   // reads the `convex.config.ts` that the declaration writes. Only its type
@@ -288,6 +290,9 @@ export const makeCodegenHandler = (
     Effect.map(({ functionPaths }) => ({ functionPaths })),
   );
 
+/**
+ * @internal
+ */
 export const codegenHandler = makeCodegenHandler();
 
 /**
@@ -364,10 +369,10 @@ const validateComponentGroupRuntime = (
   Result.gen(function* () {
     if (group.runtime === "Node") {
       return yield* Result.fail(
-        new CodegenError.ComponentNodeGroupError({ specPath, groupPath }),
+        CodegenError.ComponentNodeGroupError.make({ specPath, groupPath }),
       );
     }
-    for (const [name, child] of Object.entries(group.groups)) {
+    for (const [name, child] of Record.toEntries(group.groups)) {
       yield* validateComponentGroupRuntime(
         child,
         `${groupPath}.${name}`,
@@ -397,22 +402,25 @@ const validateCallbackPrefixes = Effect.fnUntraced(function* (
   if ((yield* ConvexDirectory.target).kind !== "component") return;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const callbacksPath = path.join(yield* ConfectDirectory.get, "callbacks.ts");
+  const confectDirectory = yield* ConfectDirectory.get;
+  const callbacksPath = path.join(confectDirectory, "callbacks.ts");
   if (!(yield* fs.exists(callbacksPath))) return;
   const name = Option.isSome(declared)
     ? Env.name(App.env(declared.value))
-    : yield* ConvexConfig.componentName(
-        path.join(
-          yield* ConvexDirectory.get,
-          ConvexConfig.CONVEX_CONFIG_FILENAME,
+    : yield* Effect.flatMap(ConvexDirectory.get, (convexDirectory) =>
+        ConvexConfig.componentName(
+          path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
         ),
       );
   const { module } = yield* Bundler.bundle(callbacksPath).pipe(
     Effect.mapError((error) => fromBundlerError("confect/callbacks.ts", error)),
   );
-  for (const contract of Object.values(module)) {
-    if (Callback.isContract(contract) && !contract.id.startsWith(`${name}/`)) {
-      return yield* new CodegenError.CallbackPrefixError({
+  for (const contract of Record.values(module)) {
+    if (
+      Callback.isContract(contract) &&
+      !pipe(contract.id, String.startsWith(`${name}/`))
+    ) {
+      return yield* CodegenError.CallbackPrefixError.make({
         declarationPath: "confect/callbacks.ts",
         contractId: contract.id,
         componentName: name,
@@ -431,7 +439,7 @@ const validateComponentConfiguration = Effect.gen(function* () {
         const confectDirectory = yield* ConfectDirectory.get;
         const authPath = path.join(confectDirectory, "auth.ts");
         if (yield* fs.exists(authPath)) {
-          return yield* new CodegenError.InvalidConvexConfigError({
+          return yield* CodegenError.InvalidConvexConfigError.make({
             configPath: authPath,
             reason:
               "Components cannot configure application authentication. Pass identity explicitly through function arguments.",
@@ -721,7 +729,7 @@ const rejectDeployModuleGroup = Effect.gen(function* () {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
   if (yield* fs.exists(path.join(confectDirectory, "confectDeploy.spec.ts")))
-    return yield* new CodegenError.InvalidDeclarationError({
+    return yield* CodegenError.InvalidDeclarationError.make({
       declarationPath: "confect/confectDeploy.spec.ts",
       reason:
         "its functions would go in convex/confectDeploy.ts, which codegen writes for the mounts a push initialises. Rename the group, for example to confect/deploy.spec.ts.",
@@ -786,7 +794,8 @@ const generateIdConstructor = Effect.fnUntraced(function* (
     tableModules,
     (tableModule) => tableModule.tableName,
   );
-  const contents = yield* Match.value(yield* ConvexDirectory.target).pipe(
+  const convexDirectory = yield* ConvexDirectory.target;
+  const contents = yield* Match.value(convexDirectory).pipe(
     Match.when({ kind: "app" }, () => templates.id({ tableNames })),
     Match.when({ kind: "component" }, ({ scope }) =>
       templates.id({ tableNames, scope }),
@@ -1066,6 +1075,8 @@ const installedMounts = Effect.gen(function* () {
  * It must exist before loading tables and specs because they may import bound
  * component IDs and schemas. Returns each mount with the specifier of its
  * definition, relative to `_generated` for an in-repo component.
+ *
+ * @internal
  */
 export const generateComponents = Effect.gen(function* () {
   const path = yield* Path.Path;
@@ -1078,8 +1089,9 @@ export const generateComponents = Effect.gen(function* () {
     })),
   });
 
+  const gENERATEDCOMPONENTSPATH = yield* GENERATED_COMPONENTS_PATH;
   yield* writeFileStringAndLog(
-    path.join(confectDirectory, yield* GENERATED_COMPONENTS_PATH),
+    path.join(confectDirectory, gENERATEDCOMPONENTSPATH),
     contents,
   );
   return mounts;
@@ -1088,15 +1100,12 @@ export const generateComponents = Effect.gen(function* () {
 const provisionalComponents = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const registry = path.join(
-    yield* ConfectDirectory.get,
-    yield* GENERATED_COMPONENTS_PATH,
-  );
+  const confectDirectory = yield* ConfectDirectory.get;
+  const gENERATEDCOMPONENTSPATH = yield* GENERATED_COMPONENTS_PATH;
+  const registry = path.join(confectDirectory, gENERATEDCOMPONENTSPATH);
   if (yield* fs.exists(registry)) return;
-  yield* writeFileStringAndLog(
-    registry,
-    yield* templates.components({ components: [] }),
-  );
+  const components2 = yield* templates.components({ components: [] });
+  yield* writeFileStringAndLog(registry, components2);
 });
 
 const logGenerated = <E, R>(
@@ -1125,11 +1134,6 @@ const logGenerated = <E, R>(
   );
 
 /**
- * Test-only imports never enter the runtime schema or function wrappers.
- */
-const quote = (value: string) => JSON.stringify(value);
-
-/**
  * A descriptor's `testing` kit must be a package specifier, so the generated
  * registry holds no machine-specific path, and must export `register`. A kit
  * whose exports cannot be listed without running it passes here, and
@@ -1143,11 +1147,11 @@ const checkTestKit = Effect.fnUntraced(function* (
 ) {
   const path = yield* Path.Path;
   const invalid = (problem: string) =>
-    new CodegenError.InvalidDeclarationError({
+    CodegenError.InvalidDeclarationError.make({
       declarationPath: "confect/app.ts",
       reason: `the mount ${quote(mount)} names the test kit ${quote(specifier)} in its component descriptor${problem}`,
     });
-  if (specifier.startsWith(".") || path.isAbsolute(specifier)) {
+  if (pipe(specifier, String.startsWith(".")) || path.isAbsolute(specifier)) {
     return yield* invalid(
       '; name it by a package specifier, such as "<package>/testing".',
     );
@@ -1170,37 +1174,46 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
   const confectDirectory = yield* ConfectDirectory.get;
   const convexDirectory = yield* ConvexDirectory.get;
   const generated = path.join(confectDirectory, "_generated");
-  const configDisplay = path
-    .relative(
-      yield* ProjectRoot.get,
-      path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
-    )
-    .split(path.sep)
-    .join("/");
+  const projectRoot = yield* ProjectRoot.get;
+  const configDisplay = Array.join(
+    pipe(
+      path.relative(
+        projectRoot,
+        path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
+      ),
+      String.split(path.sep),
+    ),
+    "/",
+  );
   const relative = (file: string) => {
-    const value = path.relative(generated, file).split(path.sep).join("/");
-    return value.startsWith(".") ? value : `./${value}`;
+    const value = Array.join(
+      pipe(path.relative(generated, file), String.split(path.sep)),
+      "/",
+    );
+    return pipe(value, String.startsWith(".")) ? value : `./${value}`;
   };
   const imports = [
     'import schema from "./schema.js";',
     'import convexSchema from "./convexSchema.js";',
   ];
   const moduleMap = Effect.fnUntraced(function* (directory: string) {
-    const files = (yield* fs.readDirectory(directory, { recursive: true }))
-      .filter(
-        (file) =>
-          /\.[cm]?[jt]s$/.test(file) &&
-          !file.endsWith(".d.ts") &&
-          !file.split(path.sep).includes("_generated") &&
-          !file.includes(".config."),
-      )
-      .sort();
-    return `{ "_generated/testing.ts": () => Promise.resolve({}),\n${files
-      .map((file) => {
+    const directory2 = yield* fs.readDirectory(directory, { recursive: true });
+    const files = Array.filter(
+      directory2,
+      (file) =>
+        /\.[cm]?[jt]s$/.test(file) &&
+        !pipe(file, String.endsWith(".d.ts")) &&
+        !pipe(file, String.split(path.sep)).includes("_generated") &&
+        !pipe(file, String.includes(".config.")),
+    ).sort();
+    return `{ "_generated/testing.ts": () => Promise.resolve({}),\n${pipe(
+      files,
+      Array.map((file) => {
         const specifier = relative(path.join(directory, file));
-        return `${quote(file.split(path.sep).join("/"))}: () => import(${quote(specifier.replace(/\.([cm]?)[jt]s$/, ".$1js"))}),`;
-      })
-      .join("\n")}\n}`;
+        return `${quote(Array.join(pipe(file, String.split(path.sep)), "/"))}: () => import(${quote(pipe(specifier, String.replace(/\.([cm]?)[jt]s$/, ".$1js")))}),`;
+      }),
+      Array.join("\n"),
+    )}\n}`;
   });
   const declarations: Array<string> = [];
   const identifiers = new Set(["schema", "convexSchema"]);
@@ -1231,7 +1244,12 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
       const name = prefix + component.name;
       const mount =
         prefix === ""
-          ? App.mounts(app).find((declared) => declared.name === component.name)
+          ? Option.getOrUndefined(
+              Array.findFirst(
+                App.mounts(app),
+                (declared) => declared.name === component.name,
+              ),
+            )
           : undefined;
       // A bare definition belongs to another package. Its directory is read
       // here but never written out; tests use the kit its descriptor names,
@@ -1250,25 +1268,26 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
                 `${component.componentDefinitionPath}/test`,
               ]
             : [];
-      const kitEntry = kitEntries.find((entry) =>
-        Option.isSome(Bundler.resolveModule(entry, config)),
+      const kitEntry = Option.getOrUndefined(
+        Array.findFirst(kitEntries, (entry) =>
+          Option.isSome(Bundler.resolveModule(entry, config)),
+        ),
       );
       const resolved = fromPackage
-        ? path.dirname(
-            yield* ConvexConfig.resolveDefinition(
-              `${component.componentDefinitionPath}/convex.config`,
-              config,
-              path,
-            ).pipe(
-              Effect.fromOption,
-              Effect.mapError(
-                () =>
-                  new CodegenError.InvalidConvexConfigError({
-                    configPath: relative(config),
-                    reason: `Cannot resolve component ${component.componentDefinitionPath} for testing.`,
-                  }),
-              ),
-            ),
+        ? yield* ConvexConfig.resolveDefinition(
+            `${component.componentDefinitionPath}/convex.config`,
+            config,
+            path,
+          ).pipe(
+            Effect.fromOption,
+            Effect.mapBoth({
+              onFailure: () =>
+                CodegenError.InvalidConvexConfigError.make({
+                  configPath: relative(config),
+                  reason: `Cannot resolve component ${component.componentDefinitionPath} for testing.`,
+                }),
+              onSuccess: (definition) => path.dirname(definition),
+            }),
           )
         : component.componentDefinitionPath;
       const localPrefix =
@@ -1276,10 +1295,11 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
       const httpPrefix =
         parentHttpPrefix === undefined || localPrefix === undefined
           ? undefined
-          : `${parentHttpPrefix.replace(/\/+$/, "")}${localPrefix}`.replace(
-              /\/+$/,
-              "",
-            ) || "/";
+          : pipe(
+              `${pipe(parentHttpPrefix, String.replace(/\/+$/, ""))}${localPrefix}`,
+              String.replace(/\/+$/, ""),
+              (joined) => (joined === "" ? "/" : joined),
+            );
       if (
         httpPrefix !== undefined &&
         ((yield* fs.exists(path.join(resolved, "http.ts"))) ||
@@ -1292,7 +1312,7 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
       const kitKey = kitEntry ?? resolved;
       let identifier = kits.get(kitKey);
       if (identifier === undefined) {
-        const cleaned = name.replaceAll(/[^A-Za-z0-9_$]/g, "_");
+        const cleaned = pipe(name, String.replaceAll(/[^A-Za-z0-9_$]/g, "_"));
         const base = /^[A-Za-z_$]/.test(cleaned) ? cleaned : `_${cleaned}`;
         identifier = `${base}Kit`;
         let schemaIdentifier = `${base}Schema`;
@@ -1316,9 +1336,9 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
           );
         } else {
           if (kitEntry === undefined) {
-            return yield* new CodegenError.InvalidConvexConfigError({
+            return yield* CodegenError.InvalidConvexConfigError.make({
               configPath: relative(config),
-              reason: `the component package ${quote(component.componentDefinitionPath)} has no ${kitEntries.map(quote).join(" or ")} export. Tests register a component from another package through that entry's \`register(t, name)\`.`,
+              reason: `the component package ${quote(component.componentDefinitionPath)} has no ${pipe(kitEntries, Array.map(quote), Array.join(" or "))} export. Tests register a component from another package through that entry's \`register(t, name)\`.`,
             });
           }
           imports.push(`import * as ${identifier} from ${quote(kitEntry)};`);
@@ -1334,11 +1354,14 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
   yield* visit(convexDirectory, "", (yield* ConvexDirectory.target).kind, "");
   yield* writeFileStringAndLog(
     path.join(generated, "testing.ts"),
-    [
-      "// Generated by `confect codegen`. Test-only; do not import in backend functions.",
-      ...imports,
-      ...declarations,
-      `export default { httpMounts: [${httpMounts.join(",")}], schema, convexSchema, modules: ${yield* moduleMap(convexDirectory)}, components: {${components.join("\n")}} };`,
-    ].join("\n"),
+    Array.join(
+      [
+        "// Generated by `confect codegen`. Test-only; do not import in backend functions.",
+        ...imports,
+        ...declarations,
+        `export default { httpMounts: [${Array.join(httpMounts, ",")}], schema, convexSchema, modules: ${yield* moduleMap(convexDirectory)}, components: {${Array.join(components, "\n")}} };`,
+      ],
+      "\n",
+    ),
   );
 });

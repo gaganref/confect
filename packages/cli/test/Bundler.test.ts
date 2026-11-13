@@ -646,7 +646,7 @@ export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({
                   },
                 },
               ],
-              results.map(({ module }, i) => ({
+              Arr.map(results, ({ module }, i) => ({
                 spec: module.shared as GroupSpec.AnyWithProps,
                 pathSegments: [String(i)],
                 relativePath: `${i}.spec.ts`,
