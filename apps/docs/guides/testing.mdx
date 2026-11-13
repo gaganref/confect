@@ -364,6 +364,28 @@ TestConfect.layer(schema, convexSchema, modules, {
 
 On the kernel, scheduled functions run on the kernel's own clock and never on a host timer, so `finishAllScheduledFunctions` does not call its `advanceTimers` callback. The default kernel clock follows the test's `Date`, fake timers included, so advancing fake timers and then calling `finishInProgressScheduledFunctions` runs the jobs that came due. A layer on one target can be provided inside a layer on the other, and each keeps its own backend while both are live. The option goes away once the kernel replaces convex-test.
 
+### Keep secrets out of kernel artifacts
+
+On the kernel, a value under a `Schema.Redacted` node, which a `Schema.RedactedFromValue` field decodes to, reaches the kernel's failure reports and diffs only as `[redacted]`. The raw value stays in memory as the backend's own state, so handlers and subscriptions still read it. The layer reads the secret nodes of the app's tables from its database schema. Pass `secrets` for function arguments and return values and for component tables:
+
+```typescript
+TestConfect.layer(databaseSchema, convexSchemaDefinition, modules, {
+  target: "kernel",
+  secrets: {
+    functions: {
+      "": {
+        "accounts:open": {
+          args: () =>
+            Schema.Struct({ token: Schema.RedactedFromValue(Schema.String) }),
+        },
+      },
+    },
+  },
+});
+```
+
+`secrets` is keyed by component path (`""` for the app), then by `module:export` or table name, and each schema is a thunk the kernel builds only when it first needs it. Codegen fills the same record from your Confect specs as `secrets` in `confect/_generated/testing`, which replaces a hand-written policy. It lists each function codec that holds a secret, and each table of a local mount that does. A package mount's kit registers only Convex schemas, so its tables and functions carry no policy.
+
 ## The generated test backend
 
 For an app that can import `@confect/test`, `confect codegen` writes `TestBackend` into `confect/_generated/testing.ts`, beside the registry. Without it the file holds the registry alone, so a backend that does not test with Confect still compiles. It follows the same `confect/app.ts` mounts and specs as the production entrypoints, and it holds:
@@ -371,7 +393,9 @@ For an app that can import `@confect/test`, `confect codegen` writes `TestBacken
 - `groups`: every group with a public function, keyed by its path, such as `tasks/tasks`. Each has its `owner`, `"product"` or the door that hosts it, its public functions' refs, and `open`, the functions a role held for `public`, `signedIn` or `self` admits.
 - `obligations`: an `access` proof per public group, `realm` when `confect/auth.ts` declares verifiers, and whatever a manifest section declares.
 - `laws`: `decodes` and `idScope` for every table, and any law a section declares.
-- `ports`, `manifestDigest`, `mounts` (in the order their `init` runs), `settings` and `secrets`, every `Schema.Redacted` path in each table and each function's args and return value, mounted components included.
+- `ports`, `manifestDigest`, `mounts` (in the order their `init` runs) and `settings`.
+
+`TestBackend.layer` passes the registry's `secrets` to the kernel, as `TestConfect.layer` does.
 
 A manifest section adds what Confect cannot know through `testing`, which returns owners, open functions, obligations, laws and ports. Codegen refuses a fact that names no such group, public function or table.
 

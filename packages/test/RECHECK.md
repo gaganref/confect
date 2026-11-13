@@ -479,6 +479,107 @@ deeper. The kernel now leaves an accessor in place when it already reads
 through one of the kernel's, which a sentinel in a fresh copy shows, and the
 chain settles after the first call on each target.
 
+## Snapshots (row 6)
+
+`src/internal/Snapshot.ts` encodes the kernel's committed state and reads it
+back. A snapshot is a header line, `confect-kernel-snapshot 1 sha256:<digest>`,
+then the body as JSON. The body holds the registered component paths, the
+version and latest commit timestamp, the clock's floor, the identity counters
+(the next document ID, the latest creation time handed out, the next held
+attempt's ID), every component's rows with the version that wrote each, every
+committed job's target, standing and world name, and the write log with each
+change's before and after values. Components, tables, rows and jobs are sorted,
+so the bytes do not depend on the order a world met them. Each document keeps
+its own field order, which a query on the kernel returns, so a restored world
+answers the same bytes. The binary keeps an object's fields sorted
+(`ConvexObject.fields` is a `BTreeMap`, `crates/value/src/object.rs:51` at
+`precompiled-2026-10-28-cccbade`), which the kernel, like convex-test, does not.
+
+Values use Convex's encoded JSON (`convexToJson`), the binary's
+`ConvexEncodedJSON`, which the websocket and the HTTP API's
+`format: "convex_encoded_json"` return (`crates/value/src/export.rs:20-24`,
+`:45-50`, `crates/local_backend/src/public_api.rs:75-81`). An int64 is
+`{"$integer": <base64, little-endian>}`, bytes are `{"$bytes": …}`, and a
+negative zero, an infinity or a NaN is `{"$float": …}`
+(`crates/value/src/json/mod.rs:103-127`). A throwaway probe through
+`packages/server/test/local-backend/LocalBackend.ts` stamped a `commitStamps`
+row on the binary, read it back through `/api/query` in that format, and
+stamped the same row on the kernel with the binary's commit timestamp: both
+encode the row's `at` and `label` as
+`{"at":{"$integer":"zWXE04qE5xg="},"label":"probe é"}`.
+
+The write log is carried whole. `Kernel.conflict` finds the commits after a
+snapshot version by position in the log, so a restored world whose log were cut
+would validate a later attempt against the wrong commits. A job's world is
+recorded by its name and resolved among the worlds the restore is given. A
+backend holding attempts refuses to export, since a held attempt is a running
+closure, not state. Restore refuses a backend that committed or holds attempts,
+registers other components, or is not given a job's world. Subscriptions are
+the client's, not the kernel's, and are not carried.
+
+Not simulated: the binary's own snapshot import and export. The binary exports
+a ZIP of `<table>/documents.jsonl` in `ConvexExportJSON`
+(`crates/exports/src/zip_uploader.rs:57-65`) and imports ZIP, JSONL, JSON and
+CSV files (`crates/application/src/snapshot_import/parse.rs:173-258`). A kernel
+snapshot is neither, so there is no binary import to drive against it. Native
+import compatibility stays on the binary.
+
+The digest binds integrity, not origin. Bytes a writer rehashes after editing
+pass the digest, so a restore checks that the body is state the kernel could
+have reached before it installs any of it, each rule with its own refusal:
+
+- `SnapshotRowInconsistent`: replaying the write log from the empty world,
+  each change replacing the value the log last published, gives exactly the
+  rows, each at the version that last wrote it, under its ID's table and in a
+  registered component.
+- `SnapshotAllocatorBehind`: the next document ID is past every ID's counter,
+  the latest creation time at or past every document's, the next attempt ID
+  positive and the identity epoch non-negative. A rewound counter would hand
+  out an identity the state already holds, and the next insert would overwrite
+  its row.
+- `SnapshotTimestampInconsistent`: commit timestamps strictly increase through
+  the log, and the latest is the log's last.
+- `SnapshotJobInconsistent`: every job names a committed job row, a registered
+  component and a function that component exports, every job row has its job,
+  and no job is running.
+
+A world refuses to export or restore while any live registry the contract
+names is non-empty. These are calls from the test, scheduler walks, function
+executions (nested and detached ones included) and held attempts, refused with
+`SnapshotWorldRunning` or `SnapshotWorldBusy`. A restore also refuses while a
+subscriber is registered, with `SnapshotSubscribed`: subscriptions are live
+client state, and a restore would rewind an existing subscriber's identity
+version so its next `authenticate` reused one. A scheduled action awaiting
+something would otherwise commit after the export, and a nested mutation an
+action leaves running would write after it. The binary lets detached work
+finish within its function's lifetime (#122), so a snapshot waits for it
+rather than cancel it.
+
+Before any map is built, a restore checks the decoded body, so its order
+cannot change the result. Components, tables, a component's rows and jobs
+each appear once, and every stored or logged document has an `_id` string and
+a finite, non-negative `_creationTime`, logged under its own ID. A duplicate
+table listed empty first would otherwise be overwritten by its populated
+twin, and a missing creation time would make the allocator check compare
+against `NaN`.
+
+The identity epoch is #125's identity version made world-wide. A subscriber
+starts at the world's epoch, and each `authenticate` advances it, so a
+restored world continues the versions its source handed out and replays the
+same identity transitions.
+
+`Snapshot.contract` lists every piece of kernel state as exported or excluded
+with its reason. Its comment names the limit of the fresh-world field test, which
+cannot see lazy, symbol-keyed, `#private` or closure-held state, so every live
+registry is also listed in `contract.live`, reported by a `liveCounts` typed
+against it, and refused on restore while non-empty. A field added to `Kernel.State` or `Scheduling.Target`
+without an entry fails to compile. A `World`'s fields are private, so a test
+compares a fresh world's own fields with the contract. Subscriptions and their
+callers are live client state, so a restore starts with none. Owed when they
+land: cron state (#133); file bytes, storage ID mappings, `nextFile` and
+upload-token counters (#138); and component init markers. A restore never
+redeclares a cron and never draws a fresh random value.
+
 ## Transaction limits (row 6)
 
 `src/internal/Metering.ts` is the kernel's one record of what an attempt has
@@ -565,6 +666,98 @@ on the local backend and on `TestConfect.layer(registry, { target: "kernel" })`.
 - `groups/commitTs:maxAfterPending` pins that a pending timestamp patched to
   `9223372036854775807n` is a second write that stores the integer.
 
+## Redaction (row 6)
+
+`src/internal/Redaction.ts` finds secret schema nodes and marks what they
+hold. A secret node is a `Schema.Redacted` declaration, which
+`Schema.RedactedFromValue` decodes to (its representation id is
+`effect/schema/Redacted`). Convex validators carry no secret flag, and a
+Confect-registered function keeps only its validators at runtime, so the
+kernel cannot read secret nodes from the modules it loads. A policy names them:
+`tablesOf` reads a Confect database schema's tables, and a declaration names
+argument and return schemas per function and tables per component. Each schema
+is a thunk built the first time the kernel needs it, so Confect's lazy table
+schemas stay unbuilt until then. `TestConfect.layer`'s kernel target passes the
+app's tables merged with its `secrets` option, or the generated registry's
+`secrets`, which row 8's codegen fills from the Confect specs.
+
+A policy hands out shapes, the type side of each schema's AST, and every
+marking walks a value together with its shape. The value bounds the walk, so a
+recursive schema ends at the value's depth, and a suspension reused at another
+field is walked again there. A union applies each member the value fits,
+and a secret member fits only what its inner type encodes to. Where the value's
+structure departs from a shape that holds a secret beneath it, the walk treats
+the value as secret whole. The walk never enters a marker, so overlapping union
+members mark a shared field once and marking is idempotent.
+
+The kernel keeps every value at a secret position, before it validates it, in
+the world's `Secrets` store: a function's arguments as it is called, a job's
+arguments as it is scheduled, a return value, and a document's fields as they
+are written. A compound secret is kept whole, and every string beneath it is
+kept for searching free text. The store is replay state. It lives in memory,
+positions values in the order first seen, and no artifact writes it. The
+writers:
+
+- A snapshot export marks each secret position of a document, by its table's
+  shape and, for a job row, its target's argument shape at `args.0`, with
+  `{ "$redacted": <n> }`, `n` its position in the store. Convex's encoded JSON
+  allows no object key that starts with `$` (`crates/value/src/json/mod.rs:9`
+  at `precompiled-2026-10-28-cccbade`), so no stored value reads as a marker. A
+  restore given the store puts the raw values back and adopts a copy of it, so
+  its own exports are the same bytes. It puts them back before any body check, so a
+  document's system fields and IDs are checked as the kernel stored them, and
+  still before any map is built. Without the store it refuses with
+  `SnapshotSecretMissing`.
+- A failure report, whether a rejection or the error in a held attempt's
+  outcome, is a separate report of whatever was thrown. A string, an `Error`,
+  a frozen `Error` and a plain object all get their text, data and causes
+  marked as `[redacted]`. When something is marked, the report is a copy with
+  the thrown value's prototype and fields, so its class and tag read the same.
+  The thrown value is never changed, so a subscription's cached error compares
+  as it was. The report is built in two passes: the first finds
+  whether anything reachable holds a kept secret, and the second copies every
+  reachable error, array and plain object, registering each copy before its
+  fields are walked. An array copy keeps its own properties, such as a
+  `code`, beside its entries. So an error whose cause is itself, or two errors that are
+  each other's cause, report copies that cycle to each other, never to a raw
+  error.
+- A subscription diff marks each outcome by the shape of what its query
+  returns, and a commit cause's documents by their tables' shapes. A
+  subscription's own value is replay state and stays raw.
+- Read records, in held attempts and a subscription's `current()`, mark a key
+  or range bound on a field its table's shape holds secret. Each field-path segment
+  consumed starts a fresh ancestry, so a suspension reused down the path, as
+  in `data.child.child.token`, is followed again.
+- A held attempt's outcome, in `prepare`, `held` and a conflict's next attempt,
+  and an applied result are marked by the shape of what the attempt's mutation
+  returns: the held view carries its `functionPath`. A normal call returns its
+  value to its caller, which is replay state, so it stays raw.
+- `projectArguments` marks a function's arguments by its argument shape. #137's
+  `commands()` writes each provider command's input through it when the stacks
+  meet.
+
+Every value artifact then passes a string backstop: a string holding a kept
+secret of four characters or more is marked. The backstop never marks a document's `_id` or
+`_creationTime`: an ID is its document's identity, not a secret value, even
+when a secret field holds the same ID. Free text has no schema, so a
+failure report's message and stack are searched for kept secret strings. A
+secret string shorter than four characters is marked in values by its schema,
+not in free text.
+
+The binary has no schema-level secret marking. It redacts by visibility: with
+logging blocked, a client's log lines are dropped and an error reads "Server
+Error" (`crates/application/src/redaction.rs:39-50`, `:96-140`). Rejecting
+credential-shaped text by pattern stays with the artifact filer, not here. The
+kernel writes no logs of its own, and a handler's `console` output goes to the
+host unmarked. Each wire canary lands with its wire.
+
+Canaries cover every route found so far. These are an argument never stored, an
+argument stored in a secret field, a row written directly, a provider's
+answer, a bare throw and a frozen error. They also include a failing
+subscription, a compound secret, a reused suspension, a recursive value, two
+union members sharing a field, and an index read on a secret field. None
+reaches the snapshot, a failure report, a diff or a read record.
+
 ## Generated test backend (row 8)
 
 - `TestBackend.layer` opens on the kernel target only. It runs each mount's
@@ -575,6 +768,6 @@ on the local backend and on `TestConfect.layer(registry, { target: "kernel" })`.
   visits its nested steps (`packages/alchemy/src/internal/MountInit.ts:96-106`).
   The binary push and a kernel session therefore disagree for a nested
   component whose parent's `init` reads it.
-- `secrets` carries static `Schema.Redacted` paths per component, table and
-  `module:export`. The kernel's artifact redaction (row 6, #142) does not read
-  it yet. `TestBackend.secretPolicy` gives its `table`, `args` and `returns`.
+- Codegen writes the registry's `secrets` as thunks of the Confect codecs that
+  hold a `Schema.Redacted` node, so the kernel's redaction (row 6) builds each
+  schema only when it first needs it. A package mount carries none.

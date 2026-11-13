@@ -25,6 +25,7 @@ import type {
 } from "../TestConfect.js";
 import { convexTest as kernelTest } from "./ConvexTest.js";
 import * as MountedHttp from "./MountedHttp.js";
+import * as Redaction from "./Redaction.js";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -253,10 +254,22 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
 ): { readonly service: TestConfect<DatabaseSchema_>; readonly raw: any } => {
   process.env.CONVEX_CLOUD_URL ??= "https://some-deployment.convex.cloud";
   process.env.CONVEX_SITE_URL ??= "https://some.convex.site";
-  const testConvex = (options.target === "kernel" ? kernelTest : convexTest)(
-    convexSchemaDefinition,
-    modules,
-  );
+  // On the kernel, a value under a secret node of the app's table schemas, or
+  // of the policy's functions and component tables, reaches every artifact as
+  // a marker.
+  const testConvex =
+    options.target === "kernel"
+      ? kernelTest({
+          schema: convexSchemaDefinition,
+          modules,
+          redaction: Redaction.policy(
+            Redaction.merge(
+              { tables: { "": Redaction.tablesOf(databaseSchema) } },
+              options.secrets ?? {},
+            ),
+          ),
+        })
+      : convexTest(convexSchemaDefinition, modules);
   // convex-test takes three arguments and ignores the options. The kernel
   // reads `standing`.
   const registerComponent =

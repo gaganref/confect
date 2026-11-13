@@ -59,6 +59,36 @@ export type TargetOptions = {
   readonly target?: Target;
 };
 
+/**
+ * Which values a kernel-target layer treats as secret, by component path, then
+ * table name or `module:export`: each entry a thunk of the Confect schema whose
+ * `Schema.Redacted` nodes mark the secrets. A value under one reaches the
+ * kernel's artifacts (snapshots, failure reports, diffs) only as a marker. The
+ * layer derives the app's own tables from its database schema, so this adds
+ * function arguments and returns and component tables. Codegen fills it from
+ * the Confect specs as `secrets` in the generated registry, which replaces a
+ * hand-written one.
+ */
+export type SecretPolicy = {
+  readonly tables?: Readonly<
+    Record<string, Readonly<Record<string, () => Schema.Top>>>
+  >;
+  readonly functions?: Readonly<
+    Record<
+      string,
+      Readonly<
+        Record<
+          string,
+          {
+            readonly args?: () => Schema.Top;
+            readonly returns?: () => Schema.Top;
+          }
+        >
+      >
+    >
+  >;
+};
+
 export type LayerOptions = TargetOptions & {
   /**
    * Register component kits synchronously before the test service is available.
@@ -68,6 +98,10 @@ export type LayerOptions = TargetOptions & {
    * Explicit HTTP mounts. The test layer does not evaluate convex.config.ts.
    */
   readonly httpMounts?: ReadonlyArray<HttpMount>;
+  /**
+   * The secret policy, read by the kernel target only.
+   */
+  readonly secrets?: SecretPolicy;
 };
 
 export type TestConfectWithoutIdentity<
@@ -162,6 +196,11 @@ export type Registry<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> = {
   readonly convexSchema: SchemaDefinition<GenericSchema, true>;
   readonly modules: Record<string, () => Promise<any>>;
   readonly components: Readonly<Record<string, ComponentKit>>;
+  /**
+   * The secret policy codegen derives from the Confect specs, read by the
+   * kernel target only.
+   */
+  readonly secrets?: SecretPolicy;
 };
 
 /**
@@ -221,6 +260,7 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       registry.modules,
       {
         ...targetOf(third as TargetOptions | undefined),
+        ...secretsOf(registry),
         httpMounts: mounts.flatMap(({ name, httpPrefix }) =>
           httpPrefix === undefined ? [] : [{ componentPath: name, httpPrefix }],
         ),
@@ -243,6 +283,7 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
     const app = appOrSchema as DeclaredApp<DatabaseSchema_>;
     return schemaLayer(app.schema, app.convexSchema, app.modules, {
       ...targetOf(second as TargetOptions | undefined),
+      ...secretsOf(app),
       httpMounts: app.httpMounts,
       register: (registerComponent) => {
         for (const [name, component] of Object.entries(app.components)) {
@@ -261,6 +302,11 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
 
 const targetOf = (options: TargetOptions | undefined): TargetOptions =>
   options?.target === undefined ? {} : { target: options.target };
+
+const secretsOf = (registry: {
+  readonly secrets?: SecretPolicy;
+}): Pick<LayerOptions, "secrets"> =>
+  registry.secrets === undefined ? {} : { secrets: registry.secrets };
 
 const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   databaseSchema: DatabaseSchema_,
