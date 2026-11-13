@@ -7,6 +7,7 @@ import { componentsGeneric } from "convex/server";
 import * as Execution from "./Execution.js";
 import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
+import * as Subscriptions from "./Subscriptions.js";
 import type * as Scheduling from "./Scheduling.js";
 import * as Storage from "./Storage.js";
 
@@ -26,6 +27,24 @@ export interface KernelControls {
   ) => Promise<Execution.HeldAttempt>;
   readonly apply: (id: string) => Promise<Execution.KernelApply>;
   readonly held: () => ReadonlyArray<Execution.HeldAttempt>;
+  readonly withIdentity: (identity: Partial<UserIdentity>) => KernelControls;
+  readonly withRequestMetadata: (metadata: {
+    readonly ip?: string | null;
+    readonly userAgent?: string | null;
+  }) => KernelControls;
+  /**
+   * A client's query set under this accessor's caller.
+   */
+  readonly subscriber: () => Subscriptions.Subscriber;
+  /**
+   * Rerun every stale subscription. Lists each one whose value changed.
+   */
+  readonly refresh: () => Promise<ReadonlyArray<Subscriptions.Transition>>;
+  /**
+   * Rerun every subscription from scratch. Lists each one whose value differs
+   * from the full rerun.
+   */
+  readonly reference: () => Promise<ReadonlyArray<Subscriptions.Disagreement>>;
   /**
    * Move the kernel's clock forward, running each job due on the way at its
    * deadline.
@@ -70,7 +89,11 @@ const isSchemaDefinition = (
   "tables" in value &&
   typeof (value as { tables: unknown }).tables === "object";
 
-const accessor = (world: Execution.World, caller: Execution.Caller): any => ({
+const accessor = (
+  world: Execution.World,
+  subscriptions: Subscriptions.Registry,
+  caller: Execution.Caller,
+): any => ({
   query: (reference: any, args?: any) => world.query(caller, reference, args),
   mutation: (reference: any, args?: any) =>
     world.mutation(caller, reference, args),
@@ -79,16 +102,19 @@ const accessor = (world: Execution.World, caller: Execution.Caller): any => ({
     world.prepare(caller, reference, args),
   apply: (id: string) => world.apply(id),
   held: () => world.held(),
+  subscriber: () => subscriptions.subscriber(caller),
+  refresh: () => subscriptions.refresh(),
+  reference: () => subscriptions.reference(),
   run: (handler: (ctx: any) => any) => world.run(caller, "", handler),
   runInComponent: (componentPath: string, handler: (ctx: any) => any) =>
     world.run(caller, componentPath, handler),
   withIdentity: (identity: Partial<UserIdentity>) =>
-    accessor(world, Execution.withIdentity(caller, identity)),
+    accessor(world, subscriptions, Execution.withIdentity(caller, identity)),
   withRequestMetadata: (metadata: {
     readonly ip?: string | null;
     readonly userAgent?: string | null;
   }) =>
-    accessor(world, {
+    accessor(world, subscriptions, {
       ...caller,
       ip: metadata.ip ?? null,
       userAgent: metadata.userAgent ?? null,
@@ -122,7 +148,9 @@ const accessor = (world: Execution.World, caller: Execution.Caller): any => ({
  * it, and `apply` validates and publishes a held attempt. `mutation` applies
  * each attempt it prepares at once and prepares the next on a conflict, up to
  * attempt 5. `runtime` supplies the clock and commit timestamps. Scheduled
- * functions run on the kernel's clock, never on a host timer.
+ * functions run on the kernel's clock, never on a host timer. A subscriber's
+ * subscriptions go stale when a commit changes what they read or the identity
+ * they read changes, and `refresh` reruns them.
  */
 export function convexTest(
   schemaOrOptions?:
@@ -154,7 +182,7 @@ export function convexTest(
   }
   const world = new Execution.World(schema, modules, runtime);
   return {
-    ...accessor(world, Execution.anonymous),
+    ...accessor(world, new Subscriptions.Registry(world), Execution.anonymous),
     registerComponent: (
       componentPath: string,
       componentSchema: SchemaDefinition<GenericSchema, boolean>,

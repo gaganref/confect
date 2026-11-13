@@ -5,6 +5,7 @@ import {
   defineTable,
   makeFunctionReference,
   mutationGeneric,
+  queryGeneric,
   type GenericActionCtx,
   type GenericDataModel,
   type GenericMutationCtx,
@@ -36,12 +37,19 @@ const files = {
   readThenNote: makeFunctionReference<"mutation", { id: StorageId }>(
     "files:readThenNote",
   ),
+  urlOf: makeFunctionReference<"query", { id: StorageId }, string | null>(
+    "files:urlOf",
+  ),
 };
 
 const modules = {
   "_generated/server.ts": () => Promise.resolve({}),
   "files.ts": () =>
     Promise.resolve({
+      urlOf: queryGeneric({
+        args: { id: v.id("_storage") },
+        handler: (ctx, { id }) => ctx.storage.getUrl(id),
+      }),
       readThenNote: mutationGeneric({
         args: { id: v.id("_storage") },
         handler: async (ctx, { id }) => {
@@ -302,6 +310,30 @@ describe("storage metadata", () => {
             ),
           ),
         ).toStrictEqual(["gone"]);
+      }),
+  );
+
+  it.effect(
+    "a subscription that read a file's URL is stale once an action deletes the file",
+    () =>
+      Effect.gen(function* () {
+        const t = storageWorld();
+        const id = yield* call(() =>
+          t.action(storeFromAction(new Blob([hello.text]))),
+        );
+        const subscription = yield* call(() =>
+          t.subscriber().subscribe(files.urlOf, { id }),
+        );
+        expect(yield* call(() => t.reference())).toStrictEqual([]);
+        yield* call(() => t.action((ctx: ActionCtx) => ctx.storage.delete(id)));
+        expect(yield* call(() => t.reference())).toMatchObject([
+          {
+            subscription: subscription.id,
+            reference: { _tag: "returned", value: null },
+          },
+        ]);
+        yield* call(() => t.refresh());
+        expect(yield* call(() => t.reference())).toStrictEqual([]);
       }),
   );
 

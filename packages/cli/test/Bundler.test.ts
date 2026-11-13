@@ -369,9 +369,7 @@ layer(BundlerLayer)("withBatch", (it) => {
           "tsconfig.json": "{}",
           "shared.ts": `import { FunctionSpec, GroupSpec } from "@confect/core";
 import * as Schema from "effect/Schema";
-const tags = { owner: "test/tags", format: 1, describe: () => "shared" };
-const profile = FunctionSpec.extend()({ middleware: [], manifest: { tags } });
-export const shared = GroupSpec.make().addFunction(profile.publicMutation({ name: "save", returns: () => Schema.Void }));`,
+export const shared = GroupSpec.make().addFunction(FunctionSpec.publicMutation({ name: "save", returns: () => Schema.Void }));`,
           "first.ts": 'export { shared } from "./shared";',
           "nested/second.ts": 'export { shared } from "../shared";',
           ...files,
@@ -396,6 +394,16 @@ export const shared = GroupSpec.make().addFunction(profile.publicMutation({ name
           expect(results[0]?.module.shared).not.toBe(results[1]?.module.shared);
           const collected = Result.getOrThrow(
             collect(
+              [
+                {
+                  key: "tags",
+                  section: {
+                    owner: "test/tags",
+                    format: 1,
+                    describe: () => "shared",
+                  },
+                },
+              ],
               results.map(({ module }, i) => ({
                 spec: module.shared as GroupSpec.AnyWithProps,
                 pathSegments: [String(i)],

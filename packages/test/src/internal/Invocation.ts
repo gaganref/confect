@@ -214,7 +214,8 @@ const pin = (
   const host = globalThis;
   const previous = { Date: host.Date, Math: host.Math, crypto: host.crypto };
   // On the kernel, `Date` already answers the running function's time on the
-  // kernel's clock, so `runAfter` schedules on it. The bridge leaves it there.
+  // kernel's clock, so `runAfter` schedules on it, and a query that reads it
+  // records the read. The bridge leaves it there.
   const kernelDate = Clock.answersInvocation(previous.Date);
   const pinned = {
     Date: kernelDate
