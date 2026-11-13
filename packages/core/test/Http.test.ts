@@ -237,6 +237,24 @@ describe("Http", () => {
     );
   });
 
+  it("skips the holes in a sparse list of mounts", () => {
+    const mounts: Array<Mount.Any> = [];
+    mounts[1] = Mount.make(Workpool, { name: "outer", httpPrefix: "/jobs" });
+    mounts[2] = Mount.make(Counter, {
+      name: "inner",
+      httpPrefix: "/jobs/inner",
+    });
+    const sparse = App.make({ env: Env.make("host", {}), components, mounts });
+    expect(Http.routes(sparse)).toEqual(
+      Result.fail(
+        new Http.OverlappingMountPrefixes({
+          first: { mount: "outer", httpPrefix: "/jobs" },
+          second: { mount: "inner", httpPrefix: "/jobs/inner" },
+        }),
+      ),
+    );
+  });
+
   it("builds a routes layer for the app's api and its handlers", () => {
     const http = declare("/context-metadata", "/docs");
     expect(Http.isHttp(http)).toBe(true);

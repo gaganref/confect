@@ -124,6 +124,17 @@ it.effect("takes HTTP prefixes from an App value", () =>
   }).pipe(Effect.provide(TestConfect.layer(app, registry))),
 );
 
+it.effect("skips the holes in an App value's sparse list of mounts", () => {
+  const mounts: Array<(typeof app.mounts)[number]> = [];
+  mounts[1] = app.mounts[0];
+  const sparse = App.make({ env, components: [counter], mounts });
+  return Effect.gen(function* () {
+    const test = yield* TestConfect.TestConfect<typeof registry.schema>();
+    const response = yield* test.fetch("/test-counter/members/7");
+    expect(response.status).toBe(200);
+  }).pipe(Effect.provide(TestConfect.layer(sparse, registry)));
+});
+
 it.effect("fetches a nested installation through its declared prefixes", () =>
   Effect.gen(function* () {
     const test = yield* TestConfect.TestConfect<typeof registry.schema>();
