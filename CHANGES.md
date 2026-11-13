@@ -141,15 +141,19 @@ fork-specific.
 On the kernel, a query or mutation that calls `fetch` gets the `TypeError` the
 Convex binary rejects with, naming the target without its query string. One
 that starts `setTimeout` or `setInterval` fails with the binary's "Can't use
-setTimeout in queries and mutations" once its handler returns, whatever the
-handler caught, and a mutation publishes none of its writes. `setImmediate`
-reads `undefined` there, as the binary defines none, and the clears stay
-allowed. Each wrapper checks the kernel function running it, so a reference a
-module kept, a nested call and a global a test replaced are refused too.
-Actions keep the host's `fetch` and timers. The local-backend suite pins each
-behaviour on the binary. This is the I/O bans row of Frame's backend testing
-kernel (Frame ADR 0012, row 6). Changeset: `test-kernel-io-bans.md`. Upstream:
-fork only, as the kernel is fork-specific.
+setTimeout in queries and mutations" at once, whatever the handler caught and
+even while it awaits the timer, and a mutation publishes none of its writes. A
+multipart `formData()` rejects with the binary's error. Queries, mutations and
+isolate actions find no `setImmediate` or `queueMicrotask`, as the binary's
+isolate defines neither, while a Node action has Node's. `RegisteredNodeFunction`
+in `@confect/server` marks a Node action so the kernel can tell. Each of these
+globals is an accessor that returns one guard, installed by the new
+`@confect/test/setup` before any test module loads, so a reference a module
+kept, a nested call, a stub and a handler's own assignment are all checked. The
+clears stay allowed and actions keep the host's `fetch` and timers. The
+local-backend suite pins each behaviour on the binary. This is the I/O bans row
+of Frame's backend testing kernel (Frame ADR 0012, row 6). Changeset:
+`test-kernel-io-bans.md`. Upstream: fork only, as the kernel is fork-specific.
 
 ## Table info through Table's extractors
 
