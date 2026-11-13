@@ -11,6 +11,8 @@ import { actionGeneric } from "convex/server";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { HttpMount, RegisterComponent } from "../TestConfect.js";
+import * as Execution from "./Execution.js";
+import * as Http from "./Http.js";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -101,6 +103,7 @@ export const make = (
   if (Result.isFailure(normalized)) throw normalized.failure;
   const registered = new Set<string>();
   let tail = Promise.resolve();
+  let nextErrorRequest = 1;
 
   const register: RegisterComponent = (
     componentPath,
@@ -159,10 +162,8 @@ export const make = (
           );
           let response: Response;
           if (route === null) {
-            response = new Response(
-              `No HttpAction routed for ${args.pathname}`,
-              { status: 404 },
-            );
+            // The binary answers a mounted router's miss as a root one's.
+            response = Http.noRoute();
           } else {
             const action = route[0];
             if (!isInvokable(action)) {
@@ -173,13 +174,25 @@ export const make = (
               });
             }
             // Convex selects on the relative path and passes the full URL to the handler.
-            response = await action.invokeHttpAction(
-              new Request(args.url, {
-                method: args.method,
-                headers: args.headers,
-                ...(args.body === null ? {} : { body: args.body }),
-              }),
-            );
+            // A handler that throws gets the binary's 500, as on the root.
+            response = await action
+              .invokeHttpAction(
+                new Request(args.url, {
+                  method: args.method,
+                  headers: args.headers,
+                  ...(args.body === null ? {} : { body: args.body }),
+                }),
+              )
+              .catch((thrown: unknown) => {
+                // A kernel refusal is no handler error: it surfaces as itself.
+                const refusal = Execution.currentRefusal(thrown);
+                if (refusal !== undefined) throw refusal;
+                // The report is an artifact: a kept secret in it is marked.
+                return Http.serverError(
+                  Execution.redactCurrentFailure(thrown),
+                  Http.errorRequestId(nextErrorRequest++),
+                );
+              });
           }
           return {
             status: response.status,
@@ -193,10 +206,19 @@ export const make = (
         }
       },
     });
+    // The bridge builds the component's router itself, once per site URL, as
+    // a deployment builds a mounted component's router at its mount. So the
+    // backend never loads the HTTP module on its own: the test kernel would
+    // otherwise construct it at open, under no mount's site URL.
+    const backendModules = Object.fromEntries(
+      Object.entries(modules).filter(
+        ([path]) => path.replace(/\.[^.]+$/, "") !== `${root}http`,
+      ),
+    );
     registerComponent(
       componentPath,
       schema,
-      { ...modules, [bridgePath]: () => Promise.resolve({ invoke }) },
+      { ...backendModules, [bridgePath]: () => Promise.resolve({ invoke }) },
       options,
     );
     registered.add(componentPath);
@@ -230,7 +252,14 @@ export const make = (
       const appSiteUrl = (
         process.env.CONVEX_SITE_URL || defaultSiteUrl
       ).replace(/\/$/, "");
-      const request = new Request(new URL(`${appSiteUrl}${path}`), init);
+      // The body goes before the request is built: a GET or HEAD request with
+      // one cannot be built at all, and the binary discards it anyway.
+      const request = new Request(
+        new URL(`${appSiteUrl}${path}`),
+        Http.discardsBody(init?.method ?? "GET")
+          ? { ...init, body: null }
+          : init,
+      );
       // convex-test encodes exact component paths in test-only function handles.
       const reference =
         `function://${mount.componentPath};${bridgeModule}:invoke` as unknown as FunctionReference<
@@ -245,10 +274,9 @@ export const make = (
         pathname: pathname.slice(mount.prefix.length) || "/",
         method: request.method,
         headers: [...request.headers],
-        body:
-          request.method === "GET" || request.method === "HEAD"
-            ? null
-            : await request.arrayBuffer(),
+        body: Http.discardsBody(request.method)
+          ? null
+          : await request.arrayBuffer(),
       });
       return new Response(
         request.method === "HEAD" || [204, 205, 304].includes(response.status)

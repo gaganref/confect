@@ -599,6 +599,33 @@ export declare const api: {
         { storageId: Id<"_storage"> },
         null
       >;
+      deleteRaw: FunctionReference<
+        "mutation",
+        "public",
+        { storageId: Id<"_storage"> },
+        null
+      >;
+      describe: FunctionReference<
+        "query",
+        "public",
+        { storageId: Id<"_storage"> },
+        string
+      >;
+      fileProbe: FunctionReference<
+        "mutation",
+        "public",
+        {
+          count: number;
+          fileReadBytes: number;
+          fileWriteBytes: number;
+          filesRead: number;
+          filesWritten: number;
+          ids: Array<Id<"_storage">>;
+          nested: boolean;
+          size: number;
+        },
+        string
+      >;
       generateUploadUrl: FunctionReference<"mutation", "public", {}, string>;
       get: FunctionReference<
         "action",
@@ -616,6 +643,18 @@ export declare const api: {
         "action",
         "public",
         { text: string },
+        Id<"_storage">
+      >;
+      storeInMutation: FunctionReference<
+        "mutation",
+        "public",
+        { contentType: string; text: string },
+        string
+      >;
+      storeWith: FunctionReference<
+        "action",
+        "public",
+        { contentType: string; sha256: string; text: string },
         Id<"_storage">
       >;
     };
@@ -711,6 +750,14 @@ export declare const internal: {
         "mutation",
         "internal",
         { run: string; status: "queued" | "sent" | "delivered" | "bounced" },
+        null
+      >;
+    };
+    storage: {
+      storeAndRead: FunctionReference<
+        "mutation",
+        "internal",
+        { count: number; ids: Array<Id<"_storage">>; size: number },
         null
       >;
     };
