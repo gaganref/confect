@@ -1,7 +1,4 @@
 {
-  "effecttsgo/api-stability-leak": {
-    "packages/alchemy/src/index.ts": 5
-  },
   "effecttsgo/global-json": {
     "packages/alchemy/test/ConvexClient.test.ts": 2,
     "packages/alchemy/test/integration/MountInit.test.ts": 1,

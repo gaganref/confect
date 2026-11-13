@@ -373,12 +373,6 @@
       }
     },
     {
-      "files": ["packages/alchemy/src/index.ts"],
-      "rules": {
-        "effecttsgo/api-stability-leak": "off"
-      }
-    },
-    {
       "files": [
         "packages/alchemy/test/ConvexClient.test.ts",
         "packages/alchemy/test/integration/MountInit.test.ts",
