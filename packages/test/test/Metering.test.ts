@@ -25,6 +25,10 @@ const help =
 
 const schema = defineSchema({
   notes: defineTable({ text: v.string() }).index("by_text", ["text"]),
+  stamps: defineTable({
+    at: v.int64(),
+    meta: v.optional(v.object({ at: v.int64() })),
+  }),
 });
 
 type DataModel = DataModelFromSchemaDefinition<typeof schema>;
@@ -49,6 +53,9 @@ const notes = {
     { read: number; written: number }
   >("notes:measuredWrite"),
   list: makeFunctionReference<"query", {}, Array<string>>("notes:list"),
+  metrics: makeFunctionReference<"query", {}, TransactionMetrics>(
+    "notes:metrics",
+  ),
   ids: makeFunctionReference<"query", {}, Array<Id>>("notes:ids"),
 };
 
@@ -96,6 +103,10 @@ const modules = {
             written: metrics.documentsWritten.used,
           };
         },
+      }),
+      metrics: queryGeneric({
+        args: {},
+        handler: (ctx) => ctx.meta.getTransactionMetrics(),
       }),
       list: queryGeneric({
         args: {},
@@ -376,7 +387,9 @@ describe("nested calls", () => {
     expect(after).toMatchObject({
       documentsRead: 1,
       documentsWritten: 2,
-      databaseQueries: 1,
+      // The caller's insert put its ID in `by_id`, so the nested read of
+      // `seed` drops the total by 1, saturating at 0, and adds back 2.
+      databaseQueries: 2,
     });
   });
 
@@ -418,6 +431,77 @@ describe("nested calls", () => {
   });
 });
 
+describe("fix round 1", () => {
+  it("a read that covers inserted IDs counts them, saturating as the binary does, and never goes below zero", async () => {
+    const t = world();
+    const counts = await t.run(async (ctx: Ctx) => {
+      const ids: Array<Id> = [];
+      await inOrder(100, () =>
+        ctx.db.insert("notes", { text: "n" }).then((id) => ids.push(id)),
+      );
+      const afterInserts = (await metricsOf(ctx)).databaseQueries.used;
+      await ctx.db.get(ids[0]!);
+      const afterGet = (await metricsOf(ctx)).databaseQueries.used;
+      await ctx.db.query("notes").withIndex("by_id").collect();
+      const afterScan = (await metricsOf(ctx)).databaseQueries.used;
+      return { afterInserts, afterGet, afterScan };
+    });
+    // The binary answers the same: 0 + its system share, then 100, then 1
+    // (transactionControls.test.ts on the local backend).
+    expect(counts).toEqual({ afterInserts: 0, afterGet: 100, afterScan: 1 });
+  });
+
+  it("a patch from a pending commit timestamp to the largest int64 is a write, at the top level and nested", async () => {
+    const t = world();
+    const result = await t.run(async (ctx: Ctx) => {
+      // Convex 1.49 types an `int64` field as `bigint`. The placeholder is
+      // what `vars.commitTs` writes into one.
+      const pending = ctx.db.vars.commitTs as unknown as bigint;
+      const top = await ctx.db.insert("stamps", { at: pending });
+      await ctx.db.patch(top, { at: 9223372036854775807n });
+      const nested = await ctx.db.insert("stamps", {
+        at: 0n,
+        meta: { at: pending },
+      });
+      await ctx.db.patch(nested, { meta: { at: 9223372036854775807n } });
+      // A pending timestamp patched to a pending timestamp changes nothing.
+      const same = await ctx.db.insert("stamps", { at: pending });
+      await ctx.db.patch(same, { at: pending });
+      const [topDoc, nestedDoc] = [
+        await ctx.db.get(top),
+        await ctx.db.get(nested),
+      ];
+      return {
+        written: (await metricsOf(ctx)).documentsWritten.used,
+        top: typeof topDoc!.at,
+        nested: typeof nestedDoc!.meta!.at,
+      };
+    });
+    expect(result).toEqual({ written: 5, top: "bigint", nested: "bigint" });
+  });
+
+  it("a stale-snapshot query starts with its caller's scheduling counters and no reads or writes", async () => {
+    const t = world();
+    await seed(t, 2);
+    const inStale = await t.run(async (ctx: Ctx) => {
+      await ctx.db.query("notes").collect();
+      await ctx.db.insert("notes", { text: "written" });
+      await ctx.scheduler.runAfter(60_000, notes.addTwo, {});
+      return usedOf(
+        await ctx.runQuery(notes.metrics, {}, { useStaleSnapshot: true }),
+      );
+    });
+    // `[{}]` is 4 bytes.
+    expect(inStale).toMatchObject({
+      functionsScheduled: 1,
+      scheduledFunctionArgsBytes: 4,
+      documentsRead: 0,
+      documentsWritten: 0,
+      databaseQueries: 0,
+    });
+  });
+});
+
 describe("what counts", () => {
   it("counts disjoint intervals: one per document read by ID or per index range, merged when they overlap", async () => {
     const t = world();
@@ -446,8 +530,10 @@ describe("what counts", () => {
         .collect();
       return usedOf(await metricsOf(ctx));
     });
-    // by_id: a, b. by_text: ["a"] lies inside ["a", "b"], so one interval.
-    expect(used["databaseQueries"]).toBe(3);
+    // by_id: a, b, then reading c drops the total by the index's 3 intervals,
+    // saturating at 0, and adds back 3, the inserted c's among them. by_text:
+    // ["a"] lies inside ["a", "b"], so one interval.
+    expect(used["databaseQueries"]).toBe(4);
     // a, a, b by ID; c by ID; "a" twice by text; "a" and "b" in the range.
     expect(used["documentsRead"]).toBe(3 + 1 + 2 + 2);
   });

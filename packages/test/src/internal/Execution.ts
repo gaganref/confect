@@ -10,6 +10,7 @@ import {
   type UserIdentity,
 } from "convex/server";
 import {
+  CommitTsPlaceholder,
   compareValues,
   convexToJson,
   jsonToConvex,
@@ -37,6 +38,7 @@ import {
   deserializeConvexErrorData,
   evaluateValue,
   hasPendingValues,
+  isSimpleObject,
   parseArgs,
   parseFunctionHandle,
   resolveCommittedValues,
@@ -1089,7 +1091,7 @@ export class World {
       (parentAttempt === undefined
         ? new KernelAttempt(this.state)
         : snapshotOnly
-          ? new KernelAttempt(parentAttempt.snapshot)
+          ? parentAttempt.staleSnapshot()
           : parentAttempt);
     const execution = this.execution(
       functionPath,
@@ -1926,10 +1928,48 @@ const indexKey = (componentPath: string, table: string, index: string) =>
 
 const isSystemTable = (table: string) => table.startsWith("_");
 
-const withoutUndefined = (doc: StoredDocument) =>
-  Object.fromEntries(
-    Object.entries(doc).filter(([, value]) => value !== undefined),
-  );
+const isFieldMap = (value: unknown): value is object =>
+  typeof value === "object" && value !== null && isSimpleObject(value);
+
+/**
+ * Whether two stored values are the same value, an unresolved commit timestamp
+ * included. The binary compares pending values structurally, so a pending
+ * timestamp equals only another pending timestamp, at any depth (`PendingValue`
+ * derives `PartialEq`, `crates/value/src/pending.rs:56-75`, as
+ * `PendingDocument` does, `crates/common/src/document.rs:624-632`). Concrete
+ * values compare by `ConvexValue`'s total order
+ * (`crates/value/src/sorting.rs:468-472`), which `compareValues` follows.
+ * `compareValues` alone ranks a pending timestamp as the largest int64, so it
+ * cannot tell the two apart. An object field set to `undefined` is absent.
+ */
+const sameValue = (a: unknown, b: unknown): boolean => {
+  const aPending = a instanceof CommitTsPlaceholder;
+  const bPending = b instanceof CommitTsPlaceholder;
+  if (aPending || bPending) return aPending && bPending;
+  if (Array.isArray(a) || Array.isArray(b)) {
+    return (
+      Array.isArray(a) &&
+      Array.isArray(b) &&
+      a.length === b.length &&
+      a.every((value, i) => sameValue(value, b[i]))
+    );
+  }
+  if (isFieldMap(a) || isFieldMap(b)) {
+    if (!isFieldMap(a) || !isFieldMap(b)) return false;
+    const fields = (value: object) =>
+      Object.entries(value).filter(([, field]) => field !== undefined);
+    const aFields = fields(a);
+    const bFields = new Map(fields(b));
+    return (
+      aFields.length === bFields.size &&
+      aFields.every(
+        ([key, field]) =>
+          bFields.has(key) && sameValue(field, bFields.get(key)),
+      )
+    );
+  }
+  return compareValues(a as Value, b as Value) === 0;
+};
 
 /**
  * Whether a patch or replace leaves a document as it was. The binary then
@@ -1937,7 +1977,7 @@ const withoutUndefined = (doc: StoredDocument) =>
  * `crates/database/src/transaction.rs:713-790`).
  */
 const sameDocument = (before: StoredDocument, after: StoredDocument) =>
-  compareValues(withoutUndefined(before), withoutUndefined(after)) === 0;
+  sameValue(before, after);
 
 /**
  * A nested call's `transactionLimits`. The binary reads each field as an

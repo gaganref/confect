@@ -266,7 +266,24 @@ class Shared {
   // File storage counters stay at zero until the kernel stores files.
   readonly filesRead = 0;
   readonly fileReadBytes = 0;
+
+  /**
+   * A stale-snapshot query's counters: the scheduling and file-read counters
+   * carried over, reads and intervals from zero (`clone_for_snapshot_query`,
+   * `crates/database/src/transaction.rs:1460-1485`).
+   */
+  forStaleSnapshot(): Shared {
+    const copy = new Shared();
+    copy.functionsScheduled = this.functionsScheduled;
+    copy.scheduledFunctionArgsBytes = this.scheduledFunctionArgsBytes;
+    return copy;
+  }
 }
+
+/**
+ * `a - b`, or 0 when `b` is larger: Rust's `usize::saturating_sub`.
+ */
+const saturatingSub = (a: number, b: number) => (a > b ? a - b : 0);
 
 /**
  * One frame's share of an attempt's accounting. The outermost frame belongs to
@@ -289,6 +306,18 @@ export class Meter {
 
   child(): Meter {
     return new Meter(this.shared, this);
+  }
+
+  /**
+   * The meter of a query run on a stale snapshot. The binary runs it on a clone
+   * of the transaction that keeps the scheduling counters and starts reads and
+   * writes from zero, then drops the clone, so nothing it counts reaches this
+   * meter (`clone_for_snapshot_query`,
+   * `crates/database/src/transaction.rs:1460-1485`; `run_udf`,
+   * `crates/isolate/src/environment/udf/async_syscall.rs:695-776`).
+   */
+  forStaleSnapshot(): Meter {
+    return new Meter(this.shared.forStaleSnapshot());
   }
 
   /**
@@ -350,14 +379,16 @@ export class Meter {
   }
 
   /**
-   * A read the function made of `interval` in `index`. It counts as the change
-   * in how many disjoint intervals that index's reads cover
+   * A read the function made of `interval` in `index`, counted as the binary
+   * counts it: the total drops by the index's interval count before the read,
+   * saturating at zero, and rises by its count after
    * (`record_indexed_directly`, `crates/database/src/reads.rs:447-480`). The
-   * binary's count starts at the system-table intervals it reads to run the
-   * function, which the kernel does not simulate, so its `saturating_sub` never
-   * bites there and the kernel adds the change unclamped. A read that covers
-   * IDs this execution inserted can then lower the count, as it does on the
-   * binary.
+   * index's count includes the intervals of IDs this execution inserted, which
+   * joined it without counting (`deriveInterval`), so a read that covers them
+   * can move the total by more than the read itself. The binary starts the
+   * total at the system-table intervals it reads to run the function, which the
+   * kernel does not simulate, so the two totals differ by that share until a
+   * read saturates both (see the `SystemTableReadIntervals` boundary).
    */
   readInterval(
     index: string,
@@ -368,7 +399,13 @@ export class Meter {
     const before = set.size;
     set.add(interval);
     const shared = this.shared;
-    shared.intervals += set.size - before;
+    shared.intervals = saturatingSub(shared.intervals, before) + set.size;
+    // Both terms are counts, so the total never goes below zero.
+    if (!Number.isSafeInteger(shared.intervals) || shared.intervals < 0) {
+      throw new Error(
+        `The kernel counted ${shared.intervals} intervals read, which is no count.`,
+      );
+    }
     return shared.intervals > limits.databaseQueries
       ? new TransactionLimitExceeded({
           code: "TooManyReads",
@@ -381,8 +418,9 @@ export class Meter {
   /**
    * A read the binary takes for a write rather than for the function: a new
    * document's ID (`register_new_id`, writes.rs:426-441). It joins the index's
-   * intervals without counting, so a later read it covers adds none
-   * (`record_indexed_derived`, reads.rs:333-344).
+   * intervals and leaves the total as it was (`record_indexed_derived` calls
+   * `_record_indexed` and ignores its counts, reads.rs:333-344), so a later
+   * read of that index starts from a count that includes it.
    */
   deriveInterval(index: string, interval: KeyInterval) {
     this.set(index).add(interval);

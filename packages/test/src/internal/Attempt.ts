@@ -61,9 +61,10 @@ export class KernelAttempt {
     readonly snapshot: Kernel.State,
     readonly number: AttemptNumber = 1,
     private readonly parent?: KernelAttempt,
+    meter?: Metering.Meter,
   ) {
     this.allReads = parent?.allReads ?? [];
-    this.meter = parent?.meter.child() ?? new Metering.Meter();
+    this.meter = meter ?? parent?.meter.child() ?? new Metering.Meter();
     this.observed = parent?.observed ?? { identity: false, time: null };
   }
 
@@ -185,6 +186,20 @@ export class KernelAttempt {
     const writes = this.overlay.get(componentPath) ?? new Map();
     this.overlay.set(componentPath, writes);
     writes.set(id, doc);
+  }
+
+  /**
+   * A query run on this attempt's snapshot rather than its pending writes. It
+   * reads and meters on its own, and its meter starts with this attempt's
+   * scheduling counters, as the binary's snapshot clone does.
+   */
+  staleSnapshot(): KernelAttempt {
+    return new KernelAttempt(
+      this.snapshot,
+      this.number,
+      undefined,
+      this.meter.forStaleSnapshot(),
+    );
   }
 
   /**
