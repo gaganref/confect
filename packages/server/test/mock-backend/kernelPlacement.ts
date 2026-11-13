@@ -35,12 +35,6 @@ export const placements: ReadonlyArray<Placement> = [
     row: "binary",
     needs: "text search, which the kernel never simulates (RequiresBinary)",
   },
-  {
-    file: "components.test.ts",
-    name: "verifies app and generated component mutation JWTs against deployment JWKS",
-    row: 6,
-    needs: "JWT verification",
-  },
   ...[
     "fetches each mounted component with its site URL at construction",
     "routes mounted HTTP writes into the selected component database",

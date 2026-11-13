@@ -6,7 +6,12 @@ import * as Schema from "effect/Schema";
 export class RequiresBinary extends Schema.TaggedError<RequiresBinary>()(
   "RequiresBinary",
   {
-    operation: Schema.Literals(["textSearch", "vectorSearch"]),
+    operation: Schema.Literals([
+      "textSearch",
+      "vectorSearch",
+      "oidcDiscovery",
+      "remoteJwks",
+    ]),
     message: Schema.String,
   },
 ) {}
@@ -96,6 +101,29 @@ export class DrainBudgetExceeded extends Schema.TaggedError<DrainBudgetExceeded>
 export class UnknownStandingSource extends Schema.TaggedError<UnknownStandingSource>()(
   "UnknownStandingSource",
   { componentPath: Schema.String, name: Schema.String, message: Schema.String },
+) {}
+
+/**
+ * The token a test presented was refused before any function ran, as the binary
+ * answers a client's request with 401. `code` is the binary's: `NoAuthProvider`
+ * when no provider's issuer and audience match the token, and
+ * `InvalidAuthHeader` for every other failure.
+ */
+export class InvalidToken extends Schema.TaggedError<InvalidToken>()(
+  "InvalidToken",
+  {
+    code: Schema.Literals(["NoAuthProvider", "InvalidAuthHeader"]),
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * The app's `auth.config` declares a provider the binary would refuse at push.
+ * `index` is the provider's position, or -1 for the config itself.
+ */
+export class InvalidAuthConfig extends Schema.TaggedError<InvalidAuthConfig>()(
+  "InvalidAuthConfig",
+  { index: Schema.Int, message: Schema.String },
 ) {}
 
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>

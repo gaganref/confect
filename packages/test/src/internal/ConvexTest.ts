@@ -26,6 +26,18 @@ export interface KernelControls {
   readonly apply: (id: string) => Promise<Execution.KernelApply>;
   readonly held: () => ReadonlyArray<Execution.HeldAttempt>;
   /**
+   * The same backend as a client that presents `token`. Each call verifies it
+   * against the app's `auth.config` providers at the kernel's time before
+   * anything runs, and refuses with `InvalidToken` as the binary does. A
+   * `customJwt` provider's JWKS must be a `data:` URL, so the test owns its
+   * keys.
+   */
+  readonly withToken: (token: string) => KernelControls;
+  /**
+   * The deployment's public keys, which verify what `ctx.auth.signJwt` signs.
+   */
+  readonly jwks: () => Promise<{ readonly keys: ReadonlyArray<JsonWebKey> }>;
+  /**
    * Move the kernel's clock forward, running each job due on the way at its
    * deadline.
    */
@@ -69,39 +81,62 @@ const isSchemaDefinition = (
   "tables" in value &&
   typeof (value as { tables: unknown }).tables === "object";
 
-const accessor = (world: Execution.World, caller: Execution.Caller): any => ({
-  query: (reference: any, args?: any) => world.query(caller, reference, args),
-  mutation: (reference: any, args?: any) =>
-    world.mutation(caller, reference, args),
-  action: (reference: any, args?: any) => world.action(caller, reference, args),
-  prepare: (reference: any, args?: any) =>
-    world.prepare(caller, reference, args),
-  apply: (id: string) => world.apply(id),
-  held: () => world.held(),
-  run: (handler: (ctx: any) => any) => world.run(caller, "", handler),
-  runInComponent: (componentPath: string, handler: (ctx: any) => any) =>
-    world.run(caller, componentPath, handler),
-  withIdentity: (identity: Partial<UserIdentity>) =>
-    accessor(world, Execution.withIdentity(caller, identity)),
-  withRequestMetadata: (metadata: {
-    readonly ip?: string | null;
-    readonly userAgent?: string | null;
-  }) =>
-    accessor(world, {
-      ...caller,
-      ip: metadata.ip ?? null,
-      userAgent: metadata.userAgent ?? null,
-    }),
-  fetch: () => Promise.reject(KernelRefusal.rowPending("HTTP routes", 6)),
-  jwks: () => Promise.reject(KernelRefusal.rowPending("JWT verification", 6)),
-  advance: (ms: number) => world.advance(ms),
-  jobs: () => world.jobs(),
-  finishInProgressScheduledFunctions: () => world.advance(0),
-  finishAllScheduledFunctions: (
-    _advanceTimers?: () => void,
-    maxIterations?: number,
-  ) => world.drain(maxIterations),
-});
+/**
+ * A test's view of the backend as one caller. With a presented `token`, every
+ * call first verifies it, as the binary verifies a client's token on each
+ * request.
+ */
+const accessor = (
+  world: Execution.World,
+  caller: Execution.Caller,
+  token?: string,
+): any => {
+  const as = <A>(call: (caller: Execution.Caller) => Promise<A>) =>
+    token === undefined
+      ? call(caller)
+      : world.authenticate(caller, token).then(call);
+  return {
+    query: (reference: any, args?: any) =>
+      as((who) => world.query(who, reference, args)),
+    mutation: (reference: any, args?: any) =>
+      as((who) => world.mutation(who, reference, args)),
+    action: (reference: any, args?: any) =>
+      as((who) => world.action(who, reference, args)),
+    prepare: (reference: any, args?: any) =>
+      as((who) => world.prepare(who, reference, args)),
+    apply: (id: string) => world.apply(id),
+    held: () => world.held(),
+    run: (handler: (ctx: any) => any) =>
+      as((who) => world.run(who, "", handler)),
+    runInComponent: (componentPath: string, handler: (ctx: any) => any) =>
+      as((who) => world.run(who, componentPath, handler)),
+    withIdentity: (identity: Partial<UserIdentity>) =>
+      accessor(world, Execution.withIdentity(caller, identity)),
+    withToken: (presented: string) => accessor(world, caller, presented),
+    withRequestMetadata: (metadata: {
+      readonly ip?: string | null;
+      readonly userAgent?: string | null;
+    }) =>
+      accessor(
+        world,
+        {
+          ...caller,
+          ip: metadata.ip ?? null,
+          userAgent: metadata.userAgent ?? null,
+        },
+        token,
+      ),
+    fetch: () => Promise.reject(KernelRefusal.rowPending("HTTP routes", 6)),
+    jwks: () => world.deploymentKey.jwks(),
+    advance: (ms: number) => world.advance(ms),
+    jobs: () => world.jobs(),
+    finishInProgressScheduledFunctions: () => world.advance(0),
+    finishAllScheduledFunctions: (
+      _advanceTimers?: () => void,
+      maxIterations?: number,
+    ) => world.drain(maxIterations),
+  };
+};
 
 /**
  * The test kernel under convex-test's `convexTest` signature. The fork's kernel

@@ -407,3 +407,67 @@ wrapped the other's accessor once more and every read of these globals went
 deeper. The kernel now leaves an accessor in place when it already reads
 through one of the kernel's, which a sentinel in a fresh copy shows, and the
 chain settles after the first call on each target.
+
+## JWT verification and signing (row 6)
+
+`src/internal/Identity.ts` holds the kernel's verifier and its deployment
+signer. The rules come from the pinned binary, `precompiled-2026-10-28-cccbade`
+(convex-backend `cccbade4`), and its `biscuit` fork at `05bdaab2`.
+
+At open the kernel loads the app's `auth.config.ts` or `auth.config.js` beside
+its functions, as the CLI pushes it, and reads its default export's providers
+on the first presented token. A `customJwt` provider needs a string issuer and
+JWKS, an RS256 or ES256 algorithm and an optional string `applicationID`. Any
+other entry is an OIDC provider with a string domain and `applicationID`
+(`common/src/auth.rs:120-139`). An issuer or domain without a scheme gets
+`https://` (`:209-241`). A provider the binary would refuse at push fails with
+`InvalidAuthConfig`.
+
+`t.withToken(token)` is the backend as a client that presents `token`. Each
+call verifies it at the kernel's time before any function runs, as the binary
+verifies a client's token on every request (`application/src/lib.rs:3297-3328`):
+
+1. The unverified payload's `iss` and `aud` pick the first provider whose
+   issuer matches, ignoring trailing slashes, and whose `applicationID`, if
+   set, is among the audiences (`common/src/auth.rs:48-82`). None matching is
+   `NoAuthProvider` (`authentication/src/lib.rs:161-200`).
+2. An OIDC provider refuses with `RequiresBinary` `oidcDiscovery`. A
+   `customJwt` JWKS must be a `data:` URL, decoded as the binary's `data-url`
+   crate does (`:439-456`). Any other URL refuses with `RequiresBinary`
+   `remoteJwks`, so the test owns every key the kernel trusts.
+3. The header's `kid` names the key. The JWK's `alg`, when present, must equal
+   the header's and the provider's, and otherwise the header's must equal the
+   provider's (`biscuit/src/jws/compact.rs:142-212`). The signature must hold.
+4. The issuer and audience are checked again, then `exp`, `nbf` and `iat` with
+   five seconds of skew (`authentication/src/lib.rs:371-407`,
+   `biscuit/src/lib.rs:906-966`). Timestamps are truncated to whole seconds.
+5. `sub`, `iss` and `exp` must be present. The identity is `tokenIdentifier`
+   (`iss|sub`), `issuer`, `subject` and every other claim under its own name.
+   Nested objects flatten to `outer.inner` keys, and `aud`, `exp`, `iat`,
+   `nbf`, `jti` and `fva` are dropped (`keybroker/src/broker.rs:512-551`,
+   `:681-695`). A `customJwt` token's `name` or `email` is a custom claim with
+   that name, not an OIDC field.
+
+Steps 2 to 5 fail with `InvalidAuthHeader`. Both codes come as `InvalidToken`,
+the transport refusal, which the binary answers with HTTP 401. A token is
+verified on every call, so a call past its expiry plus five seconds of the
+kernel's clock is refused.
+
+`ctx.auth.signJwt` in a mutation now signs with an ES256 key the world makes on
+first use, and `t.jwks()` answers its public half. The rules are convex-test
+0.0.65's, which match the binary's `mint` (`keybroker/src/deployment_jwt.rs`,
+`udf/src/deployment_jwt.rs`). The token is issued at the mutation's start
+time, as the binary signs at the function's timestamp
+(`isolate/src/environment/udf/async_syscall.rs:1149-1179`). An ECDSA signature
+draws its own randomness, so a signed token is not byte-identical across two
+replays.
+
+`test/fixtures/minted.ts` mints five tokens with keys the test makes: a valid
+control, a wrong issuer, a wrong audience, a foreign key under the declared
+key's `kid`, and an expired token. `test/Identity.test.ts` runs them on the
+kernel, and `packages/server/test/local-backend/jwt.test.ts` runs them against
+the binary through the fixture's own `auth.config.ts` and its
+`groups/components:identity` query. Both targets give the same outcome, the
+refusal code and the valid control's identity included.
+`components.test.ts:84`, signing and the deployment JWKS, now runs in the
+kernel lane, and its placement is gone.

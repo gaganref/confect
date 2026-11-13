@@ -13,6 +13,7 @@ import { convexToJson, jsonToConvex, type Value } from "convex/values";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
 import * as Globals from "./Globals.js";
+import * as Identity from "./Identity.js";
 import * as Invocation from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
@@ -59,6 +60,11 @@ interface Component {
    * that runs one, or that one schedules, is never drain work.
    */
   readonly standing: ReadonlySet<string>;
+  /**
+   * The `auth.config` module beside the functions, which only the app's
+   * providers come from.
+   */
+  readonly authConfig: (() => Promise<any>) | undefined;
 }
 
 /**
@@ -311,6 +317,9 @@ const makeComponent = (
     ),
     loaded: new Map(),
     standing: new Set(standing),
+    authConfig: relative.find(([file]) =>
+      /^auth\.config\.[jt]s$/.test(file),
+    )?.[1],
   };
 };
 
@@ -425,6 +434,12 @@ export class World {
    */
   private floor = Number.NEGATIVE_INFINITY;
   private readonly targets = new Map<DocumentId, Scheduling.Target>();
+  /**
+   * The default export of the app's `auth.config`, loaded at open.
+   */
+  private authConfig: Promise<unknown> = Promise.resolve(undefined);
+  private providers: ReadonlyArray<Identity.Provider> | undefined;
+  readonly deploymentKey = new Identity.DeploymentKey();
 
   constructor(
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
@@ -459,16 +474,40 @@ export class World {
    * runs, then check that each standing source names an exported function.
    */
   open(): Promise<void> {
-    this.opened ??= Promise.all(
-      Array.from(this.components.values(), (component) =>
-        Promise.all(
-          Array.from(component.loaders, ([path, load]) =>
-            load().then((module) => component.loaded.set(path, module)),
+    if (this.opened === undefined) {
+      const loadAuthConfig = this.component(ROOT).authConfig;
+      this.authConfig =
+        loadAuthConfig === undefined
+          ? Promise.resolve(undefined)
+          : loadAuthConfig().then((module) => module.default);
+      this.opened = Promise.all([
+        ...Array.from(this.components.values(), (component) =>
+          Promise.all(
+            Array.from(component.loaders, ([path, load]) =>
+              load().then((module) => component.loaded.set(path, module)),
+            ),
           ),
         ),
-      ),
-    ).then(() => this.checkStanding());
+        this.authConfig,
+      ]).then(() => this.checkStanding());
+    }
     return this.opened;
+  }
+
+  /**
+   * The caller a presented token makes, verified against the app's
+   * `auth.config` providers at the kernel's time, before anything runs. The
+   * binary verifies a client's token on every request, so a token that expires
+   * fails the next call after it does.
+   */
+  authenticate(caller: Caller, token: string): Promise<Caller> {
+    return this.open()
+      .then(() => this.authConfig)
+      .then((config) => {
+        this.providers ??= Identity.readProviders(config);
+        return Identity.verify(token, this.providers, this.now());
+      })
+      .then((identity) => ({ ...caller, identity, token }));
   }
 
   /**
@@ -1705,7 +1744,12 @@ const queryAuth = (execution: Execution) => ({
 
 const mutationAuth = (execution: Execution) => ({
   ...queryAuth(execution),
-  signJwt: () => Promise.reject(KernelRefusal.rowPending("JWT signing", 6)),
+  signJwt: (options: unknown) =>
+    execution.world.deploymentKey.sign(
+      execution.componentPath,
+      options,
+      execution.startTime,
+    ),
 });
 
 function validateId(
