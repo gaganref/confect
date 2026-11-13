@@ -168,6 +168,19 @@ binary as the named `SystemTableReadIntervals` boundary. File storage counters s
 limits row of Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-limits.md`. Upstream: fork only, as the kernel is fork-specific.
 
+## Metering limit test timeouts
+
+The kernel's `documentsRead` limit test seeds 32,001 notes and reads 64,001
+documents, each metered as the binary meters it. It took up to 6.1 s on Windows
+CI, where it timed out at Vitest's 5 s default on `main`, and 2.8 to 3.6 s on
+Ubuntu CI. The `documentsWritten` test reached 3.49 s on Windows and 2.17 s on
+Ubuntu. A profile spreads the cost over per-document work: the read-interval
+set's comparisons of each inserted ID, syscall JSON and document sizing. No
+bulk seeding path exists, so the two tests take explicit 15 s and 10 s
+timeouts, with the reason on the line. The assertions are unchanged. Changeset:
+none, as only a test changes. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## TestConfect kernel target
 
 `TestConfect.layer` takes `{ target: "kernel" }` in each of its three forms. It
@@ -307,6 +320,22 @@ harness lives in `tools/local-backend` with main's configurable ports, and
 its fixture's system-table share measures 21. Changeset:
 `kernel-refusal-field-names.md`. Upstream: fork only, as the kernel is
 fork-specific.
+
+## Test kernel nested ConvexError data
+
+A function calling another through `ctx.runQuery`, `ctx.runMutation` or
+`ctx.runAction` makes a syscall, and Convex's syscall wrapper decodes a rejected
+call's `ConvexError` data from Convex JSON (`convex`
+`src/server/impl/syscall.ts:46-51`). The binary hands it Convex JSON
+(convex-backend `cccbade4`, `crates/isolate/src/environment/helpers/promise.rs:77-88`).
+The kernel decoded the data to Convex values first, so the wrapper decoded it
+again: an int64 reached the caller as `Error: Unexpected type of 42`, and bytes
+as `{}`. A call made through a syscall now leaves its `ConvexError` data as
+Convex JSON, and the caller's one decode is the only one. A call from the test,
+or an action's own `ctx.run*`, which the kernel answers directly, still decodes
+to Convex values. A plain local-backend fixture runs every caller and payload on
+the binary and on the kernel. Changeset: `test-kernel-nested-convex-error.md`.
+Upstream: fork only, as the kernel is fork-specific.
 
 ## Test kernel randomness
 
