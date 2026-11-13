@@ -456,6 +456,7 @@ export class SnapshotAllocatorBehind extends Schema.TaggedError<
     "identityEpoch",
     "nextFile",
     "nextUploadToken",
+    "nextCommandId",
   ]),
   value: Schema.Finite,
   required: Schema.Finite,

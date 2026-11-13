@@ -1905,10 +1905,12 @@ export class World {
           identityEpoch: this.identityEpoch,
           nextFile: this.nextFile,
           nextUploadToken: this.nextUploadToken,
+          nextCommandId: this.nextCommandId,
         },
         jobs,
         files,
         crons,
+        cancelledCommands: [...this.cancelled],
       },
       (componentPath, table, json) =>
         Redaction.mark(
@@ -2017,6 +2019,9 @@ export class World {
     this.identityEpoch = image.identity.identityEpoch;
     this.nextFile = image.identity.nextFile;
     this.nextUploadToken = image.identity.nextUploadToken;
+    this.nextCommandId = image.identity.nextCommandId;
+    this.cancelled.clear();
+    for (const id of image.cancelledCommands) this.cancelled.add(id);
     this.files.clear();
     this.legacyIds.clear();
     for (const [id, file] of image.files) {

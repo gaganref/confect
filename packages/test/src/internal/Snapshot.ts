@@ -21,6 +21,7 @@ import {
   type StoredDocument,
 } from "./KernelValues.js";
 import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 import * as Json from "./Json.js";
@@ -29,9 +30,9 @@ import * as Json from "./Json.js";
  * The counters the kernel allocates identities from: the next document ID, the
  * latest creation time handed out, the next held attempt's ID, the identity
  * epoch, which every subscriber's `authenticate` advances, the next stored
- * file's storage UUID and the next upload URL's token. A restored world
- * continues each where its source stopped, so the same calls mint the same
- * identities and the same identity versions.
+ * file's storage UUID, the next upload URL's token and the next held provider
+ * command's ID. A restored world continues each where its source stopped, so
+ * the same calls mint the same identities and the same identity versions.
  */
 export interface Identity {
   readonly nextDocumentId: number;
@@ -40,6 +41,7 @@ export interface Identity {
   readonly identityEpoch: number;
   readonly nextFile: number;
   readonly nextUploadToken: number;
+  readonly nextCommandId: number;
 }
 
 /**
@@ -105,6 +107,11 @@ export interface Image {
    * Every declared cron job with its run state, by component and name.
    */
   readonly crons: ReadonlyArray<CronImage>;
+  /**
+   * The IDs of the provider commands cancelled when their action ended, so an
+   * answer to one is refused as cancelled after a restore too.
+   */
+  readonly cancelledCommands: ReadonlyArray<string>;
 }
 
 /**
@@ -198,14 +205,8 @@ export const contract = {
       excluded:
         "Held provider commands belong to running actions, and `functions` blocks a snapshot while any runs.",
     },
-    nextCommandId: {
-      excluded:
-        "Ids of held commands, which exist only while their action runs. A restored world numbers its own.",
-    },
-    cancelled: {
-      excluded:
-        "Ids of commands cancelled when their action ended, kept so a late answer is refused. They name no state a restore needs.",
-    },
+    nextCommandId: { exported: "identity.nextCommandId" },
+    cancelled: { exported: "cancelledCommands" },
     closedActions: {
       excluded: "Keyed by executions, which do not outlive their run.",
     },
@@ -308,7 +309,7 @@ export const contract = {
   } satisfies Readonly<Record<string, Participation>>,
 } as const;
 
-const header = "confect-kernel-snapshot 3 sha256:";
+const header = "confect-kernel-snapshot 4 sha256:";
 
 const FunctionPathJson = Schema.Struct({
   componentPath: Schema.String,
@@ -327,6 +328,7 @@ const Body = Schema.Struct({
     identityEpoch: Schema.Int,
     nextFile: Schema.Int,
     nextUploadToken: Schema.Int,
+    nextCommandId: Schema.Int,
   }),
   tables: Schema.Array(
     Schema.Struct({
@@ -374,6 +376,7 @@ const Body = Schema.Struct({
       world: Schema.NullOr(Schema.String),
     }),
   ),
+  cancelledCommands: Schema.Array(Schema.String),
   log: Schema.Array(
     Schema.Struct({
       version: Schema.Int,
@@ -483,6 +486,7 @@ export const encode = (
       identityEpoch: image.identity.identityEpoch,
       nextFile: image.identity.nextFile,
       nextUploadToken: image.identity.nextUploadToken,
+      nextCommandId: image.identity.nextCommandId,
     },
     tables,
     jobs: Arr.map(
@@ -510,6 +514,7 @@ export const encode = (
       image.crons,
       ({ componentPath, name }) => `${componentPath}\u0000${name}`,
     ) as Array<Body["crons"][number]>,
+    cancelledCommands: sorted(image.cancelledCommands, (id) => id),
     log: Arr.map(state.log, (commit) => ({
       version: commit.version,
       commitTs: commit.commitTs.toString(),
@@ -527,6 +532,15 @@ export const encode = (
   bytes.set(head);
   bytes.set(bodyBytes, head.length);
   return bytes;
+};
+
+/**
+ * The counter of a provider command ID the kernel minted, `command-<n>`, or
+ * `undefined` for another string.
+ */
+const commandCounter = (id: string): number | undefined => {
+  const match = /^command-([1-9][0-9]*)$/.exec(id);
+  return match === null ? undefined : Number(match[1]);
 };
 
 const malformed = (reason: string, detail: string) =>
@@ -659,6 +673,22 @@ export const checkBody = (
       }
     }
   }
+  const cancelled = once(body.cancelledCommands, (id) => id);
+  if (cancelled !== undefined)
+    return Result.fail(
+      malformed("duplicate", `cancelled command "${cancelled}" appears twice`),
+    );
+  const unnumbered = Arr.findFirst(
+    body.cancelledCommands,
+    (id) => commandCounter(id) === undefined,
+  );
+  if (Option.isSome(unnumbered))
+    return Result.fail(
+      malformed(
+        "cancelledCommand",
+        `"${unnumbered.value}" is not a command ID the kernel mints`,
+      ),
+    );
   const file = once(body.files, ({ id }) => id);
   if (file !== undefined)
     return Result.fail(
@@ -833,6 +863,7 @@ const imageOf = (body: Body, unredact: Unredact): Image => {
         last: cron.last as CronImage["last"],
       };
     }),
+    cancelledCommands: body.cancelledCommands,
   };
 };
 
@@ -1031,6 +1062,11 @@ export const checkAllocators = (
     return behind("nextFile", identity.nextFile, maxFile + 1);
   if (identity.nextUploadToken < 1)
     return behind("nextUploadToken", identity.nextUploadToken, 1);
+  let maxCommand = 0;
+  for (const id of image.cancelledCommands)
+    maxCommand = Math.max(maxCommand, commandCounter(id) ?? 0);
+  if (identity.nextCommandId <= maxCommand)
+    return behind("nextCommandId", identity.nextCommandId, maxCommand + 1);
   return Result.succeed(undefined);
 };
 
