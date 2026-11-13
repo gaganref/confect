@@ -25,17 +25,66 @@ const day = 24 * 60 * minute;
 const splaySeconds = 60;
 
 /**
- * A minute, hour, day, month and weekday pattern. Each set holds the bit
- * positions saffron sets: minutes and hours by value, days of the month and
- * months from 0 for the first, weekdays from 0 for Sunday.
+ * The day of the month, as saffron compiles it (`saffron/src/lib.rs:550-570`).
+ * A pattern holds bit positions from 0 for the first day, and a wrapping step
+ * may set bit 31, which no day reaches.
+ */
+export type DaysOfMonth =
+  | { readonly kind: "star" }
+  | { readonly kind: "pattern"; readonly bits: ReadonlySet<number> }
+  /**
+   * `L`, or `L-n` with `offset` n.
+   */
+  | { readonly kind: "last"; readonly offset: number }
+  /**
+   * `LW`, or `L-nW` with `offset` n.
+   */
+  | { readonly kind: "lastWeekday"; readonly offset: number }
+  /**
+   * `nW`, the weekday nearest day n.
+   */
+  | { readonly kind: "weekday"; readonly day: number };
+
+/**
+ * The day of the week, from 0 for Sunday, as saffron compiles it
+ * (`saffron/src/lib.rs:86-98`). A wrapping step may set bit 7, which no weekday
+ * reaches.
+ */
+export type DaysOfWeek =
+  | { readonly kind: "star" }
+  | { readonly kind: "pattern"; readonly bits: ReadonlySet<number> }
+  /**
+   * `nL`, the last weekday n of the month.
+   */
+  | { readonly kind: "last"; readonly weekday: number }
+  /**
+   * `n#k`, the k-th weekday n of the month.
+   */
+  | { readonly kind: "nth"; readonly weekday: number; readonly nth: number };
+
+/**
+ * A compiled cron expression. Minutes and hours hold their values, months hold
+ * bit positions from 0 for January, and a wrapping step may set bit 12, which
+ * no month reaches.
  */
 export interface Pattern {
   readonly minutes: ReadonlySet<number>;
   readonly hours: ReadonlySet<number>;
-  readonly days: ReadonlySet<number> | "*";
+  readonly days: DaysOfMonth;
   readonly months: ReadonlySet<number>;
-  readonly weekdays: ReadonlySet<number> | "*";
+  readonly weekdays: DaysOfWeek;
 }
+
+/**
+ * Why a run's time could not be computed. `BinaryAborts`: saffron subtracts
+ * below zero at `lib.rs:663`, and the binary is built with `overflow-checks =
+ * true` and `panic = "abort"` (convex-backend `Cargo.toml:271-274`), so the
+ * backend process aborts there. `NoOccurrence`: the search found no run, which
+ * `compute_next_ts` reports as an error (`next_ts.rs:204-213`).
+ */
+export type SearchFailure =
+  | { readonly _tag: "BinaryAborts"; readonly date: string }
+  | { readonly _tag: "NoOccurrence" };
 
 export type Schedule =
   | { readonly kind: "interval"; readonly seconds: number }
@@ -74,9 +123,7 @@ export interface Spec {
   readonly schedule: Schedule;
 }
 
-export type Refusal =
-  | KernelRefusal.InvalidCron
-  | KernelRefusal.UnsupportedCronExpression;
+export type Refusal = KernelRefusal.InvalidCron;
 
 // Cron expressions, as saffron parses and compiles them.
 
@@ -192,11 +239,6 @@ class Unparsed {
   readonly _tag = "Unparsed";
 }
 
-class Unsupported {
-  readonly _tag = "Unsupported";
-  constructor(readonly feature: string) {}
-}
-
 /**
  * A cursor over one field's text. Each reader throws `Unparsed` where saffron's
  * parser fails, so `parseExpression` turns any of them into one refusal.
@@ -306,40 +348,45 @@ const listOrStar = (cursor: Cursor, field: Field): Array<Item> | "*" => {
 };
 
 /**
- * `dom_expr` (`saffron/src/parse.rs:838-920`). The `L` and `W` forms parse in
- * the binary, but the kernel does not simulate them.
+ * `dom_expr` (`saffron/src/parse.rs:838-920`): `*`, a list, `L`, `L-n`, `LW`,
+ * `L-nW` or `nW`.
  */
-const daysExpr = (cursor: Cursor): Array<Item> | "*" | Unsupported => {
+const daysExpr = (cursor: Cursor): Array<Item> | "*" | DaysOfMonth => {
   if (cursor.take("L")) {
-    if (cursor.take("-") && cursor.number(1, 30) === undefined) {
-      throw new Unparsed();
+    if (cursor.take("-")) {
+      const offset = cursor.number(1, 30);
+      if (offset === undefined) throw new Unparsed();
+      return cursor.take("W")
+        ? { kind: "lastWeekday", offset }
+        : { kind: "last", offset };
     }
-    cursor.take("W");
-    return new Unsupported("L in the day of the month");
+    return cursor.take("W")
+      ? { kind: "lastWeekday", offset: 0 }
+      : { kind: "last", offset: 0 };
   }
   if (cursor.peek() === "*") return listOrStar(cursor, daysField);
   const first = item(cursor, daysField);
   if (first.kind === "one" && cursor.take("W")) {
-    return new Unsupported("W in the day of the month");
+    return { kind: "weekday", day: first.at + 1 };
   }
   return tail(cursor, daysField, [first]);
 };
 
 /**
- * `dow_expr` (`saffron/src/parse.rs:927-1011`). A lone `L` is Saturday. A
- * weekday's `L` and `#` parse in the binary, but the kernel does not simulate
- * them.
+ * `dow_expr` (`saffron/src/parse.rs:927-1011`): `*`, a list, a lone `L` for
+ * Saturday, `nL` or `n#k`.
  */
-const weekdaysExpr = (cursor: Cursor): Array<Item> | "*" | Unsupported => {
+const weekdaysExpr = (cursor: Cursor): Array<Item> | "*" | DaysOfWeek => {
   if (cursor.take("L")) return [{ kind: "one", at: 6 }];
   if (cursor.peek() === "*") return listOrStar(cursor, weekdaysField);
   const first = item(cursor, weekdaysField);
   if (first.kind === "one" && cursor.take("L")) {
-    return new Unsupported("L after a weekday");
+    return { kind: "last", weekday: first.at };
   }
   if (first.kind === "one" && cursor.take("#")) {
-    if (cursor.number(1, 5) === undefined) throw new Unparsed();
-    return new Unsupported("# in the day of the week");
+    const nth = cursor.number(1, 5);
+    if (nth === undefined) throw new Unparsed();
+    return { kind: "nth", weekday: first.at, nth };
   }
   return tail(cursor, weekdaysField, [first]);
 };
@@ -412,7 +459,7 @@ const fields = (expression: string): Array<string> | undefined => {
  */
 export const parseExpression = (
   expression: string,
-): Result.Result<Pattern, Unparsed | Unsupported> => {
+): Result.Result<Pattern, Unparsed> => {
   const parts = fields(expression);
   if (parts === undefined) return Result.fail(new Unparsed());
   const [m, h, dom, mon, dow] = parts as [
@@ -434,14 +481,22 @@ export const parseExpression = (
     const days = read(dom, daysExpr);
     const months = read(mon, (c) => listOrStar(c, monthsField));
     const weekdays = read(dow, weekdaysExpr);
-    if (days instanceof Unsupported) return Result.fail(days);
-    if (weekdays instanceof Unsupported) return Result.fail(weekdays);
     return Result.succeed({
       minutes: compile(minutesField, minutes),
       hours: compile(hoursField, hours),
-      days: days === "*" ? "*" : compile(daysField, days),
+      days:
+        days === "*"
+          ? { kind: "star" }
+          : Array.isArray(days)
+            ? { kind: "pattern", bits: compile(daysField, days) }
+            : days,
       months: compile(monthsField, months),
-      weekdays: weekdays === "*" ? "*" : compile(weekdaysField, weekdays),
+      weekdays:
+        weekdays === "*"
+          ? { kind: "star" }
+          : Array.isArray(weekdays)
+            ? { kind: "pattern", bits: compile(weekdaysField, weekdays) }
+            : weekdays,
     });
   } catch (error) {
     if (error instanceof Unparsed) return Result.fail(error);
@@ -449,7 +504,8 @@ export const parseExpression = (
   }
 };
 
-// Calendar arithmetic in UTC, on days since the epoch.
+// Calendar arithmetic in UTC, on days since the epoch, standing in for
+// chrono's `Date<Utc>`.
 
 interface Civil {
   readonly year: number;
@@ -478,64 +534,388 @@ const civil = (days: number): Civil => {
   return { year: era * 400 + yoe + (m <= 2 ? 1 : 0), month: m, day: d };
 };
 
-const weekday = (days: number) => (((days + 4) % 7) + 7) % 7;
+/**
+ * Saffron's `days_in_month` (`saffron/src/lib.rs:26-45`).
+ */
+const daysInMonth = (year: number, month: number): number =>
+  [1, 3, 5, 7, 8, 10, 12].includes(month)
+    ? 31
+    : month !== 2
+      ? 30
+      : year % 4 !== 0
+        ? 28
+        : year % 100 !== 0
+          ? 29
+          : year % 400 !== 0
+            ? 28
+            : 29;
 
 /**
- * `Cron::contains_date` (`saffron/src/lib.rs:992-1003`): the month matches, and
- * the day of the month or the weekday does. A `*` in one of them defers to the
- * other.
+ * Chrono's `Utc.ymd_opt`: the date, or `undefined` when it does not exist.
+ * Howard Hinnant's `days_from_civil`.
  */
-const containsDate = (pattern: Pattern, days: number): boolean => {
-  const { month, day: dom } = civil(days);
-  if (!pattern.months.has(month - 1)) return false;
-  const byDay = pattern.days === "*" || pattern.days.has(dom - 1);
-  const byWeekday =
-    pattern.weekdays === "*" || pattern.weekdays.has(weekday(days));
-  if (pattern.days === "*") return byWeekday;
-  if (pattern.weekdays === "*") return byDay;
-  return byDay || byWeekday;
+const ymd = (year: number, month: number, d: number): number | undefined => {
+  if (month < 1 || month > 12 || d < 1 || d > daysInMonth(year, month)) {
+    return undefined;
+  }
+  const y = month <= 2 ? year - 1 : year;
+  const era = Math.floor(y / 400);
+  const yoe = y - era * 400;
+  const mp = month > 2 ? month - 3 : month + 9;
+  const doy = Math.floor((153 * mp + 2) / 5) + d - 1;
+  const doe = yoe * 365 + Math.floor(yoe / 4) - Math.floor(yoe / 100) + doy;
+  return era * 146097 + doe - 719468;
 };
 
 /**
- * A Gregorian cycle. A pattern no day of which matches inside one never
- * matches.
+ * Chrono's `with_day`: the same month at day `d`, if it exists.
  */
-const cycle = 146097;
+const withDay = (days: number, d: number): number | undefined => {
+  const { year, month } = civil(days);
+  return ymd(year, month, d);
+};
+
+const monthLength = (days: number) => {
+  const { year, month } = civil(days);
+  return daysInMonth(year, month);
+};
 
 /**
- * `Cron::next_after` (`saffron/src/lib.rs:1134-1141`): the first matching
- * minute after the minute holding `ts`, so never `ts` itself.
+ * The weekday, from 0 for Sunday. 1970-01-01 was a Thursday.
+ */
+const weekday = (days: number) => (((days + 4) % 7) + 7) % 7;
+
+const isWeekday = (days: number) => weekday(days) !== 0 && weekday(days) !== 6;
+
+/**
+ * The least member of `set` from `from` up and below `width`, as saffron's
+ * `trailing_zeros` over a mask cleared below `from`; `width` when none.
+ */
+const lowest = (set: ReadonlySet<number>, from: number, width: number) => {
+  let least = width;
+  for (const at of set) if (at >= from && at < least) least = at;
+  return least;
+};
+
+const abort = (days: number): never => {
+  const { year, month, day: d } = civil(days);
+  throw new Aborts(
+    `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
+  );
+};
+
+class Aborts {
+  readonly _tag = "BinaryAborts";
+  constructor(readonly date: string) {}
+}
+
+/**
+ * `DaysOfMonth::contains_date` (`saffron/src/lib.rs:623-678`). An `L-nW` test
+ * on a Monday computes `day + n - days_in_month` in `u32` (`:663`). Below zero
+ * that aborts the binary, so the kernel throws `Aborts` there.
+ */
+const dayContains = (days: DaysOfMonth, date: number): boolean => {
+  const dim = monthLength(date);
+  const d = civil(date).day;
+  const wd = weekday(date);
+  switch (days.kind) {
+    case "pattern":
+      return days.bits.has(d - 1);
+    case "last":
+      return d + days.offset === dim;
+    case "lastWeekday": {
+      if (days.offset === 0) {
+        return (isWeekday(date) && d === dim) || (wd === 5 && dim - d < 3);
+      }
+      const offsetted = d + days.offset;
+      return (
+        (isWeekday(date) && offsetted === dim) ||
+        (wd === 1 && (offsetted < dim ? abort(date) : offsetted - dim < 3)) ||
+        (wd === 5 && offsetted + 1 === dim)
+      );
+    }
+    case "weekday": {
+      const expected = days.day;
+      return (
+        (isWeekday(date) && d === expected) ||
+        (wd === 1 && d - 1 === expected) ||
+        (wd === 1 && d === 3 && expected === 1) ||
+        (wd === 5 && d + 1 === expected) ||
+        (wd === 5 && d + 2 === expected && expected === dim)
+      );
+    }
+    case "star":
+      return true;
+  }
+};
+
+/**
+ * `DaysOfWeek::contains_date` (`saffron/src/lib.rs:153-173`).
+ */
+const weekdayContains = (weekdays: DaysOfWeek, date: number): boolean => {
+  const wd = weekday(date);
+  switch (weekdays.kind) {
+    case "pattern":
+      return weekdays.bits.has(wd);
+    case "nth":
+      return (
+        weekdays.weekday === wd &&
+        Math.floor((civil(date).day - 1) / 7) + 1 === weekdays.nth
+      );
+    case "last":
+      return weekdays.weekday === wd && civil(date).day + 7 > monthLength(date);
+    case "star":
+      return true;
+  }
+};
+
+/**
+ * `Cron::contains_date` (`saffron/src/lib.rs:992-1003`): the month matches, and
+ * the day of the month or the weekday does, the weekday tested first. A `*` in
+ * one defers to the other.
+ */
+const containsDate = (pattern: Pattern, date: number): boolean => {
+  if (!pattern.months.has(civil(date).month - 1)) return false;
+  const dayStar = pattern.days.kind === "star";
+  const weekdayStar = pattern.weekdays.kind === "star";
+  if (dayStar && weekdayStar) return true;
+  if (dayStar) return weekdayContains(pattern.weekdays, date);
+  if (weekdayStar) return dayContains(pattern.days, date);
+  return (
+    weekdayContains(pattern.weekdays, date) || dayContains(pattern.days, date)
+  );
+};
+
+/**
+ * `find_next_day_of_month` (`saffron/src/lib.rs:1253-1310`).
+ */
+const nextDayOfMonth = (days: DaysOfMonth, start: number) => {
+  const dim = monthLength(start);
+  const near = (
+    expected: number,
+    date: number | undefined,
+    lastSunday: boolean,
+  ) => {
+    if (date === undefined) return undefined;
+    const wd = weekday(date);
+    if (wd === 6 && expected === 1) return withDay(start, 3);
+    if (wd === 6) return withDay(start, expected - 1);
+    if (wd === 0 && lastSunday && expected === dim)
+      return withDay(start, dim - 2);
+    if (wd === 0) return withDay(start, expected + 1);
+    return date;
+  };
+  const found = ((): number | undefined => {
+    switch (days.kind) {
+      case "last":
+        return days.offset === 0
+          ? withDay(start, dim)
+          : dim < days.offset
+            ? undefined
+            : withDay(start, dim - days.offset);
+      case "lastWeekday": {
+        if (days.offset === 0) {
+          const end = withDay(start, dim)!;
+          const wd = weekday(end);
+          return wd === 6
+            ? withDay(start, dim - 1)
+            : wd === 0
+              ? withDay(start, dim - 2)
+              : end;
+        }
+        if (dim < days.offset) return undefined;
+        const expected = dim - days.offset;
+        return near(expected, withDay(start, expected), false);
+      }
+      case "weekday":
+        return near(days.day, withDay(start, days.day), true);
+      case "pattern":
+      case "star": {
+        const bits = days.kind === "pattern" ? days.bits : new Set<number>();
+        const at = lowest(bits, civil(start).day - 1, 31);
+        return at < dim ? withDay(start, at + 1) : undefined;
+      }
+    }
+  })();
+  return found !== undefined && found >= start ? found : undefined;
+};
+
+/**
+ * `find_next_weekday` (`saffron/src/lib.rs:1314-1387`).
+ */
+const nextWeekday = (weekdays: DaysOfWeek, start: number) => {
+  const dim = monthLength(start);
+  const day0 = civil(start).day - 1;
+  const current = weekday(start);
+  const firstOf = (target: number) =>
+    (day0 + (target < current ? 7 - (current - target) : target - current)) % 7;
+  const found = ((): number | undefined => {
+    switch (weekdays.kind) {
+      case "last": {
+        const first = firstOf(weekdays.weekday);
+        const fifth =
+          (dim === 29 && first === 0) ||
+          (dim === 30 && first <= 1) ||
+          (dim === 31 && first <= 2);
+        return withDay(start, first + (fifth ? 28 : 21) + 1);
+      }
+      case "nth":
+        return withDay(
+          start,
+          firstOf(weekdays.weekday) + 7 * (weekdays.nth - 1) + 1,
+        );
+      case "pattern": {
+        const map = new Set([...weekdays.bits].filter((at) => at <= 6));
+        const next = lowest(map, current, 8);
+        return withDay(
+          start,
+          (next < 8
+            ? day0 + (next - current)
+            : day0 + (6 - current) + 1 + lowest(map, 0, 8)) + 1,
+        );
+      }
+      case "star":
+        return start;
+    }
+  })();
+  return found !== undefined && found >= start ? found : undefined;
+};
+
+/**
+ * `find_next_day` (`saffron/src/lib.rs:1234-1250`).
+ */
+const nextDay = (pattern: Pattern, start: number) => {
+  const dayStar = pattern.days.kind === "star";
+  const weekdayStar = pattern.weekdays.kind === "star";
+  if (dayStar && weekdayStar) return start;
+  if (dayStar) return nextWeekday(pattern.weekdays, start);
+  if (weekdayStar) return nextDayOfMonth(pattern.days, start);
+  const byWeekday = nextWeekday(pattern.weekdays, start);
+  const byDay = nextDayOfMonth(pattern.days, start);
+  return byDay === undefined
+    ? byWeekday
+    : byWeekday === undefined
+      ? byDay
+      : Math.min(byDay, byWeekday);
+};
+
+/**
+ * `find_next_month` (`saffron/src/lib.rs:1391-1401`). A bit past December has
+ * no month, so it answers none.
+ */
+const nextMonth = (pattern: Pattern, start: number) => {
+  const { year, month } = civil(start);
+  const at = lowest(pattern.months, month - 1, 16);
+  return at < 16 ? ymd(year, at + 1, 1) : undefined;
+};
+
+/**
+ * `next_month_in_year` (`saffron/src/lib.rs:1460-1467`).
+ */
+const nextMonthInYear = (date: number) => {
+  const { year, month } = civil(date);
+  return month <= 11 ? ymd(year, month + 1, 1) : undefined;
+};
+
+/**
+ * `find_next_date` (`saffron/src/lib.rs:1403-1436`), within one year.
+ */
+const nextDate = (pattern: Pattern, from: number): number | undefined => {
+  let start = from;
+  if (pattern.months.has(civil(start).month - 1)) {
+    const found = nextDay(pattern, start);
+    if (found !== undefined) return found;
+  }
+  for (;;) {
+    const following = nextMonthInYear(start);
+    if (following === undefined) return undefined;
+    const month = nextMonth(pattern, following);
+    if (month === undefined) return undefined;
+    start = month;
+    const found = nextDay(pattern, start);
+    if (found !== undefined) return found;
+  }
+};
+
+/**
+ * `find_next_time` (`saffron/src/lib.rs:1178-1230`), in minutes of the day.
+ */
+const nextTime = (pattern: Pattern, from: number): number | undefined => {
+  const hour = Math.floor(from / 60);
+  if (pattern.hours.has(hour)) {
+    const m = lowest(pattern.minutes, from % 60, 64);
+    if (m < 64) return hour * 60 + m;
+  }
+  if (hour + 1 > 23) return undefined;
+  const h = lowest(pattern.hours, hour + 1, 32);
+  if (h >= 32) return undefined;
+  const m = lowest(pattern.minutes, 0, 64);
+  return m < 64 ? h * 60 + m : undefined;
+};
+
+/**
+ * The last year chrono's `MAX_DATETIME` reaches, where saffron's search stops.
+ */
+const lastYear = 262_143;
+
+/**
+ * `Cron::next_after` (`saffron/src/lib.rs:1134-1174`): the first run after the
+ * minute holding `ts`, so never `ts` itself. The first day is tested with
+ * `contains_date`, and every later one is found by saffron's day search, as
+ * saffron does.
  */
 export const nextOccurrenceAfter = (
   pattern: Pattern,
   ts: number,
-): number | undefined => {
+): Result.Result<number, SearchFailure> => {
   const start = Math.floor(ts / minute) * minute + minute;
-  const firstDay = Math.floor(start / day);
-  const startMinute = (start - firstDay * day) / minute;
-  for (let days = firstDay; days <= firstDay + cycle; days += 1) {
-    if (!containsDate(pattern, days)) continue;
-    const from = days === firstDay ? startMinute : 0;
-    for (let h = Math.floor(from / 60); h < 24; h += 1) {
-      if (!pattern.hours.has(h)) continue;
-      const m0 = h === Math.floor(from / 60) ? from % 60 : 0;
-      for (let m = m0; m < 60; m += 1) {
-        if (pattern.minutes.has(m))
-          return days * day + h * 60 * minute + m * minute;
-      }
+  const date = Math.floor(start / day);
+  try {
+    if (!any(pattern)) return Result.fail({ _tag: "NoOccurrence" });
+    if (containsDate(pattern, date)) {
+      const time = nextTime(pattern, (start - date * day) / minute);
+      if (time !== undefined) return Result.succeed(date * day + time * minute);
     }
+    let search = date + 1;
+    for (;;) {
+      const found = nextDate(pattern, search);
+      if (found !== undefined) {
+        const time = nextTime(pattern, 0);
+        return time === undefined
+          ? Result.fail({ _tag: "NoOccurrence" })
+          : Result.succeed(found * day + time * minute);
+      }
+      const year = civil(search).year + 1;
+      if (year > lastYear) return Result.fail({ _tag: "NoOccurrence" });
+      search = ymd(year, 1, 1)!;
+    }
+  } catch (error) {
+    if (error instanceof Aborts) {
+      return Result.fail({ _tag: "BinaryAborts", date: error.date });
+    }
+    throw error;
   }
-  return undefined;
 };
 
 /**
  * Whether a pattern can match at all, saffron's `Cron::any`
  * (`saffron/src/lib.rs:930-961`), which the binary checks at push
- * (`crates/model/src/cron_jobs/types.rs:453-459`).
+ * (`crates/model/src/cron_jobs/types.rs:453-459`). For `nW` it reads the day's
+ * own bits, as saffron does.
  */
 const any = (pattern: Pattern): boolean => {
-  if (pattern.weekdays !== "*" || pattern.days === "*") return true;
-  const first = Math.min(...pattern.days) + 1;
+  const days = pattern.days;
+  if (pattern.weekdays.kind !== "star" || days.kind === "star") return true;
+  const trailing = (n: number) => (n === 0 ? 32 : 31 - Math.clz32(n & -n));
+  let first: number;
+  if (days.kind === "last" || days.kind === "lastWeekday") {
+    if (days.offset === 0) return true;
+    first = days.offset + 1;
+  } else if (days.kind === "weekday") {
+    first = trailing(days.day) + 1;
+  } else {
+    first = lowest(days.bits, 0, 32) + 1;
+  }
   const months = [...pattern.months];
   const longest = months.some((m) => [0, 2, 4, 6, 7, 9, 11].includes(m))
     ? 31
@@ -671,16 +1051,7 @@ export const parseSpec = (
         if (typeof expression !== "string") return invalid("Invalid JSON");
         const parsed = parseExpression(expression);
         if (Result.isFailure(parsed)) {
-          return parsed.failure._tag === "Unsupported"
-            ? Result.fail(
-                new KernelRefusal.UnsupportedCronExpression({
-                  componentPath,
-                  name,
-                  expression,
-                  message: `Cron job "${name}" uses ${parsed.failure.feature} in "${expression}". The Convex binary accepts it, but the test kernel does not simulate it. Run this schedule against the binary.`,
-                }),
-              )
-            : invalid(`"${expression}" is not a cron expression`);
+          return invalid(`"${expression}" is not a cron expression`);
         }
         if (!any(parsed.success)) {
           return invalid(
@@ -727,44 +1098,38 @@ const canonical = (udfPath: string): string => {
 const patternOf = (
   schedule: Exclude<Schedule, { kind: "interval" }>,
 ): Pattern => {
+  if (schedule.kind === "cron") return schedule.pattern;
   const all = (top: number) => new Set(range(0, top));
   const at = (n: number) => new Set([n]);
-  const minutes =
-    schedule.kind === "cron" ? undefined : at(schedule.minuteUTC ?? 0);
+  const minutes = at(schedule.minuteUTC ?? 0);
+  const months = all(11);
+  const star = { kind: "star" } as const;
   switch (schedule.kind) {
-    case "cron":
-      return schedule.pattern;
     case "hourly":
-      return {
-        minutes: minutes!,
-        hours: all(23),
-        days: "*",
-        months: all(11),
-        weekdays: "*",
-      };
+      return { minutes, hours: all(23), days: star, months, weekdays: star };
     case "daily":
       return {
-        minutes: minutes!,
+        minutes,
         hours: at(schedule.hourUTC),
-        days: "*",
-        months: all(11),
-        weekdays: "*",
+        days: star,
+        months,
+        weekdays: star,
       };
     case "weekly":
       return {
-        minutes: minutes!,
+        minutes,
         hours: at(schedule.hourUTC),
-        days: "*",
-        months: all(11),
-        weekdays: at(schedule.dayOfWeek),
+        days: star,
+        months,
+        weekdays: { kind: "pattern", bits: at(schedule.dayOfWeek) },
       };
     case "monthly":
       return {
-        minutes: minutes!,
+        minutes,
         hours: at(schedule.hourUTC),
-        days: at(schedule.day - 1),
-        months: all(11),
-        weekdays: "*",
+        days: { kind: "pattern", bits: at(schedule.day - 1) },
+        months,
+        weekdays: star,
       };
   }
 };
@@ -800,31 +1165,30 @@ const splay = (
  * at time `now`, as `compute_next_ts` computes it
  * (`crates/model/src/cron_jobs/next_ts.rs:129-189`). An interval's first run is
  * due at once, and each later one an interval after the previous run's time. A
- * clock schedule's run is its next occurrence after `now`, less the previous
- * run's delay, plus the next run's delay. `draw(bound)` answers a whole number
- * of seconds in `[0, bound)`.
+ * clock schedule's run is its next occurrence after `now` less the previous
+ * run's delay, plus the next run's delay. When `now` is no later than that
+ * delay, the binary's checked subtraction fails and it searches from `now`
+ * itself (`next_ts.rs:180`, `Timestamp::sub` in
+ * `crates/convex/sync_types/src/timestamp.rs:72-78`). `draw(bound)` answers a
+ * whole number of seconds in `[0, bound)`.
  */
 export const nextRun = (
   schedule: Schedule,
   previous: number | undefined,
   now: number,
   draw: (bound: number) => number,
-): number => {
+): Result.Result<number, SearchFailure> => {
   if (schedule.kind === "interval") {
-    return previous === undefined ? now : previous + schedule.seconds * second;
-  }
-  const delay = splay(schedule, previous, draw);
-  const occurrence = nextOccurrenceAfter(
-    patternOf(schedule),
-    now - delay.previous * second,
-  );
-  if (occurrence === undefined) {
-    // `any` refused every pattern that never matches when the job was read.
-    throw new Error(
-      `Could not compute the next run of a "${schedule.kind}" cron.`,
+    return Result.succeed(
+      previous === undefined ? now : previous + schedule.seconds * second,
     );
   }
-  return occurrence + delay.next * second;
+  const delay = splay(schedule, previous, draw);
+  const back = delay.previous * second;
+  return Result.map(
+    nextOccurrenceAfter(patternOf(schedule), now > back ? now - back : now),
+    (occurrence) => occurrence + delay.next * second,
+  );
 };
 
 /**
@@ -837,12 +1201,15 @@ export const following = (
   previous: number,
   now: number,
   draw: (bound: number) => number,
-): { readonly next: number; readonly skipped: number } => {
+): Result.Result<
+  { readonly next: number; readonly skipped: number },
+  SearchFailure
+> => {
   let next = nextRun(schedule, previous, now, draw);
   let skipped = 0;
-  while (next < now) {
+  while (Result.isSuccess(next) && next.success < now) {
     skipped += 1;
-    next = nextRun(schedule, next, now, draw);
+    next = nextRun(schedule, next.success, now, draw);
   }
-  return { next, skipped };
+  return Result.map(next, (at) => ({ next: at, skipped }));
 };

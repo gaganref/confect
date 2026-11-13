@@ -601,17 +601,28 @@ export class World {
         if (Result.isFailure(parsed)) throw parsed.failure;
         const spec = parsed.success;
         this.checkCronTarget(component, spec);
-        this.cronJobs.set(cronKey(component.path, name), {
+        if (spec.schedule.kind !== "interval" && world === undefined) {
+          throw new KernelRefusal.CronRandomUnavailable({
+            componentPath: component.path,
+            name,
+            message: `Cron job "${name}" runs on a ${spec.schedule.kind} schedule, which Convex delays by a random number of seconds, and no test world was bound when the backend opened to draw it from. The kernel holds no generator. Open the backend under a bound invocation, whose world's random stream the delay draws from.`,
+          });
+        }
+        const job: CronJob = {
           componentPath: component.path,
           spec,
-          nextRun: Crons.nextRun(
-            spec.schedule,
-            undefined,
-            this.now(),
-            (bound) => this.draw(bound),
-          ),
+          nextRun: 0,
           last: undefined,
           world,
+        };
+        this.cronJobs.set(cronKey(component.path, name), {
+          ...job,
+          nextRun: this.searched(
+            job,
+            Crons.nextRun(spec.schedule, undefined, this.now(), (bound) =>
+              this.draw(job, bound),
+            ),
+          ),
         });
       }
     }
@@ -648,14 +659,34 @@ export class World {
   }
 
   /**
-   * A whole number in `[0, bound)` from the runtime's draw.
+   * A whole number in `[0, bound)`, drawn from the random stream of the world
+   * the cron job runs in, the stream its handlers draw from. `declareCrons`
+   * refused a clock schedule with no world, and an interval never draws.
    */
-  private draw(bound: number): number {
-    const random =
-      this.runtime.random ??
-      // oxlint-disable-next-line effecttsgo/global-random -- The kernel holds no generator. With no draw from the driver, the host's stands in.
-      (() => Globals.host(() => Math.random()));
-    return Math.floor(random() * bound);
+  private draw(cron: CronJob, bound: number): number {
+    return Math.floor(cron.world!.random() * bound);
+  }
+
+  /**
+   * A computed run time, or the refusal for a search the binary cannot finish.
+   */
+  private searched(
+    cron: CronJob,
+    result: Result.Result<number, Crons.SearchFailure>,
+  ): number {
+    if (Result.isSuccess(result)) return result.success;
+    const { name, schedule } = cron.spec;
+    const expression = schedule.kind === "cron" ? schedule.expression : name;
+    throw result.failure._tag === "BinaryAborts"
+      ? new KernelRefusal.CronAbortsBinary({
+          componentPath: cron.componentPath,
+          name,
+          date: result.failure.date,
+          message: `Cron job "${name}" searches "${expression}" from ${result.failure.date}, a Monday, where saffron subtracts below zero (saffron/src/lib.rs:663). The Convex binary is built with overflow checks and aborts there, so the kernel refuses rather than answer.`,
+        })
+      : new Error(
+          `Cron job "${name}" has no next run, though its schedule passed saffron's \`any\` when it was read.`,
+        );
   }
 
   /**
@@ -1028,11 +1059,14 @@ export class World {
    * the run finished.
    */
   private scheduleNextRun(cron: CronJob, last: CronOutcome) {
-    const { next } = Crons.following(
-      cron.spec.schedule,
-      cron.nextRun,
-      this.now(),
-      (bound) => this.draw(bound),
+    const next = this.searched(
+      cron,
+      Result.map(
+        Crons.following(cron.spec.schedule, cron.nextRun, this.now(), (bound) =>
+          this.draw(cron, bound),
+        ),
+        ({ next: at }) => at,
+      ),
     );
     this.cronJobs.set(cronKey(cron.componentPath, cron.spec.name), {
       ...cron,

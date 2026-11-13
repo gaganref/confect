@@ -108,15 +108,25 @@ export class InvalidCron extends Schema.TaggedError<InvalidCron>()(
 ) {}
 
 /**
- * A cron expression uses a form the binary accepts and the kernel does not
- * simulate: `L` or `W` in the day of the month, or `L` or `#` after a weekday.
+ * A cron job runs on a clock schedule, which Convex delays by a random draw,
+ * and no test world was bound when the backend opened to draw it from. The
+ * kernel holds no generator of its own.
  */
-export class UnsupportedCronExpression extends Schema.TaggedError<UnsupportedCronExpression>()(
-  "UnsupportedCronExpression",
+export class CronRandomUnavailable extends Schema.TaggedError<CronRandomUnavailable>()(
+  "CronRandomUnavailable",
+  { componentPath: Schema.String, name: Schema.String, message: Schema.String },
+) {}
+
+/**
+ * Computing a cron job's next run reaches arithmetic that aborts the Convex
+ * binary, which is built with overflow checks.
+ */
+export class CronAbortsBinary extends Schema.TaggedError<CronAbortsBinary>()(
+  "CronAbortsBinary",
   {
     componentPath: Schema.String,
     name: Schema.String,
-    expression: Schema.String,
+    date: Schema.String,
     message: Schema.String,
   },
 ) {}

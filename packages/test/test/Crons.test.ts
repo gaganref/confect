@@ -39,6 +39,20 @@ const drawing = (seconds: number) => {
   };
 };
 
+const ok = <A>(result: Result.Result<A, Crons.SearchFailure>): A => {
+  if (Result.isFailure(result)) {
+    throw new Error(`Expected a run, got ${result.failure._tag}.`);
+  }
+  return result.success;
+};
+
+const following = (
+  schedule: Crons.Schedule,
+  previous: number,
+  now: number,
+  draw: (bound: number) => number,
+) => ok(Crons.following(schedule, previous, now, draw));
+
 const never = (bound: number): number => {
   throw new Error(`No draw was expected, but one asked for [0, ${bound}).`);
 };
@@ -50,10 +64,10 @@ const runs = (
   draw: (bound: number) => number = never,
 ) => {
   const times: Array<string> = [];
-  let at = Crons.nextRun(schedule, undefined, utc(now), draw);
+  let at = ok(Crons.nextRun(schedule, undefined, utc(now), draw));
   times.push(iso(at));
   for (let i = 1; i < count; i += 1) {
-    at = Crons.following(schedule, at, at, draw).next;
+    at = following(schedule, at, at, draw).next;
     times.push(iso(at));
   }
   return times;
@@ -83,7 +97,7 @@ describe("intervals", () => {
   it("anchors on the previous run's time, so a run that finishes late keeps the cadence", () => {
     const every = spec({ type: "interval", seconds: 30 });
     const due = utc("2026-03-01T10:00:00");
-    expect(iso(Crons.following(every, due, due + 12_000, never).next)).toBe(
+    expect(iso(following(every, due, due + 12_000, never).next)).toBe(
       "2026-03-01T10:00:30.000Z",
     );
   });
@@ -91,7 +105,7 @@ describe("intervals", () => {
   it("skips every run already past when one finishes after several intervals", () => {
     const every = spec({ type: "interval", seconds: 30 });
     const due = utc("2026-03-01T10:00:00");
-    const { next, skipped } = Crons.following(
+    const { next, skipped } = following(
       every,
       due,
       utc("2026-03-01T10:01:45"),
@@ -106,9 +120,10 @@ describe("intervals", () => {
   it("keeps a run due exactly as the previous one finishes", () => {
     const every = spec({ type: "interval", seconds: 30 });
     const due = utc("2026-03-01T10:00:00");
-    expect(
-      Crons.following(every, due, utc("2026-03-01T10:00:30"), never),
-    ).toEqual({ next: utc("2026-03-01T10:00:30"), skipped: 0 });
+    expect(following(every, due, utc("2026-03-01T10:00:30"), never)).toEqual({
+      next: utc("2026-03-01T10:00:30"),
+      skipped: 0,
+    });
   });
 });
 
@@ -138,7 +153,7 @@ describe("clock schedules", () => {
   it("draws again when the previous run carried no delay", () => {
     const daily = spec({ type: "daily", hourUTC: 4, minuteUTC: 5 });
     const { bounds, draw } = drawing(42);
-    const next = Crons.following(
+    const next = following(
       daily,
       utc("2026-03-01T04:05:00"),
       utc("2026-03-01T04:05:00"),
@@ -296,24 +311,154 @@ describe("declarations the binary refuses", () => {
   });
 
   it.each([
-    "0 0 L * *",
-    "0 0 L-2W * *",
-    "0 0 15W * *",
-    "0 0 * * FRIL",
-    "0 0 * * MON#2",
-  ])(
-    "%s parses in the binary but is refused as not simulated",
-    (expression) => {
-      expect(refusal({ type: "cron", cron: expression })).toMatchObject({
-        _tag: "UnsupportedCronExpression",
-        expression,
-      });
-    },
-  );
-
-  it("refuses an L form that would not parse as invalid, not as unsupported", () => {
-    expect(refusal({ type: "cron", cron: "0 0 Lx * *" })).toMatchObject({
+    "0 0 Lx * *",
+    "0 0 L-31 * *",
+    "0 0 15W,1 * *",
+    "0 0 * * 1#6",
+    "0 0 * * 1#3,2",
+  ])("%s is refused as invalid", (expression) => {
+    expect(refusal({ type: "cron", cron: expression })).toMatchObject({
       _tag: "InvalidCron",
     });
+  });
+});
+
+// The expected dates below were traced by hand through saffron's search at the
+// pinned revision (`saffron/src/lib.rs:1134-1436`): the first day is tested
+// with `contains_date` (`:623-678`, `:153-173`), and each later one is found
+// by `find_next_day_of_month` (`:1253-1310`) or `find_next_weekday`
+// (`:1314-1387`). Weekdays of 2026-2028 come from the calendar: 2026-01-01 is a
+// Thursday.
+describe("L, W and # in cron expressions", () => {
+  const at = (expression: string, now: string, count: number) =>
+    runs(spec({ type: "cron", cron: expression }), now, count, () => 0);
+
+  it("L is the month's last day, February's 28th or 29th", () => {
+    expect(at("0 0 L * *", "2027-01-15T00:00:00", 3)).toEqual([
+      "2027-01-31T00:00:00.000Z",
+      "2027-02-28T00:00:00.000Z",
+      "2027-03-31T00:00:00.000Z",
+    ]);
+    expect(at("0 0 L * *", "2028-02-01T00:00:00", 1)).toEqual([
+      "2028-02-29T00:00:00.000Z",
+    ]);
+  });
+
+  it("L-n counts back from the month's end and skips a month too short for it", () => {
+    expect(at("0 0 L-2 * *", "2027-02-01T00:00:00", 2)).toEqual([
+      "2027-02-26T00:00:00.000Z",
+      "2027-03-29T00:00:00.000Z",
+    ]);
+    expect(at("0 0 L-2 * *", "2028-02-01T00:00:00", 1)).toEqual([
+      "2028-02-27T00:00:00.000Z",
+    ]);
+    // 31 - 30 is the 1st. February is shorter than 30 days, and April's
+    // 30 - 30 is day 0, which chrono's `with_day` refuses.
+    expect(at("0 0 L-30 * *", "2027-01-02T00:00:00", 2)).toEqual([
+      "2027-03-01T00:00:00.000Z",
+      "2027-05-01T00:00:00.000Z",
+    ]);
+  });
+
+  it("LW is the last weekday, the Friday before a month that ends on a weekend", () => {
+    // January 2026 ends on a Saturday, February on a Saturday, May on a Sunday.
+    expect(at("0 0 LW * *", "2026-01-01T00:00:00", 5)).toEqual([
+      "2026-01-30T00:00:00.000Z",
+      "2026-02-27T00:00:00.000Z",
+      "2026-03-31T00:00:00.000Z",
+      "2026-04-30T00:00:00.000Z",
+      "2026-05-29T00:00:00.000Z",
+    ]);
+  });
+
+  it("L-nW is the weekday nearest n days before the end", () => {
+    // 2026-03-28 is a Saturday, so the 27th; 2026-06-27 a Saturday, so the
+    // 26th. April's 27th is a Monday whose first test matches, so the
+    // subtraction at `lib.rs:663` is never reached.
+    expect(at("0 0 L-3W * *", "2026-03-03T12:00:00", 5)).toEqual([
+      "2026-03-27T00:00:00.000Z",
+      "2026-04-27T00:00:00.000Z",
+      "2026-05-28T00:00:00.000Z",
+      "2026-06-26T00:00:00.000Z",
+      "2026-07-28T00:00:00.000Z",
+    ]);
+  });
+
+  it("an L-nW search that starts on an unmatched Monday aborts the binary, so the kernel refuses", () => {
+    // 2026-03-02 is a Monday, and 2 + 3 < 31 underflows `u32` at `lib.rs:663`.
+    expect(
+      Crons.nextRun(
+        spec({ type: "cron", cron: "0 0 L-3W * *" }),
+        undefined,
+        utc("2026-03-01T23:59:30"),
+        () => 0,
+      ),
+    ).toEqual(Result.fail({ _tag: "BinaryAborts", date: "2026-03-02" }));
+  });
+
+  it("nW is the weekday nearest day n, never leaving the month", () => {
+    // 2026-02-15 and 2026-03-15 are Sundays, so the 16th; 2026-04-15 a Wednesday.
+    expect(at("0 0 15W * *", "2026-02-01T00:00:00", 3)).toEqual([
+      "2026-02-16T00:00:00.000Z",
+      "2026-03-16T00:00:00.000Z",
+      "2026-04-15T00:00:00.000Z",
+    ]);
+    // 2026-08-15 is a Saturday, so the 14th.
+    expect(at("0 0 15W * *", "2026-08-01T00:00:00", 1)).toEqual([
+      "2026-08-14T00:00:00.000Z",
+    ]);
+    // 2026-08-01 is a Saturday: 1W moves forward to Monday the 3rd, not back
+    // into July.
+    expect(at("0 0 1W * *", "2026-07-15T00:00:00", 2)).toEqual([
+      "2026-08-03T00:00:00.000Z",
+      "2026-09-01T00:00:00.000Z",
+    ]);
+    // 2026-05-31 is a Sunday and the month's last day: 31W moves back to Friday
+    // the 29th. June has no 31st, so it has no run.
+    expect(at("0 0 31W * *", "2026-05-01T00:00:00", 2)).toEqual([
+      "2026-05-29T00:00:00.000Z",
+      "2026-07-31T00:00:00.000Z",
+    ]);
+    // 2026-08-30 is a Sunday but not the month's end: 30W moves to Monday the 31st.
+    expect(at("0 0 30W * *", "2026-08-01T00:00:00", 1)).toEqual([
+      "2026-08-31T00:00:00.000Z",
+    ]);
+  });
+
+  it("n#k is the k-th weekday n, and a month without one has no run", () => {
+    expect(at("0 0 * * 1#3", "2026-01-01T00:00:00", 3)).toEqual([
+      "2026-01-19T00:00:00.000Z",
+      "2026-02-16T00:00:00.000Z",
+      "2026-03-16T00:00:00.000Z",
+    ]);
+    // Fridays of February, March and April 2026 stop at the fourth.
+    expect(at("0 0 * * 5#5", "2026-01-01T00:00:00", 2)).toEqual([
+      "2026-01-30T00:00:00.000Z",
+      "2026-05-29T00:00:00.000Z",
+    ]);
+  });
+
+  it("nL is the month's last weekday n", () => {
+    expect(at("0 0 * * FRIL", "2026-01-01T00:00:00", 3)).toEqual([
+      "2026-01-30T00:00:00.000Z",
+      "2026-02-27T00:00:00.000Z",
+      "2026-03-27T00:00:00.000Z",
+    ]);
+  });
+});
+
+describe("the epoch", () => {
+  it("a clock at 0 searches from 0 when the delay cannot be subtracted, as the binary's checked subtraction falls back", () => {
+    // `now.sub(15s)` fails at 0 (`timestamp.rs:72-78`), so the search starts at
+    // 0, the next minute is 60 s, and the delay makes it 75 s.
+    const { draw } = drawing(15);
+    expect(
+      Crons.nextRun(
+        spec({ type: "cron", cron: "* * * * *" }),
+        undefined,
+        0,
+        draw,
+      ),
+    ).toEqual(Result.succeed(75_000));
   });
 });

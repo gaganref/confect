@@ -143,11 +143,12 @@ const accessor = (
  * Beyond convex-test, `prepare` runs a mutation to its commit point and holds
  * it, and `apply` validates and publishes a held attempt. `mutation` applies
  * each attempt it prepares at once and prepares the next on a conflict, up to
- * attempt 5. `runtime` supplies the clock, commit timestamps and the draw for a
- * cron run's delay. Scheduled functions and declared cron jobs run on the
- * kernel's clock, never on a host timer. A subscriber's subscriptions go stale
- * when a commit changes what they read or the identity they read changes, and
- * `refresh` reruns them.
+ * attempt 5. `runtime` supplies the clock and commit timestamps. Scheduled
+ * functions and declared cron jobs run on the kernel's clock, never on a host
+ * timer, and a cron run's delay draws from the random stream of the world bound
+ * when the backend opened. A subscriber's subscriptions go stale when a commit
+ * changes what they read or the identity they read changes, and `refresh`
+ * reruns them.
  */
 export function convexTest(
   schemaOrOptions?:
