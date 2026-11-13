@@ -131,6 +131,22 @@ export class CronAbortsBinary extends Schema.TaggedError<CronAbortsBinary>()(
   },
 ) {}
 
+/**
+ * A snapshot's cron jobs are not the ones the restoring app declares: one the
+ * snapshot holds is not declared, one declared is not in the snapshot, or a
+ * declaration's function, arguments or schedule changed. A restore would run
+ * the snapshot's runs for jobs the app no longer declares as they were.
+ */
+export class SnapshotCronMismatch extends Schema.TaggedError<SnapshotCronMismatch>()(
+  "SnapshotCronMismatch",
+  {
+    componentPath: Schema.String,
+    name: Schema.String,
+    reason: Schema.Literals(["undeclared", "missing", "changed"]),
+    message: Schema.String,
+  },
+) {}
+
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
   new RequiresBinary({
     operation,

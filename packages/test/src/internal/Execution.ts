@@ -14,6 +14,7 @@ import {
   compareValues,
   convexToJson,
   jsonToConvex,
+  type JSONValue,
   type Value,
 } from "convex/values";
 import * as Result from "effect/Result";
@@ -54,6 +55,23 @@ import {
 
 const ROOT = "";
 
+/**
+ * A cron job's declaration as a snapshot writes it and a restore compares it:
+ * its name, function, arguments as Convex JSON through `args`, and schedule, a
+ * cron expression by its text.
+ */
+const declarationJson = (
+  { spec }: Pick<CronJob, "spec">,
+  args: (json: JSONValue) => JSONValue,
+) => ({
+  name: spec.name,
+  udfPath: spec.udfPath,
+  args: args(convexToJson(spec.args)),
+  schedule: (spec.schedule.kind === "cron"
+    ? { kind: "cron", expression: spec.schedule.expression }
+    : spec.schedule) as unknown as JSONValue,
+});
+
 const cronKey = (componentPath: string, name: string) =>
   `${componentPath}\u0000${name}`;
 
@@ -86,7 +104,7 @@ interface Component {
  * component's `_cron_jobs` and `_cron_next_run` system tables, which no
  * function reads, so the kernel keeps it beside its tables.
  */
-interface CronJob {
+export interface CronJob {
   readonly componentPath: string;
   readonly spec: Crons.Spec;
   readonly nextRun: number;
@@ -96,6 +114,14 @@ interface CronJob {
    * stands for. Each run starts as a fresh invocation of it, or unbound.
    */
   readonly world: Invocation.World | undefined;
+}
+
+/**
+ * A cron job as its component declares it, before any run is scheduled.
+ */
+interface CronDeclaration {
+  readonly componentPath: string;
+  readonly spec: Crons.Spec;
 }
 
 export type CronOutcome =
@@ -564,6 +590,15 @@ export class World {
   private readonly targets = new Map<DocumentId, Scheduling.Target>();
   private readonly cronJobs = new Map<string, CronJob>();
   /**
+   * Every component's cron declarations, read once the modules load.
+   */
+  private declared: ReadonlyArray<CronDeclaration> = [];
+  /**
+   * Whether the declared jobs have their runs: first runs scheduled, or a
+   * snapshot's installed.
+   */
+  private cronsScheduled = false;
+  /**
    * The raw secrets this world has seen under a secret schema node. Replay
    * state, kept in memory and never written to an artifact.
    */
@@ -621,9 +656,8 @@ export class World {
   }
 
   /**
-   * Load every registered module of every component, once, before any function
-   * runs, check that each standing source names an exported function, and
-   * declare each component's cron jobs. Their runs start in the world of the
+   * Load every registered module, read each component's cron declarations, and
+   * schedule their first runs, once. The first runs start in the world of the
    * invocation bound by the call that opened the backend, or else the world the
    * driver gave the backend. `advance` and `drain` open with the driver's,
    * since their binding never reaches a job.
@@ -633,8 +667,17 @@ export class World {
   }
 
   private openIn(world: Invocation.World | undefined): Promise<void> {
-    if (this.opened !== undefined) return this.opened;
-    this.opened = Promise.all(
+    return this.load().then(() => this.scheduleFirstRuns(world));
+  }
+
+  /**
+   * Load every registered module of every component, once, before any function
+   * runs, check that each standing source names an exported function, and read
+   * each component's cron declarations. Nothing here draws a random value, so a
+   * restore can load without one.
+   */
+  private load(): Promise<void> {
+    this.opened ??= Promise.all(
       Array.from(this.components.values(), (component) =>
         Promise.all(
           Array.from(component.loaders, ([path, load]) =>
@@ -644,19 +687,23 @@ export class World {
       ),
     )
       .then(() => this.checkStanding())
-      .then(() => this.declareCrons(world));
+      .then(() => this.readDeclarations());
     return this.opened;
+  }
+
+  private readDeclarations() {
+    this.declared = this.readCrons();
   }
 
   /**
    * Read each component's `crons.ts` as the binary reads `crons.js` at push
-   * (`crates/model/src/cron_jobs/mod.rs:151-195`), refuse what the push would
-   * (`crates/isolate/src/environment/analyze.rs:1016-1089`,
-   * `crates/application/src/application_function_runner/mod.rs:1932-1979`), and
-   * schedule each job's first run from the kernel's time now. Jobs are created
-   * in name order, as the binary walks them.
+   * (`crates/model/src/cron_jobs/mod.rs:151-195`) and refuse what the push
+   * would (`crates/isolate/src/environment/analyze.rs:1016-1089`,
+   * `crates/application/src/application_function_runner/mod.rs:1932-1979`).
+   * Jobs come in name order, as the binary walks them.
    */
-  private declareCrons(world: Invocation.World | undefined) {
+  private readCrons(): ReadonlyArray<CronDeclaration> {
+    const declarations: Array<CronDeclaration> = [];
     for (const component of this.components.values()) {
       const module = component.loaded.get("crons");
       if (module === undefined) continue;
@@ -681,33 +728,52 @@ export class World {
       for (const name of Object.keys(exported).sort()) {
         const parsed = Crons.parseSpec(component.path, name, exported[name]);
         if (Result.isFailure(parsed)) throw parsed.failure;
-        const spec = parsed.success;
-        this.checkCronTarget(component, spec);
-        if (spec.schedule.kind !== "interval" && world === undefined) {
-          throw new KernelRefusal.CronRandomUnavailable({
-            componentPath: component.path,
-            name,
-            message: `Cron job "${name}" runs on a ${spec.schedule.kind} schedule, which Convex delays by a random number of seconds, and no test world was bound when the backend opened to draw it from. The kernel holds no generator. Open the backend under a bound invocation, whose world's random stream the delay draws from.`,
-          });
-        }
-        const job: CronJob = {
+        this.checkCronTarget(component, parsed.success);
+        declarations.push({
           componentPath: component.path,
-          spec,
-          nextRun: 0,
-          last: undefined,
-          world,
-        };
-        this.cronJobs.set(cronKey(component.path, name), {
-          ...job,
-          nextRun: this.searched(
-            job,
-            Crons.nextRun(spec.schedule, undefined, this.now(), (bound) =>
-              this.draw(job, bound),
-            ),
-          ),
+          spec: parsed.success,
         });
       }
     }
+    return declarations;
+  }
+
+  /**
+   * Schedule each declared job's first run from the kernel's time now, once, in
+   * `world`. A clock schedule draws its delay from `world`'s random stream, so
+   * with no world it is refused. A restore installs the snapshot's runs instead
+   * and never comes here.
+   */
+  private scheduleFirstRuns(world: Invocation.World | undefined) {
+    if (this.cronsScheduled) return;
+    const scheduled = new Map<string, CronJob>();
+    for (const { componentPath, spec } of this.declared) {
+      if (spec.schedule.kind !== "interval" && world === undefined) {
+        throw new KernelRefusal.CronRandomUnavailable({
+          componentPath,
+          name: spec.name,
+          message: `Cron job "${spec.name}" runs on a ${spec.schedule.kind} schedule, which Convex delays by a random number of seconds, and no test world was bound when the backend opened to draw it from. The kernel holds no generator. Open the backend under a bound invocation, whose world's random stream the delay draws from.`,
+        });
+      }
+      const job: CronJob = {
+        componentPath,
+        spec,
+        nextRun: 0,
+        last: undefined,
+        world,
+      };
+      scheduled.set(cronKey(componentPath, spec.name), {
+        ...job,
+        nextRun: this.searched(
+          job,
+          Crons.nextRun(spec.schedule, undefined, this.now(), (bound) =>
+            this.draw(job, bound),
+          ),
+        ),
+      });
+    }
+    for (const [key, job] of scheduled) this.cronJobs.set(key, job);
+    this.cronsScheduled = true;
   }
 
   /**
@@ -1099,6 +1165,31 @@ export class World {
         });
       }
     }
+    const crons = Array.from(this.cronJobs.values(), (cron) => {
+      if (cron.world !== undefined) {
+        if ((names.get(cron.world.name) ?? cron.world) !== cron.world) {
+          throw unresolvedWorld(cron.world.name, "ambiguous");
+        }
+        names.set(cron.world.name, cron.world);
+      }
+      const target = {
+        componentPath: cron.componentPath,
+        udfPath: cron.spec.udfPath,
+      };
+      return {
+        componentPath: cron.componentPath,
+        ...declarationJson(cron, (json) =>
+          Redaction.mark(
+            json,
+            placed(this.redaction.args(target)),
+            this.secrets,
+          ),
+        ),
+        nextRun: cron.nextRun,
+        last: cron.last ?? null,
+        world: cron.world?.name ?? null,
+      };
+    });
     return Snapshot.encode(
       {
         components: [...this.components.keys()],
@@ -1111,6 +1202,7 @@ export class World {
           identityEpoch: this.identityEpoch,
         },
         jobs,
+        crons,
       },
       (componentPath, table, json) =>
         Redaction.mark(
@@ -1139,7 +1231,7 @@ export class World {
       readonly secrets?: Redaction.Secrets;
     } = {},
   ): Promise<void> {
-    return this.open().then(() =>
+    return this.load().then(() =>
       this.restore(
         bytes,
         options.worlds ?? [],
@@ -1180,7 +1272,9 @@ export class World {
       }
     }
     const byName = new Map<string, Invocation.World>();
-    for (const world of worlds) {
+    for (const world of this.own === undefined
+      ? worlds
+      : [...worlds.filter((w) => w.name !== this.own!.name), this.own]) {
       if ((byName.get(world.name) ?? world) !== world) {
         throw unresolvedWorld(world.name, "ambiguous");
       }
@@ -1199,6 +1293,7 @@ export class World {
         return [id, { functionPath, standing, world: resolved }];
       },
     );
+    const cronJobs = this.restoredCrons(image.crons, byName);
     this.state = image.state;
     this.floor = image.floor;
     this.nextDocId = image.identity.nextDocumentId;
@@ -1207,7 +1302,108 @@ export class World {
     this.identityEpoch = image.identity.identityEpoch;
     this.targets.clear();
     for (const [id, target] of targets) this.targets.set(id, target);
+    this.cronJobs.clear();
+    for (const [key, cron] of cronJobs) this.cronJobs.set(key, cron);
+    this.cronsScheduled = true;
     this.secrets = secrets.copy();
+  }
+
+  /**
+   * The snapshot's cron jobs as this world runs them, refusing unless the app
+   * declares exactly the snapshot's jobs, each with the same function,
+   * arguments and schedule. Each job keeps the snapshot's next run and latest
+   * outcome, and its world resolves by name. Nothing is redeclared and nothing
+   * is drawn.
+   */
+  private restoredCrons(
+    images: ReadonlyArray<Snapshot.CronImage>,
+    byName: ReadonlyMap<string, Invocation.World>,
+  ): Map<string, CronJob> {
+    const declared = new Map(
+      this.declared.map((declaration) => [
+        cronKey(declaration.componentPath, declaration.spec.name),
+        declaration,
+      ]),
+    );
+    const mismatch = (
+      componentPath: string,
+      name: string,
+      reason: KernelRefusal.SnapshotCronMismatch["reason"],
+      detail: string,
+    ) =>
+      new KernelRefusal.SnapshotCronMismatch({
+        componentPath,
+        name,
+        reason,
+        message: `The snapshot's cron job "${name}" of component "${componentPath}" ${detail}. Restore into an app that declares the same cron jobs.`,
+      });
+    const restored = new Map<string, CronJob>();
+    for (const image of images) {
+      const key = cronKey(image.componentPath, image.name);
+      const declaration = declared.get(key);
+      if (declaration === undefined) {
+        throw mismatch(
+          image.componentPath,
+          image.name,
+          "undeclared",
+          "is not declared by this app",
+        );
+      }
+      const job: CronJob = {
+        ...declaration,
+        nextRun: 0,
+        last: undefined,
+        world: undefined,
+      };
+      const ours = declarationJson(job, (json) => json);
+      if (
+        JSON.stringify(ours) !==
+        JSON.stringify({
+          name: image.name,
+          udfPath: image.udfPath,
+          args: image.args,
+          schedule: image.schedule,
+        })
+      ) {
+        throw mismatch(
+          image.componentPath,
+          image.name,
+          "changed",
+          "is declared here with another function, arguments or schedule",
+        );
+      }
+      const world = image.world === null ? undefined : byName.get(image.world);
+      if (image.world !== null && world === undefined) {
+        throw unresolvedWorld(image.world, "missing");
+      }
+      if (
+        declaration.spec.schedule.kind !== "interval" &&
+        world === undefined
+      ) {
+        throw new KernelRefusal.CronRandomUnavailable({
+          componentPath: image.componentPath,
+          name: image.name,
+          message: `The snapshot's cron job "${image.name}" runs on a ${declaration.spec.schedule.kind} schedule but names no test world to draw its delays from.`,
+        });
+      }
+      restored.set(key, {
+        ...job,
+        nextRun: image.nextRun,
+        last: image.last ?? undefined,
+        world,
+      });
+    }
+    for (const [key, { componentPath, spec }] of declared) {
+      if (!restored.has(key)) {
+        throw mismatch(
+          componentPath,
+          spec.name,
+          "missing",
+          "is declared by this app but not held by the snapshot",
+        );
+      }
+    }
+    return restored;
   }
 
   /**

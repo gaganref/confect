@@ -916,7 +916,7 @@ describe("redaction routes", () => {
         // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The marked body is written as raw bytes.
         const edited = JSON.stringify(body);
         const marked = new TextEncoder().encode(
-          `confect-kernel-snapshot 1 sha256:${createHash("sha256")
+          `confect-kernel-snapshot 2 sha256:${createHash("sha256")
             .update(edited)
             .digest("hex")}\n${edited}`,
         );

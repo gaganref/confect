@@ -562,7 +562,7 @@ chain settles after the first call on each target.
 ## Snapshots (row 6)
 
 `src/internal/Snapshot.ts` encodes the kernel's committed state and reads it
-back. A snapshot is a header line, `confect-kernel-snapshot 1 sha256:<digest>`,
+back. A snapshot is a header line, `confect-kernel-snapshot 2 sha256:<digest>`,
 then the body as JSON. The body holds the registered component paths, the
 version and latest commit timestamp, the clock's floor, the identity counters
 (the next document ID, the latest creation time handed out, the next held

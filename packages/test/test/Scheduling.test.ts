@@ -733,6 +733,9 @@ const ticks = {
     "ticks:scheduledRows",
   ),
   missing: makeFunctionReference<"mutation">("ticks:missing"),
+  scheduleMany: makeFunctionReference<"mutation", { count: number }>(
+    "ticks:scheduleMany",
+  ),
 };
 
 const ticksModule = {
@@ -752,6 +755,15 @@ const ticksModule = {
       await ctx.scheduler.runAfter(0, jobs.mark, { label: "orphan" });
       throw new Error("The cron's mutation failed.");
     },
+  }),
+  scheduleMany: mutationGeneric({
+    args: { count: v.number() },
+    handler: (ctx, { count }) =>
+      Promise.all(
+        Array.from({ length: count }, (_, i) =>
+          ctx.scheduler.runAfter(60_000, jobs.mark, { label: `job ${i}` }),
+        ),
+      ).then(() => null),
   }),
   scheduledRows: queryGeneric({
     args: {},
@@ -987,6 +999,35 @@ describe("declared cron jobs", () => {
           value: [{ label: "pulse", at: cronStart }],
         });
         expect(yield* call(() => t.reference())).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "a cron run's mutation is metered as any mutation: it schedules 1000 jobs, and one that schedules 1001 fails with the binary's message and leaves no row",
+    () =>
+      Effect.gen(function* () {
+        const t = yield* cronWorld((crons) => {
+          crons.interval("most", { minutes: 1 }, ticks.scheduleMany, {
+            count: 1000,
+          });
+          crons.interval("over", { minutes: 1 }, ticks.scheduleMany, {
+            count: 1001,
+          });
+        });
+        yield* call(() => t.advance(0));
+        expect(yield* call(() => t.query(ticks.scheduledRows, {}))).toBe(1000);
+        expect(t.crons()).toEqual([
+          expect.objectContaining({ name: "most", last: { kind: "success" } }),
+          expect.objectContaining({
+            name: "over",
+            last: {
+              kind: "failed",
+              error: expect.stringContaining(
+                "Too many functions scheduled by this mutation (limit: 1000)",
+              ),
+            },
+          }),
+        ]);
       }),
   );
 
