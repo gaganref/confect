@@ -12,6 +12,25 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Test invocation services
+
+`runHandlerPromise` starts a query, mutation or action handler with the
+services of the test invocation it belongs to, through `Effect.runPromiseWith`.
+`@confect/test` binds an invocation through async context, and a nested call
+joins it. A query's or mutation's `Date` reads its start time through its
+run. An action's reads the world's clock as it runs, and a query or mutation it
+calls starts at the action's time then. The handler's `Math.random` and
+`crypto.getRandomValues` draw from the invocation's random stream. These pins
+rely on convex-test's per-handler copies of those globals, and a bound handler
+without one is refused before it runs. A job convex-test
+starts from a timer gets a fresh record with its world's services, clock and
+random stream and the job's request metadata. With no bound invocation, and
+always in production, handlers keep `Effect.runPromise`. This is row 1 of
+Frame's backend testing kernel (Frame ADR 0012).
+`packages/test/RECHECK.md` records what each kernel part is on `main`.
+Changeset: `test-invocation-services.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector

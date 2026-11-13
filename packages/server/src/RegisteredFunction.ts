@@ -14,6 +14,7 @@ import {
   type FunctionVisibility,
   type FunctionMetadata,
   type MutationMeta,
+  type QueryMeta,
   type GenericActionCtx,
   type GenericDataModel,
   type StorageReader as ConvexStorageReader,
@@ -243,6 +244,30 @@ export const combineErrorSchemas = (
       : Schema.Union(schemas);
 };
 
+type InvocationMeta = Pick<QueryMeta, "getFunctionMetadata"> &
+  Partial<Pick<MutationMeta, "getRequestMetadata">>;
+
+type InvocationFunctionType = "query" | "mutation" | "action";
+
+/**
+ * What `@confect/test` installs on `globalThis` under {@link testInvocation}.
+ * `start` runs `run` with the services of the test invocation the handler
+ * belongs to, with the handler's `Date`, `Math.random` and
+ * `crypto.getRandomValues` pinned to that invocation, or answers `undefined`
+ * when none is bound. `functionType` decides how `Date` reads: a query or
+ * mutation keeps its start time, an action follows the clock. Production never
+ * installs it.
+ */
+type TestInvocation = {
+  readonly start: <A>(
+    meta: InvocationMeta,
+    run: (services: Context.Context<never>) => Promise<A>,
+    functionType: InvocationFunctionType,
+  ) => Promise<A> | undefined;
+};
+
+const testInvocation = Symbol.for("@confect/test/Invocation");
+
 /**
  * Run the `Effect` as a `Promise`. Inspect the complete `Exit` before encoding
  * a declared error so a typed failure cannot hide a defect.
@@ -266,6 +291,10 @@ export const combineErrorSchemas = (
  * before the exit/encoding wrappers this function adds. The fiber's op counter
  * survives context pops, so a cooperative yield can fire inside those wrappers.
  * Only a root-context scheduler covers them.
+ *
+ * Under `@confect/test`, a handler reached from a bound test invocation starts
+ * with that invocation's services through `Effect.runPromiseWith`, on a fiber
+ * of its own. Every other handler starts with `Effect.runPromise`.
  */
 export const runHandlerPromise =
   (
@@ -279,10 +308,13 @@ export const runHandlerPromise =
           >
         | undefined;
       readonly observability?: Layer.Layer<never> | undefined;
+      readonly meta?: InvocationMeta | undefined;
+      readonly functionType?: InvocationFunctionType | undefined;
     },
   ) =>
   <A, E>(effect: Effect.Effect<A, E>): Promise<A> => {
-    const { observability, invocation, clock } = runOptions ?? {};
+    const { observability, invocation, clock, meta, functionType } =
+      runOptions ?? {};
     let encodedError: Exit.Exit<any, any> | undefined;
     let undeclared: { readonly error: unknown } | undefined;
     const observed = Effect.tapCause(effect, (cause) =>
@@ -377,20 +409,28 @@ export const runHandlerPromise =
         }
         return yield* Effect.die(new Error(Cause.pretty(cause), { cause }));
       });
-    return Effect.runPromise(
-      withConvexError.pipe(
-        Effect.provide(
-          observability === undefined
-            ? ConvexLogger.layer
-            : ObservabilityRuntime.memoized(observability),
-        ),
-        Effect.provideService(Console.Console, globalThis.console),
-        clock === undefined
-          ? (self) => self
-          : Effect.provideService(Clock.Clock, clock),
+    const program = withConvexError.pipe(
+      Effect.provide(
+        observability === undefined
+          ? ConvexLogger.layer
+          : ObservabilityRuntime.memoized(observability),
       ),
-      runOptions,
-    ).then(
+      Effect.provideService(Console.Console, globalThis.console),
+      clock === undefined
+        ? (self) => self
+        : Effect.provideService(Clock.Clock, clock),
+    );
+    const started =
+      meta === undefined || functionType === undefined
+        ? undefined
+        : (globalThis as { [testInvocation]?: TestInvocation })[
+            testInvocation
+          ]?.start(
+            meta,
+            (services) => Effect.runPromiseWith(services)(program, runOptions),
+            functionType,
+          );
+    return (started ?? Effect.runPromise(program, runOptions)).then(
       Result.match({
         onFailure: (error) => {
           throw error;
@@ -484,6 +524,8 @@ export const actionFunctionBase = <
       runHandlerPromise(combineErrorSchemas(error, resolvedMiddlewares), {
         invocation: invocationMetadata(ctx.meta, actualArgs, reservedArgument),
         observability,
+        meta: ctx.meta,
+        functionType: "action",
       }),
     ),
 });

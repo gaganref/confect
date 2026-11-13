@@ -12,6 +12,7 @@
     "skipLibCheck": true,
     "exactOptionalPropertyTypes": true,
     "lib": ["ESNext", "DOM"],
+    "types": ["node"],
     "target": "ESNext",
     "moduleResolution": "Bundler",
     "module": "ESNext"
