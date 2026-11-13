@@ -20,6 +20,14 @@ import type { GenericId as Id } from "convex/values";
  * ```
  */
 export declare const api: {
+  egressNode: {
+    rawFetchNode: FunctionReference<
+      "action",
+      "public",
+      { url: string },
+      string
+    >;
+  };
   groups: {
     cacheControl: {
       control: FunctionReference<"query", "public", {}, any>;
