@@ -6,7 +6,7 @@ const entry: ConformanceException = {
   name: "action egress > a raw fetch dies",
   convexTest: "0.0.65",
   binary: "The binary performs the fetch.",
-  observed: "reached /ping",
+  outcomes: [{ function: "egress:rawFetch", returned: "reached /ping" }],
   owner: "kernel",
   evidence: "ioBans.test.ts",
 };
@@ -51,6 +51,12 @@ describe("conformance exceptions", () => {
       'egress.test.ts "action egress > a raw fetch dies" has no binary.',
       'egress.test.ts "action egress > a raw fetch dies" has no owner.',
       'egress.test.ts "action egress > a raw fetch dies" has no evidence.',
+    ]);
+  });
+
+  it("an entry that expects no outcomes is refused", () => {
+    expect(refusals({ ...entry, outcomes: [] }, cases, "0.0.65")).toEqual([
+      'egress.test.ts "action egress > a raw fetch dies" expects no outcomes. Name each function it calls.',
     ]);
   });
 

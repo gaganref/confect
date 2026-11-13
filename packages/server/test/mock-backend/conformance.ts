@@ -3,9 +3,41 @@
  * entry must meet. An exception is a mock-backend case that holds the test
  * kernel's behaviour where the Convex binary, and convex-test with it, does
  * otherwise on purpose. The lane (`convexTestLane.ts`) runs each excepted case
- * and requires it to fail there. A case that passes on convex-test fails the
- * lane, so the list only shrinks.
+ * and requires it to fail there with the outcomes its entry expects, and with
+ * no error but its own assertions. A case that passes on convex-test, fails for
+ * another reason or is skipped fails the lane, so the list only shrinks.
  */
+
+/**
+ * What one function a case calls did: returned a value, or failed with an
+ * error's tag (or name) and message.
+ */
+export type Outcome =
+  | { readonly function: string; readonly returned: unknown }
+  | {
+      readonly function: string;
+      readonly failed: { readonly tag: string; readonly message: string };
+    };
+
+const outcomesKey = "conformanceOutcomes";
+
+/**
+ * Record what each function an excepted case calls did, for the convex-test
+ * lane to compare with its entry. A case records before it asserts.
+ */
+export const recordOutcomes = (
+  task: { readonly meta: object },
+  outcomes: ReadonlyArray<Outcome>,
+) => {
+  (task.meta as Record<string, unknown>)[outcomesKey] = outcomes;
+};
+
+export const recordedOutcomes = (task: {
+  readonly meta: object;
+}): ReadonlyArray<Outcome> | undefined =>
+  (task.meta as Record<string, ReadonlyArray<Outcome> | undefined>)[
+    outcomesKey
+  ];
 
 export interface ConformanceException {
   readonly file: string;
@@ -24,10 +56,10 @@ export interface ConformanceException {
    */
   readonly binary: string;
   /**
-   * Text the case's failure on convex-test contains, which shows the binary
-   * behaviour. A failure without it is the case's own, and fails the lane.
+   * What each function the case calls does on convex-test, which follows the
+   * binary. A case that records anything else fails the lane.
    */
-  readonly observed: string;
+  readonly outcomes: ReadonlyArray<Outcome>;
   readonly owner: string;
   /**
    * Where the binary behaviour is shown, by test and source.
@@ -42,7 +74,10 @@ export const exceptions: ReadonlyArray<ConformanceException> = [
     convexTest: "0.0.65",
     binary:
       "The binary performs a raw fetch in an action and a Node action, and the action returns the response. The test kernel refuses it with BackendRefusal UndeclaredFetch, so egress goes through a provider port and a run replays. This is the kernel's one deliberate departure (Frame ADR 0012, action egress row).",
-    observed: "reached /ping",
+    outcomes: [
+      { function: "groups/egress:rawFetch", returned: "reached /ping" },
+      { function: "egressNode:rawFetchNode", returned: "reached /ping" },
+    ],
     owner: "@confect/test kernel, build-order row 6 (action egress)",
     evidence:
       "packages/server/test/local-backend/egress.test.ts > action egress > an action and a Node action perform a raw fetch, on precompiled-2026-10-28-cccbade: each reaches a loopback server and returns its response. convex-backend cccbade4: an action's start_async_op starts the fetch as a task (crates/isolate/src/environment/action/mod.rs:1639-1645), which task_executor.rs:151 hands to run_fetch (action/fetch.rs:34); only a cloud proxy's 407 refuses a host (crates/http_client/src/lib.rs:131-134). Positive control: packages/test/test/Egress.test.ts > provider ports > a port call in an action is held as a command until the test answers it.",
@@ -67,11 +102,13 @@ export const refusals = (
     "name",
     "convexTest",
     "binary",
-    "observed",
     "owner",
     "evidence",
   ] as const) {
     if (entry[field].trim() === "") refused.push(`${label} has no ${field}.`);
+  }
+  if (entry.outcomes.length === 0) {
+    refused.push(`${label} expects no outcomes. Name each function it calls.`);
   }
   if (glob.test(entry.name) || glob.test(entry.file)) {
     refused.push(`${label} is a pattern. Name one case exactly.`);

@@ -29,6 +29,8 @@ export default mergeConfig(
       globalSetup: ["./test/mock-backend/setup.ts"],
       // The conformance exceptions in `conformance.ts` must fail here.
       setupFiles: ["./test/mock-backend/convexTestLane.ts"],
+      // Fails the run when an excepted case did not run.
+      reporters: ["default", "./test/mock-backend/conformanceReporter.ts"],
     },
   }),
 );

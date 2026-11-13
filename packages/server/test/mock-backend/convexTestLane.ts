@@ -4,13 +4,16 @@ import { createRequire } from "node:module";
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- A Vitest setup file checks the entries before any Effect runtime exists.
 import path from "node:path";
 import type { RunnerTestFile, RunnerTestSuite } from "vitest";
+import { isDeepStrictEqual } from "node:util";
 import { afterEach, beforeAll, beforeEach } from "vitest";
-import { exceptions, refusals } from "./conformance";
+import { exceptions, recordedOutcomes, refusals } from "./conformance";
 
 // The convex-test lane (`vitest.mock-backend.config.ts`) runs each case in
-// `conformance.ts` and requires it to fail on convex-test with the binary
-// behaviour its entry observes. An entry that does not name one case exactly,
-// or was checked against another convex-test version, fails the lane.
+// `conformance.ts` and requires it to fail on convex-test with the outcomes its
+// entry expects, the binary's, and no error but its own assertions. An entry
+// that does not name one case exactly, or was checked against another
+// convex-test version, fails the lane, and `conformanceReporter.ts` fails a run in which an
+// excepted case did not run.
 
 type Task = RunnerTestSuite["tasks"][number];
 
@@ -90,12 +93,20 @@ beforeEach(({ task }) => {
   if (entryFor(task) !== undefined) expectFailure(task, true);
 });
 
-// A case that fails for another reason than the binary behaviour its entry
-// records keeps its own failure.
+// A case that fails for another reason, such as an unrelated throw in one of
+// the functions it calls, keeps its own failure: it must record exactly the
+// outcomes its entry expects, and fail only on its own assertions.
 afterEach(({ task }) => {
   const entry = entryFor(task);
   if (entry === undefined || task.result?.state !== "fail") return;
-  if (!JSON.stringify(task.result.errors ?? []).includes(entry.observed)) {
+  const errors = task.result.errors ?? [];
+  const ownAssertions =
+    errors.length > 0 &&
+    errors.every((error) => error.name === "AssertionError");
+  if (
+    !ownAssertions ||
+    !isDeepStrictEqual(recordedOutcomes(task), entry.outcomes)
+  ) {
     expectFailure(task, false);
   }
 });
