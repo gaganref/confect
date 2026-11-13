@@ -1,3 +1,5 @@
+import * as KernelRefusal from "./KernelRefusal.js";
+
 /**
  * Convex refuses I/O inside a query or mutation. The binary answers `fetch`,
  * `setTimeout` and `setInterval` there with an async op that its query and
@@ -8,6 +10,10 @@
  * kernel function running it, whoever holds the reference: a module that kept
  * the global at load, a nested call, or a test that replaced it. Outside a
  * kernel query or mutation every wrapper calls the host's function.
+ *
+ * One rule is the kernel's own: a raw `fetch` in an action, a Node action
+ * included, dies with `BackendRefusal` `UndeclaredFetch`, where the binary
+ * performs it. Egress goes through a provider port (`Egress.ts`) instead.
  */
 
 type UdfType = "query" | "mutation" | "action";
@@ -17,6 +23,8 @@ type UdfType = "query" | "mutation" | "action";
  */
 export interface Running {
   readonly udfType: UdfType;
+  readonly componentPath: string;
+  readonly udfPath: string;
 }
 
 export interface Hooks {
@@ -91,17 +99,31 @@ const inTransaction = ({ hooks }: State): boolean => {
 
 const guardFetch = (state: State, base: (...args: Array<unknown>) => unknown) =>
   new Proxy(base, {
-    apply: (target, self, args) =>
-      inTransaction(state)
-        ? // As on the binary, the request is built first, so a malformed one
-          // rejects with the host's own error.
-          Promise.resolve().then(() => {
-            const request = new Request(
-              ...(args as ConstructorParameters<typeof Request>),
-            );
-            throw fetchInTransaction(request.url);
-          })
-        : Reflect.apply(target, self, args),
+    apply: (target, self, args) => {
+      const running = state.hooks.running();
+      if (running === undefined) return Reflect.apply(target, self, args);
+      // As on the binary, the request is built first, so a malformed one
+      // rejects with the host's own error.
+      let request: Request;
+      try {
+        request = new Request(
+          ...(args as ConstructorParameters<typeof Request>),
+        );
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      if (running.udfType !== "action") {
+        return Promise.reject(fetchInTransaction(request.url));
+      }
+      const refusal = KernelRefusal.undeclaredFetch(
+        running.componentPath,
+        running.udfPath,
+        new URL(request.url).host,
+      );
+      // The action dies whatever its handler catches.
+      state.hooks.end(refusal);
+      return Promise.reject(refusal);
+    },
   });
 
 const guardTimer = (

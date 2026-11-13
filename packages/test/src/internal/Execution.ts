@@ -12,6 +12,7 @@ import {
 import { convexToJson, jsonToConvex, type Value } from "convex/values";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
+import * as Egress from "./Egress.js";
 import * as Globals from "./Globals.js";
 import * as Invocation from "./Invocation.js";
 import * as IoBans from "./IoBans.js";
@@ -106,6 +107,22 @@ type UdfType = "query" | "mutation" | "action";
 export type Outcome =
   | { readonly _tag: "returned"; readonly value: Value }
   | { readonly _tag: "failed"; readonly error: unknown };
+
+/**
+ * A provider port's call from an action, held until the test answers it.
+ */
+export interface HeldCommand {
+  readonly id: string;
+  readonly kind: "provider";
+  readonly port: string;
+  readonly input: unknown;
+  readonly componentPath: string;
+  /**
+   * The action that called the port, as `module:export`.
+   */
+  readonly functionName: string;
+  readonly request: string;
+}
 
 /**
  * A mutation attempt run to its commit point and held until `apply`.
@@ -219,7 +236,8 @@ const executions = new AsyncLocalStorage<Execution>();
 /**
  * The error a host API ended each function with, such as a timer a query
  * started. On the binary that function stops at its next microtask checkpoint
- * and fails with the error, whatever its handler caught.
+ * and fails with the error, whatever its handler caught, and runs no later
+ * syscall. An action that made a raw fetch ends the same way.
  */
 const endings = new WeakMap<Execution, unknown>();
 
@@ -236,6 +254,26 @@ const ioHooks: IoBans.Hooks = {
 const refuseIfEnded = (execution: Execution) => {
   if (endings.has(execution)) throw endings.get(execution);
 };
+
+/**
+ * A provider port's call inside a kernel action is held. Anywhere else the port
+ * calls its live provider, whose own `fetch` the I/O bans then answer.
+ */
+const egressHolder: Egress.Holder = {
+  hold: (port, input) => {
+    const execution = executions.getStore();
+    return execution?.udfType === "action"
+      ? execution.world.hold(execution, port, input)
+      : undefined;
+  },
+};
+
+/**
+ * Make the call `start` makes for `execution`, unless a host API ended it, as
+ * the binary runs no syscall of a function it terminated.
+ */
+const whileRunning = <A>(execution: Execution, start: () => Promise<A>) =>
+  endings.has(execution) ? Promise.reject(endings.get(execution)) : start();
 
 /**
  * `outcome`, or the error a host API ended `execution` with, which wins over
@@ -458,6 +496,14 @@ export class World {
   private readonly queries = new Map<number, Iterator<any>>();
   private readonly holding = new Map<string, Held>();
   private nextAttemptId = 1;
+  private readonly pending = new Map<
+    string,
+    {
+      readonly view: HeldCommand;
+      readonly answer: (output: unknown) => void;
+    }
+  >();
+  private nextCommandId = 1;
   /**
    * The latest deadline time has been advanced to. The clock never reads
    * earlier.
@@ -473,6 +519,7 @@ export class World {
     installConvexGlobal();
     Clock.install(pinnedTime, () => executions.getStore() !== undefined);
     IoBans.install(ioHooks);
+    Egress.install(egressHolder);
     this.components.set(ROOT, makeComponent(ROOT, schema, modules));
   }
 
@@ -680,6 +727,49 @@ export class World {
    */
   held(): ReadonlyArray<HeldAttempt> {
     return Array.from(this.holding.values(), (held) => held.view);
+  }
+
+  // Held commands.
+
+  /**
+   * Hold a provider port's call from the action `execution` until the test
+   * answers it.
+   */
+  hold(execution: Execution, port: string, input: unknown): Promise<unknown> {
+    const { promise, resolve } = Promise.withResolvers<unknown>();
+    const view: HeldCommand = {
+      id: `command-${this.nextCommandId++}`,
+      kind: "provider",
+      port,
+      input,
+      componentPath: execution.componentPath,
+      functionName: execution.udfPath,
+      request: execution.request.requestId,
+    };
+    this.pending.set(view.id, { view, answer: resolve });
+    return promise;
+  }
+
+  /**
+   * The held commands, oldest first.
+   */
+  commands(): ReadonlyArray<HeldCommand> {
+    return Array.from(this.pending.values(), ({ view }) => view);
+  }
+
+  /**
+   * Answer a held command: its port call returns `output`.
+   */
+  answer(id: string, output: unknown): void {
+    const command = this.pending.get(id);
+    if (command === undefined) {
+      throw new KernelRefusal.StaleCommand({
+        id,
+        message: `The test kernel holds no command "${id}". It was already answered, or never held.`,
+      });
+    }
+    this.pending.delete(id);
+    command.answer(output);
   }
 
   // Scheduled functions, on the kernel's clock.
@@ -1256,22 +1346,28 @@ export class World {
           {
             ...ctx,
             runQuery: (reference: any, queryArgs: any) =>
-              this.queryAt(
-                pathOfReference(reference, functionPath.componentPath),
-                queryArgs,
-                inner,
+              whileRunning(execution, () =>
+                this.queryAt(
+                  pathOfReference(reference, functionPath.componentPath),
+                  queryArgs,
+                  inner,
+                ),
               ),
             runMutation: (reference: any, mutationArgs: any) =>
-              this.mutationAt(
-                pathOfReference(reference, functionPath.componentPath),
-                mutationArgs,
-                inner,
+              whileRunning(execution, () =>
+                this.mutationAt(
+                  pathOfReference(reference, functionPath.componentPath),
+                  mutationArgs,
+                  inner,
+                ),
               ),
             runAction: (reference: any, actionArgs: any) =>
-              this.actionAt(
-                pathOfReference(reference, functionPath.componentPath),
-                actionArgs,
-                inner,
+              whileRunning(execution, () =>
+                this.actionAt(
+                  pathOfReference(reference, functionPath.componentPath),
+                  actionArgs,
+                  inner,
+                ),
               ),
             auth: queryAuth(execution),
           },
@@ -1302,7 +1398,7 @@ export class World {
             ),
             run,
           );
-    return started
+    return unlessEnded(execution, started)
       .then((raw) => {
         const result = jsonToConvex(JSON.parse(raw));
         validateReturnValue(resolved.returns, result, "action", functionPath);
@@ -1390,18 +1486,18 @@ export class World {
   asyncSyscall(op: string, jsonArgs: string): Promise<string> {
     const execution = current();
     const attempt = execution.attempt;
-    if (attempt === undefined) {
-      return Promise.resolve().then(() =>
-        this.dispatchAsync(op, JSON.parse(jsonArgs), execution),
+    const dispatch = () =>
+      whileRunning(execution, () =>
+        Promise.resolve(
+          this.dispatchAsync(op, JSON.parse(jsonArgs), execution),
+        ),
       );
-    }
+    if (attempt === undefined) return Promise.resolve().then(dispatch);
     if (attempt.closed) return Promise.reject(closed(execution, op));
     // A syscall counts toward its frame's lifetime from the moment it is
     // queued, so a frame never closes with a write still waiting its turn.
     const end = attempt.begin();
-    return execution.turn
-      .take(() => this.dispatchAsync(op, JSON.parse(jsonArgs), execution))
-      .finally(end);
+    return execution.turn.take(dispatch).finally(end);
   }
 
   private dispatchAsync(

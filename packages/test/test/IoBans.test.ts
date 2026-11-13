@@ -1,10 +1,9 @@
-// oxlint-disable effecttsgo/global-fetch, effecttsgo/global-timers, effecttsgo/new-promise, effecttsgo/async-function -- These handlers call the runtime's own fetch and timers, which is what the I/O bans refuse or allow.
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- The positive controls fetch from a real loopback server.
-import { createServer, type Server } from "node:http";
+// oxlint-disable effecttsgo/global-fetch, effecttsgo/global-timers, effecttsgo/new-promise, effecttsgo/async-function -- These handlers call the runtime's own fetch and timers, which is what the I/O bans and the egress rule refuse or allow.
 import { describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import {
   actionGeneric,
+  componentsGeneric,
   defineSchema,
   defineTable,
   makeFunctionReference,
@@ -14,6 +13,8 @@ import {
 import { v } from "convex/values";
 import * as Effect from "effect/Effect";
 import { convexTest } from "../src/internal/ConvexTest";
+import type * as KernelRefusal from "../src/internal/KernelRefusal";
+import { loopback } from "./fixtures/loopback";
 
 type Timer = "setTimeout" | "setInterval";
 
@@ -71,6 +72,10 @@ const io = {
   fetchInAction: makeFunctionReference<"action", { url: string }, string>(
     "io:fetchInAction",
   ),
+  fetchThenWrite: makeFunctionReference<"action", { url: string }>(
+    "io:fetchThenWrite",
+  ),
+  addNote: makeFunctionReference<"mutation", { text: string }>("io:addNote"),
   timersInAction: makeFunctionReference<"action">("io:timersInAction"),
 };
 
@@ -152,8 +157,24 @@ const modules = {
       }),
       fetchInAction: actionGeneric({
         args: { url: v.string() },
+        // The handler catches the rejection, and the action dies anyway.
         handler: (_ctx, { url }) =>
-          fetch(url).then((response) => response.text()),
+          fetch(url).then(
+            (response) => response.text(),
+            () => "caught",
+          ),
+      }),
+      fetchThenWrite: actionGeneric({
+        args: { url: v.string() },
+        handler: (ctx, { url }) =>
+          fetch(url)
+            .catch(() => null)
+            .then(() => ctx.runMutation(io.addNote, { text: "after" })),
+      }),
+      addNote: mutationGeneric({
+        args: { text: v.string() },
+        handler: (ctx, { text }) =>
+          ctx.db.insert("notes", { text }).then(() => null),
       }),
       timersInAction: actionGeneric({
         args: {},
@@ -196,38 +217,6 @@ const failureOf = (call: Promise<unknown>) =>
       (error: Error) => ({ failed: error.message }),
     ),
   );
-
-/**
- * A loopback server that answers every request with its path, and counts them.
- */
-const loopback = Effect.acquireRelease(
-  Effect.promise(
-    () =>
-      new Promise<{
-        readonly server: Server;
-        readonly url: string;
-        hits: number;
-      }>((resolve) => {
-        const state = {
-          server: undefined as unknown as Server,
-          url: "",
-          hits: 0,
-        };
-        state.server = createServer((request, response) => {
-          state.hits += 1;
-          response.end(`reached ${request.url}`);
-        }).listen(0, "127.0.0.1", () => {
-          const address = state.server.address() as { port: number };
-          state.url = `http://127.0.0.1:${address.port}/ping`;
-          resolve(state);
-        });
-      }),
-  ),
-  ({ server }) =>
-    Effect.promise(
-      () => new Promise<void>((resolve) => server.close(() => resolve())),
-    ),
-);
 
 describe("I/O bans", () => {
   describe("fetch", () => {
@@ -291,17 +280,78 @@ describe("I/O bans", () => {
         ).toEqual(fetchRefusal);
       }),
     );
+  });
 
-    it.effect("an action fetches through the host", () =>
+  describe("action egress", () => {
+    const refusalOf = (call: Promise<unknown>) =>
+      Effect.promise(() =>
+        call.then(
+          (value) => ({ returned: value }),
+          (error: KernelRefusal.BackendRefusal) => error,
+        ),
+      );
+
+    it.effect(
+      "a raw fetch in an action dies with UndeclaredFetch naming the action and host, whatever the handler catches",
+      () =>
+        Effect.gen(function* () {
+          const server = yield* loopback;
+          const t = convexTest(schema, modules);
+          const refusal = yield* refusalOf(
+            t.action(io.fetchInAction, { url: server.url }),
+          );
+          expect(refusal).toMatchObject({
+            _tag: "BackendRefusal",
+            reason: "UndeclaredFetch",
+            componentPath: "",
+            functionName: "io:fetchInAction",
+            host: server.host,
+            docs: "https://confect.dev/guides/testing#reach-the-network-from-an-action",
+          });
+          expect((refusal as Error).message).toBe(
+            `The action io:fetchInAction fetched ${server.host} directly. The test kernel performs no raw fetch, so a test never reaches the network and a run replays. Reach ${server.host} through a provider port. The kernel holds each port call as a command the test answers. See https://confect.dev/guides/testing#reach-the-network-from-an-action.`,
+          );
+          expect(server.hits()).toBe(0);
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect("an action that made a raw fetch runs no later syscall", () =>
       Effect.gen(function* () {
         const server = yield* loopback;
         const t = convexTest(schema, modules);
         expect(
-          yield* Effect.promise(() =>
-            t.action(io.fetchInAction, { url: server.url }),
+          yield* refusalOf(t.action(io.fetchThenWrite, { url: server.url })),
+        ).toMatchObject({ reason: "UndeclaredFetch" });
+        expect(yield* Effect.promise(() => t.query(io.notes, {}))).toEqual([]);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("a component's action is named with its component path", () =>
+      Effect.gen(function* () {
+        const server = yield* loopback;
+        const t = convexTest(schema, modules);
+        t.registerComponent("store", schema, {
+          "_generated/server.ts": () => Promise.resolve({}),
+          "egress.ts": () =>
+            Promise.resolve({
+              fetchInAction: actionGeneric({
+                args: { url: v.string() },
+                handler: (_ctx, args) => fetch(args.url).then(() => null),
+              }),
+            }),
+        });
+        const store = (componentsGeneric() as any).store;
+        expect(
+          yield* refusalOf(
+            t.action(store.egress.fetchInAction, { url: server.url }),
           ),
-        ).toBe("reached /ping");
-        expect(server.hits).toBe(1);
+        ).toMatchObject({
+          reason: "UndeclaredFetch",
+          componentPath: "store",
+          functionName: "egress:fetchInAction",
+          host: server.host,
+        });
+        expect(server.hits()).toBe(0);
       }).pipe(Effect.scoped),
     );
   });

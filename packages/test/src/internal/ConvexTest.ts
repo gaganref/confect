@@ -26,6 +26,14 @@ export interface KernelControls {
   readonly apply: (id: string) => Promise<Execution.KernelApply>;
   readonly held: () => ReadonlyArray<Execution.HeldAttempt>;
   /**
+   * The provider port calls actions made, held until answered, oldest first.
+   */
+  readonly commands: () => ReadonlyArray<Execution.HeldCommand>;
+  /**
+   * Answer a held command, so its port call returns `output`.
+   */
+  readonly answer: (id: string, output: unknown) => void;
+  /**
    * Move the kernel's clock forward, running each job due on the way at its
    * deadline.
    */
@@ -78,6 +86,8 @@ const accessor = (world: Execution.World, caller: Execution.Caller): any => ({
     world.prepare(caller, reference, args),
   apply: (id: string) => world.apply(id),
   held: () => world.held(),
+  commands: () => world.commands(),
+  answer: (id: string, output: unknown) => world.answer(id, output),
   run: (handler: (ctx: any) => any) => world.run(caller, "", handler),
   runInComponent: (componentPath: string, handler: (ctx: any) => any) =>
     world.run(caller, componentPath, handler),
@@ -112,7 +122,9 @@ const accessor = (world: Execution.World, caller: Execution.Caller): any => ({
  * it, and `apply` validates and publishes a held attempt. `mutation` applies
  * each attempt it prepares at once and prepares the next on a conflict, up to
  * attempt 5. `runtime` supplies the clock and commit timestamps. Scheduled
- * functions run on the kernel's clock, never on a host timer.
+ * functions run on the kernel's clock, never on a host timer. An action's raw
+ * `fetch` dies with `BackendRefusal` `UndeclaredFetch`, and its provider port
+ * calls wait in `commands` until `answer` settles them.
  */
 export function convexTest(
   schemaOrOptions?:

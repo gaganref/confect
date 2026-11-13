@@ -98,6 +98,73 @@ export class UnknownStandingSource extends Schema.TaggedError<UnknownStandingSou
   { componentPath: Schema.String, name: Schema.String, message: Schema.String },
 ) {}
 
+/**
+ * A refusal a test can read: what failed, why the kernel refuses it, what to do
+ * instead, and where the testing guide explains it. `UndeclaredFetch` is the
+ * kernel's one deliberate departure from the binary, which performs a raw
+ * `fetch` in an action.
+ */
+export class BackendRefusal extends Schema.TaggedError<BackendRefusal>()(
+  "BackendRefusal",
+  {
+    reason: Schema.Literal("UndeclaredFetch"),
+    componentPath: Schema.String,
+    functionName: Schema.String,
+    host: Schema.String,
+    failed: Schema.String,
+    because: Schema.String,
+    instead: Schema.String,
+    docs: Schema.TemplateLiteral([
+      "https://",
+      Schema.String,
+      "#",
+      Schema.String,
+    ]),
+    message: Schema.String,
+  },
+) {}
+
+const egressDocs =
+  "https://confect.dev/guides/testing#reach-the-network-from-an-action" as const;
+
+/**
+ * The action at `componentPath` and `functionName` fetched `host` directly.
+ */
+export const undeclaredFetch = (
+  componentPath: string,
+  functionName: string,
+  host: string,
+) => {
+  const action =
+    componentPath === ""
+      ? `The action ${functionName}`
+      : `The action ${functionName} in component "${componentPath}"`;
+  const failed = `${action} fetched ${host} directly.`;
+  const because =
+    "The test kernel performs no raw fetch, so a test never reaches the network and a run replays.";
+  const instead = `Reach ${host} through a provider port. The kernel holds each port call as a command the test answers.`;
+  return new BackendRefusal({
+    reason: "UndeclaredFetch",
+    componentPath,
+    functionName,
+    host,
+    failed,
+    because,
+    instead,
+    docs: egressDocs,
+    message: `${failed} ${because} ${instead} See ${egressDocs}.`,
+  });
+};
+
+/**
+ * `answer` named a command the kernel does not hold: it was already answered,
+ * or never held.
+ */
+export class StaleCommand extends Schema.TaggedError<StaleCommand>()(
+  "StaleCommand",
+  { id: Schema.String, message: Schema.String },
+) {}
+
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
   new RequiresBinary({
     operation,
