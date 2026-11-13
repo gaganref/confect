@@ -1,3 +1,4 @@
+import { availableParallelism } from "node:os";
 import tsconfigPaths from "vite-tsconfig-paths";
 import { defineConfig, mergeConfig } from "vitest/config";
 import sharedConfig from "../../vitest.shared";
@@ -13,6 +14,8 @@ export default mergeConfig(
       ...(process.platform === "win32"
         ? { testTimeout: 15_000, hookTimeout: 15_000 }
         : {}),
+      maxWorkers: Math.min(2, availableParallelism()),
+      sequence: { groupOrder: 1 },
     },
   }),
 );

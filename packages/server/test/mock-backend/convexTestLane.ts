@@ -6,6 +6,10 @@ import path from "node:path";
 import type { RunnerTestFile, RunnerTestSuite } from "vitest";
 import { isDeepStrictEqual } from "node:util";
 import { beforeAll, beforeEach } from "vitest";
+import * as Arr from "effect/Array";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
+import * as Str from "effect/String";
 import {
   exceptions,
   recordedDeparture,
@@ -33,16 +37,21 @@ const fullName = (task: Task): string => {
   ) {
     names.unshift(current.name);
   }
-  return names.join(" > ");
+  return Arr.join(names, " > ");
 };
 
 const allCases = (suite: RunnerTestSuite | RunnerTestFile): Array<string> =>
-  suite.tasks.flatMap((task) =>
+  Arr.flatMap(suite.tasks, (task) =>
     task.type === "suite" ? allCases(task) : [fullName(task)],
   );
 
 const fileName = (file: RunnerTestFile) =>
-  file.filepath.replaceAll("\\", "/").split("/").pop()!;
+  pipe(
+    file.filepath,
+    Str.replaceAll("\\", "/"),
+    Str.split("/"),
+    Arr.lastNonEmpty,
+  );
 
 const installed = (
   createRequire(import.meta.url)("convex-test/package.json") as {
@@ -50,20 +59,27 @@ const installed = (
   }
 ).version;
 
-const missing = exceptions.filter(
+const missing = Arr.filter(
+  exceptions,
   ({ file }) => !fs.existsSync(path.join(import.meta.dirname, file)),
 );
 if (missing.length > 0) {
   throw new Error(
-    `conformance.ts names files the mock-backend suite does not have: ${missing.map(({ file }) => file).join(", ")}`,
+    `conformance.ts names files the mock-backend suite does not have: ${Arr.join(
+      Arr.map(missing, ({ file }) => file),
+      ", ",
+    )}`,
   );
 }
 
 const entryFor = (task: Task) => {
   const name = fullName(task);
-  return exceptions.find(
-    (exception) =>
-      exception.file === fileName(task.file) && exception.name === name,
+  return Option.getOrUndefined(
+    Arr.findFirst(
+      exceptions,
+      (exception) =>
+        exception.file === fileName(task.file) && exception.name === name,
+    ),
   );
 };
 
@@ -73,12 +89,14 @@ const entryFor = (task: Task) => {
 beforeAll(({}, suite) => {
   const file = suite as RunnerTestFile;
   const cases = allCases(file);
-  const refused = exceptions
-    .filter((entry) => entry.file === fileName(file))
-    .flatMap((entry) => refusals(entry, cases, installed));
+  const refused = pipe(
+    exceptions,
+    Arr.filter((entry) => entry.file === fileName(file)),
+    Arr.flatMap((entry) => refusals(entry, cases, installed)),
+  );
   if (refused.length > 0) {
     throw new Error(
-      `conformance.ts has entries the convex-test lane refuses:\n${refused.join("\n")}`,
+      `conformance.ts has entries the convex-test lane refuses:\n${Arr.join(refused, "\n")}`,
     );
   }
 });

@@ -113,13 +113,42 @@ fails with `DrainBudgetExceeded` after 100. `registerComponent` takes
 `{ standing }`, the self-rescheduling functions of a component, so a kit can
 declare the crons component's `public:rescheduler`. A job that runs one, or that
 one schedules, is never drain work. A standing name the component does not
-export is refused at open. Convex's own `crons.ts` schedules are not simulated.
+export is refused at open. Each component's `crons.ts` is simulated too: see
+"Test kernel cron jobs".
 A lint fence refuses host timers in the kernel's modules. Row 2's
 `KernelRowPending` refusals for the scheduler are lifted, a `v.function()`
 validator accepts a function handle and refuses any other value, and the six row-5
 mock-backend cases run on the kernel. This is row 5 of Frame's backend testing
 kernel (Frame ADR 0012). Changeset: `test-kernel-scheduler.md`. Upstream: fork
 only, as the kernel and its option are fork-specific.
+
+## Test kernel cron jobs
+
+The kernel runs the cron jobs each component's `crons.ts` declares, as standing
+sources on its own clock. It reads them when the backend opens and refuses with
+`InvalidCron` what a Convex push refuses. Each run's time follows convex-backend's
+`compute_next_ts` and saffron at the revisions the pinned binary uses: an
+interval first at once, then an interval after the previous run's time; a clock
+schedule at its next UTC occurrence plus Convex's random delay within the
+minute, or within the hour when `minuteUTC` is left out. The delay draws from
+the random stream of the world bound when the backend opened, or else the
+world its driver gave it. `TestConfect.layer`'s kernel target gives it a world
+whose stream is seeded by the new `seed` option, `0` by default. A direct kernel
+open with neither world refuses a clock schedule with `CronRandomUnavailable`. A run that finishes after later runs came
+due skips them. A run is a system request with no identity and fresh request
+metadata, and a mutation's writes and jobs exist only if it commits. `advance`
+runs cron runs and jobs in time order, and a drain never runs a cron run.
+Cron expressions follow saffron's search, including `L`, `W` and `#`. A search
+that reaches saffron's `u32` underflow, which aborts the overflow-checked binary,
+is refused with `CronAbortsBinary`. A snapshot carries every cron job's run
+state, and a restore installs it without a draw. A failed run's text reaches
+`crons()` and a snapshot only through the failure redaction. A cron run's function is
+metered as any mutation, and the cron bookkeeping charges no counter, as on the
+binary, where it writes only system tables.
+Why: design row 5 lists declared schedules among the kernel's standing sources,
+and #123 left them out. This is row 5 of Frame's backend testing kernel (Frame
+ADR 0012). Changeset: `test-kernel-crons.md`. Upstream: fork only, as the kernel
+is fork-specific.
 
 ## Test kernel transaction limits
 
@@ -191,13 +220,46 @@ globals is an accessor that returns a guard, installed by the new
 kept, a nested call, a stub and a handler's own assignment are all checked. A
 replaced global is guarded again when the next function starts, a
 non-configurable one refuses the function with `UnguardableGlobal`, and a
-promisified timer is guarded too. A module's runtime comes from its
-`"use node"` directive when the test passes its sources (`sources`, a `?raw`
-glob), with Confect's mark as a cross-check. The
+promisified timer is guarded too. A global redefined while a function runs
+fails that function with `UnguardableGlobal` when it settles, so a mutation
+publishes none of its writes, and the guard comes back. A module's runtime
+comes from its `"use node"` directive when the test passes its sources
+(`sources`, a `?raw` glob, in each `TestConfect.layer` form), with Confect's
+mark, which `@confect/server` now sets on its isolate actions too, as a
+cross-check. Without sources, a plain Convex action is refused with
+`ActionRuntimeUnknown` when the kernel opens, unless the test declares its
+component's runtime with `componentRuntimes`, as for a package's test kit. The
 clears stay allowed and actions keep the host's `fetch` and timers. The
 local-backend suite pins each behaviour on the binary. This is the I/O bans row
 of Frame's backend testing kernel (Frame ADR 0012, row 6). Changeset:
 `test-kernel-io-bans.md`. Upstream: fork only, as the kernel is fork-specific.
+
+## Test kernel file storage
+
+The kernel simulates file storage. A stored file is a row in its component's
+`_storage` table, written through the storing attempt, with the fields the
+binary's `_storage` virtual table shows: `sha256` as base64 SHA-256, `size` and
+`contentType`, `null` when the file has none. Actions and mutations store and
+get files; a mutation's file exists only once it commits, and an action's
+store and delete commit at once. A declared `sha256` that differs is refused
+with the binary's `Sha256 mismatch` error and writes nothing. `getUrl` answers
+`/api/storage/<uuid>` on the kernel's origin, `getMetadata` the binary's hex
+digest and storage UUID, and `delete` of a missing file is refused as `storage
+id … not found`. Storage reads join the attempt's read set. Uploads and
+downloads through the kernel's `fetch` refuse with `RequiresBinary`, since
+upload streaming and signed URLs stay on the binary. A local-backend case pins
+the same answers on the binary. The mock-backend `Storage` cases run on the
+kernel. File storage counts toward the transaction limits as on the binary:
+a mutation refuses an eleventh file, or a twelfth when a nested budget allows
+fewer, with `TooManyFilesWritten`, and likewise `FilesWrittenTooLarge`,
+`TooManyFilesRead` and `FilesReadTooLarge`; a file read twice counts once.
+Snapshots carry stored files' bytes, UUIDs and counters, as format version 3
+beside the cron state of version 2, and refuse a tampered file body, and a file whose bytes hold a kept secret is written as a marker.
+A content type is parsed as the binary's `mime` crate parses it. The
+local-backend suite takes `CONFECT_LOCAL_BACKEND_PORT` to run on other ports.
+This is row 6's storage parity row of Frame's backend testing kernel (Frame
+ADR 0012). Changeset: `test-kernel-file-storage.md`. Upstream: fork only, as
+the kernel is fork-specific.
 
 ## Test kernel redaction
 
@@ -239,13 +301,63 @@ without their rows or targets, documents without their system fields, and
 duplicate components, tables, rows or jobs. Each has a tagged refusal. The snapshot also
 carries the identity epoch that subscribers' identity versions come from, and
 `Snapshot.contract` names every piece of kernel state as exported or excluded,
-checked by type and by a test.
+checked by type and by a test. With cron jobs (#133) the format is version 2:
+each declared job's declaration, next run, latest outcome and world by name. A
+restore installs them without redeclaring a job or drawing a random value, and
+refuses with `SnapshotCronMismatch` when the app declares other jobs.
 Replaying the same driver choices after a restore reaches the bytes of the run
 that never stopped, and a function handle stored in a row resolves to its
 component's function after restore. The format is the kernel's own, not the
 Convex binary's ZIP export. This is row 6 of Frame's backend testing kernel
 (Frame ADR 0012). Changeset: `test-kernel-snapshots.md`. Upstream: fork only,
 as the kernel is fork-specific.
+
+## Test kernel HTTP routes and signed ingress
+
+The kernel serves HTTP routes. `fetch(path)` sends the request to the root
+`http` router, whose own `lookup` picks the route by pathname and method, as
+the binary routes it, and runs the handler as an action with the caller's
+identity, the request's headers and its exact body bytes. A request no route
+matches gets the binary's 404 `No matching routes found`, and a HEAD request
+gets no body. A mounted component's HTTP module is built only by its mount's
+bridge, at the mount's site URL, so the kernel no longer constructs it at open.
+A route whose handler throws answers the binary's 500 with its JSON error body,
+`{ code, trace, data? }`, on the kernel and through the mounted bridge on both
+targets; convex-test rejects the root `fetch` instead, so those two cases are
+convex-test lane exceptions, pinned on the binary by a plain-route probe.
+HEAD answers end with no body, a mounted miss answers `No matching routes
+found`, GET, OPTIONS and HEAD bodies never reach a route, and a kernel refusal
+inside a route surfaces as itself, not as a 500. A route's 500 body marks the
+kept secrets its error carries, through the failure redaction.
+A route-local signed-envelope rule (`packages/server/test/signedEnvelope.ts`,
+HMAC-SHA-256 with a test-owned secret) backs a route in both server fixtures:
+the mock-backend suite runs a positive control and sixteen malformed shapes,
+each with its declared refusal and the protected table unchanged, on
+convex-test and on the kernel, and a local-backend case sends one accepted and
+two refused envelopes to the binary. The mock-backend `http.test.ts` cases and
+the mounted HTTP route cases in `components.test.ts` run on the kernel. This is
+row 6's HTTP parity row of Frame's backend testing kernel (Frame ADR 0012).
+Changeset: `test-kernel-http.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
+## Test kernel on Effect 4.1 and upstream 10.6.0
+
+The test kernel moved onto the fork's Effect 4.1.4 and upstream 10.6.0
+stack, and its code lints clean under the stack's Effect rules with no
+baseline. Convex's syscalls carry JSON strings and the kernel answers them
+synchronously, so the kernel's JSON goes through one internal helper. Six
+refusals rename their `name` payload field, which hid the refusal's own
+name. Four cron refusals take `cronName`, `UnknownStandingSource` takes
+`functionName` and `SnapshotWorldUnresolved` takes `worldName`. Each kernel
+function now wraps the realm's `Date` again as it enters, so a test that
+fakes `Date` after its layer opened the backend still reads the pinned
+time. The kernel lane places upstream's new mock-backend cases. JWT signing
+and a deployment-wide `transactionLimits` wait for row 6, and text search
+and a file with no content type stay on the binary. The local-backend
+harness lives in `tools/local-backend` with main's configurable ports, and
+its fixture's system-table share measures 21. Changeset:
+`kernel-refusal-field-names.md`. Upstream: fork only, as the kernel is
+fork-specific.
 
 ## Table info through Table's extractors
 
@@ -272,10 +384,14 @@ Frame's audit rows declare their commit-order column with it. Changeset:
 
 ## Counted HTTP bodies
 
-Add `HttpRouter.withBodyLimit` for endpoint middleware. Count bytes while reading,
-return 413 at the cap and 415 for non-identity content encoding. Verification and
-payload decoding share one buffer. Effect 4.0.4's Web readers do not provide these
-guarantees. Changeset: `counted-http-body.md`. Upstream: planned; no proposal submitted.
+Add `HttpRouter.withBodyLimit` for endpoint middleware. It returns 415 for
+non-identity content encoding and 413 past the cap, and verification and
+payload decoding share one buffer. Effect 4.1.4 now counts buffered reads
+against `MaxBodySize` and derives `text` from `arrayBuffer`, so the limiter reads
+through Effect under the endpoint's cap and keeps only the 413/415 mapping and
+the shared buffer. A declared `Content-Length` over the cap is refused before
+any byte is read. Changeset: `counted-http-body.md`. Upstream: planned; no
+proposal submitted.
 
 ## OPTIONS middleware dispatch
 
@@ -406,7 +522,7 @@ Upstream: unrecorded; submission goes through the maintainer.
 
 ### Refuse domain collisions in codegen
 
-Full and incremental codegen reject a domain argument reserved by its profile before loading its implementation. The diagnostic names the spec file, function and argument. Registration retains its load-time backstop. Changeset: `reserved-argument-fence.md`. Upstream: planned; no proposal submitted.
+Full and incremental codegen reject a domain argument reserved by its profile before loading its implementation. The diagnostic names the spec file, function and argument. Registration retains a backstop when its validator compiles, which Convex forces when it analyzes a push. Changeset: `reserved-argument-fence.md`. Upstream: planned; no proposal submitted.
 
 ### Forward context through callback handles
 
@@ -425,12 +541,37 @@ HTTP accepts the same layer explicitly on hand-built routers and receives `runti
 
 ## Base
 
-`main` tracks upstream 10.3.1
-([`eaa5da76`](https://github.com/rjdellecese/confect/commit/eaa5da76881455fe38d8d633eedbf79ebc5af01a)).
-The move from 10.2.0 (`1f75cb80`) landed by merge, and each later release lands
-the same way. Fork builds on this base use `10.3.1-fork.N`. The 10.3.1
+`main` tracks upstream 10.6.0
+([`278d68f8`](https://github.com/rjdellecese/confect/commit/278d68f877cd923bcea1fd53a215446eaf4db086)).
+The move from 10.3.1 (`eaa5da76`) landed by merge, and each later release lands
+the same way. Fork builds on this base use `10.6.0-fork.N`. The 10.6.0
 generator changes generated output, so consumers run `confect codegen` after
 upgrading.
+
+### Move to upstream 10.6.0
+
+Merge upstream 10.6.0, which runs on Effect 4.1, and carry the fork's patches
+onto it. Move Effect and every `@effect/*` package to 4.1.4 and Alchemy to
+2.0.0-beta.86. Combine upstream's lazy validators, `DocumentIds`, blob storage
+in mutations and `MutationAuth` with the fork's component targets, reserved
+arguments and invocation metadata in the function runner. The fork's
+`Auth.MutationAuth` gives way to upstream's service.
+Fold upstream's watch groups into the fork's lock-free `refreshCurrent`. Move
+the fork's local-backend fixtures, component codegen and auth seeding into
+upstream's `tools/local-backend` harness. Native `take()` and `first()` stay
+outside the stream read budget, as the fork's `OrderedQuery` always was.
+
+Upstream's "Enable every Effect lint rule" turns on rules the fork's code was
+never checked against. The fork fixes every finding rather than exempting
+files. A lint-disable comment remains only where the rule is wrong for that
+line or upstream disables it there too, and each names its reason. Some fixes
+change public types: errors move to `Schema.TaggedError`, published Schema
+classes carry a brand, two alchemy error fields lose the name `name`, and
+exports that expose unstable Effect APIs say so.
+
+Changesets: `effect-4-1.md`, `schema-tagged-errors.md`, `error-field-names.md`,
+`schema-class-brands.md` and `unstable-exports.md`.
+Upstream: fork only.
 
 ### Move to upstream 10.3.1
 
@@ -459,18 +600,13 @@ Raise the Convex peer floor to 1.49.0. Workspace and baseline consumer pins use 
 
 ### Bound the supported crypto API
 
-Cap the package set's Effect peers below 4.1, and cap the Node platform
-companions to the same minor. Effect 4.1 removes `effect/Crypto`, which the CLI,
-Alchemy providers and Alchemy's stack types still use. Remove the caps when
-Alchemy ships a release without `effect/Crypto` and the fork's CLI and Alchemy
-call sites move. An application that installs the CLI lists
-`@effect/platform-node-shared` directly, or pnpm resolves a 4.1 copy for
-`@effect/platform-node`.
-Fresh consumer checks request the CLI's published ranges and resolve their
-newest compatible releases without a lockfile or version override.
+Retired by the move to upstream 10.6.0. Upstream migrated the CLI off
+`effect/Crypto`, the fork's Alchemy package now uses
+`effect/crypto/SecureRandom`, and Alchemy 2.0.0-beta.86 runs on Effect 4.1. The
+`<4.1.0` caps and the `@effect/platform-node-shared` CLI peer are gone.
 
-Changeset: `effect-crypto-compatibility.md`.
-Upstream: planned; no proposal submitted.
+Changeset: `effect-4-1.md`.
+Upstream: superseded by upstream 10.5.0.
 
 ### Resolve declarations under NodeNext
 
@@ -825,6 +961,19 @@ Changesets: `backend-declaration.md`, `app-mounts-list.md`,
 `remove-app-mount.md`, `unique-definition-names.md`, `first-codegen-refs.md`,
 `first-codegen-registry.md`.
 Upstream: planned; no linked proposal verified.
+
+### Take the schema first in HttpRouter.make
+
+Adopt upstream `main`'s router shape (c3ee2b3, 6a145ab): `HttpRouter.make(schema,
+routes, options?)` is the only constructor. The schema types the routes'
+services, including `VectorSearch`, and `schema.target.kind` selects application
+or component routing, as `forSchema` did. The fork keeps `{ api, observability }`
+as the third argument. `forSchema` and the schema-less `make` are gone. Codegen
+emits the new call and still owns a generated `convex/http.ts` in the old
+`forSchema` shape, so `confect codegen` rewrites it.
+
+Changeset: `http-router-schema-first.md`.
+Upstream: converges with upstream `main`, unreleased at 10.6.0.
 
 ### Label reflected HTTP routes
 
@@ -1335,14 +1484,12 @@ Upstream: planned; no linked proposal verified.
 
 ### Sign deployment JWTs from mutations
 
-Add mutation-only `Auth.MutationAuth.signJwt` in applications and components,
-with a generated service alias. Keep application identity out of components and
-signing out of query/action handlers. Verify generated component mutations and
-app mutations against convex-test 0.0.65 deployment JWKS in the component suite.
-Require convex-test 0.0.65 or later in `@confect/test` so signing support is available.
-Keep Confect's component registration callbacks void across the test-peer update.
-Generated provider descriptors match minted token issuers and audiences under
-test defaults and explicit deployment URL overrides.
+Upstream 10.6.0 ships `MutationAuth.signJwt` under `@confect/server/MutationAuth`,
+so the fork's `Auth.MutationAuth` (`@confect/server/Auth/MutationAuth`) is gone.
+What stays is the fork's component wiring: component mutations get upstream's
+service through the shared mutation layer, and generated component services
+export the same `MutationAuth` alias as applications. Application identity stays
+out of components and signing out of query and action handlers.
 
-Changeset: `mutation-auth-sign-jwt.md`.
-Upstream: planned; no linked proposal verified.
+Changesets: `mutation-auth-sign-jwt.md`, `mutation-auth-upstream.md`.
+Upstream: superseded by upstream 10.6.0 for applications; the component wiring is fork only.

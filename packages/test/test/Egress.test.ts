@@ -11,6 +11,7 @@ import { v } from "convex/values";
 import * as Effect from "effect/Effect";
 import { convexTest } from "../src/internal/ConvexTest";
 import * as Egress from "../src/internal/Egress";
+import { inlineSources } from "./fixtures/inlineSources";
 import { loopback } from "./fixtures/loopback";
 
 const live = vi.fn((input: { readonly url: string }) =>
@@ -148,6 +149,9 @@ const modules = {
     }),
 };
 
+// Each inline module's source: none has a "use node" directive.
+const sources = inlineSources(modules);
+
 describe("provider ports", () => {
   it.effect(
     "a port call in an action is held as a command until the test answers it",
@@ -155,7 +159,7 @@ describe("provider ports", () => {
       Effect.gen(function* () {
         live.mockClear();
         const server = yield* loopback;
-        const t = convexTest(schema, modules);
+        const t = convexTest({ schema, modules, sources });
         const charged = t.action(egress.charge, { url: server.url });
         const commands = yield* Effect.promise(() =>
           vi.waitFor(() => {
@@ -172,7 +176,8 @@ describe("provider ports", () => {
           functionName: "egress:charge",
         });
         t.answer(commands[0]!.id, "answered");
-        expect(yield* Effect.promise(() => charged)).toBe("answered");
+        const observed = yield* Effect.promise(() => charged);
+        expect(observed).toBe("answered");
         expect(t.commands()).toEqual([]);
         expect(live).not.toHaveBeenCalled();
         expect(server.hits()).toBe(0);
@@ -182,7 +187,7 @@ describe("provider ports", () => {
   it.effect("a command answered twice is refused with StaleCommand", () =>
     Effect.gen(function* () {
       live.mockClear();
-      const t = convexTest(schema, modules);
+      const t = convexTest({ schema, modules, sources });
       const charged = t.action(egress.charge, { url: "https://example.com/" });
       const [command] = yield* Effect.promise(() =>
         vi.waitFor(() => {
@@ -208,14 +213,13 @@ describe("provider ports", () => {
     () =>
       Effect.gen(function* () {
         live.mockClear();
-        const t = convexTest(schema, modules);
-        expect(
-          yield* Effect.promise(() =>
-            t.query(egress.chargeInQuery, {
-              url: "https://api.example.com/v1/charges",
-            }),
-          ),
-        ).toEqual({
+        const t = convexTest({ schema, modules, sources });
+        const observed = yield* Effect.promise(() =>
+          t.query(egress.chargeInQuery, {
+            url: "https://api.example.com/v1/charges",
+          }),
+        );
+        expect(observed).toEqual({
           name: "TypeError",
           message:
             "fetch to https://api.example.com/v1/charges failed: Can't use fetch() in queries and mutations. Please consider using an action. See https://docs.convex.dev/functions/actions for more details.",
@@ -229,10 +233,11 @@ describe("provider ports", () => {
     Effect.gen(function* () {
       live.mockClear();
       const server = yield* loopback;
-      convexTest(schema, modules);
-      expect(
-        yield* Effect.promise(() => charges.call({ url: server.url })),
-      ).toBe("reached /ping");
+      convexTest({ schema, modules, sources });
+      const observed = yield* Effect.promise(() =>
+        charges.call({ url: server.url }),
+      );
+      expect(observed).toBe("reached /ping");
       expect(server.hits()).toBe(1);
     }).pipe(Effect.scoped),
   );
@@ -258,16 +263,14 @@ describe("provider ports", () => {
           live.mockClear();
           late.length = 0;
           const server = yield* loopback;
-          const t = convexTest(schema, modules);
-          expect(
-            yield* refusalOf(
-              t.action(egress.chargeAfterRefusal, { url: server.url }),
-            ),
-          ).toEqual(undeclared);
+          const t = convexTest({ schema, modules, sources });
+          const observed = yield* refusalOf(
+            t.action(egress.chargeAfterRefusal, { url: server.url }),
+          );
+          expect(observed).toEqual(undeclared);
           expect(t.commands()).toEqual([]);
-          expect(yield* Effect.promise(() => Promise.all(late))).toEqual([
-            { failed: "BackendRefusal" },
-          ]);
+          const observed2 = yield* Effect.promise(() => Promise.all(late));
+          expect(observed2).toEqual([{ failed: "BackendRefusal" }]);
           expect(live).not.toHaveBeenCalled();
         }).pipe(Effect.scoped),
     );
@@ -278,7 +281,7 @@ describe("provider ports", () => {
         Effect.gen(function* () {
           live.mockClear();
           const server = yield* loopback;
-          const t = convexTest(schema, modules);
+          const t = convexTest({ schema, modules, sources });
           const { promise: opened, resolve: open } =
             Promise.withResolvers<void>();
           gate = opened;
@@ -291,7 +294,8 @@ describe("provider ports", () => {
             }),
           );
           open();
-          expect(yield* refusalOf(died)).toEqual(undeclared);
+          const observed = yield* refusalOf(died);
+          expect(observed).toEqual(undeclared);
           expect(t.commands()).toEqual([]);
           expect(() => t.answer(command!.id, "late")).toThrow(
             expect.objectContaining({
@@ -306,19 +310,18 @@ describe("provider ports", () => {
     it.effect("it settles with its refusal while its handler never does", () =>
       Effect.gen(function* () {
         const server = yield* loopback;
-        const t = convexTest(schema, modules);
-        expect(
-          yield* refusalOf(
-            t.action(egress.hangAfterRefusal, { url: server.url }),
-          ),
-        ).toEqual(undeclared);
+        const t = convexTest({ schema, modules, sources });
+        const observed = yield* refusalOf(
+          t.action(egress.hangAfterRefusal, { url: server.url }),
+        );
+        expect(observed).toEqual(undeclared);
       }).pipe(Effect.scoped),
     );
 
     it.effect("it logs nothing after its refusal", () =>
       Effect.gen(function* () {
         const server = yield* loopback;
-        const t = convexTest(schema, modules);
+        const t = convexTest({ schema, modules, sources });
         const log = vi.spyOn(console, "log").mockImplementation(() => {});
         const outcome = yield* refusalOf(
           t.action(egress.logAroundRefusal, { url: server.url }),
@@ -335,12 +338,11 @@ describe("provider ports", () => {
       "a command an action left held when it returned is cancelled",
       () =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
-          expect(
-            yield* Effect.promise(() =>
-              t.action(egress.chargeAndReturn, { url: "https://example.com/" }),
-            ),
-          ).toBe("returned");
+          const t = convexTest({ schema, modules, sources });
+          const observed = yield* Effect.promise(() =>
+            t.action(egress.chargeAndReturn, { url: "https://example.com/" }),
+          );
+          expect(observed).toBe("returned");
           expect(t.commands()).toEqual([]);
         }),
     );
@@ -354,7 +356,7 @@ describe("provider ports", () => {
       "$article $kind logs nothing from a continuation released after it returned",
       ({ kind }) =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
+          const t = convexTest({ schema, modules, sources });
           const { promise, resolve } = Promise.withResolvers<void>();
           afterReturn = promise;
           continued.length = 0;

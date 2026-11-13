@@ -110,6 +110,18 @@ describe("notes", () => {
 });
 ```
 
+## Deployment signing keys
+
+`TestConfect.jwks()` wraps [`convex-test`](https://docs.convex.dev/testing/convex-test)'s `t.jwks()` in a lazy `Effect<DeploymentJwks>` instead of a Promise. Native rejections become defects. The `DeploymentJwk` and `DeploymentJwks` types are re-exported from `@confect/test/TestConfect`.
+
+```ts
+Effect.gen(function* () {
+  const c = yield* TestConfect.TestConfect;
+  const jwks = yield* c.jwks();
+  return jwks;
+});
+```
+
 ## Calling functions
 
 `TestConfect` provides `query`, `mutation`, and `action` methods that accept a ref and args, returning an `Effect` with the decoded result.
@@ -309,7 +321,7 @@ export const register = (
 };
 ```
 
-`makeHttp` must construct `HttpRouter.forSchema(componentSchema)(routes)` and any configuration-dependent route layers on each call. The production `confect/http.ts` can export `makeHttp()` as its default. TestConfect caches each mount's resulting router, including construction failures. A plain dynamic import of an already constructed router cannot provide separate construction-time configuration for two mounts.
+`makeHttp` must construct `HttpRouter.make(componentSchema, routes)` and any configuration-dependent route layers on each call. The production `confect/http.ts` can export `makeHttp()` as its default. TestConfect caches each mount's resulting router, including construction failures. A plain dynamic import of an already constructed router cannot provide separate construction-time configuration for two mounts.
 
 <Warning>
   Mounted HTTP tests share the process environment. Fetches through one layer,
@@ -372,17 +384,43 @@ export default defineConfig({
 });
 ```
 
-A Node action runs with Node's globals. On the kernel a Confect Node action is one by its registration. For a plain Convex module, pass the modules' sources so the kernel reads its `"use node"` directive as Convex's bundler does:
+The guards check each call, so a stub you install with `vi.stubGlobal` or by assignment still works outside a function and stays refused inside one. A function that redefines one of these globals while it runs, with `Object.defineProperty` or `delete`, steps outside the guards: a call it makes through the replacement is not blocked, but the function then fails with `UnguardableGlobal` when it settles, a mutation keeps none of its writes, and the guard comes back. Replace globals between functions instead.
+
+A Node action runs with Node's globals, and every other function with Convex's isolate's. On the kernel a Confect action's runtime comes from its registration. A plain Convex action's comes from its module's `"use node"` directive, so pass the modules' sources, a `?raw` glob of the same files, and the kernel reads the directive as Convex's bundler does. The glob can live in any test file: the kernel matches each source to its module by its path below the directory that holds `_generated`. Each form takes them beside `target`:
 
 ```ts
-TestConfect.layer(schema, convexSchema, modules, {
+const sources = import.meta.glob("../convex/**/*.ts", {
+  query: "?raw",
+  import: "default",
+});
+TestConfect.layer(registry, { target: "kernel", sources });
+TestConfect.layer(app, registry, { target: "kernel", sources });
+TestConfect.layer(schema, convexSchema, modules, { target: "kernel", sources });
+```
+
+Without sources, a module that exports a plain Convex action fails the first call with `ActionRuntimeUnknown`, naming the module. A component's plain actions need its sources too: a kit that can, registers with `registerComponent(name, schema, modules, { sources })`. A package's test kit registers without them, so declare the runtime its plain actions run in:
+
+```ts
+TestConfect.layer(app, registry, {
   target: "kernel",
-  sources: import.meta.glob("../convex/**/*.ts", {
-    query: "?raw",
-    import: "default",
-  }),
+  sources,
+  componentRuntimes: { "workflow/workpool": "isolate" },
 });
 ```
+
+The generated test subject will supply the sources and these declarations for package mounts from each kit's metadata.
+
+File storage on the kernel keeps the deployment's metadata: a stored file's `_storage` row carries a base64 SHA-256 `sha256`, its `size` and a `contentType` that is `null` when the file has none, and a `sha256` you declare to `store` must match. Uploading to a `generateUploadUrl` URL, or downloading from a `getUrl` URL, needs a real deployment, so the kernel's `fetch` refuses either with `RequiresBinary`.
+
+The kernel's `fetch` routes a request as a deployment does: the router's own `lookup` picks the route by path and method, the handler gets the exact headers and body bytes you sent, so a route that checks a signature over the raw body behaves as it would deployed, and a request no route matches gets `404 No matching routes found`. A route that throws answers `500` with the deployment's JSON error body, `{ code, trace }` plus `data` for a `ConvexError`, instead of rejecting `fetch`; a mounted component's route answers the same on either target. Identity still comes from `withIdentity`.
+
+The kernel also runs the cron jobs each component's `crons.ts` declares, which convex-test does not. It reads them when the backend opens and refuses a job Convex would refuse at deploy. Each run starts when Convex would start it, in UTC. An interval's first run is due at once, and each later one an interval after the previous run's time. An hourly, daily, weekly, monthly or cron-expression schedule runs at its next occurrence, delayed by a random number of seconds as Convex delays it: up to 59 for a pinned minute, up to 3599 across the hour when `minuteUTC` is left out. The kernel holds no random generator. On the kernel target, `TestConfect.layer` gives the backend a seeded random stream, and every delay draws from it, so two runs with the same seed get the same delays. The seed defaults to `0`. Pass `seed` beside `target` to draw a different stream:
+
+```ts
+TestConfect.layer(registry, { target: "kernel", seed: 7 });
+```
+
+A cron run counts as no work for `finishAllScheduledFunctions`, so a drain never runs one. Advancing fake timers and then calling `finishInProgressScheduledFunctions` runs every cron run that came due, in time order with scheduled jobs. Cron expressions with `L`, `W` and `#` run as Convex runs them.
 
 #### Reach the network from an action
 

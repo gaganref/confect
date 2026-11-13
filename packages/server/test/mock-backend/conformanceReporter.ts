@@ -1,4 +1,8 @@
 import type { Reporter, TestModule } from "vitest/node";
+import * as Arr from "effect/Array";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
+import * as Str from "effect/String";
 import { exceptions } from "./conformance";
 
 /**
@@ -9,22 +13,35 @@ import { exceptions } from "./conformance";
  */
 export default class ConformanceReporter implements Reporter {
   onTestRunEnd(testModules: ReadonlyArray<TestModule>) {
-    const unrun = exceptions.filter((entry) => {
-      const module = testModules.find((candidate) =>
-        candidate.moduleId.replaceAll("\\", "/").endsWith(`/${entry.file}`),
-      );
-      if (module === undefined) return false;
-      const state = Array.from(module.children.allTests())
-        .find((test) => test.fullName === entry.name)
-        ?.result().state;
-      return state !== "passed" && state !== "failed";
-    });
+    const unrun = Arr.filter(exceptions, (entry) =>
+      pipe(
+        Arr.findFirst(testModules, (candidate) =>
+          pipe(
+            candidate.moduleId,
+            Str.replaceAll("\\", "/"),
+            Str.endsWith(`/${entry.file}`),
+          ),
+        ),
+        Option.exists((module) => {
+          const state = pipe(
+            Arr.findFirst(
+              Arr.fromIterable(module.children.allTests()),
+              (test) => test.fullName === entry.name,
+            ),
+            Option.map((test) => test.result().state),
+            Option.getOrUndefined,
+          );
+          return state !== "passed" && state !== "failed";
+        }),
+      ),
+    );
     if (unrun.length === 0) return;
     process.exitCode = 1;
     process.stderr.write(
-      `conformance.ts excepts cases the convex-test lane did not run: ${unrun
-        .map(({ file, name }) => `${file} ${JSON.stringify(name)}`)
-        .join(", ")}. Run them, or remove their entries.\n`,
+      `conformance.ts excepts cases the convex-test lane did not run: ${Arr.join(
+        Arr.map(unrun, ({ file, name }) => `${file} "${name}"`),
+        ", ",
+      )}. Run them, or remove their entries.\n`,
     );
   }
 }

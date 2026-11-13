@@ -38,6 +38,9 @@ export const Declaration = Schema.TaggedUnion({
 });
 export type Declaration = typeof Declaration.Type;
 
+/**
+ * @internal
+ */
 export const planDeclarations = (
   declarations: Array.NonEmptyReadonlyArray<Declaration>,
   affectedImpls: ReadonlyArray<ImplModulePath>,
@@ -112,6 +115,9 @@ export const parse = (
   );
 };
 
+/**
+ * @internal
+ */
 export const discover = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -152,7 +158,7 @@ export const discover = Effect.gen(function* () {
     discoverTableFiles,
   ]).pipe(Effect.map(Array.flatten));
   const moduleEntryOptions = yield* Effect.forEach(
-    Array.getSomes(moduleRelativePaths.map(parse)),
+    Array.getSomes(Array.map(moduleRelativePaths, parse)),
     tryEntry,
   );
 
@@ -160,20 +166,18 @@ export const discover = Effect.gen(function* () {
   // edits to it (or to a locally-defined component definition it imports—npm component definitions are externalized and not watched) must re-run
   // codegen.
   const convexDirectory = yield* ConvexDirectory.get;
-  const convexConfigEntryOption = yield* Effect.gen(function* () {
-    const absolutePath = path.join(convexDirectory, CONVEX_CONFIG_FILENAME);
-    // A declared backend's `convex.config.ts` is codegen output, not input.
-    if (Option.isSome(declaration) || !(yield* fs.exists(absolutePath))) {
-      return Option.none<EntryPoint>();
-    }
-    return Option.some<EntryPoint>({
-      ...Kind.Config(),
-      absolutePath,
-      inputPath: yield* fs
-        .realPath(absolutePath)
-        .pipe(Effect.orElseSucceed(() => absolutePath)),
-    });
-  });
+  const absolutePath = path.join(convexDirectory, CONVEX_CONFIG_FILENAME);
+  // A declared backend's `convex.config.ts` is codegen output, not input.
+  const convexConfigEntryOption =
+    Option.isNone(declaration) && (yield* fs.exists(absolutePath))
+      ? Option.some<EntryPoint>({
+          ...Kind.Config(),
+          absolutePath,
+          inputPath: yield* fs
+            .realPath(absolutePath)
+            .pipe(Effect.orElseSucceed(() => absolutePath)),
+        })
+      : Option.none<EntryPoint>();
 
   return Array.getSomes([
     ...fixedEntryOptions,

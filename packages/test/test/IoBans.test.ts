@@ -18,11 +18,16 @@ import {
   queryGeneric,
 } from "convex/server";
 import { v } from "convex/values";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import { pipe } from "effect/Function";
+import * as Rec from "effect/Record";
+import * as Str from "effect/String";
 import * as Schema from "effect/Schema";
 import { convexTest } from "../src/internal/ConvexTest";
 import type * as KernelRefusal from "../src/internal/KernelRefusal";
 import { hasUseNodeDirective } from "../src/internal/Execution";
+import { inlineSources } from "./fixtures/inlineSources";
 import { keptFetch, keptSetImmediate } from "./fixtures/keptAtImport";
 import { loopback } from "./fixtures/loopback";
 
@@ -164,7 +169,7 @@ const io = {
   surfaceInMutation: makeFunctionReference<"mutation">("io:surfaceInMutation"),
   surfaceInAction: makeFunctionReference<"action">("io:surfaceInAction"),
   confectSurface: makeFunctionReference<"action">("io:confectSurface"),
-  nodeSurface: makeFunctionReference<"action">("io:nodeSurface"),
+  nodeSurface: makeFunctionReference<"action">("ioNode:surface"),
   importedImmediateInQuery: makeFunctionReference<"query">(
     "io:importedImmediateInQuery",
   ),
@@ -207,10 +212,34 @@ const io = {
   namedNodeScriptInQuery: makeFunctionReference<"query">(
     "io:namedNodeScriptInQuery",
   ),
+  redefinedFetchInQuery: makeFunctionReference<"query", { url: string }>(
+    "io:redefinedFetchInQuery",
+  ),
+  redefinedFetchInMutation: makeFunctionReference<"mutation", { url: string }>(
+    "io:redefinedFetchInMutation",
+  ),
+  redefinedFetchInAction: makeFunctionReference<"action", { url: string }>(
+    "io:redefinedFetchInAction",
+  ),
+  overlaidFetchInQuery: makeFunctionReference<"query", { url: string }>(
+    "io:overlaidFetchInQuery",
+  ),
 };
 
 // The writes an action made after its raw fetch, so a test waits for them.
 const lateWrites: Array<Promise<unknown>> = [];
+
+/**
+ * What a handler redefines `fetch` as while it runs, which no guard sees.
+ */
+const redefinedFetch = vi.fn(() => Promise.resolve(new Response("redefined")));
+
+const redefineFetch = () =>
+  Object.defineProperty(globalThis, "fetch", {
+    value: redefinedFetch,
+    writable: true,
+    configurable: true,
+  });
 
 const schema = defineSchema({ notes: defineTable({ text: v.string() }) });
 
@@ -286,7 +315,6 @@ const modules = {
       surfaceInMutation: mutationGeneric({ args: {}, handler: surface }),
       surfaceInAction: actionGeneric({ args: {}, handler: surface }),
       confectSurface: isolateSurface,
-      nodeSurface,
       importedImmediateInQuery: queryGeneric({
         args: {},
         handler: () =>
@@ -318,7 +346,7 @@ const modules = {
           ctx.db
             .query("notes")
             .collect()
-            .then((rows) => rows.map((row) => row.text)),
+            .then((rows) => Arr.map(rows, (row) => row.text)),
       }),
       fetchThroughNestedMutation: mutationGeneric({
         args: { url: v.string() },
@@ -405,6 +433,46 @@ const modules = {
             filename: "node:internal/deps/undici/undici-lookalike",
           }) as string,
       }),
+      redefinedFetchInQuery: queryGeneric({
+        args: { url: v.string() },
+        handler: (_ctx, { url }) => {
+          redefineFetch();
+          return fetch(url).then((response) => response.text());
+        },
+      }),
+      redefinedFetchInMutation: mutationGeneric({
+        args: { url: v.string() },
+        handler: async (ctx, { url }) => {
+          await ctx.db.insert("notes", { text: "before" });
+          redefineFetch();
+          await fetch(url);
+          await ctx.db.insert("notes", { text: "after" });
+          return "returned";
+        },
+      }),
+      redefinedFetchInAction: actionGeneric({
+        args: { url: v.string() },
+        handler: (_ctx, { url }) => {
+          redefineFetch();
+          return fetch(url).then((response) => response.text());
+        },
+      }),
+      overlaidFetchInQuery: queryGeneric({
+        args: { url: v.string() },
+        // An accessor laid over the guard's, as convex-test lays its own
+        // before each of its handlers, reads through the guard.
+        handler: (_ctx, { url }) => {
+          const beneath = Object.getOwnPropertyDescriptor(globalThis, "fetch")!;
+          Object.defineProperty(globalThis, "fetch", {
+            get: () => beneath.get?.call(globalThis),
+            set: (value: unknown) => {
+              beneath.set?.call(globalThis, value);
+            },
+            configurable: true,
+          });
+          return outcomeOf(fetch(url));
+        },
+      }),
       timersInAction: actionGeneric({
         args: {},
         handler: async () => {
@@ -422,7 +490,11 @@ const modules = {
       }),
     });
   },
+  "ioNode.ts": () => Promise.resolve({ surface: nodeSurface }),
 };
+
+// Each inline module's source: only ioNode.ts has a "use node" directive.
+const sources = inlineSources(modules, ["ioNode.ts"]);
 
 // The URL carries a query string, which the binary's message leaves out.
 const url = "https://api.example.com/v1/charges?token=secret";
@@ -452,12 +524,13 @@ describe("I/O bans", () => {
       "%s rejects with the binary's TypeError, which the handler can catch",
       (name) =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
+          const t = convexTest({ schema, modules, sources });
           const call =
             name === "fetchInQuery"
               ? t.query(io[name], { url })
               : t.mutation(io[name], { url });
-          expect(yield* Effect.promise(() => call)).toEqual(fetchRefusal);
+          const observed = yield* Effect.promise(() => call);
+          expect(observed).toEqual(fetchRefusal);
         }),
     );
 
@@ -465,12 +538,11 @@ describe("I/O bans", () => {
       "a reference a module kept when the backend loaded it is refused in a query",
       () =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
-          expect(
-            yield* Effect.promise(() =>
-              t.query(io.capturedFetchInQuery, { url }),
-            ),
-          ).toEqual(fetchRefusal);
+          const t = convexTest({ schema, modules, sources });
+          const observed = yield* Effect.promise(() =>
+            t.query(io.capturedFetchInQuery, { url }),
+          );
+          expect(observed).toEqual(fetchRefusal);
         }),
     );
 
@@ -478,12 +550,11 @@ describe("I/O bans", () => {
       "a reference a module kept when it was imported, before any backend existed, is refused in a query",
       () =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
-          expect(
-            yield* Effect.promise(() =>
-              t.query(io.importedFetchInQuery, { url }),
-            ),
-          ).toEqual(fetchRefusal);
+          const t = convexTest({ schema, modules, sources });
+          const observed = yield* Effect.promise(() =>
+            t.query(io.importedFetchInQuery, { url }),
+          );
+          expect(observed).toEqual(fetchRefusal);
         }),
     );
 
@@ -491,20 +562,18 @@ describe("I/O bans", () => {
       "a handler that reassigns globalThis.fetch mid-invocation is still refused, and the host's fetch comes back",
       () =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
+          const t = convexTest({ schema, modules, sources });
           const host = Reflect.get(globalThis, "fetch");
-          expect(
-            yield* Effect.promise(() =>
-              t.query(io.reassignedFetchInQuery, { url }),
-            ),
-          ).toEqual(fetchRefusal);
+          const observed = yield* Effect.promise(() =>
+            t.query(io.reassignedFetchInQuery, { url }),
+          );
+          expect(observed).toEqual(fetchRefusal);
           expect(Reflect.get(globalThis, "fetch")).toBe(host);
           const server = yield* loopback;
-          expect(
-            yield* Effect.promise(() =>
-              fetch(server.url).then((response) => response.text()),
-            ),
-          ).toBe("reached /ping");
+          const observed2 = yield* Effect.promise(() =>
+            fetch(server.url).then((response) => response.text()),
+          );
+          expect(observed2).toBe("reached /ping");
         }).pipe(Effect.scoped),
     );
 
@@ -512,7 +581,7 @@ describe("I/O bans", () => {
       "a fetch a test stubbed after the backend opened is refused in a query",
       () =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
+          const t = convexTest({ schema, modules, sources });
           yield* Effect.promise(() => t.query(io.notes, {}));
           const stub = vi.fn(() => Promise.resolve(new Response("stubbed")));
           vi.stubGlobal("fetch", stub);
@@ -526,20 +595,19 @@ describe("I/O bans", () => {
 
     it.effect("a query or mutation another function calls is refused", () =>
       Effect.gen(function* () {
-        const t = convexTest(schema, modules);
-        expect(
-          yield* Effect.promise(() => t.action(io.fetchThroughQuery, { url })),
-        ).toEqual(fetchRefusal);
-        expect(
-          yield* Effect.promise(() =>
-            t.action(io.fetchThroughMutation, { url }),
-          ),
-        ).toEqual(fetchRefusal);
-        expect(
-          yield* Effect.promise(() =>
-            t.mutation(io.fetchThroughNestedMutation, { url }),
-          ),
-        ).toEqual(fetchRefusal);
+        const t = convexTest({ schema, modules, sources });
+        const observed = yield* Effect.promise(() =>
+          t.action(io.fetchThroughQuery, { url }),
+        );
+        expect(observed).toEqual(fetchRefusal);
+        const observed2 = yield* Effect.promise(() =>
+          t.action(io.fetchThroughMutation, { url }),
+        );
+        expect(observed2).toEqual(fetchRefusal);
+        const observed3 = yield* Effect.promise(() =>
+          t.mutation(io.fetchThroughNestedMutation, { url }),
+        );
+        expect(observed3).toEqual(fetchRefusal);
       }),
     );
   });
@@ -558,7 +626,7 @@ describe("I/O bans", () => {
       () =>
         Effect.gen(function* () {
           const server = yield* loopback;
-          const t = convexTest(schema, modules);
+          const t = convexTest({ schema, modules, sources });
           const refusal = yield* refusalOf(
             t.action(io.fetchInAction, { url: server.url }),
           );
@@ -581,26 +649,29 @@ describe("I/O bans", () => {
       Effect.gen(function* () {
         lateWrites.length = 0;
         const server = yield* loopback;
-        const t = convexTest(schema, modules);
-        expect(
-          yield* refusalOf(t.action(io.fetchThenWrite, { url: server.url })),
-        ).toMatchObject({ reason: "UndeclaredFetch" });
+        const t = convexTest({ schema, modules, sources });
+        const refused = yield* refusalOf(
+          t.action(io.fetchThenWrite, { url: server.url }),
+        );
+        expect(refused).toMatchObject({ reason: "UndeclaredFetch" });
         // The action settled at once, so the write its handler went on to make
         // is awaited before the table is read.
-        expect(
-          yield* Effect.promise(() => Promise.allSettled(lateWrites)),
-        ).toMatchObject([
+        const writes = yield* Effect.promise(() =>
+          Promise.allSettled(lateWrites),
+        );
+        expect(writes).toMatchObject([
           { status: "rejected", reason: { reason: "UndeclaredFetch" } },
         ]);
-        expect(yield* Effect.promise(() => t.query(io.notes, {}))).toEqual([]);
+        const notes = yield* Effect.promise(() => t.query(io.notes, {}));
+        expect(notes).toEqual([]);
       }).pipe(Effect.scoped),
     );
 
     it.effect("a component's action is named with its component path", () =>
       Effect.gen(function* () {
         const server = yield* loopback;
-        const t = convexTest(schema, modules);
-        t.registerComponent("store", schema, {
+        const t = convexTest({ schema, modules, sources });
+        const storeModules = {
           "_generated/server.ts": () => Promise.resolve({}),
           "egress.ts": () =>
             Promise.resolve({
@@ -609,13 +680,15 @@ describe("I/O bans", () => {
                 handler: (_ctx, args) => fetch(args.url).then(() => null),
               }),
             }),
+        };
+        t.registerComponent("store", schema, storeModules, {
+          sources: inlineSources(storeModules),
         });
         const store = (componentsGeneric() as any).store;
-        expect(
-          yield* refusalOf(
-            t.action(store.egress.fetchInAction, { url: server.url }),
-          ),
-        ).toMatchObject({
+        const refused = yield* refusalOf(
+          t.action(store.egress.fetchInAction, { url: server.url }),
+        );
+        expect(refused).toMatchObject({
           reason: "UndeclaredFetch",
           componentPath: "store",
           functionName: "egress:fetchInAction",
@@ -631,8 +704,9 @@ describe("I/O bans", () => {
       "a query that starts %s fails with the binary's error after it returns",
       (name) =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
-          expect(yield* failureOf(t.query(io.timerInQuery, { name }))).toEqual({
+          const t = convexTest({ schema, modules, sources });
+          const observed = yield* failureOf(t.query(io.timerInQuery, { name }));
+          expect(observed).toEqual({
             failed: timerRefusal(name),
           });
         }),
@@ -642,15 +716,15 @@ describe("I/O bans", () => {
       "a mutation that starts %s fails and publishes none of its writes",
       (name) =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
-          expect(
-            yield* failureOf(t.mutation(io.timerInMutation, { name })),
-          ).toEqual({
+          const t = convexTest({ schema, modules, sources });
+          const observed = yield* failureOf(
+            t.mutation(io.timerInMutation, { name }),
+          );
+          expect(observed).toEqual({
             failed: timerRefusal(name),
           });
-          expect(yield* Effect.promise(() => t.query(io.notes, {}))).toEqual(
-            [],
-          );
+          const observed2 = yield* Effect.promise(() => t.query(io.notes, {}));
+          expect(observed2).toEqual([]);
         }),
     );
 
@@ -658,10 +732,11 @@ describe("I/O bans", () => {
       "a query that awaits %s fails with the binary's error without waiting for its handler",
       (name) =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
-          expect(
-            yield* failureOf(t.query(io.awaitedTimerInQuery, { name })),
-          ).toEqual({ failed: timerRefusal(name) });
+          const t = convexTest({ schema, modules, sources });
+          const observed = yield* failureOf(
+            t.query(io.awaitedTimerInQuery, { name }),
+          );
+          expect(observed).toEqual({ failed: timerRefusal(name) });
         }),
     );
 
@@ -669,13 +744,13 @@ describe("I/O bans", () => {
       "a mutation that awaits %s fails without waiting for its handler and publishes none of its writes",
       (name) =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
-          expect(
-            yield* failureOf(t.mutation(io.awaitedTimerInMutation, { name })),
-          ).toEqual({ failed: timerRefusal(name) });
-          expect(yield* Effect.promise(() => t.query(io.notes, {}))).toEqual(
-            [],
+          const t = convexTest({ schema, modules, sources });
+          const observed = yield* failureOf(
+            t.mutation(io.awaitedTimerInMutation, { name }),
           );
+          expect(observed).toEqual({ failed: timerRefusal(name) });
+          const observed2 = yield* Effect.promise(() => t.query(io.notes, {}));
+          expect(observed2).toEqual([]);
         }),
     );
 
@@ -683,30 +758,31 @@ describe("I/O bans", () => {
       "a query an action calls fails, and the action sees its error",
       () =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
-          expect(
-            yield* Effect.promise(() =>
-              t.action(io.timerThroughQuery, { name: "setTimeout" }),
-            ),
-          ).toBe(timerRefusal("setTimeout"));
+          const t = convexTest({ schema, modules, sources });
+          const observed = yield* Effect.promise(() =>
+            t.action(io.timerThroughQuery, { name: "setTimeout" }),
+          );
+          expect(observed).toBe(timerRefusal("setTimeout"));
         }),
     );
 
     it.effect("a query may clear a timer, as the binary allows", () =>
       Effect.gen(function* () {
-        const t = convexTest(schema, modules);
-        expect(yield* Effect.promise(() => t.query(io.clearInQuery, {}))).toBe(
-          "cleared",
+        const t = convexTest({ schema, modules, sources });
+        const observed = yield* Effect.promise(() =>
+          t.query(io.clearInQuery, {}),
         );
+        expect(observed).toBe("cleared");
       }),
     );
 
     it.effect("an action runs host timers", () =>
       Effect.gen(function* () {
-        const t = convexTest(schema, modules);
-        expect(
-          yield* Effect.promise(() => t.action(io.timersInAction, {})),
-        ).toEqual(["slept", "ticked"]);
+        const t = convexTest({ schema, modules, sources });
+        const observed = yield* Effect.promise(() =>
+          t.action(io.timersInAction, {}),
+        );
+        expect(observed).toEqual(["slept", "ticked"]);
       }),
     );
 
@@ -714,7 +790,7 @@ describe("I/O bans", () => {
       "fake timers install and uninstall through the guards, and a query is still refused while they are on",
       () =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
+          const t = convexTest({ schema, modules, sources });
           for (const round of [1, 2]) {
             vi.useFakeTimers();
             let fired = false;
@@ -723,21 +799,19 @@ describe("I/O bans", () => {
             }, 1000);
             vi.advanceTimersByTime(1000);
             expect(fired, `round ${round}`).toBe(true);
-            expect(
-              yield* failureOf(
-                t.query(io.timerInQuery, { name: "setTimeout" }),
-              ),
-            ).toEqual({ failed: timerRefusal("setTimeout") });
+            const observed = yield* failureOf(
+              t.query(io.timerInQuery, { name: "setTimeout" }),
+            );
+            expect(observed).toEqual({ failed: timerRefusal("setTimeout") });
             vi.useRealTimers();
           }
-          expect(
-            yield* Effect.promise(
-              () =>
-                new Promise<string>((resolve) =>
-                  setTimeout(() => resolve("real"), 1),
-                ),
-            ),
-          ).toBe("real");
+          const observed2 = yield* Effect.promise(
+            () =>
+              new Promise<string>((resolve) =>
+                setTimeout(() => resolve("real"), 1),
+              ),
+          );
+          expect(observed2).toBe("real");
         }),
     );
   });
@@ -765,19 +839,23 @@ describe("I/O bans", () => {
       "a query, a mutation and an isolate action have no setImmediate and no queueMicrotask, as the binary's isolate",
       () =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
-          expect(
-            yield* Effect.promise(() => t.query(io.surfaceInQuery, {})),
-          ).toEqual(absent);
-          expect(
-            yield* Effect.promise(() => t.mutation(io.surfaceInMutation, {})),
-          ).toEqual(absent);
-          expect(
-            yield* Effect.promise(() => t.action(io.surfaceInAction, {})),
-          ).toEqual(absent);
-          expect(
-            yield* Effect.promise(() => t.action(io.confectSurface, {})),
-          ).toEqual(absent);
+          const t = convexTest({ schema, modules, sources });
+          const observed = yield* Effect.promise(() =>
+            t.query(io.surfaceInQuery, {}),
+          );
+          expect(observed).toEqual(absent);
+          const observed2 = yield* Effect.promise(() =>
+            t.mutation(io.surfaceInMutation, {}),
+          );
+          expect(observed2).toEqual(absent);
+          const observed3 = yield* Effect.promise(() =>
+            t.action(io.surfaceInAction, {}),
+          );
+          expect(observed3).toEqual(absent);
+          const observed4 = yield* Effect.promise(() =>
+            t.action(io.confectSurface, {}),
+          );
+          expect(observed4).toEqual(absent);
           expect(surface()).toEqual({
             setImmediate: "function",
             queueMicrotask: "function",
@@ -789,10 +867,14 @@ describe("I/O bans", () => {
       "a Confect Node action has Node's setImmediate and queueMicrotask",
       () =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
-          expect(
-            yield* Effect.promise(() => t.action(io.nodeSurface, {})),
-          ).toEqual({ setImmediate: "function", queueMicrotask: "function" });
+          const t = convexTest({ schema, modules, sources });
+          const observed = yield* Effect.promise(() =>
+            t.action(io.nodeSurface, {}),
+          );
+          expect(observed).toEqual({
+            setImmediate: "function",
+            queueMicrotask: "function",
+          });
         }),
     );
 
@@ -800,12 +882,11 @@ describe("I/O bans", () => {
       "a setImmediate a module kept when it was imported fails in a query as the missing global does",
       () =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
-          expect(
-            yield* Effect.promise(() =>
-              t.query(io.importedImmediateInQuery, {}),
-            ),
-          ).toEqual({
+          const t = convexTest({ schema, modules, sources });
+          const observed = yield* Effect.promise(() =>
+            t.query(io.importedImmediateInQuery, {}),
+          );
+          expect(observed).toEqual({
             name: "ReferenceError",
             message: "setImmediate is not defined",
           });
@@ -824,17 +905,15 @@ describe("I/O bans", () => {
       "a query's and a mutation's multipart formData() reject with the binary's error",
       () =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
-          expect(
-            yield* Effect.promise(() =>
-              t.query(io.formDataInQuery, { body: "multipart" }),
-            ),
-          ).toEqual(refusal);
-          expect(
-            yield* Effect.promise(() =>
-              t.mutation(io.formDataInMutation, { body: "multipart" }),
-            ),
-          ).toEqual(refusal);
+          const t = convexTest({ schema, modules, sources });
+          const observed = yield* Effect.promise(() =>
+            t.query(io.formDataInQuery, { body: "multipart" }),
+          );
+          expect(observed).toEqual(refusal);
+          const observed2 = yield* Effect.promise(() =>
+            t.mutation(io.formDataInMutation, { body: "multipart" }),
+          );
+          expect(observed2).toEqual(refusal);
         }),
     );
 
@@ -842,19 +921,17 @@ describe("I/O bans", () => {
       "a query parses a urlencoded body and refuses multipart without a boundary as the binary does",
       () =>
         Effect.gen(function* () {
-          const t = convexTest(schema, modules);
-          expect(
-            yield* Effect.promise(() =>
-              t.query(io.formDataInQuery, { body: "urlencoded" }),
-            ),
-          ).toEqual({ returned: "ada" });
-          expect(
-            yield* Effect.promise(() =>
-              t.query(io.formDataInQuery, {
-                body: "multipartWithoutBoundary",
-              }),
-            ),
-          ).toEqual({
+          const t = convexTest({ schema, modules, sources });
+          const observed = yield* Effect.promise(() =>
+            t.query(io.formDataInQuery, { body: "urlencoded" }),
+          );
+          expect(observed).toEqual({ returned: "ada" });
+          const observed2 = yield* Effect.promise(() =>
+            t.query(io.formDataInQuery, {
+              body: "multipartWithoutBoundary",
+            }),
+          );
+          expect(observed2).toEqual({
             name: "TypeError",
             message:
               "Missing boundary parameter in mime type of multipart formdata.",
@@ -864,12 +941,11 @@ describe("I/O bans", () => {
 
     it.effect("an action parses a multipart body", () =>
       Effect.gen(function* () {
-        const t = convexTest(schema, modules);
-        expect(
-          yield* Effect.promise(() =>
-            t.action(io.formDataInAction, { body: "multipart" }),
-          ),
-        ).toEqual({ returned: "ada" });
+        const t = convexTest({ schema, modules, sources });
+        const observed = yield* Effect.promise(() =>
+          t.action(io.formDataInAction, { body: "multipart" }),
+        );
+        expect(observed).toEqual({ returned: "ada" });
       }),
     );
   });
@@ -883,7 +959,7 @@ describe("replaced globals", () => {
     "a fetch a test redefined with defineProperty is adopted and still refused in a query",
     () =>
       Effect.gen(function* () {
-        const t = convexTest(schema, modules);
+        const t = convexTest({ schema, modules, sources });
         yield* Effect.promise(() => t.query(io.notes, {}));
         const before = original("fetch");
         const stub = vi.fn(() => Promise.resolve(new Response("stubbed")));
@@ -910,7 +986,7 @@ describe("replaced globals", () => {
     "a fetch a test deleted and assigned again is adopted and still refused in a query",
     () =>
       Effect.gen(function* () {
-        const t = convexTest(schema, modules);
+        const t = convexTest({ schema, modules, sources });
         yield* Effect.promise(() => t.query(io.notes, {}));
         const before = original("fetch");
         const stub = vi.fn(() => Promise.resolve(new Response("stubbed")));
@@ -934,7 +1010,7 @@ describe("replaced globals", () => {
     "a stub vi.stubGlobal made is adopted, still refused in a query, and called outside one",
     () =>
       Effect.gen(function* () {
-        const t = convexTest(schema, modules);
+        const t = convexTest({ schema, modules, sources });
         yield* Effect.promise(() => t.query(io.notes, {}));
         const stub = vi.fn(() => Promise.resolve(new Response("stubbed")));
         vi.stubGlobal("fetch", stub);
@@ -950,14 +1026,116 @@ describe("replaced globals", () => {
       }),
   );
 
+  // What a function that redefined a guarded global while it ran fails with.
+  const replacedOutcome = (call: Promise<unknown>) =>
+    Effect.promise(() =>
+      call.then(
+        (value) => ({ returned: value }),
+        (error: {
+          readonly _tag?: string;
+          readonly reason?: string;
+          readonly names?: unknown;
+        }) => ({
+          failed: error._tag,
+          reason: error.reason,
+          names: error.names,
+        }),
+      ),
+    );
+
+  const replacedRefusal = {
+    failed: "UnguardableGlobal",
+    reason: "replacedWhileRunning",
+    names: ["fetch"],
+  };
+
+  it.effect.each([
+    { article: "a", kind: "query" },
+    { article: "an", kind: "action" },
+  ] as const)(
+    "$article $kind that redefines fetch and calls it is not blocked, but ends refused, and the guard is back",
+    ({ kind }) =>
+      Effect.gen(function* () {
+        const t = convexTest({ schema, modules, sources });
+        yield* Effect.promise(() => t.query(io.notes, {}));
+        const before = original("fetch");
+        redefinedFetch.mockClear();
+        const outcome = yield* replacedOutcome(
+          kind === "query"
+            ? t.query(io.redefinedFetchInQuery, { url })
+            : t.action(io.redefinedFetchInAction, { url }),
+        );
+        const calls = redefinedFetch.mock.calls.length;
+        // The refusal installed the guard again over the replacement, before
+        // any other function starts.
+        const reguarded = "get" in original("fetch");
+        const after = yield* Effect.promise(() =>
+          t.query(io.fetchInQuery, { url }),
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() =>
+              Object.defineProperty(globalThis, "fetch", before),
+            ),
+          ),
+        );
+        expect(outcome).toEqual(replacedRefusal);
+        expect(calls).toBe(1);
+        expect(reguarded).toBe(true);
+        expect(after).toEqual(fetchRefusal);
+        expect(redefinedFetch).toHaveBeenCalledOnce();
+      }),
+  );
+
+  it.effect(
+    "a mutation that redefines fetch and calls it ends refused and publishes nothing",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest({ schema, modules, sources });
+        const before = original("fetch");
+        const outcome = yield* replacedOutcome(
+          t.mutation(io.redefinedFetchInMutation, { url }),
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() =>
+              Object.defineProperty(globalThis, "fetch", before),
+            ),
+          ),
+        );
+        expect(outcome).toEqual(replacedRefusal);
+        const observed = yield* Effect.promise(() => t.query(io.notes, {}));
+        expect(observed).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "an accessor laid over the guard while a query runs reads through it and is no replacement",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest({ schema, modules, sources });
+        yield* Effect.promise(() => t.query(io.notes, {}));
+        const before = original("fetch");
+        const outcome = yield* Effect.promise(() =>
+          t.query(io.overlaidFetchInQuery, { url }),
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() =>
+              Object.defineProperty(globalThis, "fetch", before),
+            ),
+          ),
+        );
+        expect(outcome).toEqual(fetchRefusal);
+      }),
+  );
+
   it.effect(
     "util.promisify(setTimeout) in a query ends it with the binary's error",
     () =>
       Effect.gen(function* () {
-        const t = convexTest(schema, modules);
-        expect(
-          yield* failureOf(t.query(io.promisifiedTimerInQuery, {})),
-        ).toEqual({ failed: timerRefusal("setTimeout") });
+        const t = convexTest({ schema, modules, sources });
+        const observed = yield* failureOf(
+          t.query(io.promisifiedTimerInQuery, {}),
+        );
+        expect(observed).toEqual({ failed: timerRefusal("setTimeout") });
       }),
   );
 });
@@ -967,19 +1145,21 @@ describe("Node callers", () => {
     "a user's prepareStackTrace cannot pass a query's code off as Node's",
     () =>
       Effect.gen(function* () {
-        const t = convexTest(schema, modules);
-        expect(
-          yield* Effect.promise(() => t.query(io.fakedStackInQuery, {})),
-        ).toBe("undefined");
+        const t = convexTest({ schema, modules, sources });
+        const observed = yield* Effect.promise(() =>
+          t.query(io.fakedStackInQuery, {}),
+        );
+        expect(observed).toBe("undefined");
       }),
   );
 
   it.effect("a script named like a Node module is not Node's own", () =>
     Effect.gen(function* () {
-      const t = convexTest(schema, modules);
-      expect(
-        yield* Effect.promise(() => t.query(io.namedNodeScriptInQuery, {})),
-      ).toBe("undefined");
+      const t = convexTest({ schema, modules, sources });
+      const observed = yield* Effect.promise(() =>
+        t.query(io.namedNodeScriptInQuery, {}),
+      );
+      expect(observed).toBe("undefined");
     }),
   );
 });
@@ -994,14 +1174,21 @@ describe("module runtimes", () => {
     },
   );
   const only = <A>(map: Record<string, A>, files: ReadonlyArray<string>) =>
-    Object.fromEntries(
-      Object.entries(map).filter(([key]) =>
-        ["_generated/server.ts", ...files].some((file) =>
-          key.endsWith(`/runtime/${file}`),
-        ),
+    Rec.filter(map, (_, key) =>
+      Arr.some(["_generated/server.ts", ...files], (file) =>
+        pipe(key, Str.endsWith(`/runtime/${file}`)),
       ),
     );
-  const runtimeRefusalOf = (call: Promise<unknown>) =>
+  type RuntimeOutcome =
+    | { readonly returned: unknown }
+    | {
+        readonly failed: string | undefined;
+        readonly reason: string | undefined;
+        readonly message: string | undefined;
+      };
+  const runtimeRefusalOf = (
+    call: Promise<unknown>,
+  ): Effect.Effect<RuntimeOutcome> =>
     Effect.promise(() =>
       call.then(
         (value) => ({ returned: value }),
@@ -1030,12 +1217,14 @@ describe("module runtimes", () => {
           modules: only(runtimeModules, files),
           sources: only(runtimeSources, files),
         });
-        expect(
-          yield* Effect.promise(() => t.action(surfaceOf("plainNode"), {})),
-        ).toEqual(node);
-        expect(
-          yield* Effect.promise(() => t.action(surfaceOf("plainIsolate"), {})),
-        ).toEqual(absent);
+        const observed = yield* Effect.promise(() =>
+          t.action(surfaceOf("plainNode"), {}),
+        );
+        expect(observed).toEqual(node);
+        const observed2 = yield* Effect.promise(() =>
+          t.action(surfaceOf("plainIsolate"), {}),
+        );
+        expect(observed2).toEqual(absent);
       }),
   );
 
@@ -1049,9 +1238,13 @@ describe("module runtimes", () => {
           modules: only(runtimeModules, files),
           sources: only(runtimeSources, files),
         });
-        expect(
-          yield* runtimeRefusalOf(t.action(surfaceOf("markedNode"), {})),
-        ).toMatchObject({ failed: "ModuleRuntime", reason: "markerDisagrees" });
+        const observed = yield* runtimeRefusalOf(
+          t.action(surfaceOf("markedNode"), {}),
+        );
+        expect(observed).toMatchObject({
+          failed: "ModuleRuntime",
+          reason: "markerDisagrees",
+        });
       }),
   );
 
@@ -1065,13 +1258,77 @@ describe("module runtimes", () => {
           modules: only(runtimeModules, files),
           sources: only(runtimeSources, files),
         });
-        expect(
-          yield* runtimeRefusalOf(t.action(surfaceOf("plainIsolate"), {})),
-        ).toEqual({
+        const observed = yield* runtimeRefusalOf(
+          t.action(surfaceOf("plainIsolate"), {}),
+        );
+        expect(observed).toEqual({
           failed: "ModuleRuntime",
           reason: "nodeNotAllowed",
           message: '"use node" directive is not allowed for http.',
         });
+      }),
+  );
+
+  it.effect(
+    'a Confect isolate action in a "use node" module is refused, as Convex would run it in Node',
+    () =>
+      Effect.gen(function* () {
+        const files = ["markedIsolateInNode.ts"];
+        const t = convexTest({
+          schema: defineSchema({}),
+          modules: only(runtimeModules, files),
+          sources: only(runtimeSources, files),
+        });
+        const observed = yield* runtimeRefusalOf(
+          t.action(surfaceOf("markedIsolateInNode"), {}),
+        );
+        expect(observed).toMatchObject({
+          failed: "ModuleRuntime",
+          reason: "markerDisagrees",
+        });
+      }),
+  );
+
+  it.effect(
+    "without sources, a plain Convex action is refused when the kernel opens, naming its module",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest({
+          schema: defineSchema({}),
+          modules: only(runtimeModules, ["plainNode.ts"]),
+        });
+        const refused = yield* Effect.promise(() =>
+          t.action(surfaceOf("plainNode"), {}).then(
+            () => undefined,
+            (error: unknown) => error,
+          ),
+        );
+        expect(refused).toMatchObject({
+          _tag: "ActionRuntimeUnknown",
+          componentPath: "",
+          module: "plainNode",
+          exports: ["surface"],
+        });
+      }),
+  );
+
+  it.effect(
+    "without sources, Confect's marks decide: its Node action has Node's globals and its isolate action the isolate's",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest(schema, {
+          "_generated/server.ts": () => Promise.resolve({}),
+          "marks.ts": () =>
+            Promise.resolve({ node: nodeSurface, isolate: isolateSurface }),
+        });
+        const observed = yield* Effect.promise(() =>
+          t.action(makeFunctionReference<"action">("marks:node"), {}),
+        );
+        expect(observed).toEqual(node);
+        const observed2 = yield* Effect.promise(() =>
+          t.action(makeFunctionReference<"action">("marks:isolate"), {}),
+        );
+        expect(observed2).toEqual(absent);
       }),
   );
 
@@ -1082,9 +1339,13 @@ describe("module runtimes", () => {
         modules: only(runtimeModules, ["plainNode.ts", "plainIsolate.ts"]),
         sources: only(runtimeSources, ["plainIsolate.ts"]),
       });
-      expect(
-        yield* runtimeRefusalOf(t.action(surfaceOf("plainIsolate"), {})),
-      ).toMatchObject({ failed: "ModuleRuntime", reason: "missingSource" });
+      const observed = yield* runtimeRefusalOf(
+        t.action(surfaceOf("plainIsolate"), {}),
+      );
+      expect(observed).toMatchObject({
+        failed: "ModuleRuntime",
+        reason: "missingSource",
+      });
     }),
   );
 

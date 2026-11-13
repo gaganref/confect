@@ -5,8 +5,8 @@ import { Ref } from "@confect/core";
 import { expect, layer } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
-import refs from "./fixtures/confect/_generated/refs";
-import * as LocalBackend from "./LocalBackend";
+import refs from "confect-local-backend/refs";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 // The same calls as `packages/test/test/IoBans.test.ts`, answered by the
 // binary. The test kernel's I/O bans follow what these cases record.
@@ -62,20 +62,18 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })("I/O bans", (it) => {
           message:
             "fetch to https://api.example.com/v1/charges failed: Can't use fetch() in queries and mutations. Please consider using an action. See https://docs.convex.dev/functions/actions for more details.",
         };
-        expect(
-          yield* Ref.runWithCodec(
-            refs.public.groups.ioBans.fetchInQuery,
-            { url },
-            (ref, args) => client.query(ref, args),
-          ),
-        ).toEqual(refusal);
-        expect(
-          yield* Ref.runWithCodec(
-            refs.public.groups.ioBans.fetchInMutation,
-            { url },
-            (ref, args) => client.mutation(ref, args),
-          ),
-        ).toEqual(refusal);
+        const observed = yield* Ref.runWithCodec(
+          refs.public.groups.ioBans.fetchInQuery,
+          { url },
+          (ref, args) => client.query(ref, args),
+        );
+        expect(observed).toEqual(refusal);
+        const observed2 = yield* Ref.runWithCodec(
+          refs.public.groups.ioBans.fetchInMutation,
+          { url },
+          (ref, args) => client.mutation(ref, args),
+        );
+        expect(observed2).toEqual(refusal);
       }),
   );
 
@@ -148,40 +146,39 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })("I/O bans", (it) => {
           setImmediate: "undefined",
           queueMicrotask: "undefined",
         };
-        expect(
-          yield* Ref.runWithCodec(
-            refs.public.groups.ioBans.surfaceInQuery,
-            {},
-            (ref, args) => client.query(ref, args),
-          ),
-        ).toEqual(absent);
-        expect(
-          yield* Ref.runWithCodec(
-            refs.public.groups.ioBans.surfaceInAction,
-            {},
-            (ref, args) => client.action(ref, args),
-          ),
-        ).toEqual(absent);
-        expect(
-          yield* Ref.runWithCodec(
-            refs.public.ioBansNode.surfaceNode,
-            {},
-            (ref, args) => client.action(ref, args),
-          ),
-        ).toEqual({ setImmediate: "function", queueMicrotask: "function" });
+        const observed = yield* Ref.runWithCodec(
+          refs.public.groups.ioBans.surfaceInQuery,
+          {},
+          (ref, args) => client.query(ref, args),
+        );
+        expect(observed).toEqual(absent);
+        const observed2 = yield* Ref.runWithCodec(
+          refs.public.groups.ioBans.surfaceInAction,
+          {},
+          (ref, args) => client.action(ref, args),
+        );
+        expect(observed2).toEqual(absent);
+        const observed3 = yield* Ref.runWithCodec(
+          refs.public.ioBansNode.surfaceNode,
+          {},
+          (ref, args) => client.action(ref, args),
+        );
+        expect(observed3).toEqual({
+          setImmediate: "function",
+          queueMicrotask: "function",
+        });
       }),
   );
 
   it.effect("a query may clear a timer", () =>
     Effect.gen(function* () {
       const { client } = yield* LocalBackend.LocalBackend;
-      expect(
-        yield* Ref.runWithCodec(
-          refs.public.groups.ioBans.clearInQuery,
-          {},
-          (ref, args) => client.query(ref, args),
-        ),
-      ).toBe("cleared");
+      const observed = yield* Ref.runWithCodec(
+        refs.public.groups.ioBans.clearInQuery,
+        {},
+        (ref, args) => client.query(ref, args),
+      );
+      expect(observed).toBe("cleared");
     }),
   );
 
@@ -195,45 +192,40 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })("I/O bans", (it) => {
           message:
             "Can't use formData() in queries and mutations. Please consider using an action. See https://docs.convex.dev/functions/actions for more details.",
         };
-        expect(
-          yield* Ref.runWithCodec(
-            refs.public.groups.ioBans.formDataInQuery,
-            { body: "multipart" },
-            (ref, args) => client.query(ref, args),
-          ),
-        ).toEqual(refusal);
-        expect(
-          yield* Ref.runWithCodec(
-            refs.public.groups.ioBans.formDataInMutation,
-            { body: "multipart" },
-            (ref, args) => client.mutation(ref, args),
-          ),
-        ).toEqual(refusal);
-        expect(
-          yield* Ref.runWithCodec(
-            refs.public.groups.ioBans.formDataInQuery,
-            { body: "urlencoded" },
-            (ref, args) => client.query(ref, args),
-          ),
-        ).toEqual({ returned: "ada" });
-        expect(
-          yield* Ref.runWithCodec(
-            refs.public.groups.ioBans.formDataInQuery,
-            { body: "multipartWithoutBoundary" },
-            (ref, args) => client.query(ref, args),
-          ),
-        ).toEqual({
+        const observed = yield* Ref.runWithCodec(
+          refs.public.groups.ioBans.formDataInQuery,
+          { body: "multipart" },
+          (ref, args) => client.query(ref, args),
+        );
+        expect(observed).toEqual(refusal);
+        const observed2 = yield* Ref.runWithCodec(
+          refs.public.groups.ioBans.formDataInMutation,
+          { body: "multipart" },
+          (ref, args) => client.mutation(ref, args),
+        );
+        expect(observed2).toEqual(refusal);
+        const observed3 = yield* Ref.runWithCodec(
+          refs.public.groups.ioBans.formDataInQuery,
+          { body: "urlencoded" },
+          (ref, args) => client.query(ref, args),
+        );
+        expect(observed3).toEqual({ returned: "ada" });
+        const observed4 = yield* Ref.runWithCodec(
+          refs.public.groups.ioBans.formDataInQuery,
+          { body: "multipartWithoutBoundary" },
+          (ref, args) => client.query(ref, args),
+        );
+        expect(observed4).toEqual({
           name: "TypeError",
           message:
             "Missing boundary parameter in mime type of multipart formdata.",
         });
-        expect(
-          yield* Ref.runWithCodec(
-            refs.public.groups.ioBans.formDataInAction,
-            { body: "multipart" },
-            (ref, args) => client.action(ref, args),
-          ),
-        ).toEqual({ returned: "ada" });
+        const observed5 = yield* Ref.runWithCodec(
+          refs.public.groups.ioBans.formDataInAction,
+          { body: "multipart" },
+          (ref, args) => client.action(ref, args),
+        );
+        expect(observed5).toEqual({ returned: "ada" });
       }),
   );
 
@@ -241,21 +233,19 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })("I/O bans", (it) => {
     Effect.gen(function* () {
       const { client } = yield* LocalBackend.LocalBackend;
       const server = yield* loopback;
-      expect(
-        yield* Ref.runWithCodec(
-          refs.public.groups.ioBans.fetchInAction,
-          { url: server.url },
-          (ref, args) => client.action(ref, args),
-        ),
-      ).toBe("reached /ping");
+      const observed = yield* Ref.runWithCodec(
+        refs.public.groups.ioBans.fetchInAction,
+        { url: server.url },
+        (ref, args) => client.action(ref, args),
+      );
+      expect(observed).toBe("reached /ping");
       expect(server.hits).toBe(1);
-      expect(
-        yield* Ref.runWithCodec(
-          refs.public.groups.ioBans.timersInAction,
-          {},
-          (ref, args) => client.action(ref, args),
-        ),
-      ).toEqual(["slept", "ticked"]);
+      const observed2 = yield* Ref.runWithCodec(
+        refs.public.groups.ioBans.timersInAction,
+        {},
+        (ref, args) => client.action(ref, args),
+      );
+      expect(observed2).toEqual(["slept", "ticked"]);
     }).pipe(Effect.scoped),
   );
 });

@@ -62,9 +62,8 @@ it.effect("refuses a checkpoint for another resource incarnation", () =>
       Effect.flip,
     );
     expect(error._tag).toBe("LifecycleStateError");
-    expect(yield* store.get({ stack: "test", stage: "test", fqn: "Key" })).toBe(
-      original,
-    );
+    const get2 = yield* store.get({ stack: "test", stage: "test", fqn: "Key" });
+    expect(get2).toBe(original);
   }),
 );
 

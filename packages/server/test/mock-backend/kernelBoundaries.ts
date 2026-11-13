@@ -1,3 +1,8 @@
+import * as Option from "effect/Option";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 /**
  * The test kernel's accepted differences from the Convex binary as data: a
  * count or refusal the binary makes that the kernel does not simulate, and why.
@@ -58,7 +63,7 @@ export const boundaries: ReadonlyArray<KernelBoundary> = [
     metric: "databaseQueries",
     refusal: "Too many reads in a single function execution (limit: 4096).",
     binary:
-      "The binary counts, in databaseQueries, the system-table intervals it reads to run a function: the backend state and info, the function's module, its UDF config and its component. They depend on the deployment's modules, components and environment: adding the I/O bans group (`groups/ioBans`) to the local-backend fixture moved a root mutation's start from 19 to 20. So the probe measures the share at run time, a root mutation's count at its start, what its first nested call adds and a stale-snapshot query's count at its start, and compares the binary less that share with the kernel.",
+      "The binary counts, in databaseQueries, the system-table intervals it reads to run a function: the backend state and info, the function's module, its UDF config and its component. They depend on the deployment's modules, components and environment, so every module a fixture adds can move them: a root mutation on the local-backend fixture has started at 19, 20 and 21 as groups were added. So the probe measures the share at run time, a root mutation's count at its start, what its first nested call adds and a stale-snapshot query's count at its start, and compares the binary less that share with the kernel.",
     kernel:
       "The kernel counts only the intervals of the function's own reads, by the binary's rule, starting from zero. Each read maps a total x to max(0, x - before) + after, which never decreases and never moves two totals apart, so the binary's count stays between the kernel's and the kernel's plus the system share. While neither count saturates it is exactly the kernel's plus the share, and the binary refuses TooManyReads that many reads sooner. A read that covers inserted IDs can saturate only the kernel's lower count, and the gap shrinks: one insert and a read of its ID answer the share on the binary and 1 on the kernel. Once both saturate they agree: 100 inserts and a read of one answer 100 on both. The binary refuses no later than the kernel, and at most the system share sooner.",
     control:
@@ -76,21 +81,24 @@ export const boundaries: ReadonlyArray<KernelBoundary> = [
  * The entry named `name`, refused unless every field is filled.
  */
 export const boundary = (name: string): KernelBoundary => {
-  const entry = boundaries.find((candidate) => candidate.name === name);
+  const entry = Option.getOrUndefined(
+    Arr.findFirst(boundaries, (candidate) => candidate.name === name),
+  );
   if (entry === undefined) {
     throw new Error(`No kernel boundary is named "${name}".`);
   }
-  const empty = (Object.keys(entry) as Array<keyof KernelBoundary>).filter(
+  const empty = Arr.filter(
+    Rec.keys(entry) as Array<keyof KernelBoundary>,
     (field) => {
       const value = entry[field];
       return typeof value === "string"
-        ? value.trim() === ""
-        : Object.keys(value).length === 0;
+        ? pipe(value, String.trim) === ""
+        : Rec.keys(value).length === 0;
     },
   );
   if (empty.length > 0) {
     throw new Error(
-      `Kernel boundary "${name}" has no ${empty.join(", ")}. Fill every field.`,
+      `Kernel boundary "${name}" has no ${Arr.join(empty, ", ")}. Fill every field.`,
     );
   }
   return entry;

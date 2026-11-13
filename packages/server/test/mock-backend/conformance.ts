@@ -1,4 +1,8 @@
 import { getCallSites } from "node:util";
+import * as Arr from "effect/Array";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
+import * as Str from "effect/String";
 /**
  * The convex-test lane's conformance exceptions as data, and the rule each
  * entry must meet. An exception is a mock-backend case that holds the test
@@ -60,7 +64,13 @@ export const departs = (
     const caller = getCallSites(2)[1]?.scriptName ?? "";
     (task.meta as Record<string, unknown>)[departureKey] = {
       message: (error as { readonly message?: string }).message ?? "",
-      file: caller.replaceAll("\\", "/").split("/").pop() ?? "",
+      file: pipe(
+        caller,
+        Str.replaceAll("\\", "/"),
+        Str.split("/"),
+        Arr.last,
+        Option.getOrElse(() => ""),
+      ),
     } satisfies Departure;
     throw error;
   }
@@ -154,7 +164,8 @@ export const refusals = (
     "owner",
     "evidence",
   ] as const) {
-    if (entry[field].trim() === "") refused.push(`${label} has no ${field}.`);
+    if (Str.isEmpty(Str.trim(entry[field])))
+      refused.push(`${label} has no ${field}.`);
   }
   if (entry.outcomes.length === 0) {
     refused.push(`${label} expects no outcomes. Name each function it calls.`);
@@ -167,7 +178,7 @@ export const refusals = (
       `${label} was checked against convex-test ${entry.convexTest}, but ${convexTestVersion} is installed. Re-check it and update its version.`,
     );
   }
-  if (cases.some((name) => name.startsWith(`${entry.name} > `))) {
+  if (Arr.some(cases, Str.startsWith(`${entry.name} > `))) {
     refused.push(`${label} names a describe block. Name one case exactly.`);
   } else if (!cases.includes(entry.name)) {
     refused.push(`${label} names no case the file has.`);

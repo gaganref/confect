@@ -6,6 +6,7 @@ import type { DocumentId, StoredDocument } from "./KernelValues.js";
 import { tableNameFromId } from "./KernelValues.js";
 import * as Metering from "./Metering.js";
 import type * as ReadSet from "./ReadSet.js";
+import * as Arr from "effect/Array";
 
 /**
  * Pending writes, keyed by component path, then document ID. `null` deletes.
@@ -156,7 +157,7 @@ export class KernelAttempt {
   }
 
   get(componentPath: string, id: DocumentId): StoredDocument | null {
-    for (const overlay of this.overlays().toReversed()) {
+    for (const overlay of Arr.reverse(this.overlays())) {
       const write = overlay.get(componentPath)?.get(id);
       if (write !== undefined) return write;
     }

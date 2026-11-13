@@ -141,6 +141,8 @@ Create the Convex HTTP router in `confect/http.ts` with `HttpRouter.make` from `
 - `HttpRouter.add(method, path, handler)` registers a plain route.
 - `HttpRouter.middleware(fn, { global: true })` applies middleware to every route.
 
+`HttpRouter.make` takes the generated database schema first. The schema types the routes' services, including `VectorSearch` over its vector indexes, and decides whether the routes serve an application or a component. A router with no tables passes `DatabaseSchema.make({})`.
+
 Confect's `HttpRouter` module collides with Effect's, so alias it on import:
 
 ```ts confect/http.ts
@@ -150,10 +152,12 @@ import * as Layer from "effect/Layer";
 import * as HttpMiddleware from "effect/http/HttpMiddleware";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
+import databaseSchema from "./_generated/schema";
 import * as NotesApi from "./http/NotesApi";
 import * as ScalarDocs from "./http/ScalarDocs";
 
 export default ConfectHttpRouter.make(
+  databaseSchema,
   Layer.mergeAll(
     NotesApi.layer,
     ScalarDocs.layer,
@@ -174,10 +178,10 @@ Prefer `HttpApi` endpoints for application routes so Convex can show their metho
 
 Omitting `{ api }` preserves the catch-all dashboard rows and completion labels. If the supplied API has no endpoints with methods Convex supports, the dashboard keeps the catch-all rows so component routers remain mountable.
 
-For a component, pass the option to the schema-bound constructor:
+A component passes its own generated schema the same way:
 
 ```ts
-const http = ConfectHttpRouter.forSchema(schema)(routes, { api });
+const http = ConfectHttpRouter.make(schema, routes, { api });
 ```
 
 The component API's paths and labels stay relative to its HTTP mount. For example, a component endpoint `/users/:id` mounted under `/directory` serves `/directory/users/42` and logs `GET /users/:id`.

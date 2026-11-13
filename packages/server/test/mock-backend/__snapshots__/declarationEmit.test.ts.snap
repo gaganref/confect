@@ -29,12 +29,12 @@ export default databaseSchema;
 `;
 
 exports[`declaration emit > services.d.ts prints public types by name 1`] = `
-"import { ActionCtx as ActionCtx_, Auth as Auth_, type DataModel, DatabaseReader as DatabaseReader_, DatabaseWriter as DatabaseWriter_, ExecutionMetadata as ExecutionMetadata_, MutationCtx as MutationCtx_, MutationRunner as MutationRunner_, MutationTransactionContext as MutationTransactionContext_, QueryCtx as QueryCtx_, QueryRunner as QueryRunner_, QueryTransactionContext as QueryTransactionContext_, RequestMetadata as RequestMetadata_, Storage as Storage_, StorageActionWriter as StorageActionWriter_, StorageReader as StorageReader_, StorageWriter as StorageWriter_, TransactionMetadata as TransactionMetadata_, VectorSearch as VectorSearch_ } from "@confect/server";
+"import { ActionCtx as ActionCtx_, Auth as Auth_, type DataModel, DatabaseReader as DatabaseReader_, DatabaseWriter as DatabaseWriter_, DocumentIds as DocumentIds_, ExecutionMetadata as ExecutionMetadata_, MutationAuth as MutationAuth_, MutationCtx as MutationCtx_, MutationRunner as MutationRunner_, MutationTransactionContext as MutationTransactionContext_, QueryCtx as QueryCtx_, QueryRunner as QueryRunner_, QueryTransactionContext as QueryTransactionContext_, RequestMetadata as RequestMetadata_, Storage as Storage_, StorageActionWriter as StorageActionWriter_, StorageReader as StorageReader_, StorageWriter as StorageWriter_, TransactionMetadata as TransactionMetadata_, VectorSearch as VectorSearch_ } from "@confect/server";
 import type schemaDefinition from "./schema.js";
 import type { Docs } from "./docs.js";
 export declare const Auth: typeof Auth_.Auth;
 export type Auth = typeof Auth.Identifier;
-export declare const MutationAuth: typeof Auth_.MutationAuth;
+export declare const MutationAuth: typeof MutationAuth_.MutationAuth;
 export type MutationAuth = typeof MutationAuth.Identifier;
 export declare const ExecutionMetadata: typeof ExecutionMetadata_.ExecutionMetadata;
 export type ExecutionMetadata = typeof ExecutionMetadata.Identifier;
@@ -62,6 +62,8 @@ export declare const StorageActionWriter: typeof StorageActionWriter_.StorageAct
 export type StorageActionWriter = typeof StorageActionWriter.Identifier;
 export declare const VectorSearch: VectorSearch_.VectorSearchTag<DataModel.FromSchema<typeof schemaDefinition>>;
 export type VectorSearch = typeof VectorSearch.Identifier;
+export declare const DocumentIds: DocumentIds_.DocumentIdsTag<typeof schemaDefinition>;
+export type DocumentIds = typeof DocumentIds.Identifier;
 export declare const DatabaseReader: DatabaseReader_.DatabaseReaderTag<typeof schemaDefinition, Docs>;
 export type DatabaseReader = typeof DatabaseReader.Identifier;
 export declare const DatabaseWriter: DatabaseWriter_.DatabaseWriterTag<typeof schemaDefinition, Docs>;

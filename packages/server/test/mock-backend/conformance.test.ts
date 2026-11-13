@@ -1,4 +1,5 @@
 import { describe, expect, it } from "@effect/vitest";
+import * as Arr from "effect/Array";
 import { exceptions, refusals, type ConformanceException } from "./conformance";
 
 const entry: ConformanceException = {
@@ -76,7 +77,7 @@ describe("conformance exceptions", () => {
   });
 
   it("the lane holds one exception, the action egress departure", () => {
-    expect(exceptions.map(({ file, name }) => ({ file, name }))).toEqual([
+    expect(Arr.map(exceptions, ({ file, name }) => ({ file, name }))).toEqual([
       {
         file: "egress.test.ts",
         name: "action egress > a raw fetch in an action or a Node action dies with UndeclaredFetch naming the action and host",

@@ -1,4 +1,5 @@
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
+import * as Layer from "effect/Layer";
 import { Env } from "@confect/core";
 import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -15,9 +16,13 @@ const env = Env.make("tenant", {
 });
 
 const read = <A>(config: Config.Config<A>, values: Record<string, string>) =>
-  config.pipe(
-    Effect.provide(ConfigProvider.layer(ConfigProvider.fromUnknown(values))),
-  );
+  Effect.gen(function* () {
+    const services = yield* ConfigProvider.fromUnknown(values).pipe(
+      ConfigProvider.layer,
+      Layer.build,
+    );
+    return yield* config.pipe(Effect.provideContext(services));
+  }).pipe(Effect.scoped);
 
 describe("Env", () => {
   it("types each entry as the Config a handler yields", () => {
@@ -44,18 +49,19 @@ describe("Env", () => {
         EMAIL_TRANSPORT: "log",
       };
       expect(Config.isConfig(env.EMAIL_FROM)).toBe(true);
-      expect(yield* read(env.EMAIL_FROM, values)).toBe("sender@example.test");
-      expect(Redacted.value(yield* read(env.RESEND_API_KEY, values))).toBe(
-        "test-key",
-      );
-      expect(yield* read(env.EMAIL_TRANSPORT, values)).toBe("log");
-      expect(yield* read(env.PLATFORM_URL, values)).toEqual(Option.none());
-      expect(
-        yield* read(env.PLATFORM_URL, {
-          ...values,
-          PLATFORM_URL: "https://platform.example.test",
-        }),
-      ).toEqual(Option.some("https://platform.example.test"));
+      const readResult = yield* read(env.EMAIL_FROM, values);
+      expect(readResult).toBe("sender@example.test");
+      const readResult2 = yield* read(env.RESEND_API_KEY, values);
+      expect(Redacted.value(readResult2)).toBe("test-key");
+      const readResult3 = yield* read(env.EMAIL_TRANSPORT, values);
+      expect(readResult3).toBe("log");
+      const readResult4 = yield* read(env.PLATFORM_URL, values);
+      expect(readResult4).toEqual(Option.none());
+      const readResult5 = yield* read(env.PLATFORM_URL, {
+        ...values,
+        PLATFORM_URL: "https://platform.example.test",
+      });
+      expect(readResult5).toEqual(Option.some("https://platform.example.test"));
       const wrong = yield* Effect.flip(
         read(env.EMAIL_TRANSPORT, { ...values, EMAIL_TRANSPORT: "smtp" }),
       );

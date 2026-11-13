@@ -4,8 +4,8 @@ import { createServer, type Server } from "node:http";
 import { Ref } from "@confect/core";
 import { expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
-import refs from "./fixtures/confect/_generated/refs";
-import * as LocalBackend from "./LocalBackend";
+import refs from "confect-local-backend/refs";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 // The binary performs a raw fetch in an action and in a Node action. The test
 // kernel refuses both with `UndeclaredFetch`, its one deliberate departure,
@@ -41,20 +41,18 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })("action egress", (it) => {
       const { server, hits } = yield* loopback;
       const { port } = server.address() as { port: number };
       const url = `http://127.0.0.1:${port}/ping`;
-      expect(
-        yield* Ref.runWithCodec(
-          refs.public.groups.ioBans.fetchInAction,
-          { url },
-          (ref, args) => client.action(ref, args),
-        ),
-      ).toBe("reached /ping");
-      expect(
-        yield* Ref.runWithCodec(
-          refs.public.egressNode.rawFetchNode,
-          { url },
-          (ref, args) => client.action(ref, args),
-        ),
-      ).toBe("reached /ping");
+      const observed = yield* Ref.runWithCodec(
+        refs.public.groups.ioBans.fetchInAction,
+        { url },
+        (ref, args) => client.action(ref, args),
+      );
+      expect(observed).toBe("reached /ping");
+      const observed2 = yield* Ref.runWithCodec(
+        refs.public.egressNode.rawFetchNode,
+        { url },
+        (ref, args) => client.action(ref, args),
+      );
+      expect(observed2).toBe("reached /ping");
       expect(hits()).toBe(2);
     }).pipe(Effect.scoped),
   );

@@ -1,8 +1,11 @@
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
+import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as FunctionSpec from "@confect/core/FunctionSpec";
 import * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
 import * as Profile from "@confect/core/Profile";
+import * as Array from "effect/Array";
+import * as Record from "effect/Record";
 
 interface Quota extends Profile.Fields {
   readonly Type: { readonly quota: number };
@@ -71,51 +74,58 @@ describe("attach", () => {
     );
   });
 
-  it("passes the optional description to attachments and lazy schema wrappers", () => {
-    interface Identity extends Profile.SchemaTransform {
-      readonly Type: this["Input"];
-    }
-    const seen: (readonly [string | undefined, boolean])[] = [];
-    const Described = FunctionSpec.extend<
-      Profile.NoFields,
-      { returns: Identity }
-    >()({
-      middleware: [
-        Profile.attach(Limit, (info) => ({
-          max: 1,
-          label: info.description ?? info.name,
-        })),
-      ],
-      schemas: {
-        returns: (thunk, info) => {
-          expectTypeOf(info.description).toEqualTypeOf<string | undefined>();
-          seen.push([info.description, "description" in info]);
-          return thunk;
-        },
-      },
-    });
-    const described = Described.publicQuery({
-      name: "read",
-      description: "Read notes.",
-      returns,
-    });
-    const omitted = Described.publicQuery({ name: "list", returns });
-    expect(
-      [described, omitted].map(
-        (spec) => spec.middlewareAttachments[0]?.options,
-      ),
-    ).toEqual([
-      { max: 1, label: "Read notes." },
-      { max: 1, label: "list" },
-    ]);
-    expect(seen).toEqual([]);
-    Schema.decodeSync(described.functionProvenance.returns)(null);
-    Schema.decodeSync(omitted.functionProvenance.returns)(null);
-    expect(seen).toEqual([
-      ["Read notes.", true],
-      [undefined, false],
-    ]);
-  });
+  it.effect(
+    "passes the optional description to attachments and lazy schema wrappers",
+    () =>
+      Effect.gen(function* () {
+        interface Identity extends Profile.SchemaTransform {
+          readonly Type: this["Input"];
+        }
+        const seen: (readonly [string | undefined, boolean])[] = [];
+        const Described = FunctionSpec.extend<
+          Profile.NoFields,
+          { returns: Identity }
+        >()({
+          middleware: [
+            Profile.attach(Limit, (info) => ({
+              max: 1,
+              label: info.description ?? info.name,
+            })),
+          ],
+          schemas: {
+            returns: (thunk, info) => {
+              expectTypeOf(info.description).toEqualTypeOf<
+                string | undefined
+              >();
+              seen.push([info.description, "description" in info]);
+              return thunk;
+            },
+          },
+        });
+        const described = Described.publicQuery({
+          name: "read",
+          description: "Read notes.",
+          returns,
+        });
+        const omitted = Described.publicQuery({ name: "list", returns });
+        expect(
+          Array.map(
+            [described, omitted],
+            (spec) => spec.middlewareAttachments[0]?.options,
+          ),
+        ).toEqual([
+          { max: 1, label: "Read notes." },
+          { max: 1, label: "list" },
+        ]);
+        expect(seen).toEqual([]);
+        yield* Schema.decodeEffect(described.functionProvenance.returns)(null);
+        yield* Schema.decodeEffect(omitted.functionProvenance.returns)(null);
+        expect(seen).toEqual([
+          ["Read notes.", true],
+          [undefined, false],
+        ]);
+      }),
+  );
 
   it("tells a plain middleware from an attachment by its brand, not a spec member", () => {
     class Tagged extends MiddlewareSpec.MiddlewareSpec<Tagged>()("Tagged", {
@@ -171,7 +181,7 @@ describe("attach", () => {
     });
     ready = true;
 
-    expect(Object.keys(args())).toEqual(["noteId"]);
+    expect(Record.keys(args())).toEqual(["noteId"]);
   });
 
   it("refuses options the middleware does not accept, and fields the profile lacks", () => {

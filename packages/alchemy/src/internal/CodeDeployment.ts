@@ -10,10 +10,12 @@ import * as Loopback from "./Loopback.js";
 import * as MountInit from "./MountInit.js";
 import { PushLock } from "./PushLock.js";
 
-export class InvalidDeploymentTarget extends Schema.TaggedError<InvalidDeploymentTarget>()(
-  "InvalidDeploymentTarget",
-  { reason: Schema.Literals(["deployment", "deployKey"]) },
-) {}
+export class InvalidDeploymentTarget extends Schema.TaggedError<
+  InvalidDeploymentTarget,
+  { readonly brand: unique symbol }
+>()("InvalidDeploymentTarget", {
+  reason: Schema.Literals(["deployment", "deployKey"]),
+}) {}
 
 const deploymentName = /^[a-z0-9]+(?:-[a-z0-9]+)*$/;
 
@@ -27,13 +29,13 @@ const cloudTarget = (
       `^https://${name}(?:\\.[a-z]{2}-[a-z]+-[0-9]+)?\\.convex\\.cloud$`,
     ).test(url)
   )
-    return Result.fail(new InvalidDeploymentTarget({ reason: "deployment" }));
+    return Result.fail(InvalidDeploymentTarget.make({ reason: "deployment" }));
   const key =
     /^(?:dev|prod|preview|custom):([a-z0-9]+(?:-[a-z0-9]+)*)\|[a-zA-Z0-9+/=_-]+$/.exec(
       Redacted.value(props.deployKey),
     );
-  if (!key || key[1] !== name)
-    return Result.fail(new InvalidDeploymentTarget({ reason: "deployKey" }));
+  if (key === null || key[1] !== name)
+    return Result.fail(InvalidDeploymentTarget.make({ reason: "deployKey" }));
   return Result.succeed({
     _tag: "Cloud",
     deploymentName: name,
@@ -46,12 +48,12 @@ const localTarget = (
 ): Result.Result<PushTarget, InvalidDeploymentTarget> => {
   const { name, url } = props.deployment;
   if (!deploymentName.test(name) || !Loopback.isOrigin(url))
-    return Result.fail(new InvalidDeploymentTarget({ reason: "deployment" }));
+    return Result.fail(InvalidDeploymentTarget.make({ reason: "deployment" }));
   const key = /^([a-z0-9]+(?:-[a-z0-9]+)*)\|[0-9a-f]+$/.exec(
     Redacted.value(props.deployKey),
   );
-  if (!key || key[1] !== name)
-    return Result.fail(new InvalidDeploymentTarget({ reason: "deployKey" }));
+  if (key === null || key[1] !== name)
+    return Result.fail(InvalidDeploymentTarget.make({ reason: "deployKey" }));
   return Result.succeed({
     _tag: "SelfHosted",
     deploymentName: name,
@@ -65,6 +67,9 @@ const targets = { live: cloudTarget, local: localTarget } satisfies Record<
   (props: CodeProps) => Result.Result<PushTarget, InvalidDeploymentTarget>
 >;
 
+/**
+ * @internal
+ */
 export const deploy = Effect.fn("Code.deploy")(function* (
   props: CodeProps,
   mode: ProviderMode = "live",
@@ -76,7 +81,8 @@ export const deploy = Effect.fn("Code.deploy")(function* (
   yield* lock.withLock(
     target.deploymentName,
     Effect.gen(function* () {
-      if (props.prepare) yield* runner.prepare(props.prepare, props.cwd);
+      if (props.prepare !== undefined)
+        yield* runner.prepare(props.prepare, props.cwd);
       yield* runner.deploy(target, props.cwd);
       // WORKAROUND: Convex has no component `init` or install `args` in a
       // stable release, so each push runs every mount's `init` itself, inside

@@ -126,23 +126,28 @@ describe("ID scopes", () => {
     >();
   });
 
-  it("keeps the wire string while distinguishing tables and component instances", () => {
-    const own = GenericId.GenericId("users", definition);
-    const bound = GenericId.rebase(own, definition, first);
-    const value = Schema.decodeUnknownSync(bound)("user-id");
-    expect(value).toBe("user-id");
-    expect(Schema.encodeSync(bound)(value)).toBe("user-id");
+  it.effect(
+    "keeps the wire string while distinguishing tables and component instances",
+    () =>
+      Effect.gen(function* () {
+        const own = GenericId.GenericId("users", definition);
+        const bound = GenericId.rebase(own, definition, first);
+        const value = yield* Schema.decodeUnknownEffect(bound)("user-id");
+        expect(value).toBe("user-id");
+        const encoded = yield* Schema.encodeEffect(bound)(value);
+        expect(encoded).toBe("user-id");
 
-    const firstId: GenericId.GenericId<"users", typeof first> = value;
-    void firstId;
-    // @ts-expect-error A component ID is not an application's Convex ID.
-    const appId: ConvexId<"users"> = value;
-    // @ts-expect-error Installing the same definition twice creates distinct IDs.
-    const secondId: GenericId.GenericId<"users", typeof second> = value;
-    // @ts-expect-error Table names remain significant within a scope.
-    const otherTable: GenericId.GenericId<"notes", typeof first> = value;
-    void [appId, secondId, otherTable];
-  });
+        const firstId: GenericId.GenericId<"users", typeof first> = value;
+        void firstId;
+        // @ts-expect-error A component ID is not an application's Convex ID.
+        const appId: ConvexId<"users"> = value;
+        // @ts-expect-error Installing the same definition twice creates distinct IDs.
+        const secondId: GenericId.GenericId<"users", typeof second> = value;
+        // @ts-expect-error Table names remain significant within a scope.
+        const otherTable: GenericId.GenericId<"notes", typeof first> = value;
+        void [appId, secondId, otherTable];
+      }),
+  );
 
   it("compiles local IDs as table validators and foreign IDs as strings", () => {
     const own = GenericId.GenericId("users", definition);
@@ -159,58 +164,68 @@ describe("ID scopes", () => {
     ).toEqual(v.string());
   });
 
-  it("rebinds nested and optional IDs without changing transformations or foreign IDs", () => {
-    const input = Schema.Struct({
-      id: GenericId.GenericId("users", definition),
-      related: Schema.Array(GenericId.GenericId("users", definition)),
-      owner: GenericId.GenericId("users"),
-      optional: Schema.optionalKey(GenericId.GenericId("users", definition)),
-      count: Schema.FiniteFromString,
-    }).pipe(Schema.encodeKeys({ id: "user_id" }));
-    const bound = GenericId.rebase(input, definition, first);
-    const wire = {
-      user_id: "one",
-      related: ["two"],
-      owner: "app-user",
-      count: "3",
-    };
-    const decoded = Schema.decodeUnknownSync(bound)(wire);
-    expect(decoded).toEqual({
-      id: "one",
-      related: ["two"],
-      owner: "app-user",
-      count: 3,
-    });
-    expect(Schema.encodeSync(bound)(decoded)).toEqual(wire);
-    const appOwner: ConvexId<"users"> = decoded.owner;
-    const [firstRelated] = decoded.related;
-    assert(firstRelated !== undefined);
-    const related: GenericId.GenericId<"users", typeof first> = firstRelated;
-    void [appOwner, related];
-    expect(SchemaToValidator.compileArgsSchema(bound).owner).toEqual(
-      v.id("users"),
-    );
-    expect(SchemaToValidator.compileArgsSchema(bound).user_id).toEqual(
-      v.string(),
-    );
-  });
+  it.effect(
+    "rebinds nested and optional IDs without changing transformations or foreign IDs",
+    () =>
+      Effect.gen(function* () {
+        const input = Schema.Struct({
+          id: GenericId.GenericId("users", definition),
+          related: Schema.Array(GenericId.GenericId("users", definition)),
+          owner: GenericId.GenericId("users"),
+          optional: Schema.optionalKey(
+            GenericId.GenericId("users", definition),
+          ),
+          count: Schema.FiniteFromString,
+        }).pipe(Schema.encodeKeys({ id: "user_id" }));
+        const bound = GenericId.rebase(input, definition, first);
+        const wire = {
+          user_id: "one",
+          related: ["two"],
+          owner: "app-user",
+          count: "3",
+        };
+        const decoded = yield* Schema.decodeUnknownEffect(bound)(wire);
+        expect(decoded).toEqual({
+          id: "one",
+          related: ["two"],
+          owner: "app-user",
+          count: 3,
+        });
+        const encoded = yield* Schema.encodeEffect(bound)(decoded);
+        expect(encoded).toEqual(wire);
+        const appOwner: ConvexId<"users"> = decoded.owner;
+        const [firstRelated] = decoded.related;
+        assert(firstRelated !== undefined);
+        const related: GenericId.GenericId<"users", typeof first> =
+          firstRelated;
+        void [appOwner, related];
+        expect(SchemaToValidator.compileArgsSchema(bound).owner).toEqual(
+          v.id("users"),
+        );
+        expect(SchemaToValidator.compileArgsSchema(bound).user_id).toEqual(
+          v.string(),
+        );
+      }),
+  );
 
-  it("scopes generated document IDs as well as authored fields", () => {
-    const users = Table.make(() => Schema.Struct({ name: Schema.String }))(
-      "users",
-      definition,
-    );
-    const doc = Schema.decodeUnknownSync(users.Doc)({
-      _id: "one",
-      _creationTime: 0,
-      name: "Ada",
-    });
-    const id: GenericId.GenericId<"users", typeof definition> = doc._id;
-    void id;
-    // @ts-expect-error Component document IDs cannot address a host table.
-    const appId: ConvexId<"users"> = doc._id;
-    void appId;
-  });
+  it.effect("scopes generated document IDs as well as authored fields", () =>
+    Effect.gen(function* () {
+      const users = Table.make(() => Schema.Struct({ name: Schema.String }))(
+        "users",
+        definition,
+      );
+      const doc = yield* Schema.decodeUnknownEffect(users.Doc)({
+        _id: "one",
+        _creationTime: 0,
+        name: "Ada",
+      });
+      const id: GenericId.GenericId<"users", typeof definition> = doc._id;
+      void id;
+      // @ts-expect-error Component document IDs cannot address a host table.
+      const appId: ConvexId<"users"> = doc._id;
+      void appId;
+    }),
+  );
 
   it.effect(
     "keeps recursive schemas lazy and memoizes shared nodes per rebasing",
@@ -242,7 +257,8 @@ describe("ID scopes", () => {
         };
         const decoded = yield* Schema.decodeUnknownEffect(bound)(wire);
         expect(decoded).toEqual(wire);
-        expect(yield* Schema.encodeEffect(bound)(decoded)).toEqual(wire);
+        const encoded = yield* Schema.encodeEffect(bound)(decoded);
+        expect(encoded).toEqual(wire);
         expect(evaluations).toBe(1);
         assert(SchemaAST.isSuspend(left.type));
         const reboundNode = left.type.thunk();
@@ -287,7 +303,8 @@ describe("ID scopes", () => {
         expect(decoded).toEqual(
           new Map([["key", new Set([{ own: "own", foreign: "foreign" }])]]),
         );
-        expect(yield* Schema.encodeEffect(bound)(decoded)).toEqual(wire);
+        const encoded = yield* Schema.encodeEffect(bound)(decoded);
+        expect(encoded).toEqual(wire);
         for (const [key, values] of decoded) {
           expectTypeOf(key).toEqualTypeOf<FirstId>();
           expect(decoded.get(key)).toBe(values);
@@ -331,7 +348,8 @@ describe("ID scopes", () => {
       const wire = Option.some({ id: "one", count: "3" });
       const decoded = yield* Schema.decodeUnknownEffect(bound)(wire);
       expect(decoded).toEqual(Option.some({ id: "one", count: 3 }));
-      expect(yield* Schema.encodeEffect(bound)(decoded)).toEqual(wire);
+      const encoded = yield* Schema.encodeEffect(bound)(decoded);
+      expect(encoded).toEqual(wire);
       expect(SchemaAST.resolveIdentifier(bound.ast)).toBe("OptionalUser");
       assert(SchemaAST.isDeclaration(bound.ast));
       const [item] = bound.ast.typeParameters;
@@ -339,10 +357,9 @@ describe("ID scopes", () => {
       const [id] = item.propertySignatures;
       assert(id !== undefined);
       expect(GenericId.scope(id.type)).toBe(first);
-      const invalid = yield* Effect.result(
-        Schema.decodeUnknownEffect(bound)(
-          Option.some({ id: "one", count: "-1" }),
-        ),
+      const invalid = yield* Option.some({ id: "one", count: "-1" }).pipe(
+        Schema.decodeUnknownEffect(bound),
+        Effect.result,
       );
       expect(Result.isFailure(invalid)).toBe(true);
     }),

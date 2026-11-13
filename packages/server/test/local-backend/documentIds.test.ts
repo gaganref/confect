@@ -1,0 +1,102 @@
+import { getFunctionReference } from "@confect/core/RefInternal";
+import { assert, expect, layer } from "@effect/vitest";
+import * as Effect from "effect/Effect";
+import refs from "confect-local-backend/refs";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
+
+layer(LocalBackend.layer, { timeout: "120 seconds" })(
+  "DocumentIds inside the Convex isolate",
+  (it) => {
+    it.effect(
+      "identifies deleted document IDs in queries and mutations without requiring existence",
+      () =>
+        Effect.gen(function* () {
+          const { client } = yield* LocalBackend.LocalBackend;
+          const functions = refs.public.groups.documentIds;
+          const id = yield* Effect.promise(() =>
+            client.mutation(
+              getFunctionReference(functions.createAndDelete),
+              {},
+            ),
+          );
+          const expected = {
+            parsed: id,
+            identified: { table: "transactionNotes", id },
+          };
+          const promiseResult = yield* Effect.promise(() =>
+            client.query(getFunctionReference(functions.inspect), {
+              table: "transactionNotes",
+              input: id,
+            }),
+          );
+          expect(promiseResult).toEqual(expected);
+          const promiseResult2 = yield* Effect.promise(() =>
+            client.mutation(
+              getFunctionReference(functions.inspectFromMutation),
+              { table: "transactionNotes", input: id },
+            ),
+          );
+          expect(promiseResult2).toEqual(expected);
+        }),
+    );
+
+    it.effect.each([
+      "transactionNotes",
+      "_storage",
+      "_scheduled_functions",
+    ] as const)("rejects legacy strings and validates modern %s IDs", (table) =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        const inspect = getFunctionReference(
+          refs.public.groups.documentIds.inspect,
+        );
+        const legacy = yield* Effect.promise(() =>
+          client.query(inspect, { table, input: "LZ_YyWnYaZSFKTnOpihMPA" }),
+        );
+        expect(legacy.parsed).toBeNull();
+        expect(legacy.identified).toBeNull();
+        const input = yield* Effect.promise(() =>
+          client.query(
+            getFunctionReference(refs.public.groups.documentIds.nativeSampleId),
+            { table, input: "LZ_YyWnYaZSFKTnOpihMPA" },
+          ),
+        );
+        assert(input !== null);
+        const promiseResult3 = yield* Effect.promise(() =>
+          client.query(inspect, { table, input }),
+        );
+        expect(promiseResult3).toEqual({
+          parsed: input,
+          identified: { table, id: input },
+        });
+        const wrongTable =
+          table === "_storage" ? "transactionNotes" : "_storage";
+        const promiseResult4 = yield* Effect.promise(() =>
+          client.query(inspect, { table: wrongTable, input }),
+        );
+        expect(promiseResult4).toEqual({
+          parsed: null,
+          identified: { table, id: input },
+        });
+      }),
+    );
+
+    it.effect.each(["", "not-an-id"])(
+      "returns None for malformed input %j",
+      (input) =>
+        Effect.gen(function* () {
+          const { client } = yield* LocalBackend.LocalBackend;
+          const promiseResult5 = yield* Effect.promise(() =>
+            client.query(
+              getFunctionReference(refs.public.groups.documentIds.inspect),
+              { table: "transactionNotes", input },
+            ),
+          );
+          expect(promiseResult5).toEqual({
+            parsed: null,
+            identified: null,
+          });
+        }),
+    );
+  },
+);

@@ -60,7 +60,8 @@ export const check = <Target extends Ref.Any, E, R>(
 ) =>
   Effect.gen(function* () {
     for (const [index, target] of targets.entries()) {
-      expect(yield* run(target, { count: 1 } as Ref.Args<Target>)).toEqual({
+      const runResult = yield* run(target, { count: 1 } as Ref.Args<Target>);
+      expect(runResult).toEqual({
         count: "1",
         ...(enabled && index === 0 ? { context: { boundary } } : {}),
       });

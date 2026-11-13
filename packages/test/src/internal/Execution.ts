@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
   actionGeneric,
   getFunctionAddress,
+  httpActionGeneric,
   mutationGeneric,
   queryGeneric,
   type FunctionReference,
@@ -10,17 +11,21 @@ import {
   type UserIdentity,
 } from "convex/server";
 import {
+  Base64,
   CommitTsPlaceholder,
   compareValues,
   convexToJson,
   jsonToConvex,
+  type JSONValue,
   type Value,
 } from "convex/values";
 import * as Result from "effect/Result";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
+import * as Crons from "./Crons.js";
 import * as Egress from "./Egress.js";
 import * as Globals from "./Globals.js";
+import * as Http from "./Http.js";
 import * as Invocation from "./Invocation.js";
 import * as IoBans from "./IoBans.js";
 import * as Kernel from "./Kernel.js";
@@ -30,6 +35,7 @@ import * as Metering from "./Metering.js";
 import type * as ReadSet from "./ReadSet.js";
 import * as Redaction from "./Redaction.js";
 import * as Scheduling from "./Scheduling.js";
+import * as Storage from "./Storage.js";
 import * as Snapshot from "./Snapshot.js";
 import type {
   DocumentId,
@@ -52,17 +58,53 @@ import {
   validateFunctionArgs,
   validateReturnValue,
 } from "./KernelValues.js";
+import * as Option from "effect/Option";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Json from "./Json.js";
 
 const ROOT = "";
+
+/**
+ * A cron job's declaration as a snapshot writes it and a restore compares it:
+ * its name, function, arguments as Convex JSON through `args`, and schedule, a
+ * cron expression by its text.
+ */
+const declarationJson = (
+  { spec }: Pick<CronJob, "spec">,
+  args: (json: JSONValue) => JSONValue,
+) => ({
+  name: spec.name,
+  udfPath: spec.udfPath,
+  args: args(convexToJson(spec.args)),
+  schedule: (spec.schedule.kind === "cron"
+    ? { kind: "cron", expression: spec.schedule.expression }
+    : spec.schedule) as unknown as JSONValue,
+});
+
+const cronKey = (componentPath: string, name: string) =>
+  `${componentPath}\u0000${name}`;
+
+const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const TYPICAL_CONVEX_ID_LENGTH = 32;
 
 type Modules = Record<string, () => Promise<any>>;
 
 /**
- * Each module's source as text, keyed as `Modules` is, such as
- * `import.meta.glob(pattern, { query: "?raw", import: "default" })` gives.
+ * Each module's source as text, such as `import.meta.glob(pattern, { query:
+ * "?raw", import: "default" })` of the same files gives, matched to its module
+ * by its path below the directory that holds `_generated`.
  */
 type Sources = Record<string, () => Promise<string>>;
+
+/**
+ * The runtime a test declares for a component's plain Convex actions, by
+ * component path, when it cannot give the component's sources: a package's test
+ * kit registers its modules without them.
+ */
+export type ComponentRuntimes = Readonly<Record<string, IoBans.Runtime>>;
 
 /**
  * One registered component: its schema, its function modules, each loaded once
@@ -92,6 +134,49 @@ interface Component {
 /**
  * Who is calling: the identity and the request attributes a test accessor set.
  */
+/**
+ * A declared cron job and its next run. The binary keeps this in the
+ * component's `_cron_jobs` and `_cron_next_run` system tables, which no
+ * function reads, so the kernel keeps it beside its tables.
+ */
+export interface CronJob {
+  readonly componentPath: string;
+  readonly spec: Crons.Spec;
+  readonly nextRun: number;
+  readonly last: CronOutcome | undefined;
+  /**
+   * The world bound when the test backend opened, which the binary's push
+   * stands for. Each run starts as a fresh invocation of it, or unbound.
+   */
+  readonly world: Invocation.World | undefined;
+}
+
+/**
+ * A cron job as its component declares it, before any run is scheduled.
+ */
+interface CronDeclaration {
+  readonly componentPath: string;
+  readonly spec: Crons.Spec;
+}
+
+export type CronOutcome =
+  | { readonly kind: "success" }
+  | { readonly kind: "failed"; readonly error: string };
+
+/**
+ * A declared cron job as a driver sees it.
+ */
+export interface Cron {
+  readonly componentPath: string;
+  readonly name: string;
+  readonly udfPath: string;
+  readonly nextRun: number;
+  /**
+   * How the latest run ended, as the binary's cron log records it.
+   */
+  readonly last: CronOutcome | undefined;
+}
+
 export interface Caller {
   readonly identity: UserIdentity | null;
   readonly token: string | null;
@@ -110,7 +195,7 @@ export const withIdentity = (
   caller: Caller,
   identity: Partial<UserIdentity>,
 ): Caller => {
-  const subject = identity.subject ?? "" + simpleHash(JSON.stringify(identity));
+  const subject = identity.subject ?? "" + simpleHash(Json.stringify(identity));
   const issuer = identity.issuer ?? "https://convex.test";
   const tokenIdentifier = identity.tokenIdentifier ?? `${issuer}|${subject}`;
   const full = { ...identity, subject, issuer, tokenIdentifier };
@@ -272,6 +357,13 @@ interface Execution {
    * level, its caller's inside a nested call, tightened by the call's budget.
    */
   readonly limits: Metering.Limits;
+  /**
+   * The first kernel refusal a syscall of this call, or of a call nested in it,
+   * threw. Convex's `performAsyncSyscall` rethrows a syscall's error as a plain
+   * `Error`, so the refusal is kept here for whatever must surface it, such as
+   * an HTTP route that would otherwise answer 500.
+   */
+  readonly refused: { first?: unknown };
 }
 
 /**
@@ -417,16 +509,56 @@ const installIoBans = (): ReadonlyArray<string> => {
 
 /**
  * Run a function's code as `execution`, with its own copy of the globals a test
- * invocation pins, and the host APIs Convex refuses refused. A guarded global a
- * test replaced is adopted beneath a fresh guard first, and one that cannot be
- * guarded refuses the function before it runs.
+ * invocation pins, and the host APIs Convex refuses refused. A test that fakes
+ * `Date` after the backend opened replaced the kernel's wrapper, so each
+ * function wraps the realm's `Date` again, as it installs `globalThis.Convex`
+ * again. A guarded global a test replaced is adopted beneath a fresh guard
+ * first, and one that cannot be guarded refuses the function before it runs.
  */
 const enter = <A>(execution: Execution, run: () => A): A => {
   installConvexGlobal();
+  installDate();
   // A function runs only with every banned global guarded.
   const unguarded = installIoBans();
   if (unguarded.length > 0) throw KernelRefusal.unguardableGlobal(unguarded);
+  watches.set(execution, IoBans.watch());
   return Globals.own(() => executions.run(execution, run));
+};
+
+/**
+ * What tells, at each function's settlement, which guarded globals were
+ * redefined since its entry.
+ */
+const watches = new WeakMap<Execution, () => ReadonlyArray<string>>();
+
+/**
+ * `outcome`, unless a guarded global was redefined while `execution` ran. A
+ * guard cannot stop a call made through a replacement, which a descriptor
+ * change such as `Object.defineProperty` makes, so the change is caught when
+ * the function settles: it fails with `UnguardableGlobal`, whatever it
+ * returned, and the guard is installed again. Applied before a mutation's
+ * commit point, so it publishes none of its writes.
+ */
+const unlessReplaced = <A>(
+  execution: Execution,
+  outcome: Promise<A>,
+): Promise<A> => {
+  const refusal = () => {
+    const names = watches.get(execution)?.() ?? [];
+    if (names.length === 0) return undefined;
+    installIoBans();
+    return KernelRefusal.replacedWhileRunning(execution.udfPath, names);
+  };
+  return outcome.then(
+    (value) => {
+      const refused = refusal();
+      if (refused !== undefined) throw refused;
+      return value;
+    },
+    (error: unknown) => {
+      throw refusal() ?? error;
+    },
+  );
 };
 const kernelBrand = Symbol.for("@confect/test/Kernel");
 
@@ -443,6 +575,9 @@ const pinnedTime = (): number | undefined => {
   return execution.startTime;
 };
 
+const installDate = () =>
+  Clock.install(pinnedTime, () => executions.getStore() !== undefined);
+
 /**
  * How many jobs one drain or advance runs before it gives up, as convex-test's
  * `finishAllScheduledFunctions` defaults to.
@@ -453,8 +588,8 @@ const unresolvedWorld = (
   name: string,
   reason: "missing" | "ambiguous",
 ): KernelRefusal.SnapshotWorldUnresolved =>
-  new KernelRefusal.SnapshotWorldUnresolved({
-    name,
+  KernelRefusal.SnapshotWorldUnresolved.make({
+    worldName: name,
     reason,
     message:
       reason === "missing"
@@ -476,7 +611,7 @@ const running = (
   count: number,
   what: string,
 ) =>
-  new KernelRefusal.SnapshotWorldRunning({
+  KernelRefusal.SnapshotWorldRunning.make({
     registry,
     count,
     message: `The test backend is running ${count} ${what}, whose effects a snapshot would split. Await them first.`,
@@ -511,7 +646,9 @@ const jobRequest = (jobId: DocumentId): Request => ({
 });
 
 const findModulesRoot = (paths: ReadonlyArray<string>): string => {
-  const generated = paths.find((path) => path.includes("_generated"));
+  const generated = Option.getOrUndefined(
+    Arr.findFirst(paths, (path) => pipe(path, Str.includes("_generated"))),
+  );
   if (generated === undefined) {
     throw new Error(
       'Could not find the "_generated" directory, make sure to run ' +
@@ -519,7 +656,7 @@ const findModulesRoot = (paths: ReadonlyArray<string>): string => {
         '`import.meta.glob` includes the files in the "_generated" directory',
     );
   }
-  return generated.split("_generated", 2)[0]!;
+  return pipe(generated, Str.split("_generated"))[0];
 };
 
 const makeComponent = (
@@ -529,36 +666,71 @@ const makeComponent = (
   standing: ReadonlyArray<string> = [],
   sources?: Sources,
 ): Component => {
-  const root = findModulesRoot(Object.keys(modules));
-  const relative = Object.entries(modules)
-    .filter(([key]) => key.startsWith(root))
-    .map(([key, load]) => [key.slice(root.length), load] as const);
+  const root = findModulesRoot(Rec.keys(modules));
+  const relative = pipe(
+    Rec.toEntries(modules),
+    Arr.filter(([key]) => pipe(key, Str.startsWith(root))),
+    Arr.map(
+      ([key, load]) => [pipe(key, Str.slice(root.length)), load] as const,
+    ),
+  );
+  // Sources are matched to modules by their path below their own modules
+  // root, so a `?raw` glob of the same files from another file, whose keys
+  // carry another prefix, matches too.
+  const sourcesRoot =
+    sources === undefined
+      ? root
+      : pipe(
+          Arr.findFirst(Rec.keys(sources), (key) =>
+            pipe(key, Str.includes("_generated")),
+          ),
+          Option.match({
+            onNone: () => root,
+            onSome: (key) => pipe(key, Str.split("_generated"))[0],
+          }),
+        );
   const relativeSources =
     sources === undefined
       ? undefined
       : new Map(
-          Object.entries(sources)
-            .filter(([key]) => key.startsWith(root))
-            .map(
+          pipe(
+            Rec.toEntries(sources),
+            Arr.filter(([key]) => pipe(key, Str.startsWith(sourcesRoot))),
+            Arr.map(
               ([key, read]) =>
-                [key.slice(root.length).replace(/\.[^.]+$/, ""), read] as const,
+                [
+                  pipe(
+                    key,
+                    Str.slice(sourcesRoot.length),
+                    Str.replace(/\.[^.]+$/, ""),
+                  ),
+                  read,
+                ] as const,
             ),
+          ),
         );
-  const nested = relative
-    .map(([file]) => file)
-    .filter((file) => file.endsWith("/convex.config.ts"))
-    .map((file) => file.slice(0, -"convex.config.ts".length));
+  const nested = pipe(
+    relative,
+    Arr.map(([file]) => file),
+    Arr.filter((file) => pipe(file, Str.endsWith("/convex.config.ts"))),
+    Arr.map((file) => pipe(file, Str.slice(0, -"convex.config.ts".length))),
+  );
   return {
     path,
     schema: KernelQuery.exportSchema(schema),
     loaders: new Map(
-      relative
-        .filter(
+      pipe(
+        relative,
+        Arr.filter(
           ([file]) =>
             isFunctionModule(file) &&
-            !nested.some((dir) => file.startsWith(dir)),
-        )
-        .map(([file, load]) => [file.replace(/\.[^.]+$/, ""), load]),
+            !Arr.some(nested, (dir) => pipe(file, Str.startsWith(dir))),
+        ),
+        Arr.map(([file, load]) => [
+          pipe(file, Str.replace(/\.[^.]+$/, "")),
+          load,
+        ]),
+      ),
     ),
     loaded: new Map(),
     standing: new Set(standing),
@@ -585,16 +757,22 @@ const entryExtensions = [
  * neither loads them nor resolves a function in them.
  */
 const isFunctionModule = (file: string): boolean => {
-  const base = file.split("/").pop()!;
+  const base = pipe(file, Str.split("/")).pop()!;
   return (
-    entryExtensions.some((extension) => file.endsWith(extension)) &&
-    !file.startsWith("_generated/") &&
-    !base.startsWith(".") &&
-    !base.startsWith("#") &&
+    Arr.some(entryExtensions, (extension) =>
+      pipe(file, Str.endsWith(extension)),
+    ) &&
+    !pipe(file, Str.startsWith("_generated/")) &&
+    !pipe(base, Str.startsWith(".")) &&
+    !pipe(base, Str.startsWith("#")) &&
     base !== "schema.ts" &&
     base !== "schema.js" &&
-    (base.match(/\./g) ?? []).length <= 1 &&
-    !file.includes(" ")
+    pipe(
+      base,
+      Str.match(/\./g),
+      Option.match({ onNone: () => 0, onSome: (dots) => dots.length }),
+    ) <= 1 &&
+    !pipe(file, Str.includes(" "))
   );
 };
 
@@ -606,21 +784,33 @@ const isFunctionModule = (file: string): boolean => {
  * Comments and a hashbang may come before it.
  */
 export const hasUseNodeDirective = (source: string): boolean => {
-  if (!source.includes("use node")) return false;
+  if (!pipe(source, Str.includes("use node"))) return false;
   let at = 0;
+  const rest = () => pipe(source, Str.slice(at));
+  // The offset of `token` in the rest of the source, past `from`, or its end.
+  const past = (token: string, from: number) =>
+    pipe(
+      rest(),
+      Str.slice(from),
+      Str.indexOf(token),
+      Option.match({
+        onNone: () => source.length - at,
+        onSome: (index) => from + index,
+      }),
+    );
   const skipTrivia = (newlines: boolean) => {
     for (;;) {
-      const rest = source.slice(at);
-      const space = newlines ? /^\s+/.exec(rest) : /^[ \t]+/.exec(rest);
+      const space = newlines ? /^\s+/.exec(rest()) : /^[ \t]+/.exec(rest());
       if (space !== null) {
         at += space[0].length;
-      } else if (rest.startsWith("//") || (at === 0 && rest.startsWith("#!"))) {
+      } else if (
+        pipe(rest(), Str.startsWith("//")) ||
+        (at === 0 && pipe(rest(), Str.startsWith("#!")))
+      ) {
         if (!newlines) return;
-        const end = source.indexOf("\n", at);
-        at = end === -1 ? source.length : end;
-      } else if (rest.startsWith("/*")) {
-        const end = source.indexOf("*/", at + 2);
-        at = end === -1 ? source.length : end + 2;
+        at += past("\n", 0);
+      } else if (pipe(rest(), Str.startsWith("/*"))) {
+        at = Math.min(source.length, at + past("*/", 2) + 2);
       } else {
         return;
       }
@@ -635,7 +825,7 @@ export const hasUseNodeDirective = (source: string): boolean => {
       end += source[end] === "\\" ? 2 : 1;
     }
     if (end >= source.length) return false;
-    const value = source.slice(at + 1, end);
+    const value = pipe(source, Str.slice(at + 1, end));
     at = end + 1;
     skipTrivia(false);
     // A directive is a whole statement: the literal ends at `;`, a line end,
@@ -646,8 +836,8 @@ export const hasUseNodeDirective = (source: string): boolean => {
       next === ";" ||
       next === "\n" ||
       next === "\r" ||
-      source.startsWith("//", at) ||
-      source.startsWith("/*", at);
+      pipe(rest(), Str.startsWith("//")) ||
+      pipe(rest(), Str.startsWith("/*"));
     if (!ended) return false;
     if (value === "use node") return true;
     if (next === ";") at += 1;
@@ -675,7 +865,7 @@ const runtimeFromSource = (
   const read = component.sources.get(path);
   if (read === undefined) {
     return Promise.reject(
-      new KernelRefusal.ModuleRuntime({
+      KernelRefusal.ModuleRuntime.make({
         reason: "missingSource",
         componentPath: component.path,
         module: path,
@@ -686,7 +876,7 @@ const runtimeFromSource = (
   return read().then((source) => {
     if (!hasUseNodeDirective(source)) return "isolate";
     if (mustBeIsolate(path)) {
-      throw new KernelRefusal.ModuleRuntime({
+      throw KernelRefusal.ModuleRuntime.make({
         reason: "nodeNotAllowed",
         componentPath: component.path,
         module: path,
@@ -698,45 +888,101 @@ const runtimeFromSource = (
 };
 
 /**
- * Whether a Confect function is a Node action. `RegisteredNodeFunction.make` in
- * `@confect/server` marks it, and the kernel checks the mark against the
- * module's directive.
+ * The runtime Confect registered an action for: `true` for a Node action
+ * (`RegisteredNodeFunction.make` in `@confect/server`), `false` for an isolate
+ * one (`RegisteredConvexFunction`). A plain Convex function has no mark.
  */
 const nodeAction = Symbol.for("@confect/server/NodeAction");
 
+const markOf = (func: unknown): boolean | undefined =>
+  (func as { [nodeAction]?: boolean } | undefined)?.[nodeAction];
+
 /**
  * The runtime a function runs in: its module's, read from the directive. With
- * no source, Confect's mark decides. A function marked Node in a module without
- * `"use node"` is refused, as the two disagree.
+ * no source, Confect's mark decides, then the runtime the test declared for the
+ * component, and an action with none of these was refused when the world
+ * opened. A mark that disagrees with the directive is refused.
  */
 const runtimeOfFunction = (
   component: Component,
   modulePath: string,
   exportName: string,
   func: unknown,
+  componentRuntime: IoBans.Runtime | undefined,
 ): IoBans.Runtime => {
-  const marked =
-    (func as { [nodeAction]?: boolean } | undefined)?.[nodeAction] === true;
+  const marked = markOf(func);
   const declared = component.runtimes.get(modulePath);
-  if (declared === undefined) return marked ? "node" : "isolate";
-  if (marked && declared !== "node") {
-    throw new KernelRefusal.ModuleRuntime({
+  if (declared === undefined) {
+    if (marked !== undefined) return marked ? "node" : "isolate";
+    return componentRuntime ?? "isolate";
+  }
+  if (marked !== undefined && marked !== (declared === "node")) {
+    throw KernelRefusal.ModuleRuntime.make({
       reason: "markerDisagrees",
       componentPath: component.path,
       module: modulePath,
-      message: `${modulePath}:${exportName} is a Confect Node action, but module "${modulePath}" has no "use node" directive, so Convex would run it in its isolate.`,
+      message: marked
+        ? `${modulePath}:${exportName} is a Confect Node action, but module "${modulePath}" has no "use node" directive, so Convex would run it in its isolate.`
+        : `${modulePath}:${exportName} is a Confect action for Convex's isolate, but module "${modulePath}" has a "use node" directive, so Convex would run it in Node. Register it as a Node action.`,
     });
   }
   return declared;
 };
 
+/**
+ * Refuse a component the test gave no sources, and declared no runtime for,
+ * whose modules export an action with no Confect mark: Convex runs it in Node
+ * or in its isolate by its module's `"use node"` directive, which only a source
+ * shows.
+ */
+const checkActionRuntimes = (
+  component: Component,
+  componentRuntime: IoBans.Runtime | undefined,
+) => {
+  if (component.sources !== undefined || componentRuntime !== undefined) return;
+  for (const [path, module] of component.loaded) {
+    const unknown = pipe(
+      Rec.toEntries((module ?? {}) as Record<string, unknown>),
+      Arr.filter(
+        ([, func]) =>
+          (func as { isAction?: unknown } | undefined)?.isAction === true &&
+          markOf(func) === undefined,
+      ),
+      Arr.map(([name]) => name),
+    );
+    const named = Arr.join(
+      Arr.map(unknown, (name) => `${path}:${name}`),
+      ", ",
+    );
+    if (unknown.length > 0) {
+      throw KernelRefusal.ActionRuntimeUnknown.make({
+        componentPath: component.path,
+        module: path,
+        exports: unknown,
+        message:
+          `Module "${path}"${component.path === ROOT ? "" : ` of component "${component.path}"`} exports ${named}, a plain Convex action, and the test gave no sources, so the test kernel cannot read the module's "use node" directive to tell whether Convex runs it in Node or in its isolate. ` +
+          (component.path === ROOT
+            ? `Pass the modules' sources, such as import.meta.glob(pattern, { query: "?raw", import: "default" }) of the same files.`
+            : `Pass the component's sources, as registerComponent(name, schema, modules, { sources }), or, for a package's test kit that registers without them, declare the runtime its plain actions run in with componentRuntimes: { "${component.path}": "isolate" }.`),
+      });
+    }
+  }
+};
+
 const unregistered = (world: World, componentPath: string) => {
-  const registered = [...world.components.keys()].filter((p) => p !== ROOT);
+  const registered = Arr.filter(
+    [...world.components.keys()],
+    (p) => p !== ROOT,
+  );
   return new Error(
     `Component "${componentPath}" is not registered on this test backend. ` +
       (registered.length === 0
         ? "No components have been registered."
-        : `Registered components: ${registered.map((p) => `"${p}"`).join(", ")}.`),
+        : `Registered components: ${pipe(
+            registered,
+            Arr.map((p) => `"${p}"`),
+            Arr.join(", "),
+          )}.`),
   );
 };
 
@@ -761,12 +1007,12 @@ const functionPathOf = (
   }
   if (address.reference !== undefined) {
     // "_reference/childComponent/<child>/path/to/file/fn"
-    const parts = address.reference.split("/");
+    const parts = pipe(address.reference, Str.split("/"));
     const child = parts[2]!;
     const rest = parts.slice(3);
     return {
       componentPath: from.length > 0 ? `${from}/${child}` : child,
-      udfPath: `${rest.slice(0, -1).join("/")}:${rest[rest.length - 1]}`,
+      udfPath: `${Arr.join(rest.slice(0, -1), "/")}:${rest[rest.length - 1]}`,
     };
   }
   throw new Error("Function address not supported");
@@ -831,6 +1077,21 @@ export class World {
    */
   private floor = Number.NEGATIVE_INFINITY;
   private readonly targets = new Map<DocumentId, Scheduling.Target>();
+  private readonly files = new Map<DocumentId, Storage.File>();
+  private readonly legacyIds = new Map<string, DocumentId>();
+  private nextFile = 1;
+  private nextUploadToken = 1;
+  private nextErrorRequest = 1;
+  private readonly cronJobs = new Map<string, CronJob>();
+  /**
+   * Every component's cron declarations, read once the modules load.
+   */
+  private declared: ReadonlyArray<CronDeclaration> = [];
+  /**
+   * Whether the declared jobs have their runs: first runs scheduled, or a
+   * snapshot's installed.
+   */
+  private cronsScheduled = false;
   /**
    * The raw secrets this world has seen under a secret schema node. Replay
    * state, kept in memory and never written to an artifact.
@@ -859,10 +1120,16 @@ export class World {
     modules: Modules,
     private readonly runtime: Kernel.KernelRuntime = Kernel.wallClock(),
     private readonly redaction: Redaction.Policy = Redaction.none,
+    /**
+     * The world the driver gives the backend itself, which a backend opened
+     * with no invocation bound declares its cron jobs in.
+     */
+    private readonly own?: Invocation.World,
     sources?: Sources,
+    private readonly componentRuntimes: ComponentRuntimes = {},
   ) {
     installConvexGlobal();
-    Clock.install(pinnedTime, () => executions.getStore() !== undefined);
+    installDate();
     installIoBans();
     Egress.install(egressHolder);
     this.components.set(
@@ -879,7 +1146,7 @@ export class World {
     sources?: Sources,
   ) {
     if (this.opened !== undefined) {
-      throw new KernelRefusal.RegisteredAfterOpen({
+      throw KernelRefusal.RegisteredAfterOpen.make({
         componentPath,
         message: `Component "${componentPath}" was registered after the test backend opened. Register every component before the first call.`,
       });
@@ -891,11 +1158,29 @@ export class World {
   }
 
   /**
-   * Load every registered module of every component, once, before any function
-   * runs, with its runtime read from its source when the test supplied them,
-   * then check that each standing source names an exported function.
+   * Load every registered module, with its runtime read from its source when
+   * the test supplied them, refuse a plain Convex action whose runtime no
+   * source shows, read each component's cron declarations, and schedule their
+   * first runs, once. The first runs start in the world of the invocation bound
+   * by the call that opened the backend, or else the world the driver gave the
+   * backend. `advance` and `drain` open with the driver's, since their binding
+   * never reaches a job.
    */
   open(): Promise<void> {
+    return this.openIn(Invocation.current()?.world ?? this.own);
+  }
+
+  private openIn(world: Invocation.World | undefined): Promise<void> {
+    return this.load().then(() => this.scheduleFirstRuns(world));
+  }
+
+  /**
+   * Load every registered module of every component, once, before any function
+   * runs, check that each standing source names an exported function, and read
+   * each component's cron declarations. Nothing here draws a random value, so a
+   * restore can load without one.
+   */
+  private load(): Promise<void> {
     this.opened ??= Promise.all(
       Array.from(this.components.values(), (component) =>
         Promise.all(
@@ -911,8 +1196,167 @@ export class World {
           ),
         ),
       ),
-    ).then(() => this.checkStanding());
+    )
+      .then(() => {
+        for (const component of this.components.values()) {
+          checkActionRuntimes(
+            component,
+            this.componentRuntimes[component.path],
+          );
+        }
+        return this.checkStanding();
+      })
+      .then(() => this.readDeclarations());
     return this.opened;
+  }
+
+  private readDeclarations() {
+    this.declared = this.readCrons();
+  }
+
+  /**
+   * Read each component's `crons.ts` as the binary reads `crons.js` at push
+   * (`crates/model/src/cron_jobs/mod.rs:151-195`) and refuse what the push
+   * would (`crates/isolate/src/environment/analyze.rs:1016-1089`,
+   * `crates/application/src/application_function_runner/mod.rs:1932-1979`).
+   * Jobs come in name order, as the binary walks them.
+   */
+  private readCrons(): ReadonlyArray<CronDeclaration> {
+    const declarations: Array<CronDeclaration> = [];
+    for (const component of this.components.values()) {
+      const module = component.loaded.get("crons");
+      if (module === undefined) continue;
+      const refuse = (message: string) =>
+        KernelRefusal.InvalidCron.make({
+          componentPath: component.path,
+          cronName: "",
+          message,
+        });
+      if (!("default" in module)) {
+        throw refuse(
+          "`convex/crons.js` must have a default export of a Crons object.",
+        );
+      }
+      const declared = module.default;
+      if (declared?.isCrons !== true || typeof declared.export !== "function") {
+        throw refuse(
+          "The default export of `convex/crons.js` is not a Crons object.",
+        );
+      }
+      const exported = Json.parse(declared.export()) as Record<string, unknown>;
+      for (const name of Rec.keys(exported).sort()) {
+        const parsed = Crons.parseSpec(component.path, name, exported[name]);
+        if (Result.isFailure(parsed)) throw parsed.failure;
+        this.checkCronTarget(component, parsed.success);
+        declarations.push({
+          componentPath: component.path,
+          spec: parsed.success,
+        });
+      }
+    }
+    return declarations;
+  }
+
+  /**
+   * Schedule each declared job's first run from the kernel's time now, once, in
+   * `world`. A clock schedule draws its delay from `world`'s random stream, so
+   * with no world it is refused. A restore installs the snapshot's runs instead
+   * and never comes here.
+   */
+  private scheduleFirstRuns(world: Invocation.World | undefined) {
+    if (this.cronsScheduled) return;
+    const scheduled = new Map<string, CronJob>();
+    for (const { componentPath, spec } of this.declared) {
+      if (spec.schedule.kind !== "interval" && world === undefined) {
+        throw KernelRefusal.CronRandomUnavailable.make({
+          componentPath,
+          cronName: spec.name,
+          message: `Cron job "${spec.name}" runs on a ${spec.schedule.kind} schedule, which Convex delays by a random number of seconds, and no test world was bound when the backend opened to draw it from. The kernel holds no generator. Open the backend under a bound invocation, whose world's random stream the delay draws from.`,
+        });
+      }
+      const job: CronJob = {
+        componentPath,
+        spec,
+        nextRun: 0,
+        last: undefined,
+        world,
+      };
+      scheduled.set(cronKey(componentPath, spec.name), {
+        ...job,
+        nextRun: this.searched(
+          job,
+          Crons.nextRun(spec.schedule, undefined, this.now(), (bound) =>
+            this.draw(job, bound),
+          ),
+        ),
+      });
+    }
+    for (const [key, job] of scheduled) this.cronJobs.set(key, job);
+    this.cronsScheduled = true;
+  }
+
+  /**
+   * Refuse a cron job whose function is missing or is no mutation or action.
+   */
+  private checkCronTarget(component: Component, spec: Crons.Spec) {
+    const [modulePath, exportName = "default"] = pipe(
+      spec.udfPath,
+      Str.split(":"),
+    );
+    const func = component.loaded.get(modulePath!)?.[exportName];
+    const refuse = (reason: string) =>
+      KernelRefusal.InvalidCron.make({
+        componentPath: component.path,
+        cronName: spec.name,
+        message: `The cron job '${spec.name}' ${reason}: ${spec.udfPath}`,
+      });
+    if (func === undefined) {
+      throw refuse("schedules a function that does not exist");
+    }
+    if (func.isQuery === true) {
+      throw refuse(
+        "schedules a query function, only actions and mutations can be scheduled",
+      );
+    }
+    if (func.isHttp === true) {
+      throw refuse(
+        "schedules an HTTP action, only actions and mutations can be scheduled",
+      );
+    }
+    if (func.isMutation !== true && func.isAction !== true) {
+      throw refuse("schedules a function that does not exist");
+    }
+  }
+
+  /**
+   * A whole number in `[0, bound)`, drawn from the random stream of the world
+   * the cron job runs in, the stream its handlers draw from. `declareCrons`
+   * refused a clock schedule with no world, and an interval never draws.
+   */
+  private draw(cron: CronJob, bound: number): number {
+    return Math.floor(cron.world!.random() * bound);
+  }
+
+  /**
+   * A computed run time, or the refusal for a search the binary cannot finish.
+   */
+  private searched(
+    cron: CronJob,
+    result: Result.Result<number, Crons.SearchFailure>,
+  ): number {
+    if (Result.isSuccess(result)) return result.success;
+    const { name, schedule } = cron.spec;
+    const expression = schedule.kind === "cron" ? schedule.expression : name;
+    throw result.failure._tag === "BinaryAborts"
+      ? KernelRefusal.CronAbortsBinary.make({
+          componentPath: cron.componentPath,
+          cronName: name,
+          date: result.failure.date,
+          message: `Cron job "${name}" searches "${expression}" from ${result.failure.date}, a Monday, where saffron subtracts below zero (saffron/src/lib.rs:663). The Convex binary is built with overflow checks and aborts there, so the kernel refuses rather than answer.`,
+        })
+      : new Error(
+          `Cron job "${name}" has no next run, though its schedule passed saffron's \`any\` when it was read.`,
+        );
   }
 
   /**
@@ -921,12 +1365,12 @@ export class World {
   private checkStanding() {
     for (const component of this.components.values()) {
       for (const name of component.standing) {
-        const [modulePath, exportName = "default"] = name.split(":");
+        const [modulePath, exportName = "default"] = pipe(name, Str.split(":"));
         const func = component.loaded.get(modulePath!)?.[exportName];
         if (func?.isMutation !== true && func?.isAction !== true) {
-          throw new KernelRefusal.UnknownStandingSource({
+          throw KernelRefusal.UnknownStandingSource.make({
             componentPath: component.path,
-            name,
+            functionName: name,
             message: `Component "${component.path}" declares "${name}" standing, but exports no mutation or action by that name. Name the self-rescheduling function as module:export.`,
           });
         }
@@ -949,10 +1393,10 @@ export class World {
   }
 
   private resolve(functionPath: FunctionPath, kind: UdfType | "any"): Resolved {
-    const [modulePath, maybeExport] = functionPath.udfPath.split(":") as [
-      string,
-      string | undefined,
-    ];
+    const [modulePath, maybeExport] = pipe(
+      functionPath.udfPath,
+      Str.split(":"),
+    ) as [string, string | undefined];
     const exportName = maybeExport ?? "default";
     const component = this.component(functionPath.componentPath);
     const module = component.loaded.get(modulePath);
@@ -971,12 +1415,12 @@ export class World {
         `Expected a Convex function exported from module "${modulePath}" as \`${exportName}\`, but got: ${func}`,
       );
     }
-    if (kind !== "any" && !func[kindCheck[kind]]) {
+    if (kind !== "any" && func[kindCheck[kind]] !== true) {
       throw new Error(
         `Expected a ${kind} function, but the function exported from module "${modulePath}" as \`${exportName}\` is not a ${kind}.`,
       );
     }
-    const args = JSON.parse(func.exportArgs()) as ValidatorJSON;
+    const args = Json.parse(func.exportArgs()) as ValidatorJSON;
     if (args.type !== "object" && args.type !== "any") {
       throw new Error(
         `Invalid JSON returned from ${modulePath}.js:${exportName}.exportArgs(): ` +
@@ -987,16 +1431,22 @@ export class World {
       func,
       handler,
       args,
-      returns: JSON.parse(func.exportReturns()),
-      runtime: runtimeOfFunction(component, modulePath, exportName, func),
+      returns: Json.parse(func.exportReturns()),
+      runtime: runtimeOfFunction(
+        component,
+        modulePath,
+        exportName,
+        func,
+        this.componentRuntimes[component.path],
+      ),
     };
   }
 
   // Calls from the test.
 
   query(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         const from = { caller, request: newRequest(caller) };
         return typeof reference === "function"
           ? this.runQuery(
@@ -1006,13 +1456,13 @@ export class World {
               from,
             )
           : this.queryAt(pathOfReference(reference, ROOT), args, from);
-      });
-    });
+      }),
+    );
   }
 
   mutation(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         const from = { caller, request: newRequest(caller) };
         return typeof reference === "function"
           ? this.runMutation(
@@ -1022,13 +1472,13 @@ export class World {
               from,
             )
           : this.mutationAt(pathOfReference(reference, ROOT), args, from);
-      });
-    });
+      }),
+    );
   }
 
   action(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         const from = { caller, request: newRequest(caller) };
         return typeof reference === "function"
           ? this.runAction(
@@ -1038,8 +1488,8 @@ export class World {
               from,
             )
           : this.actionAt(pathOfReference(reference, ROOT), args, from);
-      });
-    });
+      }),
+    );
   }
 
   run(
@@ -1047,8 +1497,8 @@ export class World {
     componentPath: string,
     handler: (ctx: any) => any,
   ): Promise<any> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         this.component(componentPath);
         return this.runMutation(
           { componentPath, udfPath: "custom" },
@@ -1056,8 +1506,83 @@ export class World {
           {},
           { caller, request: newRequest(caller) },
         );
-      });
-    });
+      }),
+    );
+  }
+
+  /**
+   * Send `path` to the root component's HTTP router, as the binary routes a
+   * request: the router's `lookup` picks the route by pathname and method, and
+   * the route's handler runs as an action with the caller's identity. With no
+   * route, the binary's 404, and for a handler that throws, its 500.
+   */
+  fetch(caller: Caller, path: unknown, init?: RequestInit): Promise<Response> {
+    return this.during(() =>
+      this.open().then(() => this.route(caller, path, init)),
+    );
+  }
+
+  private route(
+    caller: Caller,
+    path: unknown,
+    init: RequestInit | undefined,
+  ): Promise<Response> {
+    const url = orThrow(Http.requestUrl(path));
+    const method = init?.method ?? "GET";
+    const request = new Request(
+      url,
+      Http.discardsBody(method) ? { ...init, body: null } : init,
+    );
+    const router = this.component(ROOT).loaded.get("http")?.["default"] as
+      | {
+          readonly lookup: (
+            path: string,
+            method: string,
+          ) => readonly [any, string, string] | null;
+        }
+      | undefined;
+    const route = router?.lookup(url.pathname, request.method) ?? null;
+    if (route === null) {
+      return Promise.resolve(Http.forMethod(request.method, Http.noRoute()));
+    }
+    const [endpoint] = route;
+    const handler: (
+      ctx: any,
+      request: globalThis.Request,
+    ) => Promise<Response> =
+      "_handler" in endpoint ? endpoint._handler : endpoint;
+    const execution = this.execution(
+      { componentPath: ROOT, udfPath: "http" },
+      "action",
+      undefined,
+      { caller, request: newRequest(caller) },
+      undefined,
+    );
+    const action = httpActionGeneric((ctx, received) =>
+      handler({ ...ctx, auth: queryAuth(execution) }, received),
+    ) as unknown as {
+      invokeHttpAction: (request: globalThis.Request) => Promise<Response>;
+    };
+    // A handler that throws gets the binary's 500, not a rejected fetch. A
+    // kernel refusal is no handler error: it surfaces as itself.
+    return this.track("functions", () =>
+      enter(execution, () => action.invokeHttpAction(request)),
+    ).then(
+      (response) => Http.forMethod(request.method, response),
+      (thrown: unknown) => {
+        const refusal = refusalOf(thrown, execution);
+        if (refusal !== undefined) throw refusal;
+        // The report is an artifact, so it leaves through the failure
+        // redaction a rejected call's report does.
+        return Http.forMethod(
+          request.method,
+          Http.serverError(
+            this.redactFailure(thrown),
+            Http.errorRequestId(this.nextErrorRequest++),
+          ),
+        );
+      },
+    );
   }
 
   // Held attempts.
@@ -1066,8 +1591,8 @@ export class World {
    * Run a mutation to its commit point and hold it as attempt 1.
    */
   prepare(caller: Caller, reference: any, args: any): Promise<HeldAttempt> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         const functionPath = pathOfReference(reference, ROOT);
         const resolved = this.resolve(functionPath, "mutation");
         this.keepArgs(functionPath, args);
@@ -1080,8 +1605,8 @@ export class World {
           1,
           Invocation.current(),
         ).then((held) => held.view);
-      });
-    });
+      }),
+    );
   }
 
   apply(id: string): Promise<KernelApply> {
@@ -1089,7 +1614,7 @@ export class World {
       const held = this.holding.get(id);
       return held === undefined
         ? Promise.reject(
-            new KernelRefusal.StaleAttempt({
+            KernelRefusal.StaleAttempt.make({
               id,
               message: `The test kernel holds no attempt "${id}". It was already applied, or never prepared.`,
             }),
@@ -1140,7 +1665,7 @@ export class World {
     this.closedActions.set(execution, {
       refusal:
         refusal ??
-        new KernelRefusal.ActionEnded({
+        KernelRefusal.ActionEnded.make({
           componentPath: execution.componentPath,
           functionName: execution.udfPath,
           message: `The action ${execution.udfPath} already ended, so the test kernel refused its provider port call.`,
@@ -1170,7 +1695,7 @@ export class World {
     const command = this.pending.get(id);
     if (command === undefined) {
       const cancelled = this.cancelled.has(id);
-      throw new KernelRefusal.StaleCommand({
+      throw KernelRefusal.StaleCommand.make({
         id,
         reason: cancelled ? "cancelled" : "notHeld",
         message: cancelled
@@ -1196,8 +1721,8 @@ export class World {
     args: any,
     pinned: { readonly time?: number; readonly journal: string | null },
   ): Promise<QueryRun> {
-    return this.during(() => {
-      return this.open().then(() => {
+    return this.during(() =>
+      this.open().then(() => {
         const functionPath = pathOfReference(reference, ROOT);
         const resolved = this.resolve(functionPath, "query");
         this.keepArgs(functionPath, args);
@@ -1226,8 +1751,8 @@ export class World {
           (value: Value) => run({ _tag: "returned", value }),
           (error: unknown) => run({ _tag: "failed", error }),
         );
-      });
-    });
+      }),
+    );
   }
 
   /**
@@ -1326,6 +1851,48 @@ export class World {
         });
       }
     }
+    // A file's bytes travel with its committed row. Bytes a rolled-back or
+    // deleted file left behind are unreachable, so no export carries them.
+    const files = new Map<DocumentId, Storage.File>();
+    for (const byTable of this.state.tables.values()) {
+      for (const id of byTable.get(Storage.table)?.keys() ?? []) {
+        const file = this.files.get(id);
+        if (file !== undefined) files.set(id, file);
+      }
+    }
+    const crons = Array.from(this.cronJobs.values(), (cron) => {
+      if (cron.world !== undefined) {
+        if ((names.get(cron.world.name) ?? cron.world) !== cron.world) {
+          throw unresolvedWorld(cron.world.name, "ambiguous");
+        }
+        names.set(cron.world.name, cron.world);
+      }
+      const target = {
+        componentPath: cron.componentPath,
+        udfPath: cron.spec.udfPath,
+      };
+      return {
+        componentPath: cron.componentPath,
+        ...declarationJson(cron, (json) =>
+          Redaction.mark(
+            json,
+            placed(this.redaction.args(target)),
+            this.secrets,
+          ),
+        ),
+        nextRun: cron.nextRun,
+        // A failure's text holds whatever the function threw, so a kept secret
+        // in it is written as a marker a restore puts back.
+        last:
+          cron.last?.kind === "failed"
+            ? {
+                kind: "failed" as const,
+                error: Redaction.mark(cron.last.error, [], this.secrets),
+              }
+            : (cron.last ?? null),
+        world: cron.world?.name ?? null,
+      };
+    });
     return Snapshot.encode(
       {
         components: [...this.components.keys()],
@@ -1336,8 +1903,12 @@ export class World {
           lastCreationTime: this.lastCreationTime,
           nextAttemptId: this.nextAttemptId,
           identityEpoch: this.identityEpoch,
+          nextFile: this.nextFile,
+          nextUploadToken: this.nextUploadToken,
         },
         jobs,
+        files,
+        crons,
       },
       (componentPath, table, json) =>
         Redaction.mark(
@@ -1349,6 +1920,7 @@ export class World {
           ),
           this.secrets,
         ),
+      (bytes) => Redaction.markBytes(bytes, this.secrets),
     );
   }
 
@@ -1366,7 +1938,7 @@ export class World {
       readonly secrets?: Redaction.Secrets;
     } = {},
   ): Promise<void> {
-    return this.open().then(() =>
+    return this.load().then(() =>
       this.restore(
         bytes,
         options.worlds ?? [],
@@ -1390,16 +1962,24 @@ export class World {
     if (Result.isFailure(checked)) throw checked.failure;
     const registered = [...this.components.keys()].sort();
     const snapshot = [...image.components].sort();
-    if (registered.join("\u0000") !== snapshot.join("\u0000")) {
-      throw new KernelRefusal.SnapshotComponentMismatch({
+    if (Arr.join(registered, "\u0000") !== Arr.join(snapshot, "\u0000")) {
+      throw KernelRefusal.SnapshotComponentMismatch.make({
         snapshot,
         registered,
-        message: `The snapshot holds components ${snapshot.map((p) => `"${p}"`).join(", ")}, but this test backend registers ${registered.map((p) => `"${p}"`).join(", ")}. Register the same components before restoring.`,
+        message: `The snapshot holds components ${pipe(
+          snapshot,
+          Arr.map((p) => `"${p}"`),
+          Arr.join(", "),
+        )}, but this test backend registers ${pipe(
+          registered,
+          Arr.map((p) => `"${p}"`),
+          Arr.join(", "),
+        )}. Register the same components before restoring.`,
       });
     }
     for (const [id, { functionPath }] of image.jobs) {
       if (!this.exports(functionPath)) {
-        throw new KernelRefusal.SnapshotJobInconsistent({
+        throw KernelRefusal.SnapshotJobInconsistent.make({
           id,
           reason: "function",
           message: `The snapshot's job ${id} targets ${functionPath.udfPath} in "${functionPath.componentPath}", which that component does not export.`,
@@ -1407,7 +1987,9 @@ export class World {
       }
     }
     const byName = new Map<string, Invocation.World>();
-    for (const world of worlds) {
+    for (const world of this.own === undefined
+      ? worlds
+      : [...Arr.filter(worlds, (w) => w.name !== this.own!.name), this.own]) {
       if ((byName.get(world.name) ?? world) !== world) {
         throw unresolvedWorld(world.name, "ambiguous");
       }
@@ -1426,22 +2008,138 @@ export class World {
         return [id, { functionPath, standing, world: resolved }];
       },
     );
+    const cronJobs = this.restoredCrons(image.crons, byName);
     this.state = image.state;
     this.floor = image.floor;
     this.nextDocId = image.identity.nextDocumentId;
     this.lastCreationTime = image.identity.lastCreationTime;
     this.nextAttemptId = image.identity.nextAttemptId;
     this.identityEpoch = image.identity.identityEpoch;
+    this.nextFile = image.identity.nextFile;
+    this.nextUploadToken = image.identity.nextUploadToken;
+    this.files.clear();
+    this.legacyIds.clear();
+    for (const [id, file] of image.files) {
+      this.files.set(id, file);
+      this.legacyIds.set(file.uuid, id);
+    }
     this.targets.clear();
     for (const [id, target] of targets) this.targets.set(id, target);
+    this.cronJobs.clear();
+    for (const [key, cron] of cronJobs) this.cronJobs.set(key, cron);
+    this.cronsScheduled = true;
     this.secrets = secrets.copy();
+  }
+
+  /**
+   * The snapshot's cron jobs as this world runs them, refusing unless the app
+   * declares exactly the snapshot's jobs, each with the same function,
+   * arguments and schedule. Each job keeps the snapshot's next run and latest
+   * outcome, and its world resolves by name. Nothing is redeclared and nothing
+   * is drawn.
+   */
+  private restoredCrons(
+    images: ReadonlyArray<Snapshot.CronImage>,
+    byName: ReadonlyMap<string, Invocation.World>,
+  ): Map<string, CronJob> {
+    const declared = new Map(
+      Arr.map(this.declared, (declaration) => [
+        cronKey(declaration.componentPath, declaration.spec.name),
+        declaration,
+      ]),
+    );
+    const mismatch = (
+      componentPath: string,
+      name: string,
+      reason: KernelRefusal.SnapshotCronMismatch["reason"],
+      detail: string,
+    ) =>
+      KernelRefusal.SnapshotCronMismatch.make({
+        componentPath,
+        cronName: name,
+        reason,
+        message: `The snapshot's cron job "${name}" of component "${componentPath}" ${detail}. Restore into an app that declares the same cron jobs.`,
+      });
+    const restored = new Map<string, CronJob>();
+    for (const image of images) {
+      const key = cronKey(image.componentPath, image.name);
+      const declaration = declared.get(key);
+      if (declaration === undefined) {
+        throw mismatch(
+          image.componentPath,
+          image.name,
+          "undeclared",
+          "is not declared by this app",
+        );
+      }
+      const job: CronJob = {
+        ...declaration,
+        nextRun: 0,
+        last: undefined,
+        world: undefined,
+      };
+      const ours = declarationJson(job, (json) => json);
+      if (
+        Json.stringify(ours) !==
+        Json.stringify({
+          name: image.name,
+          udfPath: image.udfPath,
+          args: image.args,
+          schedule: image.schedule,
+        })
+      ) {
+        throw mismatch(
+          image.componentPath,
+          image.name,
+          "changed",
+          "is declared here with another function, arguments or schedule",
+        );
+      }
+      const world = image.world === null ? undefined : byName.get(image.world);
+      if (image.world !== null && world === undefined) {
+        throw unresolvedWorld(image.world, "missing");
+      }
+      if (
+        declaration.spec.schedule.kind !== "interval" &&
+        world === undefined
+      ) {
+        throw KernelRefusal.CronRandomUnavailable.make({
+          componentPath: image.componentPath,
+          cronName: image.name,
+          message: `The snapshot's cron job "${image.name}" runs on a ${declaration.spec.schedule.kind} schedule but names no test world to draw its delays from.`,
+        });
+      }
+      restored.set(key, {
+        ...job,
+        nextRun: image.nextRun,
+        // Decoding put back any marked secret, so a failure's text is raw again.
+        last:
+          image.last === null
+            ? undefined
+            : image.last.kind === "failed"
+              ? { kind: "failed", error: image.last.error as string }
+              : image.last,
+        world,
+      });
+    }
+    for (const [key, { componentPath, spec }] of declared) {
+      if (!restored.has(key)) {
+        throw mismatch(
+          componentPath,
+          spec.name,
+          "missing",
+          "is declared by this app but not held by the snapshot",
+        );
+      }
+    }
+    return restored;
   }
 
   /**
    * Whether `functionPath`'s component exports a Convex function there.
    */
   private exports({ componentPath, udfPath }: FunctionPath): boolean {
-    const [modulePath, exportName = "default"] = udfPath.split(":");
+    const [modulePath, exportName = "default"] = pipe(udfPath, Str.split(":"));
     const func = this.components.get(componentPath)?.loaded.get(modulePath!)?.[
       exportName
     ];
@@ -1472,25 +2170,25 @@ export class World {
         ),
       held: () => {
         const held = [...this.holding.keys()];
-        return new KernelRefusal.SnapshotWorldBusy({
+        return KernelRefusal.SnapshotWorldBusy.make({
           version,
           held,
-          message: `The test backend holds attempts ${held.join(", ")}, which a snapshot does not carry. Apply them first.`,
+          message: `The test backend holds attempts ${Arr.join(held, ", ")}, which a snapshot does not carry. Apply them first.`,
         });
       },
       subscribers: (count) =>
-        new KernelRefusal.SnapshotSubscribed({
+        KernelRefusal.SnapshotSubscribed.make({
           subscribers: count,
           message: `The test backend has ${count} subscribers, whose identity versions a restore would rewind. Restore into a test backend no client has subscribed to.`,
         }),
     };
-    for (const key of Object.keys(refusals) as Array<keyof typeof counts>) {
+    for (const key of Rec.keys(refusals) as Array<keyof typeof counts>) {
       const { blocks } = Snapshot.contract.live[key];
       if (operation === "export" && blocks === "restore") continue;
       if (counts[key] > 0) throw refusals[key](counts[key]);
     }
     if (operation === "restore" && version !== 0) {
-      throw new KernelRefusal.SnapshotWorldBusy({
+      throw KernelRefusal.SnapshotWorldBusy.make({
         version,
         held: [],
         message: `The test backend has committed ${version} versions of its own. Restore a snapshot into a fresh test backend.`,
@@ -1504,7 +2202,8 @@ export class World {
    * The committed pending jobs, earliest deadline first.
    */
   jobs(): ReadonlyArray<Scheduling.Job> {
-    return Scheduling.pending(this.state, this.targets).map(
+    return Arr.map(
+      Scheduling.pending(this.state, this.targets),
       ({ id, componentPath, name, scheduledTime, standing }) => ({
         id,
         componentPath,
@@ -1516,21 +2215,53 @@ export class World {
   }
 
   /**
-   * Move the clock forward `ms`, running every job whose deadline falls on the
-   * way, in deadline order, each starting at its deadline. Jobs those jobs
+   * The declared cron jobs, earliest next run first.
+   */
+  crons(): ReadonlyArray<Cron> {
+    return Arr.map(
+      this.cronsByNextRun(),
+      ({ componentPath, spec, nextRun, last }) => ({
+        componentPath,
+        name: spec.name,
+        udfPath: spec.udfPath,
+        nextRun,
+        last: last === undefined ? undefined : this.reportedOutcome(last),
+      }),
+    );
+  }
+
+  /**
+   * A cron run's outcome as an artifact shows it: a failure's text through the
+   * failure redaction, every kept secret marked. The raw text stays in the
+   * job's replay state.
+   */
+  private reportedOutcome(last: CronOutcome): CronOutcome {
+    return last.kind === "failed"
+      ? {
+          kind: "failed",
+          error: Redaction.failure(last.error, this.secrets) as string,
+        }
+      : last;
+  }
+
+  /**
+   * Move the clock forward `ms`, running every job and cron run whose time
+   * falls on the way, in time order, each starting at its time. Jobs those
    * schedule inside the window run too. `advance(0)` runs what is due now and
-   * crosses no future deadline.
+   * crosses no future deadline. A cron run never counts against the budget:
+   * each one moves its job's next run later.
    */
   advance(ms: number, budget = defaultBudget): Promise<void> {
-    return this.track("walks", () => {
-      return this.open().then(() => {
+    return this.track("walks", () =>
+      this.openIn(this.own).then(() => {
         const until = this.now() + ms;
         return this.walk(
-          (pending) => pending.filter((job) => job.scheduledTime <= until),
+          (pending) => Arr.filter(pending, (job) => job.scheduledTime <= until),
           budget,
+          until,
         ).then(() => this.raiseFloor(until));
-      });
-    });
+      }),
+    );
   }
 
   /**
@@ -1538,38 +2269,61 @@ export class World {
    * standing jobs are pending. Every job run counts against `budget`.
    */
   drain(budget = defaultBudget): Promise<void> {
-    return this.track("walks", () => {
-      return this.open().then(() =>
-        this.walk((pending) => pending.filter((job) => !job.standing), budget),
-      );
-    });
+    return this.track("walks", () =>
+      this.openIn(this.own).then(() =>
+        this.walk(
+          (pending) => Arr.filter(pending, (job) => !job.standing),
+          budget,
+        ),
+      ),
+    );
   }
 
   /**
-   * Run the first of `select(pending)` until it is empty, moving the clock to
-   * each job's deadline as it starts.
+   * Run the first of `select(pending)`, and with `cronsUntil` each cron run due
+   * by then, until none is left, earliest first and moving the clock to each
+   * one's time as it starts. The binary runs jobs and cron runs on separate
+   * executors, so at one instant it orders neither before the other. The kernel
+   * runs jobs first.
    */
   private walk(
     select: (pending: Array<Scheduling.Due>) => Array<Scheduling.Due>,
     budget: number,
+    cronsUntil?: number,
   ): Promise<void> {
     const step = (ran: number): Promise<void> => {
       const left = select(Scheduling.pending(this.state, this.targets));
       const next = left[0];
+      const cron =
+        cronsUntil === undefined
+          ? undefined
+          : Option.getOrUndefined(
+              Arr.findFirst(
+                this.cronsByNextRun(),
+                ({ nextRun }) => nextRun <= cronsUntil,
+              ),
+            );
+      if (
+        cron !== undefined &&
+        (next === undefined || cron.nextRun < next.scheduledTime)
+      ) {
+        this.raiseFloor(cron.nextRun);
+        return this.runCron(cron).then(() => step(ran));
+      }
       if (next === undefined) return Promise.resolve();
       if (ran === budget) {
         const pending = Scheduling.functions(left);
         return Promise.reject(
-          new KernelRefusal.DrainBudgetExceeded({
+          KernelRefusal.DrainBudgetExceeded.make({
             budget,
             pending,
-            message: `Scheduled functions ran ${budget} jobs and work remains: ${pending
-              .map(({ componentPath, name }) =>
+            message: `Scheduled functions ran ${budget} jobs and work remains: ${pipe(
+              pending,
+              Arr.map(({ componentPath, name }) =>
                 componentPath === ROOT ? name : `${name} in "${componentPath}"`,
-              )
-              .join(
-                ", ",
-              )}. A function that schedules its own next run never lets the drain end, so its kit declares it with registerComponent's \`standing\` option.`,
+              ),
+              Arr.join(", "),
+            )}. A function that schedules its own next run never lets the drain end, so its kit declares it with registerComponent's \`standing\` option.`,
           }),
         );
       }
@@ -1577,6 +2331,79 @@ export class World {
       return this.runJob(next).then(() => step(ran + 1));
     };
     return step(0);
+  }
+
+  /**
+   * Run one cron run as its own request, then schedule the next. The request is
+   * a system one: no identity, no IP or user agent, a fresh request ID and no
+   * scheduled function ID (`crates/application/src/cron_jobs/mod.rs:441-446`,
+   * `crates/common/src/types/functions.rs:236-242`). A mutation's writes, jobs
+   * it schedules included, publish only if it commits. Its next run comes from
+   * the time it finished, whether it succeeded or failed
+   * (`crates/application/src/cron_jobs/mod.rs:475-619`).
+   */
+  private runCron(cron: CronJob): Promise<void> {
+    const request = newRequest(anonymous);
+    const from: From = { caller: anonymous, request };
+    const target: FunctionPath = {
+      componentPath: cron.componentPath,
+      udfPath: cron.spec.udfPath,
+    };
+    const run = () =>
+      Promise.resolve().then(() =>
+        this.resolve(target, "any").func.isMutation === true
+          ? this.mutationAt(target, cron.spec.args, from)
+          : this.actionAt(target, cron.spec.args, from),
+      );
+    return (
+      cron.world === undefined
+        ? Invocation.unbound(run)
+        : Invocation.bind(
+            Invocation.fresh(cron.world, cron.componentPath, request),
+            run,
+          )
+    )
+      .then(
+        (): CronOutcome => ({ kind: "success" }),
+        (error: unknown): CronOutcome => ({
+          kind: "failed",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      )
+      .then((last) => this.scheduleNextRun(cron, last));
+  }
+
+  /**
+   * Record how a cron run ended and schedule the job's next run from the time
+   * the run finished.
+   */
+  private scheduleNextRun(cron: CronJob, last: CronOutcome) {
+    const next = this.searched(
+      cron,
+      Result.map(
+        Crons.following(cron.spec.schedule, cron.nextRun, this.now(), (bound) =>
+          this.draw(cron, bound),
+        ),
+        ({ next: at }) => at,
+      ),
+    );
+    this.cronJobs.set(cronKey(cron.componentPath, cron.spec.name), {
+      ...cron,
+      nextRun: next,
+      last,
+    });
+  }
+
+  /**
+   * The cron jobs, earliest next run first, then by component and name.
+   */
+  private cronsByNextRun(): Array<CronJob> {
+    return Array.from(this.cronJobs.values()).sort(
+      (a, b) =>
+        a.nextRun - b.nextRun ||
+        compare(a.componentPath, b.componentPath) ||
+        compare(a.spec.name, b.spec.name),
+    );
   }
 
   private raiseFloor(to: number) {
@@ -1603,9 +2430,9 @@ export class World {
     const run = () =>
       Promise.resolve().then(() => {
         const { func } = this.resolve(job.target, "any");
-        return func.isQuery
+        return func.isQuery === true
           ? this.queryAt(job.target, job.args, from)
-          : func.isMutation
+          : func.isMutation === true
             ? this.mutationAt(job.target, job.args, from)
             : this.actionAt(job.target, job.args, from);
       });
@@ -1659,7 +2486,7 @@ export class World {
     if (writes.length === 0) return this.state.commitTs;
     const commitTs = this.runtime.commitTs(this.state.version + 1);
     if (commitTs <= this.state.commitTs) {
-      throw new KernelRefusal.CommitTsNotIncreasing({
+      throw KernelRefusal.CommitTsNotIncreasing.make({
         version: this.state.version + 1,
         previous: this.state.commitTs,
         commitTs,
@@ -1839,6 +2666,7 @@ export class World {
       pagination,
       turn: new Turn(),
       limits,
+      refused: from.parent?.refused ?? {},
     };
   }
 
@@ -1877,14 +2705,17 @@ export class World {
         handler: (ctx: any, a: any) =>
           resolved.handler({ ...ctx, auth: queryAuth(execution) }, a),
       }) as unknown as { invokeQuery: (args: string) => Promise<string> };
-      return unlessEnded(
+      return unlessReplaced(
         execution,
-        enter(execution, () =>
-          q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
-        ).then((raw) => settled(execution, raw)),
+        unlessEnded(
+          execution,
+          enter(execution, () =>
+            q.invokeQuery(Json.stringify(convexToJson([parseArgs(args)]))),
+          ).then((raw) => settled(execution, raw)),
+        ),
       )
         .then((raw) => {
-          const result = jsonToConvex(JSON.parse(raw));
+          const result = jsonToConvex(Json.parse(raw));
           if (!isNested && hasPendingValues(result)) {
             throw new Error(
               `Function ${functionPath.udfPath} return value invalid: queries ` +
@@ -1910,13 +2741,16 @@ export class World {
       handler: (ctx: any, a: any) =>
         resolved.handler({ ...ctx, auth: mutationAuth(execution) }, a),
     }) as unknown as { invokeMutation: (args: string) => Promise<string> };
-    return unlessEnded(
+    return unlessReplaced(
       execution,
-      enter(execution, () =>
-        m.invokeMutation(JSON.stringify(convexToJson([parseArgs(args)]))),
-      ).then((raw) => settled(execution, raw)),
+      unlessEnded(
+        execution,
+        enter(execution, () =>
+          m.invokeMutation(Json.stringify(convexToJson([parseArgs(args)]))),
+        ).then((raw) => settled(execution, raw)),
+      ),
     ).then((raw) => {
-      const result = jsonToConvex(JSON.parse(raw));
+      const result = jsonToConvex(Json.parse(raw));
       const functionPath = {
         componentPath: execution.componentPath,
         udfPath: execution.udfPath,
@@ -2076,7 +2910,7 @@ export class World {
       if (view.number === lastAttempt) {
         return Promise.resolve({
           kind: "exhausted",
-          error: new KernelRefusal.OptimisticConcurrencyControlFailure({
+          error: KernelRefusal.OptimisticConcurrencyControlFailure.make({
             attempts: lastAttempt,
             message: `Documents read by the mutation changed before each of its ${lastAttempt} attempts could commit.`,
           }),
@@ -2171,10 +3005,13 @@ export class World {
         invokeAction: (requestId: string, args: string) => Promise<string>;
       };
       const run = () =>
-        enter(execution, () =>
-          a.invokeAction(
-            from.request.requestId,
-            JSON.stringify(convexToJson([parseArgs(args)])),
+        unlessReplaced(
+          execution,
+          enter(execution, () =>
+            a.invokeAction(
+              from.request.requestId,
+              Json.stringify(convexToJson([parseArgs(args)])),
+            ),
           ),
         );
       // An action another function calls is an invocation of its own, with its
@@ -2196,7 +3033,7 @@ export class World {
       return unlessEnded(execution, started)
         .finally(() => this.closeCommands(execution))
         .then((raw) => {
-          const result = jsonToConvex(JSON.parse(raw));
+          const result = jsonToConvex(Json.parse(raw));
           this.keepReturns(functionPath, result);
           validateReturnValue(resolved.returns, result, "action", functionPath);
           return result;
@@ -2332,12 +3169,12 @@ export class World {
   projectReads(
     reads: ReadonlyArray<ReadSet.Read>,
   ): ReadonlyArray<ReadSet.Read> {
-    return reads.map((read) => {
+    return Arr.map(reads, (read) => {
       if (read.kind === "document") return read;
       const shape = this.redaction.table(read.componentPath, read.table);
       const sensitive = (fieldPath: string) =>
         shape !== undefined &&
-        Redaction.sensitiveAt(shape, fieldPath.split("."));
+        Redaction.sensitiveAt(shape, pipe(fieldPath, Str.split(".")));
       const value = (fieldPath: string, v: Value): Value =>
         sensitive(fieldPath)
           ? Redaction.marker
@@ -2345,12 +3182,12 @@ export class World {
       const key = (k: ReadSet.Key | null) =>
         k === null
           ? null
-          : k.map((v, i) =>
+          : Arr.map(k, (v, i) =>
               v === undefined ? undefined : value(read.fields[i] ?? "", v),
             );
       return {
         ...read,
-        range: read.range.map((bound) => ({
+        range: Arr.map(read.range, (bound) => ({
           ...bound,
           value: sensitive(bound.fieldPath)
             ? Redaction.marker
@@ -2513,20 +3350,32 @@ export class World {
   }
 
   private generateId(table: string): DocumentId {
-    const counter = String(this.nextDocId++).padStart(
-      TYPICAL_CONVEX_ID_LENGTH - table.length,
-      "0",
+    const counter = pipe(
+      String(this.nextDocId++),
+      Str.padStart(TYPICAL_CONVEX_ID_LENGTH - table.length, "0"),
     );
     return (counter + table) as DocumentId;
   }
 
   syscall(op: string, jsonArgs: string): string {
-    const args = JSON.parse(jsonArgs);
     const execution = current();
+    try {
+      return this.syncSyscall(op, jsonArgs, execution);
+    } catch (error) {
+      throw keepRefusal(error, execution);
+    }
+  }
+
+  private syncSyscall(
+    op: string,
+    jsonArgs: string,
+    execution: Execution,
+  ): string {
+    const args = Json.parse(jsonArgs);
     if (execution.attempt?.closed === true) throw closed(execution, op);
     switch (op) {
       case "1.0/getSnapshotTs":
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson(transaction(execution).snapshot.commitTs),
         );
       case "1.0/queryStream": {
@@ -2539,14 +3388,14 @@ export class World {
         this.queries.set(queryId, {
           next: () => (results ??= KernelQuery.stream(view, args.query)).next(),
         });
-        return JSON.stringify({ queryId });
+        return Json.stringify({ queryId });
       }
       case "1.0/queryCleanup":
         this.queries.delete(args.queryId);
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/db/normalizeId": {
         const tableName = tableNameFromId(args.idString);
-        return JSON.stringify({
+        return Json.stringify({
           id: tableName === args.table ? args.idString : null,
         });
       }
@@ -2568,11 +3417,23 @@ export class World {
    */
   asyncSyscall(op: string, jsonArgs: string): Promise<string> {
     const execution = current();
+    return this.queueSyscall(op, jsonArgs, execution).catch(
+      (error: unknown) => {
+        throw keepRefusal(error, execution);
+      },
+    );
+  }
+
+  private queueSyscall(
+    op: string,
+    jsonArgs: string,
+    execution: Execution,
+  ): Promise<string> {
     const attempt = execution.attempt;
     const dispatch = () =>
       whileRunning(execution, () =>
         Promise.resolve(
-          this.dispatchAsync(op, JSON.parse(jsonArgs), execution),
+          this.dispatchAsync(op, Json.parse(jsonArgs), execution),
         ),
       );
     if (attempt === undefined) return Promise.resolve().then(dispatch);
@@ -2591,21 +3452,23 @@ export class World {
     switch (op) {
       case "1.0/get": {
         const { table, id } = args;
-        return JSON.stringify(convexToJson(this.get(execution, table, id)));
+        return Json.stringify(convexToJson(this.get(execution, table, id)));
       }
       case "1.0/queryStreamNext": {
         const results = this.queries.get(args.queryId);
         if (results === undefined) throw new Error("Bad queryId");
         const { value, done } = results.next();
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson(
-            done ? { value: null, done: true } : { value, done: false },
+            done === true
+              ? { value: null, done: true }
+              : { value, done: false },
           ),
         );
       }
       case "1.0/queryPage": {
         const pagination = execution.pagination;
-        if (pagination) {
+        if (pagination !== undefined) {
           pagination.calls += 1;
           if (pagination.calls > 1) {
             throw new Error(
@@ -2619,22 +3482,22 @@ export class World {
           ...args,
           endCursor: args.endCursor ?? pagination?.journal ?? null,
         });
-        if (pagination) pagination.end = page.continueCursor;
-        return JSON.stringify(convexToJson(page as any));
+        if (pagination !== undefined) pagination.end = page.continueCursor;
+        return Json.stringify(convexToJson(page as any));
       }
       case "1.0/insert":
-        return JSON.stringify({
+        return Json.stringify({
           _id: this.insert(execution, args.table, jsonToConvex(args.value)),
         });
       case "1.0/shallowMerge":
         this.patch(execution, args.table, args.id, args.value);
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/replace":
         this.replace(execution, args.table, args.id, args.value);
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/remove":
         this.remove(execution, args.table, args.id);
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/count": {
         const attempt = transaction(execution);
         // The binary counts a table by reading its whole `by_id` index, and no
@@ -2655,12 +3518,12 @@ export class World {
           range: [],
           after: null,
         })("end");
-        return JSON.stringify(
+        return Json.stringify(
           attempt.scan(execution.componentPath, args.table).length,
         );
       }
       case "1.0/getFunctionMetadata":
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson({
             name: execution.udfPath,
             componentPath: execution.componentPath,
@@ -2673,9 +3536,9 @@ export class World {
               "or HTTP action. It is not available in queries.",
           );
         }
-        return JSON.stringify(convexToJson(execution.request as any));
+        return Json.stringify(convexToJson(execution.request as any));
       case "1.0/getDeploymentMetadata":
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson({ name: "test", region: null, class: "s16" }),
         );
       case "1.0/actions/query":
@@ -2689,7 +3552,7 @@ export class World {
             : op === "1.0/actions/mutation"
               ? this.mutationAt(functionPath, args.args, from)
               : this.actionAt(functionPath, args.args, from);
-        return run.then((value) => JSON.stringify(convexToJson(value)));
+        return run.then((value) => Json.stringify(convexToJson(value)));
       }
       case "1.0/runUdf": {
         const { udfType, args: udfArgs, transactionLimits } = args;
@@ -2712,23 +3575,23 @@ export class World {
                       `The test kernel does not support udf type: "${udfType}"`,
                     ),
                   );
-        return run.then((result) => JSON.stringify(convexToJson(result)));
+        return run.then((result) => Json.stringify(convexToJson(result)));
       }
       case "1.0/createFunctionHandle": {
         const functionPath = functionPathOf(args, execution.componentPath);
         this.component(functionPath.componentPath);
-        return JSON.stringify(createFunctionHandle(functionPath));
+        return Json.stringify(createFunctionHandle(functionPath));
       }
       case "1.0/auditLog":
-        return JSON.stringify(null);
+        return Json.stringify(null);
       case "1.0/schedule":
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson(
             this.scheduleJob(transaction(execution), execution, args),
           ),
         );
       case "1.0/actions/schedule":
-        return JSON.stringify(
+        return Json.stringify(
           convexToJson(
             this.commitNow((attempt) =>
               this.scheduleJob(attempt, execution, args),
@@ -2737,23 +3600,80 @@ export class World {
         );
       case "1.0/cancel_job":
         this.cancelJob(transaction(execution), execution, args.id);
-        return JSON.stringify({});
+        return Json.stringify({});
       case "1.0/actions/cancel_job":
         this.commitNow((attempt) =>
           this.cancelJob(attempt, execution, args.id),
         );
-        return JSON.stringify({});
-      case "1.0/storageDelete":
-      case "1.0/storageGetUrl":
+        return Json.stringify({});
+      case "1.0/storageGetUrl": {
+        const found = this.findFile(
+          execution,
+          "storage.getUrl",
+          args.storageId,
+        );
+        return Json.stringify(
+          found === null ? null : Storage.fileUrl(found.file),
+        );
+      }
+      case "1.0/storageGetMetadata": {
+        const found = this.findFile(
+          execution,
+          "storage.getMetadata",
+          args.storageId,
+        );
+        return Json.stringify(
+          found === null ? null : Storage.metadata(found.doc, found.file),
+        );
+      }
+      case "1.0/storageGet": {
+        const found = this.findFile(execution, "storage.get", args.storageId);
+        if (found !== null) {
+          refuse(
+            transaction(execution).meter.readFile(
+              found.id,
+              found.file.bytes.length,
+              execution.limits,
+            ),
+          );
+        }
+        return Json.stringify(
+          found === null
+            ? null
+            : {
+                blob: Base64.fromByteArray(found.file.bytes),
+                contentType: found.doc["contentType"],
+              },
+        );
+      }
       case "1.0/storageGenerateUploadUrl":
-        throw KernelRefusal.rowPending("storage", 6);
+        return Json.stringify(
+          Storage.uploadUrl(`kernel-unsigned-${this.nextUploadToken++}`),
+        );
+      case "1.0/storageStore":
+        return Json.stringify(
+          this.storageWrite(execution, (attempt) =>
+            this.storeFile(
+              execution,
+              attempt,
+              Base64.toByteArray(args.blob),
+              args.contentType,
+              args.sha256,
+            ),
+          ),
+        );
+      case "1.0/storageDelete":
+        this.storageWrite(execution, (attempt) =>
+          this.deleteFile(execution, attempt, args.storageId),
+        );
+        return Json.stringify(null);
       case "1.0/getTransactionMetrics":
         // An action has no transaction, and the binary's action syscalls do
         // not know this one (`crates/isolate/src/environment/action/async_syscall.rs:105`).
         if (execution.attempt === undefined) {
           throw new Error(`Unknown async operation ${op}`);
         }
-        return JSON.stringify(
+        return Json.stringify(
           execution.attempt.meter.metrics(execution.limits),
         );
       case "1.0/actions/vectorSearch":
@@ -2765,12 +3685,185 @@ export class World {
     }
   }
 
-  jsSyscall(op: string): Promise<never> {
-    return Promise.reject(
-      op.startsWith("storage/")
-        ? KernelRefusal.rowPending("storage", 6)
-        : new Error(`The test kernel does not support js syscall: "${op}"`),
+  /**
+   * An action's `storage.store` and `storage.get`. The binary streams the blob
+   * through its upload and download paths (`storeBlob` and `getBlob` in
+   * `npm-packages/udf-runtime/src/storage.ts`). The kernel holds the bytes in
+   * memory and keeps the same rows and refusals.
+   */
+  jsSyscall(op: string, args: any): Promise<any> {
+    return Promise.resolve().then((): unknown => {
+      const execution = current();
+      switch (op) {
+        case "storage/storeBlob": {
+          const { blob, options } = args as {
+            blob: unknown;
+            options?: { sha256?: string };
+          };
+          if (!(blob instanceof Blob)) {
+            throw new Error(
+              "store() expects a Blob. If you are trying to store a Request, `await request.blob()` will give you the correct input.",
+            );
+          }
+          return blob
+            .arrayBuffer()
+            .then((buffer) =>
+              this.storageWrite(execution, (attempt) =>
+                this.storeFile(
+                  execution,
+                  attempt,
+                  new Uint8Array(buffer),
+                  blob.type,
+                  options?.sha256,
+                ),
+              ),
+            );
+        }
+        case "storage/getBlob": {
+          const { storageId } = args as { storageId: unknown };
+          if (typeof storageId !== "string") {
+            throw new Error(
+              `storage.get requires a string storageId but received ${String(storageId)}`,
+            );
+          }
+          const found = this.findFile(execution, "storage.get", storageId);
+          return found === null
+            ? null
+            : new Blob([found.file.bytes as Uint8Array<ArrayBuffer>], {
+                type: (found.doc["contentType"] as string | null) ?? "",
+              });
+        }
+        default:
+          throw new Error(
+            `The test kernel does not support js syscall: "${op}"`,
+          );
+      }
+    });
+  }
+
+  // File storage. A file is a row in its component's `_storage` table, read
+  // and written through the attempt like any document, and its bytes beside it.
+
+  /**
+   * Where a function reads storage: its attempt, or, from an action, the latest
+   * commit, as the binary's action callbacks read it.
+   */
+  private reader(execution: Execution): KernelAttempt {
+    return execution.attempt ?? new KernelAttempt(this.state);
+  }
+
+  /**
+   * Write through the function's attempt, or, from an action, commit at once.
+   */
+  private storageWrite<A>(
+    execution: Execution,
+    write: (attempt: KernelAttempt) => A,
+  ): A {
+    return execution.attempt === undefined
+      ? this.commitNow(write)
+      : write(execution.attempt);
+  }
+
+  /**
+   * The file a storage ID names in the function's component, read through
+   * `attempt`, or `null` when it names none.
+   */
+  private findFile(
+    execution: Execution,
+    operation: string,
+    storageId: unknown,
+    attempt: KernelAttempt = this.reader(execution),
+  ): {
+    readonly id: DocumentId;
+    readonly doc: StoredDocument;
+    readonly file: Storage.File;
+  } | null {
+    const parsed = orThrow(Storage.parseId(operation, storageId));
+    const id =
+      parsed.kind === "document" ? parsed.id : this.legacyIds.get(parsed.uuid);
+    if (id === undefined) return null;
+    attempt.readDocument(execution.componentPath, id);
+    const doc = attempt.get(execution.componentPath, id);
+    const file = this.files.get(id);
+    return doc === null || file === undefined ? null : { id, doc, file };
+  }
+
+  /**
+   * Store `bytes` as a new file in the function's component. The content type
+   * and the declared digest are checked before anything is written.
+   */
+  private storeFile(
+    execution: Execution,
+    attempt: KernelAttempt,
+    bytes: Uint8Array,
+    type: unknown,
+    expectedSha256: unknown,
+  ): DocumentId {
+    const contentType = orThrow(
+      Storage.contentType(
+        execution.udfType === "action" ? "action" : "mutation",
+        type,
+      ),
     );
+    orThrow(
+      Storage.checkDigest(
+        "storage.store",
+        expectedSha256,
+        Storage.digest(bytes),
+      ),
+    );
+    // A query or mutation stores within its transaction's file limits. An
+    // action's store is no transaction, and the binary counts it toward none.
+    const metered = execution.attempt !== undefined;
+    if (metered)
+      refuse(attempt.meter.checkStore(bytes.length, execution.limits));
+    const id = this.generateId(Storage.table);
+    if (metered) attempt.meter.storeFile(id, bytes.length);
+    const file: Storage.File = {
+      componentPath: execution.componentPath,
+      uuid: Storage.uuid(this.nextFile++),
+      bytes,
+    };
+    this.files.set(id, file);
+    this.legacyIds.set(file.uuid, id);
+    attempt.write(
+      execution.componentPath,
+      id,
+      Storage.row(
+        id,
+        this.creationTime(
+          execution.udfType === "action" ? this.now() : execution.startTime,
+        ),
+        bytes,
+        contentType,
+      ),
+    );
+    return id;
+  }
+
+  /**
+   * Delete a file's row. A storage ID that names no file is refused, as the
+   * binary's `FileStorage::delete` refuses it.
+   */
+  private deleteFile(
+    execution: Execution,
+    attempt: KernelAttempt,
+    storageId: unknown,
+  ) {
+    const found = this.findFile(
+      execution,
+      "storage.delete",
+      storageId,
+      attempt,
+    );
+    if (found === null) {
+      throw Storage.StorageIdNotFound.make({
+        storageId: String(storageId),
+        message: `storage id ${String(storageId)} not found`,
+      });
+    }
+    attempt.write(execution.componentPath, found.id, null);
+    attempt.meter.deleteFile(found.id);
   }
 
   // Documents. The checks and messages are convex-test's.
@@ -2854,7 +3947,7 @@ export class World {
       );
     }
     const convexValue: Record<string, Value | undefined> = {};
-    for (const [key, v] of Object.entries(value)) {
+    for (const [key, v] of Rec.toEntries(value)) {
       if (key !== "_id" && key !== "_creationTime") {
         convexValue[key] = evaluateValue(v);
       }
@@ -2948,7 +4041,7 @@ const refuse = (error: Metering.TransactionLimitExceeded | undefined) => {
 const indexKey = (componentPath: string, table: string, index: string) =>
   `${componentPath}\u0000${table}\u0000${index}`;
 
-const isSystemTable = (table: string) => table.startsWith("_");
+const isSystemTable = (table: string) => pipe(table, Str.startsWith("_"));
 
 const isFieldMap = (value: unknown): value is object =>
   typeof value === "object" && value !== null && isSimpleObject(value);
@@ -2968,23 +4061,24 @@ const sameValue = (a: unknown, b: unknown): boolean => {
   const aPending = a instanceof CommitTsPlaceholder;
   const bPending = b instanceof CommitTsPlaceholder;
   if (aPending || bPending) return aPending && bPending;
-  if (Array.isArray(a) || Array.isArray(b)) {
+  if (Arr.isArray(a) || Arr.isArray(b)) {
     return (
-      Array.isArray(a) &&
-      Array.isArray(b) &&
+      Arr.isArray(a) &&
+      Arr.isArray(b) &&
       a.length === b.length &&
-      a.every((value, i) => sameValue(value, b[i]))
+      Arr.every(a, (value, i) => sameValue(value, b[i]))
     );
   }
   if (isFieldMap(a) || isFieldMap(b)) {
     if (!isFieldMap(a) || !isFieldMap(b)) return false;
     const fields = (value: object) =>
-      Object.entries(value).filter(([, field]) => field !== undefined);
+      Arr.filter(Rec.toEntries(value), ([, field]) => field !== undefined);
     const aFields = fields(a);
     const bFields = new Map(fields(b));
     return (
       aFields.length === bFields.size &&
-      aFields.every(
+      Arr.every(
+        aFields,
         ([key, field]) =>
           bFields.has(key) && sameValue(field, bFields.get(key)),
       )
@@ -3009,14 +4103,14 @@ const sameDocument = (before: StoredDocument, after: StoredDocument) =>
 const budgetOf = (limits: unknown): Metering.Budget | undefined => {
   if (limits === undefined || limits === null) return undefined;
   const budget: Partial<Record<keyof Metering.Limits, number>> = {};
-  for (const metric of Object.keys(Metering.defaults) as Array<
+  for (const metric of Rec.keys(Metering.defaults) as Array<
     keyof Metering.Limits
   >) {
     const value = (limits as Record<string, unknown>)[metric];
     if (value === undefined) continue;
     if (typeof value !== "number" || !Number.isInteger(value) || value < 0) {
       throw new Error(
-        `Invalid arguments for \`runUdf\`: transactionLimits.${metric} must be a non-negative integer, got ${JSON.stringify(value)}`,
+        `Invalid arguments for \`runUdf\`: transactionLimits.${metric} must be a non-negative integer, got ${Json.stringify(value)}`,
       );
     }
     budget[metric] = value;
@@ -3025,10 +4119,48 @@ const budgetOf = (limits: unknown): Metering.Budget | undefined => {
 };
 
 const closed = (execution: Execution, operation: string) =>
-  new KernelRefusal.ClosedAttempt({
+  KernelRefusal.ClosedAttempt.make({
     operation,
     message: `"${operation}" reached mutation ${execution.udfPath} after it returned and its syscalls settled. Await every read and write inside the handler.`,
   });
+
+const orThrow = <A, E>(result: Result.Result<A, E>): A => {
+  if (Result.isFailure(result)) throw result.failure;
+  return result.success;
+};
+
+/**
+ * Keep `error` as `execution`'s refusal if it is one, and hand it back.
+ */
+const keepRefusal = (error: unknown, execution: Execution): unknown => {
+  if (KernelRefusal.isKernelRefusal(error)) execution.refused.first ??= error;
+  return error;
+};
+
+/**
+ * The kernel refusal behind a function's failure, if any: the thrown value
+ * itself, or the first refusal one of its syscalls threw.
+ */
+const refusalOf = (thrown: unknown, execution: Execution): unknown =>
+  KernelRefusal.isKernelRefusal(thrown) ? thrown : execution.refused.first;
+
+/**
+ * `thrown` as the running kernel function's world reports a failure: a copy
+ * with every kept secret marked. Outside a kernel function, as on convex-test,
+ * `thrown` itself.
+ */
+export const redactCurrentFailure = (thrown: unknown): unknown =>
+  executions.getStore()?.world.redactFailure(thrown) ?? thrown;
+
+/**
+ * The kernel refusal behind a failure inside the running kernel function, if
+ * any. Outside one, as on convex-test, only a refusal thrown as itself.
+ */
+export const currentRefusal = (thrown: unknown): unknown => {
+  const execution = executions.getStore();
+  if (execution !== undefined) return refusalOf(thrown, execution);
+  return KernelRefusal.isKernelRefusal(thrown) ? thrown : undefined;
+};
 
 const transaction = (execution: Execution): KernelAttempt => {
   if (execution.attempt === undefined) {
