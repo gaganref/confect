@@ -99,18 +99,40 @@ export class UnknownStandingSource extends Schema.TaggedError<UnknownStandingSou
 ) {}
 
 /**
- * A function would have run with a host global the kernel refuses unguarded: a
- * test replaced it with a property the kernel cannot redefine.
+ * A function would have run, or ran, with a host global the kernel refuses
+ * unguarded. `notConfigurable`: a test replaced it with a property the kernel
+ * cannot redefine, so the function did not start. `replacedWhileRunning`: its
+ * descriptor was replaced while the function ran, so a call made through the
+ * replacement reached it unchecked. The function fails at settlement, a
+ * mutation publishes none of its writes, and the guard is installed again.
  */
 export class UnguardableGlobal extends Schema.TaggedError<UnguardableGlobal>()(
   "UnguardableGlobal",
-  { names: Schema.Array(Schema.String), message: Schema.String },
+  {
+    reason: Schema.Literals(["notConfigurable", "replacedWhileRunning"]),
+    names: Schema.Array(Schema.String),
+    message: Schema.String,
+  },
 ) {}
+
+const globals = (names: ReadonlyArray<string>) =>
+  names.map((name) => `globalThis.${name}`).join(", ");
 
 export const unguardableGlobal = (names: ReadonlyArray<string>) =>
   new UnguardableGlobal({
+    reason: "notConfigurable",
     names,
-    message: `The test kernel cannot guard ${names.map((name) => `globalThis.${name}`).join(", ")}: a test replaced it with a property that cannot be redefined, so a function could reach the host's implementation unchecked. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`,
+    message: `The test kernel cannot guard ${globals(names)}: a test replaced it with a property that cannot be redefined, so a function could reach the host's implementation unchecked. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`,
+  });
+
+export const replacedWhileRunning = (
+  udfPath: string,
+  names: ReadonlyArray<string>,
+) =>
+  new UnguardableGlobal({
+    reason: "replacedWhileRunning",
+    names,
+    message: `${globals(names)} was redefined while ${udfPath} ran, so a call made through the replacement reached it without the test kernel's check. The function fails, a mutation's writes are rolled back, and the guard is installed again. Replace a global between functions, or assign it, which keeps it guarded.`,
   });
 
 /**
@@ -129,6 +151,23 @@ export class ModuleRuntime extends Schema.TaggedError<ModuleRuntime>()(
     ]),
     componentPath: Schema.String,
     module: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * A module exports an action whose runtime the kernel cannot tell: the test
+ * gave the component no sources to read its `"use node"` directive from, and
+ * the action carries no Confect mark, so it is a plain Convex action that
+ * Convex could run in Node or in its isolate. Refused when the kernel opens,
+ * before any function runs.
+ */
+export class ActionRuntimeUnknown extends Schema.TaggedError<ActionRuntimeUnknown>()(
+  "ActionRuntimeUnknown",
+  {
+    componentPath: Schema.String,
+    module: Schema.String,
+    exports: Schema.Array(Schema.String),
     message: Schema.String,
   },
 ) {}

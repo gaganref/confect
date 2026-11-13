@@ -64,6 +64,13 @@ type Modules = Record<string, () => Promise<any>>;
 type Sources = Record<string, () => Promise<string>>;
 
 /**
+ * The runtime a test declares for a component's plain Convex actions, by
+ * component path, when it cannot give the component's sources: a package's test
+ * kit registers its modules without them.
+ */
+export type ComponentRuntimes = Readonly<Record<string, IoBans.Runtime>>;
+
+/**
  * One registered component: its schema, its function modules, each loaded once
  * when the world opens, and its standing sources.
  */
@@ -352,7 +359,44 @@ const enter = <A>(execution: Execution, run: () => A): A => {
   // A function runs only with every banned global guarded.
   const unguarded = installIoBans();
   if (unguarded.length > 0) throw KernelRefusal.unguardableGlobal(unguarded);
+  watches.set(execution, IoBans.watch());
   return Globals.own(() => executions.run(execution, run));
+};
+
+/**
+ * What tells, at each function's settlement, which guarded globals were
+ * redefined since its entry.
+ */
+const watches = new WeakMap<Execution, () => ReadonlyArray<string>>();
+
+/**
+ * `outcome`, unless a guarded global was redefined while `execution` ran. A
+ * guard cannot stop a call made through a replacement, which a descriptor
+ * change such as `Object.defineProperty` makes, so the change is caught when
+ * the function settles: it fails with `UnguardableGlobal`, whatever it
+ * returned, and the guard is installed again. Applied before a mutation's
+ * commit point, so it publishes none of its writes.
+ */
+const unlessReplaced = <A>(
+  execution: Execution,
+  outcome: Promise<A>,
+): Promise<A> => {
+  const refusal = () => {
+    const names = watches.get(execution)?.() ?? [];
+    if (names.length === 0) return undefined;
+    installIoBans();
+    return KernelRefusal.replacedWhileRunning(execution.udfPath, names);
+  };
+  return outcome.then(
+    (value) => {
+      const refused = refusal();
+      if (refused !== undefined) throw refused;
+      return value;
+    },
+    (error: unknown) => {
+      throw refusal() ?? error;
+    },
+  );
 };
 const kernelBrand = Symbol.for("@confect/test/Kernel");
 
@@ -624,36 +668,79 @@ const runtimeFromSource = (
 };
 
 /**
- * Whether a Confect function is a Node action. `RegisteredNodeFunction.make` in
- * `@confect/server` marks it, and the kernel checks the mark against the
- * module's directive.
+ * The runtime Confect registered an action for: `true` for a Node action
+ * (`RegisteredNodeFunction.make` in `@confect/server`), `false` for an isolate
+ * one (`RegisteredConvexFunction`). A plain Convex function has no mark.
  */
 const nodeAction = Symbol.for("@confect/server/NodeAction");
 
+const markOf = (func: unknown): boolean | undefined =>
+  (func as { [nodeAction]?: boolean } | undefined)?.[nodeAction];
+
 /**
  * The runtime a function runs in: its module's, read from the directive. With
- * no source, Confect's mark decides. A function marked Node in a module without
- * `"use node"` is refused, as the two disagree.
+ * no source, Confect's mark decides, then the runtime the test declared for the
+ * component, and an action with none of these was refused when the world
+ * opened. A mark that disagrees with the directive is refused.
  */
 const runtimeOfFunction = (
   component: Component,
   modulePath: string,
   exportName: string,
   func: unknown,
+  componentRuntime: IoBans.Runtime | undefined,
 ): IoBans.Runtime => {
-  const marked =
-    (func as { [nodeAction]?: boolean } | undefined)?.[nodeAction] === true;
+  const marked = markOf(func);
   const declared = component.runtimes.get(modulePath);
-  if (declared === undefined) return marked ? "node" : "isolate";
-  if (marked && declared !== "node") {
+  if (declared === undefined) {
+    if (marked !== undefined) return marked ? "node" : "isolate";
+    return componentRuntime ?? "isolate";
+  }
+  if (marked !== undefined && marked !== (declared === "node")) {
     throw new KernelRefusal.ModuleRuntime({
       reason: "markerDisagrees",
       componentPath: component.path,
       module: modulePath,
-      message: `${modulePath}:${exportName} is a Confect Node action, but module "${modulePath}" has no "use node" directive, so Convex would run it in its isolate.`,
+      message: marked
+        ? `${modulePath}:${exportName} is a Confect Node action, but module "${modulePath}" has no "use node" directive, so Convex would run it in its isolate.`
+        : `${modulePath}:${exportName} is a Confect action for Convex's isolate, but module "${modulePath}" has a "use node" directive, so Convex would run it in Node. Register it as a Node action.`,
     });
   }
   return declared;
+};
+
+/**
+ * Refuse a component the test gave no sources, and declared no runtime for,
+ * whose modules export an action with no Confect mark: Convex runs it in Node
+ * or in its isolate by its module's `"use node"` directive, which only a source
+ * shows.
+ */
+const checkActionRuntimes = (
+  component: Component,
+  componentRuntime: IoBans.Runtime | undefined,
+) => {
+  if (component.sources !== undefined || componentRuntime !== undefined) return;
+  for (const [path, module] of component.loaded) {
+    const unknown = Object.entries(module ?? {})
+      .filter(
+        ([, func]) =>
+          (func as { isAction?: unknown } | undefined)?.isAction === true &&
+          markOf(func) === undefined,
+      )
+      .map(([name]) => name);
+    if (unknown.length > 0) {
+      throw new KernelRefusal.ActionRuntimeUnknown({
+        componentPath: component.path,
+        module: path,
+        exports: unknown,
+        message:
+          `Module "${path}"${component.path === ROOT ? "" : ` of component "${component.path}"`} exports ${unknown.map((name) => `${path}:${name}`).join(", ")}, a plain Convex action, and the test gave no sources, so the test kernel cannot read the module's "use node" directive to tell whether Convex runs it in Node or in its isolate. ` +
+          (component.path === ROOT
+            ? `Pass the modules' sources, such as import.meta.glob(pattern, { query: "?raw", import: "default" }) of the same files.`
+            : `Pass the component's sources, as registerComponent(name, schema, modules, { sources }), or, for a package's test kit that registers without them, declare the runtime its plain actions run in with componentRuntimes: { ${JSON.stringify(component.path)}: "isolate" }.`),
+      });
+    }
+  }
 };
 
 const unregistered = (world: World, componentPath: string) => {
@@ -766,6 +853,7 @@ export class World {
     private readonly runtime: Kernel.KernelRuntime = Kernel.wallClock(),
     private readonly redaction: Redaction.Policy = Redaction.none,
     sources?: Sources,
+    private readonly componentRuntimes: ComponentRuntimes = {},
   ) {
     installConvexGlobal();
     Clock.install(pinnedTime, () => executions.getStore() !== undefined);
@@ -797,8 +885,9 @@ export class World {
 
   /**
    * Load every registered module of every component, once, before any function
-   * runs, with its runtime read from its source when the test supplied them,
-   * then check that each standing source names an exported function.
+   * runs, with its runtime read from its source when the test supplied them.
+   * Then refuse a plain Convex action whose runtime no source shows, and check
+   * that each standing source names an exported function.
    */
   open(): Promise<void> {
     this.opened ??= Promise.all(
@@ -816,7 +905,12 @@ export class World {
           ),
         ),
       ),
-    ).then(() => this.checkStanding());
+    ).then(() => {
+      for (const component of this.components.values()) {
+        checkActionRuntimes(component, this.componentRuntimes[component.path]);
+      }
+      return this.checkStanding();
+    });
     return this.opened;
   }
 
@@ -893,7 +987,13 @@ export class World {
       handler,
       args,
       returns: JSON.parse(func.exportReturns()),
-      runtime: runtimeOfFunction(component, modulePath, exportName, func),
+      runtime: runtimeOfFunction(
+        component,
+        modulePath,
+        exportName,
+        func,
+        this.componentRuntimes[component.path],
+      ),
     };
   }
 
@@ -1705,11 +1805,14 @@ export class World {
         handler: (ctx: any, a: any) =>
           resolved.handler({ ...ctx, auth: queryAuth(execution) }, a),
       }) as unknown as { invokeQuery: (args: string) => Promise<string> };
-      return unlessEnded(
+      return unlessReplaced(
         execution,
-        enter(execution, () =>
-          q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
-        ).then((raw) => settled(execution, raw)),
+        unlessEnded(
+          execution,
+          enter(execution, () =>
+            q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
+          ).then((raw) => settled(execution, raw)),
+        ),
       )
         .then((raw) => {
           const result = jsonToConvex(JSON.parse(raw));
@@ -1738,11 +1841,14 @@ export class World {
       handler: (ctx: any, a: any) =>
         resolved.handler({ ...ctx, auth: mutationAuth(execution) }, a),
     }) as unknown as { invokeMutation: (args: string) => Promise<string> };
-    return unlessEnded(
+    return unlessReplaced(
       execution,
-      enter(execution, () =>
-        m.invokeMutation(JSON.stringify(convexToJson([parseArgs(args)]))),
-      ).then((raw) => settled(execution, raw)),
+      unlessEnded(
+        execution,
+        enter(execution, () =>
+          m.invokeMutation(JSON.stringify(convexToJson([parseArgs(args)]))),
+        ).then((raw) => settled(execution, raw)),
+      ),
     ).then((raw) => {
       const result = jsonToConvex(JSON.parse(raw));
       const functionPath = {
@@ -1993,10 +2099,13 @@ export class World {
         invokeAction: (requestId: string, args: string) => Promise<string>;
       };
       const run = () =>
-        enter(execution, () =>
-          a.invokeAction(
-            from.request.requestId,
-            JSON.stringify(convexToJson([parseArgs(args)])),
+        unlessReplaced(
+          execution,
+          enter(execution, () =>
+            a.invokeAction(
+              from.request.requestId,
+              JSON.stringify(convexToJson([parseArgs(args)])),
+            ),
           ),
         );
       // An action another function calls is an invocation of its own, with its

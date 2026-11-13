@@ -25,6 +25,7 @@ import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import * as EffectScheduler from "effect/Scheduler";
 import * as Auth from "./Auth.js";
+import { markActionRuntime } from "./internal/actionRuntime.js";
 import * as ConvexConfigProvider from "./ConvexConfigProvider.js";
 import * as DatabaseReader from "./DatabaseReader.js";
 import type * as DatabaseSchema from "./DatabaseSchema.js";
@@ -135,8 +136,10 @@ export const register = (self: Definition): RegisteredFunction.Any =>
     InternalQuery: (definition) => internalQueryGeneric(definition),
     PublicMutation: (definition) => mutationGeneric(definition),
     InternalMutation: (definition) => internalMutationGeneric(definition),
-    PublicAction: (definition) => actionGeneric(definition),
-    InternalAction: (definition) => internalActionGeneric(definition),
+    PublicAction: (definition) =>
+      markActionRuntime(actionGeneric(definition), false),
+    InternalAction: (definition) =>
+      markActionRuntime(internalActionGeneric(definition), false),
     Registered: ({ handler }) => handler,
   });
 

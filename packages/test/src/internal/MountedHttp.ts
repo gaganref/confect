@@ -193,11 +193,25 @@ export const make = (
         }
       },
     });
+    // The bridge runs the component's `http.ts` routes, which Convex runs in
+    // its isolate, so it carries Confect's isolate mark, and a source with no
+    // `"use node"` directive when the component's sources are given.
+    Object.defineProperty(invoke, Symbol.for("@confect/server/NodeAction"), {
+      value: false,
+    });
     registerComponent(
       componentPath,
       schema,
       { ...modules, [bridgePath]: () => Promise.resolve({ invoke }) },
-      options,
+      options?.sources === undefined
+        ? options
+        : {
+            ...options,
+            sources: {
+              ...options.sources,
+              [bridgePath]: () => Promise.resolve(""),
+            },
+          },
     );
     registered.add(componentPath);
   };

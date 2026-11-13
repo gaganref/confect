@@ -17,6 +17,7 @@ import * as GroupRegistry from "./GroupRegistry.js";
 import type * as GroupSpec from "@confect/core/GroupSpec";
 import type * as GroupImpl from "./GroupImpl.js";
 import type * as RegisteredFunctions from "./RegisteredFunctions.js";
+import { markActionRuntime } from "./internal/actionRuntime.js";
 import { mapLeaves } from "./internal/utils.js";
 
 export const buildForGroup = <Group extends GroupSpec.AnyWithProps>(
@@ -58,7 +59,7 @@ export const make = (
     Match.exhaustive,
   );
 
-  return markNodeAction(
+  return markActionRuntime(
     genericFunction(
       nodeActionFunction(databaseSchema, {
         name: item.name,
@@ -72,18 +73,9 @@ export const make = (
         resolvedMiddlewares,
       }),
     ),
+    true,
   );
 };
-
-/**
- * Marks a function as a Node action, which Convex runs in Node rather than its
- * V8 isolate. `@confect/test`'s kernel reads the mark to give the action Node's
- * globals, since a module's `"use node"` directive is gone once it loads.
- */
-const nodeAction = Symbol.for("@confect/server/NodeAction");
-
-const markNodeAction = <F extends object>(registered: F): F =>
-  Object.defineProperty(registered, nodeAction, { value: true });
 
 const nodeActionFunction = <
   DatabaseSchema_ extends DatabaseSchema.AnyWithProps,

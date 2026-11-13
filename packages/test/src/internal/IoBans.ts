@@ -449,6 +449,48 @@ export const install = (): ReadonlyArray<string> => {
   return unguarded;
 };
 
+const sameDescriptor = (
+  before: PropertyDescriptor | undefined,
+  now: PropertyDescriptor | undefined,
+): boolean =>
+  before === undefined || now === undefined
+    ? before === now
+    : before.get === now.get &&
+      before.set === now.set &&
+      "value" in before === "value" in now &&
+      before.value === now.value;
+
+/**
+ * Take the guarded globals' descriptors as they are now, once a function's
+ * entry has guarded them. The answer names, when called, each global whose
+ * descriptor was replaced since, which a guard could not see: a call made
+ * through the replacement reached it unchecked. An accessor another library
+ * laid over a guard, as convex-test lays its own before each of its handlers
+ * (its `index.ts:3054-3060`), still reads through the guard, so it is no
+ * replacement. An assignment stores beneath the guard and replaces nothing.
+ */
+export const watch = (): (() => ReadonlyArray<string>) => {
+  const state = stateOf();
+  const global = globalThis as unknown as Global;
+  const taken = guarded.map(
+    ({ name }) =>
+      [name, Object.getOwnPropertyDescriptor(global, name)] as const,
+  );
+  return () =>
+    taken
+      .filter(([name, before]) => {
+        const now = Object.getOwnPropertyDescriptor(global, name);
+        if (sameDescriptor(before, now)) return false;
+        return !(
+          now?.get !== undefined &&
+          // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
+          !state.made.has(now.get) &&
+          readsThrough(state, now)
+        );
+      })
+      .map(([name]) => name);
+};
+
 /**
  * Give the guards the kernel's hooks. The first answers for every later one, as
  * with `globalThis.Convex`.

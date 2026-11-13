@@ -255,6 +255,11 @@ export function convexTest(
          * module's `"use node"` directive as Convex's bundler does.
          */
         readonly sources?: Record<string, () => Promise<string>>;
+        /**
+         * The runtime of each listed component's plain Convex actions, for a
+         * component registered without sources.
+         */
+        readonly componentRuntimes?: Execution.ComponentRuntimes;
         readonly redaction?: Redaction.Policy;
       },
   modules?: Modules,
@@ -263,6 +268,7 @@ export function convexTest(
   let runtime: Kernel.KernelRuntime | undefined;
   let sources: Record<string, () => Promise<string>> | undefined;
   let redaction: Redaction.Policy | undefined;
+  let componentRuntimes: Execution.ComponentRuntimes | undefined;
   if (isSchemaDefinition(schemaOrOptions)) {
     schema = schemaOrOptions;
   } else if (schemaOrOptions !== undefined) {
@@ -274,6 +280,7 @@ export function convexTest(
     runtime = schemaOrOptions.runtime;
     sources = schemaOrOptions.sources;
     redaction = schemaOrOptions.redaction;
+    componentRuntimes = schemaOrOptions.componentRuntimes;
   }
   if (modules === undefined) {
     throw new Error(
@@ -286,6 +293,7 @@ export function convexTest(
     runtime,
     redaction,
     sources,
+    componentRuntimes,
   );
   return {
     ...accessor(world, new Subscriptions.Registry(world), Execution.anonymous),
