@@ -322,6 +322,155 @@ export declare const api: {
         null
       >;
     };
+    randomness: {
+      action: FunctionReference<
+        "action",
+        "public",
+        {},
+        {
+          detachedFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          floatFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          getRandomValues: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          largestFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          mathRandom: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          oversizedFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          randomUUID: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+        }
+      >;
+      mutation: FunctionReference<
+        "mutation",
+        "public",
+        {},
+        {
+          detachedFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          floatFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          getRandomValues: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          largestFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          mathRandom: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          oversizedFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          randomUUID: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+        }
+      >;
+      query: FunctionReference<
+        "query",
+        "public",
+        {},
+        {
+          detachedFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          floatFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          getRandomValues: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          largestFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          mathRandom: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          oversizedFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          randomUUID: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+        }
+      >;
+    };
     reserved: {
       chain: FunctionReference<
         "action",

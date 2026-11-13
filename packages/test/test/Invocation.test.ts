@@ -88,8 +88,9 @@ const errorName = (call: () => unknown) => {
 };
 
 /**
- * The parts of `Date` and `crypto` a pinned handler must answer as the host
- * does. Only `Date()` reads the time, so it alone differs from the host's.
+ * The parts of `Date` and `crypto` a pinned handler answers as the host does,
+ * apart from `getRandomValues`'s errors and receiver, which follow the
+ * binary's. Only `Date()` reads the time, so it alone differs from the host's.
  */
 const contract = () => {
   const words = new Uint32Array(2);
@@ -583,7 +584,7 @@ describe("bind", () => {
   );
 
   it.effect(
-    "a bound handler's Date and crypto keep the host's contract, apart from the pinned time and stream",
+    "a bound handler's Date keeps the host's contract and its crypto the binary's, apart from the pinned time and stream",
     () =>
       Effect.gen(function* () {
         const world = {
@@ -599,15 +600,18 @@ describe("bind", () => {
         );
         const { wide, ...rest } = seen;
         const { wide: _hostWide, ...hosted } = contract();
+        // `getRandomValues` answers as the binary's does, not the host's: a
+        // fill past 65,536 bytes is a `TypeError`, and a detached or rebound
+        // call draws.
         expect(rest).toEqual({
           ...hosted,
           called: new Date(3_000_000).toString(),
+          quota: "TypeError",
+          detached: null,
+          rebound: null,
         });
         expect(rest.same).toBe(true);
-        expect(rest.quota).not.toBeNull();
-        expect(rest.float).not.toBeNull();
-        expect(rest.detached).not.toBeNull();
-        expect(rest.rebound).not.toBeNull();
+        expect(rest.float).toBe("TypeMismatchError");
         expect(wide.filter(byteInBand(0.25))).toEqual(wide);
       }),
   );

@@ -564,3 +564,48 @@ on the local backend and on `TestConfect.layer(registry, { target: "kernel" })`.
   counters, 1 function and 4 bytes.
 - `groups/commitTs:maxAfterPending` pins that a pending timestamp patched to
   `9223372036854775807n` is a second write that stores the integer.
+
+## Randomness (row 6)
+
+The binary gives every function a seeded generator, and `Math.random`,
+`crypto.getRandomValues` and `crypto.randomUUID` draw from it in a query, a
+mutation and an action alike (`crates/isolate/src/ops/random.rs:7-11`,
+`ops/crypto.rs:8-31`, convex-backend `cccbade4`). A nested query or mutation
+gets its own seed from its caller's generator
+(`isolate/src/environment/udf/phase.rs:357-385`). Only a module's import refuses
+it, with `NoRandomDuringImport` (`phase.rs:500-507`).
+
+On the kernel a bound invocation's `Math.random` and `getRandomValues` draw from
+its supplied stream, as row 1 pinned them. `getRandomValues` now answers as the
+binary's does rather than the host's (`npm-packages/udf-runtime/src/00_crypto.ts:28-53`):
+
+- a fill of more than 65,536 bytes throws `TypeError` "Byte length (N) exceeds
+  the number of bytes of entropy available via this API (65536)", where Node
+  throws `QuotaExceededError`;
+- a non-integer array throws `TypeMismatchError` "The provided ArrayBufferView
+  is not an integer array type", where Node's message differs;
+- a detached or rebound call draws, where Node throws `TypeError`, because the
+  binary's method never reads its receiver.
+
+### Boundary check
+
+`groups/randomness` in the local-backend fixture is one Confect query, mutation
+and action that each try `Math.random`, a 4-byte and a 65,536-byte fill, a
+65,537-byte fill, a `Float64Array` fill, a detached fill and `randomUUID`, and
+record whether each ran and its error. `test/fixtures/randomnessProbe.ts` holds
+the binary's answer. `packages/server/test/local-backend/randomness.test.ts`
+gets it from the binary and `test/Randomness.test.ts` from the kernel, which
+also checks that `Math.random` and the 4-byte fill are the supplied stream's
+first draws in all three function types.
+
+### Left on the binary
+
+- The native seeding policy, as the design says.
+- `crypto.randomUUID` and `crypto.subtle` keep the host's; the design names
+  neither.
+- Import-time randomness. The kernel loads modules outside any invocation, so
+  `Math.random` at module scope reads the host's where the binary refuses the
+  push. A probe for it cannot deploy on the binary, so no lane covers it.
+- A plain Convex function, such as an official component's, runs outside
+  `runHandlerPromise` and so outside the row 1 pin: it reads the host's
+  `Math.random` and `crypto` even under a bound invocation.

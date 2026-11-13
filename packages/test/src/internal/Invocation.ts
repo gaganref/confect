@@ -162,18 +162,52 @@ const drawingMath = (base: Math, random: () => number): Math =>
       property === "random" ? random : Reflect.get(target, property, receiver),
   });
 
+const integerArrays = [
+  Int8Array,
+  Uint8Array,
+  Uint8ClampedArray,
+  Int16Array,
+  Uint16Array,
+  Int32Array,
+  Uint32Array,
+  BigInt64Array,
+  BigUint64Array,
+];
+
+const maxRandomBytes = 65_536;
+
 const drawingCrypto = (base: Crypto, random: () => number): Crypto => {
+  /**
+   * The binary's `getRandomValues`, filled from `random`: it checks its
+   * arguments as `udf-runtime/src/00_crypto.ts:28-53` does and the byte limit
+   * as `crates/isolate/src/ops/crypto.rs:15-31` does (convex-backend
+   * `cccbade4`), with the same errors. It never reads its receiver, so a
+   * detached call draws as an attached one.
+   */
   function getRandomValues<T extends Parameters<Crypto["getRandomValues"]>[0]>(
-    this: unknown,
-    array: T,
+    ...args: [array: T]
   ): T {
-    // The host call checks the receiver and the argument and throws the host's
-    // errors, so a detached call fails as it does in production.
-    // oxlint-disable-next-line typescript/unbound-method -- Applied with the caller's receiver.
-    Reflect.apply(base.getRandomValues, this === drawing ? base : this, [
-      array,
-    ]);
-    if (array === null) return array;
+    const prefix = "Failed to execute 'getRandomValues' on 'Crypto'";
+    if (args.length < 1) {
+      throw new TypeError(
+        `${prefix}: 1 argument required, but only ${args.length} present.`,
+      );
+    }
+    const [array] = args;
+    if (
+      array === null ||
+      !integerArrays.some((integers) => array instanceof integers)
+    ) {
+      throw new DOMException(
+        "The provided ArrayBufferView is not an integer array type",
+        "TypeMismatchError",
+      );
+    }
+    if (array.byteLength > maxRandomBytes) {
+      throw new TypeError(
+        `Byte length (${array.byteLength}) exceeds the number of bytes of entropy available via this API (${maxRandomBytes})`,
+      );
+    }
     const bytes = new Uint8Array(
       array.buffer,
       array.byteOffset,
