@@ -471,20 +471,72 @@ const consoleMethods = [
  * (`crates/isolate/src/environment/action/mod.rs:1043-1120`), so no later
  * `console` call reaches `trace` (`:1545-1570`), the only way an action logs.
  * The kernel cannot stop a handler, so it drops the calls an ended function
- * makes.
+ * makes. `console` becomes an accessor that reads as a view of the console
+ * beneath it, whose logging methods drop an ended function's calls. The console
+ * object itself is never written, so a console a test assigns keeps its own
+ * methods, spies included, and assigning a view back stores the console it
+ * shows.
  */
 const guardConsole = (state: State) => {
-  const target = globalThis.console as unknown as Record<string, unknown>;
-  for (const method of consoleMethods) {
-    const original = target[method];
-    if (typeof original !== "function" || state.made.has(original)) continue;
-    const host = original as Fn;
-    function logged(this: unknown, ...args: Array<unknown>): unknown {
-      if (state.hooks?.ended() === true) return undefined;
-      return Reflect.apply(host, this, args);
+  const global = globalThis as unknown as Global;
+  const own = Object.getOwnPropertyDescriptor(global, "console");
+  if (own === undefined || own.configurable === false) return;
+  // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
+  if (own.get !== undefined && state.made.has(own.get)) return;
+  let beneath: unknown = "value" in own ? own.value : own.get?.call(global);
+  const views = new WeakMap<object, object>();
+  const shown = new WeakMap<object, object>();
+  const viewOf = (target: unknown): unknown => {
+    if (typeof target !== "object" || target === null) return target;
+    let view = views.get(target);
+    if (view === undefined) {
+      const methods = new WeakMap<object, Fn>();
+      view = new Proxy(target, {
+        get: (on, property) => {
+          const value: unknown = Reflect.get(on, property, on);
+          if (
+            typeof value !== "function" ||
+            !Arr.contains(
+              consoleMethods as ReadonlyArray<PropertyKey>,
+              property,
+            )
+          ) {
+            return value;
+          }
+          let logged = methods.get(value);
+          if (logged === undefined) {
+            const host = value as Fn;
+            logged = (...args: Array<unknown>): unknown =>
+              state.hooks?.ended() === true
+                ? undefined
+                : Reflect.apply(host, on, args);
+            methods.set(value, logged);
+          }
+          return logged;
+        },
+      });
+      views.set(target, view);
+      shown.set(view, target);
     }
-    state.made.add(logged);
-    target[method] = logged;
+    return view;
+  };
+  const get = (): unknown => viewOf(beneath);
+  const set = (value: unknown) => {
+    beneath =
+      typeof value === "object" && value !== null && shown.has(value)
+        ? shown.get(value)
+        : value;
+  };
+  state.made.add(get);
+  try {
+    Object.defineProperty(global, "console", {
+      get,
+      set,
+      configurable: true,
+      enumerable: own.enumerable ?? false,
+    });
+  } catch {
+    // A realm that refuses to redefine `console` keeps its own.
   }
 };
 
