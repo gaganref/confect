@@ -763,29 +763,3 @@ describe("bind", () => {
       }),
   );
 });
-
-describe("drawingGlobals", () => {
-  it("randomUUID builds a version 4 UUID from 16 bytes of the stream, as the binary's does, in the host's format", () => {
-    const draws = [0.125, 0.25, 0.5, 0.75, 0.875];
-    let next = 0;
-    const drawing = Invocation.drawingGlobals(
-      globalThis,
-      () => draws[next++ % draws.length]!,
-    );
-    // Bytes 32, 64, 128, 192, 224 repeating, with byte 6's high nibble set to
-    // version 4 and byte 8's top bits to the RFC 4122 variant.
-    // oxlint-disable-next-line effecttsgo/crypto-random-uuid -- The test compares the pinned randomUUID with the binary's and the host's.
-    expect(drawing.crypto.randomUUID()).toBe(
-      "204080c0-e020-4080-80e0-204080c0e020",
-    );
-    expect(next).toBe(16);
-    const shape =
-      /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/;
-    expect([
-      // oxlint-disable-next-line effecttsgo/crypto-random-uuid -- The test compares the pinned randomUUID with the binary's and the host's.
-      shape.test(drawing.crypto.randomUUID()),
-      // oxlint-disable-next-line effecttsgo/crypto-random-uuid -- The test compares the pinned randomUUID with the binary's and the host's.
-      shape.test(crypto.randomUUID()),
-    ]).toEqual([true, true]);
-  });
-});

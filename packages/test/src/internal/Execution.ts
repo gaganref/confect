@@ -23,6 +23,7 @@ import * as Result from "effect/Result";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
 import * as Crons from "./Crons.js";
+import * as Entropy from "./Entropy.js";
 import * as Globals from "./Globals.js";
 import * as Http from "./Http.js";
 import * as Invocation from "./Invocation.js";
@@ -362,15 +363,79 @@ const settled = <A>(execution: Execution, result: A): Promise<A> =>
 const executions = new AsyncLocalStorage<Execution>();
 
 /**
+ * The module load running now, and the stream it draws from.
+ */
+const moduleLoads = new AsyncLocalStorage<Entropy.Source>();
+
+/**
+ * What a draw reads where it happens: the load running, or else the running
+ * kernel function's type and its bound invocation's stream. A function with no
+ * invocation bound draws the host's, as before the kernel had a stream to give
+ * it. Outside both, test code's own.
+ */
+const entropySource: Entropy.Resolve = () => {
+  const loading = moduleLoads.getStore();
+  if (loading !== undefined) return loading;
+  const execution = executions.getStore();
+  if (execution === undefined) return undefined;
+  return { phase: execution.udfType, random: Invocation.current()?.random };
+};
+
+const kernelMaths = new WeakMap<Math, Math>();
+const kernelCryptos = new WeakMap<Crypto, Crypto>();
+
+/**
+ * Point this copy of the globals' `Math` and `crypto` at the kernel's, built
+ * once over the host's. The kernel calls it in each function's and each module
+ * load's own copy, so plain Convex functions, component functions and code a
+ * function imports lazily all draw through it. A reference to the host's
+ * `Math.random` or `crypto` taken outside every kernel copy, before the kernel
+ * ran any code, stays the host's: the lazy-loading contract, as for the
+ * kernel's other globals.
+ */
+const installEntropy = () => {
+  const host = Globals.host(() => ({
+    Math: globalThis.Math,
+    crypto: globalThis.crypto,
+  }));
+  let math = kernelMaths.get(host.Math);
+  if (math === undefined) {
+    math = Entropy.kernelMath(host.Math, entropySource);
+    kernelMaths.set(host.Math, math);
+  }
+  let crypto = kernelCryptos.get(host.crypto);
+  if (crypto === undefined) {
+    const hostMath = host.Math;
+    crypto = Entropy.kernelCrypto(
+      host.crypto,
+      entropySource,
+      // oxlint-disable-next-line effecttsgo/global-random -- A function with no bound invocation fills from the host's stream, as it drew before the kernel had one to give it.
+      () => hostMath.random(),
+    );
+    kernelCryptos.set(host.crypto, crypto);
+  }
+  try {
+    globalThis.Math = math;
+    globalThis.crypto = crypto;
+  } catch {
+    // A global `Globals` could not give a per-call copy stays the host's.
+  }
+};
+
+/**
  * Run a function's code as `execution`, with its own copy of the globals a test
- * invocation pins. A test that fakes `Date` after the backend opened replaced
- * the kernel's wrapper, so each function wraps the realm's `Date` again, as it
- * installs `globalThis.Convex` again.
+ * invocation pins, whose `Math` and `crypto` are the kernel's. A test that
+ * fakes `Date` after the backend opened replaced the kernel's wrapper, so each
+ * function wraps the realm's `Date` again, as it installs `globalThis.Convex`
+ * again.
  */
 const enter = <A>(execution: Execution, run: () => A): A => {
   installConvexGlobal();
   installDate();
-  return Globals.own(() => executions.run(execution, run));
+  return Globals.own(() => {
+    installEntropy();
+    return executions.run(execution, run);
+  });
 };
 const kernelBrand = Symbol.for("@confect/test/Kernel");
 
@@ -738,22 +803,27 @@ export class World {
 
   /**
    * Load each module under its own copy of the globals, whose `Math.random`,
-   * `crypto.getRandomValues` and `crypto.randomUUID` draw from `world`'s random
-   * stream. The binary lets a module draw while it loads, from a generator
-   * seeded once per push
+   * `crypto.getRandomValues` and `crypto.randomUUID` draw, while the load runs,
+   * from `world`'s random stream. The binary lets a module draw while it loads,
+   * from a generator seeded once per push
    * (`crates/isolate/src/environment/udf/phase.rs:186-193`,
    * `crates/isolate/src/environment/analyze.rs:284`, convex-backend
    * `cccbade4`); the kernel holds no generator, so the driver's stream stands
-   * in for the seed. Modules load one at a time, components in registration
-   * order and each component's modules in the order its map lists them, so the
-   * draws land in one order and a replay with the same stream draws them again.
-   * With no world, a draw refuses with `LoadRandomUnavailable`, and the load
-   * refuses with it too, even when the module caught it. A module the host
-   * runtime already evaluated is not evaluated again, so it draws nothing.
+   * in for the seed. The globals resolve their stream on every call, so a
+   * function a module keeps while it loads draws, when a handler later calls
+   * it, from that handler's stream. Modules load one at a time, components in
+   * registration order and each component's modules in the order its map lists
+   * them, so the draws land in one order and a replay with the same stream
+   * draws them again. With no world, a draw refuses with
+   * `LoadRandomUnavailable`, and the load refuses with it too, even when the
+   * module caught it. A `crypto.subtle` operation that draws cryptographic
+   * randomness rejects with the binary's queries-and-mutations error, as a load
+   * for one of those does. A module the host runtime already evaluated is not
+   * evaluated again, so it draws nothing.
    */
   private loadModules(world: Invocation.World | undefined): Promise<void> {
     let refused: KernelRefusal.LoadRandomUnavailable | undefined;
-    const loads = Arr.flatMap(
+    const entries = Arr.flatMap(
       Array.from(this.components.values()),
       (component) =>
         Arr.map(Array.from(component.loaders), ([modulePath, load]) => ({
@@ -766,7 +836,7 @@ export class World {
       component,
       modulePath,
       load,
-    }: (typeof loads)[number]): Promise<unknown> => {
+    }: (typeof entries)[number]): Promise<unknown> => {
       const random =
         world?.random ??
         (() => {
@@ -777,15 +847,17 @@ export class World {
           });
           throw refused;
         });
-      return Globals.own(() => {
-        const drawing = Invocation.drawingGlobals(globalThis, random);
-        globalThis.Math = drawing.Math;
-        globalThis.crypto = drawing.crypto;
-        return load();
-      }).then((module) => component.loaded.set(modulePath, module));
+      return moduleLoads
+        .run({ phase: "load", random }, () =>
+          Globals.own(() => {
+            installEntropy();
+            return load();
+          }),
+        )
+        .then((module) => component.loaded.set(modulePath, module));
     };
     return Arr.reduce(
-      loads,
+      entries,
       Promise.resolve<unknown>(undefined),
       (previous, entry) => previous.then(() => loadOne(entry)),
     ).then(() => (refused === undefined ? undefined : Promise.reject(refused)));

@@ -1,9 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { FunctionMetadata, RequestMetadata } from "convex/server";
 import type * as Context from "effect/Context";
-import * as Arr from "effect/Array";
-import * as Str from "effect/String";
 import * as Clock from "./Clock.js";
+import * as Entropy from "./Entropy.js";
 
 /**
  * Four re-executions after the first try. A conflict on attempt 5 exhausts.
@@ -158,114 +157,6 @@ const pinnedDate = (
     apply: () => new base(now()).toString(),
   });
 
-const drawingMath = (base: Math, random: () => number): Math =>
-  new Proxy(base, {
-    get: (target, property, receiver) =>
-      property === "random" ? random : Reflect.get(target, property, receiver),
-  });
-
-const integerArrays = [
-  Int8Array,
-  Uint8Array,
-  Uint8ClampedArray,
-  Int16Array,
-  Uint16Array,
-  Int32Array,
-  Uint32Array,
-  BigInt64Array,
-  BigUint64Array,
-];
-
-const maxRandomBytes = 65_536;
-
-const drawingCrypto = (base: Crypto, random: () => number): Crypto => {
-  /**
-   * The binary's `getRandomValues`, filled from `random`: it checks its
-   * arguments as `udf-runtime/src/00_crypto.ts:28-53` does and the byte limit
-   * as `crates/isolate/src/ops/crypto.rs:15-31` does (convex-backend
-   * `cccbade4`), with the same errors. It never reads its receiver, so a
-   * detached call draws as an attached one.
-   */
-  function getRandomValues<T extends Parameters<Crypto["getRandomValues"]>[0]>(
-    ...args: [array: T]
-  ): T {
-    const prefix = "Failed to execute 'getRandomValues' on 'Crypto'";
-    if (args.length < 1) {
-      throw new TypeError(
-        `${prefix}: 1 argument required, but only ${args.length} present.`,
-      );
-    }
-    const [array] = args;
-    if (
-      array === null ||
-      !Arr.some(integerArrays, (integers) => array instanceof integers)
-    ) {
-      throw new DOMException(
-        "The provided ArrayBufferView is not an integer array type",
-        "TypeMismatchError",
-      );
-    }
-    if (array.byteLength > maxRandomBytes) {
-      throw new TypeError(
-        `Byte length (${array.byteLength}) exceeds the number of bytes of entropy available via this API (${maxRandomBytes})`,
-      );
-    }
-    const bytes = new Uint8Array(
-      array.buffer,
-      array.byteOffset,
-      array.byteLength,
-    );
-    for (let index = 0; index < bytes.length; index++) {
-      bytes[index] = Math.floor(random() * 256);
-    }
-    return array;
-  }
-  /**
-   * The binary's `randomUUID`: a version 4 UUID built from 16 bytes of the same
-   * generator (`op_crypto_random_uuid`,
-   * `crates/isolate/src/ops/crypto.rs:8-12`, through
-   * `uuid::Builder::from_random_bytes`, which sets the version and the RFC 4122
-   * variant), so it draws from `random` too.
-   */
-  const randomUUID = (): ReturnType<Crypto["randomUUID"]> => {
-    const bytes = getRandomValues(new Uint8Array(16));
-    bytes[6] = (bytes[6]! & 0x0f) | 0x40;
-    bytes[8] = (bytes[8]! & 0x3f) | 0x80;
-    const hex = Arr.join(
-      Arr.map(Array.from(bytes), (byte) =>
-        Str.padStart(2, "0")(byte.toString(16)),
-      ),
-      "",
-    );
-    const part = (start: number, end: number) => Str.slice(start, end)(hex);
-    return `${part(0, 8)}-${part(8, 12)}-${part(12, 16)}-${part(16, 20)}-${part(20, 32)}`;
-  };
-  const drawing: Crypto = new Proxy(base, {
-    get: (target, property) => {
-      if (property === "getRandomValues") return getRandomValues;
-      if (property === "randomUUID") return randomUUID;
-      // Crypto's methods and getters need the host object as `this`.
-      const value: unknown = Reflect.get(target, property, target);
-      return typeof value === "function" ? value.bind(target) : value;
-    },
-  });
-  return drawing;
-};
-
-/**
- * `Math` and `crypto` over `base`'s, with `Math.random`,
- * `crypto.getRandomValues` and `crypto.randomUUID` drawing from `random` as a
- * pinned handler's do. The kernel loads each module under them, so a draw at
- * module scope comes from the stream the driver supplied.
- */
-export const drawingGlobals = (
-  base: { readonly Math: Math; readonly crypto: Crypto },
-  random: () => number,
-): { readonly Math: Math; readonly crypto: Crypto } => ({
-  Math: drawingMath(base.Math, random),
-  crypto: drawingCrypto(base.crypto, random),
-});
-
 /**
  * Point the calling handler's `Date`, `Math` and `crypto` at `invocation`, its
  * `Date` through {@link clockOf}. convex-test gives each handler call its own
@@ -288,12 +179,27 @@ const pin = (
   // kernel's clock, so `runAfter` schedules on it, and a query that reads it
   // records the read. The bridge leaves it there.
   const kernelDate = Clock.answersInvocation(previous.Date);
+  // On the kernel, `Math` and `crypto` are already the kernel's, which resolve
+  // the running function's stream on every call, plain Convex functions
+  // included. The bridge leaves them there. Elsewhere it pins this handler's
+  // to the invocation's stream, with the binary's `getRandomValues`,
+  // `randomUUID` and `subtle` refusals.
+  const kernelEntropy =
+    Entropy.isBuilt(previous.Math) && Entropy.isBuilt(previous.crypto);
+  const source = (): Entropy.Source => ({
+    phase: functionType,
+    random: invocation.random,
+  });
   const pinned = {
     Date: kernelDate
       ? previous.Date
       : pinnedDate(previous.Date, clockOf(invocation, functionType)),
-    Math: drawingMath(previous.Math, invocation.random),
-    crypto: drawingCrypto(previous.crypto, invocation.random),
+    Math: kernelEntropy
+      ? previous.Math
+      : Entropy.kernelMath(previous.Math, source),
+    crypto: kernelEntropy
+      ? previous.crypto
+      : Entropy.kernelCrypto(previous.crypto, source, invocation.random),
   };
   try {
     if (!kernelDate) host.Date = pinned.Date;

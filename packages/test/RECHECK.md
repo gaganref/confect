@@ -1110,12 +1110,12 @@ module deployed without that seed refuses, with `NoRandomDuringImport`
 (`udf/phase.rs:500-507`). A push of a module that calls `Math.random` or
 `getRandomValues` at module scope deploys on `precompiled-2026-10-28-cccbade`.
 
-On the kernel a bound invocation's `Math.random` and `getRandomValues` draw from
-its supplied stream, as row 1 pinned them, and `randomUUID` now does too: it
-builds a version 4 UUID from 16 bytes of the stream, as the binary's
-`op_crypto_random_uuid` builds one from 16 bytes of its generator
-(`ops/crypto.rs:8-12`). `getRandomValues` now answers as the binary's does
-rather than the host's (`npm-packages/udf-runtime/src/00_crypto.ts:28-53`):
+On the kernel a bound invocation's `Math.random`, `getRandomValues` and
+`randomUUID` draw from its supplied stream. `randomUUID` builds a version 4
+UUID from 16 bytes of the stream, as the binary's `op_crypto_random_uuid`
+builds one from 16 bytes of its generator (`ops/crypto.rs:8-12`).
+`getRandomValues` answers as the binary's does rather than the host's
+(`npm-packages/udf-runtime/src/00_crypto.ts:28-53`):
 
 - a fill of more than 65,536 bytes throws `TypeError` "Byte length (N) exceeds
   the number of bytes of entropy available via this API (65536)", where Node
@@ -1124,6 +1124,57 @@ rather than the host's (`npm-packages/udf-runtime/src/00_crypto.ts:28-53`):
   is not an integer array type", where Node's message differs;
 - a detached or rebound call draws, where Node throws `TypeError`, because the
   binary's method never reads its receiver.
+
+### Every function, and every kept reference
+
+Row 1 pinned randomness through the Confect bridge, so a plain Convex query,
+mutation or action, a component's function and a module an action imported
+lazily read the host's sources under a bound invocation. The kernel now gives
+every execution its own `Math` and `crypto` (`Entropy.ts`), placed in the copy
+of the globals each function and each module load runs with (`installEntropy`
+in `Execution.ts`, called from `enter` and from `World.load`). They resolve
+their source on every call: the load running and its stream, or else the
+running function's type and its bound invocation's stream. A reference a module
+keeps while it loads therefore draws, when a handler later calls it, from that
+handler's stream rather than the load's, and one kept during an open with no
+world refuses nothing later. On the kernel the bridge leaves these in place.
+Elsewhere it pins a handler's to its invocation as before.
+
+Two references stay the host's. A function with no invocation bound draws the
+host's stream, still through the binary's `getRandomValues` checks, as it did
+before the kernel had a stream to give it. A reference taken outside every
+kernel copy, before the kernel ran any code, such as a module a test file
+imports, keeps what it read. That is the lazy-loading contract #136 states for
+`fetch` and timers. Its setup file is not on `main`, so there is no earlier
+point to install from yet.
+
+### Cryptographic randomness
+
+`crypto.subtle` draws from a `CryptoRng`, not the seeded generator.
+`generateKey` asks for it always, `encrypt` for RSA-OAEP and `sign` for ECDSA
+and RSA-PSS (`ops/subtle_crypto/mod.rs:326-333`, `:401`, `:472`;
+`webcrypto/src/lib.rs:349-373`, `:478-481`, `:525-531`;
+`webcrypto/src/rsa.rs:471-475`). A query's and a mutation's environment
+refuses it in every phase, with `not_allowed_in_udf("CryptoRng", ...)`
+(`environment/udf/mod.rs:264-272`, `:290-292`). A function sees a plain
+`Error`: "Can't use cryptographic randomness in queries and mutations. Please
+consider using an action. See https://docs.convex.dev/functions/actions for
+more details." An action's environment gives the system's
+(`environment/action/mod.rs:1576-1578`). Measured on the pinned binary, a
+query and a mutation get that error at run time and from a module-scope
+`generateKey`. An action generates the key in both places. A push of that
+module succeeds.
+
+The kernel rejects those operations with the binary's error in a query, a
+mutation and a module load. In an action it rejects them with `RequiresBinary`
+(`subtleGenerateKey`, `subtleEncrypt`, `subtleSign`): system entropy cannot be
+replayed, and the kernel never draws the host's in its place. The kernel loads
+each module once for every function type, so a load for an action gets the
+queries' error, where the binary generates the key. Both action cases are
+exact conformance entries in `packages/server/test/mock-backend/kernelBoundaries.ts`:
+`ActionCryptoRandomness` and `ActionLoadCryptoRandomness`. Digest, import,
+export, decrypt, verify, derivation, AES encryption with a given IV, and HMAC,
+Ed25519 or RSASSA-PKCS1-v1_5 signing run as on the host in every phase.
 
 ### Load draws
 
@@ -1154,10 +1205,17 @@ one's values, where each binary push draws its own.
 
 `groups/randomness` in the local-backend fixture is one Confect query, mutation
 and action that each try `Math.random`, a 4-byte and a 65,536-byte fill, a
-65,537-byte fill, a `Float64Array` fill, a detached fill and `randomUUID`, and
-record whether each ran and its error. They also return the `Math.random` and
-the 4-byte fill their module drew while it loaded. `test/fixtures/randomnessProbe.ts` holds
-the binary's answer. `packages/server/test/local-backend/randomness.test.ts`
+65,537-byte fill, a `Float64Array` fill, a detached fill, `randomUUID`, an HMAC
+`generateKey` and a SHA-256 digest, and record whether each ran, its error and
+what it produced. They also return what their module drew while it loaded:
+`Math.random`, a 4-byte fill, `randomUUID` and `generateKey`.
+`test/fixtures/randomnessProbe.ts` keeps what both targets fix: fill lengths,
+the UUID's length and version 4 layout, the digest and every refusal. It
+replaces only the values a target chooses by what they must satisfy: a draw
+in (0, 1), 4 bytes not all zero, a 65,536-byte fill that is not constant. It
+holds the binary's answer and the kernel's, which differs by the two entries
+above. A test checks that a zero-filled replacement of any chosen value fails
+it. `packages/server/test/local-backend/randomness.test.ts`
 gets it from the binary and `test/Randomness.test.ts` from the kernel, which
 also checks that `Math.random` and the 4-byte fill are the supplied stream's
 first draws in all three function types, and that the module's load draws are
@@ -1165,15 +1223,21 @@ its world's stream's first draws. `test/fixtures/loadDrawReplay.ts` opens a
 module that draws from all three sources while it loads, through
 `TestConfect.layer` on the kernel target. `test/Randomness.test.ts` runs it in
 two processes with one seed and gets the same bytes, and with another seed
-gets others.
+gets others. `test/fixtures/handlerDrawReplay.ts` runs a plain query,
+mutation and action, a component's query the host calls, and an action that
+imports a drawing module lazily, each under its own bound stream. Two
+processes print the same bytes, each equal to its stream's draws.
+`test/Randomness.test.ts` also checks both kept-reference cases, and that a
+`Math.random` kept before the kernel ran stays the host's. `test/Entropy.test.ts`
+checks the `subtle` refusals for every drawing operation in every phase, and
+the deterministic operations in every phase.
 
 ### Left on the binary
 
 - The native seeding policy, as the design says.
-- `crypto.subtle` keeps the host's, so its key generation draws from the
-  host's entropy; the design names it nowhere.
+- An action's cryptographic randomness, at run time and while a module loads
+  for it (`ActionCryptoRandomness`, `ActionLoadCryptoRandomness`).
 - The per-push seed itself: the kernel draws a load from the driver's stream,
   and a module evaluated once per process draws once per process.
-- A plain Convex function, such as an official component's, runs outside
-  `runHandlerPromise` and so outside the row 1 pin: it reads the host's
-  `Math.random` and `crypto` even under a bound invocation.
+- A nested query's or mutation's own seed: the kernel's nested call draws on
+  from its caller's stream.

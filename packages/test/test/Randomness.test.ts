@@ -9,13 +9,17 @@ import {
   queryGeneric,
 } from "convex/server";
 import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import refs from "../../../tools/local-backend/fixtures/confect/_generated/refs";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Invocation from "../src/internal/Invocation";
+import * as Json from "../src/internal/Json";
 import { call, localBackendWorld } from "./fixtures/localBackendWorld";
-import { expected, normalize } from "./fixtures/randomnessProbe";
+import { calls, drawnFrom, streamFor } from "./fixtures/drawingBackend";
+import { expectedOnKernel, normalize } from "./fixtures/randomnessProbe";
+import { keptAtImport } from "./fixtures/randomKeptAtImport";
 
 const probe = refs.public.groups.randomness;
 
@@ -98,6 +102,72 @@ const drawingAtLoad = (
     ...(world === undefined ? {} : { world }),
   });
 
+/**
+ * A backend whose one module keeps `Math.random` and `getRandomValues` while it
+ * loads, drawing nothing, and whose `read` query calls what it kept.
+ */
+const keepingAtLoad = (world?: Invocation.World): KernelControls =>
+  convexTest({
+    schema: defineSchema({}),
+    modules: {
+      "_generated/server.ts": () => Promise.resolve({}),
+      "kept.ts": () => {
+        const { random } = Math;
+        // oxlint-disable-next-line typescript/unbound-method -- The module keeps the methods detached, as one may at load.
+        const { getRandomValues } = crypto;
+        return Promise.resolve({
+          noop: queryGeneric({
+            args: {},
+            handler: () => Promise.resolve(null),
+          }),
+          read: queryGeneric({
+            args: {},
+            handler: () =>
+              Promise.resolve([
+                random(),
+                ...getRandomValues(new Uint8Array(1)),
+              ]),
+          }),
+          host: queryGeneric({
+            args: {},
+            handler: () => Promise.resolve(keptAtImport()),
+          }),
+        });
+      },
+    },
+    ...(world === undefined ? {} : { world }),
+  });
+
+const kept = {
+  noop: makeFunctionReference<"query", Record<string, never>, null>(
+    "kept:noop",
+  ),
+  read: makeFunctionReference<"query", Record<string, never>, unknown>(
+    "kept:read",
+  ),
+  host: makeFunctionReference<"query", Record<string, never>, number>(
+    "kept:host",
+  ),
+};
+
+/**
+ * An invocation whose stream, and its world's, cycles through `values`.
+ */
+const boundTo = (values: ReadonlyArray<number>): Invocation.Invocation => ({
+  world: { ...worldOf("bound"), random: cycling(values) },
+  componentPath: "",
+  attempt: 1,
+  request: {
+    ip: null,
+    userAgent: null,
+    requestId: "0000000000000000",
+    scheduledFunctionId: null,
+  },
+  services: Context.empty(),
+  startedAt: 1_000,
+  random: cycling(values),
+});
+
 const settle = (thunk: () => Promise<unknown>) =>
   Effect.promise(() =>
     thunk().then(
@@ -108,7 +178,7 @@ const settle = (thunk: () => Promise<unknown>) =>
 
 describe("randomness on the kernel", () => {
   it.effect(
-    "a query, a mutation and an action may each draw from Math.random and crypto, and refuse the fills the binary refuses",
+    "a query, a mutation and an action may each draw from Math.random and crypto, refuse the fills the binary refuses, and generate a key only in an action",
     () =>
       Effect.gen(function* () {
         const query = yield* sample("query");
@@ -118,7 +188,32 @@ describe("randomness on the kernel", () => {
           query: normalize(query),
           mutation: normalize(mutation),
           action: normalize(action),
-        }).toEqual(expected);
+        }).toEqual(expectedOnKernel);
+      }),
+  );
+
+  it.effect(
+    "the probe's normalisation fails a sample whose fills, draws or UUIDs a zero-filled source replaced",
+    () =>
+      Effect.gen(function* () {
+        const real = yield* sample("query");
+        expect(normalize(real)).toEqual(expectedOnKernel.query);
+        const zeroed = {
+          mathRandom: [0],
+          getRandomValues: [0, 0, 0, 0],
+          largestFill: [65_536, 1],
+          detachedFill: [0, 0, 0, 0],
+          randomUUID: [36, 0],
+          loadMathRandom: [0],
+          loadGetRandomValues: [0, 0, 0, 0],
+          loadRandomUUID: [36, 0],
+        } as const;
+        for (const [field, value] of Rec.toEntries(zeroed)) {
+          const replaced = { ...real, [field]: { ...real[field], value } };
+          expect(normalize(replaced), field).not.toEqual(
+            expectedOnKernel.query,
+          );
+        }
       }),
   );
 
@@ -191,6 +286,86 @@ describe("randomness on the kernel", () => {
         expect(still).toEqual({ value: "no draw" });
       }),
   );
+
+  it.effect(
+    "a Math.random and getRandomValues a module keeps while it loads draw, in a handler, from that handler's stream, not the load's",
+    () =>
+      Effect.gen(function* () {
+        const t = keepingAtLoad(worldOf("load"));
+        // An unbound call opens the backend under its own world, whose
+        // stream starts at 0.125, and the module keeps its references then.
+        const opened = yield* settle(() => t.query(kept.noop, {}));
+        expect(opened).toEqual({ value: null });
+        const drawn = yield* Effect.promise(() =>
+          Invocation.bind(boundTo([0.625, 0.375]), () =>
+            t.query(kept.read, {}),
+          ),
+        );
+        expect(drawn).toEqual([0.625, 96]);
+      }),
+  );
+
+  it.effect(
+    "a reference a module keeps during an open with no world refuses nothing later, and draws from the stream of the invocation that calls it",
+    () =>
+      Effect.gen(function* () {
+        const t = keepingAtLoad();
+        // An unbound call opens the backend with no world. The module draws
+        // nothing while it loads, so the open succeeds.
+        const opened = yield* settle(() => t.query(kept.noop, {}));
+        expect(opened).toEqual({ value: null });
+        const drawn = yield* settle(() =>
+          Invocation.bind(boundTo([0.625, 0.375]), () =>
+            t.query(kept.read, {}),
+          ),
+        );
+        expect(drawn).toEqual({ value: [0.625, 96] });
+      }),
+  );
+
+  it.effect(
+    "a Math.random kept before the kernel ran any code stays the host's, under a bound invocation too",
+    () =>
+      Effect.gen(function* () {
+        const t = keepingAtLoad(worldOf("load"));
+        const drawn = yield* Effect.promise(() =>
+          Invocation.bind(boundTo([0.625]), () => t.query(kept.host, {})),
+        );
+        // The host's draw, which a real `Math.random` makes 0.625 with
+        // vanishing probability.
+        expect(drawn).not.toBe(0.625);
+        expect(drawn).toBeGreaterThanOrEqual(0);
+        expect(drawn).toBeLessThan(1);
+      }),
+  );
+
+  it("two processes running a plain query, mutation and action, a component's query and a lazily imported module, each under its own bound stream, draw the same bytes, and each draws its stream's values", () => {
+    const loader = pathToFileURL(
+      createRequire(import.meta.url).resolve("tsx/esm"),
+    ).href;
+    const script = fileURLToPath(
+      new URL("fixtures/handlerDrawReplay.ts", import.meta.url),
+    );
+    const replay = () =>
+      spawnSync(process.execPath, ["--import", loader, script], {
+        encoding: "utf8",
+      });
+    const [one, two] = [replay(), replay()];
+    expect([one.status, one.stderr, two.status, two.stderr]).toEqual([
+      0,
+      "",
+      0,
+      "",
+    ]);
+    expect(one.stdout).toBe(two.stdout);
+    const fromStreams = Rec.fromEntries(
+      Arr.map(Rec.keys(calls), (name, index) => [
+        name,
+        drawnFrom(streamFor(index)),
+      ]),
+    );
+    expect(Json.parse(one.stdout)).toEqual(fromStreams);
+  }, 120_000);
 
   it("two processes opening a module that draws while it loads, through TestConfect.layer with one seed, replay its draws byte for byte, and another seed moves them", () => {
     const loader = pathToFileURL(

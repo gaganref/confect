@@ -14,7 +14,16 @@ export const Use = Schema.Struct({
 
 /**
  * Every random source a function may reach, each tried once in this order, then
- * `Math.random` and a 4-byte fill as the module drew them while it loaded.
+ * what the module drew while it loaded. Each use records:
+ *
+ * - `mathRandom`, `loadMathRandom`: the draw.
+ * - `getRandomValues`, `detachedFill`, `loadGetRandomValues`: the 4 bytes.
+ * - `largestFill`: the fill's length and how many distinct bytes it holds.
+ * - `oversizedFill`, `floatFill`: the fill's length, if it ran.
+ * - `randomUUID`, `loadRandomUUID`: the UUID's length, and 1 if it has the
+ *   version 4 layout.
+ * - `generateKey`, `loadGenerateKey`: 1 if an HMAC key was generated.
+ * - `digest`: the SHA-256 of the bytes 1, 2, 3.
  */
 export const Sample = Schema.Struct({
   mathRandom: Use,
@@ -24,8 +33,12 @@ export const Sample = Schema.Struct({
   floatFill: Use,
   detachedFill: Use,
   randomUUID: Use,
+  generateKey: Use,
+  digest: Use,
   loadMathRandom: Use,
   loadGetRandomValues: Use,
+  loadRandomUUID: Use,
+  loadGenerateKey: Use,
 });
 
 export default GroupSpec.make()

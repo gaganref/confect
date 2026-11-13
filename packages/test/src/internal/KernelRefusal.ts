@@ -13,6 +13,9 @@ export class RequiresBinary extends Schema.TaggedError<
     "vectorSearch",
     "storageUpload",
     "storageDownload",
+    "subtleGenerateKey",
+    "subtleEncrypt",
+    "subtleSign",
   ]),
   message: Schema.String,
 }) {}
