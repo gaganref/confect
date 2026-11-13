@@ -27,6 +27,8 @@ export default mergeConfig(
       // The kernel lane's own controls run only there.
       exclude: ["test/mock-backend/kernelLane.test.ts"],
       globalSetup: ["./test/mock-backend/setup.ts"],
+      // The conformance exceptions in `conformance.ts` must fail here.
+      setupFiles: ["./test/mock-backend/convexTestLane.ts"],
     },
   }),
 );
