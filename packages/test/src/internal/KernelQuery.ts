@@ -286,8 +286,11 @@ const encodeCursor = (
     }),
   );
 
+const nonEmpty = (text: string | null | undefined): text is string =>
+  typeof text === "string" && text !== "";
+
 const parseCursor = (c: string | null | undefined) =>
-  c
+  nonEmpty(c)
     ? Arr.map(Json.parse(c) as Array<string | null>, (k) =>
         k === null ? undefined : jsonToConvex(Json.parse(k)),
       )
@@ -344,7 +347,7 @@ export const paginate = (
   }
   const cursorFields = interval.fields;
   const cursorKeys = parseCursor(cursor);
-  const hasEndBoundary = !!endCursor && endCursor !== "_end_cursor";
+  const hasEndBoundary = nonEmpty(endCursor) && endCursor !== "_end_cursor";
   const endCursorKeys = hasEndBoundary ? parseCursor(endCursor) : null;
   const examined = view.read(interval, cursorKeys);
   let reachedEnd = true;
@@ -362,7 +365,7 @@ export const paginate = (
     const doc = sortedDocs[i]!;
     const isLastDoc = i === sortedDocs.length - 1;
     if (!isInPage) {
-      if (cursorKeys) {
+      if (cursorKeys !== null) {
         if (compareToCursor(doc, cursorKeys, cursorFields, order) > 0) {
           isInPage = true;
         } else {
@@ -370,7 +373,7 @@ export const paginate = (
         }
       }
     }
-    if (hasEndBoundary && endCursorKeys) {
+    if (hasEndBoundary && endCursorKeys !== null) {
       const cmp = compareToCursor(doc, endCursorKeys, cursorFields, order);
       if (cmp >= 0) {
         reachedEnd = false;
@@ -392,8 +395,12 @@ export const paginate = (
     readDocCursors.push(encodeCursor(doc, cursorFields));
     examined(ReadSet.keyOf(cursorFields, doc as StoredDocument));
     const hitLimit =
-      (!!maximumRowsRead && rowsRead >= maximumRowsRead) ||
-      (!!maximumBytesRead && bytesRead >= maximumBytesRead);
+      (typeof maximumRowsRead === "number" &&
+        maximumRowsRead !== 0 &&
+        rowsRead >= maximumRowsRead) ||
+      (typeof maximumBytesRead === "number" &&
+        maximumBytesRead !== 0 &&
+        bytesRead >= maximumBytesRead);
     if (filterFn(doc)) page.push(doc);
     if (hitLimit) {
       reachedEnd = false;
@@ -401,7 +408,7 @@ export const paginate = (
       continueCursor = encodeCursor(doc, cursorFields);
       break;
     }
-    if (!endCursor && page.length >= pageSize) {
+    if (!nonEmpty(endCursor) && page.length >= pageSize) {
       reachedEnd = isLastDoc;
       if (!isLastDoc) continueCursor = encodeCursor(doc, cursorFields);
       break;

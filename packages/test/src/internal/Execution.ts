@@ -934,7 +934,7 @@ export class World {
         `Expected a Convex function exported from module "${modulePath}" as \`${exportName}\`, but got: ${func}`,
       );
     }
-    if (kind !== "any" && !func[kindCheck[kind]]) {
+    if (kind !== "any" && !Boolean(func[kindCheck[kind]])) {
       throw new Error(
         `Expected a ${kind} function, but the function exported from module "${modulePath}" as \`${exportName}\` is not a ${kind}.`,
       );
@@ -1685,7 +1685,7 @@ export class World {
     };
     const run = () =>
       Promise.resolve().then(() =>
-        this.resolve(target, "any").func.isMutation
+        Boolean(this.resolve(target, "any").func.isMutation)
           ? this.mutationAt(target, cron.spec.args, from)
           : this.actionAt(target, cron.spec.args, from),
       );
@@ -1764,9 +1764,9 @@ export class World {
     const run = () =>
       Promise.resolve().then(() => {
         const { func } = this.resolve(job.target, "any");
-        return func.isQuery
+        return Boolean(func.isQuery)
           ? this.queryAt(job.target, job.args, from)
-          : func.isMutation
+          : Boolean(func.isMutation)
             ? this.mutationAt(job.target, job.args, from)
             : this.actionAt(job.target, job.args, from);
       });
@@ -2745,13 +2745,15 @@ export class World {
         const { value, done } = results.next();
         return Json.stringify(
           convexToJson(
-            done ? { value: null, done: true } : { value, done: false },
+            done === true
+              ? { value: null, done: true }
+              : { value, done: false },
           ),
         );
       }
       case "1.0/queryPage": {
         const pagination = execution.pagination;
-        if (pagination) {
+        if (pagination !== undefined) {
           pagination.calls += 1;
           if (pagination.calls > 1) {
             throw new Error(
@@ -2765,7 +2767,7 @@ export class World {
           ...args,
           endCursor: args.endCursor ?? pagination?.journal ?? null,
         });
-        if (pagination) pagination.end = page.continueCursor;
+        if (pagination !== undefined) pagination.end = page.continueCursor;
         return Json.stringify(convexToJson(page as any));
       }
       case "1.0/insert":

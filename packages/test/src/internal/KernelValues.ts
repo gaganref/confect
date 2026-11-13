@@ -90,7 +90,7 @@ export type DocumentId = GenericId<TableName>;
 
 export function tableNameFromId(id: string) {
   const match = pipe(id, Str.match(/^[0-9]+/), Option.getOrNull);
-  if (!match || match[0].length === id.length) {
+  if (match === null || match[0].length === id.length) {
     return null;
   }
   return pipe(id, Str.slice(match[0].length));
@@ -219,7 +219,7 @@ export function evaluateFilter(
     return filter.$or.some((child: any) => evaluateFilter(document, child));
   }
   if (filter.$not !== undefined) {
-    return !evaluateFilter(document, filter.$not);
+    return !Boolean(evaluateFilter(document, filter.$not));
   }
   if (filter.$gt !== undefined) {
     return (
