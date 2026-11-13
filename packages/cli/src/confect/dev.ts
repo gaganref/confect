@@ -137,6 +137,7 @@ export const devHandler = Effect.gen(function* () {
   yield* Effect.all([watcher.run, syncLoop(previousFunctionPaths, watcher)], {
     concurrency: "unbounded",
   });
+  // oxlint-disable-next-line effecttsgo/strict-effect-provide -- `confect dev` is an entry point: its watch loop runs under the prewarmed evaluator for the whole session.
 }).pipe(Effect.provide(Evaluation.prewarmedLayer));
 
 /**

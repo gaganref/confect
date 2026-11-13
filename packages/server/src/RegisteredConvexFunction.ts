@@ -386,6 +386,7 @@ const mutationFunction = <
           functionVisibility,
           args: decodedArgs,
         },
+        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This Convex entry point provides invocation-local services before runHandlerPromise executes the handler.
       ).pipe(Effect.provide(mutationLayer(databaseSchema, ctx)));
       return yield* pipe(
         decodedReturns,

@@ -87,6 +87,7 @@ export const invocationMetadata = (
     const deployment = yield* Config.String("CONVEX_CLOUD_URL").pipe(
       Config.option,
       Effect.map(Option.getOrUndefined),
+      // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This Convex entry point reads its deployment URL through Convex's environment before any service exists to compose it into.
       Effect.provide(ConvexConfigProvider.layer),
       Effect.orDie,
     );
@@ -404,6 +405,7 @@ export const runHandlerPromise =
       });
     return Effect.runPromise(
       withConvexError.pipe(
+        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This Convex entry point provides the invocation's observability layer as Effect.runPromise runs the handler.
         Effect.provide(
           observability === undefined
             ? ConvexLogger.layer
@@ -502,6 +504,7 @@ export const actionFunctionBase = <
           functionVisibility,
           args: decodedArgs,
         },
+        // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This Convex entry point provides invocation-local services before runHandlerPromise executes the handler.
       ).pipe(Effect.provide(createLayer(restricted?.ctx ?? ctx)));
       if (restricted !== undefined) yield* restricted.check;
       return yield* pipe(

@@ -410,12 +410,6 @@
       }
     },
     {
-      "files": ["packages/core/src/Http.ts"],
-      "rules": {
-        "effecttsgo/prefer-effect-string": "off"
-      }
-    },
-    {
       "files": [
         "packages/alchemy/test/Code.test.ts",
         "packages/alchemy/test/FileLock.test.ts",
@@ -460,7 +454,6 @@
         "packages/alchemy/test/integration/RealBackend.test.ts",
         "packages/alchemy/test/integration/RealBackend.ts",
         "packages/alchemy/test/integration/RealLocalBackend.test.ts",
-        "packages/cli/src/confect/dev.ts",
         "packages/cli/test/ComponentCodegen.test.ts",
         "packages/cli/test/EntryPoint.test.ts",
         "packages/cli/test/Evaluation.test.ts",
@@ -470,9 +463,6 @@
         "packages/cli/test/codegen.test.ts",
         "packages/cli/test/integration/codegen.test.ts",
         "packages/core/test/Env.test.ts",
-        "packages/server/src/RegisteredConvexFunction.ts",
-        "packages/server/src/RegisteredFunction.ts",
-        "packages/server/src/internal/observability.ts",
         "packages/server/test/ActionRunner.test.ts",
         "packages/server/test/Auth.test.ts",
         "packages/server/test/Callback.test.ts",
@@ -485,8 +475,7 @@
         "packages/server/test/mock-backend/integration.test.ts",
         "packages/server/test/mock-backend/middleware.test.ts",
         "packages/test/test/TestConfect.test.ts",
-        "scripts/stageForkPackages.test.ts",
-        "tools/local-backend/src/setup.ts"
+        "scripts/stageForkPackages.test.ts"
       ],
       "rules": {
         "effecttsgo/strict-effect-provide": "off"

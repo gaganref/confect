@@ -12,6 +12,7 @@ const generate = setupForFixture(import.meta.dirname, "../fixtures", [
 export const seedAuth = () =>
   LocalBackend.LocalBackend.pipe(
     Effect.asVoid,
+    // oxlint-disable-next-line effecttsgo/strict-effect-provide -- seedAuth is a script entry point: it starts the local backend for one run and closes it.
     Effect.provide(LocalBackend.layer),
     Effect.scoped,
     Effect.runPromise,
