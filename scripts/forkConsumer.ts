@@ -73,6 +73,9 @@ export const installCommand = (manifest: ConsumerManifest) =>
     Array.join(" "),
   )}`;
 
+/**
+ * @internal
+ */
 export const writeConsumer = Effect.fn("ConsumerFixture.write")(function* (
   destination: string,
   manifest: ConsumerManifest,

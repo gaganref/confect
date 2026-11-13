@@ -79,6 +79,8 @@ const CONVEX_CONFIG_SUFFIX = /[/\\]convex\.config(\.[cm]?[jt]s)?$/;
 /**
  * Resolve the same config spellings that Convex accepts, for configs and test
  * kits.
+ *
+ * @internal
  */
 export const resolveDefinition = (
   specifier: string,

@@ -13,6 +13,9 @@ import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 
+/**
+ * @internal
+ */
 export const flags = {
   componentDir: Flag.String("component-dir").pipe(
     Flag.withDescription(

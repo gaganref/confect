@@ -139,6 +139,9 @@ export const devHandler = Effect.gen(function* () {
   });
 }).pipe(Effect.provide(Evaluation.prewarmedLayer));
 
+/**
+ * @internal
+ */
 export const dev = Command.make(
   "dev",
   {

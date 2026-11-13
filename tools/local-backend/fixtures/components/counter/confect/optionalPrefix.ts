@@ -13,6 +13,9 @@ const answersOptions = HttpRouter.middleware((next) =>
   }),
 ).layer;
 
+/**
+ * @internal
+ */
 export const optionalPrefix = Layer.mergeAll(
   HttpRouter.add("GET", "/prefix/:id", HttpServerResponse.text("GET ran")),
   HttpRouter.addAll(

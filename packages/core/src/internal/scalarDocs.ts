@@ -35,6 +35,9 @@ const escapeJson = (value: unknown) =>
 // into an imported chunk, which Convex refuses. This copies `layerCdn`'s page
 // byte for byte. Remove when `checkSchemaBundle.mjs` passes with
 // `HttpApiScalar.layerCdn` restored.
+/**
+ * @internal
+ */
 export const scalarDocs = <
   Id extends string,
   Groups extends HttpApiGroup.Constraint,

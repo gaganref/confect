@@ -156,6 +156,8 @@ const startup = Semaphore.makeUnsafe(1);
  * Resolves the directory that holds one local deployment's identity, database,
  * and file storage: `.alchemy/convex/<stack>/<stage>/<deployment>`. Keyed by
  * the deployment name because a deploy key resource only knows that name.
+ *
+ * @internal
  */
 export const dataDirectories = Effect.gen(function* () {
   const path = yield* Path.Path;

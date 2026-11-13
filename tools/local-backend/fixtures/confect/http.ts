@@ -100,6 +100,9 @@ const largeStream = HttpRouter.add(
   ),
 );
 
+/**
+ * @internal
+ */
 export default {
   ...http,
   routes: Layer.mergeAll(http.routes, optionalPrefix, largeStream),

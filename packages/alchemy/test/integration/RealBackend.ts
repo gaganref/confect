@@ -150,6 +150,8 @@ const runsBuiltPackages = Effect.suspend(() => {
  * of a deployment, its key and `Code`, which starts the real pinned backend, or
  * restarts it on the state's data, then runs `during` and stops the backend. It
  * binds a port in `ports`; CONFECT_LOCAL_BACKEND_PORTS overrides the range.
+ *
+ * @internal
  */
 export const make = Effect.fn("RealBackend.make")(function* (options: {
   readonly name: string;
@@ -217,6 +219,8 @@ export const make = Effect.fn("RealBackend.make")(function* (options: {
  * Copy `fixture` to `directory` as a private ESM package named for the
  * directory, each `links` entry a symlink at that relative path to an absolute
  * source.
+ *
+ * @internal
  */
 export const copyApp = Effect.fn("RealBackend.copyApp")(function* (
   fixture: string,

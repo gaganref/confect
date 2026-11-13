@@ -235,6 +235,8 @@ const render = Effect.fnUntraced(function* (
 
 /**
  * The files in `confect/_generated` a section wrote, which carry its header.
+ *
+ * @internal
  */
 export const written = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -267,6 +269,8 @@ const record = Effect.fnUntraced(function* (name: string) {
  * The `confect/` files the declared sections' `generate` and `verify` matched
  * and the `confect/` files those import, as recorded by the last codegen run
  * that loaded them.
+ *
+ * @internal
  */
 export const inputs = Effect.map(
   Effect.all([record(INPUTS), record(VERIFY_INPUTS)]),

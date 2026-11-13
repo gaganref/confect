@@ -50,6 +50,8 @@ export class PushLock extends Context.Service<
  * `confect/alchemy/locks/<deployment>.lock`, so every checkout on the machine
  * shares it. A lock left by a process that exited is taken over; a holder that
  * never releases ends in a typed timeout.
+ *
+ * @internal
  */
 export const layer = (options?: { readonly timeout?: Duration.Input }) =>
   Layer.effect(

@@ -209,6 +209,9 @@ const run = Effect.fn("ForkPackages.command")(function* (
   return output.stdout;
 }, Effect.scoped);
 
+/**
+ * @internal
+ */
 export const readVersions = Effect.fn("ForkPackages.versions")(function* (
   name: string,
 ) {

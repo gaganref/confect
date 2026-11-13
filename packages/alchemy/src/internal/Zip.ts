@@ -84,6 +84,8 @@ const inflate = (data: Uint8Array) =>
 /**
  * Extract one entry of a zip archive. Convex publishes the local backend as a
  * single-file zip, stored or deflated.
+ *
+ * @internal
  */
 export const extract = Effect.fn("Zip.extract")(function* (
   archive: string,

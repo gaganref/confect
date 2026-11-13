@@ -50,6 +50,9 @@ const preflight = (handler: Route["handler"]) =>
     ),
   );
 
+/**
+ * @internal
+ */
 export const withOptions = <A, E, R>(
   routes: Layer.Layer<A, E, R>,
   endpoints: ReadonlySet<string>,

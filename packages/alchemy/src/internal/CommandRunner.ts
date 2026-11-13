@@ -124,6 +124,9 @@ const packageBin = Effect.fn("CommandRunner.packageBin")(function* (
   }
 });
 
+/**
+ * @internal
+ */
 export const layer = Layer.effect(
   CommandRunner,
   Effect.gen(function* () {

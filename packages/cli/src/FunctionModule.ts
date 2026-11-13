@@ -129,6 +129,9 @@ const legacyRouter = String.replace(
   "HttpRouter.forSchema(schema)(http.routes, ",
 );
 
+/**
+ * @internal
+ */
 export const assertOwnedEntrypoints = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;

@@ -289,6 +289,9 @@ export const makeCodegenHandler = (
     Effect.map(({ functionPaths }) => ({ functionPaths })),
   );
 
+/**
+ * @internal
+ */
 export const codegenHandler = makeCodegenHandler();
 
 /**
@@ -1071,6 +1074,8 @@ const installedMounts = Effect.gen(function* () {
  * It must exist before loading tables and specs because they may import bound
  * component IDs and schemas. Returns each mount with the specifier of its
  * definition, relative to `_generated` for an in-repo component.
+ *
+ * @internal
  */
 export const generateComponents = Effect.gen(function* () {
   const path = yield* Path.Path;

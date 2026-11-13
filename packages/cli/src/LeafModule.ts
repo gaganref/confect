@@ -498,6 +498,9 @@ const nameUnwrittenSectionFiles = Effect.fnUntraced(function* (
   return BundleFailedError.make({ file: error.file, errors });
 });
 
+/**
+ * @internal
+ */
 export const validateImpl = Effect.fn("LeafModule.validateImpl")(function* (
   leaf: LoadedLeafModule,
   required: ReadonlyArray<{ readonly key: string }> = [],

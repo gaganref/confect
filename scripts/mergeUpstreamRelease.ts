@@ -112,6 +112,9 @@ const git = Effect.fn("MergeRelease.git")(function* (
   return pipe(result.stdout, String.trim);
 });
 
+/**
+ * @internal
+ */
 export const inspectRelease = Effect.fn("MergeRelease.inspect")(function* (
   directory: string,
   forkRef: string,
@@ -128,6 +131,9 @@ export const inspectRelease = Effect.fn("MergeRelease.inspect")(function* (
   return planMerge({ tag, target, base, forkHead });
 });
 
+/**
+ * @internal
+ */
 export const checkMerge = Effect.fn("MergeRelease.check")(function* (
   directory: string,
   forkRef: string,

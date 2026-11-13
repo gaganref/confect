@@ -55,6 +55,9 @@ export const layerFromConvexDirectory = Layer.effect(
   }),
 );
 
+/**
+ * @internal
+ */
 export const layer = layerFromConvexDirectory.pipe(
   Layer.provide(ConvexDirectory.layer),
 );
