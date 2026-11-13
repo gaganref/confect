@@ -15,12 +15,18 @@ import confectSchema from "./fixtures/confect/_generated/schema";
 
 export const TestConfect = TestConfect_.TestConfect<typeof confectSchema>();
 
-export const layer = TestConfect_.layer(
-  confectSchema,
-  convexSchema,
-  import.meta.glob([
-    "./fixtures/convex/**/*.ts",
-    "./fixtures/convex/**/*.js",
-    "!./fixtures/convex/**/*.*.*",
-  ]),
-);
+const modules = import.meta.glob([
+  "./fixtures/convex/**/*.ts",
+  "./fixtures/convex/**/*.js",
+  "!./fixtures/convex/**/*.*.*",
+]);
+
+/**
+ * The layer under `options`. A kernel backend draws its deployment signing key
+ * from its `seed`, so another seed is another deployment's key. convex-test
+ * ignores it.
+ */
+export const layerWith = (options: TestConfect_.LayerOptions) =>
+  TestConfect_.layer(confectSchema, convexSchema, modules, options);
+
+export const layer = layerWith({});

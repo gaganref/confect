@@ -46,12 +46,6 @@ export const placements: ReadonlyArray<Placement> = [
   ),
   {
     file: "integration.test.ts",
-    name: "TestConfect JWT signing",
-    row: 6,
-    needs: "JWT signing and verification",
-  },
-  {
-    file: "integration.test.ts",
     name: "DatabaseReader > uses the canonical Doc decoder for a text search",
     row: "binary",
     needs: "text search, which the kernel never simulates (RequiresBinary)",
@@ -67,11 +61,5 @@ export const placements: ReadonlyArray<Placement> = [
     name: "mock query compatibility > enforces search candidate limits without blocking early reads",
     row: "binary",
     needs: "text search, which the kernel never simulates (RequiresBinary)",
-  },
-  {
-    file: "components.test.ts",
-    name: "verifies app and generated component mutation JWTs against deployment JWKS",
-    row: 6,
-    needs: "JWT verification",
   },
 ];

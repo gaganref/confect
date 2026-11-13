@@ -637,7 +637,7 @@ describe("snapshot restore", () => {
           components: [""],
           version: "one",
         });
-        const forged = `confect-kernel-snapshot 3 sha256:${createHash("sha256")
+        const forged = `confect-kernel-snapshot 4 sha256:${createHash("sha256")
           .update(body)
           .digest("hex")}\n${body}`;
         const failureResult2 = yield* failure(() =>
@@ -709,7 +709,7 @@ const rehash = (bytes: Uint8Array, edit: (body: any) => void): Uint8Array => {
   edit(body);
   const edited = Json.stringify(body);
   return bytesOf(
-    `confect-kernel-snapshot 3 sha256:${createHash("sha256")
+    `confect-kernel-snapshot 4 sha256:${createHash("sha256")
       .update(edited)
       .digest("hex")}\n${edited}`,
   );

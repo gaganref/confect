@@ -253,6 +253,8 @@ const make = Effect.fnUntraced(function* (options: {
   );
 });
 
+const emptyJwks = `data:application/json;base64,${Buffer.from('{"keys":[]}').toString("base64")}`;
+
 /**
  * @internal
  */
@@ -262,10 +264,7 @@ export const layer = Layer.effect(
     directory: "../fixtures",
     port: ports.app,
     env: [
-      [
-        "TEST_AUTH_JWKS",
-        `data:application/json;base64,${Buffer.from('{"keys":[]}').toString("base64")}`,
-      ],
+      ["TEST_AUTH_JWKS", emptyJwks],
       ["COMPONENT_MARKER", "from-app"],
       ["COMPONENT_HOST_ONLY", "host-only"],
     ],
@@ -297,7 +296,9 @@ export const plainLayer = Layer.effect(
   make({
     directory: "../fixtures/plain",
     port: ports.plain,
-    env: [],
+    // The JWT suite sets the JWKS its minted tokens need. Until then the
+    // fixture's `auth.config.ts` declares an empty one.
+    env: [["TEST_AUTH_JWKS", emptyJwks]],
     redeployFunction: "probe:ping",
   }),
 ).pipe(Layer.provide(NodeServices.layer));

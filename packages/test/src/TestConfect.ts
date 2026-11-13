@@ -78,7 +78,8 @@ export type TargetOptions = {
    * The seed of the random stream the `"kernel"` target's backend draws from on
    * its own, such as the random delay Convex gives each run of an hourly,
    * daily, weekly, monthly or cron-expression job. Two layers with the same
-   * seed draw the same stream. Defaults to `0`. convex-test ignores it.
+   * seed draw the same stream, and on the kernel the same deployment signing
+   * key. Defaults to `0`. convex-test ignores it.
    */
   readonly seed?: number;
 };
@@ -594,6 +595,25 @@ const secretsOf = (registry: {
 }): Pick<LayerOptions, "secrets"> =>
   registry.secrets === undefined ? {} : { secrets: registry.secrets };
 
+/**
+ * The `"convex-test"` target's options. convex-test ignores `world`, but the
+ * fork's kernel lane aliases `convex-test` to the kernel, which draws a signing
+ * key or a cron delay from the backend's own world. Giving it the layer's
+ * seeded world keeps one source of randomness on both lanes.
+ */
+const convexTestOptions = (
+  schema: SchemaDefinition<GenericSchema, true>,
+  modules: Record<string, () => Promise<any>>,
+  options: LayerOptions,
+): Parameters<typeof convexTest>[0] => {
+  const withWorld = {
+    schema,
+    modules,
+    world: layerWorld(options.seed ?? 0),
+  };
+  return withWorld;
+};
+
 const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   databaseSchema: DatabaseSchema_,
   convexSchemaDefinition: SchemaDefinition<GenericSchema, true>,
@@ -620,7 +640,9 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
               ),
             ),
           })
-        : convexTest(convexSchemaDefinition, modules);
+        : convexTest(
+            convexTestOptions(convexSchemaDefinition, modules, options),
+          );
     // convex-test takes three arguments and ignores the options. The kernel
     // reads `standing`.
     const registerComponent =
