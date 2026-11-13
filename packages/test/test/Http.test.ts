@@ -10,7 +10,7 @@ import {
   queryGeneric,
   type UserIdentity,
 } from "convex/server";
-import { v } from "convex/values";
+import { ConvexError, v } from "convex/values";
 import * as Effect from "effect/Effect";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 
@@ -70,6 +70,13 @@ router.route({
   method: "GET",
   handler: httpActionGeneric(async () => {
     throw new Error("The route failed.");
+  }),
+});
+router.route({
+  path: "/fail-convex-error",
+  method: "GET",
+  handler: httpActionGeneric(async () => {
+    throw new ConvexError({ code: "denied", attempt: 2 });
   }),
 });
 
@@ -204,14 +211,45 @@ describe("HTTP routes", () => {
     }),
   );
 
-  it.effect(
-    "a route's uncaught error rejects the fetch, as on convex-test",
-    () =>
+  // The pinned binary's answers, from
+  // `packages/server/test/local-backend/httpErrors.test.ts`.
+  it.effect.each([
+    {
+      name: "an Error",
+      path: "/fail",
+      uncaught: "Uncaught Error: The route failed.",
+      data: undefined,
+    },
+    {
+      name: "a ConvexError",
+      path: "/fail-convex-error",
+      uncaught: 'Uncaught ConvexError: {"code":"denied","attempt":2}',
+      data: { code: "denied", attempt: 2 },
+    },
+  ])(
+    "a route that throws $name answers the binary's 500 JSON error body",
+    ({ path, uncaught, data }) =>
       Effect.gen(function* () {
         const t = httpWorld();
-        yield* call(() =>
-          expect(t.fetch("/fail")).rejects.toThrow("The route failed."),
+        const response = yield* call(() => t.fetch(path));
+        expect(response.status).toBe(500);
+        expect(response.headers.get("content-type")).toBe("application/json");
+        const body = (yield* call(() => response.json())) as Record<
+          string,
+          unknown
+        >;
+        expect(Object.keys(body)).toStrictEqual(
+          data === undefined ? ["code", "trace"] : ["code", "trace", "data"],
         );
+        expect(body["code"]).toMatch(
+          new RegExp(
+            `^\\[Request ID: [0-9a-f]{16}\\] Server Error: ${RegExp.escape(uncaught)}$`,
+          ),
+        );
+        expect(body["trace"]).toMatch(
+          new RegExp(`^${RegExp.escape(uncaught)}\\n(    at .*\\n)*$`),
+        );
+        expect(body["data"]).toStrictEqual(data);
       }),
   );
 

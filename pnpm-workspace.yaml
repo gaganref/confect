@@ -4,6 +4,7 @@ packages:
   - apps/*
   - packages/server/test/mock-backend/fixtures
   - packages/server/test/local-backend/fixtures
+  - packages/server/test/local-backend/fixtures/plain
 
 allowBuilds:
   "@parcel/watcher": false

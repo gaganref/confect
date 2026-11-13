@@ -1,5 +1,6 @@
 import { HttpRouter as ConfectHttpRouter } from "@confect/server";
 import { httpActionGeneric } from "convex/server";
+import { ConvexError } from "convex/values";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Logger from "effect/Logger";
@@ -136,6 +137,23 @@ http.route({
   method: "GET",
   handler: httpActionGeneric(() =>
     Promise.resolve(new Response("native", { status: 200 })),
+  ),
+});
+
+// Plain Convex routes that throw, so the backend's own answer to an uncaught
+// handler error shows through instead of the Effect router's.
+http.route({
+  path: "/convex-native/throws",
+  method: "GET",
+  handler: httpActionGeneric(() =>
+    Promise.reject(new Error("The route failed.")),
+  ),
+});
+http.route({
+  path: "/convex-native/throws-convex-error",
+  method: "GET",
+  handler: httpActionGeneric(() =>
+    Promise.reject(new ConvexError({ code: "denied", attempt: 2 })),
   ),
 });
 
