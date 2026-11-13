@@ -407,3 +407,60 @@ wrapped the other's accessor once more and every read of these globals went
 deeper. The kernel now leaves an accessor in place when it already reads
 through one of the kernel's, which a sentinel in a fresh copy shows, and the
 chain settles after the first call on each target.
+
+## I/O bans (row 6)
+
+Convex refuses I/O inside a query or mutation. At the local backend's pinned
+`precompiled-2026-10-28-cccbade` (convex-backend `cccbade4`), a query's or
+mutation's async op is refused by `start_async_op`
+(`crates/isolate/src/environment/udf/mod.rs:367-375`) with
+`not_allowed_in_udf` (`:264-272`): `No{Name}InQueriesOrMutations`, "Can't use
+{description} in queries and mutations. Please consider using an action. See
+https://docs.convex.dev/functions/actions for more details." The names and
+descriptions are `AsyncOpRequest::name_for_error` and `description_for_error`
+(`crates/isolate/src/environment/async_op.rs:47-66`). The error reaches
+JavaScript as a plain, catchable `Error` with that message
+(`handle_syscall_or_op_error` in `crates/isolate/src/request_scope.rs`).
+
+- `fetch(url)` goes through `fetchWithoutRedirect`, which rewraps the op error
+  as a `TypeError` naming the target without its query string:
+  `fetch to <origin><path> failed: Can't use fetch() in queries and mutations.
+  …` (`npm-packages/udf-runtime/src/26_fetch.ts:78-113`). The handler can catch
+  it and go on.
+- `setTimeout` and `setInterval` return their ID, then their sleep op rejects
+  with no handler (`02_timers.ts:64-80`), so the function ends with "Can't use
+  setTimeout in queries and mutations. …" at its next microtask checkpoint
+  (`run_inner`'s unhandled rejection check, `udf/mod.rs:1121-1137`), whatever
+  the handler catches. `clearTimeout` and `clearInterval` are plain map
+  deletes and are allowed.
+- The runtime defines no `setImmediate`.
+
+The kernel's `src/internal/IoBans.ts` wraps `fetch`, `setTimeout` and
+`setInterval` and hides `setImmediate`, and each call checks the kernel
+function running it. So a reference a module kept when it loaded, a nested
+query or mutation, and a global a test replaced after the backend opened are
+all refused inside a query or mutation, and every wrapper calls the host's
+function anywhere else. The wrappers are installed when a world is built and
+again whenever a kernel function starts. A timer ends its function through
+`Execution.ts`'s `endings`, so the function fails with the binary's message
+after its handler returns, and a mutation publishes none of its writes.
+
+`test/IoBans.test.ts` runs each call on the kernel, and
+`packages/server/test/local-backend/ioBans.test.ts` runs the same calls on the
+binary through `LocalBackend.ts`, with a loopback server for the action's
+fetch.
+
+convex-test 0.0.65 disagrees with the binary here and the kernel follows the
+binary: its `disallowedInTransaction` throws "`fetch` is not supported in Convex
+queries or mutations…" synchronously, and it also refuses `clearTimeout` and
+`clearInterval` (`index.ts:2929-2968`).
+
+Not covered: `formData()`'s multipart parse (`FormParse`) and storage and
+stream ops are also refused in a query or mutation, but no kernel query or
+mutation reaches them through a host API, and their rows are storage and HTTP.
+Cryptographic randomness (`crypto.subtle.generateKey` and the algorithms that
+draw from `crypto_rng`, `udf/mod.rs:290-292`) belongs to the randomness row.
+Effect picks its scheduler's timer from the host realm when it loads, so its
+default scheduler finds `setImmediate` where the binary's would use
+`setTimeout`. Confect's queries and mutations run on Effect's `"sync"`
+scheduler (`RegisteredConvexFunction.ts:268`, `:385`), which sets no timer.

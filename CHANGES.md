@@ -116,6 +116,21 @@ The option is removed at promotion, when the kernel replaces convex-test.
 Changeset: `testconfect-kernel-target.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel I/O bans
+
+On the kernel, a query or mutation that calls `fetch` gets the `TypeError` the
+Convex binary rejects with, naming the target without its query string. One
+that starts `setTimeout` or `setInterval` fails with the binary's "Can't use
+setTimeout in queries and mutations" once its handler returns, whatever the
+handler caught, and a mutation publishes none of its writes. `setImmediate`
+reads `undefined` there, as the binary defines none, and the clears stay
+allowed. Each wrapper checks the kernel function running it, so a reference a
+module kept, a nested call and a global a test replaced are refused too.
+Actions keep the host's `fetch` and timers. The local-backend suite pins each
+behaviour on the binary. This is the I/O bans row of Frame's backend testing
+kernel (Frame ADR 0012, row 6). Changeset: `test-kernel-io-bans.md`. Upstream:
+fork only, as the kernel is fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
