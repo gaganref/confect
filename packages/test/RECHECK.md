@@ -547,10 +547,10 @@ route's status and headers and no body.
 A mounted component's HTTP module now reaches only `MountedHttp`'s bridge,
 which builds the router once per site URL. Registered as a backend module, the
 kernel loaded it at open, under no mount's site URL, and a module that failed
-to build failed every call to the world. On the binary a module that throws at
-import fails the push, so there is no binary answer to copy. The rule follows
-the bridge's own contract instead: a mount's router is built at that mount's
-site URL, and a failure there fails that mount's requests.
+to build failed every call to the world. The binary fails the push of a
+deployment whose module throws at import, so this is a test-only isolation: a
+mount's router is built at that mount's site URL, as the binary builds it, and
+a failure there fails that mount's requests and no others.
 
 `packages/server/test/signedEnvelope.ts` is a route-local ingress rule: a JSON
 envelope `{ id, event }` whose `x-confect-signature` is the HMAC-SHA-256 of the
@@ -563,13 +563,36 @@ garbage shapes on both lanes and checks after each refusal that the protected
 `test/local-backend/http.test.ts` sends the accepted envelope, a tampered one
 and a signed non-UTF-8 body to the binary and gets the same answers.
 
-Open: a route's uncaught error rejects the kernel's `fetch`, as convex-test's
-and the mounted bridge's do. The binary answers 500 with
-`{ code: "[Request ID: …] Server Error: …" }` instead
-(`RedactedJsError::to_http_response_parts`,
-`crates/application/src/redaction.rs:143-160`). Identity comes from the test's
-accessor, not from an `Authorization` header, which is the JWT row's. Not
-simulated: TLS, streaming request and response bodies, and edge limits.
+A route whose handler throws answers as the binary does, on the root and
+through the mounted bridge alike: 500, `content-type: application/json`, and
+`{ code, trace }`, plus `data` for a `ConvexError`. `code` is
+`[Request ID: <16 hex digits>] Server Error: Uncaught <name>: <message>`, and
+`trace` is that uncaught line and the error's stack frames, one per line, each
+line ending in a newline. The binary builds it in
+`RedactedJsError::to_http_response_parts`
+(`crates/application/src/redaction.rs:143-160`), sends it from
+`Application::run_http_action` (`crates/application/src/lib.rs:1542-1548`) with
+a fresh request ID, and sets the content type in
+`HttpActionResponsePart::from_json` (`crates/udf/src/http_action.rs:133-141`).
+`test/local-backend/httpErrors.test.ts` pins it on the binary through
+`LocalBackend.plainLayer`, a fixture of plain Convex HTTP actions on port 3230,
+since a Confect router answers a handler's failure itself. The kernel's frames
+are the host's, its request IDs are counted, and its `data` is the parsed JSON
+where the binary writes a float as `2.0`.
+
+convex-test rejects the `fetch` instead. The two root cases
+(`test/mock-backend/httpRouteError.test.ts` and `httpRouteConvexError.test.ts`)
+are conformance exceptions in the convex-test lane. #137's `conformance.ts`
+machinery is not on `main` yet, so they are recorded the way the lane records
+an exception today: `vitest.mock-backend.config.ts` lists each one, its exact
+case, the binary behaviour, an owner, the convex-test version and the binary
+evidence, and excludes its file, which holds that one case. An entry checked
+against another convex-test version fails the lane. The mounted case runs on
+both lanes, since the bridge is the adapter's own.
+
+Identity comes from the test's accessor, not from an `Authorization` header,
+which is the JWT row's. Not simulated: TLS, streaming request and response
+bodies, and edge limits.
 
 `http.test.ts` and the mounted HTTP route cases, `components.test.ts:534` to
 `:736`, now run in the kernel lane.

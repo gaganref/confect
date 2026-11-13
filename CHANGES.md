@@ -164,6 +164,10 @@ identity, the request's headers and its exact body bytes. A request no route
 matches gets the binary's 404 `No matching routes found`, and a HEAD request
 gets no body. A mounted component's HTTP module is built only by its mount's
 bridge, at the mount's site URL, so the kernel no longer constructs it at open.
+A route whose handler throws answers the binary's 500 with its JSON error body,
+`{ code, trace, data? }`, on the kernel and through the mounted bridge on both
+targets; convex-test rejects the root `fetch` instead, so those two cases are
+convex-test lane exceptions, pinned on the binary by a plain-route probe.
 A route-local signed-envelope rule (`packages/server/test/signedEnvelope.ts`,
 HMAC-SHA-256 with a test-owned secret) backs a route in both server fixtures:
 the mock-backend suite runs a positive control and sixteen malformed shapes,
