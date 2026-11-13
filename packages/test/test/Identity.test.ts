@@ -28,6 +28,7 @@ import * as Redaction from "../src/internal/Redaction";
 import {
   jwksUrl,
   mint,
+  throughHop,
   provider,
   rsaKeys,
   sign,
@@ -35,6 +36,7 @@ import {
   type VerifierOutcome,
 } from "../../../tools/local-backend/fixtures/minted";
 import * as TokenReview from "../../../tools/local-backend/fixtures/tokenReview";
+import * as TokenReviewHop from "../../../tools/local-backend/fixtures/plain/convex/tokenReview";
 import { oversizedRsa } from "./fixtures/oversized";
 
 const whoami = makeFunctionReference<"query", {}, object | null>(
@@ -171,6 +173,49 @@ describe("HTTP actions under a presented token", () => {
       expect(response.status).toBe(200);
       const review = yield* Effect.promise(() => response.json());
       expect(review).toEqual(minted.review(start / 1000));
+    }),
+  );
+});
+
+/**
+ * A backend of the local-backend suite's plain fixture, whose `auth.config`
+ * declares the minted tokens' provider with `jwks`.
+ */
+const plainWorld = (jwks: string): KernelControls =>
+  convexTest({
+    schema: defineSchema({}),
+    modules: {
+      "_generated/server.ts": () => Promise.resolve({}),
+      "auth.config.ts": () =>
+        Promise.resolve({ default: { providers: [{ ...provider, jwks }] } }),
+      "convexErrors.ts": () =>
+        import("../../../tools/local-backend/fixtures/plain/convex/convexErrors"),
+      "tokenReview.ts": () =>
+        import("../../../tools/local-backend/fixtures/plain/convex/tokenReview"),
+      "http.ts": () =>
+        import("../../../tools/local-backend/fixtures/plain/convex/http"),
+    },
+    runtime: { now: () => start, commitTs: (version) => BigInt(version) },
+  });
+
+describe("an HTTP action's calls under a presented token", () => {
+  it.effect.each(
+    Arr.flatMap(names, (name) =>
+      Arr.map(TokenReviewHop.hops, (hop) => ({ name, hop })),
+    ),
+  )("$name, through $hop", ({ name, hop }) =>
+    Effect.gen(function* () {
+      const { jwks, cases } = yield* mint(start / 1000);
+      const t = plainWorld(jwks);
+      const minted = Option.getOrThrow(
+        Arr.findFirst(cases, (c) => c.name === name),
+      );
+      const response = yield* Effect.promise(() =>
+        t.withToken(minted.token).fetch(`${TokenReviewHop.path}?hop=${hop}`),
+      );
+      expect(response.status).toBe(200);
+      const review = yield* Effect.promise(() => response.json());
+      expect(review).toEqual(throughHop(minted.review(start / 1000), hop));
     }),
   );
 });

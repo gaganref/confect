@@ -109,6 +109,24 @@ export const jwksUrl = (keys: ReadonlyArray<object>) =>
  * foreign key signs under the declared key's `kid` and issuer. `signDeclared`
  * signs the valid control's claims with overrides.
  */
+/**
+ * What a function an HTTP action calls through `ctx.runQuery`,
+ * `ctx.runMutation` or `ctx.runAction` sees of the request's token, given what
+ * the HTTP action itself sees. A root callee gets the request's identity
+ * unchanged (`model/src/components/auth.rs:6-19`). An action reads it as the
+ * HTTP action does, so a refused token's error is thrown again
+ * (`isolate/src/environment/action/task_executor.rs:205-216`). A query or
+ * mutation reads its transaction's identity, and the unknown identity of a
+ * refused token reads as none
+ * (`isolate/src/environment/udf/async_syscall.rs:1111-1142`,
+ * `database/src/transaction.rs:390-396`).
+ */
+export const throughHop = (
+  review: TokenReview,
+  hop: "query" | "mutation" | "action",
+): TokenReview =>
+  hop === "action" || review._tag === "identified" ? review : identified(null);
+
 export const mint = (nowSeconds: number) =>
   Effect.gen(function* () {
     const declared = yield* rsaKeys();
