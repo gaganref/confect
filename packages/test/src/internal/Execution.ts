@@ -792,14 +792,21 @@ export class World {
   /**
    * The live registries `Snapshot.contract.live` names, each a count: calls
    * from the test, scheduler walks, function executions (nested and detached
-   * ones included) and registered subscribers. Held attempts are `holding`.
+   * ones included), open sync sockets and registered subscribers. Held attempts
+   * are `holding`.
    */
   private readonly live = {
     running: 0,
     walks: 0,
     functions: 0,
+    sockets: 0,
     subscribers: 0,
   };
+  /**
+   * Listeners `Sync` registers, told after each commit publishes, so a socket
+   * whose queries the commit invalidated sends its client a transition.
+   */
+  private readonly watchers = new Set<() => void>();
   /**
    * The latest identity version a subscriber's `authenticate` reached. Each
    * subscriber starts at the epoch, and each identity change advances it, so a
@@ -994,6 +1001,16 @@ export class World {
     return token === undefined
       ? this.open().then(() => caller)
       : this.authenticate(caller, token);
+  }
+
+  /**
+   * The caller `token` makes from `caller`, as a sync session's Authenticate
+   * presents it: verified against the app's `auth.config` providers at the
+   * kernel's time, as one live call, so a snapshot refuses while it is
+   * pending.
+   */
+  verify(caller: Caller, token: string): Promise<Caller> {
+    return this.during(() => this.authenticate(caller, token));
   }
 
   /**
@@ -1579,7 +1596,33 @@ export class World {
       walks: this.live.walks,
       functions: this.live.functions,
       held: this.holding.size,
+      sockets: this.live.sockets,
       subscribers: this.live.subscribers,
+    };
+  }
+
+  /**
+   * Count a sync socket open until `close` is called.
+   */
+  openSocket(): { readonly close: () => void } {
+    this.live.sockets++;
+    let open = true;
+    return {
+      close: () => {
+        if (open) this.live.sockets--;
+        open = false;
+      },
+    };
+  }
+
+  /**
+   * Call `listener` after each commit publishes, until the returned function is
+   * called. It runs in the commit's turn, so it must only schedule work.
+   */
+  watch(listener: () => void): () => void {
+    this.watchers.add(listener);
+    return () => {
+      this.watchers.delete(listener);
     };
   }
 
@@ -1978,6 +2021,11 @@ export class World {
           message: `The test backend holds attempts ${Arr.join(held, ", ")}, which a snapshot does not carry. Apply them first.`,
         });
       },
+      sockets: (count) =>
+        KernelRefusal.SnapshotSocketsOpen.make({
+          sockets: count,
+          message: `The test backend has ${count} open sync sockets, whose clients hold versions and query values a restore would rewind. Close every client first.`,
+        }),
       subscribers: (count) =>
         KernelRefusal.SnapshotSubscribed.make({
           subscribers: count,
@@ -2296,6 +2344,7 @@ export class World {
       });
     }
     this.state = Kernel.apply(this.state, writes, commitTs);
+    for (const watcher of this.watchers) watcher();
     return commitTs;
   }
 
@@ -2920,6 +2969,15 @@ export class World {
       before: document(change.before),
       after: document(change.after),
     };
+  }
+
+  /**
+   * `json` as an artifact writes it: every string holding a kept secret
+   * replaced by the marker text. For protocol messages and probe records, whose
+   * values have no declared shape of their own.
+   */
+  redactJson(json: JSONValue): JSONValue {
+    return Redaction.scrubJson(json, this.secrets);
   }
 
   /**

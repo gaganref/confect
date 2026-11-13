@@ -254,6 +254,10 @@ export const contract = {
       excluded:
         "Read from `authConfig` on the first presented token, so the restoring world reads its own.",
     },
+    watchers: {
+      excluded:
+        "Commit listeners of `Sync`'s open sockets, live client state counted under `live.sockets`.",
+    },
     deploymentKey: {
       exported:
         "signingKey, its seed as a secret marker. A restore installs the seed from the source's `secrets()` and never draws.",
@@ -281,6 +285,11 @@ export const contract = {
       blocks: "export and restore",
       reason: "Held attempts are running closures a snapshot does not carry.",
     },
+    sockets: {
+      blocks: "restore",
+      reason:
+        "Open sync sockets, live client state. A restore would rewind the state versions and query values their clients hold, so it needs a world with none open.",
+    },
     subscribers: {
       blocks: "restore",
       reason:
@@ -301,7 +310,11 @@ export const contract = {
   outside: {
     subscriptions: {
       excluded:
-        "Live client state: subscribers, their callers and runs. A restore requires a world with no subscribers (`live.subscribers`) and starts with none. Identity versions continue through `identityEpoch`.",
+        "Live client state: subscribers, their callers and runs, and the query cache of the subscribers `Sync` pushes, whose results name commits of the world that ran them. A restore requires a world with no subscribers (`live.subscribers`) and starts with none. Identity versions continue through `identityEpoch`.",
+    },
+    sync: {
+      excluded:
+        "`Sync`'s sessions: each one's request ledger, and each socket's query set, query-set and identity versions and presented token. Sessions are client state, as subscriptions are: a restore needs a world with no open socket (`live.sockets`), and a socket's subscriber blocks one too (`live.subscribers`). A ledger names commits of the world it answered, so it never travels with a snapshot.",
     },
     requestIds: {
       excluded:
