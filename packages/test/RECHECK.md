@@ -691,9 +691,11 @@ negative: `Metering.ts` asserts it.
 difference by name. `SystemTableReadIntervals` is the one this row adds. The
 binary's `databaseQueries` also counts the system-table intervals it reads to
 run a function: the backend state, the module, the UDF config and the
-component. On the local-backend fixture a root mutation starts at 19, its first
-nested call adds 2, and a stale-snapshot query starts at 19 again. That share
-depends on the deployment, so the kernel does not simulate it.
+component. On the local-backend fixture a root mutation starts at 20, its first
+nested call adds 2, and a stale-snapshot query starts at 20 again. That share
+depends on the deployment, so the kernel does not simulate it: adding the I/O
+bans group (`groups/ioBans`) to the fixture moved both starts from 19, and
+removing it again restores 19.
 
 Each read maps a total `x` to `max(0, x - before) + after`, which never
 decreases and never moves two totals apart. So the binary's count stays between
@@ -702,8 +704,8 @@ the kernel's and the kernel's plus the system share:
 - While neither count saturates, the binary's is exactly the kernel's plus the
   share, and the binary refuses `TooManyReads` that many reads sooner.
 - A read that covers inserted IDs can saturate only the kernel's lower count,
-  and the gap shrinks. One insert and a read of its ID answer 19 on the binary
-  and 1 on the kernel, a gap of 18.
+  and the gap shrinks. One insert and a read of its ID answer 20 on the binary
+  and 1 on the kernel, a gap of 19.
 - Once a read saturates both, they agree. 100 inserts and a read of one answer
   100 on both.
 
