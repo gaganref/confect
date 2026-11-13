@@ -11,5 +11,6 @@ const definitions = ConvexFunctionDefinitions.buildForGroup<typeof import("../..
 
 export default {
 ["stamp"]: RegisteredConvexFunction.register({ ...definitions["stamp"], handler: forward(definitions["stamp"].handler) }),
+["maxAfterPending"]: RegisteredConvexFunction.register({ ...definitions["maxAfterPending"], handler: forward(definitions["maxAfterPending"].handler) }),
 ["newestFirst"]: RegisteredConvexFunction.register({ ...definitions["newestFirst"], handler: forward(definitions["newestFirst"].handler) }),
 } as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/commitTs.spec.js")["default"]>;

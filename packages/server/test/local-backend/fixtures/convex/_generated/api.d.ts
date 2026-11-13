@@ -83,6 +83,12 @@ export declare const api: {
       >;
     };
     commitTs: {
+      maxAfterPending: FunctionReference<
+        "mutation",
+        "public",
+        { caseId: string },
+        { stored: "placeholder" | "bigint"; value: string; written: number }
+      >;
       newestFirst: FunctionReference<
         "query",
         "public",
@@ -483,6 +489,12 @@ export declare const api: {
       >;
     };
     transactions: {
+      insertedIntervals: FunctionReference<
+        "mutation",
+        "public",
+        { caseId: string; count: number },
+        { afterGet: number; afterInserts: number; afterScan: number }
+      >;
       limitedRead: FunctionReference<
         "query",
         "public",
@@ -501,6 +513,15 @@ export declare const api: {
         { caseId: string; limit: number },
         null
       >;
+      metrics: FunctionReference<
+        "mutation",
+        "public",
+        { caseId: string },
+        {
+          end: Record<string, { remaining: number; used: number }>;
+          start: Record<string, { remaining: number; used: number }>;
+        }
+      >;
       rollback: FunctionReference<
         "mutation",
         "public",
@@ -512,6 +533,12 @@ export declare const api: {
         "public",
         { caseId: string; count: number },
         null
+      >;
+      staleMetrics: FunctionReference<
+        "mutation",
+        "public",
+        {},
+        Record<string, { remaining: number; used: number }>
       >;
       staleRead: FunctionReference<
         "mutation",
@@ -557,11 +584,18 @@ export declare const internal: {
       >;
     };
     transactions: {
+      idle: FunctionReference<"mutation", "internal", {}, null>;
       read: FunctionReference<
         "query",
         "internal",
         { caseId: string },
         Array<string>
+      >;
+      readMetrics: FunctionReference<
+        "query",
+        "internal",
+        {},
+        Record<string, { remaining: number; used: number }>
       >;
       write: FunctionReference<
         "mutation",

@@ -6,7 +6,7 @@ import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
-import { App, Mount } from "@confect/core";
+import { App, Mount, Table } from "@confect/core";
 import {
   componentsGeneric,
   defineSchema,
@@ -372,4 +372,101 @@ it.effect.each([
       yield* advancesTimers.pipe(Effect.provide(layer({ target: "kernel" }))),
     ).toBe(false);
   }),
+);
+
+const vaultCanary = "canary-vault-9a6e3f10";
+const vault = DatabaseSchema.make({
+  keys: Table.make(() =>
+    Schema.Struct({ token: Schema.RedactedFromValue(Schema.String) }),
+  )("keys"),
+});
+const Vault = TestConfect.TestConfect<typeof vault>();
+
+it.effect(
+  "on the kernel target, a value under a secret node of the app's table schema reaches a failure report as a marker",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* Vault;
+      yield* test.run(
+        withCtx((ctx) => ctx.db.insert("keys", { token: vaultCanary })),
+      );
+      const exit = yield* Effect.exit(
+        test.run(
+          withCtx((ctx) =>
+            ctx.db
+              .query("keys")
+              .first()
+              .then((key) => {
+                throw new Error(`the stored key is ${key!.token as string}`);
+              }),
+          ),
+        ),
+      );
+      assert(Exit.isFailure(exit));
+      const report = Cause.pretty(exit.cause);
+      expect(report).toContain("the stored key is [redacted]");
+      expect(report).not.toContain(vaultCanary);
+    }).pipe(
+      Effect.provide(
+        TestConfect.layer(
+          vault,
+          defineSchema({ keys: defineTable({ token: v.string() }) }),
+          generatedOnly,
+          { target: "kernel" },
+        ),
+      ),
+    ),
+);
+
+const hookCanary = "canary-hook-5d2a7c90";
+
+it.effect(
+  "on the kernel target, the layer's secret policy hook marks a table the app's Confect schema does not declare",
+  () =>
+    Effect.gen(function* () {
+      const test = yield* Vault;
+      yield* test.run(
+        withCtx((ctx) => ctx.db.insert("tokens", { token: hookCanary })),
+      );
+      const exit = yield* Effect.exit(
+        test.run(
+          withCtx((ctx) =>
+            ctx.db
+              .query("tokens")
+              .first()
+              .then((row) => {
+                throw new Error(`the stored token is ${row!.token as string}`);
+              }),
+          ),
+        ),
+      );
+      assert(Exit.isFailure(exit));
+      const report = Cause.pretty(exit.cause);
+      expect(report).toContain("the stored token is [redacted]");
+      expect(report).not.toContain(hookCanary);
+    }).pipe(
+      Effect.provide(
+        TestConfect.layer(
+          vault,
+          defineSchema({
+            keys: defineTable({ token: v.string() }),
+            tokens: defineTable({ token: v.string() }),
+          }),
+          generatedOnly,
+          {
+            target: "kernel",
+            secrets: {
+              tables: {
+                "": {
+                  tokens: () =>
+                    Schema.Struct({
+                      token: Schema.RedactedFromValue(Schema.String),
+                    }),
+                },
+              },
+            },
+          },
+        ),
+      ),
+    ),
 );
