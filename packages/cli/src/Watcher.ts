@@ -731,9 +731,23 @@ const handleConfectChange = ({
     Match.exhaustive,
   );
 
+  // Sections read the files they match and those files' imports, entry points
+  // included. An entry point's own watcher only validates or updates that
+  // entry, so an edit to a recorded section input reruns codegen in full.
+  const source = relativePath.split(/[/\\]/).join("/");
+  const regenerateIfInput = SectionFiles.inputs.pipe(
+    Effect.map((inputs) => inputs.includes(source)),
+    Effect.orElseSucceed(() => false),
+    Effect.flatMap((listed) =>
+      listed
+        ? flipDirtyAndSignal(pendingRef, signal, restart, false)
+        : Effect.void,
+    ),
+  );
+
   const entry = EntryPoint.parse(relativePath);
   if (Option.isSome(entry)) {
-    return isLifecycleChange ? restartEntry(entry.value) : Effect.void;
+    return isLifecycleChange ? restartEntry(entry.value) : regenerateIfInput;
   }
 
   // A stray `confect/schema.ts` (now codegen-owned at
@@ -754,22 +768,11 @@ const handleConfectChange = ({
   // input, whether a file it matched or one that file imports, may have no
   // entry point importing it and is read again only by a full run, even after
   // a refusal.
-  const source = relativePath.split(/[/\\]/).join("/");
   return Match.value(eventTag).pipe(
     Match.whenOr("Create", "Remove", () =>
       flipDirtyAndSignal(pendingRef, signal, restart, false),
     ),
-    Match.when("Update", () =>
-      SectionFiles.inputs.pipe(
-        Effect.map((inputs) => inputs.includes(source)),
-        Effect.orElseSucceed(() => false),
-        Effect.flatMap((listed) =>
-          listed
-            ? flipDirtyAndSignal(pendingRef, signal, restart, false)
-            : Effect.void,
-        ),
-      ),
-    ),
+    Match.when("Update", () => regenerateIfInput),
     Match.exhaustive,
   );
 };

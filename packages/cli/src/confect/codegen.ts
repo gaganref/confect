@@ -49,6 +49,7 @@ import {
 import { ProjectRoot } from "../ProjectRoot.js";
 import { preserveComponentOutput } from "../Rollback.js";
 import { assemblyNodesFromLeaves } from "../SpecAssemblyNode.js";
+import * as ManifestSections from "../ManifestSections.js";
 import * as SectionFiles from "../SectionFiles.js";
 import * as TableModule from "../TableModule.js";
 import * as templates from "../templates.js";
@@ -70,6 +71,12 @@ import {
 } from "./declaration.js";
 
 const GENERATED_DIRNAME = "_generated";
+
+const declaredSections = (backend: Option.Option<SectionFiles.Backend>) =>
+  Option.match(backend, {
+    onNone: () => [],
+    onSome: ({ sections }) => sections,
+  });
 
 const isComponent = Effect.map(
   ConvexDirectory.target,
@@ -166,7 +173,7 @@ const runCodegen = Effect.gen(function* () {
   const {
     app: declared,
     digest,
-    target,
+    backend,
   } = yield* syncDeclaration(previousManifest);
   const mounts = yield* generateComponents;
   yield* validateCallbackPrefixes(declared);
@@ -178,11 +185,13 @@ const runCodegen = Effect.gen(function* () {
   yield* generateRuntimeSchema(tableModules);
   const leaves = yield* loadAll;
   yield* rejectComponentNodeGroups(leaves);
-  const sections = yield* SectionFiles.sync(target, leaves, mounts);
+  yield* Effect.fromResult(ManifestSections.refuseSpecSections(leaves));
+  const sections = yield* SectionFiles.sync(backend, leaves, mounts);
   // Nothing above writes a Convex entrypoint. The check waits for this run's
   // section files, because the HTTP router may import any of them.
   yield* FunctionModule.assertOwnedEntrypoints;
   yield* syncManifestSections(
+    declaredSections(backend),
     leaves,
     previousManifest,
     digest,
@@ -233,6 +242,7 @@ const runCodegen = Effect.gen(function* () {
   yield* SectionFiles.removeUnclaimed(sections.files);
   yield* syncDeployModule(declared);
   if (Option.isSome(declared)) yield* generateTesting(declared.value);
+  yield* SectionFiles.verify(backend, mounts);
   return {
     functionPaths,
     snapshot,
@@ -271,22 +281,21 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
     return yield* withImplFiles(paths, (leaves) =>
       Effect.gen(function* () {
         yield* rejectComponentNodeGroups(leaves);
+        yield* Effect.fromResult(ManifestSections.refuseSpecSections(leaves));
         const next = yield* Effect.fromResult(
           GenerationSnapshot.update(snapshot, leaves),
         );
         const {
           app: declared,
           digest,
-          target,
+          backend,
         } = yield* syncDeclaration(previousManifest);
         const all = Option.isSome(declared) ? yield* loadAll : [];
-        const sections = yield* SectionFiles.sync(
-          target,
-          all,
-          Option.isSome(target) ? yield* installedMounts : [],
-        );
+        const mounts = Option.isSome(backend) ? yield* installedMounts : [];
+        const sections = yield* SectionFiles.sync(backend, all, mounts);
         if (Option.isSome(declared))
           yield* syncManifestSections(
+            declaredSections(backend),
             all,
             previousManifest,
             digest,
@@ -309,6 +318,7 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
         yield* FunctionModule.applyFunctionPlan(
           GenerationSnapshot.diff(snapshot, next),
         );
+        yield* SectionFiles.verify(backend, mounts);
         return next;
       }),
     );

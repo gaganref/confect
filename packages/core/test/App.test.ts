@@ -18,7 +18,22 @@ const Workpool = Component.make("workpool", {
   client: (native: unknown) => native,
 });
 
+const observe = {
+  owner: "test/observe",
+  format: 1,
+  describe: () => null,
+};
+
 describe("App", () => {
+  it("keeps the declared manifest sections for an app and a component, and defaults to none", () => {
+    const manifestSections = [{ key: "observe", section: observe }];
+    expect([
+      App.make({ env, manifestSections }).manifestSections,
+      App.make({ env, kind: "component", manifestSections }).manifestSections,
+      App.make({ env }).manifestSections,
+    ]).toEqual([manifestSections, manifestSections, []]);
+  });
+
   it("keeps required middleware and defaults to no requirements", () => {
     class Required extends MiddlewareSpec.MiddlewareSpec<Required>()(
       "Required",

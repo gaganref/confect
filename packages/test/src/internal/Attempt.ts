@@ -51,6 +51,11 @@ export class KernelAttempt {
    * reads stay.
    */
   readonly meter: Metering.Meter;
+  /**
+   * Whether the attempt asked for its caller's identity, and the time it read.
+   * Every frame of the attempt shares them, as it shares the reads.
+   */
+  private readonly observed: { identity: boolean; time: number | null };
 
   constructor(
     readonly snapshot: Kernel.State,
@@ -59,10 +64,33 @@ export class KernelAttempt {
   ) {
     this.allReads = parent?.allReads ?? [];
     this.meter = parent?.meter.child() ?? new Metering.Meter();
+    this.observed = parent?.observed ?? { identity: false, time: null };
   }
 
   get reads(): ReadonlyArray<ReadSet.Read> {
     return this.allReads;
+  }
+
+  /**
+   * Whether the function asked for its caller's identity.
+   */
+  get observedIdentity(): boolean {
+    return this.observed.identity;
+  }
+
+  /**
+   * The pinned time the function read, or `null` when it never read the time.
+   */
+  get observedTime(): number | null {
+    return this.observed.time;
+  }
+
+  observeIdentity() {
+    this.observed.identity = true;
+  }
+
+  observeTime(at: number) {
+    this.observed.time = at;
   }
 
   get closed(): boolean {

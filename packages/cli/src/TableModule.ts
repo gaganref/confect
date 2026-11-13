@@ -14,6 +14,7 @@ import {
   InvalidTableFilenameError,
 } from "./CodegenError.js";
 import { ConfectDirectory } from "./ConfectDirectory.js";
+import { readDirectorySorted } from "./utils.js";
 
 export const TABLES_DIRNAME = "tables";
 
@@ -48,9 +49,7 @@ export const discoverTableFiles = Effect.gen(function* () {
     return [] as ReadonlyArray<string>;
   }
 
-  const allPaths = yield* fs.readDirectory(tablesDirectory, {
-    recursive: true,
-  });
+  const allPaths = yield* readDirectorySorted(tablesDirectory);
 
   return pipe(
     allPaths,
