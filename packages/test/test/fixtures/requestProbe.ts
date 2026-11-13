@@ -1,7 +1,7 @@
 import type {
   Reading,
   Recorded,
-} from "../../../server/test/local-backend/fixtures/confect/groups/requests.spec";
+} from "../../../../tools/local-backend/fixtures/confect/groups/requests.spec";
 
 /**
  * What the `groups/requests` probe returns on one target: a mutation and an

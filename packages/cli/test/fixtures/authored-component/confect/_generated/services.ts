@@ -1,10 +1,11 @@
 import {
   ActionRunner as ActionRunner_,
-  Auth as Auth_,
   type DataModel,
   DatabaseReader as DatabaseReader_,
   DatabaseWriter as DatabaseWriter_,
+  DocumentIds as DocumentIds_,
   ExecutionMetadata as ExecutionMetadata_,
+  MutationAuth as MutationAuth_,
   MutationRunner as MutationRunner_,
   MutationTransactionContext as MutationTransactionContext_,
   QueryRunner as QueryRunner_,
@@ -21,7 +22,7 @@ import type schemaDefinition from "./schema.js";
 import type { Docs } from "./docs.js";
 import type { scope } from "./id.js";
 
-export const MutationAuth = Auth_.MutationAuth;
+export const MutationAuth = MutationAuth_.MutationAuth;
 export type MutationAuth = typeof MutationAuth.Identifier;
 
 export const ExecutionMetadata = ExecutionMetadata_.ExecutionMetadata;
@@ -49,6 +50,9 @@ export const VectorSearch: VectorSearch_.VectorSearchTag<
   DataModel.FromSchema<typeof schemaDefinition>
 > = VectorSearch_.VectorSearch<DataModel.FromSchema<typeof schemaDefinition>>();
 export type VectorSearch = typeof VectorSearch.Identifier;
+
+export const DocumentIds: DocumentIds_.DocumentIdsTag<typeof schemaDefinition> = DocumentIds_.DocumentIds<typeof schemaDefinition>();
+export type DocumentIds = typeof DocumentIds.Identifier;
 
 export const DatabaseReader: DatabaseReader_.DatabaseReaderTag<
   typeof schemaDefinition,

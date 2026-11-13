@@ -1,5 +1,5 @@
 import { Ref } from "@confect/core";
-import testing from "../../../server/test/local-backend/fixtures/confect/_generated/testing";
+import testing from "../../../../tools/local-backend/fixtures/confect/_generated/testing";
 import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
 
 /**

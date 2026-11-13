@@ -6,22 +6,26 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 
-export class LifecycleStateError extends Schema.TaggedError<LifecycleStateError>()(
-  "LifecycleStateError",
-  { fqn: Schema.String },
-) {}
+export class LifecycleStateError extends Schema.TaggedError<
+  LifecycleStateError,
+  { readonly brand: unique symbol }
+>()("LifecycleStateError", { fqn: Schema.String }) {}
 
 export const checkpointCreate = Effect.fn("Lifecycle.checkpointCreate")(
   function* (fqn: string, instanceId: string, props: object, output?: object) {
     const stack = yield* Effect.serviceOption(Stack);
     if (Option.isNone(stack)) return;
     const state = yield* Effect.serviceOption(State);
-    if (Option.isNone(state)) return yield* new LifecycleStateError({ fqn });
+    if (Option.isNone(state)) return yield* LifecycleStateError.make({ fqn });
     const store = yield* state.value;
     const key = { stack: stack.value.name, stage: stack.value.stage, fqn };
     const row = yield* store.get(key);
-    if (!row || row.kind === "action" || row.instanceId !== instanceId)
-      return yield* new LifecycleStateError({ fqn });
+    if (
+      row === undefined ||
+      row.kind === "action" ||
+      row.instanceId !== instanceId
+    )
+      return yield* LifecycleStateError.make({ fqn });
     if (row.status !== "creating") return;
     yield* store.set({
       ...key,

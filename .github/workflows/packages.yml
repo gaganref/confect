@@ -108,6 +108,7 @@ jobs:
           restore-keys: |
             convex-local-backend-${{ runner.os }}-
       - run: pnpm --filter @confect/server test:local-backend
+      - run: pnpm test:js:local-backend
 
   codegen-fixtures:
     name: Codegen (server fixtures)
@@ -123,10 +124,13 @@ jobs:
           restore-keys: |
             convex-local-backend-${{ runner.os }}-
       - run: pnpm codegen:server:mock-backend
-      - run: pnpm codegen:server:local-backend
+      - run: pnpm codegen:local-backend
       - uses: ./.github/actions/verify-codegen-committed
         with:
           path: packages/server/test
+      - uses: ./.github/actions/verify-codegen-committed
+        with:
+          path: tools/local-backend/fixtures
 
   bench:
     name: Bench

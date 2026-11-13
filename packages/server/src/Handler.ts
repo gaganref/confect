@@ -7,6 +7,7 @@ import type * as ActionCtx from "./ActionCtx.js";
 import type * as ActionRunner from "./ActionRunner.js";
 import type * as Auth from "./Auth.js";
 import type * as DatabaseReader from "./DatabaseReader.js";
+import type * as DocumentIds from "./DocumentIds.js";
 import type * as DatabaseSchema from "./DatabaseSchema.js";
 import type * as DatabaseWriter from "./DatabaseWriter.js";
 import type * as DataModel from "./DataModel.js";
@@ -14,6 +15,7 @@ import type { ExecutionMetadata } from "./ExecutionMetadata.js";
 import type { RequestMetadata } from "./RequestMetadata.js";
 import type { TransactionMetadata } from "./TransactionMetadata.js";
 import type * as MutationCtx from "./MutationCtx.js";
+import type * as MutationAuth from "./MutationAuth.js";
 import type * as MutationRunner from "./MutationRunner.js";
 import type { MutationTransactionContext } from "./MutationTransactionContext.js";
 import type * as QueryCtx from "./QueryCtx.js";
@@ -78,6 +80,7 @@ export type QueryServices<
   DatabaseSchema_ extends DatabaseSchema.AnyWithProps,
 > =
   | DatabaseReader.DatabaseReader<DatabaseSchema_>
+  | DocumentIds.DocumentIds<DatabaseSchema_>
   | (DatabaseSchema_["target"]["kind"] extends "component" ? never : Auth.Auth)
   | StorageReader.ForScope<DatabaseSchema.Scope<DatabaseSchema_>>
   | ExecutionMetadata
@@ -95,11 +98,13 @@ export type MutationServices<
 > =
   | DatabaseReader.DatabaseReader<DatabaseSchema_>
   | DatabaseWriter.DatabaseWriter<DatabaseSchema_>
-  | Auth.MutationAuth
+  | MutationAuth.MutationAuth
+  | DocumentIds.DocumentIds<DatabaseSchema_>
   | (DatabaseSchema_["target"]["kind"] extends "component" ? never : Auth.Auth)
   | Scheduler.ForScope<DatabaseSchema.Scope<DatabaseSchema_>>
   | StorageReader.ForScope<DatabaseSchema.Scope<DatabaseSchema_>>
   | StorageWriter.ForScope<DatabaseSchema.Scope<DatabaseSchema_>>
+  | StorageActionWriter.ForScope<DatabaseSchema.Scope<DatabaseSchema_>>
   | ExecutionMetadata
   | TransactionMetadata
   | RequestMetadata
@@ -171,6 +176,9 @@ export type ConvexRuntimeAction<
   R = never,
 > = Base<FunctionSpec_, ActionServices<DatabaseSchema_, R> | R>;
 
+/**
+ * @stability unstable
+ */
 export type NodeRuntimeAction<
   DatabaseSchema_ extends DatabaseSchema.AnyWithProps,
   FunctionSpec_ extends

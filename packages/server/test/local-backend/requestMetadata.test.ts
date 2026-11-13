@@ -11,9 +11,9 @@ import {
   type Observed,
 } from "../../../test/test/fixtures/requestProbe";
 import { mintToken, send } from "./clientCall";
-import refs from "./fixtures/confect/_generated/refs";
-import { Recorded } from "./fixtures/confect/groups/requests.spec";
-import * as LocalBackend from "./LocalBackend";
+import refs from "confect-local-backend/refs";
+import { Recorded } from "../../../../tools/local-backend/fixtures/confect/groups/requests.spec";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 const requests = refs.public.groups.requests;
 const decodeRecorded = Schema.decodeUnknownEffect(

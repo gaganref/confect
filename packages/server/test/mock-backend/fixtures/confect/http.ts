@@ -18,6 +18,7 @@ import refs from "./_generated/refs";
 import * as SignedEnvelope from "../../../signedEnvelope";
 import { MutationRunner, QueryRunner } from "./_generated/services";
 import notes from "./_generated/tables/notes";
+import databaseSchema from "./_generated/schema";
 
 class NotesGroup extends HttpApiGroup.make("notes").add(
   HttpApiEndpoint.get("listNotes", "/notes", {
@@ -25,6 +26,9 @@ class NotesGroup extends HttpApiGroup.make("notes").add(
   }),
 ) {}
 
+/**
+ * @internal
+ */
 export class NotesApi extends HttpApi.make("NotesApi")
   .add(NotesGroup)
   .prefix("/api") {}
@@ -85,7 +89,8 @@ const ingress = HttpRouter.add(
   SignedEnvelope.path,
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const body = new Uint8Array(yield* request.arrayBuffer);
+    const arrayBuffer2 = yield* request.arrayBuffer;
+    const body = new Uint8Array(arrayBuffer2);
     const verdict = yield* Effect.promise(() =>
       SignedEnvelope.verify((name) => request.headers[name], body),
     );
@@ -103,6 +108,7 @@ const ingress = HttpRouter.add(
 );
 
 const http = ConfectHttpRouter.make(
+  databaseSchema,
   Layer.mergeAll(
     HttpApiBuilder.layer(NotesApi).pipe(Layer.provide(NotesApiLive)),
     HttpApiBuilder.layer(MetaApi).pipe(Layer.provide(MetaApiLive)),
@@ -121,7 +127,7 @@ const http = ConfectHttpRouter.make(
       "GET",
       "/logging/disabled",
       Effect.logWarning("hidden").pipe(
-        Effect.provide(Logger.layer([])),
+        Effect.provideService(Logger.CurrentLoggers, new Set()),
         Effect.as(HttpServerResponse.text("silent")),
       ),
     ),

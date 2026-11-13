@@ -1,8 +1,8 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import refs from "../../server/test/local-backend/fixtures/confect/_generated/refs";
-import { Recorded } from "../../server/test/local-backend/fixtures/confect/groups/requests.spec";
+import refs from "../../../tools/local-backend/fixtures/confect/_generated/refs";
+import { Recorded } from "../../../tools/local-backend/fixtures/confect/groups/requests.spec";
 import { createTestJwt } from "../src/internal/KernelValues";
 import { call, localBackendWorld } from "./fixtures/localBackendWorld";
 import {

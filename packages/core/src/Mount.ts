@@ -13,6 +13,8 @@ import type * as GenericId from "./GenericId.js";
 import type * as IdScope from "./IdScope.js";
 import { CallbackContract } from "./internal/annotations.js";
 import * as Ref from "./Ref.js";
+import * as Array from "effect/Array";
+import * as Rec from "effect/Record";
 
 const TypeId = "~@confect/core/Mount";
 
@@ -319,15 +321,16 @@ const withMemberHandles = <E, R>(
   value: unknown,
   create: Create<E, R>,
 ): Effect.Effect<unknown, E, R> => {
-  const fitting = members.filter((member) =>
-    Schema.is(member)(
-      Effect.runSync(withHandles(member, value, placeholderHandle)),
+  const fitting = Array.filter(members, (member) =>
+    withHandles(member, value, placeholderHandle).pipe(
+      Effect.runSync,
+      Schema.is(member),
     ),
   );
   return fitting.length === 0
     ? Effect.succeed(value)
     : Effect.firstSuccessOf(
-        fitting.map((member) => withHandles(member, value, create)),
+        Array.map(fitting, (member) => withHandles(member, value, create)),
       );
 };
 
@@ -362,18 +365,22 @@ const withHandles = <E, R>(
   if (Predicate.hasProperty(schema, "schema"))
     return withHandles(schema.schema as Schema.Top, value, create);
   if (Predicate.hasProperty(schema, "members") && Array.isArray(schema.members))
-    return withMemberHandles(schema.members, value, create);
+    return withMemberHandles(
+      schema.members as ReadonlyArray<Schema.Top>,
+      value,
+      create,
+    );
   const at = entrySchema(schema);
   if (at === undefined || !Predicate.isObject(value))
     return Effect.succeed(value);
-  return Effect.forEach(Object.entries(value), ([key, field]) => {
+  return Effect.forEach(Rec.toEntries(value), ([key, field]) => {
     const fieldSchema = at(key);
     return fieldSchema === undefined
       ? Effect.succeed([key, field] as const)
       : withHandles(fieldSchema, field, create).pipe(
           Effect.map((resolved) => [key, resolved] as const),
         );
-  }).pipe(Effect.map(Object.fromEntries));
+  }).pipe(Effect.map(Rec.fromEntries));
 };
 
 /**

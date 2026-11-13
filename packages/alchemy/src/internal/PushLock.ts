@@ -1,5 +1,5 @@
 import * as Context from "effect/Context";
-import * as Crypto from "effect/Crypto";
+import * as SecureRandom from "effect/crypto/SecureRandom";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -11,13 +11,13 @@ import * as Scope from "effect/Scope";
 import * as FileLock from "./FileLock.js";
 import { userCache } from "./UserCache.js";
 
-export class PushLockError extends Schema.TaggedError<PushLockError>()(
-  "PushLockError",
-  {
-    deploymentName: Schema.String,
-    reason: Schema.Literals(["configuration", "timeout", "filesystem"]),
-  },
-) {
+export class PushLockError extends Schema.TaggedError<
+  PushLockError,
+  { readonly brand: unique symbol }
+>()("PushLockError", {
+  deploymentName: Schema.String,
+  reason: Schema.Literals(["configuration", "timeout", "filesystem"]),
+}) {
   override get message() {
     switch (this.reason) {
       case "configuration":
@@ -50,6 +50,8 @@ export class PushLock extends Context.Service<
  * `confect/alchemy/locks/<deployment>.lock`, so every checkout on the machine
  * shares it. A lock left by a process that exited is taken over; a holder that
  * never releases ends in a typed timeout.
+ *
+ * @internal
  */
 export const layer = (options?: { readonly timeout?: Duration.Input }) =>
   Layer.effect(
@@ -57,12 +59,12 @@ export const layer = (options?: { readonly timeout?: Duration.Input }) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
-      const crypto = yield* Crypto.Crypto;
+      const random = yield* SecureRandom.SecureRandom;
       const timeout = options?.timeout ?? Duration.minutes(10);
       const lock = Effect.fn("PushLock.lock")(
         function* (deploymentName: string, scope: Scope.Scope) {
           const failed = (reason: PushLockError["reason"]) =>
-            new PushLockError({ deploymentName, reason });
+            PushLockError.make({ deploymentName, reason });
           const cache = yield* userCache.pipe(
             Effect.mapError(() => failed("configuration")),
           );
@@ -85,7 +87,7 @@ export const layer = (options?: { readonly timeout?: Duration.Input }) =>
         },
         Effect.provideService(FileSystem.FileSystem, fs),
         Effect.provideService(Path.Path, path),
-        Effect.provideService(Crypto.Crypto, crypto),
+        Effect.provideService(SecureRandom.SecureRandom, random),
       );
       return PushLock.of({
         withLock: (deploymentName, effect) =>

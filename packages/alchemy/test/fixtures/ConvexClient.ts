@@ -14,6 +14,8 @@ import {
   type CreateDeploymentInput,
   type UpdateProjectInput,
 } from "../../src/ConvexClient";
+import * as Option from "effect/Option";
+import * as Array from "effect/Array";
 
 export const lifecycle = {
   id: "test",
@@ -21,8 +23,6 @@ export const lifecycle = {
   instanceId: "0123456789abcdef",
   bindings: [],
   session: {
-    emit: () => Effect.void,
-    done: () => Effect.void,
     note: () => Effect.void,
   } satisfies ScopedPlanStatusSession,
 };
@@ -71,14 +71,18 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
     variables: Record<string, Redacted.Redacted<string>>;
   } = { projects: [], deployments: [], keys: [], variables: {} };
   const missing = () =>
-    new ConvexNotFound({ operation: "test", code: "HttpError", status: 404 });
+    ConvexNotFound.make({ operation: "test", code: "HttpError", status: 404 });
   const client = {
     runFunction: vi.fn(() => Effect.die("runFunction is not faked")),
     listProjects: vi.fn(() => Effect.sync(() => state.projects)),
     getProject: vi.fn((id: number) =>
       Effect.suspend(() => {
-        const found = state.projects.find((value) => value.id === id);
-        return found ? Effect.succeed(found) : Effect.fail(missing());
+        const found = Option.getOrUndefined(
+          Array.findFirst(state.projects, (value) => value.id === id),
+        );
+        return found !== undefined
+          ? Effect.succeed(found)
+          : Effect.fail(missing());
       }),
     ),
     createProject: vi.fn((_teamId: number, input: { projectName: string }) =>
@@ -94,7 +98,7 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
           id,
           ...(input.name == null ? {} : { name: input.name }),
         });
-        state.projects = state.projects.map((value) =>
+        state.projects = Array.map(state.projects, (value) =>
           value.id === id ? updated : value,
         );
         return updated;
@@ -102,17 +106,24 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
     ),
     deleteProject: vi.fn((id: number) =>
       Effect.suspend(() => {
-        if (!state.projects.some((value) => value.id === id))
+        if (!Array.some(state.projects, (value) => value.id === id))
           return Effect.fail(missing());
-        state.projects = state.projects.filter((value) => value.id !== id);
+        state.projects = Array.filter(
+          state.projects,
+          (value) => value.id !== id,
+        );
         return Effect.void;
       }),
     ),
     listDeployments: vi.fn(() => Effect.sync(() => state.deployments)),
     getDeployment: vi.fn((name: string) =>
       Effect.suspend(() => {
-        const found = state.deployments.find((value) => value.name === name);
-        return found ? Effect.succeed(found) : Effect.fail(missing());
+        const found = Option.getOrUndefined(
+          Array.findFirst(state.deployments, (value) => value.name === name),
+        );
+        return found !== undefined
+          ? Effect.succeed(found)
+          : Effect.fail(missing());
       }),
     ),
     createDeployment: vi.fn(
@@ -130,7 +141,7 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
     updateDeployment: vi.fn(
       (name: string, input: { reference?: string | null }) =>
         Effect.sync(() => {
-          state.deployments = state.deployments.map((value) =>
+          state.deployments = Array.map(state.deployments, (value) =>
             value.name === name && value.kind === "cloud"
               ? { ...value, reference: input.reference ?? value.reference }
               : value,
@@ -139,9 +150,10 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
     ),
     deleteDeployment: vi.fn((name: string) =>
       Effect.suspend(() => {
-        if (!state.deployments.some((value) => value.name === name))
+        if (!Array.some(state.deployments, (value) => value.name === name))
           return Effect.fail(missing());
-        state.deployments = state.deployments.filter(
+        state.deployments = Array.filter(
+          state.deployments,
           (value) => value.name !== name,
         );
         return Effect.void;
@@ -165,10 +177,18 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
               : Redacted.value(identifier);
           const id =
             issuedKeys.get(value) ??
-            state.keys.find((candidate) => candidate.name === value)?.id;
-          if (!state.keys.some((candidate) => candidate.id === id))
+            Option.getOrUndefined(
+              Array.findFirst(
+                state.keys,
+                (candidate) => candidate.name === value,
+              ),
+            )?.id;
+          if (!Array.some(state.keys, (candidate) => candidate.id === id))
             return Effect.fail(missing());
-          state.keys = state.keys.filter((candidate) => candidate.id !== id);
+          state.keys = Array.filter(
+            state.keys,
+            (candidate) => candidate.id !== id,
+          );
           return Effect.void;
         }),
     ),

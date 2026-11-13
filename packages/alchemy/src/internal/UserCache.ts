@@ -8,6 +8,8 @@ import * as Path from "effect/Path";
  * POSIX and `%LOCALAPPDATA%` on Windows. Shared by every checkout on the
  * machine, so binaries are downloaded once and push locks are seen by every
  * stack. None when no absolute directory can be derived.
+ *
+ * @internal
  */
 export const userCache = Effect.gen(function* () {
   const path = yield* Path.Path;
@@ -18,8 +20,15 @@ export const userCache = Effect.gen(function* () {
   });
   const root =
     process.platform === "win32"
-      ? LOCALAPPDATA ||
-        (USERPROFILE && path.join(USERPROFILE, "AppData", "Local"))
-      : HOME && path.join(HOME, ".cache");
-  return root && path.isAbsolute(root) ? Option.some(root) : Option.none();
+      ? LOCALAPPDATA !== ""
+        ? LOCALAPPDATA
+        : USERPROFILE === ""
+          ? ""
+          : path.join(USERPROFILE, "AppData", "Local")
+      : HOME === ""
+        ? ""
+        : path.join(HOME, ".cache");
+  return root !== "" && path.isAbsolute(root)
+    ? Option.some(root)
+    : Option.none();
 });
