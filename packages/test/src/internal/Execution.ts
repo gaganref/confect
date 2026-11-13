@@ -26,6 +26,7 @@ import * as KernelQuery from "./KernelQuery.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import * as Metering from "./Metering.js";
 import type * as ReadSet from "./ReadSet.js";
+import * as Redaction from "./Redaction.js";
 import * as Scheduling from "./Scheduling.js";
 import * as Snapshot from "./Snapshot.js";
 import type {
@@ -121,6 +122,11 @@ export type Outcome =
  */
 export interface HeldAttempt {
   readonly id: string;
+  /**
+   * The mutation the attempt runs, whose return shape marks its outcome in an
+   * artifact.
+   */
+  readonly functionPath: FunctionPath;
   readonly request: string;
   readonly number: Invocation.Attempt;
   readonly snapshot: Kernel.Version;
@@ -312,6 +318,15 @@ const unresolvedWorld = (
         ? `A snapshot job runs under the test world "${name}", which no world passed to restore is named. Pass that world.`
         : `Two different test worlds are named "${name}", so a snapshot cannot tell their jobs apart. Name each world uniquely.`,
   });
+
+/**
+ * `shape` placed at `at`, or no placement when there is no shape.
+ */
+const placed = (
+  shape: Redaction.Shape | undefined,
+  at: ReadonlyArray<string> = [],
+): ReadonlyArray<Redaction.Placement> =>
+  shape === undefined ? [] : [{ at, shape }];
 
 const running = (
   registry: KernelRefusal.SnapshotWorldRunning["registry"],
@@ -507,6 +522,11 @@ export class World {
   private floor = Number.NEGATIVE_INFINITY;
   private readonly targets = new Map<DocumentId, Scheduling.Target>();
   /**
+   * The raw secrets this world has seen under a secret schema node. Replay
+   * state, kept in memory and never written to an artifact.
+   */
+  private secrets = new Redaction.Secrets();
+  /**
    * The live registries `Snapshot.contract.live` names, each a count: calls
    * from the test, scheduler walks, function executions (nested and detached
    * ones included) and registered subscribers. Held attempts are `holding`.
@@ -528,6 +548,7 @@ export class World {
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
     modules: Modules,
     private readonly runtime: Kernel.KernelRuntime = Kernel.wallClock(),
+    private readonly redaction: Redaction.Policy = Redaction.none,
   ) {
     installConvexGlobal();
     Clock.install(pinnedTime, () => executions.getStore() !== undefined);
@@ -718,6 +739,7 @@ export class World {
       return this.open().then(() => {
         const functionPath = pathOfReference(reference, ROOT);
         const resolved = this.resolve(functionPath, "mutation");
+        this.keepArgs(functionPath, args);
         validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
         return this.prepareMutation(
           functionPath,
@@ -770,6 +792,7 @@ export class World {
       return this.open().then(() => {
         const functionPath = pathOfReference(reference, ROOT);
         const resolved = this.resolve(functionPath, "query");
+        this.keepArgs(functionPath, args);
         validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
         const top: TopQuery = {
           attempt: new KernelAttempt(this.state),
@@ -895,18 +918,30 @@ export class World {
         });
       }
     }
-    return Snapshot.encode({
-      components: [...this.components.keys()],
-      state: this.state,
-      floor: this.floor,
-      identity: {
-        nextDocumentId: this.nextDocId,
-        lastCreationTime: this.lastCreationTime,
-        nextAttemptId: this.nextAttemptId,
-        identityEpoch: this.identityEpoch,
+    return Snapshot.encode(
+      {
+        components: [...this.components.keys()],
+        state: this.state,
+        floor: this.floor,
+        identity: {
+          nextDocumentId: this.nextDocId,
+          lastCreationTime: this.lastCreationTime,
+          nextAttemptId: this.nextAttemptId,
+          identityEpoch: this.identityEpoch,
+        },
+        jobs,
       },
-      jobs,
-    });
+      (componentPath, table, json) =>
+        Redaction.mark(
+          json,
+          this.documentPlacements(
+            componentPath,
+            table,
+            json as { readonly _id: unknown; readonly name?: unknown },
+          ),
+          this.secrets,
+        ),
+    );
   }
 
   /**
@@ -918,14 +953,29 @@ export class World {
    */
   restoreSnapshot(
     bytes: Uint8Array,
-    worlds: ReadonlyArray<Invocation.World> = [],
+    options: {
+      readonly worlds?: ReadonlyArray<Invocation.World>;
+      readonly secrets?: Redaction.Secrets;
+    } = {},
   ): Promise<void> {
-    return this.open().then(() => this.restore(bytes, worlds));
+    return this.open().then(() =>
+      this.restore(
+        bytes,
+        options.worlds ?? [],
+        options.secrets ?? new Redaction.Secrets(),
+      ),
+    );
   }
 
-  private restore(bytes: Uint8Array, worlds: ReadonlyArray<Invocation.World>) {
+  private restore(
+    bytes: Uint8Array,
+    worlds: ReadonlyArray<Invocation.World>,
+    secrets: Redaction.Secrets,
+  ) {
     this.refuseBusy(this.state.version, "restore");
-    const decoded = Snapshot.decode(bytes);
+    const decoded = Snapshot.decode(bytes, (json) =>
+      Redaction.unmark(json, secrets),
+    );
     if (Result.isFailure(decoded)) throw decoded.failure;
     const image = decoded.success;
     const checked = Snapshot.check(image, Scheduling.table);
@@ -976,6 +1026,7 @@ export class World {
     this.identityEpoch = image.identity.identityEpoch;
     this.targets.clear();
     for (const [id, target] of targets) this.targets.set(id, target);
+    this.secrets = secrets.copy();
   }
 
   /**
@@ -1224,6 +1275,7 @@ export class World {
     const target = functionPathOf(args, execution.componentPath);
     this.component(target.componentPath);
     const jobArgs = jsonToConvex(args.args);
+    this.keepArgs(target, jobArgs);
     if (hasPendingValues(jobArgs)) {
       throw new Error(
         `Invalid arguments for "${target.udfPath}": a scheduled function cannot take an unresolved placeholder value.`,
@@ -1301,6 +1353,7 @@ export class World {
     snapshotOnly = false,
   ) {
     const resolved = this.resolve(functionPath, "query");
+    this.keepArgs(functionPath, args);
     validateFunctionArgs(
       resolved.args,
       args ?? {},
@@ -1312,6 +1365,7 @@ export class World {
 
   private mutationAt(functionPath: FunctionPath, args: any, from: From) {
     const resolved = this.resolve(functionPath, "mutation");
+    this.keepArgs(functionPath, args);
     validateFunctionArgs(
       resolved.args,
       args ?? {},
@@ -1323,6 +1377,7 @@ export class World {
 
   private actionAt(functionPath: FunctionPath, args: any, from: From) {
     const resolved = this.resolve(functionPath, "action");
+    this.keepArgs(functionPath, args);
     validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
     return this.runAction(functionPath, resolved, args, from);
   }
@@ -1424,6 +1479,7 @@ export class World {
                 `cannot return an unresolved placeholder value.`,
             );
           }
+          this.keepReturns(functionPath, result);
           validateReturnValue(resolved.returns, result, "query", functionPath);
           return result;
         })
@@ -1448,10 +1504,12 @@ export class World {
       .then((raw) => settled(execution, raw))
       .then((raw) => {
         const result = jsonToConvex(JSON.parse(raw));
-        validateReturnValue(resolved.returns, result, "mutation", {
+        const functionPath = {
           componentPath: execution.componentPath,
           udfPath: execution.udfPath,
-        });
+        };
+        this.keepReturns(functionPath, result);
+        validateReturnValue(resolved.returns, result, "mutation", functionPath);
         return result;
       });
   }
@@ -1547,6 +1605,7 @@ export class World {
           const held: Held = {
             view: {
               id: `attempt-${this.nextAttemptId++}`,
+              functionPath,
               request: from.request.requestId,
               number,
               snapshot: attempt.snapshot.version,
@@ -1715,6 +1774,7 @@ export class World {
       return started
         .then((raw) => {
           const result = jsonToConvex(JSON.parse(raw));
+          this.keepReturns(functionPath, result);
           validateReturnValue(resolved.returns, result, "action", functionPath);
           return result;
         })
@@ -1722,6 +1782,226 @@ export class World {
           throw deserializeConvexErrorData(error);
         });
     });
+  }
+
+  // Secrets.
+
+  private keepArgs(functionPath: FunctionPath, args: unknown) {
+    Redaction.keep(
+      args ?? {},
+      placed(this.redaction.args(functionPath)),
+      this.secrets,
+    );
+  }
+
+  private keepReturns(functionPath: FunctionPath, result: Value) {
+    Redaction.keep(
+      result,
+      placed(this.redaction.returns(functionPath)),
+      this.secrets,
+    );
+  }
+
+  private keepRow(componentPath: string, table: string, value: unknown) {
+    Redaction.keep(
+      value,
+      placed(this.redaction.table(componentPath, table)),
+      this.secrets,
+    );
+  }
+
+  /**
+   * Where a stored document holds secrets: its table's shape at its root, and
+   * for a job's row, its target's argument shape at `args.0`.
+   */
+  private documentPlacements(
+    componentPath: string,
+    table: string,
+    doc: { readonly _id: unknown; readonly name?: unknown },
+  ): ReadonlyArray<Redaction.Placement> {
+    const own = placed(this.redaction.table(componentPath, table));
+    if (table !== Scheduling.table) return own;
+    const target = this.targets.get(doc._id as DocumentId)?.functionPath ?? {
+      componentPath,
+      udfPath: String(doc.name),
+    };
+    return own.concat(placed(this.redaction.args(target), ["args", "0"]));
+  }
+
+  /**
+   * A copy of the raw secrets this world has kept, for a restore of its
+   * snapshots. It lives in memory only.
+   */
+  keptSecrets(): Redaction.Secrets {
+    return this.secrets.copy();
+  }
+
+  /**
+   * The failure report for `thrown`, whatever was thrown, with every kept
+   * secret marked. `thrown` itself is never changed.
+   */
+  redactFailure(thrown: unknown): unknown {
+    return Redaction.failure(thrown, this.secrets);
+  }
+
+  /**
+   * `outcome` as an artifact writes it: a value marked by the shape of what
+   * `functionPath` returns, a failure as its report.
+   */
+  redactOutcome(outcome: Outcome, functionPath?: FunctionPath): Outcome {
+    return outcome._tag === "returned"
+      ? {
+          _tag: "returned",
+          value: Redaction.markValue(
+            outcome.value,
+            placed(
+              functionPath === undefined
+                ? undefined
+                : this.redaction.returns(functionPath),
+            ),
+            this.secrets,
+          ),
+        }
+      : { _tag: "failed", error: this.redactFailure(outcome.error) };
+  }
+
+  /**
+   * A changed document as an artifact writes it, marked by its table's shape.
+   */
+  redactChange(change: Kernel.Change): Kernel.Change {
+    const document = (doc: StoredDocument | null) =>
+      doc === null
+        ? null
+        : (Redaction.markValue(
+            doc as Value,
+            this.documentPlacements(
+              change.componentPath,
+              tableNameFromId(doc._id) ?? "",
+              doc,
+            ),
+            this.secrets,
+          ) as StoredDocument);
+    return {
+      ...change,
+      before: document(change.before),
+      after: document(change.after),
+    };
+  }
+
+  /**
+   * The function a subscription's or call's reference names, if it names one.
+   */
+  functionPathOf(reference: unknown): FunctionPath | undefined {
+    try {
+      return typeof reference === "function"
+        ? undefined
+        : pathOfReference(reference as FunctionReference<any>, ROOT);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Read records as an artifact writes them. A key or range bound on a field
+   * its table's shape holds secret is the marker, and so is any string holding
+   * a kept secret.
+   */
+  projectReads(
+    reads: ReadonlyArray<ReadSet.Read>,
+  ): ReadonlyArray<ReadSet.Read> {
+    return reads.map((read) => {
+      if (read.kind === "document") return read;
+      const shape = this.redaction.table(read.componentPath, read.table);
+      const sensitive = (fieldPath: string) =>
+        shape !== undefined &&
+        Redaction.sensitiveAt(shape, fieldPath.split("."));
+      const value = (fieldPath: string, v: Value): Value =>
+        sensitive(fieldPath)
+          ? Redaction.marker
+          : Redaction.markValue(v, [], this.secrets);
+      const key = (k: ReadSet.Key | null) =>
+        k === null
+          ? null
+          : k.map((v, i) =>
+              v === undefined ? undefined : value(read.fields[i] ?? "", v),
+            );
+      return {
+        ...read,
+        range: read.range.map((bound) => ({
+          ...bound,
+          value: sensitive(bound.fieldPath)
+            ? Redaction.marker
+            : convexToJson(
+                Redaction.markValue(
+                  jsonToConvex(bound.value),
+                  [],
+                  this.secrets,
+                ),
+              ),
+        })),
+        after: key(read.after),
+        through:
+          read.through === "end" || read.through === null
+            ? read.through
+            : key(read.through),
+      };
+    });
+  }
+
+  /**
+   * A held attempt as an artifact writes it: its read records projected and its
+   * outcome marked.
+   */
+  projectHeld(view: HeldAttempt): HeldAttempt {
+    return {
+      ...view,
+      reads: this.projectReads(view.reads),
+      outcome: this.redactOutcome(view.outcome, view.functionPath),
+    };
+  }
+
+  /**
+   * What `apply` answered as an artifact writes it: an applied result marked by
+   * the shape of what `functionPath` returns, a conflict's next attempt
+   * projected, a refusal as its report.
+   */
+  projectApplied(
+    applied: KernelApply,
+    functionPath: FunctionPath | undefined,
+  ): KernelApply {
+    switch (applied.kind) {
+      case "applied": {
+        const outcome = this.redactOutcome(
+          { _tag: "returned", value: applied.result },
+          functionPath,
+        );
+        return outcome._tag === "returned"
+          ? { ...applied, result: outcome.value }
+          : applied;
+      }
+      case "conflict":
+        return { ...applied, next: this.projectHeld(applied.next) };
+      case "refused":
+        return { ...applied, error: this.redactFailure(applied.error) };
+      case "exhausted":
+        return {
+          ...applied,
+          error: this.redactFailure(applied.error) as typeof applied.error,
+        };
+    }
+  }
+
+  /**
+   * A function's arguments as an artifact writes them, marked by the shape of
+   * its arguments. A command log of provider calls (#137's `commands()`) writes
+   * each command's input through this.
+   */
+  projectArguments(functionPath: FunctionPath, args: Value): Value {
+    return Redaction.markValue(
+      args,
+      placed(this.redaction.args(functionPath)),
+      this.secrets,
+    );
   }
 
   // Syscalls.
@@ -2079,6 +2359,7 @@ export class World {
 
   private insert(execution: Execution, table: string, value: any): DocumentId {
     const attempt = transaction(execution);
+    this.keepRow(execution.componentPath, table, value);
     KernelQuery.validateDocument(
       this.schema(execution.componentPath),
       table,
@@ -2167,6 +2448,7 @@ export class World {
     const document = this.existing(execution, tableName, id, "patch", value);
     const { _id, _creationTime, ...fields } = document;
     const merged = { ...fields, ...this.fields(document, value) };
+    this.keepRow(execution.componentPath, tableNameFromId(_id)!, merged);
     const next = { _id, _creationTime, ...merged } as StoredDocument;
     if (sameDocument(document, next)) return;
     KernelQuery.validateDocument(
@@ -2185,6 +2467,11 @@ export class World {
   ) {
     const document = this.existing(execution, tableName, id, "replace", value);
     const fields = this.fields(document, value);
+    this.keepRow(
+      execution.componentPath,
+      tableNameFromId(document._id)!,
+      fields,
+    );
     const next = {
       ...fields,
       _id: document._id,

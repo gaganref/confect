@@ -1,6 +1,11 @@
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- Export is synchronous, and Effect 4.0's digests are asynchronous.
 import { createHash } from "node:crypto";
-import { convexToJson, jsonToConvex, type Value } from "convex/values";
+import {
+  convexToJson,
+  jsonToConvex,
+  type JSONValue,
+  type Value,
+} from "convex/values";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Kernel from "./Kernel.js";
@@ -137,6 +142,14 @@ export const contract = {
       excluded:
         "The driver's clock and commit timestamps. The restoring driver supplies its own.",
     },
+    redaction: {
+      excluded:
+        "The secret policy is configuration: the restoring world is built with its own.",
+    },
+    secrets: {
+      excluded:
+        "Raw secrets are replay state and never reach an artifact. A snapshot writes markers, and a restore takes the raw values from the source's `secrets()`.",
+    },
   } satisfies Readonly<Record<string, Participation>>,
   /**
    * Live registries: what blocks a snapshot while it is non-empty, and why.
@@ -247,8 +260,25 @@ const byString = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const sorted = <A>(items: Iterable<A>, key: (item: A) => string): Array<A> =>
   Array.from(items).sort((a, b) => byString(key(a), key(b)));
 
-const encodeDocument = (doc: StoredDocument | null) =>
-  doc === null ? null : convexToJson(doc as Value);
+/**
+ * What an export writes for one document, before it reaches the bytes: the
+ * kernel marks secrets here. `table` is the document's table.
+ */
+export type Redact = (
+  componentPath: string,
+  table: string,
+  json: JSONValue,
+) => JSONValue;
+
+/**
+ * What a restore reads back for one document before decoding it: the kernel
+ * puts marked secrets back here.
+ */
+export type Unredact = (
+  json: JSONValue,
+) => Result.Result<JSONValue, KernelRefusal.SnapshotSecretMissing>;
+
+const asIs: Redact = (_componentPath, _table, json) => json;
 
 const digestOf = (bytes: Uint8Array): string =>
   createHash("sha256").update(bytes).digest("hex");
@@ -259,8 +289,19 @@ const digestOf = (bytes: Uint8Array): string =>
  * and jobs are sorted, and every document keeps its own field order, so the
  * same state always encodes to the same bytes.
  */
-export const encode = (image: Image): Uint8Array => {
+export const encode = (image: Image, redact: Redact = asIs): Uint8Array => {
   const { state } = image;
+  const encodeDocument = (
+    componentPath: string,
+    doc: StoredDocument | null,
+  ): JSONValue | null =>
+    doc === null
+      ? null
+      : redact(
+          componentPath,
+          tableNameFromId(doc._id) ?? "",
+          convexToJson(doc as Value),
+        );
   const tables: Array<Body["tables"][number]> = [];
   for (const [componentPath, byTable] of sorted(
     state.tables,
@@ -273,7 +314,7 @@ export const encode = (image: Image): Uint8Array => {
         table,
         rows: sorted(rows, ([id]) => id).map(([, row]) => ({
           version: row.version,
-          doc: encodeDocument(row.doc),
+          doc: encodeDocument(componentPath, row.doc),
         })),
       });
     }
@@ -305,8 +346,8 @@ export const encode = (image: Image): Uint8Array => {
       changes: commit.changes.map((change) => ({
         componentPath: change.componentPath,
         id: change.id,
-        before: encodeDocument(change.before),
-        after: encodeDocument(change.after),
+        before: encodeDocument(change.componentPath, change.before),
+        after: encodeDocument(change.componentPath, change.after),
       })),
     })),
   };
@@ -324,9 +365,14 @@ const malformed = (reason: string, detail: string) =>
     message: `These bytes are not a test kernel snapshot this kernel reads (${reason}): ${detail}`,
   });
 
-const decodeDocument = (json: unknown): StoredDocument | null => {
+const decodeDocument = (
+  json: unknown,
+  unredact: Unredact,
+): StoredDocument | null => {
   if (json === null) return null;
-  const doc = jsonToConvex(json as never);
+  const unredacted = unredact(json as JSONValue);
+  if (Result.isFailure(unredacted)) throw unredacted.failure;
+  const doc = jsonToConvex(unredacted.success);
   if (
     typeof doc !== "object" ||
     doc === null ||
@@ -454,7 +500,60 @@ export const checkBody = (
   return Result.succeed(undefined);
 };
 
-const imageOf = (body: Body): Image => {
+/**
+ * `body` with every document's marked secrets put back, each document checked
+ * to decode as a Convex value. No map is built, so the body checks that follow
+ * see the documents as the kernel stored them, in the order they were written.
+ */
+const unredactBody = (
+  body: Body,
+  unredact: Unredact,
+): Result.Result<
+  Body,
+  KernelRefusal.SnapshotSecretMissing | KernelRefusal.SnapshotMalformed
+> => {
+  let refusal:
+    | KernelRefusal.SnapshotSecretMissing
+    | KernelRefusal.SnapshotMalformed
+    | undefined;
+  const document = (json: unknown): unknown => {
+    if (json === null || refusal !== undefined) return json;
+    const unredacted = unredact(json as JSONValue);
+    if (Result.isFailure(unredacted)) {
+      refusal = unredacted.failure;
+      return json;
+    }
+    try {
+      jsonToConvex(unredacted.success);
+    } catch (error) {
+      refusal = malformed(
+        "value",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    return unredacted.success;
+  };
+  const unredacted: Body = {
+    ...body,
+    tables: body.tables.map((entry) => ({
+      ...entry,
+      rows: entry.rows.map((row) => ({ ...row, doc: document(row.doc) })),
+    })),
+    log: body.log.map((commit) => ({
+      ...commit,
+      changes: commit.changes.map((change) => ({
+        ...change,
+        before: document(change.before),
+        after: document(change.after),
+      })),
+    })),
+  };
+  return refusal === undefined
+    ? Result.succeed(unredacted)
+    : Result.fail(refusal);
+};
+
+const imageOf = (body: Body, unredact: Unredact): Image => {
   const tables = new Map<string, Map<string, Map<DocumentId, Kernel.Row>>>();
   for (const { componentPath, table, rows } of body.tables) {
     const byTable = tables.get(componentPath) ?? new Map();
@@ -462,7 +561,7 @@ const imageOf = (body: Body): Image => {
     const byId = new Map<DocumentId, Kernel.Row>();
     byTable.set(table, byId);
     for (const { version, doc } of rows) {
-      const decoded = decodeDocument(doc)!;
+      const decoded = decodeDocument(doc, unredact)!;
       byId.set(decoded._id, { doc: decoded, version });
     }
   }
@@ -472,8 +571,8 @@ const imageOf = (body: Body): Image => {
     changes: commit.changes.map((change) => ({
       componentPath: change.componentPath,
       id: change.id as DocumentId,
-      before: decodeDocument(change.before),
-      after: decodeDocument(change.after),
+      before: decodeDocument(change.before, unredact),
+      after: decodeDocument(change.after, unredact),
     })),
   }));
   if (log.length !== body.version || log.some((c, i) => c.version !== i + 1)) {
@@ -779,10 +878,12 @@ export const check = (
  */
 export const decode = (
   bytes: Uint8Array,
+  unredact: Unredact = Result.succeed,
 ): Result.Result<
   Image,
   | KernelRefusal.SnapshotMalformed
   | KernelRefusal.SnapshotDigestMismatch
+  | KernelRefusal.SnapshotSecretMissing
   | KernelRefusal.SnapshotRowInconsistent
   | KernelRefusal.SnapshotJobInconsistent
 > => {
@@ -822,11 +923,18 @@ export const decode = (
   if (Result.isFailure(body)) {
     return Result.fail(malformed("shape", body.failure.message));
   }
-  const checkedBody = checkBody(body.success);
+  // Secrets go back first, so a document's system fields and IDs are checked as
+  // the kernel stored them, and every check runs before any map is built.
+  const unredacted = unredactBody(body.success, unredact);
+  if (Result.isFailure(unredacted)) return Result.fail(unredacted.failure);
+  const checkedBody = checkBody(unredacted.success);
   if (Result.isFailure(checkedBody)) return Result.fail(checkedBody.failure);
   try {
-    return Result.succeed(imageOf(body.success));
+    return Result.succeed(imageOf(unredacted.success, Result.succeed));
   } catch (error) {
+    if (Schema.is(KernelRefusal.SnapshotSecretMissing)(error)) {
+      return Result.fail(error);
+    }
     return Result.fail(
       malformed(
         "value",

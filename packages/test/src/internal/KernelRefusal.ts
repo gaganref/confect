@@ -170,6 +170,15 @@ export class SnapshotWorldBusy extends Schema.TaggedError<SnapshotWorldBusy>()(
 ) {}
 
 /**
+ * A snapshot marks a secret the restore was not given, so the raw value its
+ * replay needs is not in memory.
+ */
+export class SnapshotSecretMissing extends Schema.TaggedError<SnapshotSecretMissing>()(
+  "SnapshotSecretMissing",
+  { ref: Schema.String, message: Schema.String },
+) {}
+
+/**
  * A world is running work a snapshot taken or restored now would split: calls
  * from the test, scheduler walks, or function executions, nested and detached
  * ones included.
