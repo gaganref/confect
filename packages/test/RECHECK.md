@@ -541,10 +541,31 @@ descriptor. A replacement a test made, by `Object.defineProperty`, by `delete`
 and a fresh assignment, or by `vi.stubGlobal`, becomes the implementation
 beneath a fresh guard, so a stub keeps working outside a function and stays
 refused inside one. A replacement the kernel cannot redefine, a non-configurable
-one, refuses the function before it runs with `UnguardableGlobal` naming the
-global. A timer's promisified form (`util.promisify(setTimeout)`, which reads
+one, refuses the function before it runs with `UnguardableGlobal`
+(`reason: "notConfigurable"`) naming the global. A timer's promisified form (`util.promisify(setTimeout)`, which reads
 `util.promisify.custom`) is guarded too, and ends a query or mutation as the
 timer does.
+
+A descriptor replaced while a function runs, such as a handler's
+`Object.defineProperty(globalThis, "fetch", …)`, takes the global out from under
+its guard until the next entry, so a call made through the replacement is not
+blocked. The kernel is a parity aid, not a sandbox: such a call needs a
+deliberate redefinition of a global mid-invocation, and the guards never hand
+out the host's raw function. Locking the descriptors while a function runs would
+need them non-configurable, which cannot be undone and would break stubbing
+between tests, and running handlers in their own VM realm is out of scope. So
+the escape is always reported instead: each function's entry records the
+guarded descriptors (`IoBans.watch`), and when the function settles, returned,
+failed or ended, the kernel compares them. A changed descriptor fails the
+function with `UnguardableGlobal` (`reason: "replacedWhileRunning"`) naming the
+global, whatever it returned, before a mutation's commit point, so a mutation
+publishes none of its writes, and the guard is installed again. An accessor
+another library lays over a guard, as convex-test lays its own before each of
+its handlers (`index.ts:3054-3060` at 0.0.65), still reads through the guard
+and is no replacement. An assignment stores beneath the guard and replaces
+nothing. Remaining window: a call made between a mid-invocation replacement and
+the function's settlement reaches the replacement unchecked, and the function is
+always reported for it.
 
 The exemption for Node's own modules reads the caller with `util.getCallSites`
 (Node 22.9 and later), kept when `IoBans.ts` loads, which does not go through
@@ -559,14 +580,27 @@ when the world opens, as the bundler's `determineEnvironment` decides
 (`npm-packages/convex/src/bundler/index.ts:558-588`, with the directive from
 Babel's `program.directives` at `:508-548`). The test supplies the sources as a
 `?raw` glob of the same files, through the kernel shim's `sources`,
-`registerComponent`'s `{ sources }` or `TestConfect.layer`'s schema form. With
+`registerComponent`'s `{ sources }`, a component kit's `sources`, or the
+`sources` option of each of `TestConfect.layer`'s three forms. A generated
+registry may carry them too, and a layer's own option takes their place. With
 sources, every function module needs one, `"use node"` in `http`, `crons`,
 `schema` or `auth.config` is refused with the bundler's message
-(`mustBeIsolate`, `:551-574`), and Confect's Node mark is a cross-check: a
-marked function in a module without the directive is refused with
-`ModuleRuntime`. Without sources, as convex-test's two-argument signature and
-the `DeclaredApp` and `App` forms give, whose modules are all Confect's, the
-mark decides. The fork's mock-backend layer passes sources.
+(`mustBeIsolate`, `:551-574`), and Confect's mark is a cross-check: a Confect
+Node action in a module without the directive, or a Confect isolate action in a
+module with it, is refused with `ModuleRuntime` (`reason: "markerDisagrees"`).
+
+Without sources, Confect's mark decides a Confect action's runtime, and a plain
+Convex action has none the kernel can tell. So when the world opens, a component
+with no sources whose modules export an action with no mark is refused with
+`ActionRuntimeUnknown`, naming the component, the module and its exports, before
+any function runs. A package's test kit registers its modules without sources
+(`@convex-dev/workflow`'s registers Workpool, whose `worker:runActionWrapper` is
+a plain action), and a test cannot add them, so the layer and the kernel shim
+take `componentRuntimes`, the runtime each listed component's plain actions run
+in, such as `{ "workflow/workpool": "isolate" }`. The refusal's message names
+the option. Build-order row 8's generated test subject supplies the modules'
+sources and emits these declarations for package mounts from each kit's
+metadata. The fork's mock-backend layer passes sources.
 
 - In a query or mutation: `fetch` rejects with the binary's `TypeError`; a
   timer returns an ID and ends its function; multipart `formData()` rejects
@@ -577,11 +611,12 @@ mark decides. The fork's mock-backend layer passes sources.
   them: its `fetch` and web streams read and call `queueMicrotask` while doing a
   function's work, where the binary's built-ins need neither, so the guard
   checks whether the calling frame is a `node:` module.
-- A Node action has Node's globals. `RegisteredNodeFunction.make` in
-  `@confect/server` marks the function it registers with
-  `Symbol.for("@confect/server/NodeAction")`, which the kernel reads, since a
-  module's `"use node"` directive is gone once it loads. A plain Convex action
-  in a `"use node"` file carries no mark and gets the isolate's globals.
+- A Node action has Node's globals. `@confect/server` marks the actions it
+  registers with `Symbol.for("@confect/server/NodeAction")`: `true` from
+  `RegisteredNodeFunction.make`, `false` from `RegisteredConvexFunction`, since
+  a module's `"use node"` directive is gone once it loads. A plain Convex action
+  carries no mark, and its runtime comes from its module's source or its
+  component's declared runtime.
 
 A timer ends its function through `Execution.ts`'s `endings`. Each running
 function has an ending signal, and its invocation settles with the ending as

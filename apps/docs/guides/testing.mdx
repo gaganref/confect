@@ -372,17 +372,31 @@ export default defineConfig({
 });
 ```
 
-A Node action runs with Node's globals. On the kernel a Confect Node action is one by its registration. For a plain Convex module, pass the modules' sources so the kernel reads its `"use node"` directive as Convex's bundler does:
+The guards check each call, so a stub you install with `vi.stubGlobal` or by assignment still works outside a function and stays refused inside one. A function that redefines one of these globals while it runs, with `Object.defineProperty` or `delete`, steps outside the guards: a call it makes through the replacement is not blocked, but the function then fails with `UnguardableGlobal` when it settles, a mutation keeps none of its writes, and the guard comes back. Replace globals between functions instead.
+
+A Node action runs with Node's globals, and every other function with Convex's isolate's. On the kernel a Confect action's runtime comes from its registration. A plain Convex action's comes from its module's `"use node"` directive, so pass the modules' sources, a `?raw` glob beside the modules' own, and the kernel reads the directive as Convex's bundler does. Each form takes them beside `target`:
 
 ```ts
-TestConfect.layer(schema, convexSchema, modules, {
+const sources = import.meta.glob("../convex/**/*.ts", {
+  query: "?raw",
+  import: "default",
+});
+TestConfect.layer(registry, { target: "kernel", sources });
+TestConfect.layer(app, registry, { target: "kernel", sources });
+TestConfect.layer(schema, convexSchema, modules, { target: "kernel", sources });
+```
+
+Without sources, a module that exports a plain Convex action fails the first call with `ActionRuntimeUnknown`, naming the module. A component's plain actions need its sources too: a kit that can, registers with `registerComponent(name, schema, modules, { sources })`. A package's test kit registers without them, so declare the runtime its plain actions run in:
+
+```ts
+TestConfect.layer(app, registry, {
   target: "kernel",
-  sources: import.meta.glob("../convex/**/*.ts", {
-    query: "?raw",
-    import: "default",
-  }),
+  sources,
+  componentRuntimes: { "workflow/workpool": "isolate" },
 });
 ```
+
+The generated test subject will supply the sources and these declarations for package mounts from each kit's metadata.
 
 ### Keep secrets out of kernel artifacts
 

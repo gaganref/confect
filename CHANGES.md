@@ -170,9 +170,15 @@ globals is an accessor that returns a guard, installed by the new
 kept, a nested call, a stub and a handler's own assignment are all checked. A
 replaced global is guarded again when the next function starts, a
 non-configurable one refuses the function with `UnguardableGlobal`, and a
-promisified timer is guarded too. A module's runtime comes from its
-`"use node"` directive when the test passes its sources (`sources`, a `?raw`
-glob), with Confect's mark as a cross-check. The
+promisified timer is guarded too. A global redefined while a function runs
+fails that function with `UnguardableGlobal` when it settles, so a mutation
+publishes none of its writes, and the guard comes back. A module's runtime
+comes from its `"use node"` directive when the test passes its sources
+(`sources`, a `?raw` glob, in each `TestConfect.layer` form), with Confect's
+mark, which `@confect/server` now sets on its isolate actions too, as a
+cross-check. Without sources, a plain Convex action is refused with
+`ActionRuntimeUnknown` when the kernel opens, unless the test declares its
+component's runtime with `componentRuntimes`, as for a package's test kit. The
 clears stay allowed and actions keep the host's `fetch` and timers. The
 local-backend suite pins each behaviour on the binary. This is the I/O bans row
 of Frame's backend testing kernel (Frame ADR 0012, row 6). Changeset:
