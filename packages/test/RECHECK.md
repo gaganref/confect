@@ -656,9 +656,23 @@ against it, and refused on restore while non-empty. A field added to `Kernel.Sta
 without an entry fails to compile. A `World`'s fields are private, so a test
 compares a fresh world's own fields with the contract. Subscriptions and their
 callers are live client state, so a restore starts with none. Owed when they
-land: cron state (#133); file bytes, storage ID mappings, `nextFile` and
-upload-token counters (#138); and component init markers. A restore never
-redeclares a cron and never draws a fresh random value.
+land: file bytes, storage ID mappings, `nextFile` and upload-token counters
+(#138); and component init markers.
+
+Cron state (#133) is in the snapshot, format version 2. Each declared job
+exports its declaration (name, function, arguments as Convex JSON with secrets
+marked as a job's arguments are, and schedule, a cron expression by its text),
+its next run, its latest outcome and its world by name. A cron job's fields are
+checked by type against `Execution.CronJob`. A restore never redeclares a cron
+and never draws a fresh random value. The world reads its app's declarations
+when its modules load, which draws nothing, and only the call that opens the
+backend schedules first runs, the one step that draws. A restore loads without
+that step, refuses with `SnapshotCronMismatch` unless the app declares exactly
+the snapshot's jobs with the same function, arguments and schedule, resolves
+each job's world by name among `worlds` and the backend's own, and installs the
+snapshot's runs. A clock schedule restored with no world is refused with
+`CronRandomUnavailable`. A snapshot taken before its backend opened holds no
+cron jobs, so restoring it into an app that declares some refuses.
 
 ## Transaction limits (row 6)
 

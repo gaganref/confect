@@ -140,7 +140,10 @@ metadata, and a mutation's writes and jobs exist only if it commits. `advance`
 runs cron runs and jobs in time order, and a drain never runs a cron run.
 Cron expressions follow saffron's search, including `L`, `W` and `#`. A search
 that reaches saffron's `u32` underflow, which aborts the overflow-checked binary,
-is refused with `CronAbortsBinary`.
+is refused with `CronAbortsBinary`. A snapshot carries every cron job's run
+state, and a restore installs it without a draw. A cron run's function is
+metered as any mutation, and the cron bookkeeping charges no counter, as on the
+binary, where it writes only system tables.
 Why: design row 5 lists declared schedules among the kernel's standing sources,
 and #123 left them out. This is row 5 of Frame's backend testing kernel (Frame
 ADR 0012). Changeset: `test-kernel-crons.md`. Upstream: fork only, as the kernel
@@ -219,7 +222,10 @@ without their rows or targets, documents without their system fields, and
 duplicate components, tables, rows or jobs. Each has a tagged refusal. The snapshot also
 carries the identity epoch that subscribers' identity versions come from, and
 `Snapshot.contract` names every piece of kernel state as exported or excluded,
-checked by type and by a test.
+checked by type and by a test. With cron jobs (#133) the format is version 2:
+each declared job's declaration, next run, latest outcome and world by name. A
+restore installs them without redeclaring a job or drawing a random value, and
+refuses with `SnapshotCronMismatch` when the app declares other jobs.
 Replaying the same driver choices after a restore reaches the bytes of the run
 that never stopped, and a function handle stored in a row resolves to its
 component's function after restore. The format is the kernel's own, not the
