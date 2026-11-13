@@ -683,7 +683,12 @@ take `componentRuntimes`, the runtime each listed component's plain actions run
 in, such as `{ "workflow/workpool": "isolate" }`. The refusal's message names
 the option. Build-order row 8's generated test subject supplies the modules'
 sources and emits these declarations for package mounts from each kit's
-metadata. The fork's mock-backend layer passes sources.
+metadata. The fork's mock-backend layer passes sources. A layer on the default
+target passes them, with `componentRuntimes`, as a third argument to
+`convexTest`, which convex-test ignores and the kernel lane's shim reads, so
+they reach the kernel there too: before, the lane's kernel never saw them, and
+`main`'s plain `clients:echoAction` made `components.test.ts`'s local host
+layer fail there.
 
 - In a query or mutation: `fetch` rejects with the binary's `TypeError`; a
   timer returns an ID and ends its function; multipart `formData()` rejects
