@@ -161,14 +161,27 @@ describe("token verification", () => {
       }),
   );
 
-  it.effect("a subscriber that presents a token waits for Sync", () =>
-    Effect.gen(function* () {
-      const { jwks, cases } = yield* mint(start / 1000);
-      const { t } = world([{ ...provider, jwks }]);
-      expect(() => t.withToken(cases[0]!.token).subscriber()).toThrow(
-        expect.objectContaining({ _tag: "KernelRowPending", row: 7 }),
-      );
-    }),
+  it.effect(
+    "a subscriber that presents a token waits for Sync, and an HTTP request that presents one is not simulated yet",
+    () =>
+      Effect.gen(function* () {
+        const { jwks, cases } = yield* mint(start / 1000);
+        const { t } = world([{ ...provider, jwks }]);
+        const presenting = t.withToken(cases[0]!.token) as KernelControls & {
+          fetch: (path: string) => Promise<unknown>;
+        };
+        expect(() => presenting.subscriber()).toThrow(
+          expect.objectContaining({ _tag: "KernelRowPending", row: 7 }),
+        );
+        expect(
+          yield* Effect.promise(() =>
+            presenting.fetch("/identity").then(
+              () => undefined,
+              (error: unknown) => error,
+            ),
+          ),
+        ).toMatchObject({ _tag: "KernelRowPending", row: 6 });
+      }),
   );
 
   it.effect("a provider the binary would refuse at push is refused", () =>

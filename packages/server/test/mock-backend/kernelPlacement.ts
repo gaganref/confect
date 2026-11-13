@@ -16,33 +16,10 @@ export interface Placement {
 }
 
 export const placements: ReadonlyArray<Placement> = [
-  { file: "http.test.ts", row: 6, needs: "HTTP routes, after storage" },
-  {
-    file: "integration.test.ts",
-    name: "Storage",
-    row: 6,
-    needs: "storage",
-  },
   {
     file: "integration.test.ts",
     name: "DatabaseReader > uses the canonical Doc decoder for a text search",
     row: "binary",
     needs: "text search, which the kernel never simulates (RequiresBinary)",
   },
-  ...[
-    "fetches each mounted component with its site URL at construction",
-    "routes mounted HTTP writes into the selected component database",
-    "keeps query strings and headers at the exact mount path",
-    "leaves unmounted paths and partial prefix matches to the root",
-    "restores the site URL after construction fails and accepts another fetch",
-    "preserves structured HTTP compatibility failures across the action boundary",
-    "uses the default site URL when the application variable is empty",
-    "loads component HTTP modules with convex-test's extension handling",
-    "fetches an installation mounted at the root prefix",
-  ].map((name): Placement => ({
-    file: "components.test.ts",
-    name,
-    row: 6,
-    needs: "HTTP routes, after storage",
-  })),
 ];

@@ -9,6 +9,8 @@ export class RequiresBinary extends Schema.TaggedError<RequiresBinary>()(
     operation: Schema.Literals([
       "textSearch",
       "vectorSearch",
+      "storageUpload",
+      "storageDownload",
       "oidcDiscovery",
       "remoteJwks",
     ]),
@@ -300,6 +302,8 @@ export class SnapshotAllocatorBehind extends Schema.TaggedError<SnapshotAllocato
       "lastCreationTime",
       "nextAttemptId",
       "identityEpoch",
+      "nextFile",
+      "nextUploadToken",
     ]),
     value: Schema.Finite,
     required: Schema.Finite,
@@ -323,6 +327,29 @@ export class SnapshotRowInconsistent extends Schema.TaggedError<SnapshotRowIncon
       "log",
       "row",
       "systemFields",
+      "duplicate",
+    ]),
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * A snapshot's stored files and `_storage` rows disagree: a file with no
+ * committed row in its component, a row with no file, bytes whose SHA-256 or
+ * size is not the row's, a storage UUID the kernel would not mint or that two
+ * files share, or a file listed twice.
+ */
+export class SnapshotFileInconsistent extends Schema.TaggedError<SnapshotFileInconsistent>()(
+  "SnapshotFileInconsistent",
+  {
+    componentPath: Schema.String,
+    id: Schema.String,
+    reason: Schema.Literals([
+      "row",
+      "untracked",
+      "digest",
+      "size",
+      "uuid",
       "duplicate",
     ]),
     message: Schema.String,
@@ -357,3 +384,22 @@ export class SnapshotJobInconsistent extends Schema.TaggedError<SnapshotJobIncon
     message: Schema.String,
   },
 ) {}
+
+/**
+ * Whether `error` is the kernel refusing what it does not simulate or a misuse
+ * of its own API, rather than a failure the binary would raise too. A refusal
+ * reaching a function never becomes that function's own failure, such as an
+ * HTTP route's 500.
+ */
+const refusals = [
+  RequiresBinary,
+  KernelRowPending,
+  RegisteredAfterOpen,
+  ClosedAttempt,
+  StaleAttempt,
+  CommitTsNotIncreasing,
+  UnknownStandingSource,
+].map((refusal) => Schema.is(refusal));
+
+export const isKernelRefusal = (error: unknown): boolean =>
+  refusals.some((is) => is(error));

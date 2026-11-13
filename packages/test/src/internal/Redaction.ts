@@ -1,5 +1,6 @@
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import {
+  Base64,
   convexToJson,
   jsonToConvex,
   type JSONValue,
@@ -579,6 +580,35 @@ export const mark = (
     secrets.searchable(),
     toMarker,
   );
+};
+
+const utf8 = new TextEncoder();
+
+const holds = (bytes: Uint8Array, needle: Uint8Array): boolean => {
+  if (needle.length === 0) return false;
+  outer: for (let i = 0; i + needle.length <= bytes.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (bytes[i + j] !== needle[j]) continue outer;
+    }
+    return true;
+  }
+  return false;
+};
+
+/**
+ * A stored file's bytes as a snapshot writes them: base64, or a marker in their
+ * place when they hold a kept secret's UTF-8 text. File bytes have no schema,
+ * so only the backstop's rule applies, and base64 would otherwise hide the
+ * secret from it while any reader could decode it. A restore given the secrets
+ * puts the bytes back as they were.
+ */
+export const markBytes = (bytes: Uint8Array, secrets: Secrets): JSONValue => {
+  const base64 = Base64.fromByteArray(bytes);
+  return secrets
+    .searchable()
+    .some((secret) => holds(bytes, utf8.encode(secret)))
+    ? { [markerKey]: secrets.keep(base64) }
+    : base64;
 };
 
 /**

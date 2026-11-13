@@ -11,6 +11,7 @@ import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import * as Subscriptions from "./Subscriptions.js";
 import type * as Scheduling from "./Scheduling.js";
+import * as Storage from "./Storage.js";
 
 type Modules = Record<string, () => Promise<any>>;
 
@@ -242,7 +243,23 @@ const accessor = (
         },
         token,
       ),
-    fetch: () => Promise.reject(KernelRefusal.rowPending("HTTP routes", 6)),
+    // An upload to a URL from `generateUploadUrl`, or a download from one
+    // `getUrl` answered, streams through the binary's storage endpoints, which
+    // the kernel does not simulate. An HTTP action reads a presented token's
+    // identity without refusing the request, which the kernel does not do yet.
+    fetch: (path: unknown, init?: RequestInit) => {
+      const endpoint =
+        typeof path === "string" ? Storage.endpoint(path) : undefined;
+      if (endpoint !== undefined) {
+        return Promise.reject(KernelRefusal.requiresBinary(endpoint));
+      }
+      if (token !== undefined) {
+        return Promise.reject(
+          KernelRefusal.rowPending("an HTTP request that presents a token", 6),
+        );
+      }
+      return reported(() => world.fetch(caller, path, init));
+    },
     jwks: () => world.deploymentKey.jwks(),
     advance: (ms: number) => reported(() => world.advance(ms)),
     jobs: () => world.jobs(),
