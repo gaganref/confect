@@ -131,11 +131,14 @@ sources on its own clock. It reads them when the backend opens and refuses with
 interval first at once, then an interval after the previous run's time; a clock
 schedule at its next UTC occurrence plus Convex's random delay within the
 minute, or within the hour when `minuteUTC` is left out. The delay draws from
-the runtime's new optional `random`. A run that finishes after later runs came
+the random stream of the world bound when the backend opened, and a clock
+schedule with no such world is refused with `CronRandomUnavailable`. A run that finishes after later runs came
 due skips them. A run is a system request with no identity and fresh request
 metadata, and a mutation's writes and jobs exist only if it commits. `advance`
 runs cron runs and jobs in time order, and a drain never runs a cron run.
-Expressions using `L`, `W` or `#` are refused with `UnsupportedCronExpression`.
+Cron expressions follow saffron's search, including `L`, `W` and `#`. A search
+that reaches saffron's `u32` underflow, which aborts the overflow-checked binary,
+is refused with `CronAbortsBinary`.
 Why: design row 5 lists declared schedules among the kernel's standing sources,
 and #123 left them out. This is row 5 of Frame's backend testing kernel (Frame
 ADR 0012). Changeset: `test-kernel-crons.md`. Upstream: fork only, as the kernel

@@ -471,8 +471,15 @@ is a whole number of seconds below `CRON_SPLAY_SECONDS`, 60 by default
 expression, and below 3600 when `minuteUTC` is left out. A first run counts its
 fresh delay as already in effect, so it can land in the current minute or hour.
 Later runs carry the delay through the previous run's timestamp, and draw again
-only when it was 0. The kernel draws from `KernelRuntime.random`, or the host's
-`Math.random` when the driver supplies none. When a run finishes, the next is
+only when it was 0. The kernel holds no generator: the delay draws from the
+random stream of the world bound by the call that opened the backend, the stream
+that world's handlers draw from (row 1). A clock schedule with no world bound at
+open has nothing to draw from, so the backend refuses with
+`CronRandomUnavailable`. An interval never draws. When `now` is no later than the
+previous delay, the binary's checked subtraction fails and the search starts at
+`now` itself (`next_ts.rs:180`, `Timestamp::sub` at
+`crates/convex/sync_types/src/timestamp.rs:72-78`), so an epoch clock with a 15 s
+delay first runs at 75 s, not 15 s. When a run finishes, the next is
 computed from that time, and every run already past is skipped
 (`complete_job_run`, `crates/application/src/cron_jobs/mod.rs:852-965`).
 
@@ -484,9 +491,22 @@ weekday that are both restricted matching either (`saffron/src/lib.rs:975-1003`)
 saffron's quirks are kept: a wrapping range such as `22-2` starts one value
 early, at 21 (`lib.rs:393-407`), and a wrapping step reads its bounds off by one
 for days, months and weekdays (`lib.rs:418-425`). The binary refuses a pattern
-saffron's `any` says never matches (`types.rs:453-459`). The `L` and `W` forms of
-the day of the month, and a weekday's `L` and `#`, parse in the binary but are
-refused with `UnsupportedCronExpression`.
+saffron's `any` says never matches (`types.rs:453-459`).
+
+The search is a line-by-line port of saffron's `next_after` (`lib.rs:1134-1436`),
+not a scan for matching minutes. The first day is tested with `contains_date`
+(`lib.rs:623-678` for the day of the month, `:153-173` for the weekday, `:992-1003`
+for both), and every later day is found by `find_next_day_of_month`
+(`:1253-1310`) or `find_next_weekday` (`:1314-1387`). The two can disagree for
+the `L` and `W` forms, and the port keeps both. `L` is the last day, `L-n` n days
+before it, `LW` and `L-nW` the nearest weekday to those, `nW` the nearest weekday
+to day n within the month, `nL` the month's last weekday n, and `n#k` its k-th
+weekday n. A month without the day has no run. One case cannot be simulated: an
+`L-nW` test on a Monday computes `day + n - days_in_month` in `u32` (`:663`), and
+below zero that underflows. convex-backend builds with `overflow-checks = true`
+and `panic = "abort"` (`Cargo.toml:271-274`), so the binary process aborts. The
+kernel refuses with `CronAbortsBinary` instead. A differential harness built
+without overflow checks would wrap there and answer no match.
 
 A cron run is a system request: no identity, no IP or user agent, a fresh
 request ID and no scheduled function ID (`cron_jobs/mod.rs:441-446`,
