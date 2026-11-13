@@ -1170,9 +1170,15 @@ A verified token gives `getUserIdentity` its identity. For a refused one,
 (`isolate/src/environment/action/task_executor.rs:205-216`), which reaches the
 handler as a plain `Error` with the verifier's message and no `data`
 (`isolate/src/environment/helpers/promise.rs:74-76`, `errors/src/lib.rs:25-26`,
-`convex` 1.49 `src/server/impl/syscall.ts:47-52`). A function the handler calls
-sees no identity, since an unknown identity carries no token
-(`database/src/transaction.rs:390-396`, `keybroker/src/broker.rs:165-175`).
+`convex` 1.49 `src/server/impl/syscall.ts:47-52`). A function in the host the
+handler calls through `ctx.runQuery`, `ctx.runMutation` or `ctx.runAction`
+gets the same unknown identity (`model/src/components/auth.rs:6-19`). An action
+throws the error again from `getUserIdentity`. A query or mutation reads its
+transaction's identity, which for an unknown identity is none, so it sees
+`null` (`isolate/src/environment/udf/async_syscall.rs:1111-1142`,
+`database/src/transaction.rs:390-396`). A component's function sees no
+identity either way. The local-backend suite's plain fixture checks each of the
+three calls on both targets, through `/token-review-hop`.
 
 `ctx.auth.signJwt` in a mutation now signs with an ES256 key, and `t.jwks()`
 answers its public half. The rules are convex-test 0.0.65's, which match the
@@ -1204,15 +1210,16 @@ export writes `signingKey` as a marker and no artifact shows the seed raw. A
 restore puts the seed back from the source's `secrets()` and installs it without
 drawing, so the restored backend verifies the tokens in its tables and signs
 under the same key. A restore without the secrets refuses with
-`SnapshotSecretMissing`. The field took the format to version 4. The snapshot
-contract lists `deploymentKey` as exported, and `authConfig` and `providers` as
-excluded, since the restoring backend loads its own `auth.config`.
+`SnapshotSecretMissing`. The field took the format to version 4. #134 keeps
+snapshot format 4, and #137 takes 5. The snapshot contract lists `deploymentKey`
+as exported, and `authConfig` and `providers` as excluded, since the restoring
+backend loads its own `auth.config`.
 
-`tools/local-backend/fixtures/minted.ts` mints five tokens with keys the test makes: a valid
-control, a wrong issuer, a wrong audience, a foreign key under the declared
-key's `kid`, and an expired token. `test/Identity.test.ts` runs them on the
-kernel, and `packages/server/test/local-backend/jwt.test.ts` runs them against
-the binary through the fixture's own `auth.config.ts` and its
+`tools/local-backend/fixtures/minted.ts` mints five tokens with keys the test
+makes: a valid control, a wrong issuer, a wrong audience, a foreign key under
+the declared key's `kid`, and an expired token. `test/Identity.test.ts` runs
+them on the kernel, and `packages/server/test/local-backend/jwt.test.ts` runs
+them against the binary through the fixture's own `auth.config.ts` and its
 `groups/components:identity` query. Both targets give the same outcome, the
 refusal code and the valid control's identity included. Both also send each
 token to an HTTP action at `/token-review`, which answers 200 with what
@@ -1220,10 +1227,9 @@ token to an HTTP action at `/token-review`, which answers 200 with what
 The thrown error's class, `data` and message are the same on both targets. An
 expired token's message counts the seconds on the verifier's clock, so the
 binary test accepts the message for any second between its clock reads before
-and after the request.
-`components.test.ts:84`, signing and the deployment JWKS, now runs in the
-kernel lane, and its placement is gone. Upstream's "rejects tokens from another
-TestConfect instance" builds its second layer with `seed: 1` through the lane's
-`TestConfect.layerWith`, so on the kernel the second backend draws another key,
-as a second deployment has its own. convex-test ignores the seed. The case runs
-in the kernel lane, and its placement is gone.
+and after the request. `components.test.ts:84`, signing and the deployment JWKS,
+now runs in the kernel lane, and its placement is gone. Upstream's "rejects
+tokens from another TestConfect instance" builds its second layer with `seed: 1`
+through the lane's `TestConfect.layerWith`, so on the kernel the second backend
+draws another key, as a second deployment has its own. convex-test ignores the
+seed. The case runs in the kernel lane, and its placement is gone.
