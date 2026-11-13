@@ -18,6 +18,7 @@ import * as TestClock from "effect/testing/TestClock";
 import * as Fiber from "effect/Fiber";
 import * as Result from "effect/Result";
 import * as Layer from "effect/Layer";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as String from "effect/String";
 import {
@@ -2190,7 +2191,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
-      "holds every Schema.Redacted path of the app's and each mount's tables and functions",
+      "gives the kernel's redaction each secret-holding codec of the app's functions and each mount's tables and functions",
       () =>
         Effect.gen(function* () {
           const project = yield* subjectProject;
@@ -2231,26 +2232,67 @@ const vault = GroupSpec.make().addFunction(FunctionSpec.internalQuery({ name: "r
 export default Spec.fromGroups({ vault });
 `,
           );
+          yield* project.write(
+            "components/counter/confect/_generated/refs.ts",
+            `import { Refs } from "@confect/core";
+import spec from "./spec";
+export default Refs.make(spec);
+`,
+          );
           yield* project.run;
-          const backend = yield* testBackendOf(project);
-          const vault = {
-            tables: { vault: [["key"]] },
-            functions: { "vault:reveal": { args: [], returns: [[]] } },
+          const { module } = yield* Bundler.bundle(
+            `${project.root}/confect/_generated/testing.ts`,
+          );
+          type Thunk = () => Schema.Codec<any, any>;
+          const secrets = module.default.secrets as {
+            readonly tables: Record<string, Record<string, Thunk>>;
+            readonly functions: Record<
+              string,
+              Record<string, { readonly args: Thunk; readonly returns: Thunk }>
+            >;
           };
-          expect(backend.secrets).toEqual({
-            tables: {
-              "": { keys: [["token"], ["backups", "*"]] },
-              first: vault.tables,
-              second: vault.tables,
-            },
-            functions: {
-              "": {
-                "keys:rotate": { args: [["next"]], returns: [["previous"]] },
-              },
-              first: vault.functions,
-              second: vault.functions,
-            },
+          const shape = (record: object) =>
+            Object.fromEntries(
+              Object.entries(record).map(([key, value]) => [
+                key,
+                Object.fromEntries(
+                  Object.entries(value).map(([name, entry]) => [
+                    name,
+                    typeof entry === "function"
+                      ? Schema.isSchema(entry())
+                      : Object.fromEntries(
+                          Object.entries(entry as object).map(
+                            ([part, thunk]) => [
+                              part,
+                              Schema.isSchema((thunk as () => unknown)()),
+                            ],
+                          ),
+                        ),
+                  ]),
+                ),
+              ]),
+            );
+          // The layer reads the app's own tables from its schema; codegen
+          // lists each secret-holding codec of functions and mounted tables.
+          expect(shape(secrets.tables)).toEqual({
+            first: { vault: true },
+            second: { vault: true },
           });
+          expect(shape(secrets.functions)).toEqual({
+            "": { "keys:rotate": { args: true, returns: true } },
+            first: { "vault:reveal": { returns: true } },
+            second: { "vault:reveal": { returns: true } },
+          });
+          // Each thunk is the real codec: its secret field decodes to Redacted.
+          const vault = yield* Schema.decodeEffect(
+            secrets.tables["first"]!["vault"]!(),
+          )({ key: "vault-key" });
+          expect(Redacted.isRedacted(vault.key)).toBe(true);
+          const rotate = yield* Schema.decodeEffect(
+            secrets.functions[""]!["keys:rotate"]!.args(),
+          )({ next: "next-key", label: "main" });
+          expect(Redacted.isRedacted(rotate.next)).toBe(true);
+          expect(rotate.label).toBe("main");
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

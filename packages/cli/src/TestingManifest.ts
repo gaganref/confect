@@ -321,110 +321,52 @@ export const plan = ({
     };
   });
 
-/**
- * A path into an encoded value: object field names and array indexes, with `*`
- * for every element of an array or every value of a record.
- */
-export type SecretPath = ReadonlyArray<string>;
-
 const isSecretNode = (ast: SchemaAST.AST): boolean =>
   ast._tag === "Declaration" &&
   (SchemaAST.resolve(ast)?.["representation"] as { id?: unknown } | undefined)
     ?.id === "effect/schema/Redacted";
 
 /**
- * Every path at which `schema` holds a `Schema.Redacted` node, which
- * `Schema.RedactedFromValue` decodes to. The paths address the encoded value,
- * whose fields keep the schema's names.
+ * Whether `schema` holds a `Schema.Redacted` node, which
+ * `Schema.RedactedFromValue` decodes to, through structs, records, arrays,
+ * tuples, unions and suspended schemas. The kernel's redaction reads the same
+ * nodes, so codegen lists a schema in the secret policy only when it has one.
  */
-export const secretPaths = (schema: Schema.Top): Array<SecretPath> => {
-  const paths: Array<SecretPath> = [];
+export const hasSecret = (schema: Schema.Top): boolean => {
   const seen = new Set<SchemaAST.AST>();
-  const walk = (ast: SchemaAST.AST, path: SecretPath) => {
-    if (seen.has(ast)) return;
-    if (isSecretNode(ast)) {
-      paths.push(path);
-      return;
-    }
+  const walk = (ast: SchemaAST.AST): boolean => {
+    if (seen.has(ast)) return false;
+    if (isSecretNode(ast)) return true;
     switch (ast._tag) {
       case "Objects":
-        for (const property of ast.propertySignatures)
-          walk(property.type, [...path, String(property.name)]);
-        for (const index of ast.indexSignatures)
-          walk(index.type, [...path, "*"]);
-        return;
+        return (
+          ast.propertySignatures.some((property) => walk(property.type)) ||
+          ast.indexSignatures.some((index) => walk(index.type))
+        );
       case "Arrays":
-        ast.elements.forEach((element, i) => walk(element, [...path, `${i}`]));
-        for (const rest of ast.rest) walk(rest, [...path, "*"]);
-        return;
+        return ast.elements.some(walk) || ast.rest.some(walk);
       case "Union":
-        for (const member of ast.types) walk(member, path);
-        return;
+        return ast.types.some(walk);
       case "Suspend":
         seen.add(ast);
-        walk(ast.thunk(), path);
-        return;
+        return walk(ast.thunk());
       default:
-        return;
+        return false;
     }
   };
-  walk(schema.ast, []);
-  return paths;
+  return walk(schema.ast);
 };
 
 /**
- * The secret paths of one backend's or component's tables and functions, by
- * component path (`""` for the app), then table name or `module:export`. A
- * table or function with no secret is left out.
+ * One Confect function of a spec, with the codecs its ref carries.
  */
-export interface Secrets {
-  readonly tables: Record<string, Record<string, ReadonlyArray<SecretPath>>>;
-  readonly functions: Record<
-    string,
-    Record<
-      string,
-      {
-        readonly args: ReadonlyArray<SecretPath>;
-        readonly returns: ReadonlyArray<SecretPath>;
-      }
-    >
-  >;
+export interface ConfectFunction {
+  readonly segments: ReadonlyArray<string>;
+  readonly name: string;
+  readonly visibility: "public" | "internal";
+  readonly args: Schema.Top;
+  readonly returns: Schema.Top;
 }
-
-export const emptySecrets = (): Secrets => ({ tables: {}, functions: {} });
-
-/**
- * Add one component's tables, each a table name and its fields' schema.
- */
-export const addTables = (
-  secrets: Secrets,
-  componentPath: string,
-  tables: ReadonlyArray<{ readonly name: string; readonly fields: Schema.Top }>,
-) => {
-  for (const { name, fields } of tables) {
-    const paths = secretPaths(fields);
-    if (paths.length > 0) (secrets.tables[componentPath] ??= {})[name] = paths;
-  }
-};
-
-/**
- * Add one component's functions, each a `module:export` and its codecs.
- */
-export const addFunctions = (
-  secrets: Secrets,
-  componentPath: string,
-  functions: ReadonlyArray<{
-    readonly udfPath: string;
-    readonly args: Schema.Top;
-    readonly returns: Schema.Top;
-  }>,
-) => {
-  for (const { udfPath, args, returns } of functions) {
-    const found = { args: secretPaths(args), returns: secretPaths(returns) };
-    if (found.args.length > 0 || found.returns.length > 0)
-      (secrets.functions[componentPath] ??= {})[udfPath] = found;
-  }
-};
 
 /**
  * Every Confect function of a spec's groups, internal ones included.
@@ -432,40 +374,20 @@ export const addFunctions = (
 export const confectFunctions = (
   groups: Readonly<Record<string, GroupSpec.AnyWithProps>>,
   prefix: ReadonlyArray<string> = [],
-): Array<{ udfPath: string; args: Schema.Top; returns: Schema.Top }> => {
-  const found: Array<{
-    udfPath: string;
-    args: Schema.Top;
-    returns: Schema.Top;
-  }> = [];
+): Array<ConfectFunction> => {
+  const found: Array<ConfectFunction> = [];
   for (const [name, group] of Object.entries(groups)) {
     const segments = [...prefix, name];
     for (const spec of Object.values(group.functions))
       if (spec.functionProvenance._tag === "Confect")
         found.push({
-          udfPath: `${segments.join("/")}:${spec.name}`,
+          segments,
+          name: spec.name,
+          visibility: spec.functionVisibility,
           args: spec.functionProvenance.args,
           returns: spec.functionProvenance.returns,
         });
     found.push(...confectFunctions(group.groups, segments));
   }
   return found;
-};
-
-/**
- * Sort every key, so the generated text follows the schemas alone.
- */
-export const sortedSecrets = (secrets: Secrets): Secrets => {
-  const sort = <A>(record: Record<string, A>, inner: (value: A) => A) =>
-    Object.fromEntries(
-      Object.keys(record)
-        .sort()
-        .map((key) => [key, inner(record[key]!)]),
-    );
-  return {
-    tables: sort(secrets.tables, (tables) => sort(tables, (paths) => paths)),
-    functions: sort(secrets.functions, (functions) =>
-      sort(functions, (codecs) => codecs),
-    ),
-  };
 };

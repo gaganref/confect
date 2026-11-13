@@ -1,15 +1,12 @@
 import {
   App,
   Callback,
-  type Component,
   Env,
   type GroupSpec,
   type ManifestSection,
-  Ref,
   Spec,
 } from "@confect/core";
 import { DatabaseSchema } from "@confect/server";
-import type * as Schema from "effect/Schema";
 import * as Command from "effect/cli/Command";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -1324,28 +1321,28 @@ const generateTesting = Effect.fnUntraced(function* (
       }
       // A session runs a nested mount's `init` before its parent's.
       mounts.push({ path: name, kit: fromPackage ? kitKey : "local" });
-      sources.push(
-        fromPackage
-          ? { path: name, contract: mount?.component.contract }
-          : {
-              path: name,
-              confect: path.join(path.dirname(resolved), "confect"),
-            },
-      );
+      if (!fromPackage)
+        sources.push({
+          path: name,
+          identifier: identifier.replace(/Kit\d*$/, ""),
+          confect: path.join(path.dirname(resolved), "confect"),
+        });
     }
   });
   const mounts: Array<{ path: string; kit: string }> = [];
   const sources: Array<SecretSource> = [];
   yield* visit(convexDirectory, "", (yield* ConvexDirectory.target).kind, "");
+  const secrets = yield* secretsOf(input.leaves, sources, relative);
+  imports.push(...secrets.imports);
   // A component's subject is row 9's component profile, with no groups. An
   // app without @confect/test keeps the registry alone, so it still compiles.
   const subject =
     (yield* ConvexDirectory.target).kind === "app" &&
     Bundler.canImport("@confect/test", path.join(generated, "testing.ts"))
-      ? yield* testBackend(app, input, mounts, sources)
+      ? yield* testBackend(app, input, mounts)
       : { imports: [], declaration: "" };
-  imports.push(...subject.imports);
-  const registry = `{ httpMounts: [${httpMounts.join(",")}], schema, convexSchema, modules: ${yield* moduleMap(convexDirectory)}, components: {${components.join("\n")}} }`;
+  imports.push(...subject.imports.filter((line) => !imports.includes(line)));
+  const registry = `{ httpMounts: [${httpMounts.join(",")}], schema, convexSchema, modules: ${yield* moduleMap(convexDirectory)}, components: {${components.join("\n")}}${secrets.policy === undefined ? "" : `, secrets: ${secrets.policy}`} }`;
   yield* writeFileStringAndLog(
     path.join(generated, "testing.ts"),
     [
@@ -1372,7 +1369,6 @@ const testBackend = Effect.fnUntraced(function* (
   app: App.Any,
   input: TestingInput,
   mounts: ReadonlyArray<{ readonly path: string; readonly kit: string }>,
-  sources: ReadonlyArray<SecretSource>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -1395,14 +1391,6 @@ const testBackend = Effect.fnUntraced(function* (
   const manifest = yield* readPrevious;
   const digest =
     typeof manifest["digest"] === "string" ? manifest["digest"] : "";
-  const access = (segments: ReadonlyArray<string>) =>
-    segments
-      .map((segment) =>
-        /^[A-Za-z_$][\w$]*$/.test(segment)
-          ? `.${segment}`
-          : `[${quote(segment)}]`,
-      )
-      .join("");
   const imports = [
     'import { TestBackend as $TestBackend } from "@confect/test";',
     'import refs from "./refs.js";',
@@ -1431,7 +1419,6 @@ const testBackend = Effect.fnUntraced(function* (
         )
         .join(", ")} }, open: ${literal(open)} }),`,
   );
-  const secrets = yield* secretsOf(input.leaves, sources);
   const owner = Env.name(App.env(app));
   const settings = Env.descriptors(App.env(app)).map(([name, descriptor]) => ({
     name,
@@ -1450,21 +1437,31 @@ const testBackend = Effect.fnUntraced(function* (
       `  manifestDigest: ${quote(digest)},`,
       `  mounts: ${literal(mounts)},`,
       `  settings: ${literal(settings)},`,
-      `  secrets: ${literal(secrets)},`,
       "});",
     ].join("\n"),
   };
 });
 
 /**
- * Where a mount's Confect schemas live: its own `confect/`, or its contract.
+ * A property path in generated code, such as `.tasks.tasks`.
  */
-type SecretSource =
-  | { readonly path: string; readonly confect: string }
-  | {
-      readonly path: string;
-      readonly contract: Component.Descriptor["contract"] | undefined;
-    };
+const access = (segments: ReadonlyArray<string>) =>
+  segments
+    .map((segment) =>
+      /^[A-Za-z_$][\w$]*$/.test(segment)
+        ? `.${segment}`
+        : `[${quote(segment)}]`,
+    )
+    .join("");
+
+/**
+ * A local mount whose own `confect/` holds its generated schema and refs.
+ */
+interface SecretSource {
+  readonly path: string;
+  readonly identifier: string;
+  readonly confect: string;
+}
 
 const bundledDefault = Effect.fnUntraced(function* (file: string) {
   const fs = yield* FileSystem.FileSystem;
@@ -1475,103 +1472,115 @@ const bundledDefault = Effect.fnUntraced(function* (file: string) {
   return module.default as unknown;
 });
 
-const tablesOf = (schema: unknown) =>
-  DatabaseSchema.isDatabaseSchema(schema)
-    ? Object.values(
-        DatabaseSchema.tables(schema as DatabaseSchema.AnyWithProps),
-      ).map((table) => ({
-        name: table.tableName,
-        fields: table.Fields,
-      }))
-    : [];
+/**
+ * A thunk of each Confect function codec of `functions` that holds a secret.
+ */
+const functionSecrets = (
+  functions: ReadonlyArray<TestingManifest.ConfectFunction>,
+  refs: string,
+) =>
+  functions
+    .map((fn) => {
+      const ref = `${refs}.${fn.visibility}${access([...fn.segments, fn.name])}`;
+      const codecs = [
+        ...(TestingManifest.hasSecret(fn.args)
+          ? [`args: () => ${ref}.args`]
+          : []),
+        ...(TestingManifest.hasSecret(fn.returns)
+          ? [`returns: () => ${ref}.returns`]
+          : []),
+      ];
+      return codecs.length === 0
+        ? undefined
+        : `${quote(`${fn.segments.join("/")}:${fn.name}`)}: { ${codecs.join(", ")} }`;
+    })
+    .filter((entry) => entry !== undefined)
+    .sort();
 
 /**
- * Every secret path in the app's tables and functions and in each mount's: a
- * local component's from its own generated schema and spec, a package's
- * functions from its descriptor's contract.
+ * The secret policy `TestConfect.layer` feeds the kernel's redaction: a thunk
+ * of each Confect codec that holds a `Schema.Redacted` node, among the app's
+ * functions and each local mount's tables and functions. The layer reads the
+ * app's own tables from its schema. A package's kit registers only Convex
+ * schemas, so its tables and functions carry no policy here.
  */
 const secretsOf = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<LoadedLeafModule>,
   sources: ReadonlyArray<SecretSource>,
+  relative: (file: string) => string,
 ) {
   const path = yield* Path.Path;
-  const generated = path.join(yield* ConfectDirectory.get, GENERATED_DIRNAME);
-  const secrets = TestingManifest.emptySecrets();
-  TestingManifest.addTables(
-    secrets,
-    "",
-    tablesOf(yield* bundledDefault(path.join(generated, "schema.ts"))),
-  );
-  TestingManifest.addFunctions(
-    secrets,
-    "",
+  const imports: Array<string> = [];
+  const tables: Array<string> = [];
+  const functions: Array<string> = [];
+  const own = functionSecrets(
     leaves.flatMap((leaf) =>
       TestingManifest.confectFunctions(
-        {
-          [leaf.pathSegments.at(-1)!]: leaf.spec,
-        },
+        { [leaf.pathSegments.at(-1)!]: leaf.spec },
         leaf.pathSegments.slice(0, -1),
       ),
     ),
+    "refs",
   );
+  if (own.length > 0) {
+    imports.push('import refs from "./refs.js";');
+    functions.push(`"": { ${own.join(", ")} }`);
+  }
   for (const source of sources) {
-    if ("confect" in source) {
-      const own = path.join(source.confect, GENERATED_DIRNAME);
-      TestingManifest.addTables(
-        secrets,
-        source.path,
-        tablesOf(yield* bundledDefault(path.join(own, "schema.ts"))),
+    const generated = path.join(source.confect, GENERATED_DIRNAME);
+    const schema = yield* bundledDefault(path.join(generated, "schema.ts"));
+    const secretTables = DatabaseSchema.isDatabaseSchema(schema)
+      ? Object.values(
+          DatabaseSchema.tables(schema as DatabaseSchema.AnyWithProps),
+        )
+          .filter((table) => TestingManifest.hasSecret(table.Fields))
+          .map((table) => table.tableName)
+          .sort((a, b) => (a < b ? -1 : Number(a > b)))
+      : [];
+    if (secretTables.length > 0) {
+      const local = `${source.identifier}ConfectSchema`;
+      imports.push(
+        `import ${local} from ${quote(relative(path.join(generated, "schema.js")))};`,
       );
-      const spec = yield* bundledDefault(path.join(own, "spec.ts"));
-      if (Spec.isSpec(spec))
-        TestingManifest.addFunctions(
-          secrets,
-          source.path,
+      tables.push(
+        `${quote(source.path)}: { ${secretTables
+          .map(
+            (table) =>
+              `${quote(table)}: () => $DatabaseSchema.tables(${local})${access([table])}.Fields`,
+          )
+          .join(", ")} }`,
+      );
+    }
+    const spec = yield* bundledDefault(path.join(generated, "spec.ts"));
+    const local = `${source.identifier}Refs`;
+    const entries = Spec.isSpec(spec)
+      ? functionSecrets(
           TestingManifest.confectFunctions(Spec.groups(spec)),
-        );
-    } else if (source.contract !== undefined) {
-      TestingManifest.addFunctions(
-        secrets,
-        source.path,
-        contractFunctions(source.contract),
+          local,
+        )
+      : [];
+    if (entries.length > 0) {
+      imports.push(
+        `import ${local} from ${quote(relative(path.join(generated, "refs.js")))};`,
       );
+      functions.push(`${quote(source.path)}: { ${entries.join(", ")} }`);
     }
   }
-  return TestingManifest.sortedSecrets(secrets);
-});
-
-/**
- * A contract's exported Confect refs, each with its codecs.
- */
-const contractFunctions = (
-  contract: NonNullable<Component.Descriptor["contract"]>,
-) => {
-  const found: Array<{
-    udfPath: string;
-    args: Schema.Top;
-    returns: Schema.Top;
-  }> = [];
-  const visit = (tree: unknown) => {
-    if (Ref.isRef(tree)) {
-      if (tree._tag === "Confect")
-        found.push({
-          udfPath: tree.convexFunctionName,
-          args: tree.args,
-          returns: tree.returns,
-        });
-      return;
-    }
-    if (typeof tree === "object" && tree !== null)
-      for (const child of Object.values(tree)) visit(child);
+  if (tables.length > 0)
+    imports.unshift(
+      'import { DatabaseSchema as $DatabaseSchema } from "@confect/server";',
+    );
+  const parts = [
+    ...(tables.length === 0 ? [] : [`tables: { ${tables.join(", ")} }`]),
+    ...(functions.length === 0
+      ? []
+      : [`functions: { ${functions.join(", ")} }`]),
+  ];
+  return {
+    imports: [...new Set(imports)],
+    policy: parts.length === 0 ? undefined : `{ ${parts.join(", ")} }`,
   };
-  // The contract keeps its refs under its type id, which core does not export.
-  visit(
-    (contract as unknown as Record<string, { readonly refs: unknown }>)[
-      "~@confect/core/Component"
-    ]?.refs,
-  );
-  return found;
-};
+});
 
 interface TestingInput {
   readonly leaves: ReadonlyArray<LoadedLeafModule>;

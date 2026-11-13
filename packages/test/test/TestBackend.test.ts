@@ -15,6 +15,7 @@ import {
   type GenericDataModel,
 } from "convex/server";
 import { v } from "convex/values";
+import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Schema from "effect/Schema";
@@ -130,7 +131,6 @@ const backend = TestBackend.make(app, {
     { path: "parent", kit: "local" },
   ],
   settings,
-  secrets: { tables: {}, functions: {} },
 });
 
 const config = { FIXTURE_ORIGIN: "https://fixture.test" };
@@ -229,6 +229,68 @@ describe("TestBackend.layer", () => {
   );
 });
 
+const canary = "canary-backend-3f81c2d4";
+
+const vaulted = TestBackend.make(
+  {
+    ...app,
+    convexSchema: defineSchema({
+      seen: defineTable({ entry: v.string() }),
+      tokens: defineTable({ token: v.string() }),
+    }) as never,
+    secrets: {
+      tables: {
+        "": {
+          tokens: () =>
+            Schema.Struct({ token: Schema.RedactedFromValue(Schema.String) }),
+        },
+      },
+    },
+  },
+  {
+    refs: {},
+    groups: {},
+    ports: {},
+    laws: [],
+    obligations: [],
+    manifestDigest: "sha256:vaulted",
+    mounts: [],
+    settings,
+  },
+);
+
+describe("TestBackend.layer's redaction", () => {
+  it.effect(
+    "gives the kernel the registry's secret policy, so a stored secret reaches a failure report as a marker",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestConfect.TestConfect<typeof host>();
+        const ctx = MutationCtx.MutationCtx<GenericDataModel>();
+        yield* test.run(
+          Effect.flatMap(ctx, (raw) =>
+            Effect.promise(() => raw.db.insert("tokens", { token: canary })),
+          ),
+        );
+        const exit = yield* Effect.exit(
+          test.run(
+            Effect.flatMap(ctx, (raw) =>
+              Effect.promise(async () => {
+                const row = await raw.db.query("tokens").first();
+                throw new Error(
+                  `the stored token is ${row!["token"] as string}`,
+                );
+              }),
+            ),
+          ),
+        );
+        assert(Exit.isFailure(exit));
+        const report = Cause.pretty(exit.cause);
+        expect(report).toContain("the stored token is [redacted]");
+        expect(report).not.toContain(canary);
+      }).pipe(Effect.provide(vaulted.layer({ config }))),
+  );
+});
+
 const tasksSpec = GroupSpec.make()
   .addFunction(
     FunctionSpec.publicQuery({ name: "mine", returns: () => Schema.Null }),
@@ -262,7 +324,6 @@ const typed = TestBackend.make(app, {
   manifestDigest: "sha256:typed",
   mounts: [],
   settings,
-  secrets: { tables: {}, functions: {} },
 });
 
 describe("TestBackend's types", () => {
@@ -310,20 +371,5 @@ describe("TestBackend's types", () => {
     >();
     // @ts-expect-error A required setting cannot be left out.
     typed.layer({ config: {} });
-  });
-
-  it("answers the kernel's secret policy from the generated paths", () => {
-    const policy = TestBackend.secretPolicy({
-      tables: { "": { keys: [["token"]] } },
-      functions: { mailer: { "send:run": { args: [["key"]], returns: [] } } },
-    });
-    expect(policy.table("", "keys")).toEqual([["token"]]);
-    expect(policy.table("mailer", "keys")).toEqual([]);
-    expect(
-      policy.args({ componentPath: "mailer", udfPath: "send:run" }),
-    ).toEqual([["key"]]);
-    expect(policy.returns({ componentPath: "", udfPath: "send:run" })).toEqual(
-      [],
-    );
   });
 });

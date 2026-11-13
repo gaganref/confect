@@ -114,69 +114,6 @@ export type Config<S extends ReadonlyArray<Setting>> = {
 };
 
 /**
- * A path into an encoded value: object field names and array indexes, with `*`
- * for every element of an array or every value of a record.
- */
-export type SecretPath = ReadonlyArray<string>;
-
-/**
- * Where the backend holds secrets: every `Schema.Redacted` path in each table's
- * fields and in each function's args and return value, by component path (`""`
- * for the app), then table name or `module:export`. Codegen reads it from the
- * Confect schemas and specs, mounted components included.
- */
-export interface Secrets {
-  readonly tables: Readonly<
-    Record<string, Readonly<Record<string, ReadonlyArray<SecretPath>>>>
-  >;
-  readonly functions: Readonly<
-    Record<
-      string,
-      Readonly<
-        Record<
-          string,
-          {
-            readonly args: ReadonlyArray<SecretPath>;
-            readonly returns: ReadonlyArray<SecretPath>;
-          }
-        >
-      >
-    >
-  >;
-}
-
-/**
- * A function as the kernel names it: its component path and `module:export`.
- */
-export interface FunctionPath {
-  readonly componentPath: string;
-  readonly udfPath: string;
-}
-
-/**
- * Which paths of a table's documents and a function's values are secret.
- */
-export interface SecretPolicy {
-  readonly table: (
-    componentPath: string,
-    table: string,
-  ) => ReadonlyArray<SecretPath>;
-  readonly args: (functionPath: FunctionPath) => ReadonlyArray<SecretPath>;
-  readonly returns: (functionPath: FunctionPath) => ReadonlyArray<SecretPath>;
-}
-
-/**
- * The policy a backend's secrets give, for the kernel's artifact redaction.
- */
-export const secretPolicy = (secrets: Secrets): SecretPolicy => ({
-  table: (componentPath, table) => secrets.tables[componentPath]?.[table] ?? [],
-  args: ({ componentPath, udfPath }) =>
-    secrets.functions[componentPath]?.[udfPath]?.args ?? [],
-  returns: ({ componentPath, udfPath }) =>
-    secrets.functions[componentPath]?.[udfPath]?.returns ?? [],
-});
-
-/**
  * A session needs an app setting the test did not pass. Codegen never reads
  * `.env` or deployment state, so a test names each value.
  */
@@ -242,7 +179,6 @@ export interface GeneratedBackend<
   readonly manifestDigest: string;
   readonly mounts: ReadonlyArray<Mount>;
   readonly settings: C;
-  readonly secrets: Secrets;
   readonly app: GeneratedApp<S>;
   /**
    * Open a fresh session on the kernel. Every module of every mount loads, then
@@ -398,7 +334,6 @@ export const make = <
     readonly manifestDigest: string;
     readonly mounts: ReadonlyArray<Mount>;
     readonly settings: C;
-    readonly secrets: Secrets;
   },
 ): GeneratedBackend<F, T, P, S, C, L, B> => ({
   ...declaration,
@@ -421,6 +356,7 @@ export const make = <
         const opened = open(app.schema, app.convexSchema, app.modules, {
           target: "kernel",
           httpMounts: app.httpMounts,
+          ...(app.secrets === undefined ? {} : { secrets: app.secrets }),
           register: (registerComponent) => {
             const recording = record(registerComponent);
             const seen: RegisterComponent = (
