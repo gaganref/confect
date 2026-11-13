@@ -14,6 +14,7 @@ import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
 import * as Globals from "./Globals.js";
 import * as Invocation from "./Invocation.js";
+import * as IoBans from "./IoBans.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
 import * as KernelRefusal from "./KernelRefusal.js";
@@ -216,11 +217,49 @@ const settled = <A>(execution: Execution, result: A): Promise<A> =>
 const executions = new AsyncLocalStorage<Execution>();
 
 /**
+ * The error a host API ended each function with, such as a timer a query
+ * started. On the binary that function stops at its next microtask checkpoint
+ * and fails with the error, whatever its handler caught.
+ */
+const endings = new WeakMap<Execution, unknown>();
+
+const ioHooks: IoBans.Hooks = {
+  running: () => executions.getStore(),
+  end: (error) => {
+    const execution = executions.getStore();
+    if (execution !== undefined && !endings.has(execution)) {
+      endings.set(execution, error);
+    }
+  },
+};
+
+const refuseIfEnded = (execution: Execution) => {
+  if (endings.has(execution)) throw endings.get(execution);
+};
+
+/**
+ * `outcome`, or the error a host API ended `execution` with, which wins over
+ * whatever the handler returned or threw.
+ */
+const unlessEnded = <A>(execution: Execution, outcome: Promise<A>) =>
+  outcome.then(
+    (value) => {
+      refuseIfEnded(execution);
+      return value;
+    },
+    (error: unknown) => {
+      refuseIfEnded(execution);
+      throw error;
+    },
+  );
+
+/**
  * Run a function's code as `execution`, with its own copy of the globals a test
- * invocation pins.
+ * invocation pins, and the host APIs Convex refuses refused.
  */
 const enter = <A>(execution: Execution, run: () => A): A => {
   installConvexGlobal();
+  IoBans.install(ioHooks);
   return Globals.own(() => executions.run(execution, run));
 };
 const kernelBrand = Symbol.for("@confect/test/Kernel");
@@ -433,6 +472,7 @@ export class World {
   ) {
     installConvexGlobal();
     Clock.install(pinnedTime, () => executions.getStore() !== undefined);
+    IoBans.install(ioHooks);
     this.components.set(ROOT, makeComponent(ROOT, schema, modules));
   }
 
@@ -968,10 +1008,12 @@ export class World {
       handler: (ctx: any, a: any) =>
         resolved.handler({ ...ctx, auth: queryAuth(execution) }, a),
     }) as unknown as { invokeQuery: (args: string) => Promise<string> };
-    return enter(execution, () =>
-      q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
+    return unlessEnded(
+      execution,
+      enter(execution, () =>
+        q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
+      ).then((raw) => settled(execution, raw)),
     )
-      .then((raw) => settled(execution, raw))
       .then((raw) => {
         const result = jsonToConvex(JSON.parse(raw));
         if (!isNested && hasPendingValues(result)) {
@@ -997,18 +1039,19 @@ export class World {
       handler: (ctx: any, a: any) =>
         resolved.handler({ ...ctx, auth: mutationAuth(execution) }, a),
     }) as unknown as { invokeMutation: (args: string) => Promise<string> };
-    return enter(execution, () =>
-      m.invokeMutation(JSON.stringify(convexToJson([parseArgs(args)]))),
-    )
-      .then((raw) => settled(execution, raw))
-      .then((raw) => {
-        const result = jsonToConvex(JSON.parse(raw));
-        validateReturnValue(resolved.returns, result, "mutation", {
-          componentPath: execution.componentPath,
-          udfPath: execution.udfPath,
-        });
-        return result;
+    return unlessEnded(
+      execution,
+      enter(execution, () =>
+        m.invokeMutation(JSON.stringify(convexToJson([parseArgs(args)]))),
+      ).then((raw) => settled(execution, raw)),
+    ).then((raw) => {
+      const result = jsonToConvex(JSON.parse(raw));
+      validateReturnValue(resolved.returns, result, "mutation", {
+        componentPath: execution.componentPath,
+        udfPath: execution.udfPath,
       });
+      return result;
+    });
   }
 
   private runMutation(
