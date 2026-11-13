@@ -62,11 +62,102 @@ const timerInMutation = FunctionImpl.make(
     }),
 );
 
-const immediateInQuery = FunctionImpl.make(
+const awaitTimer = (name: Timer) =>
+  Effect.promise(
+    () =>
+      new Promise<string>((resolve) => {
+        (
+          globalThis as unknown as Record<
+            Timer,
+            (callback: () => void, ms: number) => unknown
+          >
+        )[name](() => resolve("returned"), 10);
+      }),
+  );
+
+const awaitedTimerInQuery = FunctionImpl.make(
   databaseSchema,
   ioBans,
-  "immediateInQuery",
-  () => Effect.sync(() => typeof globalThis.setImmediate),
+  "awaitedTimerInQuery",
+  ({ name }) => awaitTimer(name),
+);
+
+const awaitedTimerInMutation = FunctionImpl.make(
+  databaseSchema,
+  ioBans,
+  "awaitedTimerInMutation",
+  ({ name }) => awaitTimer(name),
+);
+
+const surface = () =>
+  Effect.sync(() => ({
+    setImmediate: typeof globalThis.setImmediate,
+    queueMicrotask: typeof globalThis.queueMicrotask,
+  }));
+
+const surfaceInQuery = FunctionImpl.make(
+  databaseSchema,
+  ioBans,
+  "surfaceInQuery",
+  surface,
+);
+
+const surfaceInAction = FunctionImpl.make(
+  databaseSchema,
+  ioBans,
+  "surfaceInAction",
+  surface,
+);
+
+type FormBody = "multipart" | "urlencoded" | "multipartWithoutBoundary";
+
+const formRequest = (body: FormBody) =>
+  body === "urlencoded"
+    ? new Request("https://example.com/", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "name=ada",
+      })
+    : new Request("https://example.com/", {
+        method: "POST",
+        headers: {
+          "content-type":
+            body === "multipart"
+              ? "multipart/form-data; boundary=fence"
+              : "multipart/form-data",
+        },
+        body: '--fence\r\nContent-Disposition: form-data; name="name"\r\n\r\nada\r\n--fence--\r\n',
+      });
+
+const parseForm = ({ body }: { readonly body: FormBody }) =>
+  Effect.promise(() =>
+    formRequest(body)
+      .formData()
+      .then(
+        (form) => ({ returned: form.get("name") as string | null }),
+        (error: Error) => ({ name: error.name, message: error.message }),
+      ),
+  );
+
+const formDataInQuery = FunctionImpl.make(
+  databaseSchema,
+  ioBans,
+  "formDataInQuery",
+  parseForm,
+);
+
+const formDataInMutation = FunctionImpl.make(
+  databaseSchema,
+  ioBans,
+  "formDataInMutation",
+  parseForm,
+);
+
+const formDataInAction = FunctionImpl.make(
+  databaseSchema,
+  ioBans,
+  "formDataInAction",
+  parseForm,
 );
 
 const clearInQuery = FunctionImpl.make(
@@ -104,7 +195,7 @@ const timersInAction = FunctionImpl.make(
           resolve("ticked");
         }, 1);
       });
-      return [slept, ticked, typeof globalThis.setImmediate];
+      return [slept, ticked];
     }),
 );
 
@@ -113,7 +204,13 @@ export default GroupImpl.make(databaseSchema, ioBans).pipe(
   Layer.provide(fetchInMutation),
   Layer.provide(timerInQuery),
   Layer.provide(timerInMutation),
-  Layer.provide(immediateInQuery),
+  Layer.provide(awaitedTimerInQuery),
+  Layer.provide(awaitedTimerInMutation),
+  Layer.provide(surfaceInQuery),
+  Layer.provide(surfaceInAction),
+  Layer.provide(formDataInQuery),
+  Layer.provide(formDataInMutation),
+  Layer.provide(formDataInAction),
   Layer.provide(clearInQuery),
   Layer.provide(fetchInAction),
   Layer.provide(timersInAction),

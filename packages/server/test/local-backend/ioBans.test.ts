@@ -109,16 +109,72 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })("I/O bans", (it) => {
       }),
   );
 
-  it.effect("a query defines no setImmediate and may clear a timer", () =>
+  it.effect(
+    "a query or mutation that awaits a host timer fails without waiting on it",
+    () =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        for (const name of ["setTimeout", "setInterval"] as const) {
+          const query = yield* failureOf(
+            Ref.runWithCodec(
+              refs.public.groups.ioBans.awaitedTimerInQuery,
+              { name },
+              (ref, args) => client.query(ref, args),
+            ),
+          );
+          const mutation = yield* failureOf(
+            Ref.runWithCodec(
+              refs.public.groups.ioBans.awaitedTimerInMutation,
+              { name },
+              (ref, args) => client.mutation(ref, args),
+            ),
+          );
+          for (const outcome of [query, mutation]) {
+            expect(outcome).toHaveProperty("failed");
+            expect((outcome as { failed: string }).failed).toContain(
+              timerRefusal(name),
+            );
+          }
+        }
+      }),
+  );
+
+  it.effect(
+    "a query and an isolate action define no setImmediate and no queueMicrotask, and a Node action has both",
+    () =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        const absent = {
+          setImmediate: "undefined",
+          queueMicrotask: "undefined",
+        };
+        expect(
+          yield* Ref.runWithCodec(
+            refs.public.groups.ioBans.surfaceInQuery,
+            {},
+            (ref, args) => client.query(ref, args),
+          ),
+        ).toEqual(absent);
+        expect(
+          yield* Ref.runWithCodec(
+            refs.public.groups.ioBans.surfaceInAction,
+            {},
+            (ref, args) => client.action(ref, args),
+          ),
+        ).toEqual(absent);
+        expect(
+          yield* Ref.runWithCodec(
+            refs.public.ioBansNode.surfaceNode,
+            {},
+            (ref, args) => client.action(ref, args),
+          ),
+        ).toEqual({ setImmediate: "function", queueMicrotask: "function" });
+      }),
+  );
+
+  it.effect("a query may clear a timer", () =>
     Effect.gen(function* () {
       const { client } = yield* LocalBackend.LocalBackend;
-      expect(
-        yield* Ref.runWithCodec(
-          refs.public.groups.ioBans.immediateInQuery,
-          {},
-          (ref, args) => client.query(ref, args),
-        ),
-      ).toBe("undefined");
       expect(
         yield* Ref.runWithCodec(
           refs.public.groups.ioBans.clearInQuery,
@@ -127,6 +183,58 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })("I/O bans", (it) => {
         ),
       ).toBe("cleared");
     }),
+  );
+
+  it.effect(
+    "a query's and a mutation's multipart formData() are refused, while urlencoded and an action's parse",
+    () =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        const refusal = {
+          name: "Error",
+          message:
+            "Can't use formData() in queries and mutations. Please consider using an action. See https://docs.convex.dev/functions/actions for more details.",
+        };
+        expect(
+          yield* Ref.runWithCodec(
+            refs.public.groups.ioBans.formDataInQuery,
+            { body: "multipart" },
+            (ref, args) => client.query(ref, args),
+          ),
+        ).toEqual(refusal);
+        expect(
+          yield* Ref.runWithCodec(
+            refs.public.groups.ioBans.formDataInMutation,
+            { body: "multipart" },
+            (ref, args) => client.mutation(ref, args),
+          ),
+        ).toEqual(refusal);
+        expect(
+          yield* Ref.runWithCodec(
+            refs.public.groups.ioBans.formDataInQuery,
+            { body: "urlencoded" },
+            (ref, args) => client.query(ref, args),
+          ),
+        ).toEqual({ returned: "ada" });
+        expect(
+          yield* Ref.runWithCodec(
+            refs.public.groups.ioBans.formDataInQuery,
+            { body: "multipartWithoutBoundary" },
+            (ref, args) => client.query(ref, args),
+          ),
+        ).toEqual({
+          name: "TypeError",
+          message:
+            "Missing boundary parameter in mime type of multipart formdata.",
+        });
+        expect(
+          yield* Ref.runWithCodec(
+            refs.public.groups.ioBans.formDataInAction,
+            { body: "multipart" },
+            (ref, args) => client.action(ref, args),
+          ),
+        ).toEqual({ returned: "ada" });
+      }),
   );
 
   it.effect("an action performs a raw fetch and runs host timers", () =>
@@ -147,7 +255,7 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })("I/O bans", (it) => {
           {},
           (ref, args) => client.action(ref, args),
         ),
-      ).toEqual(["slept", "ticked", "undefined"]);
+      ).toEqual(["slept", "ticked"]);
     }).pipe(Effect.scoped),
   );
 });

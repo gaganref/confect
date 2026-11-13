@@ -44,6 +44,7 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "groups/storage.ts": () => import("../../convex/groups/storage.js"),
 "groups/transactions.ts": () => import("../../convex/groups/transactions.js"),
 "http.ts": () => import("../../convex/http.js"),
+"ioBansNode.ts": () => import("../../convex/ioBansNode.js"),
 "metadataNode.ts": () => import("../../convex/metadataNode.js"),
 "schema.ts": () => import("../../convex/schema.js"),
 }, components: {"first": firstKit,
