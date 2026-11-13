@@ -25,12 +25,6 @@ export const placements: ReadonlyArray<Placement> = [
   },
   {
     file: "integration.test.ts",
-    name: "TransactionMetadata",
-    row: 6,
-    needs: "transaction limits",
-  },
-  {
-    file: "integration.test.ts",
     name: "DatabaseReader > uses the canonical Doc decoder for a text search",
     row: "binary",
     needs: "text search, which the kernel never simulates (RequiresBinary)",

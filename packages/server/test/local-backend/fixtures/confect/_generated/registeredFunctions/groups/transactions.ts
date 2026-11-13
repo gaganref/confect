@@ -18,4 +18,9 @@ export default {
 ["limitedWrite"]: RegisteredConvexFunction.register({ ...definitions["limitedWrite"], handler: forward(definitions["limitedWrite"].handler) }),
 ["rollback"]: RegisteredConvexFunction.register({ ...definitions["rollback"], handler: forward(definitions["rollback"].handler) }),
 ["staleRead"]: RegisteredConvexFunction.register({ ...definitions["staleRead"], handler: forward(definitions["staleRead"].handler) }),
+["insertedIntervals"]: RegisteredConvexFunction.register({ ...definitions["insertedIntervals"], handler: forward(definitions["insertedIntervals"].handler) }),
+["idle"]: RegisteredConvexFunction.register({ ...definitions["idle"], handler: forward(definitions["idle"].handler) }),
+["readMetrics"]: RegisteredConvexFunction.register({ ...definitions["readMetrics"], handler: forward(definitions["readMetrics"].handler) }),
+["staleMetrics"]: RegisteredConvexFunction.register({ ...definitions["staleMetrics"], handler: forward(definitions["staleMetrics"].handler) }),
+["metrics"]: RegisteredConvexFunction.register({ ...definitions["metrics"], handler: forward(definitions["metrics"].handler) }),
 } as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/transactions.spec.js")["default"]>;
