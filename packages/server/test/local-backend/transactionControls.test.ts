@@ -2,11 +2,19 @@ import { getFunctionReference } from "@confect/core/RefInternal";
 import type { ConvexHttpClient } from "convex/browser";
 import { expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import refs from "confect-local-backend/refs";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
+import registry from "../../../../tools/local-backend/fixtures/confect/_generated/testing";
 import { TestConfect } from "../../../test/src/index";
 import { boundary } from "../mock-backend/kernelBoundaries";
-import refs from "./fixtures/confect/_generated/refs";
-import registry from "./fixtures/confect/_generated/testing";
-import * as LocalBackend from "./LocalBackend";
+import * as Layer from "effect/Layer";
+
+// The fixture's module sources, which its plain Convex actions need on the
+// test kernel. Row 8's generated registry supplies them.
+const sources = import.meta.glob<string>(
+  "../../../../tools/local-backend/fixtures/convex/**/*.ts",
+  { query: "?raw", import: "default" },
+);
 
 const functions = refs.public.groups.transactions;
 
@@ -33,10 +41,15 @@ const onKernel = <A, E>(
   ) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
-    return yield* program(
-      yield* TestConfect.TestConfect<typeof registry.schema>(),
+    const services = yield* Layer.build(
+      TestConfect.layer(registry, { target: "kernel", sources }),
     );
-  }).pipe(Effect.provide(TestConfect.layer(registry, { target: "kernel" })));
+    return yield* Effect.gen(function* () {
+      const testConfect =
+        yield* TestConfect.TestConfect<typeof registry.schema>();
+      return yield* program(testConfect);
+    }).pipe(Effect.provideContext(services));
+  }).pipe(Effect.scoped);
 
 layer(LocalBackend.layer, { timeout: "120 seconds" })(
   "transaction controls",
@@ -51,22 +64,20 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
             count: 2,
           }),
         );
-        expect(
-          yield* Effect.promise(() =>
-            client.query(getFunctionReference(functions.limitedRead), {
-              caseId,
-              limit: 10,
-            }),
+        const promiseResult = yield* Effect.promise(() =>
+          client.query(getFunctionReference(functions.limitedRead), {
+            caseId,
+            limit: 10,
+          }),
+        );
+        expect(promiseResult).toEqual(["seed-0", "seed-1"]);
+        const promiseResult2 = yield* Effect.promise(() =>
+          client.mutation(
+            getFunctionReference(functions.limitedReadFromMutation),
+            { caseId, limit: 10 },
           ),
-        ).toEqual(["seed-0", "seed-1"]);
-        expect(
-          yield* Effect.promise(() =>
-            client.mutation(
-              getFunctionReference(functions.limitedReadFromMutation),
-              { caseId, limit: 10 },
-            ),
-          ),
-        ).toEqual(["seed-0", "seed-1"]);
+        );
+        expect(promiseResult2).toEqual(["seed-0", "seed-1"]);
         yield* Effect.promise(() =>
           expect(
             client.query(getFunctionReference(functions.limitedRead), {
@@ -106,28 +117,26 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
             "Too many writes in a single function execution (limit: 0)",
           ),
         );
-        expect(
-          yield* Effect.promise(() =>
-            client.query(getFunctionReference(functions.limitedRead), {
-              caseId,
-              limit: 10,
-            }),
-          ),
-        ).toEqual([]);
+        const promiseResult3 = yield* Effect.promise(() =>
+          client.query(getFunctionReference(functions.limitedRead), {
+            caseId,
+            limit: 10,
+          }),
+        );
+        expect(promiseResult3).toEqual([]);
         yield* Effect.promise(() =>
           client.mutation(getFunctionReference(functions.limitedWrite), {
             caseId,
             limit: 1,
           }),
         );
-        expect(
-          yield* Effect.promise(() =>
-            client.query(getFunctionReference(functions.limitedRead), {
-              caseId,
-              limit: 10,
-            }),
-          ),
-        ).toEqual(["child"]);
+        const promiseResult4 = yield* Effect.promise(() =>
+          client.query(getFunctionReference(functions.limitedRead), {
+            caseId,
+            limit: 10,
+          }),
+        );
+        expect(promiseResult4).toEqual(["child"]);
       }),
     );
 
@@ -143,21 +152,19 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
               count: 0,
             }),
           );
-          expect(
-            yield* Effect.promise(() =>
-              client.mutation(getFunctionReference(functions.rollback), {
-                caseId,
-              }),
-            ),
-          ).toBe(true);
-          expect(
-            yield* Effect.promise(() =>
-              client.query(getFunctionReference(functions.limitedRead), {
-                caseId,
-                limit: 10,
-              }),
-            ),
-          ).toEqual(["parent"]);
+          const promiseResult5 = yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(functions.rollback), {
+              caseId,
+            }),
+          );
+          expect(promiseResult5).toBe(true);
+          const promiseResult6 = yield* Effect.promise(() =>
+            client.query(getFunctionReference(functions.limitedRead), {
+              caseId,
+              limit: 10,
+            }),
+          );
+          expect(promiseResult6).toEqual(["parent"]);
         }),
     );
 
@@ -191,9 +198,10 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
           );
           const share = yield* systemShare(client);
           // The control touches no user table, so the kernel counts nothing.
-          expect(
-            yield* onKernel((test) => test.mutation(functions.systemShare, {})),
-          ).toEqual({ root: 0, nested: 0, stale: 0 });
+          const observed = yield* onKernel((test) =>
+            test.mutation(functions.systemShare, {}),
+          );
+          expect(observed).toEqual({ root: 0, nested: 0, stale: 0 });
           expect(share.root).toBeGreaterThan(0);
           const rootMutationStart = share.root;
           const firstNestedCall = share.nested;

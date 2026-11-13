@@ -6,4 +6,7 @@
 import type * as RpcServer from "alchemy/Local/RpcServer";
 import { localLayer } from "../Deployment.js";
 
+/**
+ * @internal
+ */
 export default localLayer satisfies RpcServer.ProviderLayer;

@@ -14,13 +14,13 @@ import type { ConvexHttpClient } from "convex/browser";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
-import refs from "./fixtures/confect/_generated/refs";
-import * as LocalBackend from "./LocalBackend";
+import refs from "confect-local-backend/refs";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 
-class ConvexQueryError extends Schema.TaggedError<ConvexQueryError>()(
-  "ConvexQueryError",
-  { message: Schema.String },
-) {}
+class ConvexQueryError extends Schema.TaggedError<
+  ConvexQueryError,
+  { readonly brand: unique symbol }
+>()("ConvexQueryError", { message: Schema.String }) {}
 
 /**
  * Run a Confect query once over HTTP. Accepts a Confect `Ref` so the return
@@ -35,7 +35,7 @@ const queryOnce = <R extends Ref.AnyPublicQuery>(
     try: () =>
       client.query(getFunctionReference(ref), (args[0] ?? {}) as never),
     catch: (error) =>
-      new ConvexQueryError({ message: `query failed: ${String(error)}` }),
+      ConvexQueryError.make({ message: `query failed: ${String(error)}` }),
   });
 
 // `MAX_CACHE_AGE` plus 1s of slack for scheduling jitter.
@@ -113,6 +113,34 @@ layer(LocalBackend.layer, {
       );
       expect(initial).toBe(afterMaxCacheAge);
     }),
+  );
+
+  it.effect.each([
+    { name: "native", ref: refs.public.groups.cacheControl.snapshot },
+    {
+      name: "Confect",
+      ref: refs.public.groups.cacheStubbed.confectWithSnapshot,
+    },
+  ])(
+    "a $name snapshot query expires while a time-independent query stays cached",
+    ({ name, ref }) =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        const control = refs.public.groups.cacheStubbed.confectNoTime;
+        const initialControl = yield* queryOnce(client, control);
+        const initial = yield* queryOnce(client, ref);
+        yield* Effect.promise(() =>
+          client.mutation(
+            getFunctionReference(refs.public.groups.transactions.seed),
+            { caseId: `snapshot-cache-${name}`, count: 1 },
+          ),
+        );
+        yield* Effect.sleep(SLEEP_PAST_CACHE);
+        const after = yield* queryOnce(client, ref);
+        const afterControl = yield* queryOnce(client, control);
+        expect(after).toBeGreaterThan(initial);
+        expect(afterControl).toBe(initialControl);
+      }),
   );
 
   it.effect("a Confect query that emits a log stays cached", () =>

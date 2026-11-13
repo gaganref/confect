@@ -19,7 +19,11 @@ import {
   queryGeneric,
 } from "convex/server";
 import { v } from "convex/values";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import { pipe } from "effect/Function";
+import * as Rec from "effect/Record";
+import * as Str from "effect/String";
 import * as Schema from "effect/Schema";
 import { convexTest } from "../src/internal/ConvexTest";
 import { hasUseNodeDirective } from "../src/internal/Execution";
@@ -334,7 +338,7 @@ const modules = {
           ctx.db
             .query("notes")
             .collect()
-            .then((rows) => rows.map((row) => row.text)),
+            .then((rows) => Arr.map(rows, (row) => row.text)),
       }),
       fetchThroughNestedMutation: mutationGeneric({
         args: { url: v.string() },
@@ -435,7 +439,9 @@ const modules = {
           const beneath = Object.getOwnPropertyDescriptor(globalThis, "fetch")!;
           Object.defineProperty(globalThis, "fetch", {
             get: () => beneath.get?.call(globalThis),
-            set: (value: unknown) => beneath.set?.call(globalThis, value),
+            set: (value: unknown) => {
+              beneath.set?.call(globalThis, value);
+            },
             configurable: true,
           });
           return outcomeOf(fetch(url));
@@ -529,7 +535,8 @@ describe("I/O bans", () => {
             name === "fetchInQuery"
               ? t.query(io[name], { url })
               : t.mutation(io[name], { url });
-          expect(yield* Effect.promise(() => call)).toEqual(fetchRefusal);
+          const observed = yield* Effect.promise(() => call);
+          expect(observed).toEqual(fetchRefusal);
         }),
     );
 
@@ -538,11 +545,10 @@ describe("I/O bans", () => {
       () =>
         Effect.gen(function* () {
           const t = convexTest({ schema, modules, sources });
-          expect(
-            yield* Effect.promise(() =>
-              t.query(io.capturedFetchInQuery, { url }),
-            ),
-          ).toEqual(fetchRefusal);
+          const observed = yield* Effect.promise(() =>
+            t.query(io.capturedFetchInQuery, { url }),
+          );
+          expect(observed).toEqual(fetchRefusal);
         }),
     );
 
@@ -551,11 +557,10 @@ describe("I/O bans", () => {
       () =>
         Effect.gen(function* () {
           const t = convexTest({ schema, modules, sources });
-          expect(
-            yield* Effect.promise(() =>
-              t.query(io.importedFetchInQuery, { url }),
-            ),
-          ).toEqual(fetchRefusal);
+          const observed = yield* Effect.promise(() =>
+            t.query(io.importedFetchInQuery, { url }),
+          );
+          expect(observed).toEqual(fetchRefusal);
         }),
     );
 
@@ -565,18 +570,16 @@ describe("I/O bans", () => {
         Effect.gen(function* () {
           const t = convexTest({ schema, modules, sources });
           const host = Reflect.get(globalThis, "fetch");
-          expect(
-            yield* Effect.promise(() =>
-              t.query(io.reassignedFetchInQuery, { url }),
-            ),
-          ).toEqual(fetchRefusal);
+          const observed = yield* Effect.promise(() =>
+            t.query(io.reassignedFetchInQuery, { url }),
+          );
+          expect(observed).toEqual(fetchRefusal);
           expect(Reflect.get(globalThis, "fetch")).toBe(host);
           const server = yield* loopback;
-          expect(
-            yield* Effect.promise(() =>
-              fetch(server.url).then((response) => response.text()),
-            ),
-          ).toBe("reached /ping");
+          const observed2 = yield* Effect.promise(() =>
+            fetch(server.url).then((response) => response.text()),
+          );
+          expect(observed2).toBe("reached /ping");
         }).pipe(Effect.scoped),
     );
 
@@ -599,19 +602,18 @@ describe("I/O bans", () => {
     it.effect("a query or mutation another function calls is refused", () =>
       Effect.gen(function* () {
         const t = convexTest({ schema, modules, sources });
-        expect(
-          yield* Effect.promise(() => t.action(io.fetchThroughQuery, { url })),
-        ).toEqual(fetchRefusal);
-        expect(
-          yield* Effect.promise(() =>
-            t.action(io.fetchThroughMutation, { url }),
-          ),
-        ).toEqual(fetchRefusal);
-        expect(
-          yield* Effect.promise(() =>
-            t.mutation(io.fetchThroughNestedMutation, { url }),
-          ),
-        ).toEqual(fetchRefusal);
+        const observed = yield* Effect.promise(() =>
+          t.action(io.fetchThroughQuery, { url }),
+        );
+        expect(observed).toEqual(fetchRefusal);
+        const observed2 = yield* Effect.promise(() =>
+          t.action(io.fetchThroughMutation, { url }),
+        );
+        expect(observed2).toEqual(fetchRefusal);
+        const observed3 = yield* Effect.promise(() =>
+          t.mutation(io.fetchThroughNestedMutation, { url }),
+        );
+        expect(observed3).toEqual(fetchRefusal);
       }),
     );
 
@@ -619,11 +621,10 @@ describe("I/O bans", () => {
       Effect.gen(function* () {
         const server = yield* loopback;
         const t = convexTest({ schema, modules, sources });
-        expect(
-          yield* Effect.promise(() =>
-            t.action(io.fetchInAction, { url: server.url }),
-          ),
-        ).toBe("reached /ping");
+        const observed = yield* Effect.promise(() =>
+          t.action(io.fetchInAction, { url: server.url }),
+        );
+        expect(observed).toBe("reached /ping");
         expect(server.hits).toBe(1);
       }).pipe(Effect.scoped),
     );
@@ -635,7 +636,8 @@ describe("I/O bans", () => {
       (name) =>
         Effect.gen(function* () {
           const t = convexTest({ schema, modules, sources });
-          expect(yield* failureOf(t.query(io.timerInQuery, { name }))).toEqual({
+          const observed = yield* failureOf(t.query(io.timerInQuery, { name }));
+          expect(observed).toEqual({
             failed: timerRefusal(name),
           });
         }),
@@ -646,14 +648,14 @@ describe("I/O bans", () => {
       (name) =>
         Effect.gen(function* () {
           const t = convexTest({ schema, modules, sources });
-          expect(
-            yield* failureOf(t.mutation(io.timerInMutation, { name })),
-          ).toEqual({
+          const observed = yield* failureOf(
+            t.mutation(io.timerInMutation, { name }),
+          );
+          expect(observed).toEqual({
             failed: timerRefusal(name),
           });
-          expect(yield* Effect.promise(() => t.query(io.notes, {}))).toEqual(
-            [],
-          );
+          const observed2 = yield* Effect.promise(() => t.query(io.notes, {}));
+          expect(observed2).toEqual([]);
         }),
     );
 
@@ -662,9 +664,10 @@ describe("I/O bans", () => {
       (name) =>
         Effect.gen(function* () {
           const t = convexTest({ schema, modules, sources });
-          expect(
-            yield* failureOf(t.query(io.awaitedTimerInQuery, { name })),
-          ).toEqual({ failed: timerRefusal(name) });
+          const observed = yield* failureOf(
+            t.query(io.awaitedTimerInQuery, { name }),
+          );
+          expect(observed).toEqual({ failed: timerRefusal(name) });
         }),
     );
 
@@ -673,12 +676,12 @@ describe("I/O bans", () => {
       (name) =>
         Effect.gen(function* () {
           const t = convexTest({ schema, modules, sources });
-          expect(
-            yield* failureOf(t.mutation(io.awaitedTimerInMutation, { name })),
-          ).toEqual({ failed: timerRefusal(name) });
-          expect(yield* Effect.promise(() => t.query(io.notes, {}))).toEqual(
-            [],
+          const observed = yield* failureOf(
+            t.mutation(io.awaitedTimerInMutation, { name }),
           );
+          expect(observed).toEqual({ failed: timerRefusal(name) });
+          const observed2 = yield* Effect.promise(() => t.query(io.notes, {}));
+          expect(observed2).toEqual([]);
         }),
     );
 
@@ -687,29 +690,30 @@ describe("I/O bans", () => {
       () =>
         Effect.gen(function* () {
           const t = convexTest({ schema, modules, sources });
-          expect(
-            yield* Effect.promise(() =>
-              t.action(io.timerThroughQuery, { name: "setTimeout" }),
-            ),
-          ).toBe(timerRefusal("setTimeout"));
+          const observed = yield* Effect.promise(() =>
+            t.action(io.timerThroughQuery, { name: "setTimeout" }),
+          );
+          expect(observed).toBe(timerRefusal("setTimeout"));
         }),
     );
 
     it.effect("a query may clear a timer, as the binary allows", () =>
       Effect.gen(function* () {
         const t = convexTest({ schema, modules, sources });
-        expect(yield* Effect.promise(() => t.query(io.clearInQuery, {}))).toBe(
-          "cleared",
+        const observed = yield* Effect.promise(() =>
+          t.query(io.clearInQuery, {}),
         );
+        expect(observed).toBe("cleared");
       }),
     );
 
     it.effect("an action runs host timers", () =>
       Effect.gen(function* () {
         const t = convexTest({ schema, modules, sources });
-        expect(
-          yield* Effect.promise(() => t.action(io.timersInAction, {})),
-        ).toEqual(["slept", "ticked"]);
+        const observed = yield* Effect.promise(() =>
+          t.action(io.timersInAction, {}),
+        );
+        expect(observed).toEqual(["slept", "ticked"]);
       }),
     );
 
@@ -726,21 +730,19 @@ describe("I/O bans", () => {
             }, 1000);
             vi.advanceTimersByTime(1000);
             expect(fired, `round ${round}`).toBe(true);
-            expect(
-              yield* failureOf(
-                t.query(io.timerInQuery, { name: "setTimeout" }),
-              ),
-            ).toEqual({ failed: timerRefusal("setTimeout") });
+            const observed = yield* failureOf(
+              t.query(io.timerInQuery, { name: "setTimeout" }),
+            );
+            expect(observed).toEqual({ failed: timerRefusal("setTimeout") });
             vi.useRealTimers();
           }
-          expect(
-            yield* Effect.promise(
-              () =>
-                new Promise<string>((resolve) =>
-                  setTimeout(() => resolve("real"), 1),
-                ),
-            ),
-          ).toBe("real");
+          const observed2 = yield* Effect.promise(
+            () =>
+              new Promise<string>((resolve) =>
+                setTimeout(() => resolve("real"), 1),
+              ),
+          );
+          expect(observed2).toBe("real");
         }),
     );
   });
@@ -769,18 +771,22 @@ describe("I/O bans", () => {
       () =>
         Effect.gen(function* () {
           const t = convexTest({ schema, modules, sources });
-          expect(
-            yield* Effect.promise(() => t.query(io.surfaceInQuery, {})),
-          ).toEqual(absent);
-          expect(
-            yield* Effect.promise(() => t.mutation(io.surfaceInMutation, {})),
-          ).toEqual(absent);
-          expect(
-            yield* Effect.promise(() => t.action(io.surfaceInAction, {})),
-          ).toEqual(absent);
-          expect(
-            yield* Effect.promise(() => t.action(io.confectSurface, {})),
-          ).toEqual(absent);
+          const observed = yield* Effect.promise(() =>
+            t.query(io.surfaceInQuery, {}),
+          );
+          expect(observed).toEqual(absent);
+          const observed2 = yield* Effect.promise(() =>
+            t.mutation(io.surfaceInMutation, {}),
+          );
+          expect(observed2).toEqual(absent);
+          const observed3 = yield* Effect.promise(() =>
+            t.action(io.surfaceInAction, {}),
+          );
+          expect(observed3).toEqual(absent);
+          const observed4 = yield* Effect.promise(() =>
+            t.action(io.confectSurface, {}),
+          );
+          expect(observed4).toEqual(absent);
           expect(surface()).toEqual({
             setImmediate: "function",
             queueMicrotask: "function",
@@ -793,9 +799,13 @@ describe("I/O bans", () => {
       () =>
         Effect.gen(function* () {
           const t = convexTest({ schema, modules, sources });
-          expect(
-            yield* Effect.promise(() => t.action(io.nodeSurface, {})),
-          ).toEqual({ setImmediate: "function", queueMicrotask: "function" });
+          const observed = yield* Effect.promise(() =>
+            t.action(io.nodeSurface, {}),
+          );
+          expect(observed).toEqual({
+            setImmediate: "function",
+            queueMicrotask: "function",
+          });
         }),
     );
 
@@ -804,11 +814,10 @@ describe("I/O bans", () => {
       () =>
         Effect.gen(function* () {
           const t = convexTest({ schema, modules, sources });
-          expect(
-            yield* Effect.promise(() =>
-              t.query(io.importedImmediateInQuery, {}),
-            ),
-          ).toEqual({
+          const observed = yield* Effect.promise(() =>
+            t.query(io.importedImmediateInQuery, {}),
+          );
+          expect(observed).toEqual({
             name: "ReferenceError",
             message: "setImmediate is not defined",
           });
@@ -828,16 +837,14 @@ describe("I/O bans", () => {
       () =>
         Effect.gen(function* () {
           const t = convexTest({ schema, modules, sources });
-          expect(
-            yield* Effect.promise(() =>
-              t.query(io.formDataInQuery, { body: "multipart" }),
-            ),
-          ).toEqual(refusal);
-          expect(
-            yield* Effect.promise(() =>
-              t.mutation(io.formDataInMutation, { body: "multipart" }),
-            ),
-          ).toEqual(refusal);
+          const observed = yield* Effect.promise(() =>
+            t.query(io.formDataInQuery, { body: "multipart" }),
+          );
+          expect(observed).toEqual(refusal);
+          const observed2 = yield* Effect.promise(() =>
+            t.mutation(io.formDataInMutation, { body: "multipart" }),
+          );
+          expect(observed2).toEqual(refusal);
         }),
     );
 
@@ -846,18 +853,16 @@ describe("I/O bans", () => {
       () =>
         Effect.gen(function* () {
           const t = convexTest({ schema, modules, sources });
-          expect(
-            yield* Effect.promise(() =>
-              t.query(io.formDataInQuery, { body: "urlencoded" }),
-            ),
-          ).toEqual({ returned: "ada" });
-          expect(
-            yield* Effect.promise(() =>
-              t.query(io.formDataInQuery, {
-                body: "multipartWithoutBoundary",
-              }),
-            ),
-          ).toEqual({
+          const observed = yield* Effect.promise(() =>
+            t.query(io.formDataInQuery, { body: "urlencoded" }),
+          );
+          expect(observed).toEqual({ returned: "ada" });
+          const observed2 = yield* Effect.promise(() =>
+            t.query(io.formDataInQuery, {
+              body: "multipartWithoutBoundary",
+            }),
+          );
+          expect(observed2).toEqual({
             name: "TypeError",
             message:
               "Missing boundary parameter in mime type of multipart formdata.",
@@ -868,11 +873,10 @@ describe("I/O bans", () => {
     it.effect("an action parses a multipart body", () =>
       Effect.gen(function* () {
         const t = convexTest({ schema, modules, sources });
-        expect(
-          yield* Effect.promise(() =>
-            t.action(io.formDataInAction, { body: "multipart" }),
-          ),
-        ).toEqual({ returned: "ada" });
+        const observed = yield* Effect.promise(() =>
+          t.action(io.formDataInAction, { body: "multipart" }),
+        );
+        expect(observed).toEqual({ returned: "ada" });
       }),
     );
   });
@@ -995,7 +999,7 @@ describe("replaced globals", () => {
         const calls = redefinedFetch.mock.calls.length;
         // The refusal installed the guard again over the replacement, before
         // any other function starts.
-        const reguarded = Object.hasOwn(original("fetch"), "get");
+        const reguarded = "get" in original("fetch");
         const after = yield* Effect.promise(() =>
           t.query(io.fetchInQuery, { url }),
         ).pipe(
@@ -1029,7 +1033,8 @@ describe("replaced globals", () => {
           ),
         );
         expect(outcome).toEqual(replacedRefusal);
-        expect(yield* Effect.promise(() => t.query(io.notes, {}))).toEqual([]);
+        const observed = yield* Effect.promise(() => t.query(io.notes, {}));
+        expect(observed).toEqual([]);
       }),
   );
 
@@ -1058,9 +1063,10 @@ describe("replaced globals", () => {
     () =>
       Effect.gen(function* () {
         const t = convexTest({ schema, modules, sources });
-        expect(
-          yield* failureOf(t.query(io.promisifiedTimerInQuery, {})),
-        ).toEqual({ failed: timerRefusal("setTimeout") });
+        const observed = yield* failureOf(
+          t.query(io.promisifiedTimerInQuery, {}),
+        );
+        expect(observed).toEqual({ failed: timerRefusal("setTimeout") });
       }),
   );
 });
@@ -1071,18 +1077,20 @@ describe("Node callers", () => {
     () =>
       Effect.gen(function* () {
         const t = convexTest({ schema, modules, sources });
-        expect(
-          yield* Effect.promise(() => t.query(io.fakedStackInQuery, {})),
-        ).toBe("undefined");
+        const observed = yield* Effect.promise(() =>
+          t.query(io.fakedStackInQuery, {}),
+        );
+        expect(observed).toBe("undefined");
       }),
   );
 
   it.effect("a script named like a Node module is not Node's own", () =>
     Effect.gen(function* () {
       const t = convexTest({ schema, modules, sources });
-      expect(
-        yield* Effect.promise(() => t.query(io.namedNodeScriptInQuery, {})),
-      ).toBe("undefined");
+      const observed = yield* Effect.promise(() =>
+        t.query(io.namedNodeScriptInQuery, {}),
+      );
+      expect(observed).toBe("undefined");
     }),
   );
 });
@@ -1097,14 +1105,21 @@ describe("module runtimes", () => {
     },
   );
   const only = <A>(map: Record<string, A>, files: ReadonlyArray<string>) =>
-    Object.fromEntries(
-      Object.entries(map).filter(([key]) =>
-        ["_generated/server.ts", ...files].some((file) =>
-          key.endsWith(`/runtime/${file}`),
-        ),
+    Rec.filter(map, (_, key) =>
+      Arr.some(["_generated/server.ts", ...files], (file) =>
+        pipe(key, Str.endsWith(`/runtime/${file}`)),
       ),
     );
-  const runtimeRefusalOf = (call: Promise<unknown>) =>
+  type RuntimeOutcome =
+    | { readonly returned: unknown }
+    | {
+        readonly failed: string | undefined;
+        readonly reason: string | undefined;
+        readonly message: string | undefined;
+      };
+  const runtimeRefusalOf = (
+    call: Promise<unknown>,
+  ): Effect.Effect<RuntimeOutcome> =>
     Effect.promise(() =>
       call.then(
         (value) => ({ returned: value }),
@@ -1133,12 +1148,14 @@ describe("module runtimes", () => {
           modules: only(runtimeModules, files),
           sources: only(runtimeSources, files),
         });
-        expect(
-          yield* Effect.promise(() => t.action(surfaceOf("plainNode"), {})),
-        ).toEqual(node);
-        expect(
-          yield* Effect.promise(() => t.action(surfaceOf("plainIsolate"), {})),
-        ).toEqual(absent);
+        const observed = yield* Effect.promise(() =>
+          t.action(surfaceOf("plainNode"), {}),
+        );
+        expect(observed).toEqual(node);
+        const observed2 = yield* Effect.promise(() =>
+          t.action(surfaceOf("plainIsolate"), {}),
+        );
+        expect(observed2).toEqual(absent);
       }),
   );
 
@@ -1152,9 +1169,13 @@ describe("module runtimes", () => {
           modules: only(runtimeModules, files),
           sources: only(runtimeSources, files),
         });
-        expect(
-          yield* runtimeRefusalOf(t.action(surfaceOf("markedNode"), {})),
-        ).toMatchObject({ failed: "ModuleRuntime", reason: "markerDisagrees" });
+        const observed = yield* runtimeRefusalOf(
+          t.action(surfaceOf("markedNode"), {}),
+        );
+        expect(observed).toMatchObject({
+          failed: "ModuleRuntime",
+          reason: "markerDisagrees",
+        });
       }),
   );
 
@@ -1168,9 +1189,10 @@ describe("module runtimes", () => {
           modules: only(runtimeModules, files),
           sources: only(runtimeSources, files),
         });
-        expect(
-          yield* runtimeRefusalOf(t.action(surfaceOf("plainIsolate"), {})),
-        ).toEqual({
+        const observed = yield* runtimeRefusalOf(
+          t.action(surfaceOf("plainIsolate"), {}),
+        );
+        expect(observed).toEqual({
           failed: "ModuleRuntime",
           reason: "nodeNotAllowed",
           message: '"use node" directive is not allowed for http.',
@@ -1188,11 +1210,13 @@ describe("module runtimes", () => {
           modules: only(runtimeModules, files),
           sources: only(runtimeSources, files),
         });
-        expect(
-          yield* runtimeRefusalOf(
-            t.action(surfaceOf("markedIsolateInNode"), {}),
-          ),
-        ).toMatchObject({ failed: "ModuleRuntime", reason: "markerDisagrees" });
+        const observed = yield* runtimeRefusalOf(
+          t.action(surfaceOf("markedIsolateInNode"), {}),
+        );
+        expect(observed).toMatchObject({
+          failed: "ModuleRuntime",
+          reason: "markerDisagrees",
+        });
       }),
   );
 
@@ -1228,16 +1252,14 @@ describe("module runtimes", () => {
           "marks.ts": () =>
             Promise.resolve({ node: nodeSurface, isolate: isolateSurface }),
         });
-        expect(
-          yield* Effect.promise(() =>
-            t.action(makeFunctionReference<"action">("marks:node"), {}),
-          ),
-        ).toEqual(node);
-        expect(
-          yield* Effect.promise(() =>
-            t.action(makeFunctionReference<"action">("marks:isolate"), {}),
-          ),
-        ).toEqual(absent);
+        const observed = yield* Effect.promise(() =>
+          t.action(makeFunctionReference<"action">("marks:node"), {}),
+        );
+        expect(observed).toEqual(node);
+        const observed2 = yield* Effect.promise(() =>
+          t.action(makeFunctionReference<"action">("marks:isolate"), {}),
+        );
+        expect(observed2).toEqual(absent);
       }),
   );
 
@@ -1248,9 +1270,13 @@ describe("module runtimes", () => {
         modules: only(runtimeModules, ["plainNode.ts", "plainIsolate.ts"]),
         sources: only(runtimeSources, ["plainIsolate.ts"]),
       });
-      expect(
-        yield* runtimeRefusalOf(t.action(surfaceOf("plainIsolate"), {})),
-      ).toMatchObject({ failed: "ModuleRuntime", reason: "missingSource" });
+      const observed = yield* runtimeRefusalOf(
+        t.action(surfaceOf("plainIsolate"), {}),
+      );
+      expect(observed).toMatchObject({
+        failed: "ModuleRuntime",
+        reason: "missingSource",
+      });
     }),
   );
 

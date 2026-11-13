@@ -14,10 +14,16 @@ import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { publishedPackages } from "./checkPackContents";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
+import * as Record from "effect/Record";
 
-const encodeJson = Schema.encodeSync(
-  Schema.fromJsonString(Schema.Unknown, { space: 2 }),
-);
+const encodeJson = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown, { space: 2 }))(
+    value,
+  ).pipe(Effect.orDie);
 
 const dependencyMap = Schema.Record(Schema.String, Schema.String);
 export const PackageManifest = Schema.StructWithRest(
@@ -37,7 +43,7 @@ export const PackageManifest = Schema.StructWithRest(
 export type PackageManifest = typeof PackageManifest.Type;
 
 const forkPackageName = (name: string) =>
-  name.replace(/^@confect\//, "@gaganref/confect-");
+  pipe(name, Str.replace(/^@confect\//, "@gaganref/confect-"));
 
 export const stageForkPackages = (
   manifest: PackageManifest,
@@ -51,27 +57,28 @@ export const stageForkPackages = (
   // The publishing command decides provenance; a manifest key would force it on, and terminal publishes have no identity provider.
   const { provenance: _provenance, ...inheritedPublishConfig } =
     manifest.publishConfig ?? {};
-  const dependencies = Object.fromEntries(
-    (
-      ["dependencies", "peerDependencies", "optionalDependencies"] as const
-    ).flatMap((field) => {
-      const values = manifest[field];
-      return values === undefined
-        ? []
-        : [
-            [
-              field,
-              Object.fromEntries(
-                Object.entries(values).map(([name, range]) => [
-                  name,
-                  name.startsWith("@confect/")
-                    ? `npm:${forkPackageName(name)}@${version}`
-                    : range,
-                ]),
-              ),
-            ],
-          ];
-    }),
+  const dependencies = Record.fromEntries(
+    Arr.flatMap(
+      ["dependencies", "peerDependencies", "optionalDependencies"] as const,
+      (field) => {
+        const values = manifest[field];
+        return values === undefined
+          ? []
+          : [
+              [
+                field,
+                Record.fromEntries(
+                  Arr.map(Record.toEntries(values), ([name, range]) => [
+                    name,
+                    pipe(name, Str.startsWith("@confect/"))
+                      ? `npm:${forkPackageName(name)}@${version}`
+                      : range,
+                  ]),
+                ),
+              ],
+            ];
+      },
+    ),
   );
   return {
     ...rest,
@@ -91,47 +98,52 @@ export const stageForkPackages = (
   };
 };
 
-export class InvalidBuildVersion extends Schema.TaggedError<InvalidBuildVersion>()(
-  "InvalidBuildVersion",
-  { base: Schema.String, build: Schema.String },
-) {}
+export class InvalidBuildVersion extends Schema.TaggedError<
+  InvalidBuildVersion,
+  { readonly brand: unique symbol }
+>()("InvalidBuildVersion", { base: Schema.String, build: Schema.String }) {}
 
-export class BuildNumberUnavailable extends Schema.TaggedError<BuildNumberUnavailable>()(
-  "BuildNumberUnavailable",
-  { version: Schema.String, highestBuild: Schema.Finite },
-) {}
+export class BuildNumberUnavailable extends Schema.TaggedError<
+  BuildNumberUnavailable,
+  { readonly brand: unique symbol }
+>()("BuildNumberUnavailable", {
+  version: Schema.String,
+  highestBuild: Schema.Finite,
+}) {}
 
-class MissingCorePackage extends Schema.TaggedError<MissingCorePackage>()(
-  "MissingCorePackage",
-  { packages: Schema.Array(Schema.String) },
-) {}
+class MissingCorePackage extends Schema.TaggedError<
+  MissingCorePackage,
+  { readonly brand: unique symbol }
+>()("MissingCorePackage", { packages: Schema.Array(Schema.String) }) {}
 
-class PackageVersionMismatch extends Schema.TaggedError<PackageVersionMismatch>()(
-  "PackageVersionMismatch",
-  {
-    packageName: Schema.String,
-    expected: Schema.String,
-    actual: Schema.String,
-  },
-) {}
+class PackageVersionMismatch extends Schema.TaggedError<
+  PackageVersionMismatch,
+  { readonly brand: unique symbol }
+>()("PackageVersionMismatch", {
+  packageName: Schema.String,
+  expected: Schema.String,
+  actual: Schema.String,
+}) {}
 
 export const packageBaseVersion = (
   manifests: ReadonlyArray<PackageManifest>,
 ): Result.Result<string, MissingCorePackage | PackageVersionMismatch> => {
-  const core = manifests.find((manifest) => manifest.name === "@confect/core");
+  const core = Option.getOrUndefined(
+    Arr.findFirst(manifests, (manifest) => manifest.name === "@confect/core"),
+  );
   if (core === undefined)
     return Result.fail(
-      new MissingCorePackage({
-        packages: manifests.map((manifest) => manifest.name),
+      MissingCorePackage.make({
+        packages: Arr.map(manifests, (manifest) => manifest.name),
       }),
     );
-  const mismatch = manifests.find(
-    (manifest) => manifest.version !== core.version,
+  const mismatch = Option.getOrUndefined(
+    Arr.findFirst(manifests, (manifest) => manifest.version !== core.version),
   );
   return mismatch === undefined
     ? Result.succeed(core.version)
     : Result.fail(
-        new PackageVersionMismatch({
+        PackageVersionMismatch.make({
           packageName: mismatch.name,
           expected: core.version,
           actual: mismatch.version,
@@ -145,11 +157,13 @@ export const chooseBuildVersion = (
   override = "",
 ): Result.Result<string, InvalidBuildVersion | BuildNumberUnavailable> => {
   const prefix = `${base}-fork.`;
-  const builds = versions
-    .filter((version) => version.startsWith(prefix))
-    .map((version) => version.slice(prefix.length))
-    .filter((build) => /^(0|[1-9]\d*)$/.test(build))
-    .map(Number);
+  const builds = pipe(
+    versions,
+    Arr.filter((version) => pipe(version, Str.startsWith(prefix))),
+    Arr.map((version) => pipe(version, Str.slice(prefix.length))),
+    Arr.filter((build) => /^(0|[1-9]\d*)$/.test(build)),
+    Arr.map(Number),
+  );
   const highestBuild = Math.max(0, ...builds);
   const build = override === "" ? highestBuild + 1 : Number(override);
   if (
@@ -158,24 +172,24 @@ export const chooseBuildVersion = (
     !Number.isSafeInteger(build)
   ) {
     return Result.fail(
-      new InvalidBuildVersion({ base, build: override || String(build) }),
+      InvalidBuildVersion.make({ base, build: override || String(build) }),
     );
   }
   const version = `${prefix}${build}`;
   return build <= highestBuild
-    ? Result.fail(new BuildNumberUnavailable({ version, highestBuild }))
+    ? Result.fail(BuildNumberUnavailable.make({ version, highestBuild }))
     : Result.succeed(version);
 };
 
-class CommandFailed extends Schema.TaggedError<CommandFailed>()(
-  "CommandFailed",
-  {
-    command: Schema.Array(Schema.String),
-    exitCode: Schema.Finite,
-    stdout: Schema.String,
-    stderr: Schema.String,
-  },
-) {}
+class CommandFailed extends Schema.TaggedError<
+  CommandFailed,
+  { readonly brand: unique symbol }
+>()("CommandFailed", {
+  command: Schema.Array(Schema.String),
+  exitCode: Schema.Finite,
+  stdout: Schema.String,
+  stderr: Schema.String,
+}) {}
 
 const run = Effect.fn("ForkPackages.command")(function* (
   command: readonly [string, ...Array<string>],
@@ -195,16 +209,19 @@ const run = Effect.fn("ForkPackages.command")(function* (
     { concurrency: "unbounded" },
   );
   if (output.exitCode !== 0)
-    return yield* new CommandFailed({ command, ...output });
+    return yield* CommandFailed.make({ command, ...output });
   return output.stdout;
 }, Effect.scoped);
 
+/**
+ * @internal
+ */
 export const readVersions = Effect.fn("ForkPackages.versions")(function* (
   name: string,
 ) {
   const response = yield* HttpClient.execute(
     HttpClientRequest.get(
-      `https://registry.npmjs.org/${name.replace("/", "%2F")}`,
+      `https://registry.npmjs.org/${pipe(name, Str.replace("/", "%2F"))}`,
     ).pipe(HttpClientRequest.acceptJson),
   );
   if (response.status === 404) return [];
@@ -217,7 +234,7 @@ export const readVersions = Effect.fn("ForkPackages.versions")(function* (
       ),
     ),
   );
-  return Object.keys(metadata.versions);
+  return Record.keys(metadata.versions);
 });
 
 const stage = Effect.fn("ForkPackages.stage")(function* (
@@ -242,7 +259,7 @@ const stage = Effect.fn("ForkPackages.stage")(function* (
     packages.push({ directory: path.basename(sourceDirectory), manifest });
   }
   const base = yield* Effect.fromResult(
-    packageBaseVersion(packages.map((pkg) => pkg.manifest)),
+    packageBaseVersion(Arr.map(packages, (pkg) => pkg.manifest)),
   );
   yield* Effect.fromResult(chooseBuildVersion(base, [], build));
   const versions = yield* Effect.forEach(
@@ -286,9 +303,10 @@ const stage = Effect.fn("ForkPackages.stage")(function* (
         ),
       );
     const renamed = stageForkPackages(packed, version);
+    const renamedJson = yield* encodeJson(renamed);
     yield* fs.writeFileString(
       path.join(directory, "package.json"),
-      `${encodeJson(renamed)}\n`,
+      `${renamedJson}\n`,
     );
     yield* run(
       [
@@ -306,9 +324,10 @@ const stage = Effect.fn("ForkPackages.stage")(function* (
     });
     yield* Console.log(`staged ${renamed.name}@${version}`);
   }
+  const planJson = yield* encodeJson({ version, packages: plan });
   yield* fs.writeFileString(
     path.join(stagingDirectory, "plan.json"),
-    `${encodeJson({ version, packages: plan })}\n`,
+    `${planJson}\n`,
   );
 });
 

@@ -11,9 +11,17 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
-import * as LocalBackend from "./LocalBackend";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
+import * as Array from "effect/Array";
+import * as SignedEnvelope from "../signedEnvelope";
 
-const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const encodeJson = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown))(value).pipe(
+    Effect.orDie,
+  );
 
 const LogEntry = Schema.fromJsonString(
   Schema.Struct({
@@ -28,6 +36,27 @@ layer(
   Layer.mergeAll(LocalBackend.layer, NodeServices.layer, FetchHttpClient.layer),
   { timeout: "120 seconds", excludeTestServices: true },
 )("HTTP routes on a real backend", (it) => {
+  it.effect("streams a 100 MiB response through the Effect router", () =>
+    Effect.gen(function* () {
+      const response = yield* HttpClient.get(
+        LocalBackend.siteUrl("/large-stream"),
+      );
+
+      expect(response.status).toBe(200);
+      expect(response.headers["content-type"]).toBe("application/octet-stream");
+      const bytes = yield* response.stream.pipe(
+        Stream.runFold(
+          () => 0,
+          (total, chunk) => {
+            expect(chunk.every((byte) => byte === 120)).toBe(true);
+            return total + chunk.byteLength;
+          },
+        ),
+      );
+      expect(bytes).toBe(100 * 1024 * 1024);
+    }),
+  );
+
   it.effect(
     "logs reflected patterns for application and mounted component completions",
     () =>
@@ -35,19 +64,22 @@ layer(
         const started = (yield* Clock.currentTimeMillis) / 1000;
         for (const requestPath of ["/users/42", "/first/members/42"]) {
           const response = yield* HttpClient.get(
-            `http://127.0.0.1:3211${requestPath}`,
+            LocalBackend.siteUrl(requestPath),
           );
           expect(response.status).toBe(200);
-          expect(yield* response.json).toBe("42");
+          const json2 = yield* response.json;
+          expect(json2).toBe("42");
         }
         const path = yield* Path.Path;
         const spawner = yield* ChildProcessSpawner;
         const logs = yield* spawner.spawn(
           ChildProcess.make(
-            "pnpm",
-            ["convex", "logs", "--history", "100", "--success", "--jsonl"],
+            "pnpm convex logs --history 100 --success --jsonl",
             {
-              cwd: path.resolve(import.meta.dirname, "./fixtures"),
+              cwd: path.resolve(
+                import.meta.dirname,
+                "../../../../tools/local-backend/fixtures",
+              ),
               shell: true,
               extendEnv: true,
               env: { CONVEX_AGENT_MODE: "anonymous" },
@@ -57,7 +89,7 @@ layer(
         const completions = yield* logs.stdout.pipe(
           Stream.decodeText(),
           Stream.splitLines,
-          Stream.filter((line) => line.startsWith("{")),
+          Stream.filter((line) => pipe(line, String.startsWith("{"))),
           Stream.mapEffect((line) => Schema.decodeEffect(LogEntry)(line)),
           Stream.filter(
             (entry) =>
@@ -69,7 +101,7 @@ layer(
           Stream.runCollect,
           Effect.timeout("20 seconds"),
         );
-        const labels = completions.map(({ identifier }) => identifier);
+        const labels = Array.map(completions, ({ identifier }) => identifier);
         expect(labels).toEqual(["GET /users/:id", "GET /members/:id"]);
         yield* Effect.sync(() => {
           for (const { kind, udfType, identifier } of completions) {
@@ -78,14 +110,63 @@ layer(
         });
       }),
   );
+  // The kernel lane's `signedIngress.test.ts` expects these same answers from
+  // the mock-backend fixture's copy of the route.
+  it.effect(
+    "answers a signed envelope's round trip, and refuses a tampered or non-UTF-8 one, as the test kernel does",
+    () =>
+      Effect.gen(function* () {
+        const send = (body: Uint8Array, signature: string) =>
+          HttpClient.execute(
+            HttpClientRequest.post(
+              LocalBackend.siteUrl(SignedEnvelope.path),
+            ).pipe(
+              HttpClientRequest.setHeader(
+                SignedEnvelope.signatureHeader,
+                signature,
+              ),
+              HttpClientRequest.bodyUint8Array(body, "application/json"),
+            ),
+          ).pipe(
+            Effect.flatMap((response) =>
+              Effect.map(response.text, (text) => ({
+                status: response.status,
+                body: text,
+              })),
+            ),
+          );
+        const sign = (body: Uint8Array) =>
+          Effect.promise(() => SignedEnvelope.sign(body));
+        const acceptedText = yield* encodeJson({ id: "evt_1", event: "paid" });
+        const accepted = new TextEncoder().encode(acceptedText);
+        const signResult = yield* sign(accepted);
+        const sendResult = yield* send(accepted, signResult);
+        expect(sendResult).toStrictEqual({
+          status: 200,
+          body: "accepted paid evt_1",
+        });
+        const tampered = Uint8Array.from(accepted);
+        tampered[tampered.length - 2] ^= 1;
+        const signResult2 = yield* sign(accepted);
+        const sendResult2 = yield* send(tampered, signResult2);
+        expect(sendResult2).toStrictEqual(SignedEnvelope.refusals.badSignature);
+        const notUtf8 = Uint8Array.of(0x7b, 0xff, 0x7d);
+        const signResult3 = yield* sign(notUtf8);
+        const sendResult3 = yield* send(notUtf8, signResult3);
+        expect(sendResult3).toStrictEqual(
+          SignedEnvelope.refusals.malformedJson,
+        );
+      }),
+  );
   it.effect("keeps unmatched app and component responses in Effect", () =>
     Effect.gen(function* () {
       for (const requestPath of ["/no-such-route", "/first/no-such-route"]) {
         const response = yield* HttpClient.get(
-          `http://127.0.0.1:3211${requestPath}`,
+          LocalBackend.siteUrl(requestPath),
         );
         expect(response.status).toBe(404);
-        expect(yield* response.text).toBe("");
+        const text2 = yield* response.text;
+        expect(text2).toBe("");
       }
     }),
   );
@@ -94,7 +175,7 @@ layer(
       for (const requestPath of ["/users/42", "/first/members/42"]) {
         const response = yield* HttpClient.execute(
           HttpClientRequest.make("OPTIONS")(
-            `http://127.0.0.1:3211${requestPath}`,
+            LocalBackend.siteUrl(requestPath),
           ).pipe(
             HttpClientRequest.setHeader("Access-Control-Request-Method", "GET"),
           ),
@@ -110,7 +191,7 @@ layer(
         for (const requestPath of ["/prefix", "/first/prefix"]) {
           const response = yield* HttpClient.execute(
             HttpClientRequest.make("OPTIONS")(
-              `http://127.0.0.1:3211${requestPath}`,
+              LocalBackend.siteUrl(requestPath),
             ),
           );
           expect([response.status, yield* response.text]).toEqual([
@@ -141,18 +222,30 @@ layer(
       const jwks = {
         keys: [{ ...key, kid: "test", alg: "RS256", use: "sig" }],
       };
+      const json3 = yield* encodeJson(jwks);
       yield* backend.setEnv(
         "TEST_AUTH_JWKS",
-        `data:application/json;base64,${Buffer.from(encodeJson(jwks)).toString("base64")}`,
+        `data:application/json;base64,${Buffer.from(json3).toString("base64")}`,
       );
       yield* backend.redeploy;
       const issuer = "https://confect-auth.invalid";
       const expires =
         Math.floor((yield* Clock.currentTimeMillis) / 1000) + 3600;
       const encode = (value: unknown) =>
-        Buffer.from(encodeJson(value)).toString("base64url");
+        encodeJson(value).pipe(
+          Effect.map((json) => Buffer.from(json).toString("base64url")),
+        );
       const sign = Effect.fnUntraced(function* (iss: string) {
-        const unsigned = `${encode({ alg: "RS256", kid: "test" })}.${encode({ iss, aud: "confect-test", sub: "person", exp: expires, name: "Synthetic Person", role: "student" })}`;
+        const header = yield* encode({ alg: "RS256", kid: "test" });
+        const payload = yield* encode({
+          iss,
+          aud: "confect-test",
+          sub: "person",
+          exp: expires,
+          name: "Synthetic Person",
+          role: "student",
+        });
+        const unsigned = `${header}.${payload}`;
         const signature = yield* Effect.promise(() =>
           crypto.subtle.sign(
             "RSASSA-PKCS1-v1_5",
@@ -163,11 +256,16 @@ layer(
         return `${unsigned}.${Buffer.from(signature).toString("base64url")}`;
       });
       const valid = yield* sign(issuer);
-      const signatureStart = valid.lastIndexOf(".") + 1;
+      const signatureStart =
+        pipe(
+          valid,
+          String.lastIndexOf("."),
+          Option.getOrElse(() => -1),
+        ) + 1;
       const badSignature =
-        valid.slice(0, signatureStart) +
+        pipe(valid, String.slice(0, signatureStart)) +
         (valid[signatureStart] === "A" ? "B" : "A") +
-        valid.slice(signatureStart + 1);
+        pipe(valid, String.slice(signatureStart + 1));
       const foreign = yield* sign("https://foreign.invalid");
       const cases = [
         ["absent", undefined, { _tag: "Absent" }],
@@ -190,13 +288,14 @@ layer(
       ] as const;
       for (const [label, token, expected] of cases) {
         const response = yield* HttpClient.get(
-          "http://127.0.0.1:3211/identity",
+          LocalBackend.siteUrl("/identity"),
           token === undefined
             ? {}
             : { headers: { authorization: `Bearer ${token}` } },
         );
         expect(response.status, label).toBe(200);
-        expect(yield* response.json, label).toEqual(expected);
+        const json2 = yield* response.json;
+        expect(json2, label).toEqual(expected);
       }
     }),
   );

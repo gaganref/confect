@@ -1,4 +1,5 @@
 import { expect, it } from "@effect/vitest";
+import * as Layer from "effect/Layer";
 import * as NodePath from "@effect/platform-node/NodePath";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -15,6 +16,10 @@ it.effect("retries project cleanup without advancing the test clock", () =>
       makeTempDirectory: () => Effect.succeed("consumer"),
       makeDirectory: () => Effect.void,
       writeFileString: () => Effect.void,
+      writeFile: () => Effect.void,
+      copyFile: () => Effect.void,
+      copy: () => Effect.void,
+      symlink: () => Effect.void,
       remove: () =>
         Effect.suspend(() => {
           attempts++;
@@ -30,13 +35,15 @@ it.effect("retries project cleanup without advancing the test clock", () =>
             : Effect.void;
         }),
     });
-    const fiber = yield* Project.make.pipe(
-      Effect.as("cleaned"),
-      Effect.scoped,
-      Effect.provideService(FileSystem.FileSystem, fs),
-      Effect.provide(NodePath.layer),
-      Effect.forkChild,
-    );
+    const fiber = yield* Effect.gen(function* () {
+      const services = yield* Layer.build(NodePath.layer);
+      return yield* Project.make.pipe(
+        Effect.as("cleaned"),
+        Effect.scoped,
+        Effect.provideService(FileSystem.FileSystem, fs),
+        Effect.provideContext(services),
+      );
+    }).pipe(Effect.scoped, Effect.forkChild);
     const completed = yield* Fiber.join(fiber).pipe(
       Effect.timeoutOption("1 second"),
       TestClock.withLive,

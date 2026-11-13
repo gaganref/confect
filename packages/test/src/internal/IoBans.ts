@@ -19,6 +19,10 @@
  */
 
 import * as Util from "node:util";
+import * as Arr from "effect/Array";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
+import * as Str from "effect/String";
 
 type UdfType = "query" | "mutation" | "action";
 
@@ -65,11 +69,19 @@ const notAllowed = (description: string) =>
 export const fetchInTransaction = (url: string): TypeError => {
   const { origin, pathname, search, hash } = new URL(url);
   const target = `${origin}${pathname}`;
-  const cause = notAllowed("fetch()")
-    .replaceAll(url, () => target)
-    .replaceAll(`${target}${search}${hash}`, () => target);
+  // Split and joined rather than replaced, so a `$` in the target is no
+  // replacement pattern.
+  const cause = pipe(
+    notAllowed("fetch()"),
+    Str.split(url),
+    Arr.join(target),
+    Str.split(`${target}${search}${hash}`),
+    Arr.join(target),
+  );
   return new TypeError(
-    cause.includes(target) ? cause : `fetch to ${target} failed: ${cause}`,
+    pipe(cause, Str.includes(target))
+      ? cause
+      : `fetch to ${target} failed: ${cause}`,
   );
 };
 
@@ -154,8 +166,11 @@ const here = callSites?.(1)[0]?.scriptName;
  * module, is one of Node's own modules in {@link nodeCallers}.
  */
 const readByNode = (): boolean => {
-  const caller = callSites?.(12).find((site) => site.scriptName !== here);
-  return caller !== undefined && nodeCallers.has(caller.scriptName);
+  const sites = callSites?.(12) ?? [];
+  return pipe(
+    Arr.findFirst(sites, (site) => site.scriptName !== here),
+    Option.exists((caller) => nodeCallers.has(caller.scriptName)),
+  );
 };
 
 /**
@@ -391,17 +406,15 @@ const guardFormData = (state: State, prototype: { formData?: unknown }) => {
   const host = original as (this: Request | Response) => Promise<FormData>;
   function formData(this: Request | Response): Promise<FormData> {
     if (!inTransaction(runningOf(state))) return Reflect.apply(host, this, []);
-    const [essence = "", ...parameters] = (
-      this.headers.get("content-type") ?? ""
-    ).split(";");
-    if (essence.trim().toLowerCase() !== "multipart/form-data") {
+    const [essence, ...parameters] = pipe(
+      this.headers.get("content-type") ?? "",
+      Str.split(";"),
+      Arr.map((part) => pipe(part, Str.trim, Str.toLowerCase)),
+    );
+    if (essence !== "multipart/form-data") {
       return Reflect.apply(host, this, []);
     }
-    if (
-      !parameters.some((parameter) =>
-        parameter.trim().toLowerCase().startsWith("boundary="),
-      )
-    ) {
+    if (!Arr.some(parameters, Str.startsWith("boundary="))) {
       return Promise.reject(
         new TypeError(
           "Missing boundary parameter in mime type of multipart formdata.",
@@ -441,9 +454,11 @@ const stateOf = (): State =>
  */
 export const install = (): ReadonlyArray<string> => {
   const state = stateOf();
-  const unguarded = guarded
-    .filter((entry) => !guardGlobal(state, entry))
-    .map(({ name }) => name);
+  const unguarded = pipe(
+    guarded,
+    Arr.filter((entry) => !guardGlobal(state, entry)),
+    Arr.map(({ name }) => name),
+  );
   guardFormData(state, Request.prototype);
   guardFormData(state, Response.prototype);
   return unguarded;
@@ -472,13 +487,15 @@ const sameDescriptor = (
 export const watch = (): (() => ReadonlyArray<string>) => {
   const state = stateOf();
   const global = globalThis as unknown as Global;
-  const taken = guarded.map(
+  const taken = Arr.map(
+    guarded,
     ({ name }) =>
       [name, Object.getOwnPropertyDescriptor(global, name)] as const,
   );
   return () =>
-    taken
-      .filter(([name, before]) => {
+    pipe(
+      taken,
+      Arr.filter(([name, before]) => {
         const now = Object.getOwnPropertyDescriptor(global, name);
         if (sameDescriptor(before, now)) return false;
         return !(
@@ -487,8 +504,9 @@ export const watch = (): (() => ReadonlyArray<string>) => {
           !state.made.has(now.get) &&
           readsThrough(state, now)
         );
-      })
-      .map(([name]) => name);
+      }),
+      Arr.map(([name]) => name),
+    );
 };
 
 /**

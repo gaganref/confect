@@ -12,6 +12,8 @@ import * as Array from "effect/Array";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import databaseSchema from "./mock-backend/fixtures/confect/_generated/schema";
+import * as Str from "effect/String";
+import * as Record from "effect/Record";
 
 class Required extends MiddlewareSpec.MiddlewareSpec<Required>()("Required", {
   functionTypes: { query: true, mutation: true, action: true },
@@ -83,7 +85,7 @@ it("qualifies every uncovered function with its group path", () => {
 });
 
 it("builds when every registered function carries required middleware", () => {
-  expect(Object.keys(build([])).toSorted()).toEqual([
+  expect(Array.sort(Record.keys(build([])), Str.Order)).toEqual([
     "covered",
     "first",
     "second",

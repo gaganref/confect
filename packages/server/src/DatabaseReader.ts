@@ -1,3 +1,4 @@
+import * as Record from "effect/Record";
 import type { GenericDatabaseReader } from "convex/server";
 import * as Context from "effect/Context";
 import * as Layer from "effect/Layer";
@@ -48,7 +49,7 @@ export const make = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
     >(
       tableName: TableName,
     ) => {
-      const isSystem = Object.hasOwn(systemTables, tableName);
+      const isSystem = Record.has(systemTables, tableName);
 
       const baseDatabaseReader: BaseDatabaseReader<any> = isSystem
         ? {
@@ -66,7 +67,9 @@ export const make = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
 
       const table = (
         isSystem
-          ? (systemTables as Record<string, Table.AnyWithProps>)[tableName]
+          ? (systemTables as { readonly [name: string]: Table.AnyWithProps })[
+              tableName
+            ]
           : DatabaseSchema.tables(databaseSchema)[tableName]
       ) as Table.WithName<IncludedTables<DatabaseSchema_>, TableName>;
 

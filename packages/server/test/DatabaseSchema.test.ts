@@ -27,8 +27,14 @@ describe("DatabaseSchema", () => {
     expectTypeOf<DatabaseSchema.Tables<typeof schema>>().toEqualTypeOf<
       typeof notes | typeof users
     >();
+    expectTypeOf<DatabaseSchema.SystemTableNames>().toEqualTypeOf<
+      "_storage" | "_scheduled_functions"
+    >();
     expectTypeOf<DatabaseSchema.TableNames<typeof schema>>().toEqualTypeOf<
       "notes" | "users"
+    >();
+    expectTypeOf<DatabaseSchema.AllTableNames<typeof schema>>().toEqualTypeOf<
+      "notes" | "users" | "_storage" | "_scheduled_functions"
     >();
     expectTypeOf<
       DatabaseSchema.TableWithName<typeof schema, "notes">
@@ -41,6 +47,9 @@ describe("DatabaseSchema", () => {
     expect(DatabaseSchema.tables(schema)).toEqual({});
     expectTypeOf<DatabaseSchema.Tables<typeof schema>>().toBeNever();
     expectTypeOf<DatabaseSchema.TableNames<typeof schema>>().toBeNever();
+    expectTypeOf<DatabaseSchema.AllTableNames<typeof schema>>().toEqualTypeOf<
+      "_storage" | "_scheduled_functions"
+    >();
   });
 
   it("retains component scope alongside the precise lazy table record", () => {
@@ -113,5 +122,27 @@ describe("DatabaseSchema", () => {
         databaseScope: componentScope,
       },
     });
+  });
+});
+
+describe("DatabaseSchema errors", () => {
+  it.each([
+    [
+      DatabaseSchema.EmptyDatabaseScopeError.make({
+        databaseScope: IdScope.app,
+      }),
+      "EmptyDatabaseScopeError: A component database schema requires a nonempty ID scope.",
+    ],
+    [
+      DatabaseSchema.TableBindingMismatchError.make({
+        bindingName: "notes",
+        tableName: "tasks",
+        tableScope: IdScope.app,
+        databaseScope: IdScope.component("notes"),
+      }),
+      "TableBindingMismatchError: Table 'notes' must be bound to its database schema's name and ID scope.",
+    ],
+  ])("prints %s", (error, printed) => {
+    expect(String(error)).toBe(printed);
   });
 });

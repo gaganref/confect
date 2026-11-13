@@ -5,6 +5,7 @@ import type * as Env from "./Env.js";
 import type * as ManifestSection from "./ManifestSection.js";
 import type * as MiddlewareSpec from "./MiddlewareSpec.js";
 import * as Mount from "./Mount.js";
+import * as Array from "effect/Array";
 
 const TypeId = "~@confect/core/App";
 
@@ -17,6 +18,8 @@ export type HttpPrefix = `/${string}`;
 
 /**
  * Any `HttpApi`, with its identifier and groups erased.
+ *
+ * @stability unstable
  */
 export type Api = HttpApi.HttpApi<string, any>;
 
@@ -116,4 +119,4 @@ export const components = (app: Any): ReadonlyArray<Definition> =>
  * What each mount was declared with, in list order.
  */
 export const mounts = (app: Any): ReadonlyArray<Mount.Data> =>
-  app.mounts.map(Mount.data);
+  Array.map(app.mounts, Mount.data);

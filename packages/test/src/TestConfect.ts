@@ -2,6 +2,7 @@ import { App, type Mount, Ref } from "@confect/core";
 import type { DatabaseSchema, DataModel } from "@confect/server";
 import { RegisteredConvexFunction } from "@confect/server";
 import type {
+  DeploymentJwks,
   TestConvexForDataModel,
   TestConvexForDataModelAndIdentity,
 } from "convex-test";
@@ -17,8 +18,14 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import * as Clock from "./internal/Clock.js";
 import { convexTest as kernelTest } from "./internal/ConvexTest.js";
+import type * as Invocation from "./internal/Invocation.js";
 import * as MountedHttp from "./internal/MountedHttp.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
+import * as Rec from "effect/Record";
 import * as Redaction from "./internal/Redaction.js";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -35,10 +42,11 @@ export type RegisterOptions = {
    */
   readonly standing?: ReadonlyArray<string>;
   /**
-   * The component's module sources, keyed as its modules are, such as
-   * `import.meta.glob(pattern, { query: "?raw", import: "default" })` gives.
-   * The test kernel reads each module's `"use node"` directive from them, as
-   * Convex's bundler does. convex-test ignores it.
+   * The component's module sources, such as `import.meta.glob(pattern, { query:
+   * "?raw", import: "default" })` of the same files gives from any test file:
+   * each matches its module by its path below the directory that holds
+   * `_generated`. The test kernel reads each module's `"use node"` directive
+   * from them, as Convex's bundler does. convex-test ignores it.
    */
   readonly sources?: Record<string, () => Promise<string>>;
 };
@@ -74,6 +82,13 @@ export type TargetOptions = {
    * option goes once the kernel replaces convex-test.
    */
   readonly target?: Target;
+  /**
+   * The seed of the random stream the `"kernel"` target's backend draws from on
+   * its own, such as the random delay Convex gives each run of an hourly,
+   * daily, weekly, monthly or cron-expression job. Two layers with the same
+   * seed draw the same stream. Defaults to `0`. convex-test ignores it.
+   */
+  readonly seed?: number;
 };
 
 /**
@@ -108,13 +123,14 @@ export type SecretPolicy = {
 
 export type SourceOptions = {
   /**
-   * The modules' sources, keyed as the modules are, such as
-   * `import.meta.glob(pattern, { query: "?raw", import: "default" })` gives
-   * beside the modules' own glob. The test kernel reads from them whether each
-   * module has a `"use node"` directive, as Convex's bundler does. Without them
-   * the kernel takes a Confect action's runtime from its registration, and
-   * refuses when it opens with `ActionRuntimeUnknown` if a module exports a
-   * plain Convex action. convex-test ignores it.
+   * The modules' sources, such as `import.meta.glob(pattern, { query: "?raw",
+   * import: "default" })` of the same files gives from any test file: each
+   * matches its module by its path below the directory that holds `_generated`.
+   * The test kernel reads from them whether each module has a `"use node"`
+   * directive, as Convex's bundler does. Without them the kernel takes a
+   * Confect action's runtime from its registration, and refuses when it opens
+   * with `ActionRuntimeUnknown` if a module exports a plain Convex action.
+   * convex-test ignores it.
    */
   readonly sources?: Record<string, () => Promise<string>>;
   /**
@@ -150,9 +166,12 @@ export type LayerOptions = TargetOptions &
     readonly secrets?: SecretPolicy;
   };
 
+export type { DeploymentJwk, DeploymentJwks } from "convex-test";
+
 export type TestConfectWithoutIdentity<
   ConfectSchema extends DatabaseSchema.AnyWithProps,
 > = {
+  jwks: () => Effect.Effect<DeploymentJwks>;
   query: <QueryRef extends Ref.AnyQuery>(
     queryRef: QueryRef,
     ...args: Ref.OptionalArgs<QueryRef>
@@ -227,6 +246,10 @@ class TestConfectImplWithoutIdentity<
     >,
     private mountedHttp: ReturnType<typeof MountedHttp.make>,
   ) {}
+
+  readonly jwks = Effect.fn("TestConfect.jwks")(() =>
+    Effect.promise(() => this.testConvex.jwks()),
+  );
 
   readonly query = <QueryRef extends Ref.AnyQuery>(
     queryRef: QueryRef,
@@ -368,6 +391,8 @@ class TestConfectImpl<
         ),
     );
 
+  readonly jwks = () => this.testConfectImplWithoutIdentity.jwks();
+
   readonly query = <QueryRef extends Ref.AnyQuery>(
     queryRef: QueryRef,
     ...args: Ref.OptionalArgs<QueryRef>
@@ -427,10 +452,13 @@ export type ComponentKit =
       ): unknown;
     };
 
-class InvalidComponentKit extends Schema.TaggedError<InvalidComponentKit>()(
-  "InvalidComponentKit",
-  { componentPath: Schema.String, message: Schema.String },
-) {}
+class InvalidComponentKit extends Schema.TaggedError<
+  InvalidComponentKit,
+  { readonly brand: unique symbol }
+>()("InvalidComponentKit", {
+  componentPath: Schema.String,
+  message: Schema.String,
+}) {}
 
 const registerKit = (
   registerComponent: RegisterComponent,
@@ -448,8 +476,9 @@ const registerKit = (
     );
   } else {
     // Codegen accepts a kit whose exports it cannot list, such as CommonJS.
-    throw new InvalidComponentKit({
+    throw InvalidComponentKit.make({
       componentPath: name,
+      // oxlint-disable-next-line effecttsgo/global-json -- Quotes the mount name in an error this sync registration throws; a string always serializes.
       message: `The test kit for ${JSON.stringify(name)} must export register(t, name), or schema and modules.`,
     });
   }
@@ -537,15 +566,23 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
         ...targetOf(third as TargetOptions | undefined),
         ...secretsOf(registry),
         ...sourcesOf(registry, third as SourceOptions | undefined),
-        httpMounts: mounts.flatMap(({ name, httpPrefix }) =>
-          httpPrefix === undefined ? [] : [{ componentPath: name, httpPrefix }],
+        // reduce skips a sparse list's holes, which effect/Array's flatMap visits.
+        httpMounts: Array.reduce(
+          mounts,
+          Array.empty<{ componentPath: string; httpPrefix: string }>(),
+          (httpMounts, { name, httpPrefix }) =>
+            httpPrefix === undefined
+              ? httpMounts
+              : Array.append(httpMounts, { componentPath: name, httpPrefix }),
         ),
         register: (registerComponent) => {
-          for (const [name, component] of Object.entries(registry.components)) {
+          for (const [name, component] of Rec.toEntries(registry.components)) {
             if (
-              mounts.some(
+              Array.some(
+                mounts,
                 (mount) =>
-                  name === mount.name || name.startsWith(`${mount.name}/`),
+                  name === mount.name ||
+                  pipe(name, String.startsWith(`${mount.name}/`)),
               )
             ) {
               registerKit(registerComponent, name, component);
@@ -563,7 +600,7 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       ...sourcesOf(app, second as SourceOptions | undefined),
       httpMounts: app.httpMounts,
       register: (registerComponent) => {
-        for (const [name, component] of Object.entries(app.components)) {
+        for (const [name, component] of Rec.toEntries(app.components)) {
           registerKit(registerComponent, name, component);
         }
       },
@@ -577,8 +614,37 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   );
 }
 
-const targetOf = (options: TargetOptions | undefined): TargetOptions =>
-  options?.target === undefined ? {} : { target: options.target };
+const targetOf = (options: TargetOptions | undefined): TargetOptions => ({
+  ...(options?.target === undefined ? {} : { target: options.target }),
+  ...(options?.seed === undefined ? {} : { seed: options.seed }),
+});
+
+/**
+ * Mulberry32: a stream uniform on [0, 1) from a 32-bit seed. The kernel holds
+ * no generator, so this driver supplies the stream, of the type a test world
+ * gives its handlers.
+ */
+const seeded = (seed: number): (() => number) => {
+  let state = Math.trunc(seed) >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+  };
+};
+
+/**
+ * The world a kernel-target layer gives its backend: no services of its own,
+ * the host's clock, which the kernel's clock follows, and a seeded stream.
+ */
+const layerWorld = (seed: number): Invocation.World => ({
+  name: "TestConfect.layer",
+  services: Context.empty(),
+  clock: Clock.hostNow,
+  random: seeded(seed),
+});
 
 const secretsOf = (registry: {
   readonly secrets?: SecretPolicy;
@@ -609,12 +675,14 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
     process.env.CONVEX_SITE_URL ??= "https://some.convex.site";
     // On the kernel, a value under a secret node of the app's table schemas,
     // or of the policy's functions and component tables, reaches every
-    // artifact as a marker.
+    // artifact as a marker. The backend's own world draws from the seeded
+    // stream.
     const testConvex =
       options.target === "kernel"
         ? kernelTest({
             schema: convexSchemaDefinition,
             modules,
+            world: layerWorld(options.seed ?? 0),
             redaction: Redaction.policy(
               Redaction.merge(
                 { tables: { "": Redaction.tablesOf(databaseSchema) } },

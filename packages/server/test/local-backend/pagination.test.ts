@@ -4,8 +4,11 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Random from "effect/Random";
 import * as Deferred from "effect/Deferred";
-import { api } from "./fixtures/convex/_generated/api";
-import * as LocalBackend from "./LocalBackend";
+import { api } from "../../../../tools/local-backend/fixtures/convex/_generated/api";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
 
 layer(LocalBackend.layer, {
   timeout: "120 seconds",
@@ -16,7 +19,8 @@ layer(LocalBackend.layer, {
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
-        const run = String(yield* Random.next);
+        const random = yield* Random.next;
+        const run = String(random);
         yield* Effect.promise(() =>
           client.mutation(api.groups.components.seed, {
             run,
@@ -44,7 +48,8 @@ layer(LocalBackend.layer, {
   it.effect("pages search results inside a component", () =>
     Effect.gen(function* () {
       const { client } = yield* LocalBackend.LocalBackend;
-      const run = `search${String(yield* Random.next).replaceAll(".", "")}`;
+      const random = yield* Random.next;
+      const run = `search${pipe(String(random), Str.replaceAll(".", ""))}`;
       yield* Effect.promise(() =>
         client.mutation(api.groups.components.seed, {
           run,
@@ -59,9 +64,9 @@ layer(LocalBackend.layer, {
         }),
       );
       expect(page.page).toHaveLength(2);
-      expect(page.page.every((count) => [1, 2, 3, 4, 5].includes(count))).toBe(
-        true,
-      );
+      expect(
+        Arr.every(page.page, (count) => [1, 2, 3, 4, 5].includes(count)),
+      ).toBe(true);
       expect(page.isDone).toBe(false);
       expect(page.continueCursor).not.toBe("");
     }),
@@ -69,16 +74,18 @@ layer(LocalBackend.layer, {
   it.effect("updates a subscribed component page after an insert", () =>
     Effect.gen(function* () {
       const { client } = yield* LocalBackend.LocalBackend;
-      const run = String(yield* Random.next);
+      const random = yield* Random.next;
+      const run = String(random);
       yield* Effect.scoped(
         Effect.gen(function* () {
           const reactive = yield* Effect.acquireRelease(
-            Effect.sync(() => new ConvexClient("http://127.0.0.1:3210")),
+            Effect.sync(() => new ConvexClient(LocalBackend.cloudUrl())),
             (reactiveClient) => Effect.promise(() => reactiveClient.close()),
           );
           const initial = yield* Deferred.make<ReadonlyArray<number>>();
           const updated = yield* Deferred.make<ReadonlyArray<number>>();
-          const complete = Effect.runSyncWith(yield* Effect.context<never>());
+          const context2 = yield* Effect.context<never>();
+          const complete = Effect.runSyncWith(context2);
           let first = true;
           yield* Effect.acquireRelease(
             Effect.sync(() =>
@@ -99,11 +106,13 @@ layer(LocalBackend.layer, {
             ),
             (stop) => Effect.sync(stop),
           );
-          expect(yield* Deferred.await(initial)).toEqual([]);
+          const awaitValue = yield* Deferred.await(initial);
+          expect(awaitValue).toEqual([]);
           yield* Effect.promise(() =>
             client.mutation(api.groups.components.seed, { run, counts: [7] }),
           );
-          expect(yield* Deferred.await(updated)).toEqual([7]);
+          const awaitValue2 = yield* Deferred.await(updated);
+          expect(awaitValue2).toEqual([7]);
         }).pipe(Effect.timeout("10 seconds")),
       );
     }),
@@ -129,7 +138,8 @@ layer(LocalBackend.layer, {
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
-        const run = String(yield* Random.next);
+        const random = yield* Random.next;
+        const run = String(random);
         const counts = Array.from({ length: 50 }, (_, i) => i + 100);
         for (let offset = 0; offset < counts.length; offset += 10) {
           yield* Effect.promise(() =>
@@ -139,11 +149,10 @@ layer(LocalBackend.layer, {
             }),
           );
         }
-        expect(
-          yield* Effect.promise(() =>
-            client.query(api.groups.pagination.streams, { run }),
-          ),
-        ).toEqual({
+        const resolved = yield* Effect.promise(() =>
+          client.query(api.groups.pagination.streams, { run }),
+        );
+        expect(resolved).toEqual({
           deferred: counts,
           merged: counts,
           budget: 2001,
@@ -153,11 +162,10 @@ layer(LocalBackend.layer, {
   it.effect("observes decoded component writes through the writer hook", () =>
     Effect.gen(function* () {
       const { client } = yield* LocalBackend.LocalBackend;
-      expect(
-        yield* Effect.promise(() =>
-          client.mutation(api.groups.pagination.hook, { run: "hook" }),
-        ),
-      ).toEqual([
+      const resolved = yield* Effect.promise(() =>
+        client.mutation(api.groups.pagination.hook, { run: "hook" }),
+      );
+      expect(resolved).toEqual([
         { operation: "insert", count: 1 },
         { operation: "update", count: 2 },
         { operation: "delete", count: 2 },

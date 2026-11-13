@@ -1,3 +1,7 @@
+import { pipe } from "effect/Function";
+import * as Str from "effect/String";
+import * as Rec from "effect/Record";
+import * as Arr from "effect/Array";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import { assert, expect, layer } from "@effect/vitest";
 import { vi } from "vitest";
@@ -6,6 +10,7 @@ import * as Console from "effect/Console";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
+import * as Queue from "effect/Queue";
 import * as esbuild from "esbuild";
 import { devHandler } from "@confect/cli/confect/dev";
 import { ConfectDirectory } from "@confect/cli/ConfectDirectory";
@@ -31,6 +36,113 @@ vi.mock("effect/Console", (importOriginal) =>
 layer(NodeServices.layer, { excludeTestServices: true })(
   "dev dependency watcher resources",
   (it) => {
+    it.effect.each([
+      { kind: "syntax", message: "Unexpected" },
+      { kind: "unlocated", message: "unlocated watcher failure" },
+    ])(
+      "reports $kind build errors before recovering from a helper edit",
+      ({ kind, message }) =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const helper = path.join(project.root, "confect/name.ts");
+          const replacement = path.join(project.root, "name.next.ts");
+          const ready = yield* Queue.unbounded<void>();
+          const errors = yield* Queue.unbounded<string>();
+          let readyCount = 0;
+          let broken = false;
+          if (kind === "unlocated") {
+            const context = vi.mocked(esbuild.context);
+            const original = context.getMockImplementation();
+            assert(original);
+            context.mockImplementation((options) =>
+              original({
+                ...options,
+                plugins: [
+                  ...(options.plugins ?? []),
+                  {
+                    name: "unlocated-watcher-error",
+                    setup(build) {
+                      build.onStart(() =>
+                        broken ? { errors: [{ text: message }] } : undefined,
+                      );
+                    },
+                  },
+                ],
+              }),
+            );
+            yield* Effect.addFinalizer(() =>
+              Effect.sync(() => context.mockImplementation(original)),
+            );
+          }
+          yield* project.write(
+            "confect/name.ts",
+            'export const name = "list";',
+          );
+          yield* project.write(
+            "confect/notes.spec.ts",
+            `import { name } from "./name";\n${pipe(Project.spec, Str.replace('name: "list"', "name"))}`,
+          );
+          yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              vi
+                .spyOn(Console, "log")
+                .mockImplementation((...args) =>
+                  Arr.some(
+                    args,
+                    (arg) =>
+                      typeof arg === "string" &&
+                      pipe(arg, Str.includes("Generated files are up-to-date")),
+                  )
+                    ? Effect.sync(() => readyCount++).pipe(
+                        Effect.andThen(Queue.offer(ready, undefined)),
+                        Effect.asVoid,
+                      )
+                    : Effect.void,
+                ),
+            ),
+            (spy) => Effect.sync(() => spy.mockRestore()),
+          );
+          yield* Effect.acquireRelease(
+            Effect.sync(() =>
+              vi.spyOn(Console, "error").mockImplementation((...args) =>
+                Effect.forEach(
+                  Arr.filter(
+                    args,
+                    (arg): arg is string =>
+                      typeof arg === "string" &&
+                      pipe(arg, Str.includes("Build errors")),
+                  ),
+                  (text) => Queue.offer(errors, text),
+                  { discard: true },
+                ),
+              ),
+            ),
+            (spy) => Effect.sync(() => spy.mockRestore()),
+          );
+          yield* project.provide(devHandler).pipe(Effect.forkScoped);
+          yield* Queue.take(ready);
+          broken = true;
+          yield* fs.writeFileString(
+            replacement,
+            kind === "syntax"
+              ? "export const name = ;"
+              : 'export const name = "pending";',
+          );
+          yield* fs.rename(replacement, helper);
+          const actual2 = yield* Queue.take(errors);
+          expect(actual2).toContain(message);
+          expect(readyCount).toBe(1);
+          broken = false;
+          yield* fs.writeFileString(replacement, 'export const name = "list";');
+          yield* fs.rename(replacement, helper);
+          yield* Queue.take(ready);
+          expect(readyCount).toBe(2);
+        }).pipe(Effect.scoped, Effect.timeout("20 seconds")),
+      { timeout: 25000 },
+    );
+
     it.effect.each(["operation", "metadata"] as const)(
       "does not report readiness after a watcher %s failure and recovers on edit",
       (failureKind) =>
@@ -46,10 +158,14 @@ layer(NodeServices.layer, { excludeTestServices: true })(
               vi.spyOn(Console, "log").mockImplementation((...args) =>
                 Effect.sync(() => {
                   if (
-                    args.some(
+                    Arr.some(
+                      args,
                       (arg) =>
                         typeof arg === "string" &&
-                        arg.includes("Generated files are up-to-date"),
+                        pipe(
+                          arg,
+                          Str.includes("Generated files are up-to-date"),
+                        ),
                     )
                   ) {
                     readyCount++;
@@ -69,8 +185,11 @@ layer(NodeServices.layer, { excludeTestServices: true })(
                       ? "watcher service unavailable"
                       : "esbuild completed without metafile";
                   if (
-                    args.some(
-                      (arg) => typeof arg === "string" && arg.includes(message),
+                    Arr.some(
+                      args,
+                      (arg) =>
+                        typeof arg === "string" &&
+                        pipe(arg, Str.includes(message)),
                     )
                   )
                     Deferred.doneUnsafe(failure, Effect.void);
@@ -82,11 +201,12 @@ layer(NodeServices.layer, { excludeTestServices: true })(
           const context = vi.mocked(esbuild.context);
           const original = context.getMockImplementation();
           assert(original);
-          const runPromise = Effect.runPromiseWith(yield* Effect.context());
+          const actual3 = yield* Effect.context();
+          const runPromise = Effect.runPromiseWith(actual3);
           context.mockImplementation((options) =>
             runPromise(
               Effect.gen(function* () {
-                const actual = yield* Effect.tryPromise(() =>
+                const actual = yield* Effect.promise(() =>
                   original({
                     ...options,
                     plugins: [
@@ -148,7 +268,7 @@ layer(NodeServices.layer, { excludeTestServices: true })(
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const project = yield* Project.make;
-          const importPath = dependency.startsWith("confect/")
+          const importPath = pipe(dependency, Str.startsWith("confect/"))
             ? "./name"
             : "../name";
           yield* project.write(dependency, 'export const name = "first";\n');
@@ -177,10 +297,14 @@ export default GroupImpl.make(databaseSchema, spec).pipe(Layer.provide(FunctionI
               vi.spyOn(Console, "log").mockImplementation((...args) =>
                 Effect.sync(() => {
                   if (
-                    args.some(
+                    Arr.some(
+                      args,
                       (arg) =>
                         typeof arg === "string" &&
-                        arg.includes("Generated files are up-to-date"),
+                        pipe(
+                          arg,
+                          Str.includes("Generated files are up-to-date"),
+                        ),
                     )
                   ) {
                     Deferred.doneUnsafe(ready, Effect.void);
@@ -190,7 +314,8 @@ export default GroupImpl.make(databaseSchema, spec).pipe(Layer.provide(FunctionI
             ),
             (spy) => Effect.sync(() => spy.mockRestore()),
           );
-          const runPromise = Effect.runPromiseWith(yield* Effect.context());
+          const actual4 = yield* Effect.context();
+          const runPromise = Effect.runPromiseWith(actual4);
           const context = vi.mocked(esbuild.context);
           const original = context.getMockImplementation();
           assert(original);
@@ -259,12 +384,18 @@ export default GroupImpl.make(databaseSchema, spec).pipe(Layer.provide(FunctionI
               project.write(`confect/${name}.spec.ts`, Project.spec),
               project.write(
                 `confect/${name}.impl.ts`,
-                Project.impl.replace('"./notes.spec"', `"./${name}.spec"`),
+                pipe(
+                  Project.impl,
+                  Str.replace('"./notes.spec"', `"./${name}.spec"`),
+                ),
               ),
             ]),
           );
           const unseen = new Set([
-            ...names.flatMap((name) => [`${name}.spec.ts`, `${name}.impl.ts`]),
+            ...Arr.flatMap(names, (name) => [
+              `${name}.spec.ts`,
+              `${name}.impl.ts`,
+            ]),
             path.join("tables", "notes.ts"),
           ]);
           const ready = yield* Deferred.make<void>();
@@ -281,7 +412,7 @@ export default GroupImpl.make(databaseSchema, spec).pipe(Layer.provide(FunctionI
                   name: "observe-watcher-graphs",
                   setup(build) {
                     build.onEnd((result) => {
-                      for (const input of Object.keys(
+                      for (const input of Rec.keys(
                         result.metafile?.inputs ?? {},
                       )) {
                         unseen.delete(

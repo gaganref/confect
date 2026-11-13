@@ -11,6 +11,9 @@ import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import * as Subscriptions from "./Subscriptions.js";
 import type * as Scheduling from "./Scheduling.js";
+import * as Option from "effect/Option";
+import * as Array from "effect/Array";
+import * as Storage from "./Storage.js";
 
 type Modules = Record<string, () => Promise<any>>;
 
@@ -55,6 +58,11 @@ export interface KernelControls {
    * The pending jobs, earliest deadline first.
    */
   readonly jobs: () => ReadonlyArray<Scheduling.Job>;
+  /**
+   * The declared cron jobs of every component's `crons.ts`, earliest next run
+   * first. `advance` runs them on the kernel's clock. A drain never does.
+   */
+  readonly crons: () => ReadonlyArray<Execution.Cron>;
   /**
    * Run the jobs due now. No future deadline is crossed.
    */
@@ -104,9 +112,10 @@ export interface RegisterOptions {
    */
   readonly standing?: ReadonlyArray<string>;
   /**
-   * Each module's source, keyed as the modules are, such as
-   * `import.meta.glob(pattern, { query: "?raw", import: "default" })` gives.
-   * The kernel reads each module's `"use node"` directive from it.
+   * Each module's source, such as `import.meta.glob(pattern, { query: "?raw",
+   * import: "default" })` of the same files gives, matched to its module by its
+   * path below the directory that holds `_generated`. The kernel reads each
+   * module's `"use node"` directive from it.
    */
   readonly sources?: Record<string, () => Promise<string>>;
 }
@@ -147,18 +156,18 @@ const accessor = (
       ),
     apply: (id: string) => {
       // The attempt leaves `held` once applied, so its function is read first.
-      const functionPath = world
-        .held()
-        .find((view) => view.id === id)?.functionPath;
+      const functionPath = Option.getOrUndefined(
+        Array.findFirst(world.held(), (view) => view.id === id),
+      )?.functionPath;
       return reported(() => world.apply(id)).then((applied) =>
         world.projectApplied(applied, functionPath),
       );
     },
-    held: () => world.held().map((view) => world.projectHeld(view)),
+    held: () => Array.map(world.held(), (view) => world.projectHeld(view)),
     subscriber: () => subscriptions.subscriber(caller),
     refresh: () =>
       reported(() => subscriptions.refresh()).then((transitions) =>
-        transitions.map((transition): Subscriptions.Transition => ({
+        Array.map(transitions, (transition): Subscriptions.Transition => ({
           ...transition,
           from: world.redactOutcome(
             transition.from,
@@ -179,17 +188,20 @@ const accessor = (
       ),
     reference: () =>
       reported(() => subscriptions.reference()).then((disagreements) =>
-        disagreements.map((disagreement): Subscriptions.Disagreement => ({
-          ...disagreement,
-          incremental: world.redactOutcome(
-            disagreement.incremental,
-            returnsOf(disagreement.subscription),
-          ),
-          reference: world.redactOutcome(
-            disagreement.reference,
-            returnsOf(disagreement.subscription),
-          ),
-        })),
+        Array.map(
+          disagreements,
+          (disagreement): Subscriptions.Disagreement => ({
+            ...disagreement,
+            incremental: world.redactOutcome(
+              disagreement.incremental,
+              returnsOf(disagreement.subscription),
+            ),
+            reference: world.redactOutcome(
+              disagreement.reference,
+              returnsOf(disagreement.subscription),
+            ),
+          }),
+        ),
       ),
     run: (handler: (ctx: any) => any) =>
       reported(() => world.run(caller, "", handler)),
@@ -206,10 +218,20 @@ const accessor = (
         ip: metadata.ip ?? null,
         userAgent: metadata.userAgent ?? null,
       }),
-    fetch: () => Promise.reject(KernelRefusal.rowPending("HTTP routes", 6)),
+    // An upload to a URL from `generateUploadUrl`, or a download from one
+    // `getUrl` answered, streams through the binary's storage endpoints, which
+    // the kernel does not simulate.
+    fetch: (path: unknown, init?: RequestInit) => {
+      const endpoint =
+        typeof path === "string" ? Storage.endpoint(path) : undefined;
+      return endpoint === undefined
+        ? reported(() => world.fetch(caller, path, init))
+        : Promise.reject(KernelRefusal.requiresBinary(endpoint));
+    },
     jwks: () => Promise.reject(KernelRefusal.rowPending("JWT verification", 6)),
     advance: (ms: number) => reported(() => world.advance(ms)),
     jobs: () => world.jobs(),
+    crons: () => world.crons(),
     finishInProgressScheduledFunctions: () => reported(() => world.advance(0)),
     finishAllScheduledFunctions: (
       _advanceTimers?: () => void,
@@ -236,7 +258,9 @@ const accessor = (
  * it, and `apply` validates and publishes a held attempt. `mutation` applies
  * each attempt it prepares at once and prepares the next on a conflict, up to
  * attempt 5. `runtime` supplies the clock and commit timestamps. Scheduled
- * functions run on the kernel's clock, never on a host timer. A subscriber's
+ * functions and declared cron jobs run on the kernel's clock, never on a host
+ * timer, and a cron run's delay draws from the random stream of the world bound
+ * when the backend opened, or else the backend's own `world`. A subscriber's
  * subscriptions go stale when a commit changes what they read or the identity
  * they read changes, and `refresh` reruns them. `redaction` names the secret
  * schema nodes of tables and functions: a value under one reaches a snapshot, a
@@ -251,8 +275,9 @@ export function convexTest(
         readonly transactionLimits?: unknown;
         readonly runtime?: Kernel.KernelRuntime;
         /**
-         * Each module's source, keyed as `modules` is, so the kernel reads each
-         * module's `"use node"` directive as Convex's bundler does.
+         * Each module's source, matched to its module by its path below the
+         * directory that holds `_generated`, so the kernel reads each module's
+         * `"use node"` directive as Convex's bundler does.
          */
         readonly sources?: Record<string, () => Promise<string>>;
         /**
@@ -261,6 +286,12 @@ export function convexTest(
          */
         readonly componentRuntimes?: Execution.ComponentRuntimes;
         readonly redaction?: Redaction.Policy;
+        /**
+         * The backend's own world. A backend opened with no invocation bound
+         * declares its cron jobs in it, and their delays draw from its random
+         * stream.
+         */
+        readonly world?: Invocation.World;
       },
   modules?: Modules,
 ): any {
@@ -269,6 +300,7 @@ export function convexTest(
   let sources: Record<string, () => Promise<string>> | undefined;
   let redaction: Redaction.Policy | undefined;
   let componentRuntimes: Execution.ComponentRuntimes | undefined;
+  let own: Invocation.World | undefined;
   if (isSchemaDefinition(schemaOrOptions)) {
     schema = schemaOrOptions;
   } else if (schemaOrOptions !== undefined) {
@@ -281,6 +313,7 @@ export function convexTest(
     sources = schemaOrOptions.sources;
     redaction = schemaOrOptions.redaction;
     componentRuntimes = schemaOrOptions.componentRuntimes;
+    own = schemaOrOptions.world;
   }
   if (modules === undefined) {
     throw new Error(
@@ -292,6 +325,7 @@ export function convexTest(
     modules,
     runtime,
     redaction,
+    own,
     sources,
     componentRuntimes,
   );

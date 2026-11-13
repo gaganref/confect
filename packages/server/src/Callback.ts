@@ -18,23 +18,28 @@ import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
+import * as Rec from "effect/Record";
+
+const jsonText = (json: Schema.Json): string =>
+  // oxlint-disable-next-line effecttsgo/global-json -- Sync on purpose: a message getter and pure comparisons key validator descriptions by this text, and Schema.Json always serializes.
+  JSON.stringify(json);
 
 /**
  * The host function does not satisfy the contract on one side. `expected` and
  * `actual` describe the contract's and the host's validators, with union
  * members in a fixed order, or the reason a schema is unsupported.
  */
-export class CallbackContractMismatch extends Schema.TaggedError<CallbackContractMismatch>()(
-  "CallbackContractMismatch",
-  {
-    contract: Schema.String,
-    side: Schema.Literals(["args", "returns", "error"]),
-    expected: Schema.Json,
-    actual: Schema.Json,
-  },
-) {
+export class CallbackContractMismatch extends Schema.TaggedError<
+  CallbackContractMismatch,
+  { readonly brand: unique symbol }
+>()("CallbackContractMismatch", {
+  contract: Schema.String,
+  side: Schema.Literals(["args", "returns", "error"]),
+  expected: Schema.Json,
+  actual: Schema.Json,
+}) {
   override get message(): string {
-    return `The host function does not satisfy callback contract "${this.contract}": its ${this.side === "error" ? "errors" : this.side} compile to ${JSON.stringify(this.actual)}, the contract's to ${JSON.stringify(this.expected)}.`;
+    return `The host function does not satisfy callback contract "${this.contract}": its ${this.side === "error" ? "errors" : this.side} compile to ${jsonText(this.actual)}, the contract's to ${jsonText(this.expected)}.`;
   }
 }
 
@@ -42,7 +47,7 @@ const alternatives = (
   validator: GenericValidator,
 ): ReadonlyArray<GenericValidator> =>
   validator.kind === "union"
-    ? validator.members.flatMap(alternatives)
+    ? Array.flatMap(validator.members, alternatives)
     : [validator];
 
 const literalKinds: Record<string, string> = {
@@ -60,12 +65,12 @@ const literalKinds: Record<string, string> = {
 const alternativesOf = (
   validators: ReadonlyArray<GenericValidator>,
 ): ReadonlyArray<GenericValidator> => {
-  const flat = validators.flatMap(alternatives);
-  if (flat.some(({ kind }) => kind === "any")) {
+  const flat = Array.flatMap(validators, alternatives);
+  if (Array.some(flat, ({ kind }) => kind === "any")) {
     return [v.any()];
   }
   const booleans = new Set(
-    flat.flatMap((validator) =>
+    Array.flatMap(flat, (validator) =>
       validator.kind === "literal" && typeof validator.value === "boolean"
         ? [validator.value]
         : [],
@@ -73,8 +78,9 @@ const alternativesOf = (
   );
   const widened =
     booleans.has(true) && booleans.has(false) ? [...flat, v.boolean()] : flat;
-  const kinds = new Set<string>(widened.map(({ kind }) => kind));
-  return widened.filter(
+  const kinds = new Set<string>(Array.map(widened, ({ kind }) => kind));
+  return Array.filter(
+    widened,
     (validator) =>
       validator.kind !== "literal" ||
       !kinds.has(literalKinds[typeof validator.value] ?? ""),
@@ -86,7 +92,7 @@ const keyed = (
 ): ReadonlyArray<readonly [string, Schema.Json]> =>
   pipe(
     described,
-    Array.map((json) => [JSON.stringify(json), json] as const),
+    Array.map((json) => [jsonText(json), json] as const),
     Array.dedupeWith(([a], [b]) => a === b),
     Array.sortWith(([key]) => key, Order.String),
   );
@@ -96,7 +102,7 @@ const keyed = (
  * sorted by it, so union order and repetition do not count as differences.
  */
 const membersOf = (validators: ReadonlyArray<GenericValidator>) =>
-  keyed(alternativesOf(validators).map(describe));
+  keyed(Array.map(alternativesOf(validators), describe));
 
 const unionOf = (
   members: ReadonlyArray<readonly [string, Schema.Json]>,
@@ -104,7 +110,10 @@ const unionOf = (
   const [only, ...rest] = members;
   return only !== undefined && rest.length === 0
     ? only[1]
-    : { kind: "union", members: members.map(([, described]) => described) };
+    : {
+        kind: "union",
+        members: Array.map(members, ([, described]) => described),
+      };
 };
 
 const describe = (validator: GenericValidator): Schema.Json => {
@@ -124,9 +133,9 @@ const describe = (validator: GenericValidator): Schema.Json => {
     case "object":
       return {
         kind: "object",
-        fields: Object.fromEntries(
+        fields: Rec.fromEntries(
           pipe(
-            Object.entries(validator.fields),
+            Rec.toEntries(validator.fields),
             Array.sortWith(([name]) => name, Order.String),
             Array.map(([name, field]) => [
               name,
@@ -155,7 +164,7 @@ const errorAlternatives = (schema: Schema.Top): ReadonlyArray<Schema.Top> =>
   SchemaAST.isUnion(schema.ast) &&
   Predicate.hasProperty(schema, "members") &&
   Array.isArray(schema.members)
-    ? schema.members.flatMap((member) =>
+    ? Array.flatMap(schema.members, (member) =>
         Schema.isSchema(member) ? errorAlternatives(member) : [],
       )
     : [schema];
@@ -168,13 +177,13 @@ const compileArgs = (ast: SchemaAST.Objects): ReturnType<typeof compileAst> =>
   Effect.forEach(ast.propertySignatures, ({ name, type }) => {
     if (typeof name !== "string") {
       return Effect.fail(
-        new UnsupportedPropertySignatureKeyTypeError({ propertyKey: name }),
+        UnsupportedPropertySignatureKeyTypeError.make({ propertyKey: name }),
       );
     }
     return Option.match(Number.parse(name), {
       onSome: (propertyKey) =>
         Effect.fail(
-          new UnsupportedPropertySignatureKeyTypeError({ propertyKey }),
+          UnsupportedPropertySignatureKeyTypeError.make({ propertyKey }),
         ),
       onNone: () => {
         const optional = SchemaAST.isOptional(type);
@@ -186,17 +195,15 @@ const compileArgs = (ast: SchemaAST.Objects): ReturnType<typeof compileAst> =>
         );
       },
     });
-  }).pipe(Effect.map((fields) => v.object(Object.fromEntries(fields))));
+  }).pipe(Effect.map((fields) => v.object(Rec.fromEntries(fields))));
 
 const compileSchema = (schema: Schema.Top, side?: "args" | "returns") => {
   const ast = Schema.toEncoded(schema).ast;
-  return Effect.runSync(
-    Effect.result(
-      side === "args" && SchemaAST.isObjects(ast)
-        ? compileArgs(ast)
-        : compileAst(ast),
-    ),
-  );
+  return (
+    side === "args" && SchemaAST.isObjects(ast)
+      ? compileArgs(ast)
+      : compileAst(ast)
+  ).pipe(Effect.result, Effect.runSync);
 };
 
 const describeCompiled = (
@@ -204,8 +211,8 @@ const describeCompiled = (
 ): Schema.Json =>
   unionOf(
     keyed([
-      ...membersOf(Array.getSuccesses(compiled)).map(([, json]) => json),
-      ...Array.getFailures(compiled).map((error) => ({
+      ...Array.map(membersOf(Array.getSuccesses(compiled)), ([, json]) => json),
+      ...Array.map(Array.getFailures(compiled), (error) => ({
         kind: "unsupported",
         reason: error.message,
       })),
@@ -232,7 +239,7 @@ const verify = (
     actual: Schema.Json,
   ) =>
     Result.fail(
-      new CallbackContractMismatch({
+      CallbackContractMismatch.make({
         contract: contract.id,
         side,
         expected,
@@ -249,28 +256,31 @@ const verify = (
     if (
       Result.isFailure(expected) ||
       Result.isFailure(actual) ||
-      JSON.stringify(expectedDescription) !== JSON.stringify(actualDescription)
+      jsonText(expectedDescription) !== jsonText(actualDescription)
     ) {
       return mismatch(side, expectedDescription, actualDescription);
     }
   }
 
-  const declared = ownError(provenance).flatMap(errorAlternatives);
-  const undeclared = [
-    ...ownError(ref),
-    ...MiddlewareSpec.errorSchemas(ref.middlewareSpecs),
-  ]
-    .flatMap(errorAlternatives)
-    .filter((schema) => !declared.includes(schema));
+  const declared = Array.flatMap(ownError(provenance), errorAlternatives);
+  const undeclared = pipe(
+    [...ownError(ref), ...MiddlewareSpec.errorSchemas(ref.middlewareSpecs)],
+    Array.flatMap(errorAlternatives),
+    Array.filter((schema) => !declared.includes(schema)),
+  );
   if (undeclared.length > 0) {
-    const expectedErrors = declared.map((schema) => compileSchema(schema));
-    const actualErrors = undeclared.map((schema) => compileSchema(schema));
+    const expectedErrors = Array.map(declared, (schema) =>
+      compileSchema(schema),
+    );
+    const actualErrors = Array.map(undeclared, (schema) =>
+      compileSchema(schema),
+    );
     const keys = new Set(
-      membersOf(Array.getSuccesses(expectedErrors)).map(([key]) => key),
+      Array.map(membersOf(Array.getSuccesses(expectedErrors)), ([key]) => key),
     );
     if (
       Array.getFailures(actualErrors).length > 0 ||
-      !membersOf(Array.getSuccesses(actualErrors)).every(([key]) =>
+      !Array.every(membersOf(Array.getSuccesses(actualErrors)), ([key]) =>
         keys.has(key),
       )
     ) {

@@ -25,7 +25,8 @@ describe("I/O bans", () => {
     () =>
       Effect.gen(function* () {
         const t = convexTest(defineSchema({}), modules);
-        expect(yield* Effect.promise(() => t.query(ping, {}))).toBe("pong");
+        const observed = yield* Effect.promise(() => t.query(ping, {}));
+        expect(observed).toBe("pong");
         Object.defineProperty(globalThis, "setInterval", {
           value: () => 0,
           writable: true,

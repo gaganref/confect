@@ -5,6 +5,8 @@
  * everywhere else. It sets no host timer.
  */
 
+// oxlint-disable effecttsgo/global-date -- This module is the kernel's Date: it answers Date.now from the pinned time or from the host Date it wraps.
+
 import * as Globals from "./Globals.js";
 
 type DateConstructor = typeof globalThis.Date;
