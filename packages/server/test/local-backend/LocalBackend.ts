@@ -289,3 +289,17 @@ export const consumerLayer = Layer.effect(
     redeployFunction: "hello:greet",
   }),
 ).pipe(Layer.provide(NodeServices.layer));
+
+/**
+ * Plain Convex HTTP actions, with no Confect router in front, for probes of the
+ * binary's own HTTP answers. It needs no codegen or seeding.
+ */
+export const plainLayer = Layer.effect(
+  LocalBackend,
+  make({
+    directory: "./fixtures/plain",
+    port: ports.plain,
+    env: [],
+    redeployFunction: "probe:ping",
+  }),
+).pipe(Layer.provide(NodeServices.layer));

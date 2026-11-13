@@ -209,14 +209,12 @@ const accessor = (
     // An upload to a URL from `generateUploadUrl`, or a download from one
     // `getUrl` answered, streams through the binary's storage endpoints, which
     // the kernel does not simulate.
-    fetch: (path: unknown) => {
+    fetch: (path: unknown, init?: RequestInit) => {
       const endpoint =
         typeof path === "string" ? Storage.endpoint(path) : undefined;
-      return Promise.reject(
-        endpoint === undefined
-          ? KernelRefusal.rowPending("HTTP routes", 6)
-          : KernelRefusal.requiresBinary(endpoint),
-      );
+      return endpoint === undefined
+        ? reported(() => world.fetch(caller, path, init))
+        : Promise.reject(KernelRefusal.requiresBinary(endpoint));
     },
     jwks: () => Promise.reject(KernelRefusal.rowPending("JWT verification", 6)),
     advance: (ms: number) => reported(() => world.advance(ms)),

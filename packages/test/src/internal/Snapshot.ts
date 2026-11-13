@@ -217,6 +217,10 @@ export const contract = {
     },
     nextFile: { exported: "identity.nextFile" },
     nextUploadToken: { exported: "identity.nextUploadToken" },
+    nextErrorRequest: {
+      excluded:
+        "Request IDs the kernel names in an HTTP route's error body, which reach no committed state, as `requestIds` below.",
+    },
     runtime: {
       excluded:
         "The driver's clock and commit timestamps. The restoring driver supplies its own.",

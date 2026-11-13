@@ -151,9 +151,9 @@ Row 2 published one top-level mutation at a time. Row 3 replaced that with
 read-set validation and held attempts. Scheduling, storage, HTTP, JWT signing
 and transaction limits refuse with `KernelRowPending`, naming the row that
 supplies them. Row 5 lifts the scheduling refusals, the limits row the
-transaction limits refusal, and row 6's storage metadata the storage ones.
-Text and vector search, and storage uploads and downloads, refuse with
-`RequiresBinary`.
+transaction limits refusal, and row 6's storage metadata and HTTP rows the
+storage and HTTP refusals. Text and vector search, and storage uploads and
+downloads, refuse with `RequiresBinary`.
 
 `src/internal/ConvexTest.ts` gives the kernel convex-test's `convexTest`
 signature. `vitest.mock-backend.kernel.config.ts` in `@confect/server` aliases
@@ -661,6 +661,109 @@ and `convex dev` waits for its recorded port to stop whoever holds it
 other ports also moves the fixtures' local deployment config.
 
 `integration.test.ts:61` `Storage` now runs in the kernel lane.
+
+## HTTP routes and signed ingress (row 6)
+
+`World.fetch` sends a test's request to the root component's `http` router.
+The binary looks the route up with the router's own `lookup` and answers a miss
+itself, with 404 and the text `No matching routes found`
+(`run_http_action_inner`, `crates/isolate/src/environment/action/mod.rs:557-578`;
+the body's content type is `text/plain; charset=utf-8`,
+`crates/udf/src/http_action.rs:122-131`). The kernel does the same, so the npm
+router's own `runRequest` fallback, `No HttpAction routed for …`, which
+convex-test answers, never appears. A deployment with no HTTP module answers
+every path that way. The route's handler runs as an action at
+`https://some.convex.site` plus the path, with the request's headers and body
+bytes as sent and the caller's identity, and a HEAD request gets the GET
+route's status and headers and no body.
+
+A mounted component's HTTP module now reaches only `MountedHttp`'s bridge,
+which builds the router once per site URL. Registered as a backend module, the
+kernel loaded it at open, under no mount's site URL, and a module that failed
+to build failed every call to the world. The binary fails the push of a
+deployment whose module throws at import, so this is a test-only isolation: a
+mount's router is built at that mount's site URL, as the binary builds it, and
+a failure there fails that mount's requests and no others.
+
+`packages/server/test/signedEnvelope.ts` is a route-local ingress rule: a JSON
+envelope `{ id, event }` whose `x-confect-signature` is the HMAC-SHA-256 of the
+exact body bytes under a test-owned secret. It declares one refusal per
+malformed shape, checked before anything is written. The mock-backend and
+local-backend fixtures each mount it at `POST /ingress/events`.
+`test/mock-backend/signedIngress.test.ts` runs a positive control and sixteen
+garbage shapes on both lanes and checks after each refusal that the protected
+`notes` table is byte-identical. The local-backend case in
+`test/local-backend/http.test.ts` sends the accepted envelope, a tampered one
+and a signed non-UTF-8 body to the binary and gets the same answers.
+
+A route whose handler throws answers as the binary does, on the root and
+through the mounted bridge alike: 500, `content-type: application/json`, and
+`{ code, trace }`, plus `data` for a `ConvexError`. `code` is
+`[Request ID: <16 hex digits>] Server Error: Uncaught <name>: <message>`, and
+`trace` is that uncaught line and the error's stack frames, one per line, each
+line ending in a newline. The binary builds it in
+`RedactedJsError::to_http_response_parts`
+(`crates/application/src/redaction.rs:143-160`), sends it from
+`Application::run_http_action` (`crates/application/src/lib.rs:1542-1548`) with
+a fresh request ID, and sets the content type in
+`HttpActionResponsePart::from_json` (`crates/udf/src/http_action.rs:133-141`).
+`test/local-backend/httpErrors.test.ts` pins it on the binary through
+`LocalBackend.plainLayer`, a fixture of plain Convex HTTP actions on port 3230,
+since a Confect router answers a handler's failure itself. The kernel's frames
+are the host's, its request IDs are counted, and its `data` is the parsed JSON
+where the binary writes a float as `2.0`.
+
+convex-test rejects the `fetch` instead. The two root cases
+(`test/mock-backend/httpRouteError.test.ts` and `httpRouteConvexError.test.ts`)
+are conformance exceptions in the convex-test lane. #137's `conformance.ts`
+machinery is not on `main` yet, so they are recorded the way the lane records
+an exception today: `vitest.mock-backend.config.ts` lists each one, its exact
+case, the binary behaviour, an owner, the convex-test version and the binary
+evidence, and excludes its file, which holds that one case. An entry checked
+against another convex-test version fails the lane. The mounted case runs on
+both lanes, since the bridge is the adapter's own.
+
+Fix round 2:
+
+- A HEAD request's 404 and 500 end with no body, as its 200 does: the binary
+  routes HEAD as GET (`RoutableMethod::try_from`,
+  `crates/common/src/types/actions.rs:127`) and sends no HEAD body.
+- A mounted router's miss answers the binary's `No matching routes found`, on
+  both targets, where the bridge answered convex-test's `No HttpAction routed`.
+  A component router runs through the same `run_http_action_inner`, so its
+  miss is the root's (`crates/isolate/src/environment/action/mod.rs:557-578`).
+  No local fixture mounts a plain component router, so this one is pinned by
+  source, not by a binary run.
+- GET, OPTIONS and HEAD requests reach their route with no body, at the root
+  and through the bridge, as the binary discards one
+  (`ExtractHttpRequestMetadata`, `crates/local_backend/src/http_actions.rs:131-140`).
+- A kernel refusal inside a route is no handler error, so it surfaces as
+  itself rather than as a 500. Convex's `performAsyncSyscall` rethrows a
+  syscall's error as a plain `Error`, so the kernel keeps the first refusal a
+  call's syscalls threw, its nested calls' included, and the root `fetch` and
+  the bridge rethrow it. Loader and compatibility failures stay outside the
+  handler's catch and reject as before.
+- `fetch` now counts in the live registries a snapshot waits on (`running`,
+  then `functions` while the route runs), so a snapshot refuses mid-request.
+- Fix round 3: the bridge drops a GET or HEAD body before it builds the
+  request, which cannot be built with one, as the root does. The 500 body is
+  an artifact, so the root and the bridge build it from the failure
+  redaction's copy of the thrown value: a kept secret a route's error carries
+  is marked there as in a rejected call's report.
+
+`test/local-backend/httpErrors.test.ts` pins on the binary, through raw
+`node:http` requests on their own connections: HEAD answers to `/ok`, a missing
+route and a throwing route, an OPTIONS body never reaching its route, two
+values of one request header reaching the route as `a, b`, and a route's two
+`set-cookie` values leaving as two header lines. The test kernel answers each
+the same.
+
+Identity comes from the test's accessor, not from an `Authorization` header,
+which is the JWT row's. Not simulated: TLS, streaming request and response
+bodies, and edge limits.
+
+`http.test.ts` and the mounted HTTP route cases, `components.test.ts:534` to
+`:736`, now run in the kernel lane.
 
 ## Snapshots (row 6)
 
