@@ -69,4 +69,17 @@ export default GroupSpec.make()
       args: () => ({ caseId: Schema.String, stale: Schema.Boolean }),
       returns: () => Schema.Array(Schema.String),
     }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
+      name: "metrics",
+      args: () => ({ caseId: Schema.String }),
+      returns: () => {
+        const metrics = Schema.Record(
+          Schema.String,
+          Schema.Struct({ used: Schema.Finite, remaining: Schema.Finite }),
+        );
+        return Schema.Struct({ start: metrics, end: metrics });
+      },
+    }),
   );

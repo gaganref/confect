@@ -1,4 +1,5 @@
 import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import databaseSchema from "../_generated/schema";
@@ -8,6 +9,8 @@ import {
   DatabaseWriter,
   MutationRunner,
   QueryRunner,
+  Scheduler,
+  TransactionMetadata,
 } from "../_generated/services";
 import transactions, { RejectedWrite } from "./transactions.spec";
 
@@ -164,6 +167,65 @@ const staleRead = FunctionImpl.make(
     }).pipe(Effect.orDie),
 );
 
+/**
+ * One fixed workload, the same on every target: writes, a write that changes
+ * nothing, a delete, reads by ID and by index, nested reads, a nested mutation
+ * that fails and one that commits, and a schedule. It answers the transaction's
+ * metrics before and after it. A nested call into this module comes first, so
+ * the binary has read the system tables it needs to run one before `start`.
+ */
+const metrics = FunctionImpl.make(
+  databaseSchema,
+  transactions,
+  "metrics",
+  ({ caseId }) =>
+    Effect.gen(function* () {
+      const writer = yield* DatabaseWriter;
+      const reader = yield* DatabaseReader;
+      const queries = yield* QueryRunner;
+      const mutations = yield* MutationRunner;
+      const scheduler = yield* Scheduler;
+      const transaction = yield* TransactionMetadata;
+      yield* queries.runQuery(refs.internal.groups.transactions.read, {
+        caseId: `${caseId}-warm`,
+      });
+      const start = yield* transaction.getMetrics();
+      const notes = writer.table("transactionNotes");
+      const kept = yield* notes.insert({ caseId, value: "kept" });
+      const same = yield* notes.insert({ caseId, value: "same" });
+      const gone = yield* notes.insert({ caseId, value: "gone" });
+      yield* reader.table("transactionNotes").get(gone);
+      yield* notes.patch(kept, { value: "patched" });
+      yield* notes.patch(same, { value: "same" });
+      yield* notes.delete(gone);
+      yield* reader
+        .table("transactionNotes")
+        .index("by_caseId", (q) => q.eq("caseId", caseId))
+        .collect();
+      yield* queries.runQuery(refs.internal.groups.transactions.read, {
+        caseId,
+      });
+      yield* mutations
+        .runMutation(refs.internal.groups.transactions.write, {
+          caseId,
+          value: "dropped",
+          fail: true,
+        })
+        .pipe(Effect.catchTag("RejectedWrite", () => Effect.void));
+      yield* mutations.runMutation(refs.internal.groups.transactions.write, {
+        caseId,
+        value: "nested",
+        fail: false,
+      });
+      yield* scheduler.runAfter(
+        Duration.hours(1),
+        refs.internal.groups.transactions.write,
+        { caseId: `${caseId}-later`, value: "scheduled", fail: false },
+      );
+      return { start, end: yield* transaction.getMetrics() };
+    }).pipe(Effect.orDie),
+);
+
 export default GroupImpl.make(databaseSchema, transactions).pipe(
   Layer.provide(read),
   Layer.provide(write),
@@ -173,5 +235,6 @@ export default GroupImpl.make(databaseSchema, transactions).pipe(
   Layer.provide(limitedWrite),
   Layer.provide(rollback),
   Layer.provide(staleRead),
+  Layer.provide(metrics),
   GroupImpl.finalize,
 );

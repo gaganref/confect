@@ -1,7 +1,9 @@
 import { getFunctionReference } from "@confect/core/RefInternal";
 import { expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
+import { TestConfect } from "../../../test/src/index";
 import refs from "./fixtures/confect/_generated/refs";
+import registry from "./fixtures/confect/_generated/testing";
 import * as LocalBackend from "./LocalBackend";
 
 const functions = refs.public.groups.transactions;
@@ -126,6 +128,47 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
               }),
             ),
           ).toEqual(["parent"]);
+        }),
+    );
+
+    it.effect(
+      "answers getMetrics for one fixed workload as the test kernel does",
+      () =>
+        Effect.gen(function* () {
+          const { client } = yield* LocalBackend.LocalBackend;
+          const caseId = "metrics";
+          yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(functions.seed), {
+              caseId,
+              count: 0,
+            }),
+          );
+          const binary = yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(functions.metrics), {
+              caseId,
+            }),
+          );
+          const kernel = yield* Effect.gen(function* () {
+            const test =
+              yield* TestConfect.TestConfect<typeof registry.schema>();
+            return yield* test.mutation(functions.metrics, { caseId });
+          }).pipe(
+            Effect.provide(TestConfect.layer(registry, { target: "kernel" })),
+          );
+          // The binary also counts the system-table intervals it reads to run
+          // a function, which the kernel does not simulate. The workload makes
+          // those reads before `start`, so the change in `databaseQueries`
+          // compares, and every other metric compares as it stands.
+          const comparable = ({ start, end }: typeof binary) => ({
+            ...end,
+            databaseQueries:
+              end.databaseQueries!.used - start.databaseQueries!.used,
+          });
+          expect(comparable(kernel)).toEqual(comparable(binary));
+          expect(binary.end.documentsRead!.used).toBeGreaterThan(0);
+          expect(binary.end.databaseQueries!.used).toBeGreaterThan(
+            binary.start.databaseQueries!.used,
+          );
         }),
     );
 
