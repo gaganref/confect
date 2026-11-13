@@ -15,6 +15,7 @@ import {
 import { v } from "convex/values";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Arr from "effect/Array";
+import * as Layer from "effect/Layer";
 
 const schema = DatabaseSchema.make({});
 const Test = TestConfect.TestConfect<typeof schema>();
@@ -56,34 +57,40 @@ it.effect(
   "a kernel function in flight keeps the kernel while a convex-test layer starts",
   () =>
     Effect.gen(function* () {
-      const kernel = yield* Test;
-      const reached = Promise.withResolvers<void>();
-      const gate = Promise.withResolvers<void>();
-      const held = yield* kernel
-        .run(
-          withCtx((ctx) =>
-            ctx.db
-              .insert("notes", { text: "held" })
-              .then(() => {
-                reached.resolve();
-                return gate.promise;
-              })
-              .then(() => texts(ctx)),
-          ),
-          Texts,
-        )
-        .pipe(Effect.forkChild);
-      yield* Effect.promise(() => reached.promise);
-      yield* Effect.gen(function* () {
-        const other = yield* Test;
-        yield* insert(other, "other");
-        const readResult = yield* read(other);
-        expect(readResult).toEqual(["other"]);
-      }).pipe(Effect.provide(layer("convex-test")));
-      gate.resolve();
-      const joined = yield* Fiber.join(held);
-      expect(joined).toEqual(["held"]);
-    }).pipe(Effect.provide(layer("kernel"))),
+      const services7 = yield* Layer.build(layer("kernel"));
+      return yield* Effect.gen(function* () {
+        const kernel = yield* Test;
+        const reached = Promise.withResolvers<void>();
+        const gate = Promise.withResolvers<void>();
+        const held = yield* kernel
+          .run(
+            withCtx((ctx) =>
+              ctx.db
+                .insert("notes", { text: "held" })
+                .then(() => {
+                  reached.resolve();
+                  return gate.promise;
+                })
+                .then(() => texts(ctx)),
+            ),
+            Texts,
+          )
+          .pipe(Effect.forkChild);
+        yield* Effect.promise(() => reached.promise);
+        yield* Effect.gen(function* () {
+          const services4 = yield* Layer.build(layer("convex-test"));
+          return yield* Effect.gen(function* () {
+            const other = yield* Test;
+            yield* insert(other, "other");
+            const readResult = yield* read(other);
+            expect(readResult).toEqual(["other"]);
+          }).pipe(Effect.provideContext(services4));
+        }).pipe(Effect.scoped);
+        gate.resolve();
+        const joined = yield* Fiber.join(held);
+        expect(joined).toEqual(["held"]);
+      }).pipe(Effect.provideContext(services7));
+    }).pipe(Effect.scoped),
 );
 
 it.effect.each([
@@ -93,22 +100,38 @@ it.effect.each([
   "a live $outer layer keeps its backend beside and after an inner $inner layer",
   ({ outer, inner }) =>
     Effect.gen(function* () {
-      const first = yield* Test;
-      yield* insert(first, "outer");
-      yield* Effect.gen(function* () {
-        const second = yield* Test;
-        const readResult = yield* read(second);
-        expect(readResult).toEqual([]);
-        yield* insert(second, "inner");
-        const readResult2 = yield* read(second);
-        expect(readResult2).toEqual(["inner"]);
-        const readResult3 = yield* read(first);
-        expect(readResult3).toEqual(["outer"]);
-      }).pipe(Effect.provide(layer(inner)));
-      const readResult = yield* read(first);
-      expect(readResult).toEqual(["outer"]);
-    }).pipe(Effect.provide(layer(outer))),
+      const services6 = yield* Layer.build(layer(outer));
+      return yield* Effect.gen(function* () {
+        const first = yield* Test;
+        yield* insert(first, "outer");
+        yield* Effect.gen(function* () {
+          const services3 = yield* Layer.build(layer(inner));
+          return yield* Effect.gen(function* () {
+            const second = yield* Test;
+            const readResult = yield* read(second);
+            expect(readResult).toEqual([]);
+            yield* insert(second, "inner");
+            const readResult2 = yield* read(second);
+            expect(readResult2).toEqual(["inner"]);
+            const readResult3 = yield* read(first);
+            expect(readResult3).toEqual(["outer"]);
+          }).pipe(Effect.provideContext(services3));
+        }).pipe(Effect.scoped);
+        const readResult = yield* read(first);
+        expect(readResult).toEqual(["outer"]);
+      }).pipe(Effect.provideContext(services6));
+    }).pipe(Effect.scoped),
 );
+
+/**
+ * The accessor each pinned global answers through, compared by identity.
+ */
+const accessorTops = () =>
+  Arr.map(
+    ["Date", "Math", "crypto"] as const,
+    // oxlint-disable-next-line typescript/unbound-method -- The getters are compared by identity and never called.
+    (name) => Object.getOwnPropertyDescriptor(globalThis, name)?.get,
+  );
 
 // Both targets give each function call its own `Date`, `Math` and `crypto`
 // through an accessor on `globalThis`, and each installs its own again when
@@ -118,24 +141,25 @@ it.effect(
   "calls alternating between a kernel and a convex-test layer keep each pinned global's accessor, instead of wrapping it again at every call",
   () =>
     Effect.gen(function* () {
-      const kernel = yield* Test;
-      yield* Effect.gen(function* () {
-        const other = yield* Test;
-        const tops = () =>
-          Arr.map(
-            ["Date", "Math", "crypto"] as const,
-            (name) => Object.getOwnPropertyDescriptor(globalThis, name)?.get,
-          );
-        yield* insert(kernel, "kernel");
-        yield* insert(other, "other");
-        const settled = tops();
-        for (let round = 0; round < 20; round++) {
-          yield* insert(kernel, "kernel");
-          yield* insert(other, "other");
-        }
-        expect(tops()).toEqual(settled);
-      }).pipe(Effect.provide(layer("convex-test")));
-    }).pipe(Effect.provide(layer("kernel"))),
+      const services5 = yield* Layer.build(layer("kernel"));
+      return yield* Effect.gen(function* () {
+        const kernel = yield* Test;
+        yield* Effect.gen(function* () {
+          const services2 = yield* Layer.build(layer("convex-test"));
+          return yield* Effect.gen(function* () {
+            const other = yield* Test;
+            yield* insert(kernel, "kernel");
+            yield* insert(other, "other");
+            const settled = accessorTops();
+            for (let round = 0; round < 20; round++) {
+              yield* insert(kernel, "kernel");
+              yield* insert(other, "other");
+            }
+            expect(accessorTops()).toEqual(settled);
+          }).pipe(Effect.provideContext(services2));
+        }).pipe(Effect.scoped);
+      }).pipe(Effect.provideContext(services5));
+    }).pipe(Effect.scoped),
 );
 
 const notes = {
@@ -178,33 +202,31 @@ it.effect(
         t.subscriber().subscribe(notes.list, {}),
       );
       yield* Effect.gen(function* () {
-        const other = yield* Test;
-        yield* insert(other, "other");
-        yield* Effect.promise(() => t.refresh());
-        const tops = () =>
-          Arr.map(
-            ["Date", "Math", "crypto"] as const,
-            (name) => Object.getOwnPropertyDescriptor(globalThis, name)?.get,
-          );
-        const settled = tops();
-        const resolved = yield* Effect.promise(() => t.refresh());
-        expect(resolved).toEqual([]);
-        yield* insert(other, "other again");
-        const resolved2 = yield* Effect.promise(() => t.refresh());
-        expect(resolved2).toEqual([]);
-        yield* Effect.promise(() => t.mutation(notes.add, { text: "b" }));
-        const reran = yield* Effect.promise(() => t.refresh());
-        expect(reran).toMatchObject([
-          {
-            subscription: subscription.id,
-            to: { _tag: "returned", value: ["a", "b"] },
-          },
-        ]);
-        const resolved3 = yield* Effect.promise(() => t.reference());
-        expect(resolved3).toEqual([]);
-        const readResult = yield* read(other);
-        expect(readResult).toEqual(["other", "other again"]);
-        expect(tops()).toEqual(settled);
-      }).pipe(Effect.provide(layer("convex-test")));
+        const services = yield* Layer.build(layer("convex-test"));
+        return yield* Effect.gen(function* () {
+          const other = yield* Test;
+          yield* insert(other, "other");
+          yield* Effect.promise(() => t.refresh());
+          const settled = accessorTops();
+          const resolved = yield* Effect.promise(() => t.refresh());
+          expect(resolved).toEqual([]);
+          yield* insert(other, "other again");
+          const resolved2 = yield* Effect.promise(() => t.refresh());
+          expect(resolved2).toEqual([]);
+          yield* Effect.promise(() => t.mutation(notes.add, { text: "b" }));
+          const reran = yield* Effect.promise(() => t.refresh());
+          expect(reran).toMatchObject([
+            {
+              subscription: subscription.id,
+              to: { _tag: "returned", value: ["a", "b"] },
+            },
+          ]);
+          const resolved3 = yield* Effect.promise(() => t.reference());
+          expect(resolved3).toEqual([]);
+          const readResult = yield* read(other);
+          expect(readResult).toEqual(["other", "other again"]);
+          expect(accessorTops()).toEqual(settled);
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped);
     }),
 );

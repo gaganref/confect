@@ -6,6 +6,7 @@ import * as LocalBackend from "confect-local-backend/LocalBackend";
 import registry from "../../../../tools/local-backend/fixtures/confect/_generated/testing";
 import { TestConfect } from "../../../test/src/index";
 import { boundary } from "../mock-backend/kernelBoundaries";
+import * as Layer from "effect/Layer";
 
 const functions = refs.public.groups.transactions;
 
@@ -20,10 +21,15 @@ const onKernel = <A, E>(
   ) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
-    const testConfect =
-      yield* TestConfect.TestConfect<typeof registry.schema>();
-    return yield* program(testConfect);
-  }).pipe(Effect.provide(TestConfect.layer(registry, { target: "kernel" })));
+    const services = yield* Layer.build(
+      TestConfect.layer(registry, { target: "kernel" }),
+    );
+    return yield* Effect.gen(function* () {
+      const testConfect =
+        yield* TestConfect.TestConfect<typeof registry.schema>();
+      return yield* program(testConfect);
+    }).pipe(Effect.provideContext(services));
+  }).pipe(Effect.scoped);
 
 layer(LocalBackend.layer, { timeout: "120 seconds" })(
   "transaction controls",

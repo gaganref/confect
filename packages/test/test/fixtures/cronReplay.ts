@@ -18,7 +18,7 @@ import * as Invocation from "../../src/internal/Invocation";
 import * as Array from "effect/Array";
 import * as Schema from "effect/Schema";
 
-const jsonText = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 
 const schema = defineSchema({
   ticks: defineTable({ name: v.string(), at: v.number() }),
@@ -116,7 +116,11 @@ const history = Effect.gen(function* () {
     name,
     nextRun,
   }));
-  const output = yield* jsonText({ opened, ticks, crons: after });
+  const output = yield* Schema.encodeEffect(UnknownJson)({
+    opened,
+    ticks,
+    crons: after,
+  });
   process.stdout.write(output);
 });
 

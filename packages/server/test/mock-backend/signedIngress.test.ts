@@ -7,6 +7,7 @@ import * as Array from "effect/Array";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Schema from "effect/Schema";
+import * as Layer from "effect/Layer";
 
 const encoder = new TextEncoder();
 // oxlint-disable-next-line effecttsgo/global-json -- A sender's envelope bytes, built at module scope and in the sync thunks of the cases' table.
@@ -205,34 +206,40 @@ const shapes: ReadonlyArray<{
 describe("signed ingress", () => {
   it.effect("accepts a correctly signed envelope and records it", () =>
     Effect.gen(function* () {
-      const protectedRowsValue = yield* protectedRows;
-      expect(protectedRowsValue).toBe("[]");
-      const resolved = yield* Effect.promise(() => signed(acceptedBody));
-      const sendResult = yield* send(resolved);
-      expect(sendResult).toStrictEqual({
-        status: 200,
-        body: "accepted paid evt_1",
-      });
-      const c = yield* TestConfect.TestConfect;
-      const query2 = yield* c.query(refs.public.groups.notes.list);
-      expect(Array.map(query2, (row) => row.text)).toStrictEqual([
-        "paid:evt_1",
-      ]);
-    }).pipe(Effect.provide(TestConfect.layer)),
+      const services2 = yield* Layer.build(TestConfect.layer);
+      return yield* Effect.gen(function* () {
+        const protectedRowsValue = yield* protectedRows;
+        expect(protectedRowsValue).toBe("[]");
+        const resolved = yield* Effect.promise(() => signed(acceptedBody));
+        const sendResult = yield* send(resolved);
+        expect(sendResult).toStrictEqual({
+          status: 200,
+          body: "accepted paid evt_1",
+        });
+        const c = yield* TestConfect.TestConfect;
+        const query2 = yield* c.query(refs.public.groups.notes.list);
+        expect(Array.map(query2, (row) => row.text)).toStrictEqual([
+          "paid:evt_1",
+        ]);
+      }).pipe(Effect.provideContext(services2));
+    }).pipe(Effect.scoped),
   );
 
   it.effect.each(shapes)(
     "refuses $name with its declared refusal and leaves the protected table unchanged",
     ({ envelope, refusal }) =>
       Effect.gen(function* () {
-        const resolved = yield* Effect.promise(() => signed(acceptedBody));
-        yield* send(resolved);
-        const before = yield* protectedRows;
-        const resolved2 = yield* Effect.promise(envelope);
-        const sendResult = yield* send(resolved2);
-        expect(sendResult).toStrictEqual(refusal);
-        const protectedRowsValue = yield* protectedRows;
-        expect(protectedRowsValue).toBe(before);
-      }).pipe(Effect.provide(TestConfect.layer)),
+        const services = yield* Layer.build(TestConfect.layer);
+        return yield* Effect.gen(function* () {
+          const resolved = yield* Effect.promise(() => signed(acceptedBody));
+          yield* send(resolved);
+          const before = yield* protectedRows;
+          const resolved2 = yield* Effect.promise(envelope);
+          const sendResult = yield* send(resolved2);
+          expect(sendResult).toStrictEqual(refusal);
+          const protectedRowsValue = yield* protectedRows;
+          expect(protectedRowsValue).toBe(before);
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped),
   );
 });

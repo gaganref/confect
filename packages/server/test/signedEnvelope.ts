@@ -89,12 +89,8 @@ export const sign = (body: Uint8Array, key: string = secret): Promise<string> =>
     )
     .then((signature) => `sha256=${toHex(signature)}`);
 
-const decodeJson = Schema.decodeUnknownResult(
-  Schema.fromJsonString(Schema.Unknown),
-);
-const decodeEnvelope = Schema.decodeUnknownResult(
-  Schema.Struct({ id: Schema.String, event: Schema.String }),
-);
+const UnknownJson = Schema.fromJsonString(Schema.Unknown);
+const Envelope = Schema.Struct({ id: Schema.String, event: Schema.String });
 const utf8 = new TextDecoder("utf-8", { fatal: true });
 
 const refused = (refusal: Refusal): Verdict => ({ kind: "refused", refusal });
@@ -145,9 +141,9 @@ export const verify = (
       } catch {
         return refused(refusals.malformedJson);
       }
-      const json = decodeJson(text);
+      const json = Schema.decodeResult(UnknownJson)(text);
       if (Result.isFailure(json)) return refused(refusals.malformedJson);
-      const envelope = decodeEnvelope(json.success);
+      const envelope = Schema.decodeUnknownResult(Envelope)(json.success);
       return Result.isFailure(envelope)
         ? refused(refusals.malformedEnvelope)
         : { kind: "accepted", ...envelope.success };

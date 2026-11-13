@@ -950,7 +950,7 @@ export class World {
         `Expected a Convex function exported from module "${modulePath}" as \`${exportName}\`, but got: ${func}`,
       );
     }
-    if (kind !== "any" && !Boolean(func[kindCheck[kind]])) {
+    if (kind !== "any" && func[kindCheck[kind]] !== true) {
       throw new Error(
         `Expected a ${kind} function, but the function exported from module "${modulePath}" as \`${exportName}\` is not a ${kind}.`,
       );
@@ -1797,7 +1797,7 @@ export class World {
     };
     const run = () =>
       Promise.resolve().then(() =>
-        Boolean(this.resolve(target, "any").func.isMutation)
+        this.resolve(target, "any").func.isMutation === true
           ? this.mutationAt(target, cron.spec.args, from)
           : this.actionAt(target, cron.spec.args, from),
       );
@@ -1876,9 +1876,9 @@ export class World {
     const run = () =>
       Promise.resolve().then(() => {
         const { func } = this.resolve(job.target, "any");
-        return Boolean(func.isQuery)
+        return func.isQuery === true
           ? this.queryAt(job.target, job.args, from)
-          : Boolean(func.isMutation)
+          : func.isMutation === true
             ? this.mutationAt(job.target, job.args, from)
             : this.actionAt(job.target, job.args, from);
       });

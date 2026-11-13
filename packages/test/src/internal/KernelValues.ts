@@ -219,7 +219,8 @@ export function evaluateFilter(
     return filter.$or.some((child: any) => evaluateFilter(document, child));
   }
   if (filter.$not !== undefined) {
-    return !Boolean(evaluateFilter(document, filter.$not));
+    const negated = Boolean(evaluateFilter(document, filter.$not));
+    return !negated;
   }
   if (filter.$gt !== undefined) {
     return (

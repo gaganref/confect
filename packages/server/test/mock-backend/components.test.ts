@@ -796,14 +796,7 @@ it.effect(
   "a mounted route that throws answers the binary's 500 JSON error body",
   () =>
     Effect.gen(function* () {
-      const t = yield* TestConfect.TestConfect<typeof hostSchema>();
-      const fetch2 = yield* t.fetch("/email/ping");
-      yield* expectServerError(
-        fetch2,
-        "Uncaught Error: The mounted route failed.",
-      );
-    }).pipe(
-      Effect.provide(
+      const services22 = yield* Layer.build(
         TestConfect.layer(hostSchema, hostConvexSchema, hostModules, {
           register: (registerComponent) =>
             registerComponent("first", componentSchema, {
@@ -812,8 +805,16 @@ it.effect(
             }),
           httpMounts: [{ componentPath: "first", httpPrefix: "/email" }],
         }),
-      ),
-    ),
+      );
+      return yield* Effect.gen(function* () {
+        const t = yield* TestConfect.TestConfect<typeof hostSchema>();
+        const fetch2 = yield* t.fetch("/email/ping");
+        yield* expectServerError(
+          fetch2,
+          "Uncaught Error: The mounted route failed.",
+        );
+      }).pipe(Effect.provideContext(services22));
+    }).pipe(Effect.scoped),
 );
 
 const localHostModules = import.meta.glob([

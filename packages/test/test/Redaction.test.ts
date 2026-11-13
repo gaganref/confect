@@ -29,7 +29,7 @@ import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 
-const jsonText = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 import * as Json from "../src/internal/Json";
 
 // Each canary reaches the kernel by one route: a handler argument it never
@@ -770,7 +770,7 @@ describe("redaction routes", () => {
         const subscription = yield* call(() =>
           t.subscriber().subscribe(app.byToken, { token: indexCanary }),
         );
-        const records = yield* jsonText([
+        const records = yield* Schema.encodeEffect(UnknownJson)([
           prepared.reads,
           Arr.map(t.held(), ({ reads }) => reads),
           subscription.current().reads,
@@ -859,7 +859,7 @@ describe("redaction routes", () => {
         const prepared = yield* call(() =>
           t.prepare(app.findDeep, { token: deepIndexCanary }),
         );
-        const records = yield* jsonText(prepared.reads);
+        const records = yield* Schema.encodeEffect(UnknownJson)(prepared.reads);
         expect(records).not.toContain(deepIndexCanary);
         expect(records).toContain(Redaction.marker);
       }),
@@ -947,7 +947,7 @@ describe("redaction routes", () => {
         for (const commit of body.log)
           for (const change of commit.changes)
             if (change.after?._id === id) change.after._id = marker;
-        const edited = yield* jsonText(body);
+        const edited = yield* Schema.encodeEffect(UnknownJson)(body);
         const marked = new TextEncoder().encode(
           `confect-kernel-snapshot 3 sha256:${createHash("sha256")
             .update(edited)
@@ -1031,14 +1031,14 @@ describe("cron outcomes", () => {
           kind: "failed",
           error: expect.stringContaining(`failed with ${Redaction.marker}`),
         });
-        const cronsText = yield* jsonText(t.crons());
+        const cronsText = yield* Schema.encodeEffect(UnknownJson)(t.crons());
         expect(cronsText).not.toContain(cronCanary);
         const bytes = t.exportSnapshot();
         const exported = new TextDecoder().decode(bytes);
         expect(exported).not.toContain(cronCanary);
         expect(exported).toContain('"error":{"$redacted":');
         const after = t.crons();
-        const afterText = yield* jsonText(after);
+        const afterText = yield* Schema.encodeEffect(UnknownJson)(after);
         expect(afterText).not.toContain(cronCanary);
 
         const restored = cronBackend();

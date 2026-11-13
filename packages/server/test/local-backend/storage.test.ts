@@ -484,10 +484,15 @@ const onKernel = <A, E>(
   ) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
-    const testConfect =
-      yield* TestConfect.TestConfect<typeof registry.schema>();
-    return yield* program(testConfect);
-  }).pipe(Effect.provide(TestConfect.layer(registry, { target: "kernel" })));
+    const services2 = yield* Layer.build(
+      TestConfect.layer(registry, { target: "kernel" }),
+    );
+    return yield* Effect.gen(function* () {
+      const testConfect =
+        yield* TestConfect.TestConfect<typeof registry.schema>();
+      return yield* program(testConfect);
+    }).pipe(Effect.provideContext(services2));
+  }).pipe(Effect.scoped);
 
 const MiB = 1 << 20;
 const deployment = {

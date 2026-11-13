@@ -14,7 +14,7 @@ import * as Effect from "effect/Effect";
 import * as TestConfect from "../../src/TestConfect";
 import * as Schema from "effect/Schema";
 
-const jsonText = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 
 let now = Date.UTC(2026, 0, 14, 22, 15, 0);
 const RealDate = globalThis.Date;
@@ -60,9 +60,10 @@ const history = Effect.gen(function* () {
     now += 1000;
     yield* test.finishInProgressScheduledFunctions();
   }
-  const output = yield* jsonText(ticks);
+  const output = yield* Schema.encodeEffect(UnknownJson)(ticks);
   process.stdout.write(output);
 }).pipe(
+  // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This replay script is an entry point: it opens one kernel backend for its process and closes it.
   Effect.provide(
     TestConfect.layer(schema, defineSchema({}), modules, {
       target: "kernel",

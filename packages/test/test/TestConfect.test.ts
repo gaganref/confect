@@ -325,33 +325,30 @@ it.effect.each([{ target: "convex-test" }, { target: "kernel" }] as const)(
   "runs one program the same way on $target",
   ({ target }) =>
     Effect.gen(function* () {
-      vi.useFakeTimers();
-      const programValue = yield* program;
-      expect(programValue).toEqual({
-        notes: ["direct", "scheduled"],
-        rows: ["component"],
-      });
-    }).pipe(
-      Effect.ensuring(Effect.sync(() => vi.useRealTimers())),
-      Effect.provide(
+      const services15 = yield* Layer.build(
         TestConfect.layer(host, hostSchema, hostModules, {
           target,
           register: (registerComponent) =>
             registerComponent("store", store.schema, store.modules),
         }),
-      ),
-    ),
+      );
+      return yield* Effect.gen(function* () {
+        vi.useFakeTimers();
+        const programValue = yield* program;
+        expect(programValue).toEqual({
+          notes: ["direct", "scheduled"],
+          rows: ["component"],
+        });
+      }).pipe(
+        Effect.ensuring(Effect.sync(() => vi.useRealTimers())),
+        Effect.provideContext(services15),
+      );
+    }).pipe(Effect.scoped),
 );
 
 const drainBeat = (standing: ReadonlyArray<string> | undefined) =>
   Effect.gen(function* () {
-    const test = yield* Host;
-    yield* test.run(
-      withCtx((ctx) => ctx.runMutation(mounted.beat.public.tick, {})),
-    );
-    yield* test.finishAllScheduledFunctions(() => {});
-  }).pipe(
-    Effect.provide(
+    const services14 = yield* Layer.build(
       TestConfect.layer(host, defineSchema({}), generatedOnly, {
         target: "kernel",
         register: (registerComponent) =>
@@ -362,8 +359,15 @@ const drainBeat = (standing: ReadonlyArray<string> | undefined) =>
             standing === undefined ? undefined : { standing },
           ),
       }),
-    ),
-  );
+    );
+    return yield* Effect.gen(function* () {
+      const test = yield* Host;
+      yield* test.run(
+        withCtx((ctx) => ctx.runMutation(mounted.beat.public.tick, {})),
+      );
+      yield* test.finishAllScheduledFunctions(() => {});
+    }).pipe(Effect.provideContext(services14));
+  }).pipe(Effect.scoped);
 
 it.effect(
   "on the kernel target, a kit's standing source lets the drain end and an undeclared one fails its budget",
@@ -413,13 +417,15 @@ it.effect.each([
   },
 ])("the $form form runs on the target it names", ({ layer }) =>
   Effect.gen(function* () {
-    const advancesTimersResult = yield* advancesTimers.pipe(
-      Effect.provide(layer({})),
-    );
+    const advancesTimersResult = yield* Effect.gen(function* () {
+      const services13 = yield* Layer.build(layer({}));
+      return yield* advancesTimers.pipe(Effect.provideContext(services13));
+    }).pipe(Effect.scoped);
     expect(advancesTimersResult).toBe(true);
-    const advancesTimersResult2 = yield* advancesTimers.pipe(
-      Effect.provide(layer({ target: "kernel" })),
-    );
+    const advancesTimersResult2 = yield* Effect.gen(function* () {
+      const services12 = yield* Layer.build(layer({ target: "kernel" }));
+      return yield* advancesTimers.pipe(Effect.provideContext(services12));
+    }).pipe(Effect.scoped);
     expect(advancesTimersResult2).toBe(false);
   }),
 );
@@ -462,36 +468,37 @@ it.effect(
   "on the kernel target, a value under a secret node of the app's table schema reaches a failure report as a marker",
   () =>
     Effect.gen(function* () {
-      const test = yield* Vault;
-      yield* test.run(
-        withCtx((ctx) => ctx.db.insert("keys", { token: vaultCanary })),
-      );
-      const exit = yield* Effect.exit(
-        test.run(
-          withCtx((ctx) =>
-            ctx.db
-              .query("keys")
-              .first()
-              .then((key) => {
-                throw new Error(`the stored key is ${key!.token as string}`);
-              }),
-          ),
-        ),
-      );
-      assertIs(exit, Exit.isFailure);
-      const report = Cause.pretty(exit.cause);
-      expect(report).toContain("the stored key is [redacted]");
-      expect(report).not.toContain(vaultCanary);
-    }).pipe(
-      Effect.provide(
+      const services11 = yield* Layer.build(
         TestConfect.layer(
           vault,
           defineSchema({ keys: defineTable({ token: v.string() }) }),
           generatedOnly,
           { target: "kernel" },
         ),
-      ),
-    ),
+      );
+      return yield* Effect.gen(function* () {
+        const test = yield* Vault;
+        yield* test.run(
+          withCtx((ctx) => ctx.db.insert("keys", { token: vaultCanary })),
+        );
+        const exit = yield* Effect.exit(
+          test.run(
+            withCtx((ctx) =>
+              ctx.db
+                .query("keys")
+                .first()
+                .then((key) => {
+                  throw new Error(`the stored key is ${key!.token as string}`);
+                }),
+            ),
+          ),
+        );
+        assertIs(exit, Exit.isFailure);
+        const report = Cause.pretty(exit.cause);
+        expect(report).toContain("the stored key is [redacted]");
+        expect(report).not.toContain(vaultCanary);
+      }).pipe(Effect.provideContext(services11));
+    }).pipe(Effect.scoped),
 );
 
 const hookCanary = "canary-hook-5d2a7c90";
@@ -500,28 +507,7 @@ it.effect(
   "on the kernel target, the layer's secret policy hook marks a table the app's Confect schema does not declare",
   () =>
     Effect.gen(function* () {
-      const test = yield* Vault;
-      yield* test.run(
-        withCtx((ctx) => ctx.db.insert("tokens", { token: hookCanary })),
-      );
-      const exit = yield* Effect.exit(
-        test.run(
-          withCtx((ctx) =>
-            ctx.db
-              .query("tokens")
-              .first()
-              .then((row) => {
-                throw new Error(`the stored token is ${row!.token as string}`);
-              }),
-          ),
-        ),
-      );
-      assertIs(exit, Exit.isFailure);
-      const report = Cause.pretty(exit.cause);
-      expect(report).toContain("the stored token is [redacted]");
-      expect(report).not.toContain(hookCanary);
-    }).pipe(
-      Effect.provide(
+      const services10 = yield* Layer.build(
         TestConfect.layer(
           vault,
           defineSchema({
@@ -543,6 +529,30 @@ it.effect(
             },
           },
         ),
-      ),
-    ),
+      );
+      return yield* Effect.gen(function* () {
+        const test = yield* Vault;
+        yield* test.run(
+          withCtx((ctx) => ctx.db.insert("tokens", { token: hookCanary })),
+        );
+        const exit = yield* Effect.exit(
+          test.run(
+            withCtx((ctx) =>
+              ctx.db
+                .query("tokens")
+                .first()
+                .then((row) => {
+                  throw new Error(
+                    `the stored token is ${row!.token as string}`,
+                  );
+                }),
+            ),
+          ),
+        );
+        assertIs(exit, Exit.isFailure);
+        const report = Cause.pretty(exit.cause);
+        expect(report).toContain("the stored token is [redacted]");
+        expect(report).not.toContain(hookCanary);
+      }).pipe(Effect.provideContext(services10));
+    }).pipe(Effect.scoped),
 );

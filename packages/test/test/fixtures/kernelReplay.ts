@@ -13,7 +13,7 @@ import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
 import * as Array from "effect/Array";
 import * as Schema from "effect/Schema";
 
-const jsonText = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 
 const schema = defineSchema({
   counters: defineTable({ n: v.number() }),
@@ -91,7 +91,9 @@ const history = Effect.gen(function* () {
         ? { kind: step.kind, version: step.version, commitTs: step.commitTs }
         : { kind: step.kind },
   );
-  const output = yield* jsonText(convexToJson({ steps, state }));
+  const output = yield* Schema.encodeEffect(UnknownJson)(
+    convexToJson({ steps, state }),
+  );
   process.stdout.write(output);
 });
 

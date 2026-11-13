@@ -30,7 +30,7 @@ import { pipe } from "effect/Function";
 import * as Schema from "effect/Schema";
 import * as Json from "../src/internal/Json";
 
-const jsonText = Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown));
+const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 
 const start = 1_767_225_600_000;
 
@@ -633,7 +633,10 @@ describe("snapshot restore", () => {
           _tag: "SnapshotMalformed",
           reason: "header",
         });
-        const body = yield* jsonText({ components: [""], version: "one" });
+        const body = yield* Schema.encodeEffect(UnknownJson)({
+          components: [""],
+          version: "one",
+        });
         const forged = `confect-kernel-snapshot 3 sha256:${createHash("sha256")
           .update(body)
           .digest("hex")}\n${body}`;
@@ -1432,7 +1435,7 @@ describe("snapshot cron state", () => {
         yield* call(() => t.advance(hours(40)));
         const straightCrons = t.crons();
         const straightTicks = yield* call(() => t.query(cronTicks.list, {}));
-        const straight = yield* jsonText({
+        const straight = yield* Schema.encodeEffect(UnknownJson)({
           crons: straightCrons,
           ticks: straightTicks,
         });
@@ -1447,7 +1450,7 @@ describe("snapshot cron state", () => {
         const replayedTicks = yield* call(() =>
           restored.query(cronTicks.list, {}),
         );
-        const replayed = yield* jsonText({
+        const replayed = yield* Schema.encodeEffect(UnknownJson)({
           crons: replayedCrons,
           ticks: replayedTicks,
         });
