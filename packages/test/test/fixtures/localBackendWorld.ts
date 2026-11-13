@@ -1,5 +1,4 @@
 import { Ref } from "@confect/core";
-import type * as Effect from "effect/Effect";
 import testing from "../../../server/test/local-backend/fixtures/confect/_generated/testing";
 import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
 
@@ -27,7 +26,7 @@ export const call = <R extends Ref.Any>(
   kind: Kind,
   ref: R,
   ...args: Ref.OptionalArgs<R>
-): Effect.Effect<Ref.Returns<R>, unknown> =>
+) =>
   Ref.runWithCodec(ref, (args[0] ?? {}) as Ref.Args<R>, (reference, encoded) =>
     accessor[kind](reference, encoded),
   );
