@@ -1070,6 +1070,29 @@ describe("declared cron jobs", () => {
       }),
   );
 
+  it.effect(
+    "a backend the driver gives a world opens with no invocation bound, and its cron delays draw from that world",
+    () =>
+      Effect.gen(function* () {
+        const crons = cronJobs();
+        crons.cron("minutely", "* * * * *", ticks.log, { label: "minutely" });
+        const t: KernelControls = convexTest({
+          schema: hostSchema,
+          modules: {
+            ...hostModules,
+            "ticks.ts": () => Promise.resolve(ticksModule),
+            "crons.ts": () => Promise.resolve({ default: crons }),
+          },
+          runtime: cronRuntime,
+          world: cronOwner,
+        });
+        yield* call(() => t.query(jobs.marks, {}));
+        expect(t.crons()).toEqual([
+          expect.objectContaining({ name: "minutely", nextRun: utc(0, 15) }),
+        ]);
+      }),
+  );
+
   it("two processes replaying one cron history print the same deadlines", () => {
     const loader = pathToFileURL(
       createRequire(import.meta.url).resolve("tsx/esm"),

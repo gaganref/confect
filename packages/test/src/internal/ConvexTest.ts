@@ -5,6 +5,7 @@ import type {
 } from "convex/server";
 import { componentsGeneric } from "convex/server";
 import * as Execution from "./Execution.js";
+import type * as Invocation from "./Invocation.js";
 import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import * as Subscriptions from "./Subscriptions.js";
@@ -158,11 +159,18 @@ export function convexTest(
         readonly modules?: Modules;
         readonly transactionLimits?: unknown;
         readonly runtime?: Kernel.KernelRuntime;
+        /**
+         * The backend's own world. A backend opened with no invocation bound
+         * declares its cron jobs in it, and their delays draw from its random
+         * stream.
+         */
+        readonly world?: Invocation.World;
       },
   modules?: Modules,
 ): any {
   let schema: SchemaDefinition<GenericSchema, boolean> | undefined;
   let runtime: Kernel.KernelRuntime | undefined;
+  let own: Invocation.World | undefined;
   if (isSchemaDefinition(schemaOrOptions)) {
     schema = schemaOrOptions;
   } else if (schemaOrOptions !== undefined) {
@@ -172,13 +180,14 @@ export function convexTest(
     schema = schemaOrOptions.schema;
     modules = schemaOrOptions.modules;
     runtime = schemaOrOptions.runtime;
+    own = schemaOrOptions.world;
   }
   if (modules === undefined) {
     throw new Error(
       "The test kernel needs the modules map: pass `import.meta.glob(...)` as the second argument.",
     );
   }
-  const world = new Execution.World(schema, modules, runtime);
+  const world = new Execution.World(schema, modules, runtime, own);
   return {
     ...accessor(world, new Subscriptions.Registry(world), Execution.anonymous),
     registerComponent: (

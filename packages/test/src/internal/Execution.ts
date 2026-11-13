@@ -515,6 +515,11 @@ export class World {
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
     modules: Modules,
     private readonly runtime: Kernel.KernelRuntime = Kernel.wallClock(),
+    /**
+     * The world the driver gives the backend itself, which a backend opened
+     * with no invocation bound declares its cron jobs in.
+     */
+    private readonly own?: Invocation.World,
   ) {
     installConvexGlobal();
     Clock.install(pinnedTime, () => executions.getStore() !== undefined);
@@ -542,12 +547,13 @@ export class World {
   /**
    * Load every registered module of every component, once, before any function
    * runs, check that each standing source names an exported function, and
-   * declare each component's cron jobs. Their runs start in `world`, the world
-   * of the invocation bound by the call that opened the backend. `advance` and
-   * `drain` open with none, since their binding never reaches a job.
+   * declare each component's cron jobs. Their runs start in the world of the
+   * invocation bound by the call that opened the backend, or else the world the
+   * driver gave the backend. `advance` and `drain` open with the driver's,
+   * since their binding never reaches a job.
    */
   open(): Promise<void> {
-    return this.openIn(Invocation.current()?.world);
+    return this.openIn(Invocation.current()?.world ?? this.own);
   }
 
   private openIn(world: Invocation.World | undefined): Promise<void> {
@@ -945,7 +951,7 @@ export class World {
    * each one moves its job's next run later.
    */
   advance(ms: number, budget = defaultBudget): Promise<void> {
-    return this.openIn(undefined).then(() => {
+    return this.openIn(this.own).then(() => {
       const until = this.now() + ms;
       return this.walk(
         (pending) => pending.filter((job) => job.scheduledTime <= until),
@@ -960,7 +966,7 @@ export class World {
    * standing jobs are pending. Every job run counts against `budget`.
    */
   drain(budget = defaultBudget): Promise<void> {
-    return this.openIn(undefined).then(() =>
+    return this.openIn(this.own).then(() =>
       this.walk((pending) => pending.filter((job) => !job.standing), budget),
     );
   }
