@@ -993,7 +993,9 @@ describe("replaced globals", () => {
             : t.action(io.redefinedFetchInAction, { url }),
         );
         const calls = redefinedFetch.mock.calls.length;
-        // The guard is installed again over the replacement.
+        // The refusal installed the guard again over the replacement, before
+        // any other function starts.
+        const reguarded = Object.hasOwn(original("fetch"), "get");
         const after = yield* Effect.promise(() =>
           t.query(io.fetchInQuery, { url }),
         ).pipe(
@@ -1005,6 +1007,7 @@ describe("replaced globals", () => {
         );
         expect(outcome).toEqual(replacedRefusal);
         expect(calls).toBe(1);
+        expect(reguarded).toBe(true);
         expect(after).toEqual(fetchRefusal);
         expect(redefinedFetch).toHaveBeenCalledOnce();
       }),
