@@ -148,6 +148,16 @@ describe("token verification", () => {
       }),
   );
 
+  it.effect("a subscriber that presents a token waits for Sync", () =>
+    Effect.gen(function* () {
+      const { jwks, cases } = yield* mint(start / 1000);
+      const { t } = world([{ ...provider, jwks }]);
+      expect(() => t.withToken(cases[0]!.token).subscriber()).toThrow(
+        expect.objectContaining({ _tag: "KernelRowPending", row: 7 }),
+      );
+    }),
+  );
+
   it.effect("a provider the binary would refuse at push is refused", () =>
     Effect.gen(function* () {
       const { jwks, cases } = yield* mint(start / 1000);
