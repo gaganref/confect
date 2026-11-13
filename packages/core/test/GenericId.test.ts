@@ -86,6 +86,31 @@ describe("GenericId", () => {
       ),
     ).toThrow();
   });
+
+  it("states an exact JSON Schema that adds nothing to a string", () => {
+    for (const id of [
+      GenericId.GenericId("users"),
+      GenericId.GenericId("users", IdScope.component("ratelimiter")),
+    ]) {
+      const refinement = id.ast.checks?.at(-1);
+      expect(refinement?._tag).toBe("Filter");
+      expect(
+        refinement?.annotations?.toJsonSchema?.({
+          type: "string",
+          schemas: [],
+        }),
+      ).toEqual({});
+      expect(Schema.toJsonSchemaDocument(id).schema).toEqual({
+        type: "string",
+      });
+      // An approximate member would turn this `oneOf` into an `anyOf`.
+      expect(
+        Schema.toJsonSchemaDocument(
+          Schema.Union([id, Schema.Null], { mode: "oneOf" }),
+        ).schema,
+      ).toEqual({ oneOf: [{ type: "string" }, { type: "null" }] });
+    }
+  });
 });
 
 describe("tableName", () => {
