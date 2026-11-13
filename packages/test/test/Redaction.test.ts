@@ -1,4 +1,6 @@
 // oxlint-disable effecttsgo/async-function -- The fixtures are plain Convex functions, which are async as product code is.
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- A hand-marked snapshot needs the SHA-256 its header names.
+import { createHash } from "node:crypto";
 import * as Table from "@confect/core/Table";
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import { describe, expect, it } from "@effect/vitest";
@@ -83,6 +85,7 @@ const databaseSchema = DatabaseSchema.make({
   )("accounts"),
   notes: Table.make(() => Schema.Struct({ text: Schema.String }))("notes"),
   trees: Table.make(() => Schema.Struct({ data: Node }))("trees"),
+  links: Table.make(() => Schema.Struct({ target: Token }))("links"),
   vault: Table.make(() =>
     Schema.Struct({
       label: Schema.String,
@@ -326,6 +329,7 @@ const convexSchema = defineSchema({
     ["token"],
   ),
   notes: defineTable({ text: v.string() }),
+  links: defineTable({ target: v.string() }),
   trees: defineTable({ data: v.any() }).index("by_deep", [
     "data.child.child.token",
   ]),
@@ -855,6 +859,95 @@ describe("redaction routes", () => {
         expect(yield* call(() => t.mutation(app.issue, {}))).toEqual({
           token: "ab",
         });
+      }),
+  );
+
+  it.effect(
+    "a secret field holding a document ID round-trips: the export marks the field but never the document's own ID",
+    () =>
+      Effect.gen(function* () {
+        const t = backend();
+        const id = yield* call(() =>
+          t.run((ctx) => ctx.db.insert("notes", { text: "target" })),
+        );
+        yield* call(() =>
+          t.run((ctx) => ctx.db.insert("links", { target: id })),
+        );
+        const snapshot = t.exportSnapshot();
+        const text = new TextDecoder().decode(snapshot);
+        expect(text).toContain(`"_id":"${id}"`);
+        expect(text).not.toContain(`"target":"${id}"`);
+        const restored = backend();
+        yield* call(() =>
+          restored.restoreSnapshot(snapshot, { secrets: t.secrets() }),
+        );
+        expect(
+          yield* call(() =>
+            restored.run(async (ctx) => {
+              const link = await ctx.db.query("links").first();
+              const note = await ctx.db.get(link!.target);
+              return { target: link!.target, note: note?.text };
+            }),
+          ),
+        ).toEqual({ target: id, note: "target" });
+      }),
+  );
+
+  it.effect(
+    "a snapshot whose document ID is marked restores once its secrets are back, since restore puts them back before it checks system fields",
+    () =>
+      Effect.gen(function* () {
+        const t = backend();
+        const id = yield* call(() =>
+          t.run((ctx) => ctx.db.insert("notes", { text: "marked" })),
+        );
+        const secrets = t.secrets();
+        const ref = secrets.keep(id);
+        const marker = { [Redaction.markerKey]: ref };
+        const snapshot = new TextDecoder().decode(t.exportSnapshot());
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The edit works on the body's raw JSON, as a writer of marked snapshots would.
+        const body = JSON.parse(snapshot.slice(snapshot.indexOf("\n") + 1));
+        for (const entry of body.tables)
+          for (const row of entry.rows)
+            if (row.doc._id === id) row.doc._id = marker;
+        for (const commit of body.log)
+          for (const change of commit.changes)
+            if (change.after?._id === id) change.after._id = marker;
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The marked body is written as raw bytes.
+        const edited = JSON.stringify(body);
+        const marked = new TextEncoder().encode(
+          `confect-kernel-snapshot 1 sha256:${createHash("sha256")
+            .update(edited)
+            .digest("hex")}\n${edited}`,
+        );
+        const restored = backend();
+        yield* call(() => restored.restoreSnapshot(marked, { secrets }));
+        expect(
+          yield* call(() => restored.run((ctx) => ctx.db.get(id))),
+        ).toMatchObject({ _id: id, text: "marked" });
+      }),
+  );
+
+  it.effect(
+    "a failure copy keeps an array's own properties beside its entries",
+    () =>
+      Effect.sync(() => {
+        const secrets = new Redaction.Secrets();
+        secrets.keep(cycleCanary);
+        const details = Object.assign(["first", `second ${cycleCanary}`], {
+          code: "E42",
+          attempt: 3,
+        });
+        const error = Object.assign(new Error("failed"), { details });
+        const reported = Redaction.failure(error, secrets) as typeof error;
+        expect(reported.details).not.toBe(details);
+        expect([...reported.details]).toEqual([
+          "first",
+          `second ${Redaction.marker}`,
+        ]);
+        expect(reported.details.code).toBe("E42");
+        expect(reported.details.attempt).toBe(3);
+        expect(details[1]).toContain(cycleCanary);
       }),
   );
 });

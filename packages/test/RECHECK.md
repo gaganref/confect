@@ -704,7 +704,9 @@ writers:
   allows no object key that starts with `$` (`crates/value/src/json/mod.rs:9`
   at `precompiled-2026-10-28-cccbade`), so no stored value reads as a marker. A
   restore given the store puts the raw values back and adopts a copy of it, so
-  its own exports are the same bytes. Without the store it refuses with
+  its own exports are the same bytes. It puts them back before any body check, so a
+  document's system fields and IDs are checked as the kernel stored them, and
+  still before any map is built. Without the store it refuses with
   `SnapshotSecretMissing`.
 - A failure report, whether a rejection or the error in a held attempt's
   outcome, is a separate report of whatever was thrown. A string, an `Error`,
@@ -715,7 +717,8 @@ writers:
   as it was. The report is built in two passes: the first finds
   whether anything reachable holds a kept secret, and the second copies every
   reachable error, array and plain object, registering each copy before its
-  fields are walked. So an error whose cause is itself, or two errors that are
+  fields are walked. An array copy keeps its own properties, such as a
+  `code`, beside its entries. So an error whose cause is itself, or two errors that are
   each other's cause, report copies that cycle to each other, never to a raw
   error.
 - A subscription diff marks each outcome by the shape of what its query
@@ -734,7 +737,9 @@ writers:
   meet.
 
 Every value artifact then passes a string backstop: a string holding a kept
-secret of four characters or more is marked. Free text has no schema, so a
+secret of four characters or more is marked. The backstop never marks a document's `_id` or
+`_creationTime`: an ID is its document's identity, not a secret value, even
+when a secret field holds the same ID. Free text has no schema, so a
 failure report's message and stack are searched for kept secret strings. A
 secret string shorter than four characters is marked in values by its schema,
 not in free text.

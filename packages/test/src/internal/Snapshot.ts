@@ -500,6 +500,59 @@ export const checkBody = (
   return Result.succeed(undefined);
 };
 
+/**
+ * `body` with every document's marked secrets put back, each document checked
+ * to decode as a Convex value. No map is built, so the body checks that follow
+ * see the documents as the kernel stored them, in the order they were written.
+ */
+const unredactBody = (
+  body: Body,
+  unredact: Unredact,
+): Result.Result<
+  Body,
+  KernelRefusal.SnapshotSecretMissing | KernelRefusal.SnapshotMalformed
+> => {
+  let refusal:
+    | KernelRefusal.SnapshotSecretMissing
+    | KernelRefusal.SnapshotMalformed
+    | undefined;
+  const document = (json: unknown): unknown => {
+    if (json === null || refusal !== undefined) return json;
+    const unredacted = unredact(json as JSONValue);
+    if (Result.isFailure(unredacted)) {
+      refusal = unredacted.failure;
+      return json;
+    }
+    try {
+      jsonToConvex(unredacted.success);
+    } catch (error) {
+      refusal = malformed(
+        "value",
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    return unredacted.success;
+  };
+  const unredacted: Body = {
+    ...body,
+    tables: body.tables.map((entry) => ({
+      ...entry,
+      rows: entry.rows.map((row) => ({ ...row, doc: document(row.doc) })),
+    })),
+    log: body.log.map((commit) => ({
+      ...commit,
+      changes: commit.changes.map((change) => ({
+        ...change,
+        before: document(change.before),
+        after: document(change.after),
+      })),
+    })),
+  };
+  return refusal === undefined
+    ? Result.succeed(unredacted)
+    : Result.fail(refusal);
+};
+
 const imageOf = (body: Body, unredact: Unredact): Image => {
   const tables = new Map<string, Map<string, Map<DocumentId, Kernel.Row>>>();
   for (const { componentPath, table, rows } of body.tables) {
@@ -870,10 +923,14 @@ export const decode = (
   if (Result.isFailure(body)) {
     return Result.fail(malformed("shape", body.failure.message));
   }
-  const checkedBody = checkBody(body.success);
+  // Secrets go back first, so a document's system fields and IDs are checked as
+  // the kernel stored them, and every check runs before any map is built.
+  const unredacted = unredactBody(body.success, unredact);
+  if (Result.isFailure(unredacted)) return Result.fail(unredacted.failure);
+  const checkedBody = checkBody(unredacted.success);
   if (Result.isFailure(checkedBody)) return Result.fail(checkedBody.failure);
   try {
-    return Result.succeed(imageOf(body.success, unredact));
+    return Result.succeed(imageOf(unredacted.success, Result.succeed));
   } catch (error) {
     if (Schema.is(KernelRefusal.SnapshotSecretMissing)(error)) {
       return Result.fail(error);

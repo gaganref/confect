@@ -543,14 +543,22 @@ const backstop = (
     if (Array.isArray(value)) return value.map(go);
     if (isObject(value)) {
       if (isWrapped(value)) return value;
+      // A document's ID and creation time are its identity, never a secret
+      // value, even when a secret field holds the same ID. Convex reserves
+      // these names for system fields, so no user value is skipped.
       return Object.fromEntries(
-        Object.entries(value).map(([key, item]) => [key, go(item)]),
+        Object.entries(value).map(([key, item]) => [
+          key,
+          systemFields.has(key) ? item : go(item),
+        ]),
       );
     }
     return value;
   };
   return go(json);
 };
+
+const systemFields = new Set(["_id", "_creationTime"]);
 
 /**
  * `json`, a document bound for a snapshot, with every secret its placements put
@@ -685,9 +693,24 @@ export const failure = (thrown: unknown, secrets: Secrets): unknown => {
     if (copies.has(value)) return copies.get(value);
     if (!copyable(value)) return value;
     if (Array.isArray(value)) {
+      // The copy is registered first, so a cycle through it reaches the copy.
+      // Its entries and its own other properties, such as a `code`, are copied.
       const items: Array<unknown> = [];
       copies.set(value, items);
-      for (const item of value) items.push(copy(item));
+      for (const key of Reflect.ownKeys(value)) {
+        if (key === "length") continue;
+        const { raw, enumerable } = field(value, key);
+        if (typeof key === "string" && /^(0|[1-9][0-9]*)$/.test(key))
+          items[Number(key)] = copy(raw);
+        else
+          Object.defineProperty(items, key, {
+            value: copy(raw),
+            writable: true,
+            enumerable,
+            configurable: true,
+          });
+      }
+      items.length = value.length;
       return items;
     }
     const target: object = Object.create(Object.getPrototypeOf(value));
