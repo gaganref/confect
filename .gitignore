@@ -16,3 +16,4 @@ tsconfig.vitest-temp.json
 .README.md.bak
 
 packages/server/test/local-backend/.consumer/
+packages/server/test/local-backend/.sync-probe/

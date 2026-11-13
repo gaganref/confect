@@ -65,6 +65,7 @@ export const ports = {
   app: basePort,
   consumer: basePort + 10,
   plain: basePort + 20,
+  sync: basePort + 30,
 } as const;
 
 /**
@@ -301,5 +302,25 @@ export const plainLayer = Layer.effect(
     port: ports.plain,
     env: [],
     redeployFunction: "probe:ping",
+  }),
+).pipe(Layer.provide(NodeServices.layer));
+
+/**
+ * The sync probe's app (`fixtures/sync`), which the probe runs on this binary
+ * and on the test kernel. Its `auth.config` reads `TEST_AUTH_JWKS`, which the
+ * probe replaces with the JWKS of the tokens it mints.
+ */
+export const syncLayer = Layer.effect(
+  LocalBackend,
+  make({
+    directory: "./fixtures/sync",
+    port: ports.sync,
+    env: [
+      [
+        "TEST_AUTH_JWKS",
+        `data:application/json;base64,${Buffer.from('{"keys":[]}').toString("base64")}`,
+      ],
+    ],
+    redeployFunction: "sync:whoami",
   }),
 ).pipe(Layer.provide(NodeServices.layer));
