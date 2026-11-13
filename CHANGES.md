@@ -74,6 +74,26 @@ Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-read-sets.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel subscriptions
+
+A client of the test kernel subscribes to queries under one identity. Each
+subscription keeps its latest run with the dependencies it took: the commit and
+reads it read, the caller's identity if it asked for it, the time if it read
+it, and where its paginated read ended. A commit that changes what a run read
+makes it stale, by the same check an attempt's commit makes, and so does an
+identity change when the run read the identity. The clock moving never does, as
+on the Convex binary. `refresh` reruns the stale subscriptions and lists the
+values that changed. A full-rerun reference reruns every subscription from
+scratch, so a missed invalidation shows up as a disagreement. It decides from
+its own rerun's reads whether a rerun was owed, and then reruns at the kernel's
+time, so a missed invalidation of a query whose value is only the time shows
+too. Failures compare by error name, message and data, or by the bare value a
+query threw. `Date` inside a query or mutation answers the kernel's time at its
+start, in a bound handler too, since the invocation bridge leaves `Date` to the
+kernel there. This is row 4 of Frame's backend testing kernel (Frame ADR 0012).
+Changeset: `test-kernel-subscriptions.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## Test kernel scheduler, crons, handles and workflow events
 
 The kernel runs scheduled functions on its own clock, never on a host timer. A
