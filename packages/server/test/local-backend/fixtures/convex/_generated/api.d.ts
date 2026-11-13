@@ -444,6 +444,18 @@ export declare const api: {
         { storageId: Id<"_storage"> },
         null
       >;
+      deleteRaw: FunctionReference<
+        "mutation",
+        "public",
+        { storageId: Id<"_storage"> },
+        null
+      >;
+      describe: FunctionReference<
+        "query",
+        "public",
+        { storageId: Id<"_storage"> },
+        string
+      >;
       generateUploadUrl: FunctionReference<"mutation", "public", {}, string>;
       get: FunctionReference<
         "action",
@@ -461,6 +473,12 @@ export declare const api: {
         "action",
         "public",
         { text: string },
+        Id<"_storage">
+      >;
+      storeWith: FunctionReference<
+        "action",
+        "public",
+        { contentType: string; sha256: string; text: string },
         Id<"_storage">
       >;
     };
