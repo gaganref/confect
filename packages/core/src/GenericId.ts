@@ -41,7 +41,11 @@ export const GenericId = <
     [ConvexId]: tableName,
     [ConvexIdScope]: scope ?? IdScope.app,
   }).pipe(
-    Schema.refine((_value): _value is GenericId<TableName, Scope> => true),
+    // The refinement narrows only the TypeScript type, so its exact JSON
+    // Schema adds nothing to the string's.
+    Schema.refine((_value): _value is GenericId<TableName, Scope> => true, {
+      toJsonSchema: () => ({}),
+    }),
     Schema.toType,
   );
 
