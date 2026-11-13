@@ -49,7 +49,8 @@ it.effect("reports the path and bounded attempts when Busy persists", () =>
       Effect.forkChild,
     );
     yield* TestClock.adjust("1 second");
-    expect(yield* Fiber.join(fiber)).toMatchObject({
+    const joined = yield* Fiber.join(fiber);
+    expect(joined).toMatchObject({
       _tag: "RemoveBusyError",
       path: "generated",
       attempts: 4,
@@ -74,12 +75,11 @@ it.effect("does not retry other filesystem errors", () =>
           return Effect.fail(denied);
         }),
     });
-    expect(
-      yield* remove("generated").pipe(
-        Effect.provideService(FileSystem.FileSystem, fs),
-        Effect.flip,
-      ),
-    ).toEqual(denied);
+    const removeResult = yield* remove("generated").pipe(
+      Effect.provideService(FileSystem.FileSystem, fs),
+      Effect.flip,
+    );
+    expect(removeResult).toEqual(denied);
     expect(attempts).toBe(1);
   }),
 );

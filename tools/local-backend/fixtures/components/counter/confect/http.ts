@@ -1,0 +1,49 @@
+import { Http } from "@confect/core";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Predicate from "effect/Predicate";
+import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
+import { ActionCtx, type DataModel } from "@confect/server";
+import type schema from "./_generated/schema";
+import type { scope } from "./_generated/id";
+import refs from "./_generated/refs";
+import { classProbeHandler } from "./authoringHandler";
+import { CounterApi } from "./api";
+import { optionalPrefix } from "./optionalPrefix";
+
+const health = HttpApiBuilder.group(CounterApi, "health", (handle) =>
+  handle
+    .handle("health", () =>
+      Effect.map(
+        ActionCtx.ActionCtx<
+          DataModel.ToConvex<DataModel.FromSchema<typeof schema>>,
+          typeof scope
+        >(),
+        (ctx) =>
+          Predicate.hasProperty(ctx, "auth")
+            ? "unexpected-auth"
+            : "component-ready",
+      ),
+    )
+    .handle("echo", ({ payload }) => Effect.succeed(payload)),
+);
+
+const users = HttpApiBuilder.group(CounterApi, "users", (handle) =>
+  handle.handle("get", ({ params }) => Effect.succeed(params.id)),
+);
+
+const authoring = HttpApiBuilder.group(CounterApi, "authoring", (handle) =>
+  handle.handle("classProbe", ({ params }) =>
+    classProbeHandler(refs.public.authoring.probe, params.value),
+  ),
+);
+
+const http = Http.make({
+  api: CounterApi,
+  handlers: Layer.mergeAll(health, users, authoring),
+});
+
+/**
+ * @internal
+ */
+export default { ...http, routes: Layer.merge(http.routes, optionalPrefix) };

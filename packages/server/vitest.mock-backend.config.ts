@@ -4,6 +4,8 @@ import path from "node:path";
 import tsconfigPaths from "vite-tsconfig-paths";
 import { defineConfig, mergeConfig } from "vitest/config";
 import sharedConfig from "../../vitest.shared";
+import * as Array from "effect/Array";
+import { pipe } from "effect/Function";
 
 /**
  * Conformance exceptions: mock-backend cases that hold the Convex binary's
@@ -24,7 +26,7 @@ const exceptions: ReadonlyArray<{
   {
     file: "test/mock-backend/httpRouteError.test.ts",
     name: "HTTP route errors > a root route that throws an Error answers the binary's 500 JSON error body",
-    convexTest: "0.0.65",
+    convexTest: "0.0.67",
     binary:
       'The binary answers 500, application/json, {"code":"[Request ID: <16 hex>] Server Error: Uncaught Error: <message>","trace":"Uncaught Error: <message>\\n    at …\\n"}. convex-test rejects the fetch with the thrown Error.',
     owner: "@confect/test kernel, build-order row 6 (HTTP and signed ingress)",
@@ -34,7 +36,7 @@ const exceptions: ReadonlyArray<{
   {
     file: "test/mock-backend/httpRouteConvexError.test.ts",
     name: "HTTP route errors > a root route that throws a ConvexError answers the binary's 500 JSON error body with its data",
-    convexTest: "0.0.65",
+    convexTest: "0.0.67",
     binary:
       "The binary answers 500, application/json, with code and trace naming Uncaught ConvexError and the error's JSON, and data holding the ConvexError's data. convex-test rejects the fetch with the thrown ConvexError.",
     owner: "@confect/test kernel, build-order row 6 (HTTP and signed ingress)",
@@ -48,12 +50,17 @@ const convexTestVersion = (
     readonly version: string;
   }
 ).version;
-const stale = exceptions.filter(
+const stale = Array.filter(
+  exceptions,
   ({ convexTest }) => convexTest !== convexTestVersion,
 );
 if (stale.length > 0) {
   throw new Error(
-    `The convex-test lane's exceptions were checked against another convex-test than ${convexTestVersion}: ${stale.map(({ file }) => file).join(", ")}. Re-check each and update its version.`,
+    `The convex-test lane's exceptions were checked against another convex-test than ${convexTestVersion}: ${pipe(
+      stale,
+      Array.map(({ file }) => file),
+      Array.join(", "),
+    )}. Re-check each and update its version.`,
   );
 }
 
@@ -81,7 +88,7 @@ export default mergeConfig(
       // exceptions above.
       exclude: [
         "test/mock-backend/kernelLane.test.ts",
-        ...exceptions.map(({ file }) => file),
+        ...Array.map(exceptions, ({ file }) => file),
       ],
       globalSetup: ["./test/mock-backend/setup.ts"],
     },

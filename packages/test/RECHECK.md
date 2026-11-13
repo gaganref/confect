@@ -930,9 +930,8 @@ negative: `Metering.ts` asserts it.
 difference by name. `SystemTableReadIntervals` is the one this row adds. The
 binary's `databaseQueries` also counts the system-table intervals it reads to
 run a function: the backend state, the module, the UDF config and the
-component. On the local-backend fixture a root mutation starts at 18, its first
-nested call adds 2, and a stale-snapshot query starts at 18 again (19 before
-the storage row's probe functions joined the fixture). That share
+component. On the local-backend fixture a root mutation starts at 21, its first
+nested call adds 2, and a stale-snapshot query starts at 21 again. That share
 depends on the deployment, so the kernel does not simulate it.
 
 Each read maps a total `x` to `max(0, x - before) + after`, which never
@@ -942,8 +941,8 @@ the kernel's and the kernel's plus the system share:
 - While neither count saturates, the binary's is exactly the kernel's plus the
   share, and the binary refuses `TooManyReads` that many reads sooner.
 - A read that covers inserted IDs can saturate only the kernel's lower count,
-  and the gap shrinks. One insert and a read of its ID answer 18 on the binary
-  and 1 on the kernel, a gap of 17.
+  and the gap shrinks. One insert and a read of its ID answer 21 on the binary
+  and 1 on the kernel, a gap of 20.
 - Once a read saturates both, they agree. 100 inserts and a read of one answer
   100 on both.
 
@@ -1063,16 +1062,56 @@ subscription, a compound secret, a reused suspension, a recursive value, two
 union members sharing a field, and an index read on a secret field. None
 reaches the snapshot, a failure report, a diff or a read record.
 
+## Upstream 10.6.0 on the kernel lane
+
+The fork moved to upstream Confect 10.6.0 and Effect 4.1.4 after row 6's
+first parts landed. Upstream's release adds mock-backend cases that the
+inventory above never placed, so the lane met them on the merge.
+
+- `TestConfect JWT signing` waits for row 6's JWT signing and verification.
+- `TestConfect Blob storage` runs on the kernel since the storage row landed,
+  and so do two `mutation Blob transactions` cases. Of the rest, the four that
+  pass a deployment-wide `transactionLimits` option to `convexTest` wait for
+  row 6, which refuses that option. The two that store a file with no content
+  type are placed `binary`: the binary and the kernel store a `null`
+  `contentType`, which Confect's `_storage` schema refuses, where convex-test
+  stores none.
+- `mock search compatibility` and the search case of `mock query
+  compatibility` read through a text search, so they are placed `binary`
+  beside the Doc decoder's search case.
+- `mock query compatibility > pins the Effect clock inside TestConfect.run`
+  fakes `Date` after its layer built the backend. The kernel wrapped the realm's
+  `Date` only when the backend opened, so the test's fake replaced the wrapper
+  and the run read the moved host time. Each kernel function now wraps the
+  realm's `Date` again as it enters, as it installs `globalThis.Convex` again,
+  and the case runs on the kernel.
+- The local-backend fixture moved to `tools/local-backend` and deploys more
+  modules and components, so `SystemTableReadIntervals` was measured again on
+  the same binary. A root mutation and a stale-snapshot query now start at 21,
+  where `main`'s fixture measured 18 once the storage row's probe functions
+  joined it. The first nested call still adds 2.
+- The convex-test lane's two HTTP route error exceptions were checked on
+  convex-test 0.0.65. Upstream's release moves the lane to 0.0.67, which still
+  rejects the fetch with the thrown error, so both exceptions hold and name
+  0.0.67.
+
 ## Generated test backend (row 8)
 
-- `TestBackend.layer` opens on the kernel target only. It runs each mount's
-  `init` through the `confectDeploy:steps` mutation production registers, with
-  `runInComponent` at each component path, so the subject adds no function.
-- Open on `main`: the order. The ADR and the kernel run a nested mount's `init`
-  before its parent's. Alchemy's `MountInit.run` runs a parent's `init`, then
-  visits its nested steps (`packages/alchemy/src/internal/MountInit.ts:96-106`).
-  The binary push and a kernel session therefore disagree for a nested
-  component whose parent's `init` reads it.
+- `TestBackend.layer` opens on the kernel target only. It opens the kernel
+  explicitly, so every module loads even when no init or seed calls it, then runs
+  each mount's `init` through the `confectDeploy:steps` mutation production
+  registers, with `runInComponent` at each component path, so the subject adds
+  no function.
+- The order is the push's. `MountSteps.run` in `@confect/core` is the one
+  traversal, and Alchemy's `MountInit.run` and the test layer both call it: a
+  mount's `init`, then its nested component's own steps. The binary's
+  child-first walk at `cccbade4` evaluates definitions and runs no Confect
+  init, so parent-first is what a deployment does today. ADR 0012's
+  nested-before-parent text is corrected to it.
+- A component's environment: inside a function of a component with a bound
+  environment, `process.env` answers that environment and Convex's system
+  URLs only (`internal/Environment.ts`). Elsewhere it answers the host's.
 - Codegen writes the registry's `secrets` as thunks of the Confect codecs that
   hold a `Schema.Redacted` node, so the kernel's redaction (row 6) builds each
-  schema only when it first needs it. A package mount carries none.
+  schema only when it first needs it. A kit adds its component's policy at
+  registration, keyed at the registered path.

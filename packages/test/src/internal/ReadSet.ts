@@ -9,6 +9,7 @@ import {
   evaluateRangeFilter,
   tableNameFromId,
 } from "./KernelValues.js";
+import * as Array from "effect/Array";
 
 /**
  * A row's position in an interval's order: its value at each of the interval's
@@ -74,11 +75,11 @@ export const compareToKey = (
 export const keyOf = (
   fields: ReadonlyArray<string>,
   doc: StoredDocument,
-): Key => fields.map((field) => evaluateFieldPath(field, doc));
+): Key => Array.map(fields, (field) => evaluateFieldPath(field, doc));
 
 const inInterval = (read: IntervalRead, doc: StoredDocument): boolean =>
   read.through !== null &&
-  read.range.every((filter) => evaluateRangeFilter(doc, filter)) &&
+  Array.every(read.range, (filter) => evaluateRangeFilter(doc, filter)) &&
   (read.after === null ||
     compareToKey(read.fields, read.order, doc, read.after) > 0) &&
   (read.through === "end" ||
@@ -101,7 +102,8 @@ export const covers = (
   if (read.kind === "document") return read.id === change.id;
   return (
     tableNameFromId(change.id) === read.table &&
-    [change.before, change.after].some(
+    Array.some(
+      [change.before, change.after],
       (doc) => doc !== null && inInterval(read, doc),
     )
   );

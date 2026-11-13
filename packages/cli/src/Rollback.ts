@@ -28,12 +28,11 @@ export const preserveComponentOutput = <A, E, R>(
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
     const backupDirectory = yield* fs.makeTempDirectoryScoped();
-    const configPath = path.join(
-      yield* ConvexDirectory.get,
-      CONVEX_CONFIG_FILENAME,
-    );
+    const convexDirectory = yield* ConvexDirectory.get;
+    const configPath = path.join(convexDirectory, CONVEX_CONFIG_FILENAME);
+    const confectDirectory = yield* ConfectDirectory.get;
     const snapshots = yield* Effect.forEach(
-      [path.join(yield* ConfectDirectory.get, "_generated"), configPath],
+      [path.join(confectDirectory, "_generated"), configPath],
       Effect.fnUntraced(function* (original, index) {
         const backup = path.join(backupDirectory, String(index));
         const existed = yield* fs.exists(original);

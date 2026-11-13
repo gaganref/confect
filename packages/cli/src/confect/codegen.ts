@@ -4,9 +4,12 @@ import {
   Env,
   type GroupSpec,
   type ManifestSection,
+  SecretSchema,
   Spec,
 } from "@confect/core";
 import { DatabaseSchema } from "@confect/server";
+import type * as Mount from "@confect/core/Mount";
+import * as SchemaAST from "effect/SchemaAST";
 import * as Command from "effect/cli/Command";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
@@ -19,6 +22,8 @@ import { pipe } from "effect/Function";
 import * as HashSet from "effect/HashSet";
 import * as Match from "effect/Match";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
+import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import type * as Scope from "effect/Scope";
 import * as Bundler from "../Bundler.js";
@@ -78,6 +83,8 @@ import {
   syncDeployModule,
   syncDeclaredHttp,
 } from "./declaration.js";
+import * as String from "effect/String";
+import { quote, stringify } from "../Json.js";
 
 const GENERATED_DIRNAME = "_generated";
 
@@ -129,6 +136,9 @@ const LEGACY_PATHS = Effect.gen(function* () {
   ];
 });
 
+/**
+ * @internal
+ */
 export const codegen = Command.make("codegen", DirectoryOptions.flags, () =>
   Effect.gen(function* () {
     yield* logPending("Performing initial sync…");
@@ -167,9 +177,9 @@ const runCodegen = Effect.gen(function* () {
   // written before the declaration is bundled, even on a first run.
   yield* generateTableWrappers(tableModules);
   yield* removeObsoleteTableWrappers(tableModules);
-  yield* generateAssembledSpecs(
-    yield* Effect.forEach(yield* discoverLeafSpecFiles, toLeafModule),
-  );
+  const leafSpecFiles = yield* discoverLeafSpecFiles;
+  const forEach2 = yield* Effect.forEach(leafSpecFiles, toLeafModule);
+  yield* generateAssembledSpecs(forEach2);
   yield* generateRefs;
   // Specs and tables can import the components registry, but the registry
   // reads the `convex.config.ts` that the declaration writes. Only its type
@@ -255,19 +265,42 @@ const runCodegen = Effect.gen(function* () {
       leaves,
       sections: declaredSections(backend),
       modules: sections.modules,
-      tables: tableModules.map(({ tableName }) => tableName),
     });
   yield* SectionFiles.verify(backend, mounts);
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const optionalFiles = yield* Effect.filter(
+    ["http.ts", "crons.ts", "auth.ts"],
+    (file) => fs.exists(path.join(confectDirectory, file)),
+  );
+  yield* Bundler.withBatch(
+    Array.map(optionalFiles, (file) => path.join(confectDirectory, file)),
+    Effect.forEach(
+      optionalFiles,
+      (file) =>
+        Bundler.check(path.join(confectDirectory, file)).pipe(
+          Effect.mapError((error) => fromBundlerError(file, error)),
+        ),
+      { discard: true },
+    ),
+  );
   return {
     functionPaths,
     snapshot,
   };
 });
 
+/**
+ * @internal
+ */
 export const generateWithSnapshot = runCodegen.pipe(
   Effect.withSpan("Cli.codegen"),
 );
 
+/**
+ * @internal
+ */
 export const makeCodegenHandler = (
   duringRestore?: Effect.Effect<void, never, Scope.Scope>,
 ) =>
@@ -276,8 +309,14 @@ export const makeCodegenHandler = (
     Effect.map(({ functionPaths }) => ({ functionPaths })),
   );
 
+/**
+ * @internal
+ */
 export const codegenHandler = makeCodegenHandler();
 
+/**
+ * @internal
+ */
 export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
   function* (
     snapshot: GenerationSnapshot.GenerationSnapshot,
@@ -349,10 +388,10 @@ const validateComponentGroupRuntime = (
   Result.gen(function* () {
     if (group.runtime === "Node") {
       return yield* Result.fail(
-        new CodegenError.ComponentNodeGroupError({ specPath, groupPath }),
+        CodegenError.ComponentNodeGroupError.make({ specPath, groupPath }),
       );
     }
-    for (const [name, child] of Object.entries(group.groups)) {
+    for (const [name, child] of Record.toEntries(group.groups)) {
       yield* validateComponentGroupRuntime(
         child,
         `${groupPath}.${name}`,
@@ -382,22 +421,25 @@ const validateCallbackPrefixes = Effect.fnUntraced(function* (
   if ((yield* ConvexDirectory.target).kind !== "component") return;
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const callbacksPath = path.join(yield* ConfectDirectory.get, "callbacks.ts");
+  const confectDirectory = yield* ConfectDirectory.get;
+  const callbacksPath = path.join(confectDirectory, "callbacks.ts");
   if (!(yield* fs.exists(callbacksPath))) return;
   const name = Option.isSome(declared)
     ? Env.name(App.env(declared.value))
-    : yield* ConvexConfig.componentName(
-        path.join(
-          yield* ConvexDirectory.get,
-          ConvexConfig.CONVEX_CONFIG_FILENAME,
+    : yield* Effect.flatMap(ConvexDirectory.get, (convexDirectory) =>
+        ConvexConfig.componentName(
+          path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
         ),
       );
   const { module } = yield* Bundler.bundle(callbacksPath).pipe(
     Effect.mapError((error) => fromBundlerError("confect/callbacks.ts", error)),
   );
-  for (const contract of Object.values(module)) {
-    if (Callback.isContract(contract) && !contract.id.startsWith(`${name}/`)) {
-      return yield* new CodegenError.CallbackPrefixError({
+  for (const contract of Record.values(module)) {
+    if (
+      Callback.isContract(contract) &&
+      !pipe(contract.id, String.startsWith(`${name}/`))
+    ) {
+      return yield* CodegenError.CallbackPrefixError.make({
         declarationPath: "confect/callbacks.ts",
         contractId: contract.id,
         componentName: name,
@@ -416,7 +458,7 @@ const validateComponentConfiguration = Effect.gen(function* () {
         const confectDirectory = yield* ConfectDirectory.get;
         const authPath = path.join(confectDirectory, "auth.ts");
         if (yield* fs.exists(authPath)) {
-          return yield* new CodegenError.InvalidConvexConfigError({
+          return yield* CodegenError.InvalidConvexConfigError.make({
             configPath: authPath,
             reason:
               "Components cannot configure application authentication. Pass identity explicitly through function arguments.",
@@ -588,11 +630,10 @@ const removeObsoleteRegisteredFunctions = Effect.fnUntraced(function* (
     return;
   }
 
-  const expected = new Set(
-    yield* Effect.forEach(leaves, (leaf) =>
-      registeredFunctionsRelativePath(leaf),
-    ),
+  const expectedPaths = yield* Effect.forEach(leaves, (leaf) =>
+    registeredFunctionsRelativePath(leaf),
   );
+  const expected = new Set(expectedPaths);
 
   const existing = yield* fs.readDirectory(registryRoot, { recursive: true });
   yield* Effect.forEach(existing, (relativePath) => {
@@ -636,6 +677,9 @@ const loadGeneratedSpec = Effect.gen(function* () {
 
 const emptyFunctionPaths = FunctionPaths.FunctionPaths.make(HashSet.empty());
 
+/**
+ * @internal
+ */
 export const loadPreviousFunctionPaths = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const specPath = yield* getGeneratedSpecPath;
@@ -693,7 +737,7 @@ const rejectLegacySchemaFile = Effect.gen(function* () {
   const legacyPath = path.join(confectDirectory, "schema.ts");
 
   if (yield* fs.exists(legacyPath)) {
-    return yield* new LegacySchemaFileError({ schemaPath: "schema.ts" });
+    return yield* LegacySchemaFileError.make({ schemaPath: "schema.ts" });
   }
 });
 
@@ -704,7 +748,7 @@ const rejectDeployModuleGroup = Effect.gen(function* () {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
   if (yield* fs.exists(path.join(confectDirectory, "confectDeploy.spec.ts")))
-    return yield* new CodegenError.InvalidDeclarationError({
+    return yield* CodegenError.InvalidDeclarationError.make({
       declarationPath: "confect/confectDeploy.spec.ts",
       reason:
         "its functions would go in convex/confectDeploy.ts, which codegen writes for the mounts a push initialises. Rename the group, for example to confect/deploy.spec.ts.",
@@ -719,9 +763,7 @@ const rejectDeployModuleGroup = Effect.gen(function* () {
  * legal—but the warning catches the much more common case of a typoed directory
  * or files placed under the wrong root.
  */
-const warnIfNoTables = (
-  tableModules: ReadonlyArray<TableModule.TableModule>,
-) =>
+const warnIfNoTables = (tableModules: ReadonlyArray<TableModule.TableModule>) =>
   tableModules.length === 0
     ? logWarn(
         `No tables discovered in \`confect/${TableModule.TABLES_DIRNAME}/\`. ` +
@@ -771,7 +813,8 @@ const generateIdConstructor = Effect.fnUntraced(function* (
     tableModules,
     (tableModule) => tableModule.tableName,
   );
-  const contents = yield* Match.value(yield* ConvexDirectory.target).pipe(
+  const convexDirectory = yield* ConvexDirectory.target;
+  const contents = yield* Match.value(convexDirectory).pipe(
     Match.when({ kind: "app" }, () => templates.id({ tableNames })),
     Match.when({ kind: "component" }, ({ scope }) =>
       templates.id({ tableNames, scope }),
@@ -963,7 +1006,7 @@ const validateNoDocNameCollisions = Effect.fnUntraced(function* (
   );
 
   if (Array.isReadonlyArrayNonEmpty(collisions)) {
-    return yield* new CodegenError.ConflictingDocNameError({ collisions });
+    return yield* CodegenError.ConflictingDocNameError.make({ collisions });
   }
 });
 
@@ -1051,6 +1094,8 @@ const installedMounts = Effect.gen(function* () {
  * It must exist before loading tables and specs because they may import bound
  * component IDs and schemas. Returns each mount with the specifier of its
  * definition, relative to `_generated` for an in-repo component.
+ *
+ * @internal
  */
 export const generateComponents = Effect.gen(function* () {
   const path = yield* Path.Path;
@@ -1063,8 +1108,9 @@ export const generateComponents = Effect.gen(function* () {
     })),
   });
 
+  const gENERATEDCOMPONENTSPATH = yield* GENERATED_COMPONENTS_PATH;
   yield* writeFileStringAndLog(
-    path.join(confectDirectory, yield* GENERATED_COMPONENTS_PATH),
+    path.join(confectDirectory, gENERATEDCOMPONENTSPATH),
     contents,
   );
   return mounts;
@@ -1073,15 +1119,12 @@ export const generateComponents = Effect.gen(function* () {
 const provisionalComponents = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const registry = path.join(
-    yield* ConfectDirectory.get,
-    yield* GENERATED_COMPONENTS_PATH,
-  );
+  const confectDirectory = yield* ConfectDirectory.get;
+  const gENERATEDCOMPONENTSPATH = yield* GENERATED_COMPONENTS_PATH;
+  const registry = path.join(confectDirectory, gENERATEDCOMPONENTSPATH);
   if (yield* fs.exists(registry)) return;
-  yield* writeFileStringAndLog(
-    registry,
-    yield* templates.components({ components: [] }),
-  );
+  const components2 = yield* templates.components({ components: [] });
+  yield* writeFileStringAndLog(registry, components2);
 });
 
 const logGenerated = <E, R>(
@@ -1110,16 +1153,6 @@ const logGenerated = <E, R>(
   );
 
 /**
- * Test-only imports never enter the runtime schema or function wrappers.
- */
-const quote = (value: string) => JSON.stringify(value);
-
-/**
- * A TypeScript literal of plain data, for the generated subject.
- */
-const literal = (value: unknown): string => JSON.stringify(value);
-
-/**
  * A descriptor's `testing` kit must be a package specifier, so the generated
  * registry holds no machine-specific path, and must export `register`. A kit
  * whose exports cannot be listed without running it passes here, and
@@ -1133,11 +1166,11 @@ const checkTestKit = Effect.fnUntraced(function* (
 ) {
   const path = yield* Path.Path;
   const invalid = (problem: string) =>
-    new CodegenError.InvalidDeclarationError({
+    CodegenError.InvalidDeclarationError.make({
       declarationPath: "confect/app.ts",
       reason: `the mount ${quote(mount)} names the test kit ${quote(specifier)} in its component descriptor${problem}`,
     });
-  if (specifier.startsWith(".") || path.isAbsolute(specifier)) {
+  if (pipe(specifier, String.startsWith(".")) || path.isAbsolute(specifier)) {
     return yield* invalid(
       '; name it by a package specifier, such as "<package>/testing".',
     );
@@ -1163,16 +1196,23 @@ const generateTesting = Effect.fnUntraced(function* (
   const confectDirectory = yield* ConfectDirectory.get;
   const convexDirectory = yield* ConvexDirectory.get;
   const generated = path.join(confectDirectory, "_generated");
-  const configDisplay = path
-    .relative(
-      yield* ProjectRoot.get,
-      path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
-    )
-    .split(path.sep)
-    .join("/");
+  const projectRoot = yield* ProjectRoot.get;
+  const configDisplay = Array.join(
+    pipe(
+      path.relative(
+        projectRoot,
+        path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
+      ),
+      String.split(path.sep),
+    ),
+    "/",
+  );
   const relative = (file: string) => {
-    const value = path.relative(generated, file).split(path.sep).join("/");
-    return value.startsWith(".") ? value : `./${value}`;
+    const value = Array.join(
+      pipe(path.relative(generated, file), String.split(path.sep)),
+      "/",
+    );
+    return pipe(value, String.startsWith(".")) ? value : `./${value}`;
   };
   const imports = [
     'import schema from "./schema.js";',
@@ -1182,12 +1222,14 @@ const generateTesting = Effect.fnUntraced(function* (
     const files = [
       ...(yield* FunctionModule.registeredModules(directory)),
     ].sort();
-    return `{ "_generated/testing.ts": () => Promise.resolve({}),\n${files
-      .map((file) => {
+    return `{ "_generated/testing.ts": () => Promise.resolve({}),\n${pipe(
+      files,
+      Array.map((file) => {
         const specifier = relative(path.join(directory, file));
-        return `${quote(file.split(path.sep).join("/"))}: () => import(${quote(specifier.replace(/\.([cm]?)[jt]s$/, ".$1js"))}),`;
-      })
-      .join("\n")}\n}`;
+        return `${quote(Array.join(pipe(file, String.split(path.sep)), "/"))}: () => import(${quote(pipe(specifier, String.replace(/\.([cm]?)[jt]s$/, ".$1js")))}),`;
+      }),
+      Array.join("\n"),
+    )}\n}`;
   });
   const declarations: Array<string> = [];
   const identifiers = new Set(["schema", "convexSchema"]);
@@ -1199,13 +1241,15 @@ const generateTesting = Effect.fnUntraced(function* (
     prefix: string,
     kind: "app" | "component",
     parentHttpPrefix: string | undefined,
+    declaring: App.Any | undefined,
   ): Effect.fn.Return<
     void,
     | PlatformError.PlatformError
     | BuildError
     | CodegenError.InvalidConvexConfigError
     | CodegenError.InvalidDeclarationError
-    | CodegenError.MissingTestKitError,
+    | CodegenError.MissingTestKitError
+    | CodegenError.TestKitSecretsMissingError,
     FileSystem.FileSystem | Path.Path
   > {
     const config = path.join(directory, ConvexConfig.CONVEX_CONFIG_FILENAME);
@@ -1217,10 +1261,17 @@ const generateTesting = Effect.fnUntraced(function* (
     );
     for (const component of installed) {
       const name = prefix + component.name;
+      // The mount as the backend that installs it declared it: the app, or a
+      // local component's own `confect/app.ts`.
       const mount =
-        prefix === ""
-          ? App.mounts(app).find((declared) => declared.name === component.name)
-          : undefined;
+        declaring === undefined
+          ? undefined
+          : Option.getOrUndefined(
+              Array.findFirst(
+                App.mounts(declaring),
+                (declared) => declared.name === component.name,
+              ),
+            );
       // A bare definition belongs to another package. Its directory is read
       // here but never written out; tests use the kit its descriptor names,
       // else its public test entry.
@@ -1238,25 +1289,26 @@ const generateTesting = Effect.fnUntraced(function* (
                 `${component.componentDefinitionPath}/test`,
               ]
             : [];
-      const kitEntry = kitEntries.find((entry) =>
-        Option.isSome(Bundler.resolveModule(entry, config)),
+      const kitEntry = Option.getOrUndefined(
+        Array.findFirst(kitEntries, (entry) =>
+          Option.isSome(Bundler.resolveModule(entry, config)),
+        ),
       );
       const resolved = fromPackage
-        ? path.dirname(
-            yield* ConvexConfig.resolveDefinition(
-              `${component.componentDefinitionPath}/convex.config`,
-              config,
-              path,
-            ).pipe(
-              Effect.fromOption,
-              Effect.mapError(
-                () =>
-                  new CodegenError.InvalidConvexConfigError({
-                    configPath: relative(config),
-                    reason: `Cannot resolve component ${component.componentDefinitionPath} for testing.`,
-                  }),
-              ),
-            ),
+        ? yield* ConvexConfig.resolveDefinition(
+            `${component.componentDefinitionPath}/convex.config`,
+            config,
+            path,
+          ).pipe(
+            Effect.fromOption,
+            Effect.mapBoth({
+              onFailure: () =>
+                CodegenError.InvalidConvexConfigError.make({
+                  configPath: relative(config),
+                  reason: `Cannot resolve component ${component.componentDefinitionPath} for testing.`,
+                }),
+              onSuccess: (definition) => path.dirname(definition),
+            }),
           )
         : component.componentDefinitionPath;
       const localPrefix =
@@ -1264,10 +1316,11 @@ const generateTesting = Effect.fnUntraced(function* (
       const httpPrefix =
         parentHttpPrefix === undefined || localPrefix === undefined
           ? undefined
-          : `${parentHttpPrefix.replace(/\/+$/, "")}${localPrefix}`.replace(
-              /\/+$/,
-              "",
-            ) || "/";
+          : pipe(
+              `${pipe(parentHttpPrefix, String.replace(/\/+$/, ""))}${localPrefix}`,
+              String.replace(/\/+$/, ""),
+              (joined) => (joined === "" ? "/" : joined),
+            );
       if (
         httpPrefix !== undefined &&
         ((yield* fs.exists(path.join(resolved, "http.ts"))) ||
@@ -1280,7 +1333,7 @@ const generateTesting = Effect.fnUntraced(function* (
       const kitKey = kitEntry ?? resolved;
       let identifier = kits.get(kitKey);
       if (identifier === undefined) {
-        const cleaned = name.replaceAll(/[^A-Za-z0-9_$]/g, "_");
+        const cleaned = pipe(name, String.replaceAll(/[^A-Za-z0-9_$]/g, "_"));
         const base = /^[A-Za-z_$]/.test(cleaned) ? cleaned : `_${cleaned}`;
         identifier = `${base}Kit`;
         let schemaIdentifier = `${base}Schema`;
@@ -1304,7 +1357,7 @@ const generateTesting = Effect.fnUntraced(function* (
           );
         } else {
           if (kitEntry === undefined) {
-            return yield* new CodegenError.MissingTestKitError({
+            return yield* CodegenError.MissingTestKitError.make({
               configPath: relative(config),
               mount: name,
               component: component.componentDefinitionPath,
@@ -1315,23 +1368,57 @@ const generateTesting = Effect.fnUntraced(function* (
         }
       }
       components.push(`${quote(name)}: ${identifier},`);
-      // A package's own `register` installs its children.
-      if (!fromPackage) {
-        yield* visit(resolved, `${name}/`, "component", httpPrefix);
+      // A packaged Confect component keeps its secret fields, so its kit
+      // must hand the kernel its secret policy as it registers.
+      if (
+        fromPackage &&
+        kitEntry !== undefined &&
+        mount?.component.contract !== undefined
+      ) {
+        const kitFile = Bundler.resolveModule(kitEntry, config);
+        const exported = Option.isNone(kitFile)
+          ? Option.none()
+          : yield* Bundler.exportNames(kitFile.value).pipe(
+              Effect.mapError((error) => fromBundlerError(kitEntry, error)),
+            );
+        if (Option.isSome(exported) && !exported.value.includes("secrets"))
+          return yield* CodegenError.TestKitSecretsMissingError.make({
+            mount: name,
+            kit: kitEntry,
+          });
       }
-      // A session runs a nested mount's `init` before its parent's.
-      mounts.push({ path: name, kit: fromPackage ? kitKey : "local" });
-      if (!fromPackage)
-        sources.push({
-          path: name,
-          identifier: identifier.replace(/Kit\d*$/, ""),
-          confect: path.join(path.dirname(resolved), "confect"),
-        });
+      // A push runs a parent's `init` before the components it mounts.
+      const local = path.join(path.dirname(resolved), "confect");
+      mounts.push({
+        path: name,
+        kit: fromPackage ? kitKey : "local",
+        ...mountSettings(mount),
+      });
+      if (!fromPackage) {
+        sources.push({ path: name, identifier, confect: local });
+        const own = path.join(local, "app.ts");
+        const nested = (yield* fs.exists(own))
+          ? yield* bundledDefault(own)
+          : undefined;
+        yield* visit(
+          resolved,
+          `${name}/`,
+          "component",
+          httpPrefix,
+          App.isApp(nested) ? nested : undefined,
+        );
+      }
     }
   });
-  const mounts: Array<{ path: string; kit: string }> = [];
+  const mounts: Array<TestingManifest.MountEntry> = [];
   const sources: Array<SecretSource> = [];
-  yield* visit(convexDirectory, "", (yield* ConvexDirectory.target).kind, "");
+  yield* visit(
+    convexDirectory,
+    "",
+    (yield* ConvexDirectory.target).kind,
+    "",
+    app,
+  );
   const secrets = yield* secretsOf(input.leaves, sources, relative);
   imports.push(...secrets.imports);
   // A component's subject is row 9's component profile, with no groups. An
@@ -1341,23 +1428,31 @@ const generateTesting = Effect.fnUntraced(function* (
     Bundler.canImport("@confect/test", path.join(generated, "testing.ts"))
       ? yield* testBackend(app, input, mounts)
       : { imports: [], declaration: "" };
-  imports.push(...subject.imports.filter((line) => !imports.includes(line)));
-  const registry = `{ httpMounts: [${httpMounts.join(",")}], schema, convexSchema, modules: ${yield* moduleMap(convexDirectory)}, components: {${components.join("\n")}}${secrets.policy === undefined ? "" : `, secrets: ${secrets.policy}`} }`;
+  imports.push(
+    ...Array.filter(subject.imports, (line) => !imports.includes(line)),
+  );
+  const modules = yield* moduleMap(convexDirectory);
+  const policy =
+    secrets.policy === undefined ? "" : `, secrets: ${secrets.policy}`;
+  const registry = `{ httpMounts: [${Array.join(httpMounts, ",")}], schema, convexSchema, modules: ${modules}, components: {${Array.join(components, "\n")}}${policy} }`;
   yield* writeFileStringAndLog(
     path.join(generated, "testing.ts"),
-    [
-      "// Generated by `confect codegen`. Test-only; do not import in backend functions.",
-      ...imports,
-      ...declarations,
-      ...(subject.declaration === ""
-        ? [`export default ${registry};`]
-        : [
-            `const backend = ${registry};`,
-            "export default backend;",
-            subject.declaration,
-            "",
-          ]),
-    ].join("\n"),
+    Array.join(
+      [
+        "// Generated by `confect codegen`. Test-only; do not import in backend functions.",
+        ...imports,
+        ...declarations,
+        ...(subject.declaration === ""
+          ? [`export default ${registry};`]
+          : [
+              `const backend = ${registry};`,
+              "export default backend;",
+              subject.declaration,
+              "",
+            ]),
+      ],
+      "\n",
+    ),
   );
 });
 
@@ -1368,7 +1463,7 @@ const generateTesting = Effect.fnUntraced(function* (
 const testBackend = Effect.fnUntraced(function* (
   app: App.Any,
   input: TestingInput,
-  mounts: ReadonlyArray<{ readonly path: string; readonly kit: string }>,
+  mounts: ReadonlyArray<TestingManifest.MountEntry>,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -1380,88 +1475,157 @@ const testBackend = Effect.fnUntraced(function* (
   const facts = yield* Effect.fromResult(
     TestingManifest.collectFacts(registry, input.modules, groups),
   );
+  const schema = yield* bundledDefault(
+    path.join(confectDirectory, GENERATED_DIRNAME, "schema.ts"),
+  );
+  const realm = yield* fs.exists(path.join(confectDirectory, "auth.ts"));
   const planned = yield* Effect.fromResult(
     TestingManifest.plan({
       groups,
       facts,
-      tables: input.tables,
-      realm: yield* fs.exists(path.join(confectDirectory, "auth.ts")),
+      tables: tableInfo(schema),
+      mounts: Array.map(mounts, ({ path: mountPath }) => mountPath),
+      realm,
     }),
   );
   const manifest = yield* readPrevious;
-  const digest =
-    typeof manifest["digest"] === "string" ? manifest["digest"] : "";
+  const digest = Predicate.isString(manifest["digest"])
+    ? manifest["digest"]
+    : "";
   const imports = [
     'import { TestBackend as $TestBackend } from "@confect/test";',
     'import refs from "./refs.js";',
   ];
   const ports: Array<string> = [];
   for (const [index, port] of planned.ports.entries()) {
-    const [file = "", exportName = ""] = port.input.split("#");
+    const [file, exportName = ""] = pipe(port.input, String.split("#"));
     if (!(yield* fs.exists(path.join(confectDirectory, file))))
-      return yield* new CodegenError.InvalidDeclarationError({
+      return yield* CodegenError.InvalidDeclarationError.make({
         declarationPath: `confect/${file}`,
         reason: `the port ${quote(port.name)} takes its input codec from this file, which does not exist.`,
       });
-    imports.push(
-      `import * as $port${index} from ${quote(`../${file.replace(/\.ts$/, ".js")}`)};`,
-    );
+    const specifier = `../${pipe(file, String.replace(/\.ts$/, ".js"))}`;
+    imports.push(`import * as $port${index} from ${quote(specifier)};`);
     ports.push(
-      `${quote(port.name)}: $TestBackend.port({ name: ${quote(port.name)}, input: $port${index}[${quote(exportName)}], outcomes: ${literal(port.outcomes)} }),`,
+      `${quote(port.name)}: $TestBackend.port({ name: ${quote(port.name)}, input: $port${index}[${quote(exportName)}], outcomes: ${stringify(port.outcomes)} }),`,
     );
   }
-  const groupLines = planned.groups.map(
-    ({ path: groupPath, segments, owner, functions, open }) =>
-      `${quote(groupPath)}: $TestBackend.group({ path: ${quote(groupPath)}, owner: ${quote(owner)}, functions: { ${functions
-        .map(
+  const groupLines = Array.map(
+    planned.groups,
+    ({ path: groupPath, segments, owner, functions, open }) => {
+      const refs = pipe(
+        functions,
+        Array.map(
           (name) =>
             `${quote(name)}: refs.public${access(segments)}${access([name])}`,
-        )
-        .join(", ")} }, open: ${literal(open)} }),`,
+        ),
+        Array.join(", "),
+      );
+      return `    ${quote(groupPath)}: $TestBackend.group({ path: ${quote(groupPath)}, owner: ${quote(owner)}, functions: { ${refs} }, open: ${stringify(open)} }),`;
+    },
   );
+  const portLines = Array.map(ports, (line) => `\n    ${line}`);
   const owner = Env.name(App.env(app));
-  const settings = Env.descriptors(App.env(app)).map(([name, descriptor]) => ({
-    name,
-    owner,
-    optional: descriptor.optional,
-  }));
+  const settings = Array.map(
+    Env.descriptors(App.env(app)),
+    ([name, descriptor]) => ({ name, owner, optional: descriptor.optional }),
+  );
   return {
     imports,
-    declaration: [
-      "export const TestBackend = $TestBackend.make(backend, {",
-      "  refs,",
-      `  groups: {\n${groupLines.map((line) => `    ${line}`).join("\n")}\n  },`,
-      `  ports: {${ports.map((line) => `\n    ${line}`).join("")}${ports.length === 0 ? "" : "\n  "}},`,
-      `  laws: ${literal(planned.laws)},`,
-      `  obligations: ${literal(planned.obligations)},`,
-      `  manifestDigest: ${quote(digest)},`,
-      `  mounts: ${literal(mounts)},`,
-      `  settings: ${literal(settings)},`,
-      "});",
-    ].join("\n"),
+    declaration: Array.join(
+      [
+        "export const TestBackend = $TestBackend.make(backend, {",
+        "  refs,",
+        `  groups: {\n${Array.join(groupLines, "\n")}\n  },`,
+        `  ports: {${Array.join(portLines, "")}${ports.length === 0 ? "" : "\n  "}},`,
+        `  laws: ${stringify(planned.laws)},`,
+        `  obligations: ${stringify(planned.obligations)},`,
+        `  manifestDigest: ${quote(digest)},`,
+        `  mounts: ${stringify(mounts)},`,
+        `  settings: ${stringify(settings)},`,
+        "});",
+      ],
+      "\n",
+    ),
   };
 });
+
+/**
+ * What a mount binds its component's settings to, and which of them the
+ * component requires: a literal stays a value, an entry of the mounting
+ * backend's env forwards that backend's setting.
+ */
+const mountSettings = (
+  mount: Mount.Data | undefined,
+): Pick<TestingManifest.MountEntry, "env" | "required"> => {
+  const env: Record<string, TestingManifest.Binding> = {};
+  const bound = Array.sort(
+    Record.toEntries(mount?.env ?? {}),
+    Order.mapInput(Order.String, ([slot]: readonly [string, unknown]) => slot),
+  );
+  for (const [slot, value] of bound) {
+    if (Predicate.isString(value)) env[slot] = { value };
+    else if (value !== undefined && Env.isEntry(value))
+      env[slot] = { from: Env.origin(value).key };
+  }
+  const required = pipe(
+    Record.toEntries(mount?.component.env ?? {}),
+    Array.filter(([, schema]) => !SchemaAST.isOptional(schema.ast)),
+    Array.map(([slot]) => slot),
+    Array.sort(Order.String),
+  );
+  return { env, required };
+};
 
 /**
  * A property path in generated code, such as `.tasks.tasks`.
  */
 const access = (segments: ReadonlyArray<string>) =>
-  segments
-    .map((segment) =>
+  pipe(
+    segments,
+    Array.map((segment) =>
       /^[A-Za-z_$][\w$]*$/.test(segment)
         ? `.${segment}`
         : `[${quote(segment)}]`,
-    )
-    .join("");
+    ),
+    Array.join(""),
+  );
 
 /**
- * A local mount whose own `confect/` holds its generated schema and refs.
+ * A local mount whose own `confect/` holds its generated schema and refs, and
+ * the identifier codegen gave its kit, which is unique among the mounts.
  */
 interface SecretSource {
   readonly path: string;
   readonly identifier: string;
   readonly confect: string;
 }
+
+/**
+ * A Confect database schema's tables, or none for any other value.
+ */
+const tablesOfSchema = (schema: unknown) =>
+  DatabaseSchema.isDatabaseSchema(schema)
+    ? Record.values(
+        DatabaseSchema.tables(schema as DatabaseSchema.AnyWithProps),
+      )
+    : [];
+
+/**
+ * Each app table with its stored fields and its declared indexes.
+ */
+const tableInfo = (schema: unknown): Array<TestingManifest.TableInfo> =>
+  Array.map(tablesOfSchema(schema), (table) => ({
+    name: table.tableName,
+    fields:
+      table.Fields.ast._tag === "Objects"
+        ? Array.filter(
+            Array.map(table.Fields.ast.propertySignatures, ({ name }) => name),
+            Predicate.isString,
+          )
+        : [],
+    indexes: Record.keys(table.indexes),
+  }));
 
 const bundledDefault = Effect.fnUntraced(function* (file: string) {
   const fs = yield* FileSystem.FileSystem;
@@ -1479,30 +1643,32 @@ const functionSecrets = (
   functions: ReadonlyArray<TestingManifest.ConfectFunction>,
   refs: string,
 ) =>
-  functions
-    .map((fn) => {
+  pipe(
+    functions,
+    Array.filterMap((fn) => {
       const ref = `${refs}.${fn.visibility}${access([...fn.segments, fn.name])}`;
       const codecs = [
-        ...(TestingManifest.hasSecret(fn.args)
+        ...(SecretSchema.hasSecret(fn.args.ast)
           ? [`args: () => ${ref}.args`]
           : []),
-        ...(TestingManifest.hasSecret(fn.returns)
+        ...(SecretSchema.hasSecret(fn.returns.ast)
           ? [`returns: () => ${ref}.returns`]
           : []),
       ];
+      const key = quote(`${Array.join(fn.segments, "/")}:${fn.name}`);
       return codecs.length === 0
-        ? undefined
-        : `${quote(`${fn.segments.join("/")}:${fn.name}`)}: { ${codecs.join(", ")} }`;
-    })
-    .filter((entry) => entry !== undefined)
-    .sort();
+        ? Result.failVoid
+        : Result.succeed(`${key}: { ${Array.join(codecs, ", ")} }`);
+    }),
+    Array.sort(Order.String),
+  );
 
 /**
  * The secret policy `TestConfect.layer` feeds the kernel's redaction: a thunk
  * of each Confect codec that holds a `Schema.Redacted` node, among the app's
  * functions and each local mount's tables and functions. The layer reads the
- * app's own tables from its schema. A package's kit registers only Convex
- * schemas, so its tables and functions carry no policy here.
+ * app's own tables from its schema. A packaged component's kit hands the kernel
+ * its own policy as it registers.
  */
 const secretsOf = Effect.fnUntraced(function* (
   leaves: ReadonlyArray<LoadedLeafModule>,
@@ -1514,42 +1680,41 @@ const secretsOf = Effect.fnUntraced(function* (
   const tables: Array<string> = [];
   const functions: Array<string> = [];
   const own = functionSecrets(
-    leaves.flatMap((leaf) =>
+    Array.flatMap(leaves, (leaf) =>
       TestingManifest.confectFunctions(
-        { [leaf.pathSegments.at(-1)!]: leaf.spec },
-        leaf.pathSegments.slice(0, -1),
+        { [Array.lastNonEmpty(leaf.pathSegments)]: leaf.spec },
+        Array.initNonEmpty(leaf.pathSegments),
       ),
     ),
     "refs",
   );
   if (own.length > 0) {
     imports.push('import refs from "./refs.js";');
-    functions.push(`"": { ${own.join(", ")} }`);
+    functions.push(`"": { ${Array.join(own, ", ")} }`);
   }
   for (const source of sources) {
     const generated = path.join(source.confect, GENERATED_DIRNAME);
     const schema = yield* bundledDefault(path.join(generated, "schema.ts"));
-    const secretTables = DatabaseSchema.isDatabaseSchema(schema)
-      ? Object.values(
-          DatabaseSchema.tables(schema as DatabaseSchema.AnyWithProps),
-        )
-          .filter((table) => TestingManifest.hasSecret(table.Fields))
-          .map((table) => table.tableName)
-          .sort((a, b) => (a < b ? -1 : Number(a > b)))
-      : [];
+    const secretTables = pipe(
+      tablesOfSchema(schema),
+      Array.filter((table) => SecretSchema.hasSecret(table.Fields.ast)),
+      Array.map((table) => table.tableName),
+      Array.sort(Order.String),
+    );
     if (secretTables.length > 0) {
       const local = `${source.identifier}ConfectSchema`;
+      const thunks = pipe(
+        secretTables,
+        Array.map(
+          (table) =>
+            `${quote(table)}: () => $DatabaseSchema.tables(${local})${access([table])}.Fields`,
+        ),
+        Array.join(", "),
+      );
       imports.push(
         `import ${local} from ${quote(relative(path.join(generated, "schema.js")))};`,
       );
-      tables.push(
-        `${quote(source.path)}: { ${secretTables
-          .map(
-            (table) =>
-              `${quote(table)}: () => $DatabaseSchema.tables(${local})${access([table])}.Fields`,
-          )
-          .join(", ")} }`,
-      );
+      tables.push(`${quote(source.path)}: { ${thunks} }`);
     }
     const spec = yield* bundledDefault(path.join(generated, "spec.ts"));
     const local = `${source.identifier}Refs`;
@@ -1563,7 +1728,7 @@ const secretsOf = Effect.fnUntraced(function* (
       imports.push(
         `import ${local} from ${quote(relative(path.join(generated, "refs.js")))};`,
       );
-      functions.push(`${quote(source.path)}: { ${entries.join(", ")} }`);
+      functions.push(`${quote(source.path)}: { ${Array.join(entries, ", ")} }`);
     }
   }
   if (tables.length > 0)
@@ -1571,14 +1736,14 @@ const secretsOf = Effect.fnUntraced(function* (
       'import { DatabaseSchema as $DatabaseSchema } from "@confect/server";',
     );
   const parts = [
-    ...(tables.length === 0 ? [] : [`tables: { ${tables.join(", ")} }`]),
+    ...(tables.length === 0 ? [] : [`tables: { ${Array.join(tables, ", ")} }`]),
     ...(functions.length === 0
       ? []
-      : [`functions: { ${functions.join(", ")} }`]),
+      : [`functions: { ${Array.join(functions, ", ")} }`]),
   ];
   return {
-    imports: [...new Set(imports)],
-    policy: parts.length === 0 ? undefined : `{ ${parts.join(", ")} }`,
+    imports: Array.dedupe(imports),
+    policy: parts.length === 0 ? undefined : `{ ${Array.join(parts, ", ")} }`,
   };
 });
 
@@ -1589,5 +1754,4 @@ interface TestingInput {
     string,
     ManifestSection.GenerateInput["modules"]
   >;
-  readonly tables: ReadonlyArray<string>;
 }

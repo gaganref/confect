@@ -216,7 +216,7 @@ import { HttpRouter } from "@confect/server";
 import schema from "../confect/_generated/schema";
 import http from "../confect/http";
 
-export default HttpRouter.forSchema(schema)(http.routes, { api: http.api });
+export default HttpRouter.make(schema, http.routes, { api: http.api });
 ```
 
 The schema supplies the backend's capabilities; `{ api }` supplies endpoint labels for Convex logs and the dashboard. Mounted components serve their own routes under their prefixes; your middleware does not run in front of them.

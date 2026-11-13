@@ -13,6 +13,10 @@ import type { Providers } from "./Providers.js";
 import { resourceName } from "./internal/ResourceIdentity.js";
 import { checkpointCreate } from "./internal/Lifecycle.js";
 import { adminKey, dataDirectories } from "./internal/LocalBackend.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
+import * as Array from "effect/Array";
 
 export interface DeployKeyProps {
   readonly deploymentName: string;
@@ -39,50 +43,57 @@ export type DeployKey = Resource<
 >;
 export const DeployKey = Resource<DeployKey>("Convex.DeployKey");
 
-export class DeployKeyRecoveryRequired extends Schema.TaggedError<DeployKeyRecoveryRequired>()(
-  "DeployKeyRecoveryRequired",
-  {
-    deploymentName: Schema.String,
-    name: Schema.String,
-    keyIds: Schema.Array(Schema.Finite),
-  },
-) {}
+export class DeployKeyRecoveryRequired extends Schema.TaggedError<
+  DeployKeyRecoveryRequired,
+  { readonly brand: unique symbol }
+>()("DeployKeyRecoveryRequired", {
+  deploymentName: Schema.String,
+  keyName: Schema.String,
+  keyIds: Schema.Array(Schema.Finite),
+}) {}
 
-export class DeployKeyChangeRequiresNewResource extends Schema.TaggedError<DeployKeyChangeRequiresNewResource>()(
-  "DeployKeyChangeRequiresNewResource",
-  { deploymentName: Schema.String, keyId: Schema.Finite, field: Schema.String },
-) {}
+export class DeployKeyChangeRequiresNewResource extends Schema.TaggedError<
+  DeployKeyChangeRequiresNewResource,
+  { readonly brand: unique symbol }
+>()("DeployKeyChangeRequiresNewResource", {
+  deploymentName: Schema.String,
+  keyId: Schema.Finite,
+  field: Schema.String,
+}) {}
 
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient;
   const hasName = (keyName: string, name: string) =>
     keyName === name ||
-    (keyName.startsWith(`${name} (`) &&
-      /^[0-9a-f]{8}\)$/.test(keyName.slice(name.length + 2)));
+    (pipe(keyName, String.startsWith(`${name} (`)) &&
+      /^[0-9a-f]{8}\)$/.test(pipe(keyName, String.slice(name.length + 2))));
   const recover = (
     deploymentName: string,
     name: string,
     keyIds: ReadonlyArray<number>,
-  ) => new DeployKeyRecoveryRequired({ deploymentName, name, keyIds });
+  ) =>
+    DeployKeyRecoveryRequired.make({ deploymentName, keyName: name, keyIds });
   return {
     diff: Effect.fn("DeployKey.diff")(function* ({ news, output }) {
-      if (!isResolved(news) || !output) return;
+      if (!isResolved(news) || output === undefined) return;
       for (const field of ["deploymentName", "name"] as const) {
         if (news[field] !== undefined && news[field] !== output[field])
-          return yield* new DeployKeyChangeRequiresNewResource({
+          return yield* DeployKeyChangeRequiresNewResource.make({
             deploymentName: output.deploymentName,
             keyId: output.keyId,
             field,
           });
       }
       const keys = yield* client.listDeployKeys(output.deploymentName);
-      const key = keys.find((candidate) => candidate.id === output.keyId);
-      if (!key || !Redacted.isRedacted(output.deployKey))
+      const key = Option.getOrUndefined(
+        Array.findFirst(keys, (candidate) => candidate.id === output.keyId),
+      );
+      if (key === undefined || !Redacted.isRedacted(output.deployKey))
         return yield* recover(output.deploymentName, output.name, [
           output.keyId,
         ]);
       if (!hasName(key.name, news.name ?? output.name))
-        return yield* new DeployKeyChangeRequiresNewResource({
+        return yield* DeployKeyChangeRequiresNewResource.make({
           deploymentName: output.deploymentName,
           keyId: output.keyId,
           field: "name",
@@ -90,9 +101,12 @@ export const provider = Effect.gen(function* () {
       const allowedActions = news.allowedActions ?? output.allowedActions;
       if (
         new Set(allowedActions).size !== new Set(key.allowedActions).size ||
-        allowedActions.some((action) => !key.allowedActions.includes(action))
+        Array.some(
+          allowedActions,
+          (action) => !key.allowedActions.includes(action),
+        )
       )
-        return yield* new DeployKeyChangeRequiresNewResource({
+        return yield* DeployKeyChangeRequiresNewResource.make({
           deploymentName: output.deploymentName,
           keyId: output.keyId,
           field: "allowedActions",
@@ -111,9 +125,12 @@ export const provider = Effect.gen(function* () {
         olds.name ??
         (yield* resourceName("key", fqn, instanceId));
       const keys = yield* client.listDeployKeys(deploymentName);
-      if (output) {
-        const key = keys.find((candidate) => candidate.id === output.keyId);
-        if (!key) return yield* recover(deploymentName, name, [output.keyId]);
+      if (output !== undefined) {
+        const key = Option.getOrUndefined(
+          Array.findFirst(keys, (candidate) => candidate.id === output.keyId),
+        );
+        if (key === undefined)
+          return yield* recover(deploymentName, name, [output.keyId]);
         if (!Redacted.isRedacted(output.deployKey))
           return yield* recover(deploymentName, name, [key.id]);
         return {
@@ -121,12 +138,12 @@ export const provider = Effect.gen(function* () {
           allowedActions: key.allowedActions,
         };
       }
-      const matches = keys.filter((key) => hasName(key.name, name));
+      const matches = Array.filter(keys, (key) => hasName(key.name, name));
       if (matches.length > 0)
         return yield* recover(
           deploymentName,
           name,
-          matches.map((candidate) => candidate.id),
+          Array.map(matches, (candidate) => candidate.id),
         );
       return undefined;
     }),
@@ -136,26 +153,28 @@ export const provider = Effect.gen(function* () {
       news,
       output,
     }) {
-      if (!output) yield* checkpointCreate(fqn, instanceId, news);
+      if (output === undefined) yield* checkpointCreate(fqn, instanceId, news);
       const name =
         news.name ??
         output?.name ??
         (yield* resourceName("key", fqn, instanceId));
-      if (output) {
+      if (output !== undefined) {
         for (const field of ["deploymentName", "name"] as const) {
           if (news[field] !== undefined && news[field] !== output[field])
-            return yield* new DeployKeyChangeRequiresNewResource({
+            return yield* DeployKeyChangeRequiresNewResource.make({
               deploymentName: output.deploymentName,
               keyId: output.keyId,
               field,
             });
         }
         const keys = yield* client.listDeployKeys(output.deploymentName);
-        const key = keys.find((candidate) => candidate.id === output.keyId);
-        if (!key || !Redacted.isRedacted(output.deployKey))
+        const key = Option.getOrUndefined(
+          Array.findFirst(keys, (candidate) => candidate.id === output.keyId),
+        );
+        if (key === undefined || !Redacted.isRedacted(output.deployKey))
           return yield* recover(output.deploymentName, name, [output.keyId]);
         if (!hasName(key.name, name))
-          return yield* new DeployKeyChangeRequiresNewResource({
+          return yield* DeployKeyChangeRequiresNewResource.make({
             deploymentName: output.deploymentName,
             keyId: output.keyId,
             field: "name",
@@ -163,9 +182,12 @@ export const provider = Effect.gen(function* () {
         const allowedActions = news.allowedActions ?? output.allowedActions;
         if (
           new Set(allowedActions).size !== new Set(key.allowedActions).size ||
-          allowedActions.some((action) => !key.allowedActions.includes(action))
+          Array.some(
+            allowedActions,
+            (action) => !key.allowedActions.includes(action),
+          )
         )
-          return yield* new DeployKeyChangeRequiresNewResource({
+          return yield* DeployKeyChangeRequiresNewResource.make({
             deploymentName: output.deploymentName,
             keyId: output.keyId,
             field: "allowedActions",
@@ -175,14 +197,15 @@ export const provider = Effect.gen(function* () {
           allowedActions: key.allowedActions,
         };
       }
-      const existing = (yield* client.listDeployKeys(
-        news.deploymentName,
-      )).filter((key) => hasName(key.name, name));
+      const deployKeys = yield* client.listDeployKeys(news.deploymentName);
+      const existing = Array.filter(deployKeys, (key) =>
+        hasName(key.name, name),
+      );
       if (existing.length > 0)
         return yield* recover(
           news.deploymentName,
           name,
-          existing.map((key) => key.id),
+          Array.map(existing, (key) => key.id),
         );
       const created = yield* client.createDeployKey(news.deploymentName, {
         name,
@@ -190,15 +213,16 @@ export const provider = Effect.gen(function* () {
           ? {}
           : { allowedActions: [...news.allowedActions] }),
       });
-      const matches = (yield* client.listDeployKeys(
-        news.deploymentName,
-      )).filter((key) => hasName(key.name, name));
+      const deployKeys2 = yield* client.listDeployKeys(news.deploymentName);
+      const matches = Array.filter(deployKeys2, (key) =>
+        hasName(key.name, name),
+      );
       const key = matches[0];
-      if (matches.length !== 1 || !key)
+      if (matches.length !== 1 || key === undefined)
         return yield* recover(
           news.deploymentName,
           name,
-          matches.map((candidate) => candidate.id),
+          Array.map(matches, (candidate) => candidate.id),
         );
       return {
         deploymentName: news.deploymentName,
@@ -220,6 +244,8 @@ export const provider = Effect.gen(function* () {
  * Under `alchemy dev` the deploy key is the admin key the local deployment
  * generated. It is read on every apply, so a recreated backend's new key
  * replaces the old one.
+ *
+ * @stability unstable
  */
 export const localProvider = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -253,4 +279,7 @@ export const localProvider = Effect.gen(function* () {
 });
 
 export const layer = Provider.effect(DeployKey, provider);
+/**
+ * @stability unstable
+ */
 export const localLayer = Provider.effect(DeployKey, localProvider);

@@ -1,5 +1,6 @@
 import { mutationGeneric, queryGeneric } from "convex/server";
 import { v } from "convex/values";
+import * as Array from "effect/Array";
 
 export const add = mutationGeneric({
   args: { text: v.string() },
@@ -12,5 +13,5 @@ export const list = queryGeneric({
     ctx.db
       .query("notes")
       .collect()
-      .then((notes) => notes.map((note) => note.text)),
+      .then((notes) => Array.map(notes, (note) => note.text)),
 });

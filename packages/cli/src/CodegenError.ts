@@ -1,3 +1,4 @@
+import * as String from "effect/String";
 import * as Array from "effect/Array";
 import * as Console from "effect/Console";
 import { pipe } from "effect/Function";
@@ -8,241 +9,277 @@ import * as Schema from "effect/Schema";
 import { BuildError, isBuildError } from "./BuildError.js";
 import { SnapshotError } from "./SnapshotError.js";
 import * as Ansi from "./Ansi.js";
+import { quote } from "./Json.js";
 import { formatPath, renderBuildError } from "./log.js";
 
 // --- Variants ---
 
-export class MissingImplFileError extends Schema.TaggedError<MissingImplFileError>()(
-  "MissingImplFileError",
-  {
-    specPath: Schema.String,
-    expectedImplPath: Schema.String,
-  },
-) {}
+export class MissingImplFileError extends Schema.TaggedError<
+  MissingImplFileError,
+  { readonly brand: unique symbol }
+>()("MissingImplFileError", {
+  specPath: Schema.String,
+  expectedImplPath: Schema.String,
+}) {}
 
-export class MissingSpecFileError extends Schema.TaggedError<MissingSpecFileError>()(
-  "MissingSpecFileError",
-  {
-    implPath: Schema.String,
-    expectedSpecPath: Schema.String,
-  },
-) {}
+export class MissingSpecFileError extends Schema.TaggedError<
+  MissingSpecFileError,
+  { readonly brand: unique symbol }
+>()("MissingSpecFileError", {
+  implPath: Schema.String,
+  expectedSpecPath: Schema.String,
+}) {}
 
-export class SpecMissingDefaultGroupSpecError extends Schema.TaggedError<SpecMissingDefaultGroupSpecError>()(
-  "SpecMissingDefaultGroupSpecError",
-  {
-    specPath: Schema.String,
-  },
-) {}
+export class SpecMissingDefaultGroupSpecError extends Schema.TaggedError<
+  SpecMissingDefaultGroupSpecError,
+  { readonly brand: unique symbol }
+>()("SpecMissingDefaultGroupSpecError", {
+  specPath: Schema.String,
+}) {}
 
-export class RemoveBusyError extends Schema.TaggedError<RemoveBusyError>()(
-  "RemoveBusyError",
-  { path: Schema.String, attempts: Schema.Finite, cause: Schema.Unknown },
-) {}
+export class RemoveBusyError extends Schema.TaggedError<
+  RemoveBusyError,
+  { readonly brand: unique symbol }
+>()("RemoveBusyError", {
+  path: Schema.String,
+  attempts: Schema.Finite,
+  cause: Schema.Unknown,
+}) {}
 
-export class ComponentNodeGroupError extends Schema.TaggedError<ComponentNodeGroupError>()(
-  "ComponentNodeGroupError",
-  {
-    specPath: Schema.String,
-    groupPath: Schema.String,
-  },
-) {}
+export class ComponentNodeGroupError extends Schema.TaggedError<
+  ComponentNodeGroupError,
+  { readonly brand: unique symbol }
+>()("ComponentNodeGroupError", {
+  specPath: Schema.String,
+  groupPath: Schema.String,
+}) {}
 
-export class SpecImportsServerError extends Schema.TaggedError<SpecImportsServerError>()(
-  "SpecImportsServerError",
-  {
-    specPath: Schema.String,
-    importerPaths: Schema.Array(Schema.String),
-  },
-) {}
+export class SpecImportsServerError extends Schema.TaggedError<
+  SpecImportsServerError,
+  { readonly brand: unique symbol }
+>()("SpecImportsServerError", {
+  specPath: Schema.String,
+  importerPaths: Schema.Array(Schema.String),
+}) {}
 
-export class InvalidMiddlewareAttachmentError extends Schema.TaggedError<InvalidMiddlewareAttachmentError>()(
-  "InvalidMiddlewareAttachmentError",
-  { specPath: Schema.String, message: Schema.String },
-) {}
+export class InvalidMiddlewareAttachmentError extends Schema.TaggedError<
+  InvalidMiddlewareAttachmentError,
+  { readonly brand: unique symbol }
+>()("InvalidMiddlewareAttachmentError", {
+  specPath: Schema.String,
+  message: Schema.String,
+}) {}
 
-export class ImplMissingSpecImportError extends Schema.TaggedError<ImplMissingSpecImportError>()(
-  "ImplMissingSpecImportError",
-  {
-    implPath: Schema.String,
-    expectedSpecPath: Schema.String,
-  },
-) {}
+export class InvalidContextReuseError extends Schema.TaggedError<
+  InvalidContextReuseError,
+  { readonly brand: unique symbol }
+>()("InvalidContextReuseError", {
+  specPath: Schema.String,
+  groupPath: Schema.String,
+  reason: Schema.Literals([
+    "InvalidOption",
+    "NodeRuntime",
+    "ReservedFunctionName",
+  ]),
+}) {}
 
-export class ImplMissingDefaultLayerError extends Schema.TaggedError<ImplMissingDefaultLayerError>()(
-  "ImplMissingDefaultLayerError",
-  {
-    implPath: Schema.String,
-  },
-) {}
+export class ImplMissingSpecImportError extends Schema.TaggedError<
+  ImplMissingSpecImportError,
+  { readonly brand: unique symbol }
+>()("ImplMissingSpecImportError", {
+  implPath: Schema.String,
+  expectedSpecPath: Schema.String,
+}) {}
 
-export class ImplNotFinalizedError extends Schema.TaggedError<ImplNotFinalizedError>()(
-  "ImplNotFinalizedError",
-  {
-    implPath: Schema.String,
-  },
-) {}
+export class ImplMissingDefaultLayerError extends Schema.TaggedError<
+  ImplMissingDefaultLayerError,
+  { readonly brand: unique symbol }
+>()("ImplMissingDefaultLayerError", {
+  implPath: Schema.String,
+}) {}
 
-export class ImplMissingFunctionsError extends Schema.TaggedError<ImplMissingFunctionsError>()(
-  "ImplMissingFunctionsError",
-  {
-    implPath: Schema.String,
-    groupPath: Schema.String,
-    missingFunctionNames: Schema.Array(Schema.String),
-  },
-) {}
+export class ImplNotFinalizedError extends Schema.TaggedError<
+  ImplNotFinalizedError,
+  { readonly brand: unique symbol }
+>()("ImplNotFinalizedError", {
+  implPath: Schema.String,
+}) {}
 
-export class ImplMissingMiddlewareError extends Schema.TaggedError<ImplMissingMiddlewareError>()(
-  "ImplMissingMiddlewareError",
-  {
-    implPath: Schema.String,
-    groupPath: Schema.String,
-    missingMiddlewareKeys: Schema.Array(Schema.String),
-  },
-) {}
+export class ImplMissingFunctionsError extends Schema.TaggedError<
+  ImplMissingFunctionsError,
+  { readonly brand: unique symbol }
+>()("ImplMissingFunctionsError", {
+  implPath: Schema.String,
+  groupPath: Schema.String,
+  missingFunctionNames: Schema.Array(Schema.String),
+}) {}
 
-export class RequiredMiddlewareError extends Schema.TaggedError<RequiredMiddlewareError>()(
-  "RequiredMiddlewareError",
-  {
-    missing: Schema.Array(
-      Schema.Struct({
-        functionName: Schema.String,
-        middlewareKey: Schema.String,
-      }),
-    ),
-  },
-) {}
+export class ImplMissingMiddlewareError extends Schema.TaggedError<
+  ImplMissingMiddlewareError,
+  { readonly brand: unique symbol }
+>()("ImplMissingMiddlewareError", {
+  implPath: Schema.String,
+  groupPath: Schema.String,
+  missingMiddlewareKeys: Schema.Array(Schema.String),
+}) {}
 
-export class ParentChildNameCollisionError extends Schema.TaggedError<ParentChildNameCollisionError>()(
-  "ParentChildNameCollisionError",
-  {
-    parentSpecPath: Schema.String,
-    childSpecPath: Schema.String,
-    collisionName: Schema.String,
-    collisionKind: Schema.Literals(["function", "group"]),
-  },
-) {}
+export class RequiredMiddlewareError extends Schema.TaggedError<
+  RequiredMiddlewareError,
+  { readonly brand: unique symbol }
+>()("RequiredMiddlewareError", {
+  missing: Schema.Array(
+    Schema.Struct({
+      functionName: Schema.String,
+      middlewareKey: Schema.String,
+    }),
+  ),
+}) {}
 
-export class InvalidTableDefaultExportError extends Schema.TaggedError<InvalidTableDefaultExportError>()(
-  "InvalidTableDefaultExportError",
-  {
-    tablePath: Schema.String,
-  },
-) {}
+export class ParentChildNameCollisionError extends Schema.TaggedError<
+  ParentChildNameCollisionError,
+  { readonly brand: unique symbol }
+>()("ParentChildNameCollisionError", {
+  parentSpecPath: Schema.String,
+  childSpecPath: Schema.String,
+  collisionName: Schema.String,
+  collisionKind: Schema.Literals(["function", "group"]),
+}) {}
 
-export class InvalidTableFilenameError extends Schema.TaggedError<InvalidTableFilenameError>()(
-  "InvalidTableFilenameError",
-  {
-    tablePath: Schema.String,
-    reason: Schema.String,
-  },
-) {}
+export class InvalidTableDefaultExportError extends Schema.TaggedError<
+  InvalidTableDefaultExportError,
+  { readonly brand: unique symbol }
+>()("InvalidTableDefaultExportError", {
+  tablePath: Schema.String,
+}) {}
 
-export class DuplicateTableNameError extends Schema.TaggedError<DuplicateTableNameError>()(
-  "DuplicateTableNameError",
-  {
-    // Every table name that more than one file resolves to, each paired with
-    // the colliding file paths. All collisions are captured in a single pass
-    // so the user can fix them together rather than re-running codegen once
-    // per conflict.
-    collisions: Schema.Array(
-      Schema.Struct({
-        tableName: Schema.String,
-        tablePaths: Schema.Array(Schema.String),
-      }),
-    ),
-  },
-) {}
+export class InvalidTableFilenameError extends Schema.TaggedError<
+  InvalidTableFilenameError,
+  { readonly brand: unique symbol }
+>()("InvalidTableFilenameError", {
+  tablePath: Schema.String,
+  reason: Schema.String,
+}) {}
 
-export class LegacySchemaFileError extends Schema.TaggedError<LegacySchemaFileError>()(
-  "LegacySchemaFileError",
-  {
-    schemaPath: Schema.String,
-  },
-) {}
+export class DuplicateTableNameError extends Schema.TaggedError<
+  DuplicateTableNameError,
+  { readonly brand: unique symbol }
+>()("DuplicateTableNameError", {
+  // Every table name that more than one file resolves to, each paired with
+  // the colliding file paths. All collisions are captured in a single pass
+  // so the user can fix them together rather than re-running codegen once
+  // per conflict.
+  collisions: Schema.Array(
+    Schema.Struct({
+      tableName: Schema.String,
+      tablePaths: Schema.Array(Schema.String),
+    }),
+  ),
+}) {}
 
-export class ConflictingDocNameError extends Schema.TaggedError<ConflictingDocNameError>()(
-  "ConflictingDocNameError",
-  {
-    collisions: Schema.Array(
-      Schema.Struct({
-        docName: Schema.String,
-        tableNames: Schema.Array(Schema.String),
-      }),
-    ),
-  },
-) {}
+export class LegacySchemaFileError extends Schema.TaggedError<
+  LegacySchemaFileError,
+  { readonly brand: unique symbol }
+>()("LegacySchemaFileError", {
+  schemaPath: Schema.String,
+}) {}
 
-export class InvalidConvexConfigError extends Schema.TaggedError<InvalidConvexConfigError>()(
-  "InvalidConvexConfigError",
-  {
-    configPath: Schema.String,
-    reason: Schema.String,
-  },
-) {}
+export class ConflictingDocNameError extends Schema.TaggedError<
+  ConflictingDocNameError,
+  { readonly brand: unique symbol }
+>()("ConflictingDocNameError", {
+  collisions: Schema.Array(
+    Schema.Struct({
+      docName: Schema.String,
+      tableNames: Schema.Array(Schema.String),
+    }),
+  ),
+}) {}
 
-export class InvalidDeclarationError extends Schema.TaggedError<InvalidDeclarationError>()(
-  "InvalidDeclarationError",
-  {
-    declarationPath: Schema.String,
-    reason: Schema.String,
-  },
-) {}
+export class InvalidConvexConfigError extends Schema.TaggedError<
+  InvalidConvexConfigError,
+  { readonly brand: unique symbol }
+>()("InvalidConvexConfigError", {
+  configPath: Schema.String,
+  reason: Schema.String,
+}) {}
 
-export class InvalidManifestSectionError extends Schema.TaggedError<InvalidManifestSectionError>()(
-  "InvalidManifestSectionError",
-  {
-    sectionKey: Schema.String,
-    reason: Schema.String,
-  },
-) {}
+export class InvalidDeclarationError extends Schema.TaggedError<
+  InvalidDeclarationError,
+  { readonly brand: unique symbol }
+>()("InvalidDeclarationError", {
+  declarationPath: Schema.String,
+  reason: Schema.String,
+}) {}
 
-export class HandWrittenConvexFileError extends Schema.TaggedError<HandWrittenConvexFileError>()(
-  "HandWrittenConvexFileError",
-  {
-    convexPath: Schema.String,
-    declarationPath: Schema.String,
-  },
-) {}
+export class InvalidManifestSectionError extends Schema.TaggedError<
+  InvalidManifestSectionError,
+  { readonly brand: unique symbol }
+>()("InvalidManifestSectionError", {
+  sectionKey: Schema.String,
+  reason: Schema.String,
+}) {}
 
-export class UnownedConvexEntrypointError extends Schema.TaggedError<UnownedConvexEntrypointError>()(
-  "UnownedConvexEntrypointError",
-  { filePaths: Schema.Array(Schema.String) },
-) {}
+export class HandWrittenConvexFileError extends Schema.TaggedError<
+  HandWrittenConvexFileError,
+  { readonly brand: unique symbol }
+>()("HandWrittenConvexFileError", {
+  convexPath: Schema.String,
+  declarationPath: Schema.String,
+}) {}
 
-export class DeclarationKindMismatchError extends Schema.TaggedError<DeclarationKindMismatchError>()(
-  "DeclarationKindMismatchError",
-  {
-    declarationPath: Schema.String,
-    declaredKind: Schema.Literals(["app", "component"]),
-    targetKind: Schema.Literals(["app", "component"]),
-  },
-) {}
+export class UnownedConvexEntrypointError extends Schema.TaggedError<
+  UnownedConvexEntrypointError,
+  { readonly brand: unique symbol }
+>()("UnownedConvexEntrypointError", {
+  filePaths: Schema.Array(Schema.String),
+}) {}
 
-export class CallbackPrefixError extends Schema.TaggedError<CallbackPrefixError>()(
-  "CallbackPrefixError",
-  {
-    declarationPath: Schema.String,
-    contractId: Schema.String,
-    componentName: Schema.String,
-  },
-) {}
+export class DeclarationKindMismatchError extends Schema.TaggedError<
+  DeclarationKindMismatchError,
+  { readonly brand: unique symbol }
+>()("DeclarationKindMismatchError", {
+  declarationPath: Schema.String,
+  declaredKind: Schema.Literals(["app", "component"]),
+  targetKind: Schema.Literals(["app", "component"]),
+}) {}
+
+export class CallbackPrefixError extends Schema.TaggedError<
+  CallbackPrefixError,
+  { readonly brand: unique symbol }
+>()("CallbackPrefixError", {
+  declarationPath: Schema.String,
+  contractId: Schema.String,
+  componentName: Schema.String,
+}) {}
 
 /**
  * A mount whose component comes from a package that exports no test kit, so the
  * generated test backend could not register what production mounts.
  */
-export class MissingTestKitError extends Schema.TaggedError<MissingTestKitError>()(
-  "MissingTestKitError",
-  {
-    configPath: Schema.String,
-    mount: Schema.String,
-    component: Schema.String,
-    entries: Schema.Array(Schema.String),
-  },
-) {}
+export class MissingTestKitError extends Schema.TaggedError<
+  MissingTestKitError,
+  { readonly brand: unique symbol }
+>()("MissingTestKitError", {
+  configPath: Schema.String,
+  mount: Schema.String,
+  component: Schema.String,
+  entries: Schema.Array(Schema.String),
+}) {}
+
+/**
+ * A packaged Confect component whose test kit exports no `secrets`, so the test
+ * kernel would hold its secret fields unmarked.
+ */
+export class TestKitSecretsMissingError extends Schema.TaggedError<
+  TestKitSecretsMissingError,
+  { readonly brand: unique symbol }
+>()("TestKitSecretsMissingError", {
+  mount: Schema.String,
+  kit: Schema.String,
+}) {}
 
 export const CodegenError = Schema.Union([
+  TestKitSecretsMissingError,
   MissingTestKitError,
   SnapshotError,
   BuildError,
@@ -253,6 +290,7 @@ export const CodegenError = Schema.Union([
   RemoveBusyError,
   SpecImportsServerError,
   InvalidMiddlewareAttachmentError,
+  InvalidContextReuseError,
   ImplMissingSpecImportError,
   ImplMissingDefaultLayerError,
   ImplNotFinalizedError,
@@ -286,17 +324,17 @@ const cross = Ansi.red("✘");
 
 const stemFromSpecPath = (specPath: string): string => {
   const lastSep = Math.max(
-    specPath.lastIndexOf("/"),
-    specPath.lastIndexOf("\\"),
+    Option.getOrElse(String.lastIndexOf("/")(specPath), () => -1),
+    Option.getOrElse(String.lastIndexOf("\\")(specPath), () => -1),
   );
-  const basename = lastSep < 0 ? specPath : specPath.slice(lastSep + 1);
-  return basename.endsWith(".spec.ts")
-    ? basename.slice(0, -".spec.ts".length)
+  const basename = lastSep < 0 ? specPath : String.slice(lastSep + 1)(specPath);
+  return String.endsWith(".spec.ts")(basename)
+    ? String.slice(0, -".spec.ts".length)(basename)
     : basename;
 };
 
 const singleLine = (...parts: ReadonlyArray<string>): string =>
-  `${cross} ${parts.join("")}`;
+  `${cross} ${Array.join(parts, "")}`;
 
 const renderMissingImplFileError = (error: MissingImplFileError): string =>
   singleLine(
@@ -328,7 +366,7 @@ const renderSpecMissingDefaultGroupSpecError = (
 const renderSpecImportsServerError = (
   error: SpecImportsServerError,
 ): string => {
-  const importers = error.importerPaths.join(", ");
+  const importers = Array.join(error.importerPaths, ", ");
   return singleLine(
     "Spec ",
     formatPath(error.specPath),
@@ -366,7 +404,7 @@ const renderImplNotFinalizedError = (error: ImplNotFinalizedError): string =>
 const renderImplMissingFunctionsError = (
   error: ImplMissingFunctionsError,
 ): string => {
-  const names = error.missingFunctionNames.join(", ");
+  const names = Array.join(error.missingFunctionNames, ", ");
   return singleLine(
     "Impl ",
     formatPath(error.implPath),
@@ -377,7 +415,7 @@ const renderImplMissingFunctionsError = (
 const renderImplMissingMiddlewareError = (
   error: ImplMissingMiddlewareError,
 ): string => {
-  const keys = error.missingMiddlewareKeys.join(", ");
+  const keys = Array.join(error.missingMiddlewareKeys, ", ");
   return singleLine(
     "Impl ",
     formatPath(error.implPath),
@@ -406,12 +444,14 @@ const renderInvalidTableFilenameError = (
 const renderDuplicateTableNameError = (
   error: DuplicateTableNameError,
 ): string => {
-  const conflicts = error.collisions
-    .map(
+  const conflicts = Array.join(
+    Array.map(
+      error.collisions,
       ({ tableName, tablePaths }) =>
-        `\`${tableName}\` (${tablePaths.join(", ")})`,
-    )
-    .join("; ");
+        `\`${tableName}\` (${Array.join(tablePaths, ", ")})`,
+    ),
+    "; ",
+  );
   return singleLine(
     `Multiple files under \`confect/tables/\` resolve to the same table name. Table names are derived from filenames, so each must be unique across the directory (including subdirectories); rename or remove all but one. Conflicts: ${conflicts}.`,
   );
@@ -478,12 +518,14 @@ export const renderCodegenError = (error: CodegenError): string => {
   if (error._tag === "RequiredMiddlewareError") {
     return singleLine(
       "Required middleware is missing:\n",
-      error.missing
-        .map(
+      pipe(
+        error.missing,
+        Array.map(
           ({ functionName, middlewareKey }) =>
             `${functionName} requires middleware "${middlewareKey}"`,
-        )
-        .join("\n"),
+        ),
+        Array.join("\n"),
+      ),
     );
   }
   if (error._tag === "RemoveBusyError") {
@@ -533,12 +575,21 @@ export const renderCodegenError = (error: CodegenError): string => {
     return singleLine(
       `The mount "${error.mount}" in `,
       formatPath(error.configPath),
-      ` installs the component package "${error.component}", which exports no test kit at ${error.entries.map((entry) => `"${entry}"`).join(" or ")}. The generated test backend registers every mount through its kit's \`register(t, name)\`; name one with the component descriptor's \`testing\` option.`,
+      ` installs the component package "${error.component}", which exports no test kit at ${pipe(error.entries, Array.map(quote), Array.join(" or "))}. The generated test backend registers every mount through its kit's \`register(t, name)\`; name one with the component descriptor's \`testing\` option.`,
+    );
+  }
+  if (error._tag === "TestKitSecretsMissingError") {
+    return singleLine(
+      `The mount "${error.mount}" installs a packaged Confect component whose test kit "${error.kit}" exports no \`secrets\`. A kit hands the test kernel its component's secret policy as it registers, \`registerComponent(name, schema, modules, { secrets })\`, so the component's secret fields stay out of test artifacts. Export \`secrets\` from the kit, \`{}\` when the component holds none.`,
     );
   }
   if (error._tag === "UnownedConvexEntrypointError") {
     return singleLine(
-      error.filePaths.map((file) => formatPath(file)).join(", "),
+      pipe(
+        error.filePaths,
+        Array.map((file) => formatPath(file)),
+        Array.join(", "),
+      ),
       error.filePaths.length === 1 ? " was" : " were",
       " not written by confect codegen. Generated files only re-export the registry; put authored code outside convex/. If a file is stale generated output, delete it and run codegen again.",
     );
@@ -548,7 +599,9 @@ export const renderCodegenError = (error: CodegenError): string => {
       singleLine(
         `Invalid generation metadata (${reason})`,
         relativePath === "" ? "" : ` for ${relativePath}`,
-        pathSegments.length === 0 ? "." : ` at ${pathSegments.join("/")}.`,
+        pathSegments.length === 0
+          ? "."
+          : ` at ${Array.join(pathSegments, "/")}.`,
       ),
     ),
     Match.tag("MissingImplFileError", renderMissingImplFileError),
@@ -566,6 +619,30 @@ export const renderCodegenError = (error: CodegenError): string => {
       ),
     ),
     Match.tag("ImplMissingSpecImportError", renderImplMissingSpecImportError),
+    Match.tag("InvalidContextReuseError", ({ specPath, groupPath, reason }) =>
+      singleLine(
+        "Spec ",
+        formatPath(specPath),
+        `, group ${groupPath}: `,
+        Match.value(reason).pipe(
+          Match.when(
+            "InvalidOption",
+            () => "experimental_reuseContext must be a boolean.",
+          ),
+          Match.when(
+            "NodeRuntime",
+            () =>
+              "experimental_reuseContext is only supported for Convex-runtime groups.",
+          ),
+          Match.when(
+            "ReservedFunctionName",
+            () =>
+              "Rename the function experimental_reuseContext before enabling context reuse; its name conflicts with Convex's module flag.",
+          ),
+          Match.exhaustive,
+        ),
+      ),
+    ),
     Match.tag(
       "ImplMissingDefaultLayerError",
       renderImplMissingDefaultLayerError,
@@ -591,7 +668,7 @@ export const renderCodegenError = (error: CodegenError): string => {
 };
 
 export const logCodegenError = (error: CodegenError) =>
-  Console.error(renderCodegenError(error));
+  pipe(error, renderCodegenError, Console.error);
 
 // --- Effect combinators ---
 
@@ -616,7 +693,9 @@ export const tapAndLog = <A, E, R>(
 export const catchAndLog = <A, E, R>(
   effect: Effect.Effect<A, E, R>,
 ): Effect.Effect<Option.Option<A>, Exclude<E, CodegenError>, R> =>
-  Effect.catchIf(Effect.map(effect, Option.some<A>), isCodegenError, (error) =>
-    logCodegenError(error).pipe(Effect.as(Option.none<A>())),
+  Effect.catchIf(
+    Effect.map(effect, Option.some<A>),
+    (error: E): error is E & CodegenError => isCodegenError(error),
+    (error: E & CodegenError) =>
+      logCodegenError(error).pipe(Effect.as(Option.none<A>())),
   ) as Effect.Effect<Option.Option<A>, Exclude<E, CodegenError>, R>;
-// oxlint-enable effecttsgo/unsafe-effect-type-assertion

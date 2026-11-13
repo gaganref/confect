@@ -1,9 +1,4 @@
-import type {
-  Auth as ConvexAuth,
-  MutationAuth as ConvexMutationAuth,
-  SignJwtOptions,
-  UserIdentity,
-} from "convex/server";
+import type { Auth as ConvexAuth, UserIdentity } from "convex/server";
 import * as Context from "effect/Context";
 import { flow } from "effect/Function";
 import * as Effect from "effect/Effect";
@@ -19,7 +14,7 @@ const make = (auth: ConvexAuth) => ({
       flow(
         Option.fromNullishOr,
         Option.match({
-          onNone: () => Effect.fail(new NoUserIdentityFoundError()),
+          onNone: () => Effect.fail(NoUserIdentityFoundError.make()),
           onSome: Effect.succeed,
         }),
       ),
@@ -58,24 +53,6 @@ export const getUserIdentity: Effect.Effect<Identity, never, Auth> = Auth.pipe(
 
 export const layer = (auth: ConvexAuth) => Layer.succeed(Auth, make(auth));
 
-/**
- * Mutation-only deployment signing, available in applications and components.
- */
-export class MutationAuth extends Context.Service<
-  MutationAuth,
-  {
-    readonly signJwt: (options: SignJwtOptions) => Effect.Effect<string>;
-  }
->()("@confect/server/Auth/MutationAuth") {}
-
-/**
- * SDK rejections remain defects, as with the other native auth operations.
- */
-export const mutationLayer = (auth: ConvexMutationAuth) =>
-  Layer.succeed(MutationAuth, {
-    signJwt: (options) => Effect.promise(() => auth.signJwt(options)),
-  });
-
 export type ForTarget<Target extends DatabaseSchema.Target> =
   Target["kind"] extends "component" ? never : Auth;
 
@@ -89,10 +66,10 @@ export const layerForTarget = <Target extends DatabaseSchema.Target>(
     Match.exhaustive,
   ) as Layer.Layer<ForTarget<Target>>;
 
-export class NoUserIdentityFoundError extends Schema.TaggedError<NoUserIdentityFoundError>()(
-  "NoUserIdentityFoundError",
-  {},
-) {
+export class NoUserIdentityFoundError extends Schema.TaggedError<
+  NoUserIdentityFoundError,
+  {}
+>()("NoUserIdentityFoundError", {}) {
   override get message(): string {
     return "No user identity found";
   }

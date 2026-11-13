@@ -1,28 +1,32 @@
 import * as IdScope from "@confect/core/IdScope";
-import * as Data from "effect/Data";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import type * as Table from "./Table.js";
 
-export class EmptyDatabaseScopeError extends Data.TaggedError(
-  "EmptyDatabaseScopeError",
-)<{
-  readonly databaseScope: IdScope.IdScope;
-}> {
+const IdScopeSchema = Schema.declare((u): u is IdScope.IdScope =>
+  Predicate.isString(u),
+);
+
+export class EmptyDatabaseScopeError extends Schema.TaggedError<
+  EmptyDatabaseScopeError,
+  { readonly brand: unique symbol }
+>()("EmptyDatabaseScopeError", { databaseScope: IdScopeSchema }) {
   override get message(): string {
     return "A component database schema requires a nonempty ID scope.";
   }
 }
 
-export class TableBindingMismatchError extends Data.TaggedError(
-  "TableBindingMismatchError",
-)<{
-  readonly bindingName: string;
-  readonly tableName: string;
-  readonly tableScope: IdScope.IdScope;
-  readonly databaseScope: IdScope.IdScope;
-}> {
+export class TableBindingMismatchError extends Schema.TaggedError<
+  TableBindingMismatchError,
+  { readonly brand: unique symbol }
+>()("TableBindingMismatchError", {
+  bindingName: Schema.String,
+  tableName: Schema.String,
+  tableScope: IdScopeSchema,
+  databaseScope: IdScopeSchema,
+}) {
   override get message(): string {
     return `Table '${this.bindingName}' must be bound to its database schema's name and ID scope.`;
   }
@@ -89,6 +93,12 @@ export type TableNames<DatabaseSchema_ extends AnyWithProps> = Table.Name<
 > &
   string;
 
+export type SystemTableNames = Table.Name<Table.SystemTables>;
+
+export type AllTableNames<DatabaseSchema_ extends AnyWithProps> =
+  | TableNames<DatabaseSchema_>
+  | SystemTableNames;
+
 export type TableWithName<
   DatabaseSchema_ extends AnyWithProps,
   TableName extends TableNames<DatabaseSchema_>,
@@ -100,13 +110,13 @@ const validateBindings = (
 ): Result.Result<void, EmptyDatabaseScopeError | TableBindingMismatchError> => {
   if (target.kind === "component" && target.scope === "") {
     return Result.fail(
-      new EmptyDatabaseScopeError({ databaseScope: target.scope }),
+      EmptyDatabaseScopeError.make({ databaseScope: target.scope }),
     );
   }
   for (const [name, table] of Record.toEntries(tableRecord)) {
     if (name !== table.tableName || table.scope !== target.scope) {
       return Result.fail(
-        new TableBindingMismatchError({
+        TableBindingMismatchError.make({
           bindingName: name,
           tableName: table.tableName,
           tableScope: table.scope,

@@ -1,6 +1,6 @@
 import { App, type Mount, type Ref } from "@confect/core";
-import type { DatabaseSchema } from "@confect/server";
-import type { RegisteredConvexFunction } from "@confect/server";
+import type { DatabaseSchema, RegisteredConvexFunction } from "@confect/server";
+import type { DeploymentJwks } from "convex-test";
 import type {
   GenericSchema,
   SchemaDefinition,
@@ -11,6 +11,10 @@ import * as Context from "effect/Context";
 import type * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Schema from "effect/Schema";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
+import * as Rec from "effect/Record";
 import * as Session from "./internal/Session.js";
 
 /**
@@ -24,6 +28,14 @@ export type RegisterOptions = {
    * `finishAllScheduledFunctions` must finish. convex-test ignores it.
    */
   readonly standing?: ReadonlyArray<string>;
+  /**
+   * The component's secret policy, keyed from the component: `""` for its own
+   * tables and functions, a child's name for a component it mounts. The test
+   * kernel keys it at the path the kit registers the component at, so a
+   * packaged Confect component keeps its secrets marked. convex-test ignores
+   * it.
+   */
+  readonly secrets?: SecretPolicy;
 };
 
 /**
@@ -111,9 +123,12 @@ export type LayerOptions = TargetOptions & {
   readonly secrets?: SecretPolicy;
 };
 
+export type { DeploymentJwk, DeploymentJwks } from "convex-test";
+
 export type TestConfectWithoutIdentity<
   ConfectSchema extends DatabaseSchema.AnyWithProps,
 > = {
+  jwks: () => Effect.Effect<DeploymentJwks>;
   query: <QueryRef extends Ref.AnyQuery>(
     queryRef: QueryRef,
     ...args: Ref.OptionalArgs<QueryRef>
@@ -268,15 +283,23 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       {
         ...targetOf(third as TargetOptions | undefined),
         ...secretsOf(registry),
-        httpMounts: mounts.flatMap(({ name, httpPrefix }) =>
-          httpPrefix === undefined ? [] : [{ componentPath: name, httpPrefix }],
+        // reduce skips a sparse list's holes, which effect/Array's flatMap visits.
+        httpMounts: Array.reduce(
+          mounts,
+          Array.empty<{ componentPath: string; httpPrefix: string }>(),
+          (httpMounts, { name, httpPrefix }) =>
+            httpPrefix === undefined
+              ? httpMounts
+              : Array.append(httpMounts, { componentPath: name, httpPrefix }),
         ),
         register: (registerComponent) => {
-          for (const [name, component] of Object.entries(registry.components)) {
+          for (const [name, component] of Rec.toEntries(registry.components)) {
             if (
-              mounts.some(
+              Array.some(
+                mounts,
                 (mount) =>
-                  name === mount.name || name.startsWith(`${mount.name}/`),
+                  name === mount.name ||
+                  pipe(name, String.startsWith(`${mount.name}/`)),
               )
             ) {
               Session.registerKit(registerComponent, name, component);
@@ -293,7 +316,7 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       ...secretsOf(app),
       httpMounts: app.httpMounts,
       register: (registerComponent) => {
-        for (const [name, component] of Object.entries(app.components)) {
+        for (const [name, component] of Rec.toEntries(app.components)) {
           Session.registerKit(registerComponent, name, component);
         }
       },
