@@ -135,6 +135,26 @@ kernel. This is row 6's storage parity row of Frame's backend testing kernel
 (Frame ADR 0012). Changeset: `test-kernel-file-storage.md`. Upstream: fork
 only, as the kernel is fork-specific.
 
+## Test kernel HTTP routes and signed ingress
+
+The kernel serves HTTP routes. `fetch(path)` sends the request to the root
+`http` router, whose own `lookup` picks the route by pathname and method, as
+the binary routes it, and runs the handler as an action with the caller's
+identity, the request's headers and its exact body bytes. A request no route
+matches gets the binary's 404 `No matching routes found`, and a HEAD request
+gets no body. A mounted component's HTTP module is built only by its mount's
+bridge, at the mount's site URL, so the kernel no longer constructs it at open.
+A route-local signed-envelope rule (`packages/server/test/signedEnvelope.ts`,
+HMAC-SHA-256 with a test-owned secret) backs a route in both server fixtures:
+the mock-backend suite runs a positive control and sixteen malformed shapes,
+each with its declared refusal and the protected table unchanged, on
+convex-test and on the kernel, and a local-backend case sends one accepted and
+two refused envelopes to the binary. The mock-backend `http.test.ts` cases and
+the mounted HTTP route cases in `components.test.ts` run on the kernel. This is
+row 6's HTTP parity row of Frame's backend testing kernel (Frame ADR 0012).
+Changeset: `test-kernel-http.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
