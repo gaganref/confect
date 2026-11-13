@@ -924,6 +924,15 @@ export class World {
         });
       }
     }
+    // A file's bytes travel with its committed row. Bytes a rolled-back or
+    // deleted file left behind are unreachable, so no export carries them.
+    const files = new Map<DocumentId, Storage.File>();
+    for (const byTable of this.state.tables.values()) {
+      for (const id of byTable.get(Storage.table)?.keys() ?? []) {
+        const file = this.files.get(id);
+        if (file !== undefined) files.set(id, file);
+      }
+    }
     return Snapshot.encode(
       {
         components: [...this.components.keys()],
@@ -934,8 +943,11 @@ export class World {
           lastCreationTime: this.lastCreationTime,
           nextAttemptId: this.nextAttemptId,
           identityEpoch: this.identityEpoch,
+          nextFile: this.nextFile,
+          nextUploadToken: this.nextUploadToken,
         },
         jobs,
+        files,
       },
       (componentPath, table, json) =>
         Redaction.mark(
@@ -947,6 +959,7 @@ export class World {
           ),
           this.secrets,
         ),
+      (bytes) => Redaction.markBytes(bytes, this.secrets),
     );
   }
 
@@ -1030,6 +1043,14 @@ export class World {
     this.lastCreationTime = image.identity.lastCreationTime;
     this.nextAttemptId = image.identity.nextAttemptId;
     this.identityEpoch = image.identity.identityEpoch;
+    this.nextFile = image.identity.nextFile;
+    this.nextUploadToken = image.identity.nextUploadToken;
+    this.files.clear();
+    this.legacyIds.clear();
+    for (const [id, file] of image.files) {
+      this.files.set(id, file);
+      this.legacyIds.set(file.uuid, id);
+    }
     this.targets.clear();
     for (const [id, target] of targets) this.targets.set(id, target);
     this.secrets = secrets.copy();
@@ -2348,6 +2369,15 @@ export class World {
       }
       case "1.0/storageGet": {
         const found = this.findFile(execution, "storage.get", args.storageId);
+        if (found !== null) {
+          refuse(
+            transaction(execution).meter.readFile(
+              found.id,
+              found.file.bytes.length,
+              execution.limits,
+            ),
+          );
+        }
         return JSON.stringify(
           found === null
             ? null
@@ -2510,7 +2540,12 @@ export class World {
     type: unknown,
     expectedSha256: unknown,
   ): DocumentId {
-    const contentType = orThrow(Storage.contentType("storage.store", type));
+    const contentType = orThrow(
+      Storage.contentType(
+        execution.udfType === "action" ? "action" : "mutation",
+        type,
+      ),
+    );
     orThrow(
       Storage.checkDigest(
         "storage.store",
@@ -2518,7 +2553,13 @@ export class World {
         Storage.digest(bytes),
       ),
     );
+    // A query or mutation stores within its transaction's file limits. An
+    // action's store is no transaction, and the binary counts it toward none.
+    const metered = execution.attempt !== undefined;
+    if (metered)
+      refuse(attempt.meter.checkStore(bytes.length, execution.limits));
     const id = this.generateId(Storage.table);
+    if (metered) attempt.meter.storeFile(id, bytes.length);
     const file: Storage.File = {
       componentPath: execution.componentPath,
       uuid: Storage.uuid(this.nextFile++),
@@ -2563,6 +2604,7 @@ export class World {
       });
     }
     attempt.write(execution.componentPath, found.id, null);
+    attempt.meter.deleteFile(found.id);
   }
 
   // Documents. The checks and messages are convex-test's.

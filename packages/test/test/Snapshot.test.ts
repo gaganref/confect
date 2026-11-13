@@ -1110,6 +1110,195 @@ describe("snapshot live state", () => {
   );
 });
 
+describe("snapshot file storage", () => {
+  const binary = Uint8Array.from([0, 1, 2, 254, 255, 0x7b, 0x0a]);
+  type StorageId = GenericId<"_storage">;
+  const storeFiles = (t: KernelControls) =>
+    call(() =>
+      t.action(async (ctx: any) => ({
+        typed: await ctx.storage.store(
+          new Blob([binary], { type: "application/octet-stream" }),
+        ),
+        untyped: await ctx.storage.store(new Blob(["plain"])),
+        gone: await ctx.storage.store(new Blob(["deleted before export"])),
+      })),
+    );
+  const describeFile = (t: KernelControls, id: StorageId | string) =>
+    call(() =>
+      t.query(async (ctx: any) => ({
+        doc: await ctx.db.system.get(id),
+        metadata: await ctx.storage.getMetadata(id),
+        url: await ctx.storage.getUrl(id),
+      })),
+    );
+  const contents = (t: KernelControls, id: StorageId) =>
+    call(() =>
+      t.action(async (ctx: any) => {
+        const blob = await ctx.storage.get(id);
+        return blob === null
+          ? null
+          : { type: blob.type, bytes: await blob.arrayBuffer() };
+      }),
+    );
+
+  it.effect(
+    "a stored file round-trips byte for byte, and getUrl and getMetadata answer after a restore as before it",
+    () =>
+      Effect.gen(function* () {
+        const t = backend(driver());
+        const ids = yield* storeFiles(t);
+        yield* call(() => t.action((ctx: any) => ctx.storage.delete(ids.gone)));
+        const exported = t.exportSnapshot();
+        let exportedFiles: Array<string> = [];
+        rehash(exported, (body) => {
+          exportedFiles = body.files.map((file: any) => file.id);
+        });
+        expect(exportedFiles).toEqual(
+          [ids.typed, ids.untyped].toSorted((a, b) => (a < b ? -1 : 1)),
+        );
+
+        const restored = backend(driver());
+        yield* call(() => restored.restoreSnapshot(exported));
+        expect(text(restored.exportSnapshot())).toBe(text(exported));
+        for (const id of [ids.typed, ids.untyped]) {
+          const source = yield* describeFile(t, id);
+          expect(yield* describeFile(restored, id)).toEqual(source);
+          // A file's storage UUID still names it after a restore.
+          const byUuid = yield* describeFile(
+            restored,
+            source.metadata.storageId,
+          );
+          expect([byUuid.metadata, byUuid.url]).toEqual([
+            source.metadata,
+            source.url,
+          ]);
+        }
+        const read = yield* contents(restored, ids.typed);
+        expect(read?.type).toBe("application/octet-stream");
+        expect(new Uint8Array(read!.bytes)).toStrictEqual(binary);
+        expect(yield* contents(restored, ids.gone)).toBeNull();
+      }),
+  );
+
+  it.effect(
+    "a restored backend mints the next storage UUID and upload token, never one its source handed out",
+    () =>
+      Effect.gen(function* () {
+        const t = backend(driver());
+        const ids = yield* storeFiles(t);
+        const uploadUrl = () =>
+          call(() => t.mutation((ctx: any) => ctx.storage.generateUploadUrl()));
+        yield* uploadUrl();
+        const restored = backend(driver());
+        yield* call(() => restored.restoreSnapshot(t.exportSnapshot()));
+        const next = yield* call(() =>
+          restored.action((ctx: any) => ctx.storage.store(new Blob(["next"]))),
+        );
+        const uuids = yield* call(() =>
+          restored.query((ctx: any) =>
+            Promise.all(
+              [ids.typed, ids.untyped, ids.gone, next].map((id) =>
+                ctx.storage
+                  .getMetadata(id)
+                  .then((m: any) => m?.storageId ?? null),
+              ),
+            ),
+          ),
+        );
+        expect(new Set(uuids).size).toBe(4);
+        expect(uuids[3]).toBe("00000000-0000-4000-8000-000000000004");
+        expect(
+          yield* call(() =>
+            restored.mutation((ctx: any) => ctx.storage.generateUploadUrl()),
+          ),
+        ).toMatch(/token=kernel-unsigned-2$/);
+      }),
+  );
+
+  it.effect.each<{
+    readonly name: string;
+    readonly edit: (body: any, ids: Record<string, string>) => void;
+    readonly refusal: Record<string, unknown>;
+  }>([
+    {
+      name: "a file body changed after export",
+      edit: (body, ids) => {
+        const file = body.files.find((f: any) => f.id === ids["typed"]);
+        file.bytes = btoa("tampered");
+      },
+      refusal: { _tag: "SnapshotFileInconsistent", reason: "digest" },
+    },
+    {
+      name: "a file body of the right digest and another size",
+      edit: (body, ids) => {
+        const row = body.tables
+          .flatMap((entry: any) => entry.rows)
+          .find((r: any) => r.doc._id === ids["untyped"]);
+        row.doc.size = 6;
+        for (const commit of body.log)
+          for (const change of commit.changes)
+            if (change.id === ids["untyped"] && change.after !== null)
+              change.after.size = 6;
+      },
+      refusal: { _tag: "SnapshotFileInconsistent", reason: "size" },
+    },
+    {
+      name: "a `_storage` row whose file is missing",
+      edit: (body, ids) => {
+        body.files = body.files.filter((f: any) => f.id !== ids["untyped"]);
+      },
+      refusal: { _tag: "SnapshotFileInconsistent", reason: "untracked" },
+    },
+    {
+      name: "two files under one storage UUID",
+      edit: (body) => {
+        body.files[1].uuid = body.files[0].uuid;
+      },
+      refusal: { _tag: "SnapshotFileInconsistent", reason: "uuid" },
+    },
+    {
+      name: "a next file counter rewound onto a stored file's UUID",
+      edit: (body) => {
+        body.identity.nextFile = 1;
+      },
+      refusal: {
+        _tag: "SnapshotAllocatorBehind",
+        allocator: "nextFile",
+        required: 4,
+      },
+    },
+  ])("$name is refused before anything is restored", ({ edit, refusal }) =>
+    Effect.gen(function* () {
+      const t = backend(driver());
+      const ids = yield* storeFiles(t);
+      const forged = rehash(t.exportSnapshot(), (body) => edit(body, ids));
+      const restored = backend(driver());
+      expect(
+        yield* failure(() => restored.restoreSnapshot(forged)),
+      ).toMatchObject(refusal);
+      expect(restored.exportSnapshot()).toStrictEqual(
+        backend(driver()).exportSnapshot(),
+      );
+    }),
+  );
+
+  it.effect(
+    "a flipped byte in an exported file body fails the snapshot's digest",
+    () =>
+      Effect.gen(function* () {
+        const t = backend(driver());
+        yield* storeFiles(t);
+        const exported = t.exportSnapshot();
+        const at = text(exported).indexOf('"bytes":"') + '"bytes":"'.length;
+        const flipped = Uint8Array.from(exported);
+        flipped[at] = flipped[at] === 0x41 ? 0x42 : 0x41;
+        expect(
+          yield* failure(() => backend(driver()).restoreSnapshot(flipped)),
+        ).toMatchObject({ _tag: "SnapshotDigestMismatch" });
+      }),
+  );
+});
+
 describe("snapshot contract", () => {
   it.effect(
     "every field of a world is exported or excluded with a reason, so new state cannot be left out of a snapshot by accident",

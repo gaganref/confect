@@ -11,9 +11,13 @@ import {
   type GenericMutationCtx,
   type GenericQueryCtx,
 } from "convex/server";
-import { v, type GenericId } from "convex/values";
+import * as Table from "@confect/core/Table";
+import * as DatabaseSchema from "@confect/server/DatabaseSchema";
+import { Base64, v, type GenericId } from "convex/values";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
+import * as Redaction from "../src/internal/Redaction";
 
 // The binary answers these for one stored blob. The local-backend case
 // "keeps one stored blob's _storage row, metadata, URL and delete as the test
@@ -366,21 +370,75 @@ describe("storage metadata", () => {
     }),
   );
 
-  it.effect(
-    "a content type that is no media type is refused, and nothing is stored",
-    () =>
+  // The binary parses a content type with `mime` 0.3.17. Its messages, and
+  // the stored forms, are pinned on the binary in
+  // `packages/server/test/local-backend/storage.test.ts`.
+  it.effect.each([
+    {
+      type: "nonsense",
+      reason: "a slash (/) was missing between the type and subtype",
+    },
+    {
+      type: 'text/plain; charset="unterminated',
+      reason: 'a quote (") was missing from a parameter value',
+    },
+    {
+      type: "text/plain ;charset=utf-8",
+      reason: "an invalid token was encountered, 20 at position 10",
+    },
+    {
+      type: "text/plain; charset",
+      reason:
+        "an equals sign (=) was missing between a parameter and its value",
+    },
+    {
+      type: 'text/plain; a="b" c',
+      reason: "an invalid token was encountered, 63 at position 18",
+    },
+  ])(
+    "a content type `mime` refuses, $type, is refused on both store paths, and nothing is stored",
+    ({ type, reason }) =>
       Effect.gen(function* () {
         const t = storageWorld();
+        const blob = new Blob([hello.text], { type });
         yield* call(() =>
-          expect(
-            t.action(
-              storeFromAction(new Blob([hello.text], { type: "nonsense" })),
-            ),
-          ).rejects.toThrow(
-            'Invalid argument `contentType` for `storage.store`: "nonsense" is not a media type',
+          expect(t.action(storeFromAction(blob))).rejects.toThrow(
+            `mime parse error: ${reason}`,
+          ),
+        );
+        yield* call(() =>
+          expect(t.run((ctx) => ctx.storage.store(blob))).rejects.toThrow(
+            `Invalid argument \`contentType\` for \`storage.store\`: mime parse error: ${reason}`,
           ),
         );
         expect(yield* call(() => t.query(allFiles))).toBe("[]");
+      }),
+  );
+
+  it.effect.each([
+    { type: "text/plain;", stored: "text/plain" },
+    { type: "text/", stored: "text/" },
+    { type: 'text/plain; name="A B"', stored: 'text/plain; name="A B"' },
+    { type: "*/*", stored: "*/*" },
+  ])(
+    "a content type `mime` accepts, $type, is stored as `mime` prints it",
+    ({ type, stored }) =>
+      Effect.gen(function* () {
+        const t = storageWorld();
+        // A `Blob` lowercases its type, so this one keeps the case `mime`
+        // itself keeps in a parameter value.
+        const id = yield* call(() =>
+          t.run((ctx) =>
+            ctx.storage.store(
+              Object.defineProperty(new Blob([hello.text]), "type", {
+                value: type,
+              }),
+            ),
+          ),
+        );
+        expect(
+          (yield* call(() => t.query(describeFile(id)))).doc.contentType,
+        ).toBe(stored);
       }),
   );
 
@@ -446,6 +504,154 @@ describe("storage endpoints", () => {
           _tag: "RequiresBinary",
           operation: "storageDownload",
         });
+      }),
+  );
+});
+
+describe("storage redaction", () => {
+  const canary = "canary-attachment-5d2e91f0";
+  const Token = Schema.RedactedFromValue(Schema.String);
+  const confectSchema = DatabaseSchema.make({
+    attachments: Table.make(() =>
+      Schema.Struct({ file: Schema.String, token: Token }),
+    )("attachments"),
+  });
+  const attachThenFail = makeFunctionReference<
+    "mutation",
+    { file: StorageId; token: string }
+  >("files:attachThenFail");
+  const redactedWorld = () =>
+    convexTest({
+      schema: defineSchema({
+        attachments: defineTable({ file: v.id("_storage"), token: v.string() }),
+      }),
+      modules: {
+        "_generated/server.ts": () => Promise.resolve({}),
+        "files.ts": () =>
+          Promise.resolve({
+            attachThenFail: mutationGeneric({
+              args: { file: v.id("_storage"), token: v.string() },
+              handler: async (_ctx, { file, token }) => {
+                throw new Error(`Attaching ${file} with ${token} failed.`);
+              },
+            }),
+          }),
+      },
+      redaction: Redaction.policy({
+        tables: { "": Redaction.tablesOf(confectSchema) },
+        functions: {
+          "": {
+            "files:attachThenFail": {
+              args: () => Schema.Struct({ file: Schema.String, token: Token }),
+            },
+          },
+        },
+      }),
+    });
+  const attach = (t: any, contents: string) =>
+    call((): Promise<StorageId> =>
+      t.run(async (ctx: MutationCtx) => {
+        const file = await ctx.storage.store(new Blob([contents]));
+        await ctx.db.insert("attachments", { file, token: canary });
+        return file;
+      }),
+    );
+  const text = (bytes: Uint8Array) => new TextDecoder().decode(bytes);
+
+  it.effect(
+    "a snapshot marks a declared secret in a row that references a file, and carries the file's row and bytes as they are",
+    () =>
+      Effect.gen(function* () {
+        const t = redactedWorld();
+        const file = yield* attach(t, "attachment body");
+        const exported = text(t.exportSnapshot());
+        expect(exported).not.toContain(canary);
+        expect(exported).toContain(`"${Redaction.markerKey}"`);
+        expect(exported).toContain(`"file":"${file}"`);
+        expect(exported).toContain(
+          `"bytes":"${Base64.fromByteArray(new TextEncoder().encode("attachment body"))}"`,
+        );
+
+        const restored = redactedWorld();
+        yield* call(() =>
+          restored.restoreSnapshot(new TextEncoder().encode(exported), {
+            secrets: t.secrets(),
+          }),
+        );
+        expect(
+          yield* call(() =>
+            restored.query((ctx: QueryCtx) =>
+              ctx.db
+                .query("attachments")
+                .collect()
+                .then((rows) => rows.map((row) => [row["file"], row["token"]])),
+            ),
+          ),
+        ).toStrictEqual([[file, canary]]);
+        expect(
+          yield* call(() =>
+            restored.action(async (ctx: ActionCtx) =>
+              (await ctx.storage.get(file))!.text(),
+            ),
+          ),
+        ).toBe("attachment body");
+      }),
+  );
+
+  it.effect(
+    "a file whose bytes hold a kept secret is marked in the snapshot, and only a restore given the secrets puts its bytes back",
+    () =>
+      Effect.gen(function* () {
+        const t = redactedWorld();
+        yield* attach(t, "first");
+        const contents = `the token is ${canary}`;
+        const leaky = yield* call((): Promise<StorageId> =>
+          t.action((ctx: ActionCtx) => ctx.storage.store(new Blob([contents]))),
+        );
+        const exported = t.exportSnapshot();
+        expect(text(exported)).not.toContain(
+          Base64.fromByteArray(new TextEncoder().encode(contents)),
+        );
+        expect(
+          yield* call(() =>
+            redactedWorld()
+              .restoreSnapshot(exported)
+              .then(
+                () => null,
+                (error: unknown) => error,
+              ),
+          ),
+        ).toMatchObject({ _tag: "SnapshotSecretMissing" });
+        const restored = redactedWorld();
+        yield* call(() =>
+          restored.restoreSnapshot(exported, { secrets: t.secrets() }),
+        );
+        expect(
+          yield* call(() =>
+            restored.action(async (ctx: ActionCtx) =>
+              (await ctx.storage.get(leaky))!.text(),
+            ),
+          ),
+        ).toBe(contents);
+        expect(text(restored.exportSnapshot())).toBe(text(exported));
+      }),
+  );
+
+  it.effect(
+    "a failure report marks a declared secret beside a storage ID and leaves the ID as it is",
+    () =>
+      Effect.gen(function* () {
+        const t = redactedWorld();
+        const file = yield* attach(t, "attachment body");
+        const report = yield* call(() =>
+          t.mutation(attachThenFail, { file, token: canary }).then(
+            () => "",
+            (error: unknown) => (error as Error).message,
+          ),
+        );
+        expect(report).not.toContain(canary);
+        expect(report).toContain(Redaction.marker);
+        expect(report).toContain(file);
       }),
   );
 });
