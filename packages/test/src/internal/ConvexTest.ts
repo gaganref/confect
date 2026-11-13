@@ -6,6 +6,7 @@ import type {
 import { componentsGeneric } from "convex/server";
 import * as Execution from "./Execution.js";
 import type * as Invocation from "./Invocation.js";
+import type * as Redaction from "./Redaction.js";
 import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import * as Subscriptions from "./Subscriptions.js";
@@ -79,8 +80,17 @@ export interface KernelControls {
    */
   readonly restoreSnapshot: (
     bytes: Uint8Array,
-    options?: { readonly worlds?: ReadonlyArray<Invocation.World> },
+    options?: {
+      readonly worlds?: ReadonlyArray<Invocation.World>;
+      readonly secrets?: Redaction.Secrets;
+    },
   ) => Promise<void>;
+  /**
+   * A copy of the raw secrets the backend has seen under a secret schema node.
+   * A snapshot marks each one, and a restore given this copy puts them back. It
+   * lives in memory and is never written to an artifact.
+   */
+  readonly secrets: () => Redaction.Secrets;
 }
 
 /**
@@ -107,47 +117,86 @@ const accessor = (
   world: Execution.World,
   subscriptions: Subscriptions.Registry,
   caller: Execution.Caller,
-): any => ({
-  query: (reference: any, args?: any) => world.query(caller, reference, args),
-  mutation: (reference: any, args?: any) =>
-    world.mutation(caller, reference, args),
-  action: (reference: any, args?: any) => world.action(caller, reference, args),
-  prepare: (reference: any, args?: any) =>
-    world.prepare(caller, reference, args),
-  apply: (id: string) => world.apply(id),
-  held: () => world.held(),
-  subscriber: () => subscriptions.subscriber(caller),
-  refresh: () => subscriptions.refresh(),
-  reference: () => subscriptions.reference(),
-  run: (handler: (ctx: any) => any) => world.run(caller, "", handler),
-  runInComponent: (componentPath: string, handler: (ctx: any) => any) =>
-    world.run(caller, componentPath, handler),
-  withIdentity: (identity: Partial<UserIdentity>) =>
-    accessor(world, subscriptions, Execution.withIdentity(caller, identity)),
-  withRequestMetadata: (metadata: {
-    readonly ip?: string | null;
-    readonly userAgent?: string | null;
-  }) =>
-    accessor(world, subscriptions, {
-      ...caller,
-      ip: metadata.ip ?? null,
-      userAgent: metadata.userAgent ?? null,
-    }),
-  fetch: () => Promise.reject(KernelRefusal.rowPending("HTTP routes", 6)),
-  jwks: () => Promise.reject(KernelRefusal.rowPending("JWT verification", 6)),
-  advance: (ms: number) => world.advance(ms),
-  jobs: () => world.jobs(),
-  finishInProgressScheduledFunctions: () => world.advance(0),
-  finishAllScheduledFunctions: (
-    _advanceTimers?: () => void,
-    maxIterations?: number,
-  ) => world.drain(maxIterations),
-  exportSnapshot: () => world.exportSnapshot(),
-  restoreSnapshot: (
-    bytes: Uint8Array,
-    options?: { readonly worlds?: ReadonlyArray<Invocation.World> },
-  ) => world.restoreSnapshot(bytes, options?.worlds),
-});
+): any => {
+  // Every failure the kernel hands back is a report a test runner prints, so
+  // each leaves through the world's redaction.
+  const reported = <A>(run: () => Promise<A>): Promise<A> =>
+    run().catch((error: unknown) => {
+      throw world.redactFailure(error);
+    });
+  const held = (view: Execution.HeldAttempt): Execution.HeldAttempt => {
+    if (view.outcome._tag === "failed") world.redactFailure(view.outcome.error);
+    return view;
+  };
+  return {
+    query: (reference: any, args?: any) =>
+      reported(() => world.query(caller, reference, args)),
+    mutation: (reference: any, args?: any) =>
+      reported(() => world.mutation(caller, reference, args)),
+    action: (reference: any, args?: any) =>
+      reported(() => world.action(caller, reference, args)),
+    prepare: (reference: any, args?: any) =>
+      reported(() => world.prepare(caller, reference, args)).then(held),
+    apply: (id: string) =>
+      reported(() => world.apply(id)).then((applied) => {
+        if (applied.kind === "conflict") held(applied.next);
+        if (applied.kind === "refused" || applied.kind === "exhausted")
+          world.redactFailure(applied.error);
+        return applied;
+      }),
+    held: () => world.held(),
+    subscriber: () => subscriptions.subscriber(caller),
+    refresh: () =>
+      reported(() => subscriptions.refresh()).then((transitions) =>
+        transitions.map((transition) => ({
+          ...transition,
+          from: world.redactOutcome(transition.from),
+          to: world.redactOutcome(transition.to),
+        })),
+      ),
+    reference: () =>
+      reported(() => subscriptions.reference()).then((disagreements) =>
+        disagreements.map((disagreement) => ({
+          ...disagreement,
+          incremental: world.redactOutcome(disagreement.incremental),
+          reference: world.redactOutcome(disagreement.reference),
+        })),
+      ),
+    run: (handler: (ctx: any) => any) =>
+      reported(() => world.run(caller, "", handler)),
+    runInComponent: (componentPath: string, handler: (ctx: any) => any) =>
+      reported(() => world.run(caller, componentPath, handler)),
+    withIdentity: (identity: Partial<UserIdentity>) =>
+      accessor(world, subscriptions, Execution.withIdentity(caller, identity)),
+    withRequestMetadata: (metadata: {
+      readonly ip?: string | null;
+      readonly userAgent?: string | null;
+    }) =>
+      accessor(world, subscriptions, {
+        ...caller,
+        ip: metadata.ip ?? null,
+        userAgent: metadata.userAgent ?? null,
+      }),
+    fetch: () => Promise.reject(KernelRefusal.rowPending("HTTP routes", 6)),
+    jwks: () => Promise.reject(KernelRefusal.rowPending("JWT verification", 6)),
+    advance: (ms: number) => reported(() => world.advance(ms)),
+    jobs: () => world.jobs(),
+    finishInProgressScheduledFunctions: () => reported(() => world.advance(0)),
+    finishAllScheduledFunctions: (
+      _advanceTimers?: () => void,
+      maxIterations?: number,
+    ) => reported(() => world.drain(maxIterations)),
+    exportSnapshot: () => world.exportSnapshot(),
+    restoreSnapshot: (
+      bytes: Uint8Array,
+      options?: {
+        readonly worlds?: ReadonlyArray<Invocation.World>;
+        readonly secrets?: Redaction.Secrets;
+      },
+    ) => world.restoreSnapshot(bytes, options),
+    secrets: () => world.keptSecrets(),
+  };
+};
 
 /**
  * The test kernel under convex-test's `convexTest` signature. The fork's kernel
@@ -160,7 +209,9 @@ const accessor = (
  * attempt 5. `runtime` supplies the clock and commit timestamps. Scheduled
  * functions run on the kernel's clock, never on a host timer. A subscriber's
  * subscriptions go stale when a commit changes what they read or the identity
- * they read changes, and `refresh` reruns them.
+ * they read changes, and `refresh` reruns them. `redaction` names the secret
+ * schema nodes of tables and functions: a value under one reaches a snapshot, a
+ * failure report or a diff only as a marker.
  */
 export function convexTest(
   schemaOrOptions?:
@@ -170,11 +221,13 @@ export function convexTest(
         readonly modules?: Modules;
         readonly transactionLimits?: unknown;
         readonly runtime?: Kernel.KernelRuntime;
+        readonly redaction?: Redaction.Policy;
       },
   modules?: Modules,
 ): any {
   let schema: SchemaDefinition<GenericSchema, boolean> | undefined;
   let runtime: Kernel.KernelRuntime | undefined;
+  let redaction: Redaction.Policy | undefined;
   if (isSchemaDefinition(schemaOrOptions)) {
     schema = schemaOrOptions;
   } else if (schemaOrOptions !== undefined) {
@@ -184,13 +237,14 @@ export function convexTest(
     schema = schemaOrOptions.schema;
     modules = schemaOrOptions.modules;
     runtime = schemaOrOptions.runtime;
+    redaction = schemaOrOptions.redaction;
   }
   if (modules === undefined) {
     throw new Error(
       "The test kernel needs the modules map: pass `import.meta.glob(...)` as the second argument.",
     );
   }
-  const world = new Execution.World(schema, modules, runtime);
+  const world = new Execution.World(schema, modules, runtime, redaction);
   return {
     ...accessor(world, new Subscriptions.Registry(world), Execution.anonymous),
     registerComponent: (

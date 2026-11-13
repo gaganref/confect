@@ -136,6 +136,24 @@ The option is removed at promotion, when the kernel replaces convex-test.
 Changeset: `testconfect-kernel-target.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel redaction
+
+A value under a secret schema node, a `Schema.Redacted` that
+`Schema.RedactedFromValue` decodes to, reaches every artifact the kernel
+writes as a marker. The kernel reads the nodes from Effect schemas: a Confect
+database schema's tables, and the arguments and return values a test declares
+in `convexTest`'s `redaction` option. `TestConfect.layer`'s kernel target
+passes the app's table schemas. The kernel keeps each secret it meets, in a
+function's arguments, its return value or a written document, before it
+validates it, in an in-memory store that is replay state and never an
+artifact. A snapshot export writes `{ "$redacted": <n> }` in place of each
+secret and of any string that holds one, and a restore given the store puts
+the raw values back, so a restored backend replays with them. A restore without
+it refuses with `SnapshotSecretMissing`. Failure reports, their message, stack
+and data, and subscription diffs write `[redacted]`. This is row 6 of Frame's
+backend testing kernel (Frame ADR 0012). Changeset: `test-kernel-redaction.md`.
+Upstream: fork only, as the kernel is fork-specific.
+
 ## Test kernel snapshots
 
 The kernel exports its committed state as snapshot bytes and restores them into

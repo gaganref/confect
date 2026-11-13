@@ -525,3 +525,59 @@ import compatibility stays on the binary.
 
 The digest binds integrity, not origin. Bytes a writer rehashes after editing
 pass the digest and then meet the body's shape check, `SnapshotMalformed`.
+
+## Redaction (row 6)
+
+`src/internal/Redaction.ts` finds secret schema nodes and marks what they
+hold. A secret node is a `Schema.Redacted` declaration, which
+`Schema.RedactedFromValue` decodes to (its representation id is
+`effect/schema/Redacted`). `secretPaths` walks a schema's type side through
+structs, records, arrays, tuples, unions and suspensions, and answers paths
+into the encoded value, whose fields keep the schema's names. A schema that
+renames a field on encoding is not followed. Convex validators carry no secret
+flag, and a Confect-registered function keeps only its validators at runtime,
+so the kernel cannot read secret nodes from the modules it loads. A policy
+names them instead: `tablesOf` reads a Confect database schema's tables, and
+`convexTest`'s `redaction` option takes declared argument and return schemas
+per function. Each schema is built the first time its paths are needed, so a
+policy leaves Confect's lazy table schemas unbuilt until then.
+`TestConfect.layer`'s kernel target passes the app's tables. A component kit
+registers only Convex schemas, so its tables carry no policy.
+
+The kernel keeps every value at a secret path, before it validates it, in the
+world's `Secrets` store: a function's arguments as it is called, a job's
+arguments as it is scheduled, a return value, and a document's fields as they
+are written. The store is replay state. It lives in memory, positions values in
+the order first seen, and no artifact writes it. Three writers mark what it
+holds:
+
+- A snapshot export replaces each value at a secret path, and each string that
+  holds a kept secret of four characters or more, with `{ "$redacted": <n> }`,
+  `n` its position in the store. A job row's arguments take the secret paths of
+  its target's arguments. Convex's encoded JSON allows no object key that
+  starts with `$` (`crates/value/src/json/mod.rs:9` at
+  `precompiled-2026-10-28-cccbade`), so no stored value reads as a marker. A
+  restore given the store puts the raw values back and adopts a copy of it, so
+  its own exports are the same bytes. Without the store it refuses with
+  `SnapshotSecretMissing`.
+- A failure report the shim hands back, every rejection and the error in a
+  held attempt's outcome, has each kept secret in its message and stack, raw or
+  JSON-escaped, and each string of its data holding one, replaced by
+  `[redacted]`. The error object is the same one.
+- A subscription diff, `refresh`'s transitions and `reference`'s
+  disagreements, has each string holding a kept secret replaced by
+  `[redacted]`. A subscription's own current value is replay state and keeps
+  the raw value.
+
+The binary has no schema-level secret marking. It redacts by visibility: with
+logging blocked, a client's log lines are dropped and an error reads "Server
+Error" (`crates/application/src/redaction.rs:39-50`, `:96-140`). Rejecting
+credential-shaped text by pattern stays with the artifact filer, not here. The
+kernel writes no logs of its own. A handler's `console` output goes to the host
+and is not marked. Each wire canary lands with its wire.
+
+Planted canaries, one per route: an argument never stored, an argument stored
+in a secret field, a row written directly, and a provider's answer, which an
+action reads from its test world's services and passes to a mutation. None
+reaches the snapshot, any failure report or the diff, and each artifact carries
+a marker in its place.

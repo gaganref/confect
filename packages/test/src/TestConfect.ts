@@ -19,6 +19,7 @@ import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import { convexTest as kernelTest } from "./internal/ConvexTest.js";
 import * as MountedHttp from "./internal/MountedHttp.js";
+import * as Redaction from "./internal/Redaction.js";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -492,10 +493,18 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   Layer.sync(TestConfect<DatabaseSchema_>(), () => {
     process.env.CONVEX_CLOUD_URL ??= "https://some-deployment.convex.cloud";
     process.env.CONVEX_SITE_URL ??= "https://some.convex.site";
-    const testConvex = (options.target === "kernel" ? kernelTest : convexTest)(
-      convexSchemaDefinition,
-      modules,
-    );
+    // On the kernel, a value under a secret node of the app's table schemas
+    // reaches every artifact as a marker.
+    const testConvex =
+      options.target === "kernel"
+        ? kernelTest({
+            schema: convexSchemaDefinition,
+            modules,
+            redaction: Redaction.policy({
+              tables: { "": Redaction.tablesOf(databaseSchema) },
+            }),
+          })
+        : convexTest(convexSchemaDefinition, modules);
     // convex-test takes three arguments and ignores the options. The kernel
     // reads `standing`.
     const registerComponent =

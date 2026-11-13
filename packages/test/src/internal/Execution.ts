@@ -9,7 +9,12 @@ import {
   type SchemaDefinition,
   type UserIdentity,
 } from "convex/server";
-import { convexToJson, jsonToConvex, type Value } from "convex/values";
+import {
+  convexToJson,
+  jsonToConvex,
+  type JSONValue,
+  type Value,
+} from "convex/values";
 import * as Result from "effect/Result";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
@@ -19,6 +24,7 @@ import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type * as ReadSet from "./ReadSet.js";
+import * as Redaction from "./Redaction.js";
 import * as Scheduling from "./Scheduling.js";
 import * as Snapshot from "./Snapshot.js";
 import type {
@@ -482,11 +488,17 @@ export class World {
    */
   private floor = Number.NEGATIVE_INFINITY;
   private readonly targets = new Map<DocumentId, Scheduling.Target>();
+  /**
+   * The raw secrets this world has seen under a secret schema node. Replay
+   * state, kept in memory and never written to an artifact.
+   */
+  private secrets = new Redaction.Secrets();
 
   constructor(
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
     modules: Modules,
     private readonly runtime: Kernel.KernelRuntime = Kernel.wallClock(),
+    private readonly redaction: Redaction.Policy = Redaction.none,
   ) {
     installConvexGlobal();
     Clock.install(pinnedTime, () => executions.getStore() !== undefined);
@@ -668,6 +680,7 @@ export class World {
     return this.open().then(() => {
       const functionPath = pathOfReference(reference, ROOT);
       const resolved = this.resolve(functionPath, "mutation");
+      this.keepArgs(functionPath, args);
       validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
       return this.prepareMutation(
         functionPath,
@@ -716,6 +729,7 @@ export class World {
     return this.open().then(() => {
       const functionPath = pathOfReference(reference, ROOT);
       const resolved = this.resolve(functionPath, "query");
+      this.keepArgs(functionPath, args);
       validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
       const top: TopQuery = {
         attempt: new KernelAttempt(this.state),
@@ -775,17 +789,25 @@ export class World {
         });
       }
     }
-    return Snapshot.encode({
-      components: [...this.components.keys()],
-      state: this.state,
-      floor: this.floor,
-      identity: {
-        nextDocumentId: this.nextDocId,
-        lastCreationTime: this.lastCreationTime,
-        nextAttemptId: this.nextAttemptId,
+    return Snapshot.encode(
+      {
+        components: [...this.components.keys()],
+        state: this.state,
+        floor: this.floor,
+        identity: {
+          nextDocumentId: this.nextDocId,
+          lastCreationTime: this.lastCreationTime,
+          nextAttemptId: this.nextAttemptId,
+        },
+        jobs,
       },
-      jobs,
-    });
+      (componentPath, table, json) =>
+        Redaction.mark(
+          json,
+          this.documentPaths(componentPath, table, json),
+          this.secrets,
+        ),
+    );
   }
 
   /**
@@ -796,14 +818,29 @@ export class World {
    */
   restoreSnapshot(
     bytes: Uint8Array,
-    worlds: ReadonlyArray<Invocation.World> = [],
+    options: {
+      readonly worlds?: ReadonlyArray<Invocation.World>;
+      readonly secrets?: Redaction.Secrets;
+    } = {},
   ): Promise<void> {
-    return this.open().then(() => this.restore(bytes, worlds));
+    return this.open().then(() =>
+      this.restore(
+        bytes,
+        options.worlds ?? [],
+        options.secrets ?? new Redaction.Secrets(),
+      ),
+    );
   }
 
-  private restore(bytes: Uint8Array, worlds: ReadonlyArray<Invocation.World>) {
+  private restore(
+    bytes: Uint8Array,
+    worlds: ReadonlyArray<Invocation.World>,
+    secrets: Redaction.Secrets,
+  ) {
     this.refuseHeld(this.state.version);
-    const decoded = Snapshot.decode(bytes);
+    const decoded = Snapshot.decode(bytes, (json) =>
+      Redaction.unmark(json, secrets),
+    );
     if (Result.isFailure(decoded)) throw decoded.failure;
     const image = decoded.success;
     const registered = [...this.components.keys()].sort();
@@ -842,6 +879,7 @@ export class World {
     this.nextAttemptId = image.identity.nextAttemptId;
     this.targets.clear();
     for (const [id, target] of targets) this.targets.set(id, target);
+    this.secrets = secrets.copy();
   }
 
   /**
@@ -1042,6 +1080,7 @@ export class World {
     const target = functionPathOf(args, execution.componentPath);
     this.component(target.componentPath);
     const jobArgs = jsonToConvex(args.args);
+    this.keepArgs(target, jobArgs);
     if (hasPendingValues(jobArgs)) {
       throw new Error(
         `Invalid arguments for "${target.udfPath}": a scheduled function cannot take an unresolved placeholder value.`,
@@ -1100,6 +1139,7 @@ export class World {
     snapshotOnly = false,
   ) {
     const resolved = this.resolve(functionPath, "query");
+    this.keepArgs(functionPath, args);
     validateFunctionArgs(
       resolved.args,
       args ?? {},
@@ -1111,6 +1151,7 @@ export class World {
 
   private mutationAt(functionPath: FunctionPath, args: any, from: From) {
     const resolved = this.resolve(functionPath, "mutation");
+    this.keepArgs(functionPath, args);
     validateFunctionArgs(
       resolved.args,
       args ?? {},
@@ -1122,6 +1163,7 @@ export class World {
 
   private actionAt(functionPath: FunctionPath, args: any, from: From) {
     const resolved = this.resolve(functionPath, "action");
+    this.keepArgs(functionPath, args);
     validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
     return this.runAction(functionPath, resolved, args, from);
   }
@@ -1209,6 +1251,7 @@ export class World {
               `cannot return an unresolved placeholder value.`,
           );
         }
+        this.keepReturns(functionPath, result);
         validateReturnValue(resolved.returns, result, "query", functionPath);
         return result;
       })
@@ -1232,10 +1275,12 @@ export class World {
       .then((raw) => settled(execution, raw))
       .then((raw) => {
         const result = jsonToConvex(JSON.parse(raw));
-        validateReturnValue(resolved.returns, result, "mutation", {
+        const functionPath = {
           componentPath: execution.componentPath,
           udfPath: execution.udfPath,
-        });
+        };
+        this.keepReturns(functionPath, result);
+        validateReturnValue(resolved.returns, result, "mutation", functionPath);
         return result;
       });
   }
@@ -1491,12 +1536,94 @@ export class World {
     return started
       .then((raw) => {
         const result = jsonToConvex(JSON.parse(raw));
+        this.keepReturns(functionPath, result);
         validateReturnValue(resolved.returns, result, "action", functionPath);
         return result;
       })
       .catch((error: unknown) => {
         throw deserializeConvexErrorData(error);
       });
+  }
+
+  // Secrets.
+
+  private keepArgs(functionPath: FunctionPath, args: unknown) {
+    Redaction.keep(args ?? {}, this.redaction.args(functionPath), this.secrets);
+  }
+
+  private keepReturns(functionPath: FunctionPath, result: Value) {
+    Redaction.keep(result, this.redaction.returns(functionPath), this.secrets);
+  }
+
+  private keepRow(componentPath: string, table: string, value: unknown) {
+    Redaction.keep(
+      value,
+      this.redaction.table(componentPath, table),
+      this.secrets,
+    );
+  }
+
+  /**
+   * Where a stored document holds secrets: its table's secret paths, and for a
+   * job's row, the secret paths of its target's arguments.
+   */
+  private documentPaths(
+    componentPath: string,
+    table: string,
+    json: JSONValue,
+  ): ReadonlyArray<Redaction.Path> {
+    const own = this.redaction.table(componentPath, table);
+    if (table !== Scheduling.table) return own;
+    const { _id, name } = json as { _id: DocumentId; name: string };
+    const target = this.targets.get(_id)?.functionPath ?? {
+      componentPath,
+      udfPath: name,
+    };
+    return own.concat(
+      this.redaction.args(target).map((path) => ["args", "0"].concat(path)),
+    );
+  }
+
+  /**
+   * A copy of the raw secrets this world has kept, for a restore of its
+   * snapshots. It lives in memory only.
+   */
+  keptSecrets(): Redaction.Secrets {
+    return this.secrets.copy();
+  }
+
+  /**
+   * Mark every kept secret in `error`, a failure report the kernel hands back:
+   * its message, stack and data. Answers the same error.
+   */
+  redactFailure<E>(error: E): E {
+    if (!(error instanceof Error)) return error;
+    try {
+      error.message = Redaction.scrubText(error.message, this.secrets);
+      if (error.stack !== undefined)
+        error.stack = Redaction.scrubText(error.stack, this.secrets);
+      const data = (error as { data?: Value }).data;
+      if (data !== undefined)
+        (error as { data?: Value }).data = Redaction.scrubValue(
+          data,
+          this.secrets,
+        );
+    } catch {
+      // A frozen error keeps its text. The kernel's own errors are not frozen.
+    }
+    return error;
+  }
+
+  /**
+   * `outcome` as a diff writes it: every string holding a kept secret marked.
+   */
+  redactOutcome(outcome: Outcome): Outcome {
+    return outcome._tag === "returned"
+      ? {
+          _tag: "returned",
+          value: Redaction.scrubValue(outcome.value, this.secrets),
+        }
+      : { _tag: "failed", error: this.redactFailure(outcome.error) };
   }
 
   // Syscalls.
@@ -1775,6 +1902,7 @@ export class World {
 
   private insert(execution: Execution, table: string, value: any): DocumentId {
     const attempt = transaction(execution);
+    this.keepRow(execution.componentPath, table, value);
     KernelQuery.validateDocument(
       this.schema(execution.componentPath),
       table,
@@ -1860,6 +1988,7 @@ export class World {
     const document = this.existing(execution, tableName, id, "patch", value);
     const { _id, _creationTime, ...fields } = document;
     const merged = { ...fields, ...this.fields(document, value) };
+    this.keepRow(execution.componentPath, tableNameFromId(_id)!, merged);
     KernelQuery.validateDocument(
       this.schema(execution.componentPath),
       tableNameFromId(_id)!,
@@ -1880,6 +2009,11 @@ export class World {
   ) {
     const document = this.existing(execution, tableName, id, "replace", value);
     const fields = this.fields(document, value);
+    this.keepRow(
+      execution.componentPath,
+      tableNameFromId(document._id)!,
+      fields,
+    );
     KernelQuery.validateDocument(
       this.schema(execution.componentPath),
       tableNameFromId(document._id)!,
