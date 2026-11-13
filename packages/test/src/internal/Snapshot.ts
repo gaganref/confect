@@ -1,6 +1,7 @@
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- Export is synchronous, and Effect 4.0's digests are asynchronous.
 import { createHash } from "node:crypto";
 import {
+  Base64,
   convexToJson,
   jsonToConvex,
   type JSONValue,
@@ -8,9 +9,11 @@ import {
 } from "convex/values";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import type * as Execution from "./Execution.js";
 import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type * as Scheduling from "./Scheduling.js";
+import * as Storage from "./Storage.js";
 import {
   tableNameFromId,
   type DocumentId,
@@ -20,8 +23,9 @@ import {
 
 /**
  * The counters the kernel allocates identities from: the next document ID, the
- * latest creation time handed out, the next held attempt's ID, and the identity
- * epoch, which every subscriber's `authenticate` advances. A restored world
+ * latest creation time handed out, the next held attempt's ID, the identity
+ * epoch, which every subscriber's `authenticate` advances, the next stored
+ * file's storage UUID and the next upload URL's token. A restored world
  * continues each where its source stopped, so the same calls mint the same
  * identities and the same identity versions.
  */
@@ -30,6 +34,8 @@ export interface Identity {
   readonly lastCreationTime: number;
   readonly nextAttemptId: number;
   readonly identityEpoch: number;
+  readonly nextFile: number;
+  readonly nextUploadToken: number;
 }
 
 /**
@@ -43,9 +49,36 @@ export interface JobTarget {
 }
 
 /**
+ * A declared cron job as a snapshot carries it: its declaration, which a
+ * restore checks against the restoring app's, its next run, how its latest run
+ * ended, and its test world by name. `null` is a job declared with no world.
+ * `args` is the declaration's arguments as Convex JSON, secrets marked;
+ * `schedule` is its schedule as the kernel reads it, a cron expression by its
+ * text.
+ */
+export interface CronImage {
+  readonly componentPath: string;
+  readonly name: string;
+  readonly udfPath: string;
+  readonly args: JSONValue;
+  readonly schedule: JSONValue;
+  readonly nextRun: number;
+  /**
+   * How the latest run ended. A failure's text is Convex JSON: a marker where
+   * it held a kept secret, the raw text once a restore reads it back.
+   */
+  readonly last:
+    | { readonly kind: "success" }
+    | { readonly kind: "failed"; readonly error: JSONValue }
+    | null;
+  readonly world: string | null;
+}
+
+/**
  * The kernel state a snapshot carries: committed rows of every component with
  * the version that wrote each, the write log, the latest commit timestamp,
- * every job's target, the clock's floor and the identity counters.
+ * every job's target, every stored file's bytes, the clock's floor and the
+ * identity counters.
  */
 export interface Image {
   readonly components: ReadonlyArray<string>;
@@ -59,6 +92,15 @@ export interface Image {
    * The target of every job whose row is committed, by job ID.
    */
   readonly jobs: ReadonlyMap<DocumentId, JobTarget>;
+  /**
+   * The bytes, component and storage UUID of every file whose `_storage` row is
+   * committed, by the row's ID.
+   */
+  readonly files: ReadonlyMap<DocumentId, Storage.File>;
+  /**
+   * Every declared cron job with its run state, by component and name.
+   */
+  readonly crons: ReadonlyArray<CronImage>;
 }
 
 /**
@@ -72,12 +114,12 @@ export type Participation =
 
 /**
  * The snapshot's contract with the kernel's state. Every field of the committed
- * state, of a job's target and of a `World` is listed here as exported or
- * excluded with its reason. The first two are checked by type: a field added to
- * `Kernel.State` or `Scheduling.Target` without an entry fails to compile. A
- * `World`'s fields are private, which no type can enumerate, so
- * `Snapshot.test.ts` compares a fresh world's own fields with `world` below,
- * and a field added without an entry fails that test.
+ * state, of a job's target, of a stored file and of a `World` is listed here as
+ * exported or excluded with its reason. The first three are checked by type: a
+ * field added to `Kernel.State`, `Scheduling.Target` or `Storage.File` without
+ * an entry fails to compile. A `World`'s fields are private, which no type can
+ * enumerate, so `Snapshot.test.ts` compares a fresh world's own fields with
+ * `world` below, and a field added without an entry fails that test.
  *
  * That test sees only the own fields a fresh world has. It cannot see state
  * created lazily after construction, held under a symbol or a `#private` name,
@@ -88,12 +130,14 @@ export type Participation =
  * so a piece of live state the snapshot does not carry fails loudly rather than
  * surviving a restore silently. A new live registry adds itself there.
  *
- * Owed by later rows, which add their state here when they land on `main`: cron
- * state (#133), stored file bytes, storage ID mappings, `nextFile` and
- * upload-token counters (#138), and component init markers. A restore never
- * redeclares a cron and never draws a fresh random value: it installs the
- * declared state as the snapshot holds it, so a row whose state comes from a
- * declaration or a random draw exports what was declared or drawn.
+ * A cron job's fields are checked by type too, against `Execution.CronJob`. A
+ * restore never redeclares a cron and never draws a fresh random value: it
+ * installs each job's run state as the snapshot holds it, after checking that
+ * the restoring app declares the same jobs.
+ *
+ * Owed by later rows, which add their state here when they land on `main`:
+ * component init markers. A row whose state comes from a declaration or a
+ * random draw exports what was declared or drawn.
  */
 export const contract = {
   state: {
@@ -107,6 +151,21 @@ export const contract = {
     standing: { exported: "jobs[].standing" },
     world: { exported: "jobs[].world, by name" },
   } satisfies { readonly [K in keyof Scheduling.Target]-?: Participation },
+  file: {
+    componentPath: { exported: "files[].componentPath" },
+    uuid: { exported: "files[].uuid" },
+    bytes: { exported: "files[].bytes, base64" },
+  } satisfies { readonly [K in keyof Storage.File]-?: Participation },
+  cron: {
+    componentPath: { exported: "crons[].componentPath" },
+    spec: {
+      exported:
+        "crons[].name, udfPath, args and schedule, which a restore checks against the restoring app's declarations",
+    },
+    nextRun: { exported: "crons[].nextRun" },
+    last: { exported: "crons[].last" },
+    world: { exported: "crons[].world, by name" },
+  } satisfies { readonly [K in keyof Execution.CronJob]-?: Participation },
   world: {
     components: {
       excluded:
@@ -133,11 +192,35 @@ export const contract = {
     nextAttemptId: { exported: "identity.nextAttemptId" },
     floor: { exported: "floor" },
     targets: { exported: "jobs" },
+    cronJobs: { exported: "crons" },
+    declared: {
+      excluded:
+        "Read from the restoring app's `crons.ts` when it loads. A restore refuses unless it equals the snapshot's declarations.",
+    },
+    cronsScheduled: {
+      excluded:
+        "Whether the declared jobs have runs. A restore installs the snapshot's and sets it, so no first run is drawn.",
+    },
+    own: {
+      excluded:
+        "The driver's own world is configuration: the restoring driver gives its own, and cron worlds resolve by name.",
+    },
     live: {
       excluded:
         "Live registries, listed under `live` below. A world refuses to restore while any is non-empty.",
     },
     identityEpoch: { exported: "identity.identityEpoch" },
+    files: { exported: "files, for every committed `_storage` row" },
+    legacyIds: {
+      exported:
+        "files[].uuid: a restore rebuilds each storage UUID's document ID from its file",
+    },
+    nextFile: { exported: "identity.nextFile" },
+    nextUploadToken: { exported: "identity.nextUploadToken" },
+    nextErrorRequest: {
+      excluded:
+        "Request IDs the kernel names in an HTTP route's error body, which reach no committed state, as `requestIds` below.",
+    },
     runtime: {
       excluded:
         "The driver's clock and commit timestamps. The restoring driver supplies its own.",
@@ -202,7 +285,7 @@ export const contract = {
   } satisfies Readonly<Record<string, Participation>>,
 } as const;
 
-const header = "confect-kernel-snapshot 1 sha256:";
+const header = "confect-kernel-snapshot 3 sha256:";
 
 const FunctionPathJson = Schema.Struct({
   componentPath: Schema.String,
@@ -219,6 +302,8 @@ const Body = Schema.Struct({
     lastCreationTime: Schema.Finite,
     nextAttemptId: Schema.Int,
     identityEpoch: Schema.Int,
+    nextFile: Schema.Int,
+    nextUploadToken: Schema.Int,
   }),
   tables: Schema.Array(
     Schema.Struct({
@@ -234,6 +319,35 @@ const Body = Schema.Struct({
       id: Schema.String,
       target: FunctionPathJson,
       standing: Schema.Boolean,
+      world: Schema.NullOr(Schema.String),
+    }),
+  ),
+  files: Schema.Array(
+    Schema.Struct({
+      id: Schema.String,
+      componentPath: Schema.String,
+      uuid: Schema.String,
+      // Base64, or a secret's marker in its place.
+      bytes: Schema.Unknown,
+    }),
+  ),
+  crons: Schema.Array(
+    Schema.Struct({
+      componentPath: Schema.String,
+      name: Schema.String,
+      udfPath: Schema.String,
+      args: Schema.Unknown,
+      schedule: Schema.Unknown,
+      nextRun: Schema.Finite,
+      last: Schema.NullOr(
+        Schema.Union([
+          Schema.Struct({ kind: Schema.Literal("success") }),
+          Schema.Struct({
+            kind: Schema.Literal("failed"),
+            error: Schema.Unknown,
+          }),
+        ]),
+      ),
       world: Schema.NullOr(Schema.String),
     }),
   ),
@@ -280,6 +394,14 @@ export type Unredact = (
 
 const asIs: Redact = (_componentPath, _table, json) => json;
 
+/**
+ * What an export writes for a stored file's bytes: base64, or a marker the
+ * kernel puts in its place.
+ */
+export type RedactBytes = (bytes: Uint8Array) => JSONValue;
+
+const base64Of: RedactBytes = (bytes) => Base64.fromByteArray(bytes);
+
 const digestOf = (bytes: Uint8Array): string =>
   createHash("sha256").update(bytes).digest("hex");
 
@@ -289,7 +411,11 @@ const digestOf = (bytes: Uint8Array): string =>
  * and jobs are sorted, and every document keeps its own field order, so the
  * same state always encodes to the same bytes.
  */
-export const encode = (image: Image, redact: Redact = asIs): Uint8Array => {
+export const encode = (
+  image: Image,
+  redact: Redact = asIs,
+  redactBytes: RedactBytes = base64Of,
+): Uint8Array => {
   const { state } = image;
   const encodeDocument = (
     componentPath: string,
@@ -329,6 +455,8 @@ export const encode = (image: Image, redact: Redact = asIs): Uint8Array => {
       lastCreationTime: image.identity.lastCreationTime,
       nextAttemptId: image.identity.nextAttemptId,
       identityEpoch: image.identity.identityEpoch,
+      nextFile: image.identity.nextFile,
+      nextUploadToken: image.identity.nextUploadToken,
     },
     tables,
     jobs: sorted(image.jobs, ([id]) => id).map(([id, target]) => ({
@@ -340,6 +468,16 @@ export const encode = (image: Image, redact: Redact = asIs): Uint8Array => {
       standing: target.standing,
       world: target.world,
     })),
+    files: sorted(image.files, ([id]) => id).map(([id, file]) => ({
+      id,
+      componentPath: file.componentPath,
+      uuid: file.uuid,
+      bytes: redactBytes(file.bytes),
+    })),
+    crons: sorted(
+      image.crons,
+      ({ componentPath, name }) => `${componentPath}\u0000${name}`,
+    ) as Array<Body["crons"][number]>,
     log: state.log.map((commit) => ({
       version: commit.version,
       commitTs: commit.commitTs.toString(),
@@ -422,6 +560,7 @@ export const checkBody = (
   | KernelRefusal.SnapshotMalformed
   | KernelRefusal.SnapshotRowInconsistent
   | KernelRefusal.SnapshotJobInconsistent
+  | KernelRefusal.SnapshotFileInconsistent
 > => {
   const once = <A>(items: ReadonlyArray<A>, key: (item: A) => string) => {
     const seen = new Set<string>();
@@ -488,6 +627,11 @@ export const checkBody = (
       }
     }
   }
+  const file = once(body.files, ({ id }) => id);
+  if (file !== undefined)
+    return Result.fail(
+      fileRefusal(file.componentPath, file.id, "duplicate", "appears twice"),
+    );
   const job = once(body.jobs, ({ id }) => id);
   if (job !== undefined)
     return Result.fail(
@@ -496,6 +640,17 @@ export const checkBody = (
         reason: "duplicate",
         message: `The snapshot's job ${job.id} appears twice.`,
       }),
+    );
+  const cron = once(
+    body.crons,
+    ({ componentPath, name }) => `${componentPath}\u0000${name}`,
+  );
+  if (cron !== undefined)
+    return Result.fail(
+      malformed(
+        "duplicate",
+        `cron job "${cron.name}" of component "${cron.componentPath}" appears twice`,
+      ),
     );
   return Result.succeed(undefined);
 };
@@ -546,6 +701,26 @@ const unredactBody = (
         before: document(change.before),
         after: document(change.after),
       })),
+    })),
+    files: body.files.map((file) => {
+      if (refusal !== undefined) return file;
+      const bytes = unredact(file.bytes as JSONValue);
+      if (Result.isFailure(bytes)) {
+        refusal = bytes.failure;
+        return file;
+      }
+      if (typeof bytes.success !== "string") {
+        refusal = malformed("value", `file ${file.id}'s bytes are not base64`);
+      }
+      return { ...file, bytes: bytes.success };
+    }),
+    crons: body.crons.map((cron) => ({
+      ...cron,
+      args: document(cron.args),
+      last:
+        cron.last?.kind === "failed"
+          ? { kind: "failed" as const, error: document(cron.last.error) }
+          : cron.last,
     })),
   };
   return refusal === undefined
@@ -600,6 +775,29 @@ const imageOf = (body: Body, unredact: Unredact): Image => {
         },
       ]),
     ),
+    files: new Map(
+      body.files.map((file) => [
+        file.id as DocumentId,
+        {
+          componentPath: file.componentPath,
+          uuid: file.uuid,
+          bytes: Base64.toByteArray(file.bytes as string),
+        },
+      ]),
+    ),
+    crons: body.crons.map((cron) => {
+      if (cron.last?.kind === "failed" && typeof cron.last.error !== "string") {
+        throw new Error(
+          `cron job "${cron.name}" records a failure whose text is not a string`,
+        );
+      }
+      return {
+        ...cron,
+        args: cron.args as JSONValue,
+        schedule: cron.schedule as JSONValue,
+        last: cron.last as CronImage["last"],
+      };
+    }),
   };
 };
 
@@ -610,7 +808,8 @@ export type Inconsistency =
   | KernelRefusal.SnapshotAllocatorBehind
   | KernelRefusal.SnapshotRowInconsistent
   | KernelRefusal.SnapshotTimestampInconsistent
-  | KernelRefusal.SnapshotJobInconsistent;
+  | KernelRefusal.SnapshotJobInconsistent
+  | KernelRefusal.SnapshotFileInconsistent;
 
 const documentText = (doc: StoredDocument | null): string =>
   doc === null ? "null" : JSON.stringify(convexToJson(doc as Value));
@@ -624,6 +823,19 @@ const counterOf = (id: string): number | undefined => {
   const digits = table === null ? "" : id.slice(0, id.length - table.length);
   return /^[0-9]+$/.test(digits) ? Number(digits) : undefined;
 };
+
+const fileRefusal = (
+  componentPath: string,
+  id: string,
+  reason: KernelRefusal.SnapshotFileInconsistent["reason"],
+  detail: string,
+) =>
+  new KernelRefusal.SnapshotFileInconsistent({
+    componentPath,
+    id,
+    reason,
+    message: `The snapshot's file ${id} in "${componentPath}" ${detail}.`,
+  });
 
 const rowRefusal = (
   componentPath: string,
@@ -773,6 +985,13 @@ export const checkAllocators = (
     return behind("nextAttemptId", identity.nextAttemptId, 1);
   if (identity.identityEpoch < 0)
     return behind("identityEpoch", identity.identityEpoch, 0);
+  let maxFile = 0;
+  for (const { uuid } of image.files.values())
+    maxFile = Math.max(maxFile, Storage.uuidCounter(uuid) ?? 0);
+  if (identity.nextFile <= maxFile)
+    return behind("nextFile", identity.nextFile, maxFile + 1);
+  if (identity.nextUploadToken < 1)
+    return behind("nextUploadToken", identity.nextUploadToken, 1);
   return Result.succeed(undefined);
 };
 
@@ -851,6 +1070,67 @@ export const checkJobs = (
 };
 
 /**
+ * Every file names a committed `_storage` row in its component, whose digest
+ * and size are the file's bytes', under a storage UUID the kernel mints and no
+ * other file holds, and every `_storage` row has its file.
+ */
+export const checkFiles = (
+  image: Image,
+): Result.Result<void, KernelRefusal.SnapshotFileInconsistent> => {
+  const uuids = new Set<string>();
+  for (const [id, file] of image.files) {
+    const row = image.state.tables
+      .get(file.componentPath)
+      ?.get(Storage.table)
+      ?.get(id)?.doc;
+    if (row === undefined)
+      return Result.fail(
+        fileRefusal(
+          file.componentPath,
+          id,
+          "row",
+          "has no committed `_storage` row",
+        ),
+      );
+    if (row["sha256"] !== Storage.digest(file.bytes))
+      return Result.fail(
+        fileRefusal(
+          file.componentPath,
+          id,
+          "digest",
+          `holds bytes whose SHA-256 is not its row's ${JSON.stringify(row["sha256"])}`,
+        ),
+      );
+    if (row["size"] !== file.bytes.length)
+      return Result.fail(
+        fileRefusal(
+          file.componentPath,
+          id,
+          "size",
+          `holds ${file.bytes.length} bytes, not its row's ${JSON.stringify(row["size"])}`,
+        ),
+      );
+    if (Storage.uuidCounter(file.uuid) === undefined || uuids.has(file.uuid))
+      return Result.fail(
+        fileRefusal(
+          file.componentPath,
+          id,
+          "uuid",
+          `has storage UUID "${file.uuid}", which the kernel would not mint or another file holds`,
+        ),
+      );
+    uuids.add(file.uuid);
+  }
+  for (const [componentPath, byTable] of image.state.tables)
+    for (const id of byTable.get(Storage.table)?.keys() ?? [])
+      if (image.files.get(id)?.componentPath !== componentPath)
+        return Result.fail(
+          fileRefusal(componentPath, id, "untracked", "has a row but no file"),
+        );
+  return Result.succeed(undefined);
+};
+
+/**
  * Check a decoded image against every rule the kernel's own exports keep,
  * before any of it is installed.
  */
@@ -863,6 +1143,7 @@ export const check = (
     () => checkAllocators(image),
     () => checkTimestamps(image),
     () => checkJobs(image, jobTable),
+    () => checkFiles(image),
   ];
   for (const run of checks) {
     const checked = run();
@@ -886,6 +1167,7 @@ export const decode = (
   | KernelRefusal.SnapshotSecretMissing
   | KernelRefusal.SnapshotRowInconsistent
   | KernelRefusal.SnapshotJobInconsistent
+  | KernelRefusal.SnapshotFileInconsistent
 > => {
   const newline = bytes.indexOf(0x0a);
   const head =

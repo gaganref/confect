@@ -10,8 +10,17 @@ import { classProbeHandler } from "../components/counter/confect/authoringHandle
 import { optionalPrefix } from "../components/counter/confect/optionalPrefix";
 import { first } from "./componentBindings";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
+import * as HttpRouter from "effect/http/HttpRouter";
+import * as HttpServerRequest from "effect/http/HttpServerRequest";
+import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as Layer from "effect/Layer";
-import { ExecutionMetadata, RequestMetadata } from "./_generated/services";
+import * as SignedEnvelope from "../../../signedEnvelope";
+import refs from "./_generated/refs";
+import {
+  ExecutionMetadata,
+  MutationRunner,
+  RequestMetadata,
+} from "./_generated/services";
 
 const HostApi = HttpApi.make("host")
   .add(
@@ -81,9 +90,38 @@ const componentAuthoring = HttpApiBuilder.group(
     ),
 );
 
+// The route-local signed ingress rule of `../../../signedEnvelope.ts`: a
+// refused envelope gets its declared refusal before anything is written.
+const ingress = HttpRouter.add(
+  "POST",
+  SignedEnvelope.path,
+  Effect.gen(function* () {
+    const request = yield* HttpServerRequest.HttpServerRequest;
+    const body = new Uint8Array(yield* request.arrayBuffer);
+    const verdict = yield* Effect.promise(() =>
+      SignedEnvelope.verify((name) => request.headers[name], body),
+    );
+    if (verdict.kind === "refused") {
+      return HttpServerResponse.text(verdict.refusal.body, {
+        status: verdict.refusal.status,
+      });
+    }
+    const { runMutation } = yield* MutationRunner;
+    yield* runMutation(refs.internal.groups.transactions.write, {
+      caseId: "ingress",
+      value: `${verdict.event}:${verdict.id}`,
+      fail: false,
+    });
+    return HttpServerResponse.text(`accepted ${verdict.event} ${verdict.id}`);
+  }).pipe(Effect.orDie),
+);
+
 const http = Http.make({
   api: HostApi,
   handlers: Layer.mergeAll(users, metadata, componentAuthoring, auth),
 });
 
-export default { ...http, routes: Layer.merge(http.routes, optionalPrefix) };
+export default {
+  ...http,
+  routes: Layer.mergeAll(http.routes, optionalPrefix, ingress),
+};

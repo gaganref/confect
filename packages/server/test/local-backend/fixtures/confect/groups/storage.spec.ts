@@ -35,4 +35,63 @@ export default GroupSpec.make()
       args: () => ({ storageId: GenericId.GenericId("_storage") }),
       returns: () => Schema.Null,
     }),
+  )
+  .addFunction(
+    FunctionSpec.publicAction({
+      name: "storeWith",
+      args: () => ({
+        text: Schema.String,
+        contentType: Schema.String,
+        sha256: Schema.String,
+      }),
+      returns: () => GenericId.GenericId("_storage"),
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicQuery({
+      name: "describe",
+      args: () => ({ storageId: GenericId.GenericId("_storage") }),
+      returns: () => Schema.String,
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
+      name: "deleteRaw",
+      args: () => ({ storageId: GenericId.GenericId("_storage") }),
+      returns: () => Schema.Null,
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
+      name: "storeInMutation",
+      args: () => ({ text: Schema.String, contentType: Schema.String }),
+      returns: () => Schema.String,
+    }),
+  )
+  .addFunction(
+    FunctionSpec.internalMutation({
+      name: "storeAndRead",
+      args: () => ({
+        count: Schema.Finite,
+        size: Schema.Finite,
+        ids: Schema.Array(GenericId.GenericId("_storage")),
+      }),
+      returns: () => Schema.Null,
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
+      name: "fileProbe",
+      args: () => ({
+        nested: Schema.Boolean,
+        count: Schema.Finite,
+        size: Schema.Finite,
+        ids: Schema.Array(GenericId.GenericId("_storage")),
+        filesWritten: Schema.Finite,
+        fileWriteBytes: Schema.Finite,
+        filesRead: Schema.Finite,
+        fileReadBytes: Schema.Finite,
+      }),
+      returns: () => Schema.String,
+    }),
   );

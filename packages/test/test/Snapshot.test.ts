@@ -6,6 +6,7 @@ import {
   actionGeneric,
   componentsGeneric,
   createFunctionHandle,
+  cronJobs,
   defineSchema,
   defineTable,
   makeFunctionReference,
@@ -613,7 +614,7 @@ describe("snapshot restore", () => {
         ).toMatchObject({ _tag: "SnapshotMalformed", reason: "header" });
         // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The forged body is raw bytes, as a tampering writer would make them.
         const body = JSON.stringify({ components: [""], version: "one" });
-        const forged = `confect-kernel-snapshot 1 sha256:${createHash("sha256")
+        const forged = `confect-kernel-snapshot 3 sha256:${createHash("sha256")
           .update(body)
           .digest("hex")}\n${body}`;
         expect(
@@ -673,7 +674,7 @@ const rehash = (bytes: Uint8Array, edit: (body: any) => void): Uint8Array => {
   edit(body);
   const edited = JSON.stringify(body);
   return bytesOf(
-    `confect-kernel-snapshot 1 sha256:${createHash("sha256")
+    `confect-kernel-snapshot 3 sha256:${createHash("sha256")
       .update(edited)
       .digest("hex")}\n${edited}`,
   );
@@ -1106,6 +1107,423 @@ describe("snapshot live state", () => {
           held: { _tag: "SnapshotWorldBusy" },
           subscribers: { _tag: "SnapshotSubscribed" },
         });
+      }),
+  );
+});
+
+describe("snapshot file storage", () => {
+  const binary = Uint8Array.from([0, 1, 2, 254, 255, 0x7b, 0x0a]);
+  type StorageId = GenericId<"_storage">;
+  const storeFiles = (t: KernelControls) =>
+    call(() =>
+      t.action(async (ctx: any) => ({
+        typed: await ctx.storage.store(
+          new Blob([binary], { type: "application/octet-stream" }),
+        ),
+        untyped: await ctx.storage.store(new Blob(["plain"])),
+        gone: await ctx.storage.store(new Blob(["deleted before export"])),
+      })),
+    );
+  const describeFile = (t: KernelControls, id: StorageId | string) =>
+    call(() =>
+      t.query(async (ctx: any) => ({
+        doc: await ctx.db.system.get(id),
+        metadata: await ctx.storage.getMetadata(id),
+        url: await ctx.storage.getUrl(id),
+      })),
+    );
+  const contents = (t: KernelControls, id: StorageId) =>
+    call(() =>
+      t.action(async (ctx: any) => {
+        const blob = await ctx.storage.get(id);
+        return blob === null
+          ? null
+          : { type: blob.type, bytes: await blob.arrayBuffer() };
+      }),
+    );
+
+  it.effect(
+    "a stored file round-trips byte for byte, and getUrl and getMetadata answer after a restore as before it",
+    () =>
+      Effect.gen(function* () {
+        const t = backend(driver());
+        const ids = yield* storeFiles(t);
+        yield* call(() => t.action((ctx: any) => ctx.storage.delete(ids.gone)));
+        const exported = t.exportSnapshot();
+        let exportedFiles: Array<string> = [];
+        rehash(exported, (body) => {
+          exportedFiles = body.files.map((file: any) => file.id);
+        });
+        expect(exportedFiles).toEqual(
+          [ids.typed, ids.untyped].toSorted((a, b) => (a < b ? -1 : 1)),
+        );
+
+        const restored = backend(driver());
+        yield* call(() => restored.restoreSnapshot(exported));
+        expect(text(restored.exportSnapshot())).toBe(text(exported));
+        for (const id of [ids.typed, ids.untyped]) {
+          const source = yield* describeFile(t, id);
+          expect(yield* describeFile(restored, id)).toEqual(source);
+          // A file's storage UUID still names it after a restore.
+          const byUuid = yield* describeFile(
+            restored,
+            source.metadata.storageId,
+          );
+          expect([byUuid.metadata, byUuid.url]).toEqual([
+            source.metadata,
+            source.url,
+          ]);
+        }
+        const read = yield* contents(restored, ids.typed);
+        expect(read?.type).toBe("application/octet-stream");
+        expect(new Uint8Array(read!.bytes)).toStrictEqual(binary);
+        expect(yield* contents(restored, ids.gone)).toBeNull();
+      }),
+  );
+
+  it.effect(
+    "a restored backend mints the next storage UUID and upload token, never one its source handed out",
+    () =>
+      Effect.gen(function* () {
+        const t = backend(driver());
+        const ids = yield* storeFiles(t);
+        const uploadUrl = () =>
+          call(() => t.mutation((ctx: any) => ctx.storage.generateUploadUrl()));
+        yield* uploadUrl();
+        const restored = backend(driver());
+        yield* call(() => restored.restoreSnapshot(t.exportSnapshot()));
+        const next = yield* call(() =>
+          restored.action((ctx: any) => ctx.storage.store(new Blob(["next"]))),
+        );
+        const uuids = yield* call(() =>
+          restored.query((ctx: any) =>
+            Promise.all(
+              [ids.typed, ids.untyped, ids.gone, next].map((id) =>
+                ctx.storage
+                  .getMetadata(id)
+                  .then((m: any) => m?.storageId ?? null),
+              ),
+            ),
+          ),
+        );
+        expect(new Set(uuids).size).toBe(4);
+        expect(uuids[3]).toBe("00000000-0000-4000-8000-000000000004");
+        expect(
+          yield* call(() =>
+            restored.mutation((ctx: any) => ctx.storage.generateUploadUrl()),
+          ),
+        ).toMatch(/token=kernel-unsigned-2$/);
+      }),
+  );
+
+  it.effect.each<{
+    readonly name: string;
+    readonly edit: (body: any, ids: Record<string, string>) => void;
+    readonly refusal: Record<string, unknown>;
+  }>([
+    {
+      name: "a file body changed after export",
+      edit: (body, ids) => {
+        const file = body.files.find((f: any) => f.id === ids["typed"]);
+        file.bytes = btoa("tampered");
+      },
+      refusal: { _tag: "SnapshotFileInconsistent", reason: "digest" },
+    },
+    {
+      name: "a file body of the right digest and another size",
+      edit: (body, ids) => {
+        const row = body.tables
+          .flatMap((entry: any) => entry.rows)
+          .find((r: any) => r.doc._id === ids["untyped"]);
+        row.doc.size = 6;
+        for (const commit of body.log)
+          for (const change of commit.changes)
+            if (change.id === ids["untyped"] && change.after !== null)
+              change.after.size = 6;
+      },
+      refusal: { _tag: "SnapshotFileInconsistent", reason: "size" },
+    },
+    {
+      name: "a `_storage` row whose file is missing",
+      edit: (body, ids) => {
+        body.files = body.files.filter((f: any) => f.id !== ids["untyped"]);
+      },
+      refusal: { _tag: "SnapshotFileInconsistent", reason: "untracked" },
+    },
+    {
+      name: "two files under one storage UUID",
+      edit: (body) => {
+        body.files[1].uuid = body.files[0].uuid;
+      },
+      refusal: { _tag: "SnapshotFileInconsistent", reason: "uuid" },
+    },
+    {
+      name: "a next file counter rewound onto a stored file's UUID",
+      edit: (body) => {
+        body.identity.nextFile = 1;
+      },
+      refusal: {
+        _tag: "SnapshotAllocatorBehind",
+        allocator: "nextFile",
+        required: 4,
+      },
+    },
+  ])("$name is refused before anything is restored", ({ edit, refusal }) =>
+    Effect.gen(function* () {
+      const t = backend(driver());
+      const ids = yield* storeFiles(t);
+      const forged = rehash(t.exportSnapshot(), (body) => edit(body, ids));
+      const restored = backend(driver());
+      expect(
+        yield* failure(() => restored.restoreSnapshot(forged)),
+      ).toMatchObject(refusal);
+      expect(restored.exportSnapshot()).toStrictEqual(
+        backend(driver()).exportSnapshot(),
+      );
+    }),
+  );
+
+  it.effect(
+    "a flipped byte in an exported file body fails the snapshot's digest",
+    () =>
+      Effect.gen(function* () {
+        const t = backend(driver());
+        yield* storeFiles(t);
+        const exported = t.exportSnapshot();
+        const at = text(exported).indexOf('"bytes":"') + '"bytes":"'.length;
+        const flipped = Uint8Array.from(exported);
+        flipped[at] = flipped[at] === 0x41 ? 0x42 : 0x41;
+        expect(
+          yield* failure(() => backend(driver()).restoreSnapshot(flipped)),
+        ).toMatchObject({ _tag: "SnapshotDigestMismatch" });
+      }),
+  );
+});
+
+// Cron state across a snapshot. The world counts every draw from its stream,
+// and each draw is a quarter of its bound, never a zero delay, so no run ever
+// draws again after its first.
+const cronTicks = {
+  tick: makeFunctionReference<"mutation", { name: string }>("cronApp:tick"),
+  list: makeFunctionReference<"query", {}, Array<{ name: string; at: number }>>(
+    "cronApp:list",
+  ),
+};
+const cronSchema = defineSchema({
+  ticks: defineTable({ name: v.string(), at: v.number() }),
+});
+type Declare = (crons: ReturnType<typeof cronJobs>) => void;
+const declareAll: Declare = (crons) => {
+  crons.interval("interval", { minutes: 15 }, cronTicks.tick, {
+    name: "interval",
+  });
+  crons.hourly("hourly", {}, cronTicks.tick, { name: "hourly" });
+  crons.cron("expression", "*/7 * * * *", cronTicks.tick, {
+    name: "expression",
+  });
+  crons.cron("weekday", "0 6 15W * *", cronTicks.tick, { name: "weekday" });
+};
+const cronModules = (declare: Declare) => {
+  const crons = cronJobs();
+  declare(crons);
+  return {
+    "_generated/server.ts": () => Promise.resolve({}),
+    "cronApp.ts": () =>
+      Promise.resolve({
+        tick: mutationGeneric({
+          args: { name: v.string() },
+          handler: (ctx, { name }) =>
+            ctx.db.insert("ticks", { name, at: Date.now() }).then(() => null),
+        }),
+        list: queryGeneric({
+          args: {},
+          handler: (ctx) =>
+            ctx.db
+              .query("ticks")
+              .collect()
+              .then((rows) => rows.map(({ name, at }) => ({ name, at }))),
+        }),
+      }),
+    "crons.ts": () => Promise.resolve({ default: crons }),
+  };
+};
+const counted = () => {
+  let draws = 0;
+  const world: Invocation.World = {
+    name: "crons",
+    services: Context.empty(),
+    clock: () => start,
+    random: () => {
+      draws += 1;
+      return 0.25;
+    },
+  };
+  return { world, draws: () => draws };
+};
+const cronBackend = (
+  d: Driver,
+  world: Invocation.World,
+  declare: Declare = declareAll,
+): KernelControls =>
+  convexTest({
+    schema: cronSchema,
+    modules: cronModules(declare),
+    runtime: d.runtime,
+    world,
+  });
+const hours = (n: number) => n * 60 * 60 * 1000;
+
+describe("snapshot cron state", () => {
+  it.effect(
+    "a restored backend's next cron runs equal the run that never stopped, byte for byte, and the restore draws nothing",
+    () =>
+      Effect.gen(function* () {
+        const d = driver();
+        const source = counted();
+        const t = cronBackend(d, source.world);
+        yield* call(() => t.advance(hours(30)));
+        const snapshot = t.exportSnapshot();
+        const atSnapshot = t.crons();
+        yield* call(() => t.advance(hours(40)));
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The run's state is compared as the bytes it prints.
+        const straight = JSON.stringify({
+          crons: t.crons(),
+          ticks: yield* call(() => t.query(cronTicks.list, {})),
+        });
+
+        const restoring = counted();
+        const restored = cronBackend(driver(), restoring.world);
+        yield* call(() => restored.restoreSnapshot(snapshot));
+        expect(restoring.draws()).toBe(0);
+        expect(restored.crons()).toEqual(atSnapshot);
+        yield* call(() => restored.advance(hours(40)));
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The run's state is compared as the bytes it prints.
+        const replayed = JSON.stringify({
+          crons: restored.crons(),
+          ticks: yield* call(() => restored.query(cronTicks.list, {})),
+        });
+
+        expect(replayed).toBe(straight);
+        expect(restoring.draws()).toBe(0);
+        expect(source.draws()).toBe(3);
+        expect(text(restored.exportSnapshot())).toBe(text(t.exportSnapshot()));
+      }),
+  );
+
+  it.effect(
+    "a restore refuses when the app declares other cron jobs than the snapshot holds, and draws nothing",
+    () =>
+      Effect.gen(function* () {
+        const t = cronBackend(driver(), counted().world);
+        yield* call(() => t.advance(hours(1)));
+        const snapshot = t.exportSnapshot();
+        const into = (declare: Declare) => {
+          const restoring = counted();
+          const restored = cronBackend(driver(), restoring.world, declare);
+          return failure(() => restored.restoreSnapshot(snapshot)).pipe(
+            Effect.map((error) => ({ error, draws: restoring.draws() })),
+          );
+        };
+        expect(
+          yield* into((crons) => {
+            declareAll(crons);
+            delete (crons as unknown as { crons: Record<string, unknown> })
+              .crons["expression"];
+          }),
+        ).toMatchObject({
+          error: {
+            _tag: "SnapshotCronMismatch",
+            name: "expression",
+            reason: "undeclared",
+          },
+          draws: 0,
+        });
+        expect(
+          yield* into((crons) => {
+            declareAll(crons);
+            crons.interval("extra", { seconds: 5 }, cronTicks.tick, {
+              name: "extra",
+            });
+          }),
+        ).toMatchObject({
+          error: {
+            _tag: "SnapshotCronMismatch",
+            name: "extra",
+            reason: "missing",
+          },
+          draws: 0,
+        });
+        expect(
+          yield* into((crons) => {
+            crons.interval("interval", { seconds: 60 }, cronTicks.tick, {
+              name: "interval",
+            });
+            crons.hourly("hourly", {}, cronTicks.tick, { name: "hourly" });
+            crons.cron("expression", "*/7 * * * *", cronTicks.tick, {
+              name: "expression",
+            });
+            crons.cron("weekday", "0 6 15W * *", cronTicks.tick, {
+              name: "weekday",
+            });
+          }),
+        ).toMatchObject({
+          error: {
+            _tag: "SnapshotCronMismatch",
+            name: "interval",
+            reason: "changed",
+          },
+          draws: 0,
+        });
+        expect(
+          yield* into((crons) => {
+            declareAll(crons);
+            (
+              crons as unknown as {
+                crons: Record<string, { args: Array<unknown> }>;
+              }
+            ).crons["hourly"]!.args = [{ name: "renamed" }];
+          }),
+        ).toMatchObject({
+          error: {
+            _tag: "SnapshotCronMismatch",
+            name: "hourly",
+            reason: "changed",
+          },
+          draws: 0,
+        });
+      }),
+  );
+
+  it.effect(
+    "a cron job's world is restored by name, and a restore with no world of that name refuses",
+    () =>
+      Effect.gen(function* () {
+        const t = cronBackend(driver(), counted().world);
+        yield* call(() => t.advance(hours(1)));
+        const snapshot = t.exportSnapshot();
+        const elsewhere = convexTest({
+          schema: cronSchema,
+          modules: cronModules(declareAll),
+          runtime: driver().runtime,
+        });
+        expect(
+          yield* failure(() => elsewhere.restoreSnapshot(snapshot)),
+        ).toMatchObject({
+          _tag: "SnapshotWorldUnresolved",
+          name: "crons",
+          reason: "missing",
+        });
+        const named = convexTest({
+          schema: cronSchema,
+          modules: cronModules(declareAll),
+          runtime: driver().runtime,
+        });
+        const restoring = counted();
+        yield* call(() =>
+          named.restoreSnapshot(snapshot, { worlds: [restoring.world] }),
+        );
+        expect(named.crons()).toEqual(t.crons());
+        expect(restoring.draws()).toBe(0);
       }),
   );
 });

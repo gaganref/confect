@@ -13,6 +13,7 @@ import type {
   UserIdentity,
 } from "convex/server";
 import type { Value } from "convex/values";
+import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import type * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -23,7 +24,9 @@ import type {
   TestConfect,
   TestConfectWithoutIdentity,
 } from "../TestConfect.js";
+import * as Clock from "./Clock.js";
 import { convexTest as kernelTest } from "./ConvexTest.js";
+import type * as Invocation from "./Invocation.js";
 import * as MountedHttp from "./MountedHttp.js";
 import * as Redaction from "./Redaction.js";
 
@@ -242,6 +245,33 @@ export const registerKit = (
 };
 
 /**
+ * Mulberry32: a stream uniform on [0, 1) from a 32-bit seed. The kernel holds
+ * no generator, so this driver supplies the stream, of the type a test world
+ * gives its handlers.
+ */
+const seeded = (seed: number): (() => number) => {
+  let state = Math.trunc(seed) >>> 0;
+  return () => {
+    state = (state + 0x6d2b79f5) >>> 0;
+    let t = state;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
+  };
+};
+
+/**
+ * The world a kernel-target layer gives its backend: no services of its own,
+ * the host's clock, which the kernel's clock follows, and a seeded stream.
+ */
+const layerWorld = (seed: number): Invocation.World => ({
+  name: "TestConfect.layer",
+  services: Context.empty(),
+  clock: Clock.hostNow,
+  random: seeded(seed),
+});
+
+/**
  * Open one backend: the convex-test world or the kernel shim the target names,
  * with every kit the options register. `raw` is the backend the service runs
  * on, for a caller that must reach a component path.
@@ -256,12 +286,13 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   process.env.CONVEX_SITE_URL ??= "https://some.convex.site";
   // On the kernel, a value under a secret node of the app's table schemas, or
   // of the policy's functions and component tables, reaches every artifact as
-  // a marker.
+  // a marker. The backend's own world draws from the seeded stream.
   const testConvex =
     options.target === "kernel"
       ? kernelTest({
           schema: convexSchemaDefinition,
           modules,
+          world: layerWorld(options.seed ?? 0),
           redaction: Redaction.policy(
             Redaction.merge(
               { tables: { "": Redaction.tablesOf(databaseSchema) } },

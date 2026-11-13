@@ -57,6 +57,13 @@ export type TargetOptions = {
    * option goes once the kernel replaces convex-test.
    */
   readonly target?: Target;
+  /**
+   * The seed of the random stream the `"kernel"` target's backend draws from on
+   * its own, such as the random delay Convex gives each run of an hourly,
+   * daily, weekly, monthly or cron-expression job. Two layers with the same
+   * seed draw the same stream. Defaults to `0`. convex-test ignores it.
+   */
+  readonly seed?: number;
 };
 
 /**
@@ -300,8 +307,10 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   );
 }
 
-const targetOf = (options: TargetOptions | undefined): TargetOptions =>
-  options?.target === undefined ? {} : { target: options.target };
+const targetOf = (options: TargetOptions | undefined): TargetOptions => ({
+  ...(options?.target === undefined ? {} : { target: options.target }),
+  ...(options?.seed === undefined ? {} : { seed: options.seed }),
+});
 
 const secretsOf = (registry: {
   readonly secrets?: SecretPolicy;
