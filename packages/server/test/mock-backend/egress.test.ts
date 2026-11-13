@@ -5,7 +5,7 @@ import { describe, expect, it } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
-import { recordOutcomes, type Outcome } from "./conformance";
+import { departs, recordOutcomes, type Outcome } from "./conformance";
 import refs from "./fixtures/confect/_generated/refs";
 import * as TestConfect from "./TestConfect";
 
@@ -72,16 +72,20 @@ describe("action egress", () => {
           ),
         );
         recordOutcomes(task, outcomes);
-        expect(outcomes).toEqual(
-          calls.map(([name]) => ({
-            function: name,
-            failed: {
-              tag: "BackendRefusal",
-              message: expect.stringContaining(
-                `The action ${name} fetched ${host} directly.`,
-              ),
-            },
-          })),
+        // The departure: on convex-test, as on the binary, each action returns
+        // the server's response instead.
+        departs(task, () =>
+          expect(outcomes).toEqual(
+            calls.map(([name]) => ({
+              function: name,
+              failed: {
+                tag: "BackendRefusal",
+                message: expect.stringContaining(
+                  `The action ${name} fetched ${host} directly.`,
+                ),
+              },
+            })),
+          ),
         );
       }).pipe(Effect.scoped, Effect.provide(TestConfect.layer)),
   );

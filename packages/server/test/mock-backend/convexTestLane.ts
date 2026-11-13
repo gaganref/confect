@@ -5,8 +5,13 @@ import { createRequire } from "node:module";
 import path from "node:path";
 import type { RunnerTestFile, RunnerTestSuite } from "vitest";
 import { isDeepStrictEqual } from "node:util";
-import { afterEach, beforeAll, beforeEach } from "vitest";
-import { exceptions, recordedOutcomes, refusals } from "./conformance";
+import { beforeAll, beforeEach } from "vitest";
+import {
+  exceptions,
+  recordedDeparture,
+  recordedOutcomes,
+  refusals,
+} from "./conformance";
 
 // The convex-test lane (`vitest.mock-backend.config.ts`) runs each case in
 // `conformance.ts` and requires it to fail on convex-test with the outcomes its
@@ -89,24 +94,33 @@ const expectFailure = (task: Task, fails: boolean) => {
 
 // An excepted case must fail. Vitest reports one that passes as "Expect test
 // to fail", which fails the lane.
-beforeEach(({ task }) => {
-  if (entryFor(task) !== undefined) expectFailure(task, true);
-});
-
-// A case that fails for another reason, such as an unrelated throw in one of
-// the functions it calls, keeps its own failure: it must record exactly the
-// outcomes its entry expects, and fail only on its own assertions.
-afterEach(({ task }) => {
+//
+// A case that fails for any other reason keeps its own failure. It must fail
+// with exactly one error, its departure assertion, raised through `departs` in
+// its own body with the message its entry pins, and record exactly the
+// outcomes its entry expects. A failing hook adds an error of its own, and an
+// unrelated throw in a function it calls changes the outcomes. The check runs
+// once the case's hooks have run, as `onTestFinished` does: an `afterEach`
+// that throws stops the hooks after it, so one here could be skipped.
+beforeEach(({ task, onTestFinished }) => {
   const entry = entryFor(task);
-  if (entry === undefined || task.result?.state !== "fail") return;
-  const errors = task.result.errors ?? [];
-  const ownAssertions =
-    errors.length > 0 &&
-    errors.every((error) => error.name === "AssertionError");
-  if (
-    !ownAssertions ||
-    !isDeepStrictEqual(recordedOutcomes(task), entry.outcomes)
-  ) {
-    expectFailure(task, false);
-  }
+  if (entry === undefined) return;
+  expectFailure(task, true);
+  onTestFinished(() => {
+    if (task.result?.state !== "fail") return;
+    const errors = task.result.errors ?? [];
+    const departure = recordedDeparture(task);
+    const ownDeparture =
+      errors.length === 1 &&
+      departure !== undefined &&
+      departure.file === entry.file &&
+      departure.message === entry.departure &&
+      errors[0]?.message === entry.departure;
+    if (
+      !ownDeparture ||
+      !isDeepStrictEqual(recordedOutcomes(task), entry.outcomes)
+    ) {
+      expectFailure(task, false);
+    }
+  });
 });

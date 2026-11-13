@@ -1,3 +1,4 @@
+import { getCallSites } from "node:util";
 /**
  * The convex-test lane's conformance exceptions as data, and the rule each
  * entry must meet. An exception is a mock-backend case that holds the test
@@ -32,6 +33,44 @@ export const recordOutcomes = (
   (task.meta as Record<string, unknown>)[outcomesKey] = outcomes;
 };
 
+const departureKey = "conformanceDeparture";
+
+/**
+ * The expected assertion of an excepted case, as the case ran it: its failure
+ * message and the file that called {@link departs}.
+ */
+export interface Departure {
+  readonly message: string;
+  readonly file: string;
+}
+
+/**
+ * Run the case's departure assertion, the one that fails on convex-test where
+ * the binary's behaviour holds. Its failure is recorded with the file that made
+ * the call, so the lane takes only that failure, raised from the case's own
+ * body, for the departure.
+ */
+export const departs = (
+  task: { readonly meta: object },
+  assertion: () => void,
+) => {
+  try {
+    assertion();
+  } catch (error) {
+    const caller = getCallSites(2)[1]?.scriptName ?? "";
+    (task.meta as Record<string, unknown>)[departureKey] = {
+      message: (error as { readonly message?: string }).message ?? "",
+      file: caller.replaceAll("\\", "/").split("/").pop() ?? "",
+    } satisfies Departure;
+    throw error;
+  }
+};
+
+export const recordedDeparture = (task: {
+  readonly meta: object;
+}): Departure | undefined =>
+  (task.meta as Record<string, Departure | undefined>)[departureKey];
+
 export const recordedOutcomes = (task: {
   readonly meta: object;
 }): ReadonlyArray<Outcome> | undefined =>
@@ -60,6 +99,13 @@ export interface ConformanceException {
    * binary. A case that records anything else fails the lane.
    */
   readonly outcomes: ReadonlyArray<Outcome>;
+  /**
+   * The message the case's departure assertion fails with on convex-test,
+   * exactly. The case must fail with that one error, raised through
+   * {@link departs} in its own body, and no other, so a failing hook or any
+   * unrelated assertion fails the lane.
+   */
+  readonly departure: string;
   readonly owner: string;
   /**
    * Where the binary behaviour is shown, by test and source.
@@ -78,6 +124,8 @@ export const exceptions: ReadonlyArray<ConformanceException> = [
       { function: "groups/egress:rawFetch", returned: "reached /ping" },
       { function: "egressNode:rawFetchNode", returned: "reached /ping" },
     ],
+    departure:
+      "expected [ { …(2) }, { …(2) } ] to deeply equal [ { …(2) }, { …(2) } ]",
     owner: "@confect/test kernel, build-order row 6 (action egress)",
     evidence:
       "packages/server/test/local-backend/egress.test.ts > action egress > an action and a Node action perform a raw fetch, on precompiled-2026-10-28-cccbade: each reaches a loopback server and returns its response. convex-backend cccbade4: an action's start_async_op starts the fetch as a task (crates/isolate/src/environment/action/mod.rs:1639-1645), which task_executor.rs:151 hands to run_fetch (action/fetch.rs:34); only a cloud proxy's 407 refuses a host (crates/http_client/src/lib.rs:131-134). Positive control: packages/test/test/Egress.test.ts > provider ports > a port call in an action is held as a command until the test answers it.",
@@ -102,6 +150,7 @@ export const refusals = (
     "name",
     "convexTest",
     "binary",
+    "departure",
     "owner",
     "evidence",
   ] as const) {
