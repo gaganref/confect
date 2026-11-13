@@ -305,7 +305,7 @@ it.effect(
         .pipe(Effect.result);
       expect(yield* reconcile).toEqual(
         Result.fail(
-          new LocalBackendError({ deploymentName, reason: "identity" }),
+          LocalBackendError.make({ deploymentName, reason: "identity" }),
         ),
       );
       yield* fs.makeDirectory(directory, { recursive: true });

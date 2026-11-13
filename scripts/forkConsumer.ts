@@ -22,7 +22,7 @@ export class InvalidConsumerVersion extends Schema.TaggedError<InvalidConsumerVe
 
 export const consumerManifest = (version: string, tarballs?: string) => {
   if (!/^\d+\.\d+\.\d+-fork\.(0|[1-9]\d*)$/.test(version))
-    return Result.fail(new InvalidConsumerVersion({ version }));
+    return Result.fail(InvalidConsumerVersion.make({ version }));
   const forkPackage = (name: string) =>
     tarballs === undefined
       ? `npm:@gaganref/confect-${name}@${version}`

@@ -780,7 +780,7 @@ export default ${nested ? "GroupSpec.addGroupsAt(GroupSpec.make(), { child: grou
             'throw new Error("impl must not load");',
           );
           expect(yield* Effect.flip(project.provide(codegenHandler))).toEqual(
-            new InvalidDeclarationError({
+            InvalidDeclarationError.make({
               declarationPath: "confect/notes.spec.ts",
               reason: `${nested ? "notes/child:save" : "notes:list"} declares the argument "context", which its profile reserves. Rename the argument.`,
             }),
@@ -843,7 +843,7 @@ export default GroupSpec.make().addFunction(profile.publicMutation({ name: "list
               ),
             ),
           ).toEqual(
-            new InvalidDeclarationError({
+            InvalidDeclarationError.make({
               declarationPath: "confect/notes.spec.ts",
               reason:
                 'notes:list declares the argument "context", which its profile reserves. Rename the argument.',
@@ -2441,7 +2441,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
         Effect.gen(function* () {
           const project = yield* wrongKitProject(testing);
           expect(yield* Effect.flip(project.run)).toEqual(
-            new InvalidDeclarationError({
+            InvalidDeclarationError.make({
               declarationPath: "confect/app.ts",
               reason: `the mount "pool" names the test kit ${stringLiteral(testing)} in its component descriptor${problem}`,
             }),
@@ -2594,7 +2594,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             ),
           );
           expect(yield* Effect.flip(project.run)).toEqual(
-            new InvalidConvexConfigError({
+            InvalidConvexConfigError.make({
               configPath: "../../convex/convex.config.ts",
               reason:
                 'the component package "no-test-kit" has no "no-test-kit/testing" or "no-test-kit/test" export. Tests register a component from another package through that entry\'s `register(t, name)`.',
@@ -2668,7 +2668,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             }),
           );
           expect(yield* Effect.flip(run)).toEqual(
-            new InvalidDeclarationError({
+            InvalidDeclarationError.make({
               declarationPath: "confect/http.ts",
               reason: "GET /items/:key is declared twice (app and app).",
             }),
@@ -2687,7 +2687,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             project.http("/first/status"),
           );
           expect(yield* Effect.flip(project.run)).toEqual(
-            new InvalidDeclarationError({
+            InvalidDeclarationError.make({
               declarationPath: "confect/http.ts",
               reason:
                 'The app route GET /first/status is under the HTTP prefix /first of the mount "first". Convex would let it shadow the component\'s routes; move it or change the prefix.',
@@ -2716,7 +2716,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             ),
           );
           expect(yield* Effect.flip(project.run)).toEqual(
-            new InvalidDeclarationError({
+            InvalidDeclarationError.make({
               declarationPath: "confect/app.ts",
               reason:
                 'The mounts "first" (/first) and "second" (/first/nested) have overlapping HTTP prefixes.',
@@ -2737,7 +2737,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const handWritten = `import { defineApp } from "convex/server";\nexport default defineApp();\n`;
           yield* project.write("convex/convex.config.ts", handWritten);
           expect(yield* Effect.flip(project.run)).toEqual(
-            new HandWrittenConvexFileError({
+            HandWrittenConvexFileError.make({
               convexPath: "convex/convex.config.ts",
               declarationPath: "confect/app.ts",
             }),
@@ -2757,7 +2757,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const handWritten = "export default { providers: [] };\n";
           yield* project.write("convex/auth.config.ts", handWritten);
           expect(yield* Effect.flip(project.run)).toEqual(
-            new HandWrittenConvexFileError({
+            HandWrittenConvexFileError.make({
               convexPath: "convex/auth.config.ts",
               declarationPath: "confect/auth.ts",
             }),
@@ -2782,7 +2782,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             ),
           );
           expect(yield* Effect.flip(project.run)).toEqual(
-            new InvalidDeclarationError({
+            InvalidDeclarationError.make({
               declarationPath: "confect/app.ts",
               reason:
                 '"first-mount" is not a valid mount name; use letters, digits and underscores, starting with a letter or underscore.',

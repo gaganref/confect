@@ -27,13 +27,13 @@ const cloudTarget = (
       `^https://${name}(?:\\.[a-z]{2}-[a-z]+-[0-9]+)?\\.convex\\.cloud$`,
     ).test(url)
   )
-    return Result.fail(new InvalidDeploymentTarget({ reason: "deployment" }));
+    return Result.fail(InvalidDeploymentTarget.make({ reason: "deployment" }));
   const key =
     /^(?:dev|prod|preview|custom):([a-z0-9]+(?:-[a-z0-9]+)*)\|[a-zA-Z0-9+/=_-]+$/.exec(
       Redacted.value(props.deployKey),
     );
   if (!key || key[1] !== name)
-    return Result.fail(new InvalidDeploymentTarget({ reason: "deployKey" }));
+    return Result.fail(InvalidDeploymentTarget.make({ reason: "deployKey" }));
   return Result.succeed({
     _tag: "Cloud",
     deploymentName: name,
@@ -46,12 +46,12 @@ const localTarget = (
 ): Result.Result<PushTarget, InvalidDeploymentTarget> => {
   const { name, url } = props.deployment;
   if (!deploymentName.test(name) || !Loopback.isOrigin(url))
-    return Result.fail(new InvalidDeploymentTarget({ reason: "deployment" }));
+    return Result.fail(InvalidDeploymentTarget.make({ reason: "deployment" }));
   const key = /^([a-z0-9]+(?:-[a-z0-9]+)*)\|[0-9a-f]+$/.exec(
     Redacted.value(props.deployKey),
   );
   if (!key || key[1] !== name)
-    return Result.fail(new InvalidDeploymentTarget({ reason: "deployKey" }));
+    return Result.fail(InvalidDeploymentTarget.make({ reason: "deployKey" }));
   return Result.succeed({
     _tag: "SelfHosted",
     deploymentName: name,

@@ -67,13 +67,13 @@ export const provider = Effect.gen(function* () {
     deploymentName: string,
     name: string,
     keyIds: ReadonlyArray<number>,
-  ) => new DeployKeyRecoveryRequired({ deploymentName, name, keyIds });
+  ) => DeployKeyRecoveryRequired.make({ deploymentName, name, keyIds });
   return {
     diff: Effect.fn("DeployKey.diff")(function* ({ news, output }) {
       if (!isResolved(news) || !output) return;
       for (const field of ["deploymentName", "name"] as const) {
         if (news[field] !== undefined && news[field] !== output[field])
-          return yield* new DeployKeyChangeRequiresNewResource({
+          return yield* DeployKeyChangeRequiresNewResource.make({
             deploymentName: output.deploymentName,
             keyId: output.keyId,
             field,
@@ -88,7 +88,7 @@ export const provider = Effect.gen(function* () {
           output.keyId,
         ]);
       if (!hasName(key.name, news.name ?? output.name))
-        return yield* new DeployKeyChangeRequiresNewResource({
+        return yield* DeployKeyChangeRequiresNewResource.make({
           deploymentName: output.deploymentName,
           keyId: output.keyId,
           field: "name",
@@ -101,7 +101,7 @@ export const provider = Effect.gen(function* () {
           (action) => !key.allowedActions.includes(action),
         )
       )
-        return yield* new DeployKeyChangeRequiresNewResource({
+        return yield* DeployKeyChangeRequiresNewResource.make({
           deploymentName: output.deploymentName,
           keyId: output.keyId,
           field: "allowedActions",
@@ -155,7 +155,7 @@ export const provider = Effect.gen(function* () {
       if (output) {
         for (const field of ["deploymentName", "name"] as const) {
           if (news[field] !== undefined && news[field] !== output[field])
-            return yield* new DeployKeyChangeRequiresNewResource({
+            return yield* DeployKeyChangeRequiresNewResource.make({
               deploymentName: output.deploymentName,
               keyId: output.keyId,
               field,
@@ -168,7 +168,7 @@ export const provider = Effect.gen(function* () {
         if (!key || !Redacted.isRedacted(output.deployKey))
           return yield* recover(output.deploymentName, name, [output.keyId]);
         if (!hasName(key.name, name))
-          return yield* new DeployKeyChangeRequiresNewResource({
+          return yield* DeployKeyChangeRequiresNewResource.make({
             deploymentName: output.deploymentName,
             keyId: output.keyId,
             field: "name",
@@ -181,7 +181,7 @@ export const provider = Effect.gen(function* () {
             (action) => !key.allowedActions.includes(action),
           )
         )
-          return yield* new DeployKeyChangeRequiresNewResource({
+          return yield* DeployKeyChangeRequiresNewResource.make({
             deploymentName: output.deploymentName,
             keyId: output.keyId,
             field: "allowedActions",

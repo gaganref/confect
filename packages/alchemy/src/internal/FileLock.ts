@@ -50,7 +50,7 @@ export const acquire = Effect.fn("FileLock.acquire")(function* (
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const random = yield* SecureRandom.SecureRandom;
-  const failed = () => new FileLockError({ reason: "filesystem" });
+  const failed = () => FileLockError.make({ reason: "filesystem" });
   const token = Buffer.from(yield* random.randomBytes(16)).toString("hex");
   const holder = yield* Schema.encodeEffect(Holder)({
     pid: process.pid,
@@ -117,7 +117,7 @@ export const acquire = Effect.fn("FileLock.acquire")(function* (
   );
 
   if (wait === undefined) {
-    if (!(yield* attempt)) return yield* new FileLockError({ reason: "held" });
+    if (!(yield* attempt)) return yield* FileLockError.make({ reason: "held" });
   } else {
     yield* attempt.pipe(
       Effect.repeat({
@@ -126,7 +126,7 @@ export const acquire = Effect.fn("FileLock.acquire")(function* (
       }),
       Effect.timeoutOrElse({
         duration: wait,
-        orElse: () => Effect.fail(new FileLockError({ reason: "timeout" })),
+        orElse: () => Effect.fail(FileLockError.make({ reason: "timeout" })),
       }),
     );
   }

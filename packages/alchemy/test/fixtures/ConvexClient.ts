@@ -71,7 +71,7 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
     variables: Record<string, Redacted.Redacted<string>>;
   } = { projects: [], deployments: [], keys: [], variables: {} };
   const missing = () =>
-    new ConvexNotFound({ operation: "test", code: "HttpError", status: 404 });
+    ConvexNotFound.make({ operation: "test", code: "HttpError", status: 404 });
   const client = {
     runFunction: vi.fn(() => Effect.die("runFunction is not faked")),
     listProjects: vi.fn(() => Effect.sync(() => state.projects)),

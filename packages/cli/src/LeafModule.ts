@@ -297,7 +297,7 @@ const validateReservedArguments = Effect.fnUntraced(function* (
       provenance._tag === "Confect" &&
       Record.has(provenance.args.fields, name)
     ) {
-      return yield* new InvalidDeclarationError({
+      return yield* InvalidDeclarationError.make({
         declarationPath: `confect/${specPath}`,
         reason: `${groupPath}:${spec.name} declares the argument "${name}", which its profile reserves. Rename the argument.`,
       });
@@ -494,7 +494,7 @@ const nameUnwrittenSectionFiles = Effect.fnUntraced(function* (
       });
     },
   );
-  return new BundleFailedError({ file: error.file, errors });
+  return BundleFailedError.make({ file: error.file, errors });
 });
 
 export const validateImpl = Effect.fn("LeafModule.validateImpl")(function* (
@@ -682,7 +682,7 @@ export const validateAllImpls = Effect.fnUntraced(function* (
       pipe(left.functionName, String.localeCompare(right.functionName)),
     );
   if (missing.length > 0) {
-    return yield* new RequiredMiddlewareError({ missing });
+    return yield* RequiredMiddlewareError.make({ missing });
   }
 });
 

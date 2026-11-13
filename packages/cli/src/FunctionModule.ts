@@ -231,7 +231,7 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
     refused.push(toPosixPath(path, path.relative(projectRoot, absolute)));
   }
   if (refused.length > 0)
-    return yield* new UnownedConvexEntrypointError({
+    return yield* UnownedConvexEntrypointError.make({
       filePaths: refused.sort(),
     });
 });

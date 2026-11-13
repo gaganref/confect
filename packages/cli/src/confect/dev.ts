@@ -335,7 +335,7 @@ const syncLoop = Effect.fnUntraced(function* (
           Effect.catchTags({
             RemoveBusyError: (error) =>
               Effect.fail(
-                new Evaluation.EvaluationError({
+                Evaluation.EvaluationError.make({
                   diagnostic: renderCodegenError(error),
                 }),
               ),

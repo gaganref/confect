@@ -73,7 +73,7 @@ const bundleDeclaration = Effect.fnUntraced(function* (file: string) {
 });
 
 const invalid = (file: string) => (error: { readonly message: string }) =>
-  new InvalidDeclarationError({
+  InvalidDeclarationError.make({
     declarationPath: `confect/${file}`,
     reason: error.message,
   });
@@ -93,7 +93,7 @@ const assertOwned = Effect.fnUntraced(function* (
   if (Declaration.isGenerated(yield* fs.readFileString(convexPath), legacy)) {
     return;
   }
-  return yield* new HandWrittenConvexFileError({
+  return yield* HandWrittenConvexFileError.make({
     convexPath: yield* displayPath(convexPath),
     declarationPath: `confect/${declarationFile}`,
   });
@@ -323,7 +323,7 @@ const writeDeclaration = Effect.fnUntraced(function* (
   const app = yield* bundleDeclaration("app.ts");
   const appValue: unknown = app.module.default;
   if (App.isApp(appValue) && appValue.kind !== target) {
-    return yield* new DeclarationKindMismatchError({
+    return yield* DeclarationKindMismatchError.make({
       declarationPath: "confect/app.ts",
       declaredKind: appValue.kind,
       targetKind: target,
@@ -340,12 +340,11 @@ const writeDeclaration = Effect.fnUntraced(function* (
     auth: Option.map(auth, ({ module }) => module.default),
     componentImport: yield* componentImport(),
   }).pipe(
-    Result.mapError(
-      (error) =>
-        new InvalidDeclarationError({
-          declarationPath: Declaration.fileOf(error),
-          reason: error.message,
-        }),
+    Result.mapError((error) =>
+      InvalidDeclarationError.make({
+        declarationPath: Declaration.fileOf(error),
+        reason: error.message,
+      }),
     ),
     Effect.fromResult,
   );
@@ -495,7 +494,7 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
 
   const http = (yield* bundleDeclaration("http.ts")).module.default;
   if (!Http.isHttp(http)) {
-    return yield* new InvalidDeclarationError({
+    return yield* InvalidDeclarationError.make({
       declarationPath: "confect/http.ts",
       reason: "it must default-export Http.make(...).",
     });
@@ -573,7 +572,7 @@ const hasDeployModule = Effect.fnUntraced(function* (
 const mountExport = Effect.fnUntraced(function* (name: string) {
   const fs = yield* FileSystem.FileSystem;
   const file = yield* confectPath(`${name}.ts`);
-  const missing = new InvalidDeclarationError({
+  const missing = InvalidDeclarationError.make({
     declarationPath: "confect/app.ts",
     reason: `the mount ${name} runs at every push, so export it from confect/${name}.ts.`,
   });

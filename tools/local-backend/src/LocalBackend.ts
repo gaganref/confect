@@ -109,7 +109,7 @@ const make = Effect.fnUntraced(function* (options: {
         : ChildProcess.make(words[0]!, words.slice(1), spawnOptions);
     const code = yield* spawner.exitCode(command).pipe(Effect.orDie);
     if (code !== 0)
-      return yield* new BackendEnvironmentSetupError({
+      return yield* BackendEnvironmentSetupError.make({
         name,
         exitCode: code,
       });
@@ -177,7 +177,7 @@ const make = Effect.fnUntraced(function* (options: {
             )
             .pipe(Effect.orDie);
           if (code !== 0)
-            return yield* new BackendRedeployError({ exitCode: code });
+            return yield* BackendRedeployError.make({ exitCode: code });
         });
         return {
           client: new ConvexHttpClient(`http://127.0.0.1:${options.port}`),

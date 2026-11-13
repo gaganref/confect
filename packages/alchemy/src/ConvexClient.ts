@@ -209,12 +209,11 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     const token =
       options?.token ??
       (yield* Config.Redacted("CONVEX_ACCESS_TOKEN").pipe(
-        Effect.mapError(
-          () =>
-            new ConvexApiError({
-              operation: "configure",
-              code: "InvalidConfiguration",
-            }),
+        Effect.mapError(() =>
+          ConvexApiError.make({
+            operation: "configure",
+            code: "InvalidConfiguration",
+          }),
         ),
       ));
     return Redacted.make(`Bearer ${Redacted.value(token)}`);
@@ -237,8 +236,8 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     );
     if (body !== undefined) {
       request = yield* HttpClientRequest.bodyJson(request, body).pipe(
-        Effect.mapError(
-          () => new ConvexApiError({ operation, code: "InvalidRequest" }),
+        Effect.mapError(() =>
+          ConvexApiError.make({ operation, code: "InvalidRequest" }),
         ),
       );
     }
@@ -246,26 +245,26 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       Effect.provideService(FetchHttpClient.RequestInit, {
         redirect: "manual",
       }),
-      Effect.mapError(
-        () => new ConvexApiError({ operation, code: "TransportError" }),
+      Effect.mapError(() =>
+        ConvexApiError.make({ operation, code: "TransportError" }),
       ),
     );
     if (response.status === 404) {
-      return yield* new ConvexNotFound({
+      return yield* ConvexNotFound.make({
         operation,
         status: 404,
         code: "HttpError",
       });
     }
     if (response.status === 409) {
-      return yield* new ConvexConflict({
+      return yield* ConvexConflict.make({
         operation,
         status: 409,
         code: "HttpError",
       });
     }
     if (response.status < 200 || response.status >= 300) {
-      return yield* new ConvexApiError({
+      return yield* ConvexApiError.make({
         operation,
         status: response.status,
         code: "HttpError",
@@ -280,7 +279,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     schema: Schema.Decoder<A>,
   ) {
     const invalidResponse = () =>
-      new ConvexApiError({
+      ConvexApiError.make({
         operation,
         status: response.status,
         code: "InvalidResponse",
@@ -328,7 +327,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     url: string,
   ) {
     const invalidUrl = () =>
-      new ConvexApiError({ operation, code: "InvalidRequest" });
+      ConvexApiError.make({ operation, code: "InvalidRequest" });
     if (options?.mode === "local") {
       if (!Loopback.isOrigin(url)) return yield* invalidUrl();
       return `${url}/api/v1`;
@@ -386,28 +385,28 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
           format: "json",
           ...(componentPath === undefined ? {} : { componentPath }),
         }),
-        Effect.mapError(
-          () => new ConvexApiError({ operation, code: "InvalidRequest" }),
+        Effect.mapError(() =>
+          ConvexApiError.make({ operation, code: "InvalidRequest" }),
         ),
       );
       const response = yield* http.execute(request).pipe(
         Effect.provideService(FetchHttpClient.RequestInit, {
           redirect: "manual",
         }),
-        Effect.mapError(
-          () => new ConvexApiError({ operation, code: "TransportError" }),
+        Effect.mapError(() =>
+          ConvexApiError.make({ operation, code: "TransportError" }),
         ),
       );
       // Convex answers a function that threw with 560 and its message.
       if (response.status !== 200 && response.status !== 560)
-        return yield* new ConvexApiError({
+        return yield* ConvexApiError.make({
           operation,
           status: response.status,
           code: "HttpError",
         });
       const result = yield* decode(operation, response, FunctionResponse);
       if (result.status === "error")
-        return yield* new ConvexFunctionError({
+        return yield* ConvexFunctionError.make({
           functionPath,
           errorMessage: result.errorMessage,
         });
@@ -430,7 +429,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
         if (!page.pagination.hasMore) return projects;
         const nextCursor = page.pagination.nextCursor;
         if (!nextCursor || seenCursors.has(nextCursor)) {
-          return yield* new ConvexApiError({
+          return yield* ConvexApiError.make({
             operation: "listProjects",
             code: "InvalidPagination",
           });

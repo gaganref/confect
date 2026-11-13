@@ -62,7 +62,7 @@ export const layer = (options?: { readonly timeout?: Duration.Input }) =>
       const lock = Effect.fn("PushLock.lock")(
         function* (deploymentName: string, scope: Scope.Scope) {
           const failed = (reason: PushLockError["reason"]) =>
-            new PushLockError({ deploymentName, reason });
+            PushLockError.make({ deploymentName, reason });
           const cache = yield* userCache.pipe(
             Effect.mapError(() => failed("configuration")),
           );

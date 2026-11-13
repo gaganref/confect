@@ -177,7 +177,7 @@ const readIdentity = Effect.fn("LocalBackend.readIdentity")(function* (
   const path = yield* Path.Path;
   const file = path.join(directory, "identity.json");
   const invalid = () =>
-    new LocalBackendError({ deploymentName, reason: "identity" });
+    LocalBackendError.make({ deploymentName, reason: "identity" });
   if (!(yield* fs.exists(file).pipe(Effect.mapError(invalid))))
     return Option.none<Identity>();
   const identity = yield* fs
@@ -199,7 +199,10 @@ export const adminKey = Effect.fn("LocalBackend.adminKey")(function* (
 ) {
   const identity = yield* readIdentity(deploymentName, directory);
   if (Option.isNone(identity))
-    return yield* new LocalBackendError({ deploymentName, reason: "identity" });
+    return yield* LocalBackendError.make({
+      deploymentName,
+      reason: "identity",
+    });
   return Redacted.make(identity.value.adminKey);
 });
 
@@ -211,8 +214,8 @@ export const remove = Effect.fn("LocalBackend.remove")(function* (
   yield* fs
     .remove(directory, { recursive: true, force: true })
     .pipe(
-      Effect.mapError(
-        () => new LocalBackendError({ deploymentName, reason: "filesystem" }),
+      Effect.mapError(() =>
+        LocalBackendError.make({ deploymentName, reason: "filesystem" }),
       ),
     );
 });
@@ -230,7 +233,7 @@ const install = Effect.fn("LocalBackend.install")(function* (
   const path = yield* Path.Path;
   const http = yield* HttpClient.HttpClient;
   const failed = () =>
-    new LocalBackendError({ deploymentName, reason: "install" });
+    LocalBackendError.make({ deploymentName, reason: "install" });
   const binaries = path.join(cache, "convex", "binaries");
   const binary = path.join(binaries, version, executable);
   const artifact = artifacts[`${process.platform}-${process.arch}`];
@@ -277,7 +280,7 @@ export const boot = Effect.fn("LocalBackend.boot")(function* (
   const spawner = yield* ChildProcessSpawner.ChildProcessSpawner;
   const random = yield* SecureRandom.SecureRandom;
   const fail = (reason: LocalBackendError["reason"], exitCode?: number) =>
-    new LocalBackendError({
+    LocalBackendError.make({
       deploymentName,
       reason,
       ...(exitCode === undefined ? {} : { exitCode }),

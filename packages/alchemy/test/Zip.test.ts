@@ -57,14 +57,14 @@ describe("Zip", () => {
           yield* extract(zip, "convex-local-backend.exe", destination).pipe(
             Effect.result,
           ),
-        ).toEqual(Result.fail(new ZipError({ reason: "entry" })));
+        ).toEqual(Result.fail(ZipError.make({ reason: "entry" })));
         const garbage = path.join(directory, "garbage.zip");
         yield* fs.writeFileString(garbage, "not a zip archive");
         expect(
           yield* extract(garbage, "convex-local-backend", destination).pipe(
             Effect.result,
           ),
-        ).toEqual(Result.fail(new ZipError({ reason: "format" })));
+        ).toEqual(Result.fail(ZipError.make({ reason: "format" })));
         expect(yield* fs.exists(destination)).toBe(false);
       }),
     ).pipe(Effect.provide(NodeServices.layer)),

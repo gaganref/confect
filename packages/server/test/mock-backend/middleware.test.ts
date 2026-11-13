@@ -606,7 +606,7 @@ it.layer(TestConfect.layer, { buildPerTest: true })("middleware", (test) => {
           expect(yield* c.query(group.profiledQuery)).toBe("ada");
           expect(
             yield* Effect.result(c.mutation(group.profiledMutation)),
-          ).toEqual(Result.fail(new NameRejected({ minLength: 4 })));
+          ).toEqual(Result.fail(NameRejected.make({ minLength: 4 })));
         }).pipe(Effect.provide(TestConfect.layer)),
     );
   });

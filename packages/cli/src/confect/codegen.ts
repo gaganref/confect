@@ -365,7 +365,7 @@ const validateComponentGroupRuntime = (
   Result.gen(function* () {
     if (group.runtime === "Node") {
       return yield* Result.fail(
-        new CodegenError.ComponentNodeGroupError({ specPath, groupPath }),
+        CodegenError.ComponentNodeGroupError.make({ specPath, groupPath }),
       );
     }
     for (const [name, child] of Record.toEntries(group.groups)) {
@@ -416,7 +416,7 @@ const validateCallbackPrefixes = Effect.fnUntraced(function* (
       Callback.isContract(contract) &&
       !pipe(contract.id, String.startsWith(`${name}/`))
     ) {
-      return yield* new CodegenError.CallbackPrefixError({
+      return yield* CodegenError.CallbackPrefixError.make({
         declarationPath: "confect/callbacks.ts",
         contractId: contract.id,
         componentName: name,
@@ -435,7 +435,7 @@ const validateComponentConfiguration = Effect.gen(function* () {
         const confectDirectory = yield* ConfectDirectory.get;
         const authPath = path.join(confectDirectory, "auth.ts");
         if (yield* fs.exists(authPath)) {
-          return yield* new CodegenError.InvalidConvexConfigError({
+          return yield* CodegenError.InvalidConvexConfigError.make({
             configPath: authPath,
             reason:
               "Components cannot configure application authentication. Pass identity explicitly through function arguments.",
@@ -725,7 +725,7 @@ const rejectDeployModuleGroup = Effect.gen(function* () {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
   if (yield* fs.exists(path.join(confectDirectory, "confectDeploy.spec.ts")))
-    return yield* new CodegenError.InvalidDeclarationError({
+    return yield* CodegenError.InvalidDeclarationError.make({
       declarationPath: "confect/confectDeploy.spec.ts",
       reason:
         "its functions would go in convex/confectDeploy.ts, which codegen writes for the mounts a push initialises. Rename the group, for example to confect/deploy.spec.ts.",
@@ -1147,7 +1147,7 @@ const checkTestKit = Effect.fnUntraced(function* (
 ) {
   const path = yield* Path.Path;
   const invalid = (problem: string) =>
-    new CodegenError.InvalidDeclarationError({
+    CodegenError.InvalidDeclarationError.make({
       declarationPath: "confect/app.ts",
       reason: `the mount ${quote(mount)} names the test kit ${quote(specifier)} in its component descriptor${problem}`,
     });
@@ -1279,12 +1279,11 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
               path,
             ).pipe(
               Effect.fromOption,
-              Effect.mapError(
-                () =>
-                  new CodegenError.InvalidConvexConfigError({
-                    configPath: relative(config),
-                    reason: `Cannot resolve component ${component.componentDefinitionPath} for testing.`,
-                  }),
+              Effect.mapError(() =>
+                CodegenError.InvalidConvexConfigError.make({
+                  configPath: relative(config),
+                  reason: `Cannot resolve component ${component.componentDefinitionPath} for testing.`,
+                }),
               ),
             ),
           )
@@ -1334,7 +1333,7 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
           );
         } else {
           if (kitEntry === undefined) {
-            return yield* new CodegenError.InvalidConvexConfigError({
+            return yield* CodegenError.InvalidConvexConfigError.make({
               configPath: relative(config),
               reason: `the component package ${quote(component.componentDefinitionPath)} has no ${pipe(kitEntries, Array.map(quote), Array.join(" or "))} export. Tests register a component from another package through that entry's \`register(t, name)\`.`,
             });

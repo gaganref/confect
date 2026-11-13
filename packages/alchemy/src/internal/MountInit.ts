@@ -67,7 +67,7 @@ export const run = Effect.fn("MountInit.run")(function* (
   const failed =
     (mount: string) =>
     (error: { readonly _tag: string }): MountInitFailed =>
-      new MountInitFailed({
+      MountInitFailed.make({
         mount,
         detail: Schema.is(ConvexFunctionError)(error)
           ? error.errorMessage
@@ -92,7 +92,7 @@ export const run = Effect.fn("MountInit.run")(function* (
             ? step.componentPath
             : `${prefix}/${step.componentPath}`;
         if ("failure" in step)
-          return yield* new MountInitFailed({ mount, detail: step.failure });
+          return yield* MountInitFailed.make({ mount, detail: step.failure });
         if (step.init !== null)
           yield* client
             .runFunction(

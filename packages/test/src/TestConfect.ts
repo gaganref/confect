@@ -352,7 +352,7 @@ const registerKit = (
     registerComponent(name, kit.schema, kit.modules);
   } else {
     // Codegen accepts a kit whose exports it cannot list, such as CommonJS.
-    throw new InvalidComponentKit({
+    throw InvalidComponentKit.make({
       componentPath: name,
       message: `The test kit for ${JSON.stringify(name)} must export register(t, name), or schema and modules.`,
     });

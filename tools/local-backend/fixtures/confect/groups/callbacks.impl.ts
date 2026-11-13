@@ -88,7 +88,7 @@ const onEvent = FunctionImpl.make(
         .insert({ run, status })
         .pipe(Effect.orDie);
       if (status === "bounced") {
-        return yield* new EventRejected({
+        return yield* EventRejected.make({
           reason: `host refuses bounced for ${run}`,
         });
       }

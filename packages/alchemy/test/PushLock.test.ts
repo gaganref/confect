@@ -175,7 +175,7 @@ setTimeout(() => process.exit(0), 600);`,
             .pipe(Effect.result),
         ).toEqual(
           Result.fail(
-            new PushLockError({
+            PushLockError.make({
               deploymentName: "happy-otter-123",
               reason: "timeout",
             }),
@@ -187,7 +187,7 @@ setTimeout(() => process.exit(0), 600);`,
 
   it("says which deployment's push lock failed and why", () => {
     expect(
-      new PushLockError({
+      PushLockError.make({
         deploymentName: "happy-otter-123",
         reason: "timeout",
       }).message,

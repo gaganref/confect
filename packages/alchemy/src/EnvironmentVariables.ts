@@ -67,7 +67,7 @@ export const provider = Effect.gen(function* () {
     diff: Effect.fn("EnvironmentVariables.diff")(function* ({ news, output }) {
       if (!isResolved(news) || !output) return;
       if (news.url !== output.url)
-        return yield* new EnvironmentTargetChange({
+        return yield* EnvironmentTargetChange.make({
           url: output.url,
         });
       const names = Rec.keys(news.variables);
@@ -116,7 +116,7 @@ export const provider = Effect.gen(function* () {
     }) {
       if (!output) yield* checkpointCreate(fqn, instanceId, news);
       if (output && output.url !== news.url)
-        return yield* new EnvironmentTargetChange({
+        return yield* EnvironmentTargetChange.make({
           url: output.url,
         });
       const observed = yield* client.listEnvironmentVariables(

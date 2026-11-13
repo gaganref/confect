@@ -24,7 +24,7 @@ const read = FunctionImpl.make(schema, spec, "read", ({ id }) =>
 );
 
 const probe = FunctionImpl.make(schema, spec, "probe", ({ value }) =>
-  Effect.succeed(new ClassProbe({ value })),
+  Effect.succeed(ClassProbe.make({ value })),
 );
 
 const mint = FunctionImpl.make(schema, spec, "mint", ({ expiresInSeconds }) =>

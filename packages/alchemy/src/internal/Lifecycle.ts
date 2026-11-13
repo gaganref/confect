@@ -16,12 +16,12 @@ export const checkpointCreate = Effect.fn("Lifecycle.checkpointCreate")(
     const stack = yield* Effect.serviceOption(Stack);
     if (Option.isNone(stack)) return;
     const state = yield* Effect.serviceOption(State);
-    if (Option.isNone(state)) return yield* new LifecycleStateError({ fqn });
+    if (Option.isNone(state)) return yield* LifecycleStateError.make({ fqn });
     const store = yield* state.value;
     const key = { stack: stack.value.name, stage: stack.value.stage, fqn };
     const row = yield* store.get(key);
     if (!row || row.kind === "action" || row.instanceId !== instanceId)
-      return yield* new LifecycleStateError({ fqn });
+      return yield* LifecycleStateError.make({ fqn });
     if (row.status !== "creating") return;
     yield* store.set({
       ...key,

@@ -41,7 +41,7 @@ it.effect("deletes idempotently when the deployment is already gone", () => {
       ...mock.client,
       listEnvironmentVariables: () =>
         Effect.fail(
-          new ConvexNotFound({
+          ConvexNotFound.make({
             operation: "listEnvironmentVariables",
             status: 404,
             code: "HttpError",
@@ -294,7 +294,7 @@ it.effect(
         ...mock.client,
         listEnvironmentVariables: () =>
           Effect.fail(
-            new ConvexApiError({
+            ConvexApiError.make({
               operation: "listEnvironmentVariables",
               code,
               ...(code === "HttpError" ? { status: 500 } : {}),
@@ -321,7 +321,7 @@ it.effect(
       ).toEqual(Result.succeed(undefined));
       expect(yield* remove.pipe(failure("HttpError"), Effect.result)).toEqual(
         Result.fail(
-          new ConvexApiError({
+          ConvexApiError.make({
             operation: "listEnvironmentVariables",
             code: "HttpError",
             status: 500,

@@ -122,7 +122,7 @@ describe("cloud deployment lifecycle", () => {
               if (reject) {
                 reject = false;
                 return Effect.fail(
-                  new ConvexApiError({
+                  ConvexApiError.make({
                     operation: "createDeployKey",
                     status: 503,
                     code: "HttpError",
@@ -135,7 +135,7 @@ describe("cloud deployment lifecycle", () => {
             names.push(name);
             return name === undefined
               ? Effect.fail(
-                  new ConvexApiError({
+                  ConvexApiError.make({
                     operation: "listDeployKeys",
                     status: 400,
                     code: "HttpError",
@@ -211,7 +211,7 @@ describe("cloud deployment lifecycle", () => {
               fixture.client.createDeployKey(name, input).pipe(
                 Effect.andThen(
                   Effect.fail(
-                    new ConvexApiError({
+                    ConvexApiError.make({
                       operation: "createDeployKey",
                       code: "TransportError",
                     }),
@@ -325,7 +325,7 @@ describe("cloud deployment lifecycle", () => {
                     if (!loseResponse) return Effect.void;
                     loseResponse = false;
                     return Effect.fail(
-                      new ConvexApiError({
+                      ConvexApiError.make({
                         operation: "updateEnvironmentVariables",
                         code: "TransportError",
                       }),

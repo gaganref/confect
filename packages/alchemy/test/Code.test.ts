@@ -128,7 +128,7 @@ describe("Code", () => {
         Effect.provideService(CommandRunner, {
           prepare: () =>
             Effect.fail(
-              new CommandError({
+              CommandError.make({
                 operation: "prepare",
                 reason: "exit",
                 exitCode: 2,
@@ -290,7 +290,7 @@ describe("Code command boundary", () => {
       expect(Result.isFailure(exited)).toBe(true);
       if (Result.isFailure(exited))
         expect(exited.failure).toEqual(
-          new CommandError({
+          CommandError.make({
             operation: "prepare",
             reason: "exit",
             exitCode: 6,
@@ -303,7 +303,7 @@ describe("Code command boundary", () => {
       expect(Result.isFailure(failed)).toBe(true);
       if (Result.isFailure(failed))
         expect(failed.failure).toEqual(
-          new CommandError({ operation: "prepare", reason: "spawn" }),
+          CommandError.make({ operation: "prepare", reason: "spawn" }),
         );
       expect(serialize(failed)).not.toContain("test-secret");
     }).pipe(
@@ -415,7 +415,7 @@ describe("Code command boundary", () => {
         expect(Result.isFailure(result)).toBe(true);
         if (Result.isFailure(result))
           expect(result.failure).toEqual(
-            new CommandError({
+            CommandError.make({
               operation: "deploy",
               reason: "exit",
               exitCode: 7,
@@ -489,7 +489,7 @@ describe("Code command boundary", () => {
       expect(Result.isFailure(result)).toBe(true);
       if (Result.isFailure(result))
         expect(result.failure).toEqual(
-          new CommandError({ operation: "deploy", reason: "configuration" }),
+          CommandError.make({ operation: "deploy", reason: "configuration" }),
         );
     }).pipe(Effect.provide(NodeServices.layer)),
   );
@@ -655,7 +655,7 @@ describe("Code local target", () => {
             Effect.result,
           );
           expect(result).toEqual(
-            Result.fail(new InvalidDeploymentTarget({ reason })),
+            Result.fail(InvalidDeploymentTarget.make({ reason })),
           );
         }
         expect(calls).toEqual([]);
@@ -716,7 +716,7 @@ describe("Code mount init", () => {
             }
             yield* record(`init ${componentPath}`);
             if (componentPath === options.failAt)
-              return yield* new ConvexFunctionError({
+              return yield* ConvexFunctionError.make({
                 functionPath,
                 errorMessage: "Uncaught Error: SyntheticInitFailure",
               });

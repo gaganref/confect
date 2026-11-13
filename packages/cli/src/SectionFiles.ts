@@ -106,7 +106,10 @@ export const claims = (sections: ReadonlyArray<ManifestSection.Entry>) =>
             : undefined;
       if (refusal !== undefined)
         return yield* Result.fail(
-          new InvalidManifestSectionError({ sectionKey: key, reason: refusal }),
+          InvalidManifestSectionError.make({
+            sectionKey: key,
+            reason: refusal,
+          }),
         );
       byFile.set(file, key);
     }
@@ -188,9 +191,8 @@ const refuse = Effect.fnUntraced(function* (
   key: string,
   reasons: ReadonlyArray<string>,
 ) {
-  const [error, ...more] = Arr.map(
-    reasons,
-    (reason) => new InvalidManifestSectionError({ sectionKey: key, reason }),
+  const [error, ...more] = Arr.map(reasons, (reason) =>
+    InvalidManifestSectionError.make({ sectionKey: key, reason }),
   );
   for (const other of more) yield* logCodegenError(other);
   if (error !== undefined) return yield* error;
@@ -204,7 +206,7 @@ const render = Effect.fnUntraced(function* (
 ) {
   const confectDirectory = yield* ConfectDirectory.get;
   const failed = (cause: unknown) =>
-    new InvalidManifestSectionError({
+    InvalidManifestSectionError.make({
       sectionKey: key,
       reason: `generate failed: ${String(cause)}`,
     });
@@ -363,7 +365,7 @@ export const verify = Effect.fnUntraced(function* (
   const [, failures] = yield* Effect.partition(checks, ({ key, verifier }) =>
     Effect.gen(function* () {
       const failed = (cause: unknown) =>
-        new InvalidManifestSectionError({
+        InvalidManifestSectionError.make({
           sectionKey: key,
           reason: `verify failed: ${String(cause)}`,
         });

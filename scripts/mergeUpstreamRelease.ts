@@ -27,7 +27,7 @@ export const selectReleaseTag = (
     pipe(right, String.localeCompare(left, ["en"], { numeric: true })),
   );
   return releases[0] === undefined
-    ? Result.fail(new NoStableCoreRelease({ tags }))
+    ? Result.fail(NoStableCoreRelease.make({ tags }))
     : Result.succeed(releases[0]);
 };
 
@@ -103,7 +103,7 @@ const git = Effect.fn("MergeRelease.git")(function* (
 ) {
   const result = yield* gitResult(args, directory);
   if (result.exitCode !== 0)
-    return yield* new GitCommandFailed({
+    return yield* GitCommandFailed.make({
       args,
       directory,
       exitCode: result.exitCode,
@@ -177,12 +177,12 @@ export const checkMerge = Effect.fn("MergeRelease.check")(function* (
       `Merging ${plan.tag} into ${forkRef} failed. Conflicting files:\n${Arr.join(files, "\n") || "(none; see git output)"}`,
     );
     if (files.length === 0)
-      return yield* new MergeFailed({
+      return yield* MergeFailed.make({
         tag: plan.tag,
         base: plan.base,
         output: result.stdout + result.stderr,
       });
-    return yield* new MergeConflict({
+    return yield* MergeConflict.make({
       tag: plan.tag,
       base: plan.base,
       files,

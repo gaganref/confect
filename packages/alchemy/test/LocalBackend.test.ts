@@ -201,7 +201,7 @@ describe("LocalBackend", () => {
         yield* run(boot(name, directory)).pipe(Effect.scoped, Effect.result),
       ).toEqual(
         Result.fail(
-          new LocalBackendError({
+          LocalBackendError.make({
             deploymentName: name,
             reason: "exit",
             exitCode: 3,
@@ -225,7 +225,7 @@ describe("LocalBackend", () => {
           yield* run(boot(name, directory)).pipe(Effect.scoped, Effect.result),
         ).toEqual(
           Result.fail(
-            new LocalBackendError({ deploymentName: name, reason: "ports" }),
+            LocalBackendError.make({ deploymentName: name, reason: "ports" }),
           ),
         );
         fake.answers.set(first.url, name);
@@ -233,7 +233,7 @@ describe("LocalBackend", () => {
           yield* run(boot(name, directory)).pipe(Effect.scoped, Effect.result),
         ).toEqual(
           Result.fail(
-            new LocalBackendError({ deploymentName: name, reason: "running" }),
+            LocalBackendError.make({ deploymentName: name, reason: "running" }),
           ),
         );
         yield* Scope.close(scope, Exit.void);
@@ -252,7 +252,7 @@ describe("LocalBackend", () => {
         yield* run(boot(name, directory)).pipe(Effect.scoped, Effect.result),
       ).toEqual(
         Result.fail(
-          new LocalBackendError({ deploymentName: name, reason: "running" }),
+          LocalBackendError.make({ deploymentName: name, reason: "running" }),
         ),
       );
       expect(fake.served).toHaveLength(1);
@@ -285,7 +285,7 @@ describe("LocalBackend", () => {
           ),
         ).toEqual(
           Result.fail(
-            new LocalBackendError({
+            LocalBackendError.make({
               deploymentName: name,
               reason: "exit",
               exitCode: 3,
@@ -419,13 +419,13 @@ describe("LocalBackend", () => {
 
   it("says why a backend could not start", () => {
     expect(
-      new LocalBackendError({ deploymentName: name, reason: "running" })
+      LocalBackendError.make({ deploymentName: name, reason: "running" })
         .message,
     ).toBe(
       `Local backend for ${name} is already running: stop the other alchemy dev session, or the backend process left over from one, that serves its data directory`,
     );
     expect(
-      new LocalBackendError({
+      LocalBackendError.make({
         deploymentName: name,
         reason: "exit",
         exitCode: 3,
@@ -439,7 +439,7 @@ describe("LocalBackend", () => {
       const { directory, run } = yield* harness(fake);
       expect(yield* run(boot(name, directory)).pipe(Effect.result)).toEqual(
         Result.fail(
-          new LocalBackendError({ deploymentName: name, reason: "ports" }),
+          LocalBackendError.make({ deploymentName: name, reason: "ports" }),
         ),
       );
       expect(fake.served[0]?.running()).toBe(false);
@@ -474,7 +474,7 @@ describe("LocalBackend", () => {
           ),
         ).toEqual(
           Result.fail(
-            new LocalBackendError({
+            LocalBackendError.make({
               deploymentName: name,
               reason: "configuration",
             }),
@@ -503,7 +503,7 @@ describe("LocalBackend", () => {
         ),
       ).toEqual(
         Result.fail(
-          new LocalBackendError({
+          LocalBackendError.make({
             deploymentName: name,
             reason: "configuration",
           }),

@@ -129,7 +129,7 @@ export const packageBaseVersion = (
   );
   if (core === undefined)
     return Result.fail(
-      new MissingCorePackage({
+      MissingCorePackage.make({
         packages: Arr.map(manifests, (manifest) => manifest.name),
       }),
     );
@@ -139,7 +139,7 @@ export const packageBaseVersion = (
   return mismatch === undefined
     ? Result.succeed(core.version)
     : Result.fail(
-        new PackageVersionMismatch({
+        PackageVersionMismatch.make({
           packageName: mismatch.name,
           expected: core.version,
           actual: mismatch.version,
@@ -168,12 +168,12 @@ export const chooseBuildVersion = (
     !Number.isSafeInteger(build)
   ) {
     return Result.fail(
-      new InvalidBuildVersion({ base, build: override || String(build) }),
+      InvalidBuildVersion.make({ base, build: override || String(build) }),
     );
   }
   const version = `${prefix}${build}`;
   return build <= highestBuild
-    ? Result.fail(new BuildNumberUnavailable({ version, highestBuild }))
+    ? Result.fail(BuildNumberUnavailable.make({ version, highestBuild }))
     : Result.succeed(version);
 };
 
@@ -205,7 +205,7 @@ const run = Effect.fn("ForkPackages.command")(function* (
     { concurrency: "unbounded" },
   );
   if (output.exitCode !== 0)
-    return yield* new CommandFailed({ command, ...output });
+    return yield* CommandFailed.make({ command, ...output });
   return output.stdout;
 }, Effect.scoped);
 

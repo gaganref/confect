@@ -339,8 +339,8 @@ it.effect.each([
   (scenario) =>
     Effect.gen(function* () {
       class Denied extends Schema.TaggedError<Denied>()("Denied", {}) {}
-      const denied = new Denied();
-      const forbidden = new HttpApiError.Forbidden();
+      const denied = Denied.make({});
+      const forbidden = HttpApiError.Forbidden.make({});
       const defect = new Error("broken");
       const recorder = recording();
       const { spans } = recorder;
@@ -1039,7 +1039,7 @@ it.effect(
 
 it("requires a byte size and preserves the downstream error type", () => {
   const limited = ConfectHttpRouter.withBodyLimit(
-    Effect.fail(new HttpApiError.Unauthorized()),
+    Effect.fail(HttpApiError.Unauthorized.make({})),
     { maxBytes: ByteSize.bytes(1) },
   );
   expectTypeOf(limited).toEqualTypeOf<

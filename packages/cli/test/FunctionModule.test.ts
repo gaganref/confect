@@ -394,7 +394,7 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
         verdict === "accepts"
           ? Result.succeed(undefined)
           : Result.fail(
-              new UnownedConvexEntrypointError({
+              UnownedConvexEntrypointError.make({
                 filePaths: [`convex/${file}`],
               }),
             ),

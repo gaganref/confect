@@ -117,7 +117,12 @@ const mismatch = (
   actual: Schema.Json,
 ) =>
   Result.fail(
-    new Callback.CallbackContractMismatch({ contract, side, expected, actual }),
+    Callback.CallbackContractMismatch.make({
+      contract,
+      side,
+      expected,
+      actual,
+    }),
   );
 
 describe("create checks the host's validators", () => {

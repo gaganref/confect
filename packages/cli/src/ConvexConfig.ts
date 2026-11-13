@@ -370,7 +370,7 @@ export const componentName = Effect.fnUntraced(function* (configPath: string) {
     !Predicate.hasProperty(definition, "_name") ||
     !Predicate.isString(definition._name)
   ) {
-    return yield* new InvalidConvexConfigError({
+    return yield* InvalidConvexConfigError.make({
       configPath: "convex/convex.config.ts",
       reason: "the component definition must have a string name.",
     });

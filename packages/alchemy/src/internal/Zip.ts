@@ -14,7 +14,7 @@ interface Entry {
   readonly end: number;
 }
 
-const format = () => Result.fail(new ZipError({ reason: "format" }));
+const format = () => Result.fail(ZipError.make({ reason: "format" }));
 
 /**
  * Locate one entry's compressed bytes through the archive's central directory.
@@ -67,7 +67,7 @@ const locate = (
       bytes.readUInt16LE(offset + 30) +
       bytes.readUInt16LE(offset + 32);
   }
-  return Result.fail(new ZipError({ reason: "entry" }));
+  return Result.fail(ZipError.make({ reason: "entry" }));
 };
 
 const inflate = (data: Uint8Array) =>
@@ -75,7 +75,7 @@ const inflate = (data: Uint8Array) =>
     inflateRaw(data, (error, output) =>
       resume(
         error
-          ? Effect.fail(new ZipError({ reason: "format" }))
+          ? Effect.fail(ZipError.make({ reason: "format" }))
           : Effect.succeed(output),
       ),
     );
@@ -93,7 +93,7 @@ export const extract = Effect.fn("Zip.extract")(function* (
   const fs = yield* FileSystem.FileSystem;
   const bytes = yield* fs
     .readFile(archive)
-    .pipe(Effect.mapError(() => new ZipError({ reason: "io" })));
+    .pipe(Effect.mapError(() => ZipError.make({ reason: "io" })));
   const entry = yield* Effect.fromResult(locate(bytes, name));
   const data = bytes.subarray(entry.start, entry.end);
   const content =
@@ -101,8 +101,8 @@ export const extract = Effect.fn("Zip.extract")(function* (
       ? yield* inflate(data)
       : entry.method === 0
         ? data
-        : yield* new ZipError({ reason: "format" });
+        : yield* ZipError.make({ reason: "format" });
   yield* fs
     .writeFile(destination, content, { mode: 0o755 })
-    .pipe(Effect.mapError(() => new ZipError({ reason: "io" })));
+    .pipe(Effect.mapError(() => ZipError.make({ reason: "io" })));
 });

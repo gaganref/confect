@@ -56,7 +56,7 @@ it("renders malformed snapshot input without inventing a source location", () =>
 
 it("renders every refused path with recovery instructions", () => {
   const rendered = renderCodegenError(
-    new UnownedConvexEntrypointError({
+    UnownedConvexEntrypointError.make({
       filePaths: ["convex/one.ts", "convex/two.ts"],
     }),
   );

@@ -2382,7 +2382,7 @@ export const collect: {
       ...options,
     }).pipe(
       Effect.catchTag("SchemaError", (cause) =>
-        Effect.die(new QueryStreamReadBudget.InvalidReadLimitError({ cause })),
+        Effect.die(QueryStreamReadBudget.InvalidReadLimitError.make({ cause })),
       ),
       Effect.flatMap(QueryStreamReadBudget.make),
     );
@@ -2400,7 +2400,7 @@ export const collect: {
       ),
     );
     if (yield* budget.isStopped)
-      return yield* new ReadBudgetExceededError(yield* budget.getReadCounts);
+      return yield* ReadBudgetExceededError.make(yield* budget.getReadCounts);
     return rows;
   }),
 );

@@ -85,7 +85,7 @@ type Summarized = {
 type Leaf = Pick<LoadedLeafModule, "spec" | "pathSegments" | "relativePath">;
 
 const appDeclaration = (reason: string) =>
-  new InvalidDeclarationError({ declarationPath: "confect/app.ts", reason });
+  InvalidDeclarationError.make({ declarationPath: "confect/app.ts", reason });
 
 /**
  * Refuse a key `App.make` declares twice or that shadows one the manifest keeps
@@ -144,7 +144,7 @@ export const refuseSpecSections = (leaves: ReadonlyArray<Leaf>) =>
   visit(leaves, (spec, _, path, source) =>
     Predicate.hasProperty(spec, "manifestSections")
       ? Result.fail(
-          new InvalidDeclarationError({
+          InvalidDeclarationError.make({
             declarationPath: `confect/${source}`,
             reason: `${path} carries manifestSections, which codegen no longer reads from a function spec. Declare the backend's manifest sections once, on App.make({ manifestSections }) in confect/app.ts.`,
           }),
@@ -190,7 +190,7 @@ export const collect = (
     for (const { spec, group, path, source } of functions) {
       for (const [key, { section, data, sources }] of registry) {
         const invalid = (reason: string) =>
-          new InvalidDeclarationError({
+          InvalidDeclarationError.make({
             declarationPath: `confect/${source}`,
             reason: `Manifest section "${key}" (${path}): ${reason}`,
           });
@@ -231,7 +231,7 @@ export const summarize = (
         sources,
       };
       const invalid = (reason: string) =>
-        new InvalidManifestSectionError({ sectionKey: key, reason });
+        InvalidManifestSectionError.make({ sectionKey: key, reason });
       const summary = yield* Result.try({
         try: () => section.summarize?.(input),
         catch: (cause) => invalid(`summarize failed: ${String(cause)}`),
@@ -261,14 +261,14 @@ export const check = (
       notes.push(...checked.notes);
       if (checked.errors.length > 0)
         errors.push(
-          new InvalidManifestSectionError({
+          InvalidManifestSectionError.make({
             sectionKey: key,
             reason: Arr.join([...new Set(checked.errors)], "\n"),
           }),
         );
     } catch (cause) {
       errors.push(
-        new InvalidManifestSectionError({
+        InvalidManifestSectionError.make({
           sectionKey: key,
           reason: `check failed: ${String(cause)}`,
         }),

@@ -76,7 +76,7 @@ export const provider = Effect.gen(function* () {
     deployment: PlatformDeploymentResponse,
   ) {
     if (deployment.kind !== "cloud")
-      return yield* new UnsupportedLocalDeployment({
+      return yield* UnsupportedLocalDeployment.make({
         deploymentName: deployment.name,
       });
     return {
@@ -98,7 +98,7 @@ export const provider = Effect.gen(function* () {
         deployment.kind === "cloud" && deployment.reference === reference,
     );
     if (matches.length > 1)
-      return yield* new AmbiguousDeployment({ projectId, reference });
+      return yield* AmbiguousDeployment.make({ projectId, reference });
     return matches[0];
   });
   const validate = Effect.fn("Deployment.validate")(function* (
@@ -107,7 +107,7 @@ export const provider = Effect.gen(function* () {
   ) {
     for (const field of ["projectId", "type", "region"] as const) {
       if (news[field] !== undefined && current[field] !== news[field])
-        return yield* new DeploymentIdentityChange({
+        return yield* DeploymentIdentityChange.make({
           deploymentName: current.name,
           field,
           current: String(current[field]),

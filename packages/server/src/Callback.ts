@@ -173,13 +173,13 @@ const compileArgs = (ast: SchemaAST.Objects): ReturnType<typeof compileAst> =>
   Effect.forEach(ast.propertySignatures, ({ name, type }) => {
     if (typeof name !== "string") {
       return Effect.fail(
-        new UnsupportedPropertySignatureKeyTypeError({ propertyKey: name }),
+        UnsupportedPropertySignatureKeyTypeError.make({ propertyKey: name }),
       );
     }
     return Option.match(Number.parse(name), {
       onSome: (propertyKey) =>
         Effect.fail(
-          new UnsupportedPropertySignatureKeyTypeError({ propertyKey }),
+          UnsupportedPropertySignatureKeyTypeError.make({ propertyKey }),
         ),
       onNone: () => {
         const optional = SchemaAST.isOptional(type);
@@ -237,7 +237,7 @@ const verify = (
     actual: Schema.Json,
   ) =>
     Result.fail(
-      new CallbackContractMismatch({
+      CallbackContractMismatch.make({
         contract: contract.id,
         side,
         expected,

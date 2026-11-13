@@ -629,7 +629,7 @@ describe("ConvexClient", () => {
             .listEnvironmentVariables(url, deployKey)
             .pipe(Effect.flip);
           expect(failure).toEqual(
-            new ConvexClient.ConvexApiError({
+            ConvexClient.ConvexApiError.make({
               operation: "listEnvironmentVariables",
               code: "InvalidRequest",
             }),

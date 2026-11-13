@@ -74,7 +74,7 @@ export const provider = Effect.gen(function* () {
       (project) => project.name === name,
     );
     if (matches.length > 1)
-      return yield* new AmbiguousProject({
+      return yield* AmbiguousProject.make({
         teamId,
         name,
         projectIds: Array.map(matches, (project) => project.id),
@@ -85,7 +85,7 @@ export const provider = Effect.gen(function* () {
     diff: Effect.fn("Project.diff")(function* ({ news, output }) {
       if (!isResolved(news) || !output) return;
       if (output.teamId !== news.teamId)
-        return yield* new ProjectTeamChange({
+        return yield* ProjectTeamChange.make({
           projectId: output.projectId,
           teamId: output.teamId,
           requestedTeamId: news.teamId,
@@ -95,7 +95,7 @@ export const provider = Effect.gen(function* () {
         .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
       if (!project) return { action: "update" };
       if (project.teamId !== news.teamId)
-        return yield* new ProjectTeamChange({
+        return yield* ProjectTeamChange.make({
           projectId: project.id,
           teamId: project.teamId,
           requestedTeamId: news.teamId,
@@ -130,7 +130,7 @@ export const provider = Effect.gen(function* () {
     }) {
       if (!output) yield* checkpointCreate(fqn, instanceId, news);
       if (output && output.teamId !== news.teamId)
-        return yield* new ProjectTeamChange({
+        return yield* ProjectTeamChange.make({
           projectId: output.projectId,
           teamId: output.teamId,
           requestedTeamId: news.teamId,
@@ -163,7 +163,7 @@ export const provider = Effect.gen(function* () {
         }
       }
       if (project.teamId !== news.teamId)
-        return yield* new ProjectTeamChange({
+        return yield* ProjectTeamChange.make({
           projectId: project.id,
           teamId: project.teamId,
           requestedTeamId: news.teamId,

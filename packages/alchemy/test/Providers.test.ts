@@ -101,7 +101,7 @@ describe("providers", () => {
                 slug: "notes",
               })
             : Result.fail(
-                new ConvexApiError({
+                ConvexApiError.make({
                   operation: "configure",
                   code: "InvalidConfiguration",
                 }),

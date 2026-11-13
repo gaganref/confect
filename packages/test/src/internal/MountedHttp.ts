@@ -51,7 +51,7 @@ const normalizeMounts = (mounts: ReadonlyArray<HttpMount>) => {
       /[?#]/.test(mount.httpPrefix)
     ) {
       return Result.fail(
-        new InvalidHttpMount({
+        InvalidHttpMount.make({
           ...mount,
           message:
             "httpPrefix must be an absolute path without a query or fragment.",
@@ -61,7 +61,7 @@ const normalizeMounts = (mounts: ReadonlyArray<HttpMount>) => {
     const prefix = pipe(mount.httpPrefix, String.replace(/\/+$/, ""));
     if (Arr.some(normalized, (previous) => previous.prefix === prefix)) {
       return Result.fail(
-        new InvalidHttpMount({
+        InvalidHttpMount.make({
           ...mount,
           message: "Each httpPrefix must select one component installation.",
         }),
@@ -138,7 +138,7 @@ export const make = (
     const loadHttp =
       root === undefined ? undefined : moduleLoaders[`${root}http`];
     if (root === undefined || loadHttp === undefined) {
-      throw new ComponentHttpError({
+      throw ComponentHttpError.make({
         componentPath,
         message:
           "Mounted components need an HTTP module and Convex _generated modules.",
@@ -146,7 +146,7 @@ export const make = (
     }
     const bridgePath = `${root}${bridgeModule}.ts`;
     if (`${root}${bridgeModule}` in moduleLoaders) {
-      throw new ComponentHttpError({
+      throw ComponentHttpError.make({
         componentPath,
         message: `${bridgeModule} is reserved for mounted HTTP tests.`,
       });
@@ -177,7 +177,7 @@ export const make = (
           } else {
             const action = route[0];
             if (!isInvokable(action)) {
-              throw new ComponentHttpError({
+              throw ComponentHttpError.make({
                 componentPath,
                 message:
                   "This Convex version does not expose invokeHttpAction for HTTP tests.",
@@ -219,7 +219,7 @@ export const make = (
     if (normalized.success.length === 0) return accessor.fetch(path, init);
     const run = async () => {
       if (!pipe(path, String.startsWith("/"))) {
-        throw new InvalidFetchPath({
+        throw InvalidFetchPath.make({
           path,
           message: 'Path given to fetch must start with a "/".',
         });
@@ -235,7 +235,7 @@ export const make = (
       );
       if (mount === undefined) return accessor.fetch(path, init);
       if (!registered.has(mount.componentPath)) {
-        throw new ComponentHttpError({
+        throw ComponentHttpError.make({
           componentPath: mount.componentPath,
           message: "Register the mounted component before calling fetch.",
         });

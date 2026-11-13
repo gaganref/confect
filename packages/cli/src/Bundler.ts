@@ -151,7 +151,7 @@ export const exportNames = (
         logLevel: "silent",
         outdir: "out",
       }),
-    catch: (cause) => new BundlerError({ cause }),
+    catch: (cause) => BundlerError.make({ cause }),
   }).pipe(
     Effect.map(({ metafile, outputFiles }) =>
       Array.some(

@@ -61,7 +61,7 @@ export const layer = ({
               path.join(path.dirname(absolute), "confect", "app.ts"),
             ))
           ) {
-            return yield* new ConvexDirectory.ConvexDirectoryNotFoundError();
+            return yield* ConvexDirectory.ConvexDirectoryNotFoundError.make({});
           }
           const pkg = yield* fs
             .readFileString(path.join(projectRoot, "package.json"))

@@ -85,7 +85,7 @@ const packageBin = Effect.fn("CommandRunner.packageBin")(function* (
   binName: string,
 ) {
   const invalid = () =>
-    new CommandError({
+    CommandError.make({
       operation: packageName === "convex" ? "deploy" : "prepare",
       reason: "configuration",
     });
@@ -149,12 +149,12 @@ export const layer = Layer.effect(
           }),
         )
         .pipe(
-          Effect.mapError(
-            () => new CommandError({ operation, reason: "spawn" }),
+          Effect.mapError(() =>
+            CommandError.make({ operation, reason: "spawn" }),
           ),
         );
       if (code !== 0)
-        return yield* new CommandError({
+        return yield* CommandError.make({
           operation,
           reason: "exit",
           exitCode: Number(code),
@@ -170,12 +170,11 @@ export const layer = Layer.effect(
       ) {
         const directory = path.resolve(cwd);
         const env = yield* environment.pipe(
-          Effect.mapError(
-            () =>
-              new CommandError({
-                operation: "prepare",
-                reason: "configuration",
-              }),
+          Effect.mapError(() =>
+            CommandError.make({
+              operation: "prepare",
+              reason: "configuration",
+            }),
           ),
         );
         if (command.command === "confect") {
@@ -204,12 +203,11 @@ export const layer = Layer.effect(
         const directory = path.resolve(cwd);
         const bin = yield* packageBin(fs, path, directory, "convex", "convex");
         const env = yield* environment.pipe(
-          Effect.mapError(
-            () =>
-              new CommandError({
-                operation: "deploy",
-                reason: "configuration",
-              }),
+          Effect.mapError(() =>
+            CommandError.make({
+              operation: "deploy",
+              reason: "configuration",
+            }),
           ),
         );
         yield* Effect.scoped(
@@ -238,7 +236,7 @@ export const layer = Layer.effect(
             Effect.mapError((error) =>
               Schema.is(CommandError)(error)
                 ? error
-                : new CommandError({
+                : CommandError.make({
                     operation: "deploy",
                     reason: "configuration",
                   }),
