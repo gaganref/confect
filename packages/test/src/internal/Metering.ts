@@ -387,8 +387,10 @@ export class Meter {
    * joined it without counting (`deriveInterval`), so a read that covers them
    * can move the total by more than the read itself. The binary starts the
    * total at the system-table intervals it reads to run the function, which the
-   * kernel does not simulate, so the two totals differ by that share until a
-   * read saturates both (see the `SystemTableReadIntervals` boundary).
+   * kernel does not simulate. While neither total saturates they differ by
+   * exactly that share. A read that saturates only the kernel's lower total
+   * narrows the gap, and it never widens or turns negative (see the
+   * `SystemTableReadIntervals` boundary).
    */
   readInterval(
     index: string,

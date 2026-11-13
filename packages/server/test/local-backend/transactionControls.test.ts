@@ -239,6 +239,51 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
     );
 
     it.effect(
+      "narrows the SystemTableReadIntervals gap when a read saturates only the test kernel's count",
+      () =>
+        Effect.gen(function* () {
+          const { client } = yield* LocalBackend.LocalBackend;
+          const { rootMutationStart } = boundary(
+            "SystemTableReadIntervals",
+          ).measured;
+          const caseId = "inserted-interval";
+          yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(functions.seed), {
+              caseId,
+              count: 0,
+            }),
+          );
+          const binary = yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(functions.insertedIntervals), {
+              caseId,
+              count: 1,
+            }),
+          );
+          const kernel = yield* onKernel((test) =>
+            test.mutation(functions.insertedIntervals, { caseId, count: 1 }),
+          );
+          // Reading the one inserted ID drops the kernel's 0 by the index's 1
+          // interval, saturating, and adds 1 back. The binary's count starts at
+          // its system share and drops by 1 without saturating. So the gap
+          // shrinks from the share to the share less 1 (19 against 1 on the
+          // fixture). The `by_id` scan merges the one interval into one.
+          expect(kernel).toEqual({
+            afterInserts: 0,
+            afterGet: 1,
+            afterScan: 1,
+          });
+          expect(binary).toEqual({
+            afterInserts: rootMutationStart!,
+            afterGet: rootMutationStart!,
+            afterScan: rootMutationStart!,
+          });
+          expect(binary.afterGet - kernel.afterGet).toBe(
+            rootMutationStart! - 1,
+          );
+        }),
+    );
+
+    it.effect(
       "keeps the caller's scheduling counters in a stale-snapshot query, as the test kernel does",
       () =>
         Effect.gen(function* () {

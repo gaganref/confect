@@ -527,10 +527,22 @@ binary's `databaseQueries` also counts the system-table intervals it reads to
 run a function: the backend state, the module, the UDF config and the
 component. On the local-backend fixture a root mutation starts at 19, its first
 nested call adds 2, and a stale-snapshot query starts at 19 again. That share
-depends on the deployment, so the kernel does not simulate it. The kernel's
-count is the binary's minus that share until a read saturates both, and it
-refuses `TooManyReads` later by that share. CPU, heap and duration stay on the
-binary, as the design says.
+depends on the deployment, so the kernel does not simulate it.
+
+Each read maps a total `x` to `max(0, x - before) + after`, which never
+decreases and never moves two totals apart. So the binary's count stays between
+the kernel's and the kernel's plus the system share:
+
+- While neither count saturates, the binary's is exactly the kernel's plus the
+  share, and the binary refuses `TooManyReads` that many reads sooner.
+- A read that covers inserted IDs can saturate only the kernel's lower count,
+  and the gap shrinks. One insert and a read of its ID answer 19 on the binary
+  and 1 on the kernel, a gap of 18.
+- Once a read saturates both, they agree. 100 inserts and a read of one answer
+  100 on both.
+
+The binary refuses no later than the kernel, and at most the system share
+sooner. CPU, heap and duration stay on the binary, as the design says.
 
 ### Boundary check
 
@@ -545,7 +557,9 @@ on the local backend and on `TestConfect.layer(registry, { target: "kernel" })`.
   boundary's `rootMutationStart` at the start, and plus `firstNestedCall` too at
   the end. The case reads both amounts from the entry, and its name is the
   entry's `probe`.
-- `groups/transactions:insertedIntervals` pins the saturating count above.
+- `groups/transactions:insertedIntervals` pins the saturating count above,
+  with 100 inserts where both counts saturate, and with 1 insert where only the
+  kernel's does and the gap shrinks to 18.
 - `groups/transactions:staleMetrics` pins a stale-snapshot query's scheduling
   counters, 1 function and 4 bytes.
 - `groups/commitTs:maxAfterPending` pins that a pending timestamp patched to
