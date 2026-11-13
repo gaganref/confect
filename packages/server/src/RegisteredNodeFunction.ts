@@ -58,20 +58,32 @@ export const make = (
     Match.exhaustive,
   );
 
-  return genericFunction(
-    nodeActionFunction(databaseSchema, {
-      name: item.name,
-      reservedArgument: item.reservedArgument,
-      observability,
-      functionVisibility: item.functionVisibility,
-      args: item.args,
-      returns: item.returns,
-      error: item.error,
-      handler: item.handler,
-      resolvedMiddlewares,
-    }),
+  return markNodeAction(
+    genericFunction(
+      nodeActionFunction(databaseSchema, {
+        name: item.name,
+        reservedArgument: item.reservedArgument,
+        observability,
+        functionVisibility: item.functionVisibility,
+        args: item.args,
+        returns: item.returns,
+        error: item.error,
+        handler: item.handler,
+        resolvedMiddlewares,
+      }),
+    ),
   );
 };
+
+/**
+ * Marks a function as a Node action, which Convex runs in Node rather than its
+ * V8 isolate. `@confect/test`'s kernel reads the mark to give the action Node's
+ * globals, since a module's `"use node"` directive is gone once it loads.
+ */
+const nodeAction = Symbol.for("@confect/server/NodeAction");
+
+const markNodeAction = <F extends object>(registered: F): F =>
+  Object.defineProperty(registered, nodeAction, { value: true });
 
 const nodeActionFunction = <
   DatabaseSchema_ extends DatabaseSchema.AnyWithProps,

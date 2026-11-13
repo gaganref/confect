@@ -1,22 +1,37 @@
 /**
- * Convex refuses I/O inside a query or mutation. The binary answers `fetch`,
- * `setTimeout` and `setInterval` there with an async op that its query and
- * mutation environment refuses (`start_async_op` in
- * `crates/isolate/src/environment/udf/mod.rs`, `not_allowed_in_udf` at
- * `:264-272`, at the local backend's `cccbade`), and its runtime has no
- * `setImmediate` at all. The kernel wraps these globals so each call checks the
- * kernel function running it, whoever holds the reference: a module that kept
- * the global at load, a nested call, or a test that replaced it. Outside a
- * kernel query or mutation every wrapper calls the host's function.
+ * Convex refuses I/O inside a query or mutation, and its isolate runtime lacks
+ * some of Node's globals. The binary answers `fetch`, `setTimeout`,
+ * `setInterval` and a multipart `formData()` in a query or mutation with an
+ * async op its query and mutation environment refuses (`start_async_op` in
+ * `crates/isolate/src/environment/udf/mod.rs:367-375`, `not_allowed_in_udf` at
+ * `:264-272`, at the local backend's `cccbade4`). Its isolate defines no
+ * `setImmediate` and no `queueMicrotask`
+ * (`npm-packages/udf-runtime/src/setup.ts` installs neither), in queries,
+ * mutations and actions alike, while a Node action runs in Node.
+ *
+ * Each of these globals is an accessor whose getter returns one guard for the
+ * whole test runtime. The guard checks the kernel function running in the
+ * caller's async context at every call, so a reference taken at any time after
+ * {@link install} ran is checked: a module that kept the global when it loaded,
+ * a nested call, a handler or a test that assigned the global. An assignment
+ * stores the new implementation beneath the guard, and outside a kernel
+ * function that is refused, the guard calls it.
  */
 
 type UdfType = "query" | "mutation" | "action";
+
+/**
+ * Which Convex runtime a function runs in: the V8 isolate, for queries,
+ * mutations and actions, or Node, for a `"use node"` action.
+ */
+export type Runtime = "isolate" | "node";
 
 /**
  * The kernel function a call runs in.
  */
 export interface Running {
   readonly udfType: UdfType;
+  readonly runtime: Runtime;
 }
 
 export interface Hooks {
@@ -25,16 +40,12 @@ export interface Hooks {
    */
   readonly running: () => Running | undefined;
   /**
-   * End the running function with `error`: it fails with `error` once its
-   * handler returns, as the binary terminates a function at its next microtask
-   * checkpoint.
+   * End the running function with `error`: it fails with `error` at once,
+   * whether or not its handler ever settles, as the binary terminates a
+   * function at its next microtask checkpoint.
    */
   readonly end: (error: unknown) => void;
 }
-
-const timers = ["setTimeout", "setInterval"] as const;
-
-type Timer = (typeof timers)[number];
 
 /**
  * The binary's text for an operation a query or mutation may not use
@@ -60,103 +71,225 @@ export const fetchInTransaction = (url: string): TypeError => {
   );
 };
 
+type Timer = "setTimeout" | "setInterval";
+
 /**
  * What a query or mutation that starts `name` fails with on the binary. The
  * timer's sleep op rejects with no handler, so the function ends with it
  * (`run_inner`'s unhandled rejection check in
  * `crates/isolate/src/environment/udf/mod.rs:1121-1137`), whatever the handler
- * catches.
+ * catches or awaits.
  */
 export const timerInTransaction = (name: Timer): Error =>
   new Error(notAllowed(name));
 
+/**
+ * What a query's or mutation's `formData()` on a multipart body rejects with on
+ * the binary: `parseFormData`'s `form/parseMultiPart` op error
+ * (`npm-packages/udf-runtime/src/21_formdata.ts:126-150`).
+ */
+export const formDataInTransaction = (): Error =>
+  new Error(notAllowed("formData()"));
+
 interface State {
-  readonly hooks: Hooks;
+  hooks: Hooks | undefined;
   /**
-   * The wrappers and accessors this module installed, so a later install skips
-   * them.
+   * Every guard and getter this module made, so an install skips a global it
+   * already guards.
    */
-  readonly installed: WeakSet<object>;
+  readonly made: WeakSet<object>;
+  /**
+   * Set while an install reads another library's accessor, so the hidden
+   * globals answer their guard whatever function is running.
+   */
+  probing: boolean;
   nextTimerId: number;
 }
 
 const key = Symbol.for("@confect/test/IoBans");
 
+const promisifyCustom = Symbol.for("nodejs.util.promisify.custom");
+
 type Global = { [key]?: State } & Record<string, unknown>;
 
-const inTransaction = ({ hooks }: State): boolean => {
-  const running = hooks.running();
-  return running !== undefined && running.udfType !== "action";
-};
+type Fn = (...args: Array<unknown>) => unknown;
 
-const guardFetch = (state: State, base: (...args: Array<unknown>) => unknown) =>
-  new Proxy(base, {
-    apply: (target, self, args) =>
-      inTransaction(state)
-        ? // As on the binary, the request is built first, so a malformed one
-          // rejects with the host's own error.
-          Promise.resolve().then(() => {
-            const request = new Request(
-              ...(args as ConstructorParameters<typeof Request>),
-            );
-            throw fetchInTransaction(request.url);
-          })
-        : Reflect.apply(target, self, args),
-  });
+const runningOf = (state: State) => state.hooks?.running();
 
-const guardTimer = (
-  state: State,
-  name: Timer,
-  base: (...args: Array<unknown>) => unknown,
-) =>
-  new Proxy(base, {
-    apply: (target, self, args) => {
-      if (!inTransaction(state)) return Reflect.apply(target, self, args);
-      // The binary's timer returns its ID before its sleep op is refused.
-      state.hooks.end(timerInTransaction(name));
-      return state.nextTimerId++;
-    },
-  });
+const inTransaction = (running: Running | undefined): boolean =>
+  running !== undefined && running.udfType !== "action";
+
+const inIsolate = (state: State): boolean =>
+  !state.probing && runningOf(state)?.runtime === "isolate";
 
 /**
- * Replace `name` with `guard` of its current value, unless that value is
- * already one of this module's.
+ * Whether the code reading or calling a global, the frame that called `reader`,
+ * is one of Node's own modules. Node's `fetch`, streams and timers read and
+ * call globals such as `queueMicrotask` while running a function's work, and
+ * the binary's own built-ins need none of them, so only the function's own code
+ * finds them absent.
  */
-const wrap = (
+const readByNode = (reader: Fn): boolean => {
+  // oxlint-disable-next-line typescript/unbound-method -- Restored as it was, never called here.
+  const prepare = Error.prepareStackTrace;
+  const limit = Error.stackTraceLimit;
+  const holder: { stack?: ReadonlyArray<NodeJS.CallSite> } = {};
+  try {
+    Error.prepareStackTrace = (_error, callSites) => callSites;
+    Error.stackTraceLimit = 1;
+    Error.captureStackTrace(holder, reader);
+    return holder.stack?.[0]?.getFileName()?.startsWith("node:") === true;
+  } finally {
+    Error.prepareStackTrace = prepare;
+    Error.stackTraceLimit = limit;
+  }
+};
+
+/**
+ * What a guard answers instead of calling the host's function, or `undefined`
+ * when the running function may call it.
+ */
+type Rule = (
+  state: State,
+  running: Running,
+  args: ReadonlyArray<unknown>,
+  /**
+   * Whether one of Node's own modules made the call.
+   */
+  calledByNode: () => boolean,
+) => { readonly answer: unknown } | undefined;
+
+const fetchRule: Rule = (_state, running, args) => {
+  if (!inTransaction(running)) return undefined;
+  // As on the binary, the request is built first, so a malformed one rejects
+  // with the host's own error.
+  let request: Request;
+  try {
+    request = new Request(...(args as ConstructorParameters<typeof Request>));
+  } catch (error) {
+    return { answer: Promise.reject(error) };
+  }
+  return { answer: Promise.reject(fetchInTransaction(request.url)) };
+};
+
+const timerRule =
+  (name: Timer): Rule =>
+  (state, running) => {
+    if (!inTransaction(running)) return undefined;
+    // The binary's timer returns its ID before its sleep op is refused.
+    state.hooks?.end(timerInTransaction(name));
+    return { answer: state.nextTimerId++ };
+  };
+
+/**
+ * A reference to a global the isolate lacks, taken outside a function, fails
+ * inside one as the missing global would.
+ */
+const absentRule =
+  (name: string): Rule =>
+  (_state, running, _args, calledByNode) => {
+    if (running.runtime !== "isolate" || calledByNode()) return undefined;
+    throw new ReferenceError(`${name} is not defined`);
+  };
+
+const guarded: ReadonlyArray<{
+  readonly name: string;
+  readonly rule: Rule;
+  /**
+   * Whether the global reads `undefined` inside an isolate function.
+   */
+  readonly absent: boolean;
+}> = [
+  { name: "fetch", rule: fetchRule, absent: false },
+  { name: "setTimeout", rule: timerRule("setTimeout"), absent: false },
+  { name: "setInterval", rule: timerRule("setInterval"), absent: false },
+  { name: "setImmediate", rule: absentRule("setImmediate"), absent: true },
+  { name: "queueMicrotask", rule: absentRule("queueMicrotask"), absent: true },
+];
+
+const makeGuard = (
   state: State,
   name: string,
-  guard: (base: (...args: Array<unknown>) => unknown) => object,
-) => {
-  const global = globalThis as unknown as Global;
-  const current = global[name];
-  if (typeof current !== "function" || state.installed.has(current)) return;
-  const wrapper = guard(current as (...args: Array<unknown>) => unknown);
-  state.installed.add(wrapper);
-  global[name] = wrapper;
+  rule: Rule,
+  implementation: () => unknown,
+): Fn => {
+  function guard(this: unknown, ...args: Array<unknown>): unknown {
+    const running = runningOf(state);
+    const refused =
+      running === undefined
+        ? undefined
+        : rule(state, running, args, () => readByNode(guard));
+    if (refused !== undefined) return refused.answer;
+    return Reflect.apply(implementation() as Fn, this, args);
+  }
+  Object.defineProperty(guard, "name", { value: name });
+  // `util.promisify(setTimeout)` reads the implementation's promisified form.
+  Object.defineProperty(guard, promisifyCustom, {
+    get: () =>
+      (implementation() as Record<symbol, unknown> | undefined)?.[
+        promisifyCustom
+      ],
+    configurable: true,
+  });
+  state.made.add(guard);
+  return guard;
 };
 
 /**
- * The binary's runtime defines no `setImmediate`, so inside a kernel query or
- * mutation the global reads `undefined`, and feature detection takes the path
- * it takes there.
+ * Whether `accessor`, another library's, already reads through one of this
+ * module's guards, as convex-test's does once it wraps the kernel's.
+ * convex-test installs its accessor again whenever another is on top (its
+ * `dist/index.js:1854-1866`), so guarding it again would add a layer at every
+ * call while both kinds of world are live.
  */
-const hideImmediate = (state: State) => {
+const readsThrough = (state: State, accessor: PropertyDescriptor): boolean => {
+  state.probing = true;
+  try {
+    return state.made.has(accessor.get?.call(globalThis) as object);
+  } catch {
+    return false;
+  } finally {
+    state.probing = false;
+  }
+};
+
+/**
+ * Make `name` an accessor whose getter returns its guard, unless it already
+ * reads through one. The value or accessor it replaces becomes the
+ * implementation beneath. An assignment of another value stores it beneath the
+ * guard, and assigning the guard back, as fake timers do when they uninstall,
+ * restores the implementation before it.
+ */
+const guardGlobal = (
+  state: State,
+  { name, rule, absent }: (typeof guarded)[number],
+) => {
   const global = globalThis as unknown as Global;
-  const own = Object.getOwnPropertyDescriptor(global, "setImmediate");
+  const own = Object.getOwnPropertyDescriptor(global, name);
   if (own === undefined || own.configurable === false) return;
   // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
-  if (own.get !== undefined && state.installed.has(own.get)) return;
-  let base = own;
-  const get = () => {
-    if (inTransaction(state)) return undefined;
-    return "value" in base ? base.value : base.get?.call(global);
-  };
+  if (own.get !== undefined && state.made.has(own.get)) return;
+  if (own.get !== undefined && readsThrough(state, own)) return;
+  let beneath: PropertyDescriptor = own;
+  const earlier: Array<PropertyDescriptor> = [];
+  const implementation = () =>
+    "value" in beneath ? beneath.value : beneath.get?.call(global);
+  const guard = makeGuard(state, name, rule, implementation);
+  const get = (): unknown =>
+    absent && inIsolate(state) && !readByNode(get) ? undefined : guard;
   const set = (value: unknown) => {
-    if (base.set !== undefined) base.set.call(global, value);
-    else base = { ...base, value };
+    if (value === guard) {
+      beneath = earlier.pop() ?? beneath;
+    } else if (beneath.set !== undefined) {
+      // Another library's accessor keeps its own store.
+      beneath.set.call(global, value);
+    } else {
+      earlier.push(beneath);
+      beneath = { value, writable: true };
+    }
   };
-  state.installed.add(get);
-  Object.defineProperty(global, "setImmediate", {
+  state.made.add(get);
+  Object.defineProperty(global, name, {
     get,
     set,
     configurable: true,
@@ -165,21 +298,72 @@ const hideImmediate = (state: State) => {
 };
 
 /**
- * Wrap `fetch`, `setTimeout` and `setInterval`, and hide `setImmediate`, unless
- * the kernel already did. The first install's hooks answer for every later one,
- * as with `globalThis.Convex`. A test that replaces one of these globals
- * replaces the wrapper, and the next install wraps what it left.
+ * A query's or mutation's `formData()` on a multipart body is refused, as on
+ * the binary, which reads the body first. A urlencoded body parses in
+ * JavaScript there and is allowed, and an action parses either.
  */
-export const install = (hooks: Hooks) => {
-  const global = globalThis as unknown as Global;
-  const state = (global[key] ??= {
-    hooks,
-    installed: new WeakSet(),
+const guardFormData = (state: State, prototype: { formData?: unknown }) => {
+  const original = prototype.formData;
+  if (typeof original !== "function" || state.made.has(original)) return;
+  const host = original as (this: Request | Response) => Promise<FormData>;
+  function formData(this: Request | Response): Promise<FormData> {
+    if (!inTransaction(runningOf(state))) return Reflect.apply(host, this, []);
+    const [essence = "", ...parameters] = (
+      this.headers.get("content-type") ?? ""
+    ).split(";");
+    if (essence.trim().toLowerCase() !== "multipart/form-data") {
+      return Reflect.apply(host, this, []);
+    }
+    if (
+      !parameters.some((parameter) =>
+        parameter.trim().toLowerCase().startsWith("boundary="),
+      )
+    ) {
+      return Promise.reject(
+        new TypeError(
+          "Missing boundary parameter in mime type of multipart formdata.",
+        ),
+      );
+    }
+    return this.arrayBuffer().then(() =>
+      Promise.reject(formDataInTransaction()),
+    );
+  }
+  state.made.add(formData);
+  Object.defineProperty(prototype, "formData", {
+    value: formData,
+    writable: true,
+    configurable: true,
+    enumerable: false,
+  });
+};
+
+const stateOf = (): State =>
+  ((globalThis as unknown as Global)[key] ??= {
+    hooks: undefined,
+    made: new WeakSet(),
+    probing: false,
     nextTimerId: 1,
   });
-  wrap(state, "fetch", (base) => guardFetch(state, base));
-  for (const name of timers) {
-    wrap(state, name, (base) => guardTimer(state, name, base));
-  }
-  hideImmediate(state);
+
+/**
+ * Guard `fetch`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`
+ * and multipart `formData()`, unless they are already guarded.
+ * `@confect/test/setup` calls this before any test module loads, and the kernel
+ * again whenever a world opens or a function starts, which guards again a
+ * global a test redefined, as `vi.stubGlobal` does.
+ */
+export const install = () => {
+  const state = stateOf();
+  for (const entry of guarded) guardGlobal(state, entry);
+  guardFormData(state, Request.prototype);
+  guardFormData(state, Response.prototype);
+};
+
+/**
+ * Give the guards the kernel's hooks. The first answers for every later one, as
+ * with `globalThis.Convex`.
+ */
+export const bind = (hooks: Hooks) => {
+  stateOf().hooks ??= hooks;
 };

@@ -208,6 +208,7 @@ interface Execution {
   readonly componentPath: string;
   readonly udfPath: string;
   readonly udfType: UdfType;
+  readonly runtime: IoBans.Runtime;
   readonly attempt: KernelAttempt | undefined;
   readonly identity: UserIdentity | null;
   readonly request: Request;
@@ -259,40 +260,60 @@ const executions = new AsyncLocalStorage<Execution>();
 
 /**
  * The error a host API ended each function with, such as a timer a query
- * started. On the binary that function stops at its next microtask checkpoint
- * and fails with the error, whatever its handler caught.
+ * started, and the signal that ends it. On the binary that function stops at
+ * its next microtask checkpoint and fails with the error, whatever its handler
+ * caught, and whether or not the handler ever settles.
  */
-const endings = new WeakMap<Execution, unknown>();
+interface Ending {
+  readonly ended: Promise<never>;
+  readonly end: (error: unknown) => void;
+}
+
+const endings = new WeakMap<Execution, Ending>();
+
+const endingOf = (execution: Execution): Ending => {
+  let ending = endings.get(execution);
+  if (ending === undefined) {
+    const { promise, reject } = Promise.withResolvers<never>();
+    // Read only through `unlessEnded`, so an ending nothing awaits is no
+    // unhandled rejection.
+    promise.catch(() => undefined);
+    ending = { ended: promise, end: reject };
+    endings.set(execution, ending);
+  }
+  return ending;
+};
 
 const ioHooks: IoBans.Hooks = {
   running: () => executions.getStore(),
   end: (error) => {
     const execution = executions.getStore();
-    if (execution !== undefined && !endings.has(execution)) {
-      endings.set(execution, error);
-    }
+    if (execution !== undefined) endingOf(execution).end(error);
   },
 };
 
-const refuseIfEnded = (execution: Execution) => {
-  if (endings.has(execution)) throw endings.get(execution);
-};
-
 /**
- * `outcome`, or the error a host API ended `execution` with, which wins over
- * whatever the handler returned or threw.
+ * `outcome`, unless a host API ended `execution` first, in which case its
+ * ending, without waiting for the handler to settle.
  */
 const unlessEnded = <A>(execution: Execution, outcome: Promise<A>) =>
-  outcome.then(
-    (value) => {
-      refuseIfEnded(execution);
-      return value;
-    },
-    (error: unknown) => {
-      refuseIfEnded(execution);
-      throw error;
-    },
-  );
+  Promise.race([outcome, endingOf(execution).ended]);
+
+/**
+ * Whether a Confect function is a Node action, which runs in Node rather than
+ * the isolate. `RegisteredNodeFunction.make` in `@confect/server` marks it.
+ */
+const nodeAction = Symbol.for("@confect/server/NodeAction");
+
+const runtimeOf = (func: unknown): IoBans.Runtime =>
+  (func as { [nodeAction]?: boolean } | undefined)?.[nodeAction] === true
+    ? "node"
+    : "isolate";
+
+const installIoBans = () => {
+  IoBans.install();
+  IoBans.bind(ioHooks);
+};
 
 /**
  * Run a function's code as `execution`, with its own copy of the globals a test
@@ -300,7 +321,7 @@ const unlessEnded = <A>(execution: Execution, outcome: Promise<A>) =>
  */
 const enter = <A>(execution: Execution, run: () => A): A => {
   installConvexGlobal();
-  IoBans.install(ioHooks);
+  installIoBans();
   return Globals.own(() => executions.run(execution, run));
 };
 const kernelBrand = Symbol.for("@confect/test/Kernel");
@@ -514,7 +535,7 @@ export class World {
   ) {
     installConvexGlobal();
     Clock.install(pinnedTime, () => executions.getStore() !== undefined);
-    IoBans.install(ioHooks);
+    installIoBans();
     this.components.set(ROOT, makeComponent(ROOT, schema, modules));
   }
 
@@ -1043,6 +1064,7 @@ export class World {
     from: From,
     pagination: Pagination | undefined,
     startTime?: number,
+    runtime: IoBans.Runtime = "isolate",
   ): Execution {
     // A function in a component runs with no identity, whoever called it, as
     // Convex gives a component no `ctx.auth` of the caller's. A nested call in
@@ -1058,6 +1080,7 @@ export class World {
       componentPath: functionPath.componentPath,
       udfPath: functionPath.udfPath,
       udfType,
+      runtime,
       attempt,
       identity,
       request: from.request,
@@ -1335,7 +1358,8 @@ export class World {
 
   private runAction(
     functionPath: FunctionPath,
-    resolved: Pick<Resolved, "handler" | "args" | "returns">,
+    resolved: Pick<Resolved, "handler" | "args" | "returns"> &
+      Partial<Pick<Resolved, "func">>,
     args: any,
     from: From,
   ): Promise<any> {
@@ -1345,6 +1369,8 @@ export class World {
       undefined,
       from,
       undefined,
+      undefined,
+      runtimeOf(resolved.func),
     );
     const inner: From = { request: from.request, parent: execution };
     const a = actionGeneric({

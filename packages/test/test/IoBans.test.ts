@@ -1,7 +1,12 @@
-// oxlint-disable effecttsgo/global-fetch, effecttsgo/global-timers, effecttsgo/new-promise, effecttsgo/async-function -- These handlers call the runtime's own fetch and timers, which is what the I/O bans refuse or allow.
+// oxlint-disable effecttsgo/global-fetch, effecttsgo/global-fetch-in-effect, effecttsgo/global-timers, effecttsgo/global-timers-in-effect, effecttsgo/new-promise, effecttsgo/async-function -- These handlers call the runtime's own fetch and timers, which is what the I/O bans refuse or allow.
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The positive controls fetch from a real loopback server.
 import { createServer, type Server } from "node:http";
-import { describe, expect, it } from "@effect/vitest";
+import * as FunctionSpec from "@confect/core/FunctionSpec";
+import * as DatabaseSchema from "@confect/server/DatabaseSchema";
+import * as FunctionRegistryItem from "@confect/server/FunctionRegistryItem";
+import * as RegisteredConvexFunction from "@confect/server/RegisteredConvexFunction";
+import { RegisteredNodeFunction } from "@confect/server/node";
+import { assert, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import {
   actionGeneric,
@@ -13,7 +18,9 @@ import {
 } from "convex/server";
 import { v } from "convex/values";
 import * as Effect from "effect/Effect";
+import * as Schema from "effect/Schema";
 import { convexTest } from "../src/internal/ConvexTest";
+import { keptFetch, keptSetImmediate } from "./fixtures/keptAtImport";
 
 type Timer = "setTimeout" | "setInterval";
 
@@ -21,20 +28,105 @@ const timerArgs = {
   name: v.union(v.literal("setTimeout"), v.literal("setInterval")),
 };
 
-const startTimer = (name: Timer) =>
-  (
-    globalThis as unknown as Record<
-      Timer,
-      (f: () => void, ms: number) => unknown
-    >
-  )[name](() => {}, 0);
+type TimerFn = (callback: () => void, ms: number) => unknown;
 
-// What a rejected fetch tells its handler, so a test compares it whole.
-const outcomeOf = (fetched: Promise<unknown>) =>
-  fetched.then(
-    () => "fetched",
+const timerOf = (name: Timer) =>
+  (globalThis as unknown as Record<Timer, TimerFn>)[name];
+
+const startTimer = (name: Timer) => timerOf(name)(() => {}, 0);
+
+/**
+ * Wait on `name` as a handler that awaits its timer does.
+ */
+const awaitTimer = (name: Timer) =>
+  new Promise<void>((resolve) => {
+    timerOf(name)(resolve, 10);
+  });
+
+// What a rejected call tells its handler, so a test compares it whole.
+const outcomeOf = (called: Promise<unknown>) =>
+  called.then(
+    (value) => ({ returned: value }),
     (error: Error) => ({ name: error.name, message: error.message }),
   );
+
+// What each global the isolate lacks reads as, inside the running function.
+const surface = () => ({
+  setImmediate: typeof setImmediate,
+  queueMicrotask: typeof queueMicrotask,
+});
+
+type Body = "multipart" | "urlencoded" | "multipartWithoutBoundary";
+
+const bodyArgs = {
+  body: v.union(
+    v.literal("multipart"),
+    v.literal("urlencoded"),
+    v.literal("multipartWithoutBoundary"),
+  ),
+};
+
+const formRequest = (body: Body) =>
+  body === "urlencoded"
+    ? new Request("https://example.com/", {
+        method: "POST",
+        headers: { "content-type": "application/x-www-form-urlencoded" },
+        body: "name=ada",
+      })
+    : new Request("https://example.com/", {
+        method: "POST",
+        headers: {
+          "content-type":
+            body === "multipart"
+              ? "multipart/form-data; boundary=fence"
+              : "multipart/form-data",
+        },
+        body: '--fence\r\nContent-Disposition: form-data; name="name"\r\n\r\nada\r\n--fence--\r\n',
+      });
+
+const parseForm = (body: Body) =>
+  outcomeOf(
+    formRequest(body)
+      .formData()
+      .then((form) => form.get("name")),
+  );
+
+const nodeSurface = RegisteredNodeFunction.make(
+  DatabaseSchema.make({}),
+  (() => {
+    const item = FunctionRegistryItem.make({
+      functionSpec: FunctionSpec.publicNodeAction({
+        name: "surface",
+        returns: () =>
+          Schema.Struct({
+            setImmediate: Schema.String,
+            queueMicrotask: Schema.String,
+          }),
+      }),
+      groupMiddlewareAttachments: [],
+      handler: () => Effect.sync(surface),
+    });
+    assert(item._tag === "Confect");
+    return item;
+  })(),
+);
+
+const isolateSurface = (() => {
+  const item = FunctionRegistryItem.make({
+    functionSpec: FunctionSpec.publicAction({
+      name: "surface",
+      returns: () =>
+        Schema.Struct({
+          setImmediate: Schema.String,
+          queueMicrotask: Schema.String,
+        }),
+    }),
+    groupMiddlewareAttachments: [],
+    handler: () => Effect.sync(surface),
+  });
+  assert(item._tag === "Confect");
+  return RegisteredConvexFunction.make(DatabaseSchema.make({}), item);
+})();
 
 const io = {
   fetchInQuery: makeFunctionReference<"query", { url: string }>(
@@ -46,13 +138,41 @@ const io = {
   capturedFetchInQuery: makeFunctionReference<"query", { url: string }>(
     "io:capturedFetchInQuery",
   ),
+  importedFetchInQuery: makeFunctionReference<"query", { url: string }>(
+    "io:importedFetchInQuery",
+  ),
+  reassignedFetchInQuery: makeFunctionReference<"query", { url: string }>(
+    "io:reassignedFetchInQuery",
+  ),
   timerInQuery: makeFunctionReference<"query", { name: Timer }>(
     "io:timerInQuery",
   ),
   timerInMutation: makeFunctionReference<"mutation", { name: Timer }>(
     "io:timerInMutation",
   ),
-  immediateInQuery: makeFunctionReference<"query">("io:immediateInQuery"),
+  awaitedTimerInQuery: makeFunctionReference<"query", { name: Timer }>(
+    "io:awaitedTimerInQuery",
+  ),
+  awaitedTimerInMutation: makeFunctionReference<"mutation", { name: Timer }>(
+    "io:awaitedTimerInMutation",
+  ),
+  surfaceInQuery: makeFunctionReference<"query">("io:surfaceInQuery"),
+  surfaceInMutation: makeFunctionReference<"mutation">("io:surfaceInMutation"),
+  surfaceInAction: makeFunctionReference<"action">("io:surfaceInAction"),
+  confectSurface: makeFunctionReference<"action">("io:confectSurface"),
+  nodeSurface: makeFunctionReference<"action">("io:nodeSurface"),
+  importedImmediateInQuery: makeFunctionReference<"query">(
+    "io:importedImmediateInQuery",
+  ),
+  formDataInQuery: makeFunctionReference<"query", { body: Body }>(
+    "io:formDataInQuery",
+  ),
+  formDataInMutation: makeFunctionReference<"mutation", { body: Body }>(
+    "io:formDataInMutation",
+  ),
+  formDataInAction: makeFunctionReference<"action", { body: Body }>(
+    "io:formDataInAction",
+  ),
   clearInQuery: makeFunctionReference<"query">("io:clearInQuery"),
   notes: makeFunctionReference<"query", {}, Array<string>>("io:notes"),
   fetchThroughNestedMutation: makeFunctionReference<
@@ -79,7 +199,7 @@ const schema = defineSchema({ notes: defineTable({ text: v.string() }) });
 const modules = {
   "_generated/server.ts": () => Promise.resolve({}),
   "io.ts": () => {
-    // A module that keeps the global when it loads, as an HTTP client does.
+    // A module that keeps the global when the backend loads it.
     const captured = globalThis.fetch;
     return Promise.resolve({
       fetchInQuery: queryGeneric({
@@ -93,6 +213,25 @@ const modules = {
       capturedFetchInQuery: queryGeneric({
         args: { url: v.string() },
         handler: (_ctx, { url }) => outcomeOf(captured(url)),
+      }),
+      importedFetchInQuery: queryGeneric({
+        args: { url: v.string() },
+        handler: (_ctx, { url }) => outcomeOf(keptFetch(url)),
+      }),
+      reassignedFetchInQuery: queryGeneric({
+        args: { url: v.string() },
+        handler: async (_ctx, { url }) => {
+          const before = globalThis.fetch;
+          globalThis.fetch = (() =>
+            Promise.resolve(
+              new Response("reassigned"),
+            )) as unknown as typeof fetch;
+          try {
+            return await outcomeOf(fetch(url));
+          } finally {
+            globalThis.fetch = before;
+          }
+        },
       }),
       timerInQuery: queryGeneric({
         args: timerArgs,
@@ -110,9 +249,42 @@ const modules = {
           return "returned";
         },
       }),
-      immediateInQuery: queryGeneric({
+      awaitedTimerInQuery: queryGeneric({
+        args: timerArgs,
+        handler: async (_ctx, { name }) => {
+          await awaitTimer(name);
+          return "returned";
+        },
+      }),
+      awaitedTimerInMutation: mutationGeneric({
+        args: timerArgs,
+        handler: async (ctx, { name }) => {
+          await ctx.db.insert("notes", { text: "before" });
+          await awaitTimer(name);
+          return "returned";
+        },
+      }),
+      surfaceInQuery: queryGeneric({ args: {}, handler: surface }),
+      surfaceInMutation: mutationGeneric({ args: {}, handler: surface }),
+      surfaceInAction: actionGeneric({ args: {}, handler: surface }),
+      confectSurface: isolateSurface,
+      nodeSurface,
+      importedImmediateInQuery: queryGeneric({
         args: {},
-        handler: () => typeof setImmediate,
+        handler: () =>
+          outcomeOf(Promise.resolve().then(() => keptSetImmediate(() => {}))),
+      }),
+      formDataInQuery: queryGeneric({
+        args: bodyArgs,
+        handler: (_ctx, { body }) => parseForm(body),
+      }),
+      formDataInMutation: mutationGeneric({
+        args: bodyArgs,
+        handler: (_ctx, { body }) => parseForm(body),
+      }),
+      formDataInAction: actionGeneric({
+        args: bodyArgs,
+        handler: (_ctx, { body }) => parseForm(body),
       }),
       clearInQuery: queryGeneric({
         args: {},
@@ -167,10 +339,7 @@ const modules = {
               resolve("ticked");
             }, 1);
           });
-          const immediate = await new Promise<string>((resolve) =>
-            setImmediate(() => resolve("immediate")),
-          );
-          return [slept, ticked, immediate];
+          return [slept, ticked];
         },
       }),
     });
@@ -229,6 +398,8 @@ const loopback = Effect.acquireRelease(
     ),
 );
 
+const absent = { setImmediate: "undefined", queueMicrotask: "undefined" };
+
 describe("I/O bans", () => {
   describe("fetch", () => {
     it.effect.each(["fetchInQuery", "fetchInMutation"] as const)(
@@ -245,7 +416,7 @@ describe("I/O bans", () => {
     );
 
     it.effect(
-      "a reference a module kept when it loaded is refused in a query",
+      "a reference a module kept when the backend loaded it is refused in a query",
       () =>
         Effect.gen(function* () {
           const t = convexTest(schema, modules);
@@ -255,6 +426,40 @@ describe("I/O bans", () => {
             ),
           ).toEqual(fetchRefusal);
         }),
+    );
+
+    it.effect(
+      "a reference a module kept when it was imported, before any backend existed, is refused in a query",
+      () =>
+        Effect.gen(function* () {
+          const t = convexTest(schema, modules);
+          expect(
+            yield* Effect.promise(() =>
+              t.query(io.importedFetchInQuery, { url }),
+            ),
+          ).toEqual(fetchRefusal);
+        }),
+    );
+
+    it.effect(
+      "a handler that reassigns globalThis.fetch mid-invocation is still refused, and the host's fetch comes back",
+      () =>
+        Effect.gen(function* () {
+          const t = convexTest(schema, modules);
+          const host = Reflect.get(globalThis, "fetch");
+          expect(
+            yield* Effect.promise(() =>
+              t.query(io.reassignedFetchInQuery, { url }),
+            ),
+          ).toEqual(fetchRefusal);
+          expect(Reflect.get(globalThis, "fetch")).toBe(host);
+          const server = yield* loopback;
+          expect(
+            yield* Effect.promise(() =>
+              fetch(server.url).then((response) => response.text()),
+            ),
+          ).toBe("reached /ping");
+        }).pipe(Effect.scoped),
     );
 
     it.effect(
@@ -334,6 +539,31 @@ describe("I/O bans", () => {
         }),
     );
 
+    it.effect.each(["setTimeout", "setInterval"] as const)(
+      "a query that awaits %s fails with the binary's error without waiting for its handler",
+      (name) =>
+        Effect.gen(function* () {
+          const t = convexTest(schema, modules);
+          expect(
+            yield* failureOf(t.query(io.awaitedTimerInQuery, { name })),
+          ).toEqual({ failed: timerRefusal(name) });
+        }),
+    );
+
+    it.effect.each(["setTimeout", "setInterval"] as const)(
+      "a mutation that awaits %s fails without waiting for its handler and publishes none of its writes",
+      (name) =>
+        Effect.gen(function* () {
+          const t = convexTest(schema, modules);
+          expect(
+            yield* failureOf(t.mutation(io.awaitedTimerInMutation, { name })),
+          ).toEqual({ failed: timerRefusal(name) });
+          expect(yield* Effect.promise(() => t.query(io.notes, {}))).toEqual(
+            [],
+          );
+        }),
+    );
+
     it.effect(
       "a query an action calls fails, and the action sees its error",
       () =>
@@ -347,18 +577,6 @@ describe("I/O bans", () => {
         }),
     );
 
-    it.effect(
-      "a query reads setImmediate as undefined, as the binary defines none",
-      () =>
-        Effect.gen(function* () {
-          const t = convexTest(schema, modules);
-          expect(
-            yield* Effect.promise(() => t.query(io.immediateInQuery, {})),
-          ).toBe("undefined");
-          expect(typeof setImmediate).toBe("function");
-        }),
-    );
-
     it.effect("a query may clear a timer, as the binary allows", () =>
       Effect.gen(function* () {
         const t = convexTest(schema, modules);
@@ -368,12 +586,157 @@ describe("I/O bans", () => {
       }),
     );
 
-    it.effect("an action runs every host timer", () =>
+    it.effect("an action runs host timers", () =>
       Effect.gen(function* () {
         const t = convexTest(schema, modules);
         expect(
           yield* Effect.promise(() => t.action(io.timersInAction, {})),
-        ).toEqual(["slept", "ticked", "immediate"]);
+        ).toEqual(["slept", "ticked"]);
+      }),
+    );
+
+    it.effect(
+      "fake timers install and uninstall through the guards, and a query is still refused while they are on",
+      () =>
+        Effect.gen(function* () {
+          const t = convexTest(schema, modules);
+          for (const round of [1, 2]) {
+            vi.useFakeTimers();
+            let fired = false;
+            setTimeout(() => {
+              fired = true;
+            }, 1000);
+            vi.advanceTimersByTime(1000);
+            expect(fired, `round ${round}`).toBe(true);
+            expect(
+              yield* failureOf(
+                t.query(io.timerInQuery, { name: "setTimeout" }),
+              ),
+            ).toEqual({ failed: timerRefusal("setTimeout") });
+            vi.useRealTimers();
+          }
+          expect(
+            yield* Effect.promise(
+              () =>
+                new Promise<string>((resolve) =>
+                  setTimeout(() => resolve("real"), 1),
+                ),
+            ),
+          ).toBe("real");
+        }),
+    );
+  });
+
+  describe("runtime globals", () => {
+    it.effect(
+      "a query, a mutation and an isolate action have no setImmediate and no queueMicrotask, as the binary's isolate",
+      () =>
+        Effect.gen(function* () {
+          const t = convexTest(schema, modules);
+          expect(
+            yield* Effect.promise(() => t.query(io.surfaceInQuery, {})),
+          ).toEqual(absent);
+          expect(
+            yield* Effect.promise(() => t.mutation(io.surfaceInMutation, {})),
+          ).toEqual(absent);
+          expect(
+            yield* Effect.promise(() => t.action(io.surfaceInAction, {})),
+          ).toEqual(absent);
+          expect(
+            yield* Effect.promise(() => t.action(io.confectSurface, {})),
+          ).toEqual(absent);
+          expect(surface()).toEqual({
+            setImmediate: "function",
+            queueMicrotask: "function",
+          });
+        }),
+    );
+
+    it.effect(
+      "a Confect Node action has Node's setImmediate and queueMicrotask",
+      () =>
+        Effect.gen(function* () {
+          const t = convexTest(schema, modules);
+          expect(
+            yield* Effect.promise(() => t.action(io.nodeSurface, {})),
+          ).toEqual({ setImmediate: "function", queueMicrotask: "function" });
+        }),
+    );
+
+    it.effect(
+      "a setImmediate a module kept when it was imported fails in a query as the missing global does",
+      () =>
+        Effect.gen(function* () {
+          const t = convexTest(schema, modules);
+          expect(
+            yield* Effect.promise(() =>
+              t.query(io.importedImmediateInQuery, {}),
+            ),
+          ).toEqual({
+            name: "ReferenceError",
+            message: "setImmediate is not defined",
+          });
+        }),
+    );
+  });
+
+  describe("multipart formData", () => {
+    const refusal = {
+      name: "Error",
+      message:
+        "Can't use formData() in queries and mutations. Please consider using an action. See https://docs.convex.dev/functions/actions for more details.",
+    };
+
+    it.effect(
+      "a query's and a mutation's multipart formData() reject with the binary's error",
+      () =>
+        Effect.gen(function* () {
+          const t = convexTest(schema, modules);
+          expect(
+            yield* Effect.promise(() =>
+              t.query(io.formDataInQuery, { body: "multipart" }),
+            ),
+          ).toEqual(refusal);
+          expect(
+            yield* Effect.promise(() =>
+              t.mutation(io.formDataInMutation, { body: "multipart" }),
+            ),
+          ).toEqual(refusal);
+        }),
+    );
+
+    it.effect(
+      "a query parses a urlencoded body and refuses multipart without a boundary as the binary does",
+      () =>
+        Effect.gen(function* () {
+          const t = convexTest(schema, modules);
+          expect(
+            yield* Effect.promise(() =>
+              t.query(io.formDataInQuery, { body: "urlencoded" }),
+            ),
+          ).toEqual({ returned: "ada" });
+          expect(
+            yield* Effect.promise(() =>
+              t.query(io.formDataInQuery, {
+                body: "multipartWithoutBoundary",
+              }),
+            ),
+          ).toEqual({
+            name: "TypeError",
+            message:
+              "Missing boundary parameter in mime type of multipart formdata.",
+          });
+        }),
+    );
+
+    it.effect("an action parses a multipart body", () =>
+      Effect.gen(function* () {
+        const t = convexTest(schema, modules);
+        expect(
+          yield* Effect.promise(() =>
+            t.action(io.formDataInAction, { body: "multipart" }),
+          ),
+        ).toEqual({ returned: "ada" });
       }),
     );
   });
