@@ -33,9 +33,9 @@ export interface Hooks {
    */
   readonly running: () => Running | undefined;
   /**
-   * End the running function with `error`: its later syscalls are refused and
-   * it fails with `error` once its handler returns, as the binary terminates a
-   * function at its next microtask checkpoint.
+   * End the running function with `error`: it fails with `error` once its
+   * handler returns, as the binary terminates a function at its next microtask
+   * checkpoint.
    */
   readonly end: (error: unknown) => void;
 }
