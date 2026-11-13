@@ -61,7 +61,6 @@ against the installed plugin's schema so upgrades cannot silently omit new
 rules. Fix findings rather than disabling additional rules. Unstable API usage
 is permitted globally: the platform, HTTP, AI, and test integrations deliberately
 depend on these APIs, so do not maintain per-export `allowedUnstableApis` grants.
-Files that failed a rule when upstream 10.6.0 enabled it are exempt from that rule by literal path in `.oxlintrc.json`, with their diagnostic counts in `scripts/effectLintBaseline.json`. `scripts/effectLint.test.ts` requires exactly those counts. Never add an exemption. When a fix lowers a count, lower it in the baseline, and remove the file from its override at zero.
 Keep public API stability annotations accurate; disabling the diagnostic does
 not make an unstable API stable.
 Keep compatibility exceptions local and documented: existing structural service
