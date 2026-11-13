@@ -314,6 +314,15 @@ interface Ending {
   readonly ended: Promise<never>;
   readonly reject: (error: unknown) => void;
   error: { readonly value: unknown } | undefined;
+  /**
+   * Whether the function's invocation settled: it returned, failed or was
+   * ended. The binary runs none of its JavaScript after that, so a continuation
+   * released later logs nothing: an action's run loop
+   * (`crates/isolate/src/environment/action/mod.rs:1043`) breaks once its
+   * promise rejects (`:1125-1128`) or its result is collected (`:1151`), and a
+   * query's or mutation's `run_inner` loop (`udf/mod.rs:1113`) likewise.
+   */
+  settled: boolean;
 }
 
 const endings = new WeakMap<Execution, Ending>();
@@ -325,7 +334,7 @@ const endingOf = (execution: Execution): Ending => {
     // Read only through `unlessEnded`, so an ending nothing awaits is no
     // unhandled rejection.
     promise.catch(() => undefined);
-    ending = { ended: promise, reject, error: undefined };
+    ending = { ended: promise, reject, error: undefined, settled: false };
     endings.set(execution, ending);
   }
   return ending;
@@ -350,8 +359,10 @@ const ioHooks: IoBans.Hooks = {
   },
   ended: () => {
     const execution = executions.getStore();
+    if (execution === undefined) return false;
+    const ending = endings.get(execution);
     return (
-      execution !== undefined && endings.get(execution)?.error !== undefined
+      ending !== undefined && (ending.settled || ending.error !== undefined)
     );
   },
 };
@@ -380,10 +391,15 @@ const whileRunning = <A>(execution: Execution, start: () => Promise<A>) => {
 
 /**
  * `outcome`, unless a host API ended `execution` first, in which case its
- * ending, without waiting for the handler to settle.
+ * ending, without waiting for the handler to settle. Either way the function
+ * counts as settled from then on.
  */
-const unlessEnded = <A>(execution: Execution, outcome: Promise<A>) =>
-  Promise.race([outcome, endingOf(execution).ended]);
+const unlessEnded = <A>(execution: Execution, outcome: Promise<A>) => {
+  const ending = endingOf(execution);
+  return Promise.race([outcome, ending.ended]).finally(() => {
+    ending.settled = true;
+  });
+};
 
 const installIoBans = (): ReadonlyArray<string> => {
   const unguarded = IoBans.install();

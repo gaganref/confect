@@ -42,6 +42,27 @@ const egress = {
   chargeAndReturn: makeFunctionReference<"action", { url: string }>(
     "egress:chargeAndReturn",
   ),
+  logAfterReturn: makeFunctionReference<"action">("egress:logAfterReturn"),
+  logAfterReturnInQuery: makeFunctionReference<"query">(
+    "egress:logAfterReturnInQuery",
+  ),
+};
+
+// Released by a test after a function returned, so the function's own
+// continuation runs then.
+let afterReturn: Promise<void> = Promise.resolve();
+// The continuations that ran, so a test waits for them.
+const continued: Array<Promise<void>> = [];
+
+const logLater = (label: string) => {
+  continued.push(
+    afterReturn.then(() => {
+      console.log(`${label} after it returned`);
+      return undefined;
+    }),
+  );
+  console.log(`${label} before it returned`);
+  return label;
 };
 
 // Set by a test before it starts `chargeThenFetch`, so the test can read the
@@ -107,6 +128,14 @@ const modules = {
           void charges.call({ url });
           return Promise.resolve("returned");
         },
+      }),
+      logAfterReturn: actionGeneric({
+        args: {},
+        handler: () => Promise.resolve(logLater("action")),
+      }),
+      logAfterReturnInQuery: queryGeneric({
+        args: {},
+        handler: () => logLater("query"),
       }),
       chargeInQuery: queryGeneric({
         args: { url: v.string() },
@@ -313,6 +342,32 @@ describe("provider ports", () => {
             ),
           ).toBe("returned");
           expect(t.commands()).toEqual([]);
+        }),
+    );
+  });
+
+  describe("a function that settled", () => {
+    it.effect.each(["action", "query"] as const)(
+      "an %s logs nothing from a continuation released after it returned",
+      (kind) =>
+        Effect.gen(function* () {
+          const t = convexTest(schema, modules);
+          const { promise, resolve } = Promise.withResolvers<void>();
+          afterReturn = promise;
+          continued.length = 0;
+          const log = vi.spyOn(console, "log").mockImplementation(() => {});
+          const returned = yield* Effect.promise(() =>
+            kind === "action"
+              ? t.action(egress.logAfterReturn, {})
+              : t.query(egress.logAfterReturnInQuery, {}),
+          );
+          resolve();
+          yield* Effect.promise(() => Promise.all(continued));
+          // Restoring a spy clears its calls, so they are read first.
+          const logged = [...log.mock.calls];
+          log.mockRestore();
+          expect(returned).toBe(kind);
+          expect(logged).toEqual([[`${kind} before it returned`]]);
         }),
     );
   });
