@@ -5,13 +5,10 @@
     "packages/cli/test/ManifestSections.test.ts": 1,
     "packages/cli/test/SectionFiles.test.ts": 1,
     "packages/cli/test/codegen.test.ts": 1,
-    "packages/core/src/internal/scalarDocs.ts": 1,
     "packages/react/test/StreamPagination.test.ts": 4,
-    "packages/server/src/Callback.ts": 5,
     "packages/server/test/Callback.test.ts": 3,
     "packages/server/test/MountInit.test.ts": 1,
     "packages/server/test/RegisteredConvexFunction.test.ts": 1,
-    "packages/test/src/TestConfect.ts": 1,
     "scripts/stageForkPackages.test.ts": 1
   },
   "effecttsgo/missed-pipeable-opportunity": {
@@ -43,9 +40,7 @@
     "packages/core/test/Profile.test.ts": 2,
     "packages/server/test/local-backend/http.test.ts": 1,
     "packages/server/test/local-backend/reservedArgument.test.ts": 1,
-    "scripts/forkConsumer.ts": 1,
-    "scripts/stageForkPackages.test.ts": 1,
-    "scripts/stageForkPackages.ts": 1
+    "scripts/stageForkPackages.test.ts": 1
   },
   "effecttsgo/strict-effect-provide": {
     "packages/alchemy/test/Code.test.ts": 17,

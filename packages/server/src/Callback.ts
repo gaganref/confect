@@ -20,6 +20,10 @@ import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import * as Rec from "effect/Record";
 
+const jsonText = (json: Schema.Json): string =>
+  // oxlint-disable-next-line effecttsgo/global-json -- Sync on purpose: a message getter and pure comparisons key validator descriptions by this text, and Schema.Json always serializes.
+  JSON.stringify(json);
+
 /**
  * The host function does not satisfy the contract on one side. `expected` and
  * `actual` describe the contract's and the host's validators, with union
@@ -35,7 +39,7 @@ export class CallbackContractMismatch extends Schema.TaggedError<
   actual: Schema.Json,
 }) {
   override get message(): string {
-    return `The host function does not satisfy callback contract "${this.contract}": its ${this.side === "error" ? "errors" : this.side} compile to ${JSON.stringify(this.actual)}, the contract's to ${JSON.stringify(this.expected)}.`;
+    return `The host function does not satisfy callback contract "${this.contract}": its ${this.side === "error" ? "errors" : this.side} compile to ${jsonText(this.actual)}, the contract's to ${jsonText(this.expected)}.`;
   }
 }
 
@@ -88,7 +92,7 @@ const keyed = (
 ): ReadonlyArray<readonly [string, Schema.Json]> =>
   pipe(
     described,
-    Array.map((json) => [JSON.stringify(json), json] as const),
+    Array.map((json) => [jsonText(json), json] as const),
     Array.dedupeWith(([a], [b]) => a === b),
     Array.sortWith(([key]) => key, Order.String),
   );
@@ -252,7 +256,7 @@ const verify = (
     if (
       Result.isFailure(expected) ||
       Result.isFailure(actual) ||
-      JSON.stringify(expectedDescription) !== JSON.stringify(actualDescription)
+      jsonText(expectedDescription) !== jsonText(actualDescription)
     ) {
       return mismatch(side, expectedDescription, actualDescription);
     }

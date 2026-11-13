@@ -379,13 +379,10 @@
         "packages/cli/test/ManifestSections.test.ts",
         "packages/cli/test/SectionFiles.test.ts",
         "packages/cli/test/codegen.test.ts",
-        "packages/core/src/internal/scalarDocs.ts",
         "packages/react/test/StreamPagination.test.ts",
-        "packages/server/src/Callback.ts",
         "packages/server/test/Callback.test.ts",
         "packages/server/test/MountInit.test.ts",
         "packages/server/test/RegisteredConvexFunction.test.ts",
-        "packages/test/src/TestConfect.ts",
         "scripts/stageForkPackages.test.ts"
       ],
       "rules": {
@@ -427,9 +424,7 @@
         "packages/core/test/Profile.test.ts",
         "packages/server/test/local-backend/http.test.ts",
         "packages/server/test/local-backend/reservedArgument.test.ts",
-        "scripts/forkConsumer.ts",
-        "scripts/stageForkPackages.test.ts",
-        "scripts/stageForkPackages.ts"
+        "scripts/stageForkPackages.test.ts"
       ],
       "rules": {
         "effecttsgo/schema-sync": "off"

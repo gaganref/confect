@@ -20,9 +20,10 @@ import * as Arr from "effect/Array";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 
-const encodeJson = Schema.encodeSync(
-  Schema.fromJsonString(Schema.Unknown, { space: 2 }),
-);
+const encodeJson = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown, { space: 2 }))(
+    value,
+  ).pipe(Effect.orDie);
 
 const dependencyMap = Schema.Record(Schema.String, Schema.String);
 export const PackageManifest = Schema.StructWithRest(
@@ -302,9 +303,10 @@ const stage = Effect.fn("ForkPackages.stage")(function* (
         ),
       );
     const renamed = stageForkPackages(packed, version);
+    const renamedJson = yield* encodeJson(renamed);
     yield* fs.writeFileString(
       path.join(directory, "package.json"),
-      `${encodeJson(renamed)}\n`,
+      `${renamedJson}\n`,
     );
     yield* run(
       [
@@ -322,9 +324,10 @@ const stage = Effect.fn("ForkPackages.stage")(function* (
     });
     yield* Console.log(`staged ${renamed.name}@${version}`);
   }
+  const planJson = yield* encodeJson({ version, packages: plan });
   yield* fs.writeFileString(
     path.join(stagingDirectory, "plan.json"),
-    `${encodeJson({ version, packages: plan })}\n`,
+    `${planJson}\n`,
   );
 });
 

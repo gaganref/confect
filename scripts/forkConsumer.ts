@@ -11,9 +11,10 @@ import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Record from "effect/Record";
 
-const encodeJson = Schema.encodeSync(
-  Schema.fromJsonString(Schema.Unknown, { space: 2 }),
-);
+const encodeJson = (value: unknown) =>
+  Schema.encodeEffect(Schema.fromJsonString(Schema.Unknown, { space: 2 }))(
+    value,
+  ).pipe(Effect.orDie);
 
 export class InvalidConsumerVersion extends Schema.TaggedError<
   InvalidConsumerVersion,
@@ -94,9 +95,10 @@ export const writeConsumer = Effect.fn("ConsumerFixture.write")(function* (
     const contents = yield* fs.readFileString(path.join(template, file));
     yield* fs.writeFileString(target, contents);
   }
+  const manifestJson = yield* encodeJson(manifest);
   yield* fs.writeFileString(
     path.join(destination, "package.json"),
-    `${encodeJson(manifest)}\n`,
+    `${manifestJson}\n`,
   );
   yield* fs.writeFileString(
     path.join(destination, "install-command.txt"),

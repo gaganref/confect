@@ -24,6 +24,7 @@ const escapeAttribute = (value: string) =>
 
 const escapeJson = (value: unknown) =>
   pipe(
+    // oxlint-disable-next-line effecttsgo/global-json -- Sync on purpose: this renders an HTML string, and it receives only the docs page's JSON configuration.
     JSON.stringify(value),
     String.replaceAll("<", "\\u003c"),
     String.replaceAll("\u2028", "\\u2028"),

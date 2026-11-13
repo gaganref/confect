@@ -357,6 +357,7 @@ const registerKit = (
     // Codegen accepts a kit whose exports it cannot list, such as CommonJS.
     throw InvalidComponentKit.make({
       componentPath: name,
+      // oxlint-disable-next-line effecttsgo/global-json -- Quotes the mount name in an error this sync registration throws; a string always serializes.
       message: `The test kit for ${JSON.stringify(name)} must export register(t, name), or schema and modules.`,
     });
   }
