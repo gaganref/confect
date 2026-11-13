@@ -1,4 +1,3 @@
-import * as Data from "effect/Data";
 import * as IdScope from "./IdScope.js";
 import type * as Callback from "./Callback.js";
 import { CallbackContract } from "./internal/annotations.js";
@@ -60,7 +59,7 @@ export const compileArgsSchema = <ConfectValue, ConvexValue>(
   const validators = Effect.runSync(compileArgsAst(ast, scope));
   if (reservedArgument === undefined) return validators;
   if (Rec.has(validators, reservedArgument)) {
-    throw new ReservedArgumentCollision({
+    throw ReservedArgumentCollision.make({
       functionName,
       argument: reservedArgument,
     });
@@ -80,12 +79,13 @@ const compileArgsAst = (ast: SchemaAST.AST, scope: IdScope.IdScope) =>
     Match.orElse(() => Effect.fail(TopLevelMustBeObjectError.make())),
   );
 
-export class ReservedArgumentCollision extends Data.TaggedError(
-  "ReservedArgumentCollision",
-)<{
-  readonly functionName: string | undefined;
-  readonly argument: string;
-}> {
+export class ReservedArgumentCollision extends Schema.TaggedError<
+  ReservedArgumentCollision,
+  { readonly brand: unique symbol }
+>()("ReservedArgumentCollision", {
+  functionName: Schema.UndefinedOr(Schema.String),
+  argument: Schema.String,
+}) {
   override get message() {
     return `${this.functionName} declares the argument "${this.argument}", which its profile reserves. Rename the argument.`;
   }

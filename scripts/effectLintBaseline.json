@@ -58,17 +58,6 @@
   "effecttsgo/prefer-schema-over-json": {
     "packages/cli/src/ConvexConfig.ts": 2
   },
-  "effecttsgo/prefer-schema-tagged-error": {
-    "packages/cli/src/Declaration.ts": 12,
-    "packages/core/src/Component.ts": 3,
-    "packages/core/src/Http.ts": 3,
-    "packages/core/src/SchemaToValidator.ts": 1,
-    "packages/core/src/Table.ts": 1,
-    "packages/server/src/ActionCall.ts": 5,
-    "packages/server/src/DatabaseSchema.ts": 2,
-    "packages/server/src/GroupImpl.ts": 1,
-    "packages/server/src/QueryStream.ts": 1
-  },
   "effecttsgo/schema-class-missing-brand": {
     "packages/alchemy/src/ConvexClient.ts": 4,
     "packages/alchemy/src/DeployKey.ts": 2,

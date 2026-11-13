@@ -116,7 +116,7 @@ describe("Http", () => {
     for (const path of ["/first", "/first/", "/first/status"] as const) {
       expect(Http.routes(app, declare(path))).toEqual(
         Result.fail(
-          new Http.RouteUnderMountPrefix({
+          Http.RouteUnderMountPrefix.make({
             method: "GET",
             path,
             mount: "first",
@@ -131,7 +131,7 @@ describe("Http", () => {
   it("rejects the docs page under a mount prefix", () => {
     expect(Http.routes(app, declare("/meta", "/second/docs"))).toEqual(
       Result.fail(
-        new Http.RouteUnderMountPrefix({
+        Http.RouteUnderMountPrefix.make({
           method: "GET",
           path: "/second/docs",
           mount: "second",
@@ -168,7 +168,7 @@ describe("Http", () => {
       ),
     ).toEqual(
       Result.fail(
-        new Http.DuplicateRoute({
+        Http.DuplicateRoute.make({
           method: "GET",
           path: "/items/:key",
           first: { kind: "app" },
@@ -229,7 +229,7 @@ describe("Http", () => {
     });
     expect(Http.routes(overlapping)).toEqual(
       Result.fail(
-        new Http.OverlappingMountPrefixes({
+        Http.OverlappingMountPrefixes.make({
           first: { mount: "outer", httpPrefix: "/jobs" },
           second: { mount: "inner", httpPrefix: "/jobs/inner" },
         }),
@@ -247,7 +247,7 @@ describe("Http", () => {
     const sparse = App.make({ env: Env.make("host", {}), components, mounts });
     expect(Http.routes(sparse)).toEqual(
       Result.fail(
-        new Http.OverlappingMountPrefixes({
+        Http.OverlappingMountPrefixes.make({
           first: { mount: "outer", httpPrefix: "/jobs" },
           second: { mount: "inner", httpPrefix: "/jobs/inner" },
         }),

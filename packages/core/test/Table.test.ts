@@ -270,3 +270,13 @@ describe("Table", () => {
     });
   });
 });
+
+describe("Table errors", () => {
+  it("prints GroupFieldError", () => {
+    expect(
+      String(Table.GroupFieldError.make({ tableName: "notes", key: "text" })),
+    ).toBe(
+      "GroupFieldError: Table 'notes' cannot be grouped by 'text': it is not a field holding an id.",
+    );
+  });
+});

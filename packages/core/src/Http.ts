@@ -1,8 +1,7 @@
-import * as Data from "effect/Data";
 import * as Layer from "effect/Layer";
+import * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
-import type * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import type * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
@@ -77,42 +76,52 @@ export const isHttp = (u: unknown): u is Any =>
 
 export type Owner = { readonly kind: "app" } | { readonly kind: "docs" };
 
+const OwnerSchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("app") }),
+  Schema.Struct({ kind: Schema.Literal("docs") }),
+]);
+
 export interface Route {
   readonly method: string;
   readonly path: string;
   readonly owner: Owner;
 }
 
-export class RouteUnderMountPrefix extends Data.TaggedError(
-  "RouteUnderMountPrefix",
-)<{
-  readonly method: string;
-  readonly path: string;
-  readonly mount: string;
-  readonly httpPrefix: string;
-}> {
+export class RouteUnderMountPrefix extends Schema.TaggedError<
+  RouteUnderMountPrefix,
+  { readonly brand: unique symbol }
+>()("RouteUnderMountPrefix", {
+  method: Schema.String,
+  path: Schema.String,
+  mount: Schema.String,
+  httpPrefix: Schema.String,
+}) {
   override get message(): string {
     return `The app route ${this.method} ${this.path} is under the HTTP prefix ${this.httpPrefix} of the mount "${this.mount}". Convex would let it shadow the component's routes; move it or change the prefix.`;
   }
 }
 
-export class DuplicateRoute extends Data.TaggedError("DuplicateRoute")<{
-  readonly method: string;
-  readonly path: string;
-  readonly first: Owner;
-  readonly second: Owner;
-}> {
+export class DuplicateRoute extends Schema.TaggedError<
+  DuplicateRoute,
+  { readonly brand: unique symbol }
+>()("DuplicateRoute", {
+  method: Schema.String,
+  path: Schema.String,
+  first: OwnerSchema,
+  second: OwnerSchema,
+}) {
   override get message(): string {
     return `${this.method} ${this.path} is declared twice (${this.first.kind} and ${this.second.kind}).`;
   }
 }
 
-export class OverlappingMountPrefixes extends Data.TaggedError(
-  "OverlappingMountPrefixes",
-)<{
-  readonly first: { readonly mount: string; readonly httpPrefix: string };
-  readonly second: { readonly mount: string; readonly httpPrefix: string };
-}> {
+export class OverlappingMountPrefixes extends Schema.TaggedError<
+  OverlappingMountPrefixes,
+  { readonly brand: unique symbol }
+>()("OverlappingMountPrefixes", {
+  first: Schema.Struct({ mount: Schema.String, httpPrefix: Schema.String }),
+  second: Schema.Struct({ mount: Schema.String, httpPrefix: Schema.String }),
+}) {
   override get message(): string {
     return `The mounts "${this.first.mount}" (${this.first.httpPrefix}) and "${this.second.mount}" (${this.second.httpPrefix}) have overlapping HTTP prefixes.`;
   }
@@ -197,7 +206,7 @@ export const routes = (
         isUnder(first.httpPrefix, second.httpPrefix)
       ) {
         return Result.fail(
-          new OverlappingMountPrefixes({
+          OverlappingMountPrefixes.make({
             first: { mount: first.name, httpPrefix: first.httpPrefix },
             second: { mount: second.name, httpPrefix: second.httpPrefix },
           }),
@@ -233,7 +242,7 @@ export const routes = (
     );
     if (mount !== undefined) {
       return Result.fail(
-        new RouteUnderMountPrefix({
+        RouteUnderMountPrefix.make({
           method: route.method,
           path: route.path,
           mount: mount.name,
@@ -248,7 +257,7 @@ export const routes = (
     const previous = seen.get(key);
     if (previous !== undefined) {
       return Result.fail(
-        new DuplicateRoute({
+        DuplicateRoute.make({
           method: route.method,
           path: route.path,
           first: previous.owner,

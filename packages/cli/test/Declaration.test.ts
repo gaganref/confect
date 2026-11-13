@@ -62,7 +62,7 @@ describe("Declaration", () => {
         }),
       ).toEqual(
         Result.fail(
-          new Declaration.InvalidProviderEnv({
+          Declaration.InvalidProviderEnv.make({
             field: "domain",
             key: Env.origin(entry).key,
             backend: "tenant",
@@ -267,7 +267,7 @@ export default app;
     };
     expect(parseApp(app)).toEqual(
       Result.fail(
-        new Declaration.ForeignEnvBinding({
+        Declaration.ForeignEnvBinding.make({
           mount: "limiter",
           slot: "LIMIT",
           backend: "platform",
@@ -290,7 +290,7 @@ export default app;
     };
     expect(parseApp(app)).toEqual(
       Result.fail(
-        new Declaration.InvalidBinding({ mount: "limiter", slot: "LIMIT" }),
+        Declaration.InvalidBinding.make({ mount: "limiter", slot: "LIMIT" }),
       ),
     );
   });
@@ -326,5 +326,49 @@ export default app;
     expect(
       Declaration.digest({ files, versions: [["convex", "1.47.0"]] }),
     ).not.toBe(digest);
+  });
+});
+
+describe("Declaration errors", () => {
+  it.each([
+    [
+      Declaration.InvalidEnvKey.make({ key: "1BAD" }),
+      'InvalidEnvKey: "1BAD" is not a valid Convex environment variable name; use letters, digits and underscores, starting with a letter.',
+    ],
+    [
+      Declaration.ForeignEnvBinding.make({
+        mount: "limiter",
+        slot: "LIMIT",
+        backend: "other",
+        key: "RATE",
+        expectedBackend: "app",
+      }),
+      'ForeignEnvBinding: The mount "limiter" binds LIMIT to RATE of the "other" env, but this backend\'s env is "app".',
+    ],
+    [
+      Declaration.InvalidBinding.make({ mount: "limiter", slot: "LIMIT" }),
+      'InvalidBinding: The mount "limiter" binds LIMIT to something other than a string or an entry of this backend\'s env.',
+    ],
+    [
+      Declaration.InvalidComponentDefinition.make({ index: 2 }),
+      "InvalidComponentDefinition: App.make's components[2] must be the default export of a component's convex.config module, imported directly in the declaration.",
+    ],
+    [
+      Declaration.AuthForAnotherBackend.make({
+        backend: "other",
+        expectedBackend: "app",
+      }),
+      'AuthForAnotherBackend: confect/auth.ts declares auth for the "other" backend, but confect/app.ts declares "app".',
+    ],
+    [
+      Declaration.InvalidProviderEnv.make({
+        field: "domain",
+        key: "SECRET",
+        backend: "app",
+      }),
+      'InvalidProviderEnv: Auth provider field "domain" requires a non-secret, required string entry of the "app" env; got "SECRET".',
+    ],
+  ])("prints %s", (error, printed) => {
+    expect(String(error)).toBe(printed);
   });
 });

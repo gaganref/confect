@@ -466,14 +466,15 @@ export const empty =
  *
  * @experimental
  */
-export class DeferredStreamMismatchError extends Data.TaggedError(
-  "DeferredStreamMismatchError",
-)<{
-  readonly expectedOrderDirection: QueryStreamOrderDirection.QueryStreamOrderDirection;
-  readonly actualOrderDirection: QueryStreamOrderDirection.QueryStreamOrderDirection;
-  readonly expectedKeyLayout: QueryStreamKeyLayout.QueryStreamKeyLayout;
-  readonly actualKeyLayout: QueryStreamKeyLayout.QueryStreamKeyLayout;
-}> {}
+export class DeferredStreamMismatchError extends Schema.TaggedError<
+  DeferredStreamMismatchError,
+  { readonly brand: unique symbol }
+>()("DeferredStreamMismatchError", {
+  expectedOrderDirection: Schema.Literals(["asc", "desc"]),
+  actualOrderDirection: Schema.Literals(["asc", "desc"]),
+  expectedKeyLayout: QueryStreamKeyLayout.QueryStreamKeyLayout,
+  actualKeyLayout: QueryStreamKeyLayout.QueryStreamKeyLayout,
+}) {}
 
 /**
  * Defer an effect that checks access or constructs a query stream until it is
@@ -510,7 +511,7 @@ export const defer = <
       stream.orderDirection !== options.orderDirection ||
       !QueryStreamKeyLayout.Equivalence(stream.keyLayout, options.keyLayout)
     ) {
-      throw new DeferredStreamMismatchError({
+      throw DeferredStreamMismatchError.make({
         expectedOrderDirection: options.orderDirection,
         actualOrderDirection: stream.orderDirection,
         expectedKeyLayout: options.keyLayout,

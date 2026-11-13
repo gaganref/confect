@@ -597,20 +597,20 @@ const restrict = <Model extends GenericDataModel>(
 ) => {
   let dispatched = false;
   const claim = () => {
-    if (dispatched) throw new ActionCall.ActionCallAlreadyUsed();
+    if (dispatched) throw ActionCall.ActionCallAlreadyUsed.make({});
     dispatched = true;
   };
   const restricted: GenericActionCtx<Model> = {
     ...ctx,
     scheduler: {
       runAfter: () => {
-        throw new ActionCall.SchedulingNotAllowed();
+        throw ActionCall.SchedulingNotAllowed.make({});
       },
       runAt: () => {
-        throw new ActionCall.SchedulingNotAllowed();
+        throw ActionCall.SchedulingNotAllowed.make({});
       },
       cancel: () => {
-        throw new ActionCall.SchedulingNotAllowed();
+        throw ActionCall.SchedulingNotAllowed.make({});
       },
     },
     runQuery: (...args) => {
@@ -622,13 +622,15 @@ const restrict = <Model extends GenericDataModel>(
       return ctx.runMutation(...args);
     },
     runAction: () => {
-      throw new ActionCall.NestedActionNotAllowed();
+      throw ActionCall.NestedActionNotAllowed.make({});
     },
   };
   return {
     ctx: restricted,
     check: Effect.suspend(() =>
-      dispatched ? Effect.void : Effect.die(new ActionCall.ActionCallNotUsed()),
+      dispatched
+        ? Effect.void
+        : Effect.die(ActionCall.ActionCallNotUsed.make({})),
     ),
   };
 };

@@ -464,22 +464,6 @@
     },
     {
       "files": [
-        "packages/cli/src/Declaration.ts",
-        "packages/core/src/Component.ts",
-        "packages/core/src/Http.ts",
-        "packages/core/src/SchemaToValidator.ts",
-        "packages/core/src/Table.ts",
-        "packages/server/src/ActionCall.ts",
-        "packages/server/src/DatabaseSchema.ts",
-        "packages/server/src/GroupImpl.ts",
-        "packages/server/src/QueryStream.ts"
-      ],
-      "rules": {
-        "effecttsgo/prefer-schema-tagged-error": "off"
-      }
-    },
-    {
-      "files": [
         "packages/alchemy/src/ConvexClient.ts",
         "packages/alchemy/src/DeployKey.ts",
         "packages/alchemy/src/Deployment.ts",

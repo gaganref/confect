@@ -721,3 +721,20 @@ describe("table groups in a contract", () => {
     void Component.contract(spec, scope, eitherValid());
   });
 });
+
+describe("Component errors", () => {
+  it.each([
+    [
+      Component.EmptyComponentScopeError.make({ definitionScope: IdScope.app }),
+      "EmptyComponentScopeError: A component contract requires a nonempty definition scope.",
+    ],
+    [
+      Component.UninstalledComponentReferenceError.make({
+        definitionScope: IdScope.component("notes"),
+      }),
+      "UninstalledComponentReferenceError: Component.bind expects an installed component from the generated components registry.",
+    ],
+  ])("prints %s", (error, printed) => {
+    expect(String(error)).toBe(printed);
+  });
+});

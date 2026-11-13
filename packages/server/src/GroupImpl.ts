@@ -3,9 +3,9 @@ import type * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
 import * as Registry from "./Registry.js";
 import * as RegistryItems from "./RegistryItems.js";
 import * as Array from "effect/Array";
+import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import * as Data from "effect/Data";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -116,11 +116,17 @@ export const make = <
 const findGroupImpl = <S>(context: Context.Context<S>): Option.Option<Any> =>
   Array.findFirst(context.mapUnsafe.values(), isGroupImpl);
 
-export class MissingRequiredMiddlewareError extends Data.TaggedError(
-  "MissingRequiredMiddlewareError",
-)<{
-  readonly missing: ReadonlyArray<RegistryItems.MissingMiddleware>;
-}> {
+export class MissingRequiredMiddlewareError extends Schema.TaggedError<
+  MissingRequiredMiddlewareError,
+  { readonly brand: unique symbol }
+>()("MissingRequiredMiddlewareError", {
+  missing: Schema.Array(
+    Schema.Struct({
+      functionName: Schema.String,
+      middlewareKey: Schema.String,
+    }),
+  ),
+}) {
   override get message(): string {
     return `GroupImpl.finalize: ${pipe(
       this.missing,
@@ -208,7 +214,7 @@ const finalizeWith = (
               );
               if (missing.length > 0) {
                 return yield* Effect.die(
-                  new MissingRequiredMiddlewareError({ missing }),
+                  MissingRequiredMiddlewareError.make({ missing }),
                 );
               }
               return {

@@ -1,6 +1,6 @@
 import { App, Auth, Env } from "@confect/core";
-import * as Data from "effect/Data";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- a synchronous hash of in-memory strings in a pure function; Effect's Crypto is a service.
@@ -42,111 +42,136 @@ export type ProviderValue =
 
 export type Provider = ReadonlyArray<readonly [string, ProviderValue]>;
 
-export class NotADeclaration extends Data.TaggedError("NotADeclaration")<{
-  readonly file: string;
-  readonly expected: string;
-}> {
+export class NotADeclaration extends Schema.TaggedError<
+  NotADeclaration,
+  { readonly brand: unique symbol }
+>()("NotADeclaration", { file: Schema.String, expected: Schema.String }) {
   override get message(): string {
     return `${this.file} must default-export ${this.expected}.`;
   }
 }
 
-export class InvalidEnvKey extends Data.TaggedError("InvalidEnvKey")<{
-  readonly key: string;
-}> {
+export class InvalidEnvKey extends Schema.TaggedError<
+  InvalidEnvKey,
+  { readonly brand: unique symbol }
+>()("InvalidEnvKey", { key: Schema.String }) {
   override get message(): string {
     return `"${this.key}" is not a valid Convex environment variable name; use letters, digits and underscores, starting with a letter.`;
   }
 }
 
-export class InvalidMountName extends Data.TaggedError("InvalidMountName")<{
-  readonly mount: string;
-}> {
+export class InvalidMountName extends Schema.TaggedError<
+  InvalidMountName,
+  { readonly brand: unique symbol }
+>()("InvalidMountName", { mount: Schema.String }) {
   override get message(): string {
     return `"${this.mount}" is not a valid mount name; use letters, digits and underscores, starting with a letter or underscore.`;
   }
 }
 
-export class ForeignEnvBinding extends Data.TaggedError("ForeignEnvBinding")<{
-  readonly mount: string;
-  readonly slot: string;
-  readonly backend: string;
-  readonly key: string;
-  readonly expectedBackend: string;
-}> {
+export class ForeignEnvBinding extends Schema.TaggedError<
+  ForeignEnvBinding,
+  { readonly brand: unique symbol }
+>()("ForeignEnvBinding", {
+  mount: Schema.String,
+  slot: Schema.String,
+  backend: Schema.String,
+  key: Schema.String,
+  expectedBackend: Schema.String,
+}) {
   override get message(): string {
     return `The mount "${this.mount}" binds ${this.slot} to ${this.key} of the "${this.backend}" env, but this backend's env is "${this.expectedBackend}".`;
   }
 }
 
-export class InvalidBinding extends Data.TaggedError("InvalidBinding")<{
-  readonly mount: string;
-  readonly slot: string;
-}> {
+export class InvalidBinding extends Schema.TaggedError<
+  InvalidBinding,
+  { readonly brand: unique symbol }
+>()("InvalidBinding", { mount: Schema.String, slot: Schema.String }) {
   override get message(): string {
     return `The mount "${this.mount}" binds ${this.slot} to something other than a string or an entry of this backend's env.`;
   }
 }
 
-export class InvalidComponentDefinition extends Data.TaggedError(
-  "InvalidComponentDefinition",
-)<{ readonly index: number }> {
+export class InvalidComponentDefinition extends Schema.TaggedError<
+  InvalidComponentDefinition,
+  { readonly brand: unique symbol }
+>()("InvalidComponentDefinition", { index: Schema.Finite }) {
   override get message(): string {
     return `App.make's components[${this.index}] must be the default export of a component's convex.config module, imported directly in the declaration.`;
   }
 }
 
-export class MountWithoutDefinition extends Data.TaggedError(
-  "MountWithoutDefinition",
-)<{ readonly mount: string; readonly component: string }> {
+export class MountWithoutDefinition extends Schema.TaggedError<
+  MountWithoutDefinition,
+  { readonly brand: unique symbol }
+>()("MountWithoutDefinition", {
+  mount: Schema.String,
+  component: Schema.String,
+}) {
   override get message(): string {
     return `The mount "${this.mount}" mounts the component "${this.component}", but App.make's components lists no definition named "${this.component}".`;
   }
 }
 
-export class DefinitionWithoutMount extends Data.TaggedError(
-  "DefinitionWithoutMount",
-)<{ readonly component: string; readonly importPath: string }> {
+export class DefinitionWithoutMount extends Schema.TaggedError<
+  DefinitionWithoutMount,
+  { readonly brand: unique symbol }
+>()("DefinitionWithoutMount", {
+  component: Schema.String,
+  importPath: Schema.String,
+}) {
   override get message(): string {
     return `App.make's components lists the definition "${this.component}" from ${this.importPath}, but no mount mounts it.`;
   }
 }
 
-export class DuplicateMountName extends Data.TaggedError("DuplicateMountName")<{
-  readonly mount: string;
-  readonly first: string;
-  readonly second: string;
-}> {
+export class DuplicateMountName extends Schema.TaggedError<
+  DuplicateMountName,
+  { readonly brand: unique symbol }
+>()("DuplicateMountName", {
+  mount: Schema.String,
+  first: Schema.String,
+  second: Schema.String,
+}) {
   override get message(): string {
     return `Two mounts are named "${this.mount}", one of "${this.first}" and one of "${this.second}"; give each mount its own name.`;
   }
 }
 
-export class DuplicateDefinitionName extends Data.TaggedError(
-  "DuplicateDefinitionName",
-)<{
-  readonly component: string;
-  readonly first: string;
-  readonly second: string;
-}> {
+export class DuplicateDefinitionName extends Schema.TaggedError<
+  DuplicateDefinitionName,
+  { readonly brand: unique symbol }
+>()("DuplicateDefinitionName", {
+  component: Schema.String,
+  first: Schema.String,
+  second: Schema.String,
+}) {
   override get message(): string {
     return `Two component definitions are named "${this.component}", from ${this.first} and ${this.second}; give each definition its own name.`;
   }
 }
 
-export class AuthForAnotherBackend extends Data.TaggedError(
-  "AuthForAnotherBackend",
-)<{ readonly backend: string; readonly expectedBackend: string }> {
+export class AuthForAnotherBackend extends Schema.TaggedError<
+  AuthForAnotherBackend,
+  { readonly brand: unique symbol }
+>()("AuthForAnotherBackend", {
+  backend: Schema.String,
+  expectedBackend: Schema.String,
+}) {
   override get message(): string {
     return `confect/auth.ts declares auth for the "${this.backend}" backend, but confect/app.ts declares "${this.expectedBackend}".`;
   }
 }
 
-export class InvalidProviderEnv extends Data.TaggedError("InvalidProviderEnv")<{
-  readonly field: string;
-  readonly key: string;
-  readonly backend: string;
-}> {
+export class InvalidProviderEnv extends Schema.TaggedError<
+  InvalidProviderEnv,
+  { readonly brand: unique symbol }
+>()("InvalidProviderEnv", {
+  field: Schema.String,
+  key: Schema.String,
+  backend: Schema.String,
+}) {
   override get message(): string {
     return `Auth provider field "${this.field}" requires a non-secret, required string entry of the "${this.backend}" env; got "${this.key}".`;
   }
@@ -205,7 +230,7 @@ export const parse = (input: {
   Result.gen(function* () {
     if (!App.isApp(input.app)) {
       return yield* Result.fail(
-        new NotADeclaration({
+        NotADeclaration.make({
           file: "confect/app.ts",
           expected: "App.make(...)",
         }),
@@ -216,20 +241,20 @@ export const parse = (input: {
     const descriptors = Env.descriptors(env);
     for (const [key] of descriptors) {
       if (!ENV_KEY.test(key))
-        return yield* Result.fail(new InvalidEnvKey({ key }));
+        return yield* Result.fail(InvalidEnvKey.make({ key }));
     }
 
     const definitions = new Map<string, ComponentImport>();
     for (const [index, definition] of App.components(input.app).entries()) {
       const component = input.componentImport(definition);
       if (Option.isNone(component)) {
-        return yield* Result.fail(new InvalidComponentDefinition({ index }));
+        return yield* Result.fail(InvalidComponentDefinition.make({ index }));
       }
       const { componentName, importPath } = component.value;
       const named = definitions.get(componentName);
       if (named !== undefined && named.importPath !== importPath) {
         return yield* Result.fail(
-          new DuplicateDefinitionName({
+          DuplicateDefinitionName.make({
             component: componentName,
             first: named.importPath,
             second: importPath,
@@ -242,12 +267,12 @@ export const parse = (input: {
     const mounts: Array<Mount> = [];
     for (const mount of App.mounts(input.app)) {
       if (!MOUNT_NAME.test(mount.name)) {
-        return yield* Result.fail(new InvalidMountName({ mount: mount.name }));
+        return yield* Result.fail(InvalidMountName.make({ mount: mount.name }));
       }
       const component = definitions.get(mount.component.name);
       if (component === undefined) {
         return yield* Result.fail(
-          new MountWithoutDefinition({
+          MountWithoutDefinition.make({
             mount: mount.name,
             component: mount.component.name,
           }),
@@ -258,7 +283,7 @@ export const parse = (input: {
       );
       if (named !== undefined) {
         return yield* Result.fail(
-          new DuplicateMountName({
+          DuplicateMountName.make({
             mount: mount.name,
             first: named.componentName,
             second: component.componentName,
@@ -274,13 +299,13 @@ export const parse = (input: {
         }
         if (!Env.isEntry(bound)) {
           return yield* Result.fail(
-            new InvalidBinding({ mount: mount.name, slot }),
+            InvalidBinding.make({ mount: mount.name, slot }),
           );
         }
         const origin = Env.origin(bound);
         if (origin.backend !== name) {
           return yield* Result.fail(
-            new ForeignEnvBinding({
+            ForeignEnvBinding.make({
               mount: mount.name,
               slot,
               backend: origin.backend,
@@ -304,7 +329,7 @@ export const parse = (input: {
         !Arr.some(mounts, ({ componentName }) => componentName === component)
       ) {
         return yield* Result.fail(
-          new DefinitionWithoutMount({ component, importPath }),
+          DefinitionWithoutMount.make({ component, importPath }),
         );
       }
     }
@@ -330,7 +355,7 @@ const parseProviders = (
 ): Result.Result<ReadonlyArray<Provider>, DeclarationError> => {
   if (!Auth.isAuth(auth)) {
     return Result.fail(
-      new NotADeclaration({
+      NotADeclaration.make({
         file: "confect/auth.ts",
         expected: "Auth.make(app, ...)",
       }),
@@ -339,7 +364,7 @@ const parseProviders = (
   const authBackend = Env.name(App.env(auth.app));
   if (authBackend !== backend) {
     return Result.fail(
-      new AuthForAnotherBackend({
+      AuthForAnotherBackend.make({
         backend: authBackend,
         expectedBackend: backend,
       }),
@@ -366,7 +391,7 @@ const parseProviders = (
             !ENV_KEY.test(key)
           ) {
             return yield* Result.fail(
-              new InvalidProviderEnv({ field, key, backend }),
+              InvalidProviderEnv.make({ field, key, backend }),
             );
           }
           lowered = { kind: "env", key };

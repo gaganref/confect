@@ -1,11 +1,11 @@
 import type { DefaultFunctionArgs, FunctionReference } from "convex/server";
 import { getFunctionAddress } from "convex/server";
 import * as Array from "effect/Array";
-import * as Data from "effect/Data";
 import * as Result from "effect/Result";
 import { memoize, pipe } from "effect/Function";
 import * as Match from "effect/Match";
 import * as Record from "effect/Record";
+import * as Predicate from "effect/Predicate";
 import * as Schema from "effect/Schema";
 import type * as FunctionProvenance from "./FunctionProvenance.js";
 import type * as FunctionSpec from "./FunctionSpec.js";
@@ -20,32 +20,35 @@ import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 import * as Spec from "./Spec.js";
 import type * as Table_ from "./Table.js";
 
-export class EmptyComponentScopeError extends Data.TaggedError(
-  "EmptyComponentScopeError",
-)<{
-  readonly definitionScope: IdScope.IdScope;
-}> {
+const IdScopeSchema = Schema.declare((u): u is IdScope.IdScope =>
+  Predicate.isString(u),
+);
+
+export class EmptyComponentScopeError extends Schema.TaggedError<
+  EmptyComponentScopeError,
+  { readonly brand: unique symbol }
+>()("EmptyComponentScopeError", { definitionScope: IdScopeSchema }) {
   override get message(): string {
     return "A component contract requires a nonempty definition scope.";
   }
 }
 
-export class ComponentNameCollisionError extends Data.TaggedError(
-  "ComponentNameCollisionError",
-)<{
-  readonly groupPath: string;
-  readonly functionName: string;
-}> {
+export class ComponentNameCollisionError extends Schema.TaggedError<
+  ComponentNameCollisionError,
+  { readonly brand: unique symbol }
+>()("ComponentNameCollisionError", {
+  groupPath: Schema.String,
+  functionName: Schema.String,
+}) {
   override get message(): string {
     return `Group and function at same level have same name ('${this.groupPath}:${this.functionName}')`;
   }
 }
 
-export class UninstalledComponentReferenceError extends Data.TaggedError(
-  "UninstalledComponentReferenceError",
-)<{
-  readonly definitionScope: IdScope.IdScope;
-}> {
+export class UninstalledComponentReferenceError extends Schema.TaggedError<
+  UninstalledComponentReferenceError,
+  { readonly brand: unique symbol }
+>()("UninstalledComponentReferenceError", { definitionScope: IdScopeSchema }) {
   override get message(): string {
     return "Component.bind expects an installed component from the generated components registry.";
   }
@@ -60,7 +63,7 @@ const validateNames = (
     for (const functionSpec of Record.values(group.functions)) {
       if (Record.has(group.groups, functionSpec.name)) {
         return Result.fail(
-          new ComponentNameCollisionError({
+          ComponentNameCollisionError.make({
             groupPath: path,
             functionName: functionSpec.name,
           }),
@@ -81,7 +84,7 @@ const validateContract = (
   EmptyComponentScopeError | ComponentNameCollisionError
 > =>
   scope === ""
-    ? Result.fail(new EmptyComponentScopeError({ definitionScope: scope }))
+    ? Result.fail(EmptyComponentScopeError.make({ definitionScope: scope }))
     : validateNames(groups);
 
 const TypeId = "~@confect/core/Component";
@@ -411,12 +414,10 @@ export const bind = <
   const published = component[TypeId];
   const address = getFunctionAddress(native);
   const installedReference = Result.getOrThrow(
-    Result.fromNullishOr(
-      address.reference,
-      () =>
-        new UninstalledComponentReferenceError({
-          definitionScope: published.scope,
-        }),
+    Result.fromNullishOr(address.reference, () =>
+      UninstalledComponentReferenceError.make({
+        definitionScope: published.scope,
+      }),
     ),
   );
   // Preserve the opaque address as an identity only. Calls retain the native
