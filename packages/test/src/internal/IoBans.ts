@@ -9,13 +9,13 @@
  * (`npm-packages/udf-runtime/src/setup.ts` installs neither), in queries,
  * mutations and actions alike, while a Node action runs in Node.
  *
- * Each of these globals is an accessor whose getter returns one guard for the
- * whole test runtime. The guard checks the kernel function running in the
+ * Each of these globals is an accessor that reads as a guard of the
+ * implementation beneath it. A guard checks the kernel function running in the
  * caller's async context at every call, so a reference taken at any time after
  * {@link install} ran is checked: a module that kept the global when it loaded,
  * a nested call, a handler or a test that assigned the global. An assignment
- * stores the new implementation beneath the guard, and outside a kernel
- * function that is refused, the guard calls it.
+ * stores the new implementation beneath, still guarded, and outside a kernel
+ * function that is refused, a guard calls the implementation it was read with.
  */
 
 type UdfType = "query" | "mutation" | "action";
@@ -98,6 +98,10 @@ interface State {
    * already guards.
    */
   readonly made: WeakSet<object>;
+  /**
+   * The function each guard calls when the running function may.
+   */
+  readonly guarding: WeakMap<object, unknown>;
   /**
    * Set while an install reads another library's accessor, so the hidden
    * globals answer their guard whatever function is running.
@@ -254,11 +258,15 @@ const readsThrough = (state: State, accessor: PropertyDescriptor): boolean => {
 };
 
 /**
- * Make `name` an accessor whose getter returns its guard, unless it already
- * reads through one. The value or accessor it replaces becomes the
- * implementation beneath. An assignment of another value stores it beneath the
- * guard, and assigning the guard back, as fake timers do when they uninstall,
- * restores the implementation before it.
+ * Make `name` an accessor that reads as a guard of the implementation beneath
+ * it, unless it already reads through one. The value or accessor it replaces is
+ * the first implementation. Each implementation has one guard, so a read
+ * answers the same function until an assignment, and a reference keeps the
+ * implementation it was read with, as a kept reference to the host's function
+ * would: convex-test keeps the real `setTimeout` at load to run beside fake
+ * timers (its `dist/index.js:2205`). An assignment stores a new implementation
+ * beneath, still guarded, and assigning a guard back, as fake timers do when
+ * they uninstall, stores the implementation it guards.
  */
 const guardGlobal = (
   state: State,
@@ -271,22 +279,36 @@ const guardGlobal = (
   if (own.get !== undefined && state.made.has(own.get)) return;
   if (own.get !== undefined && readsThrough(state, own)) return;
   let beneath: PropertyDescriptor = own;
-  const earlier: Array<PropertyDescriptor> = [];
-  const implementation = () =>
-    "value" in beneath ? beneath.value : beneath.get?.call(global);
-  const guard = makeGuard(state, name, rule, implementation);
-  const get = (): unknown =>
-    absent && inIsolate(state) && !readByNode(get) ? undefined : guard;
+  // Another library's accessor beneath answers per read, so one guard reads
+  // through it at each call.
+  const throughAccessor = makeGuard(state, name, rule, () =>
+    beneath.get?.call(global),
+  );
+  const guards = new WeakMap<object, Fn>();
+  const guardOf = (implementation: unknown): unknown => {
+    if (typeof implementation !== "function") return implementation;
+    let guard = guards.get(implementation);
+    if (guard === undefined) {
+      guard = makeGuard(state, name, rule, () => implementation);
+      guards.set(implementation, guard);
+      state.guarding.set(guard, implementation);
+    }
+    return guard;
+  };
+  const get = (): unknown => {
+    if (absent && inIsolate(state) && !readByNode(get)) return undefined;
+    return "value" in beneath ? guardOf(beneath.value) : throughAccessor;
+  };
   const set = (value: unknown) => {
-    if (value === guard) {
-      beneath = earlier.pop() ?? beneath;
-    } else if (beneath.set !== undefined) {
+    if (!("value" in beneath) && beneath.set !== undefined) {
       // Another library's accessor keeps its own store.
       beneath.set.call(global, value);
-    } else {
-      earlier.push(beneath);
-      beneath = { value, writable: true };
+      return;
     }
+    const implementation = state.guarding.has(value as object)
+      ? state.guarding.get(value as object)
+      : value;
+    beneath = { value: implementation, writable: true };
   };
   state.made.add(get);
   Object.defineProperty(global, name, {
@@ -342,6 +364,7 @@ const stateOf = (): State =>
   ((globalThis as unknown as Global)[key] ??= {
     hooks: undefined,
     made: new WeakSet(),
+    guarding: new WeakMap(),
     probing: false,
     nextTimerId: 1,
   });

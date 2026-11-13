@@ -627,6 +627,24 @@ describe("I/O bans", () => {
     );
   });
 
+  describe("kept references", () => {
+    it.effect(
+      "a timer kept before fake timers stays the real one while they are on, as convex-test relies on",
+      () =>
+        Effect.gen(function* () {
+          const kept = setTimeout;
+          vi.useFakeTimers();
+          const fired = yield* Effect.promise(
+            () =>
+              new Promise<string>((resolve) => {
+                kept(() => resolve("real"), 1);
+              }),
+          ).pipe(Effect.ensuring(Effect.sync(() => vi.useRealTimers())));
+          expect(fired).toBe("real");
+        }),
+    );
+  });
+
   describe("runtime globals", () => {
     it.effect(
       "a query, a mutation and an isolate action have no setImmediate and no queueMicrotask, as the binary's isolate",

@@ -519,12 +519,16 @@ JavaScript as a plain, catchable `Error` with that message
 
 The kernel's `src/internal/IoBans.ts` makes each of `fetch`, `setTimeout`,
 `setInterval`, `setImmediate` and `queueMicrotask` an accessor on `globalThis`,
-as `Globals.ts` does for `Date`, `Math` and `crypto`. Its getter returns one
-guard, and the guard checks the kernel function running in the caller's async
-context at every call. An assignment stores the new implementation beneath the
-guard, so a stub or a handler that assigns the global mid-invocation is still
-guarded, and assigning the guard back, as fake timers do when they uninstall,
-restores the implementation before it. `formData()` is guarded on `Request`'s
+as `Globals.ts` does for `Date`, `Math` and `crypto`. It reads as a guard of the
+implementation beneath, one guard per implementation, and a guard checks the
+kernel function running in the caller's async context at every call. An
+assignment stores the new implementation beneath, so a stub or a handler that
+assigns the global mid-invocation is still guarded, and assigning a guard back,
+as fake timers do when they uninstall, stores the implementation it guards. A
+reference keeps the implementation it was read with, as a kept reference to
+the host's function would: convex-test keeps the real `setTimeout` when it
+loads (`dist/index.js:2205`) and yields on it beside fake timers, so a single
+guard that followed the fakes made its drain loop forever. `formData()` is guarded on `Request`'s
 and `Response`'s prototypes. `@confect/test/setup` (`src/setup.ts`), a Vitest
 setup file, installs the guards before any test module loads, so a reference a
 module takes when it is imported is the guard. The kernel installs them again
