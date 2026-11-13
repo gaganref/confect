@@ -276,13 +276,83 @@ gives each query, mutation and action the kernel starts its own copy, as
 convex-test does, and a nested call starts from the test environment's. A
 bound handler on the kernel then reads its invocation's stream, a nested action
 its world's, and test code keeps the host's. The start time it reads is the
-kernel's, as recorded under row 5. The kernel's
+kernel's, as recorded under rows 4 and 5. The kernel's
 default wall clock reads the host's `Date`, never a handler's copy, so a
 document a bound mutation inserts takes its `_creationTime` from the kernel's
 clock, as every commit timestamp does. On convex-test it takes the pinned
 start time, as recorded under row 1.
 
 No inventory case is placed in row 3, and no refusal named row 3, so the lane's
+placements are unchanged.
+
+## Subscriptions (row 4)
+
+`src/internal/Subscriptions.ts` keeps each client's query set. A `Subscriber`
+holds one caller and an identity version. Each subscription keeps its latest
+run: the value, the commit it read, its read set, whether it asked for the
+caller's identity, the pinned time it read and where its paginated read ended.
+
+A run is stale when a commit since its snapshot changed something it read,
+which is the check `apply` makes for an attempt (`Kernel.conflict`). It is also
+stale when it read the identity and `authenticate` has since bumped its
+subscriber's identity version. `refresh` reruns the stale runs at the latest
+commit and the kernel's time, oldest first, until none is stale. It lists each
+value that changed. `reference` is the full-rerun reference: it reruns every
+subscription from scratch and lists each one whose value differs. Two failures
+show the same thing when their errors share a name, message and data, or when
+they threw equal bare values of the same type, so a query that throws `"a"`
+and then `"b"` changes.
+
+Three rules come from the binary's source and docs (Convex 1.49), not from
+convex-test, which has no subscriptions:
+
+- Time never makes a run stale. "The query is not re-run when `Date.now()`
+  changes" (`docs/understanding/best-practices/best-practices.mdx:571`). The
+  sync worker reruns a query only when its read set or the identity changes
+  (`crates/sync/src/worker.rs:948-962`). The binary's time dependency is its
+  query cache, which reuses a result that read the time only within
+  `MAX_CACHE_AGE` (`crates/application/src/cache/mod.rs:795-820`). The kernel
+  has no cache, so a rerun always reads the kernel's time now. The reference
+  reruns a query that read the time at the time its run read, and again at the
+  kernel's time now when that rerun's own reads show a rerun was owed: a commit
+  since the run changed something it read, or it read an identity that has
+  changed. It reads neither the run's recorded reads nor `invalidation`, so a
+  missed invalidation disagrees even when the query's value is only the time.
+- An identity change makes stale only the runs that read the identity, as the
+  design says. The binary reruns every query of the session and leaves the
+  narrower rule as a TODO, CX-737 (`crates/sync/src/worker.rs:953-962`). The
+  two differ only for a query that read the time but not the identity, once
+  its cached result is older than the cache window.
+- A rerun ends its page where the first run's page ended, as the binary's query
+  journal does (`crates/isolate/src/environment/udf/async_syscall.rs:2263-2266`
+  and `:2324`). So an insert inside the page grows it.
+
+`Date` inside a query or mutation answers its start time, and a query that
+reads it records that time. The wrapper, `src/internal/Clock.ts`, is the same
+file as row 5's, byte for byte: a time dependency needs the pinned query clock
+that row 5's scheduler also needs.
+
+Inside a bound handler, row 1's pin of the invocation's start time would hide
+the wrapper. A bound query would then read that start time, and its read would
+go unrecorded, so a subscription would lose its time dependency. So when the
+realm's `Date` is the kernel's wrapper and a kernel invocation is running, the
+bridge leaves `Date` to it and pins only `Math` and `crypto`
+(`Clock.answersInvocation`, row 5's rule too). A bound handler on the kernel
+reads the kernel's clock as an unbound one does, and a bound query's read of it
+is recorded. A bound action reads the running clock, and a query or mutation it
+calls starts at the kernel's time when it is called, the kernel's form of row
+1's rule. A record's own start time and its world's clock apply only on
+convex-test.
+
+A kernel subscription's reruns reach Convex's server library through the same
+`globalThis.Convex` dispatcher and pinned-global accessors that a live
+convex-test layer uses (row 5's `TestConfect` target). Beside such a layer it
+ignores the other target's commits, reruns on a kernel commit to what it read,
+agrees with the reference, and leaves each accessor as it found it
+(`test/TestConfectTargets.test.ts`). `TestConfect` itself has no subscription
+surface yet, so a test opens subscriptions on the kernel's `convexTest` shim.
+
+No inventory case is placed in row 4, and no refusal named row 4, so the lane's
 placements are unchanged.
 
 ## Scheduler, crons, handles and workflow events (row 5)

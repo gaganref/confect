@@ -38,12 +38,32 @@ export interface GenerateInput {
   readonly confectDirectory: string;
 }
 
+/**
+ * What codegen hands a section's `verify.check`: the exports of each `confect/`
+ * file `verify.match` selected, each mounted component with the specifier of
+ * its definition, and the backend it generates.
+ */
+export interface VerifyInput {
+  readonly modules: GenerateInput["modules"];
+  readonly mounts: GenerateInput["mounts"];
+  readonly target: Target;
+}
+
 export interface Generate {
   readonly file: string;
   match(relativePath: string): boolean;
   render(input: GenerateInput): {
     readonly contents: string;
     readonly errors: ReadonlyArray<string>;
+  };
+  /**
+   * A check codegen runs once every `_generated` file exists, so the files
+   * `match` selects may import this section's file or any other. Codegen fails
+   * with each string `check` returns.
+   */
+  readonly verify?: {
+    match(relativePath: string): boolean;
+    check(input: VerifyInput): ReadonlyArray<string>;
   };
 }
 

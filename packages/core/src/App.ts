@@ -2,6 +2,7 @@ import type { ComponentDefinition } from "convex/server";
 import type * as HttpApi from "effect/http-api/HttpApi";
 import * as Predicate from "effect/Predicate";
 import type * as Env from "./Env.js";
+import type * as ManifestSection from "./ManifestSection.js";
 import type * as MiddlewareSpec from "./MiddlewareSpec.js";
 import * as Mount from "./Mount.js";
 
@@ -45,18 +46,24 @@ export interface App<
   readonly components: ReadonlyArray<Definition>;
   readonly mounts: M;
   readonly requiresMiddleware: ReadonlyArray<MiddlewareSpec.AnyMiddlewareSpec>;
+  readonly manifestSections: ReadonlyArray<ManifestSection.Entry>;
 }
 
 export type Any = App<Env.Any, ReadonlyArray<Mount.Any>>;
 
 /**
  * Declare a backend, in `confect/app.ts`: its env, the `convex.config`
- * definitions of the Convex components it mounts, and its mounts. Set `kind:
- * "component"` when declaring a component; the default is `"app"`. Codegen
- * rejects a kind that differs from its target, and writes
+ * definitions of the Convex components it mounts, its mounts and its manifest
+ * sections. Set `kind: "component"` when declaring a component; the default is
+ * `"app"`. Codegen rejects a kind that differs from its target, and writes
  * `convex/convex.config.ts` with one `app.use` per mount, in list order, using
  * the definition whose `defineComponent` name is the mount's component name. A
  * mount that binds another backend's env entry fails to typecheck.
+ *
+ * `manifestSections` is the only place codegen learns a backend's sections.
+ * Each section describes every registered function of an app, whatever builder
+ * made it, and writes its `_generated` file for an app or a component, even one
+ * with no functions.
  *
  * ```ts
  * import email from "@acme/email/convex.config";
@@ -77,6 +84,7 @@ export const make = <
   options: {
     readonly env: E;
     readonly requiresMiddleware?: ReadonlyArray<MiddlewareSpec.AnyMiddlewareSpec>;
+    readonly manifestSections?: ReadonlyArray<ManifestSection.Entry>;
     readonly components?: ReadonlyArray<Definition>;
     readonly mounts?: M & OwnedBy<NoInfer<Env.Name<E>>, NoInfer<M>>;
   } & ([K] extends ["app"] ? { readonly kind?: K } : { readonly kind: K }),
@@ -87,6 +95,7 @@ export const make = <
   components: options.components ?? [],
   mounts: options.mounts ?? ([] as unknown as M),
   requiresMiddleware: options.requiresMiddleware ?? [],
+  manifestSections: options.manifestSections ?? [],
 });
 
 export const isApp = (u: unknown): u is Any =>
