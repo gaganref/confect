@@ -232,10 +232,9 @@ describe("encodeCall", () => {
   );
 
   it("requires an explicit carrier option", () => {
-    void (() => {
+    void (() =>
       // @ts-expect-error TS2554: A component's carrier policy must be explicit.
-      return OfficialComponent.encodeCall(record, { value: 42, note: "n" });
-    });
+      OfficialComponent.encodeCall(record, { value: 42, note: "n" }));
   });
 
   const options = {

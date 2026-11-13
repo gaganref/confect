@@ -95,10 +95,9 @@ describe("component capabilities", () => {
     }
     const reserved = (
       auth: Context.Service.Shape<typeof MutationAuth.MutationAuth>,
-    ) => {
+    ) =>
       // @ts-expect-error Convex owns the issuer claim.
-      return auth.signJwt({ claims: { iss: "other" }, expiresInSeconds: 60 });
-    };
+      auth.signJwt({ claims: { iss: "other" }, expiresInSeconds: 60 });
     void reserved;
     expectTypeOf(Auth).not.toHaveProperty("MutationAuth");
   });

@@ -69,12 +69,6 @@
     "packages/cli/src/ConvexConfig.ts": 2,
     "packages/cli/src/templates.ts": 2
   },
-  "effecttsgo/map-const-to-as": {
-    "tools/local-backend/fixtures/components/counter/confect/pagination.impl.ts": 1
-  },
-  "effecttsgo/map-map-error-to-map-both": {
-    "packages/cli/src/SectionFiles.ts": 1
-  },
   "effecttsgo/missed-pipeable-opportunity": {
     "packages/alchemy/src/ConvexClient.ts": 15,
     "packages/alchemy/test/Code.test.ts": 2,
@@ -120,16 +114,6 @@
     "packages/server/src/DatabaseSchema.ts": 2,
     "packages/server/src/GroupImpl.ts": 1,
     "packages/server/src/QueryStream.ts": 1
-  },
-  "effecttsgo/prefer-schema-type-property": {
-    "packages/core/test/Mount.test.ts": 1
-  },
-  "effecttsgo/provide-merge-all-to-array": {
-    "packages/alchemy/test/Code.test.ts": 1,
-    "packages/alchemy/test/LocalBackend.test.ts": 3,
-    "packages/cli/test/LeafModule.test.ts": 1,
-    "packages/server/src/RegisteredConvexFunction.ts": 1,
-    "packages/server/test/Callback.test.ts": 1
   },
   "effecttsgo/schema-class-missing-brand": {
     "packages/alchemy/src/ConvexClient.ts": 4,
@@ -211,13 +195,13 @@
     "scripts/forkConsumer.ts": 1
   },
   "effecttsgo/strict-effect-provide": {
-    "packages/alchemy/test/Code.test.ts": 17,
+    "packages/alchemy/test/Code.test.ts": 16,
     "packages/alchemy/test/ConvexClient.test.ts": 14,
     "packages/alchemy/test/DeployKey.test.ts": 8,
     "packages/alchemy/test/Deployment.test.ts": 5,
     "packages/alchemy/test/EnvironmentVariables.test.ts": 5,
     "packages/alchemy/test/FileLock.test.ts": 3,
-    "packages/alchemy/test/LocalBackend.test.ts": 20,
+    "packages/alchemy/test/LocalBackend.test.ts": 17,
     "packages/alchemy/test/Project.test.ts": 5,
     "packages/alchemy/test/Providers.test.ts": 2,
     "packages/alchemy/test/PushLock.test.ts": 2,
@@ -232,18 +216,18 @@
     "packages/cli/test/ComponentCodegen.test.ts": 33,
     "packages/cli/test/EntryPoint.test.ts": 2,
     "packages/cli/test/Evaluation.test.ts": 2,
-    "packages/cli/test/LeafModule.test.ts": 2,
+    "packages/cli/test/LeafModule.test.ts": 1,
     "packages/cli/test/Project.test.ts": 1,
     "packages/cli/test/TableModule.test.ts": 1,
     "packages/cli/test/codegen.test.ts": 1,
     "packages/cli/test/integration/codegen.test.ts": 1,
     "packages/core/test/Env.test.ts": 1,
-    "packages/server/src/RegisteredConvexFunction.ts": 2,
+    "packages/server/src/RegisteredConvexFunction.ts": 1,
     "packages/server/src/RegisteredFunction.ts": 3,
     "packages/server/src/internal/observability.ts": 1,
     "packages/server/test/ActionRunner.test.ts": 1,
     "packages/server/test/Auth.test.ts": 5,
-    "packages/server/test/Callback.test.ts": 2,
+    "packages/server/test/Callback.test.ts": 1,
     "packages/server/test/MutationRunner.test.ts": 1,
     "packages/server/test/MutationTransactionContext.test.ts": 1,
     "packages/server/test/OfficialComponent.test.ts": 3,
@@ -255,10 +239,5 @@
     "packages/test/test/TestConfect.test.ts": 8,
     "scripts/stageForkPackages.test.ts": 1,
     "tools/local-backend/src/setup.ts": 1
-  },
-  "effecttsgo/unnecessary-arrow-block": {
-    "packages/core/src/Component.ts": 1,
-    "packages/server/test/ComponentCapabilities.test.ts": 1,
-    "packages/server/test/OfficialComponent.test.ts": 1
   }
 }

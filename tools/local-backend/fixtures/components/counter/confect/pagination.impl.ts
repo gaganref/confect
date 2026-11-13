@@ -51,7 +51,7 @@ const streams = FunctionImpl.make(schema, spec, "streams", ({ run }) =>
       innerKeyLayout: source.keyLayout,
     });
     const budget = yield* QueryStream.collect(oversized).pipe(
-      Effect.map(() => -1),
+      Effect.as(-1),
       Effect.catchTag("ReadBudgetExceededError", (e) =>
         Effect.succeed(e.rowsRead),
       ),

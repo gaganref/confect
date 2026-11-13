@@ -51,22 +51,20 @@ const harness = (
     const directory = path.join(root, "data", name);
     const run = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
       effect.pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            fake.layer,
-            ConfigProvider.layer(
-              ConfigProvider.fromUnknown({
-                HOME: home,
-                LOCALAPPDATA: home,
-                ...(options !== undefined && "ports" in options
-                  ? options.ports === undefined
-                    ? {}
-                    : { CONFECT_LOCAL_BACKEND_PORTS: options.ports }
-                  : { CONFECT_LOCAL_BACKEND_PORTS: "3350-3359" }),
-              }),
-            ),
+        Effect.provide([
+          fake.layer,
+          ConfigProvider.layer(
+            ConfigProvider.fromUnknown({
+              HOME: home,
+              LOCALAPPDATA: home,
+              ...(options !== undefined && "ports" in options
+                ? options.ports === undefined
+                  ? {}
+                  : { CONFECT_LOCAL_BACKEND_PORTS: options.ports }
+                : { CONFECT_LOCAL_BACKEND_PORTS: "3350-3359" }),
+            }),
           ),
-        ),
+        ]),
       );
     return { directory, run };
   });
@@ -467,18 +465,16 @@ describe("LocalBackend", () => {
           prefix: "confect-local-backend-",
         });
         const bootResult = yield* boot(name, path.join(home, name)).pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              fakeBackend().layer,
-              ConfigProvider.layer(
-                ConfigProvider.fromUnknown({
-                  HOME: home,
-                  LOCALAPPDATA: home,
-                  CONFECT_LOCAL_BACKEND_PORTS: range,
-                }),
-              ),
+          Effect.provide([
+            fakeBackend().layer,
+            ConfigProvider.layer(
+              ConfigProvider.fromUnknown({
+                HOME: home,
+                LOCALAPPDATA: home,
+                CONFECT_LOCAL_BACKEND_PORTS: range,
+              }),
             ),
-          ),
+          ]),
           Effect.scoped,
           Effect.result,
         );
@@ -501,12 +497,10 @@ describe("LocalBackend", () => {
         prefix: "confect-local-backend-",
       });
       const bootResult = yield* boot(name, path.join(root, name)).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            fakeBackend().layer,
-            ConfigProvider.layer(ConfigProvider.fromUnknown({})),
-          ),
-        ),
+        Effect.provide([
+          fakeBackend().layer,
+          ConfigProvider.layer(ConfigProvider.fromUnknown({})),
+        ]),
         Effect.scoped,
         Effect.result,
       );

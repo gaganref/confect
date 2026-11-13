@@ -179,10 +179,11 @@ const load = Effect.fnUntraced(function* (
         }),
     };
     return Bundler.bundle(entry, { plugins: [...plugins, recordInputs] }).pipe(
-      Effect.map(({ module }) => ({ relativePath, exports: module })),
-      Effect.mapError((error) =>
-        fromBundlerError(`confect/${relativePath}`, error),
-      ),
+      Effect.mapBoth({
+        onFailure: (error) =>
+          fromBundlerError(`confect/${relativePath}`, error),
+        onSuccess: ({ module }) => ({ relativePath, exports: module }),
+      }),
     );
   });
 });

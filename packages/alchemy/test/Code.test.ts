@@ -522,18 +522,16 @@ describe("Code push lock", () => {
         });
         const push = (codeProps: CodeProps) =>
           deploy(codeProps).pipe(
-            Effect.provide(
-              Layer.mergeAll(
-                runner,
-                Layer.mock(ConvexClient, {}),
-                ConfigProvider.layer(
-                  ConfigProvider.fromUnknown({
-                    HOME: home,
-                    LOCALAPPDATA: home,
-                  }),
-                ),
+            Effect.provide([
+              runner,
+              Layer.mock(ConvexClient, {}),
+              ConfigProvider.layer(
+                ConfigProvider.fromUnknown({
+                  HOME: home,
+                  LOCALAPPDATA: home,
+                }),
               ),
-            ),
+            ]),
           );
         yield* Effect.all([push(props), push(props)], {
           concurrency: "unbounded",

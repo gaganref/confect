@@ -464,20 +464,6 @@
     },
     {
       "files": [
-        "tools/local-backend/fixtures/components/counter/confect/pagination.impl.ts"
-      ],
-      "rules": {
-        "effecttsgo/map-const-to-as": "off"
-      }
-    },
-    {
-      "files": ["packages/cli/src/SectionFiles.ts"],
-      "rules": {
-        "effecttsgo/map-map-error-to-map-both": "off"
-      }
-    },
-    {
-      "files": [
         "packages/alchemy/src/ConvexClient.ts",
         "packages/alchemy/test/Code.test.ts",
         "packages/alchemy/test/integration/MountInit.test.ts",
@@ -536,24 +522,6 @@
       ],
       "rules": {
         "effecttsgo/prefer-schema-tagged-error": "off"
-      }
-    },
-    {
-      "files": ["packages/core/test/Mount.test.ts"],
-      "rules": {
-        "effecttsgo/prefer-schema-type-property": "off"
-      }
-    },
-    {
-      "files": [
-        "packages/alchemy/test/Code.test.ts",
-        "packages/alchemy/test/LocalBackend.test.ts",
-        "packages/cli/test/LeafModule.test.ts",
-        "packages/server/src/RegisteredConvexFunction.ts",
-        "packages/server/test/Callback.test.ts"
-      ],
-      "rules": {
-        "effecttsgo/provide-merge-all-to-array": "off"
       }
     },
     {
@@ -699,16 +667,6 @@
       ],
       "rules": {
         "effecttsgo/strict-effect-provide": "off"
-      }
-    },
-    {
-      "files": [
-        "packages/core/src/Component.ts",
-        "packages/server/test/ComponentCapabilities.test.ts",
-        "packages/server/test/OfficialComponent.test.ts"
-      ],
-      "rules": {
-        "effecttsgo/unnecessary-arrow-block": "off"
       }
     },
     {

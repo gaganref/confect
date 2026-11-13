@@ -337,13 +337,13 @@ export function contract(
         const path = prefix === "" ? name : `${prefix}/${name}`;
         const functions = pipe(
           group.functions,
-          Record.filter((functionSpec) => {
-            return Match.value(functionSpec.functionVisibility).pipe(
+          Record.filter((functionSpec) =>
+            Match.value(functionSpec.functionVisibility).pipe(
               Match.when("public", () => true),
               Match.when("internal", () => false),
               Match.exhaustive,
-            );
-          }),
+            ),
+          ),
           Record.map((functionSpec) =>
             Ref.make(path, functionSpec, group.middlewareAttachments),
           ),

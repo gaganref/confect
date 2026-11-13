@@ -1089,13 +1089,11 @@ describe("callback carrier", () => {
           expect(args).toEqual({ count: 1 });
         }
       }).pipe(
-        Effect.provide(
-          Layer.mergeAll(
-            MutationRunner.layer(Forwarding.echo),
-            ActionRunner.layer(Forwarding.echo),
-            Layer.succeed(RegisteredFunction.Forward, forward),
-          ),
-        ),
+        Effect.provide([
+          MutationRunner.layer(Forwarding.echo),
+          ActionRunner.layer(Forwarding.echo),
+          Layer.succeed(RegisteredFunction.Forward, forward),
+        ]),
       ),
   );
 });

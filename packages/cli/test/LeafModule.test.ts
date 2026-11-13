@@ -699,15 +699,13 @@ layer(LeafModuleLayer)("discovery", (it) => {
         // `/` sorts before `0`, `\` after it, so the host form orders these
         // two the other way round.
         const specFiles = yield* discoverLeafSpecFiles.pipe(
-          Effect.provide(
-            Layer.mergeAll(
-              NodePath.layerWin32,
-              FileSystem.layerNoop({
-                readDirectory: () =>
-                  Effect.succeed(["a0.spec.ts", "a\\x.spec.ts"]),
-              }),
-            ),
-          ),
+          Effect.provide([
+            NodePath.layerWin32,
+            FileSystem.layerNoop({
+              readDirectory: () =>
+                Effect.succeed(["a0.spec.ts", "a\\x.spec.ts"]),
+            }),
+          ]),
         );
         expect(specFiles).toEqual(["a\\x.spec.ts", "a0.spec.ts"]);
       }),

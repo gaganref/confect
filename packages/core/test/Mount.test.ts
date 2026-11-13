@@ -439,7 +439,7 @@ describe("Mount callbackArgs", () => {
     )({ noticeId: "n1", reader: "ann" }).noticeId;
     const officeFields = Office.callbackArgs("onRead");
     // @ts-expect-error RULE callback-args-per-mount: an id rebased for one mount is not another's.
-    const officeId: Schema.Schema.Type<typeof officeFields.noticeId> = schoolId;
+    const officeId: typeof officeFields.noticeId.Type = schoolId;
     void officeId;
     const wrongSlot = () =>
       // @ts-expect-error RULE callback-args-slot: title is not a callback slot.
