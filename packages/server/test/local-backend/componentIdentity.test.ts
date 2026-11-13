@@ -2,7 +2,7 @@ import { Ref } from "@confect/core";
 import { expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import {
-  binary,
+  expected,
   subject,
 } from "../../../test/test/fixtures/componentIdentityProbe";
 import { mintToken, send } from "./clientCall";
@@ -38,7 +38,7 @@ layer(LocalBackend.layer, {
             {},
             send("action", headers),
           ),
-        }).toEqual(binary);
+        }).toEqual(expected);
       }),
   );
 });

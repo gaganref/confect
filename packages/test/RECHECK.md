@@ -142,10 +142,11 @@ query, range, pagination and validator rules come from convex-test 0.0.65
 kernel adds a `record` validator check, of every key and value, and refuses a
 validator kind it does not know rather than accepting it.
 
-A function in a component runs with no identity, whoever called it, since
-Convex gives a component no `ctx.auth` of its caller's. A nested call in the
-host takes its parent's identity, even when that is none, and a test's caller
-reaches only the function the test called.
+A nested call takes its caller's identity, even when that is none, and a
+test's caller reaches only the function the test called. Row 2 also gave every
+function in a component no identity. The component identity row (below)
+replaced that with the binary's rule: a component a query or a mutation calls
+sees the caller, and one an action calls sees none.
 
 Row 2 published one top-level mutation at a time. Row 3 replaced that with
 read-set validation and held attempts. Scheduling, storage, HTTP, JWT signing
@@ -1065,10 +1066,28 @@ reaches the snapshot, a failure report, a diff or a read record.
 
 ## Component identity (row 6)
 
-Since row 2 a function in a mounted component runs with no identity on the
-kernel, nested mounts included, whoever calls it (`World.execution` in
-`Execution.ts`). No `KernelCaller` type carries that yet: the rule is a runtime
-branch on the component path.
+Row 2 gave every function in a mounted component no identity, on the premise
+that Convex gives a component no `ctx.auth` of its caller's. The binary
+disagrees, and the kernel now follows it (`callIdentity` in `Execution.ts`),
+convex-backend `cccbade4`:
+
+- A query's or mutation's nested call runs on its caller's transaction, and
+  `getUserIdentity` reads that transaction's identity in a component as in the
+  app (`crates/isolate/src/environment/udf/async_syscall.rs:629-724`,
+  `:1111-1141`). A component a query or a mutation calls sees the caller, at
+  every depth.
+- An action's call passes its identity through `propagate_component_auth`,
+  which keeps it only from the app to the app
+  (`crates/isolate/src/environment/action/async_syscall.rs:166`,
+  `crates/model/src/components/auth.rs:6-19`). A component an action calls
+  sees none, and so does every call below it.
+- A client reaches only the app's functions, so a test that calls a component
+  directly gets no identity, as a component's HTTP action does
+  (`crates/function_runner/src/server.rs:450-455`).
+
+Confect still drops `ctx.auth` from a Confect component's context. That is its
+API's rule, separate from parity, and the probe below reads `ctx.auth` through
+plain Convex functions for that reason.
 
 ### Boundary check
 
@@ -1076,27 +1095,10 @@ The local-backend fixture's `left` (parent), `left/deep` (middle) and
 `left/deep/child` (inner) mounts each expose a plain Convex `identityChain`
 query. It reads `ctx.auth.getUserIdentity()` and its component path, then calls
 the next mount's. `groups/componentIdentity` calls the chain from a query, a
-mutation and an action, beside the host's own reading. Plain Convex functions
-read `ctx.auth` as an official component does. Confect drops `ctx.auth` from a
-component's context, so a Confect handler could not probe it.
-`packages/server/test/local-backend/componentIdentity.test.ts` calls the three
-with a token the fixture's `auth.config` accepts, and `test/ComponentIdentity.test.ts`
-calls them under `withIdentity`.
-
-### Conformance exception `componentIdentityThroughTransactions`
-
-- **Test.** The binary leg in `componentIdentity.test.ts`.
-- **Binary behaviour.** A component reads the caller's identity at every depth
-  when a query or a mutation calls it, and none when an action does. Only an
-  action's call passes the identity through `propagate_component_auth`
-  (`crates/isolate/src/environment/action/async_syscall.rs:166`,
-  `crates/model/src/components/auth.rs:6-19`, convex-backend `cccbade4`). A
-  query's or mutation's nested call runs on the caller's transaction
-  (`isolate/src/environment/udf/async_syscall.rs:629-724`), and
-  `getUserIdentity` reads that transaction's identity in a component as in the
-  host (`:1111-1141`). Measured on `precompiled-2026-10-28-cccbade`.
-- **Kernel behaviour.** None at every depth from all three, as the design's row
-  states.
-- **Owner.** The kernel design's component-identity row, which decides whether
-  the kernel follows the binary or keeps the rule as a deliberate departure.
-||||||| b5e7f80c
+mutation and an action, beside the host's own reading.
+`test/fixtures/componentIdentityProbe.ts` holds the one answer both targets
+give: the caller at every depth from the query and the mutation, none from the
+action. `packages/server/test/local-backend/componentIdentity.test.ts` gets it
+from the binary with a token the fixture's `auth.config` accepts, measured on
+`precompiled-2026-10-28-cccbade`, and `test/ComponentIdentity.test.ts` from the
+kernel under `withIdentity`.
