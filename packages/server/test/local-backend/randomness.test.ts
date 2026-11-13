@@ -18,22 +18,23 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
       () =>
         Effect.gen(function* () {
           const { client } = yield* LocalBackend.LocalBackend;
+          const query = yield* Ref.runWithCodec(probe.query, {}, (ref, args) =>
+            client.query(ref, args),
+          );
+          const mutation = yield* Ref.runWithCodec(
+            probe.mutation,
+            {},
+            (ref, args) => client.mutation(ref, args),
+          );
+          const action = yield* Ref.runWithCodec(
+            probe.action,
+            {},
+            (ref, args) => client.action(ref, args),
+          );
           expect({
-            query: normalize(
-              yield* Ref.runWithCodec(probe.query, {}, (ref, args) =>
-                client.query(ref, args),
-              ),
-            ),
-            mutation: normalize(
-              yield* Ref.runWithCodec(probe.mutation, {}, (ref, args) =>
-                client.mutation(ref, args),
-              ),
-            ),
-            action: normalize(
-              yield* Ref.runWithCodec(probe.action, {}, (ref, args) =>
-                client.action(ref, args),
-              ),
-            ),
+            query: normalize(query),
+            mutation: normalize(mutation),
+            action: normalize(action),
           }).toEqual(expected);
         }),
     );

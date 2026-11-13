@@ -16,8 +16,8 @@ const use = (draw: () => ReadonlyArray<number>) => {
   }
 };
 
-// oxlint-disable effecttsgo/global-random-in-effect -- The probe reads the ambient random sources the backend gives a module and a function.
 const atLoad = {
+  // oxlint-disable-next-line effecttsgo/global-random -- The probe reads the ambient Math.random the backend gives a module and a function.
   loadMathRandom: use(() => [Math.random()]),
   loadGetRandomValues: use(() => [
     ...crypto.getRandomValues(new Uint8Array(4)),
@@ -25,22 +25,25 @@ const atLoad = {
 };
 
 const sample = Effect.sync(() => ({
+  // oxlint-disable-next-line effecttsgo/global-random -- The probe reads the ambient Math.random the backend gives a module and a function.
   mathRandom: use(() => [Math.random()]),
   getRandomValues: use(() => [...crypto.getRandomValues(new Uint8Array(4))]),
-  largestFill: use(() => [crypto.getRandomValues(new Uint8Array(65536)).length]),
+  largestFill: use(() => [
+    crypto.getRandomValues(new Uint8Array(65536)).length,
+  ]),
   oversizedFill: use(() => [
     crypto.getRandomValues(new Uint8Array(65537)).length,
   ]),
   floatFill: use(() => [crypto.getRandomValues(new Float64Array(1)).length]),
   detachedFill: use(() => {
-    const { getRandomValues } = crypto;
     // oxlint-disable-next-line typescript/unbound-method -- The probe calls it detached on purpose.
+    const { getRandomValues } = crypto;
     return [getRandomValues(new Uint8Array(4)).length];
   }),
+  // oxlint-disable-next-line effecttsgo/crypto-random-uuid -- The probe reads the ambient crypto.randomUUID the backend gives a function.
   randomUUID: use(() => [crypto.randomUUID().length]),
   ...atLoad,
 }));
-// oxlint-enable effecttsgo/global-random-in-effect
 
 export default GroupImpl.make(schema, spec).pipe(
   Layer.provide([
