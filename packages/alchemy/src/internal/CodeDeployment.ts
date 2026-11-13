@@ -65,6 +65,9 @@ const targets = { live: cloudTarget, local: localTarget } satisfies Record<
   (props: CodeProps) => Result.Result<PushTarget, InvalidDeploymentTarget>
 >;
 
+/**
+ * @internal
+ */
 export const deploy = Effect.fn("Code.deploy")(function* (
   props: CodeProps,
   mode: ProviderMode = "live",
