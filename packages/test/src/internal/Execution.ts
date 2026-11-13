@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
   actionGeneric,
   getFunctionAddress,
+  httpActionGeneric,
   mutationGeneric,
   queryGeneric,
   type FunctionReference,
@@ -14,6 +15,7 @@ import * as Result from "effect/Result";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
 import * as Globals from "./Globals.js";
+import * as Http from "./Http.js";
 import * as Invocation from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
@@ -604,6 +606,50 @@ export class World {
         { handler, args: { type: "any" }, returns: null },
         {},
         { caller, request: newRequest(caller) },
+      );
+    });
+  }
+
+  /**
+   * Send `path` to the root component's HTTP router, as the binary routes a
+   * request: the router's `lookup` picks the route by pathname and method, and
+   * the route's handler runs as an action with the caller's identity. With no
+   * route, the binary's 404.
+   */
+  fetch(caller: Caller, path: unknown, init?: RequestInit): Promise<Response> {
+    return this.open().then(() => {
+      const url = orThrow(Http.requestUrl(path));
+      const request = new Request(url, init);
+      const router = this.component(ROOT).loaded.get("http")?.["default"] as
+        | {
+            readonly lookup: (
+              path: string,
+              method: string,
+            ) => readonly [any, string, string] | null;
+          }
+        | undefined;
+      const route = router?.lookup(url.pathname, request.method) ?? null;
+      if (route === null) return Http.noRoute();
+      const [endpoint] = route;
+      const handler: (
+        ctx: any,
+        request: globalThis.Request,
+      ) => Promise<Response> =
+        "_handler" in endpoint ? endpoint._handler : endpoint;
+      const execution = this.execution(
+        { componentPath: ROOT, udfPath: "http" },
+        "action",
+        undefined,
+        { caller, request: newRequest(caller) },
+        undefined,
+      );
+      const action = httpActionGeneric((ctx, received) =>
+        handler({ ...ctx, auth: queryAuth(execution) }, received),
+      ) as unknown as {
+        invokeHttpAction: (request: globalThis.Request) => Promise<Response>;
+      };
+      return enter(execution, () => action.invokeHttpAction(request)).then(
+        (response) => Http.forMethod(request.method, response),
       );
     });
   }
