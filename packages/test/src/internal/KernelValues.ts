@@ -95,7 +95,32 @@ export function tableNameFromId(id: string) {
   }
   return pipe(id, Str.slice(match[0].length));
 }
-export function deserializeConvexErrorData(thrown: unknown) {
+/**
+ * How a thrown `ConvexError`'s data reaches the code a call answers. Convex's
+ * `serializeConvexErrorData` leaves it a JSON string as it leaves the function
+ * that threw it (`convex` `src/server/impl/registration_impl.ts:112-127`).
+ *
+ * - `"json"`: Convex JSON, for a calling function's syscall. The binary parses
+ *   the string to a Convex value and hands the calling function's rejected
+ *   syscall its Convex JSON (convex-backend `cccbade4`,
+ *   `crates/isolate/src/error.rs:164-181`,
+ *   `crates/isolate/src/helpers.rs:175-208`,
+ *   `crates/isolate/src/environment/helpers/promise.rs:77-88`). The caller's
+ *   `performAsyncSyscall` decodes it once
+ *   (`src/server/impl/syscall.ts:46-51`).
+ * - `"value"`: a Convex value, for the test and for a call the kernel answers
+ *   without a syscall.
+ */
+export type ConvexErrorDataEncoding = "json" | "value";
+
+/**
+ * `thrown` with a `ConvexError`'s serialized data in `encoding`. Data that is
+ * not a serialized JSON string stays as it is.
+ */
+export function receiveConvexErrorData(
+  thrown: unknown,
+  encoding: ConvexErrorDataEncoding,
+) {
   if (
     typeof thrown === "object" &&
     thrown !== null &&
@@ -103,9 +128,9 @@ export function deserializeConvexErrorData(thrown: unknown) {
     typeof (thrown as { data: unknown }).data === "string"
   ) {
     try {
-      (thrown as { data: unknown }).data = jsonToConvex(
-        Json.parse((thrown as { data: string }).data),
-      );
+      const json: JSONValue = Json.parse((thrown as { data: string }).data);
+      (thrown as { data: unknown }).data =
+        encoding === "json" ? json : jsonToConvex(json);
     } catch {
       // Data wasn't a serialized JSON string — leave it untouched.
     }
