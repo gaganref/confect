@@ -712,12 +712,23 @@ writers:
   marked as `[redacted]`. When something is marked, the report is a copy with
   the thrown value's prototype and fields, so its class and tag read the same.
   The thrown value is never changed, so a subscription's cached error compares
-  as it was.
+  as it was. The report is built in two passes: the first finds
+  whether anything reachable holds a kept secret, and the second copies every
+  reachable error, array and plain object, registering each copy before its
+  fields are walked. So an error whose cause is itself, or two errors that are
+  each other's cause, report copies that cycle to each other, never to a raw
+  error.
 - A subscription diff marks each outcome by the shape of what its query
   returns, and a commit cause's documents by their tables' shapes. A
   subscription's own value is replay state and stays raw.
 - Read records, in held attempts and a subscription's `current()`, mark a key
-  or range bound on a field its table's shape holds secret.
+  or range bound on a field its table's shape holds secret. Each field-path segment
+  consumed starts a fresh ancestry, so a suspension reused down the path, as
+  in `data.child.child.token`, is followed again.
+- A held attempt's outcome, in `prepare`, `held` and a conflict's next attempt,
+  and an applied result are marked by the shape of what the attempt's mutation
+  returns: the held view carries its `functionPath`. A normal call returns its
+  value to its caller, which is replay state, so it stays raw.
 - `projectArguments` marks a function's arguments by its argument shape. #137's
   `commands()` writes each provider command's input through it when the stacks
   meet.

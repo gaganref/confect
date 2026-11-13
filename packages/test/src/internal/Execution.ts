@@ -122,6 +122,11 @@ export type Outcome =
  */
 export interface HeldAttempt {
   readonly id: string;
+  /**
+   * The mutation the attempt runs, whose return shape marks its outcome in an
+   * artifact.
+   */
+  readonly functionPath: FunctionPath;
   readonly request: string;
   readonly number: Invocation.Attempt;
   readonly snapshot: Kernel.Version;
@@ -1600,6 +1605,7 @@ export class World {
           const held: Held = {
             view: {
               id: `attempt-${this.nextAttemptId++}`,
+              functionPath,
               request: from.request.requestId,
               number,
               snapshot: attempt.snapshot.version,
@@ -1950,8 +1956,39 @@ export class World {
     return {
       ...view,
       reads: this.projectReads(view.reads),
-      outcome: this.redactOutcome(view.outcome),
+      outcome: this.redactOutcome(view.outcome, view.functionPath),
     };
+  }
+
+  /**
+   * What `apply` answered as an artifact writes it: an applied result marked by
+   * the shape of what `functionPath` returns, a conflict's next attempt
+   * projected, a refusal as its report.
+   */
+  projectApplied(
+    applied: KernelApply,
+    functionPath: FunctionPath | undefined,
+  ): KernelApply {
+    switch (applied.kind) {
+      case "applied": {
+        const outcome = this.redactOutcome(
+          { _tag: "returned", value: applied.result },
+          functionPath,
+        );
+        return outcome._tag === "returned"
+          ? { ...applied, result: outcome.value }
+          : applied;
+      }
+      case "conflict":
+        return { ...applied, next: this.projectHeld(applied.next) };
+      case "refused":
+        return { ...applied, error: this.redactFailure(applied.error) };
+      case "exhausted":
+        return {
+          ...applied,
+          error: this.redactFailure(applied.error) as typeof applied.error,
+        };
+    }
   }
 
   /**

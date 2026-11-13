@@ -38,6 +38,8 @@ const reusedCanary = "canary-reused-41d8e2b6";
 const deepCanary = "canary-deep-7e3c5a01";
 const unionCanary = "canary-union-b2f6d48e";
 const indexCanary = "canary-index-c9e04a75";
+const cycleCanary = "canary-cycle-2f9b61e4";
+const deepIndexCanary = "canary-deep-index-8a3c07d5";
 
 const Token = Schema.RedactedFromValue(Schema.String);
 
@@ -57,6 +59,12 @@ const Tree: Schema.Codec<any, Tree> = Schema.Struct({
   children: Schema.Array(Schema.suspend(() => Tree)),
 });
 
+// A tree whose token sits under a suspension reused down an index path.
+const Node: Schema.Codec<any, any> = Schema.Struct({
+  token: Token,
+  child: Schema.optional(Schema.suspend(() => Node)),
+});
+
 // Two union members that share a secret field.
 const Either = Schema.Union([
   Schema.Struct({ kind: Schema.Literal("a"), token: Token }),
@@ -74,6 +82,7 @@ const databaseSchema = DatabaseSchema.make({
     Schema.Struct({ name: Schema.String, token: Token }),
   )("accounts"),
   notes: Table.make(() => Schema.Struct({ text: Schema.String }))("notes"),
+  trees: Table.make(() => Schema.Struct({ data: Node }))("trees"),
   vault: Table.make(() =>
     Schema.Struct({
       label: Schema.String,
@@ -104,6 +113,8 @@ const functions = {
         Schema.Struct({ label: Schema.String, credential: Credential }),
       ),
   },
+  "app:throwCycle": { args: () => Schema.Struct({ token: Token }) },
+  "app:issue": { returns: () => Schema.Struct({ token: Token }) },
   "app:nested": {
     args: () => Schema.Struct({ a: Inner, b: Inner, tree: Tree }),
   },
@@ -141,6 +152,13 @@ const app = {
     "app:findByToken",
   ),
   byToken: makeFunctionReference<"query", { token: string }>("app:byToken"),
+  throwCycle: makeFunctionReference<"mutation", { token: string }>(
+    "app:throwCycle",
+  ),
+  issue: makeFunctionReference<"mutation", {}, { token: string }>("app:issue"),
+  findDeep: makeFunctionReference<"mutation", { token: string }>(
+    "app:findDeep",
+  ),
 };
 
 class Provider extends Context.Service<
@@ -257,6 +275,32 @@ const modules = {
           return null;
         },
       }),
+      throwCycle: mutationGeneric({
+        args: { token: v.string() },
+        handler: (_ctx, { token }) => {
+          const error = new Error(`cyclic ${token}`) as Error & {
+            cause?: unknown;
+          };
+          error.cause = error;
+          throw error;
+        },
+      }),
+      issue: mutationGeneric({
+        args: {},
+        // "ab" is too short for the string backstop, so only the declared
+        // return shape marks it.
+        handler: () => Promise.resolve({ token: "ab" }),
+      }),
+      findDeep: mutationGeneric({
+        args: { token: v.string() },
+        handler: async (ctx, { token }) => {
+          await ctx.db
+            .query("trees")
+            .withIndex("by_deep", (q) => q.eq("data.child.child.token", token))
+            .first();
+          return null;
+        },
+      }),
       byToken: queryGeneric({
         args: { token: v.string() },
         handler: (ctx, { token }) =>
@@ -282,6 +326,9 @@ const convexSchema = defineSchema({
     ["token"],
   ),
   notes: defineTable({ text: v.string() }),
+  trees: defineTable({ data: v.any() }).index("by_deep", [
+    "data.child.child.token",
+  ]),
   vault: defineTable({
     label: v.string(),
     credential: v.any(),
@@ -718,6 +765,96 @@ describe("redaction routes", () => {
             { name: "provider", token: providerCanary },
           ),
         ).toEqual({ name: "provider", token: Redaction.marker });
+      }),
+  );
+
+  it.effect(
+    "a failure whose cause is itself, or a two-error cycle, reports marked copies that cycle to each other, and the raw errors stay as they were",
+    () =>
+      Effect.sync(() => {
+        const secrets = new Redaction.Secrets();
+        secrets.keep(cycleCanary);
+        const self = new Error(`self ${cycleCanary}`) as Error & {
+          cause?: unknown;
+        };
+        self.cause = self;
+        const reported = Redaction.failure(self, secrets) as typeof self;
+        expect(reported).not.toBe(self);
+        expect(reported.message).toBe(`self ${Redaction.marker}`);
+        expect(reported.cause).toBe(reported);
+        expect(self.message).toContain(cycleCanary);
+
+        const outer = new Error("outer") as Error & { cause?: unknown };
+        const inner = new Error(`inner ${cycleCanary}`) as Error & {
+          cause?: unknown;
+        };
+        outer.cause = inner;
+        inner.cause = outer;
+        const copy = Redaction.failure(outer, secrets) as typeof outer;
+        const copiedInner = copy.cause as typeof inner;
+        expect(copiedInner).not.toBe(inner);
+        expect(copiedInner.message).toBe(`inner ${Redaction.marker}`);
+        expect(copiedInner.cause).toBe(copy);
+        expect(inner.message).toContain(cycleCanary);
+      }),
+  );
+
+  it.effect(
+    "a failure through the kernel whose cause is itself reaches its report marked, cause included",
+    () =>
+      Effect.gen(function* () {
+        const reported = (yield* failure(() =>
+          backend().mutation(app.throwCycle, { token: cycleCanary }),
+        )) as Error & { cause?: Error };
+        expect(reported.message).not.toContain(cycleCanary);
+        expect(reported.cause?.message).not.toContain(cycleCanary);
+        expect(reported.cause).toBe(reported);
+      }),
+  );
+
+  it.effect(
+    "a read record's key on a secret field reached through a reused suspension down the index path is the marker, on an empty table",
+    () =>
+      Effect.gen(function* () {
+        expect(
+          Redaction.sensitiveAt(Schema.Struct({ data: Node }).ast, [
+            "data",
+            "child",
+            "child",
+            "token",
+          ]),
+        ).toBe(true);
+        const t = backend();
+        const prepared = yield* call(() =>
+          t.prepare(app.findDeep, { token: deepIndexCanary }),
+        );
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The records are printed as a report would print them.
+        const records = JSON.stringify(prepared.reads);
+        expect(records).not.toContain(deepIndexCanary);
+        expect(records).toContain(Redaction.marker);
+      }),
+  );
+
+  it.effect(
+    "a held attempt's outcome and its applied result are marked by the mutation's return shape, while a normal call returns the raw value to its caller",
+    () =>
+      Effect.gen(function* () {
+        const t = backend();
+        const prepared = yield* call(() => t.prepare(app.issue, {}));
+        expect(prepared.outcome).toEqual({
+          _tag: "returned",
+          value: { token: Redaction.marker },
+        });
+        expect(t.held().map(({ outcome }) => outcome)).toEqual([
+          prepared.outcome,
+        ]);
+        expect(yield* call(() => t.apply(prepared.id))).toMatchObject({
+          kind: "applied",
+          result: { token: Redaction.marker },
+        });
+        expect(yield* call(() => t.mutation(app.issue, {}))).toEqual({
+          token: "ab",
+        });
       }),
   );
 });

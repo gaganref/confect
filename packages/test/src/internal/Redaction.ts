@@ -300,9 +300,11 @@ export const sensitiveAt = (
         const property = ast.propertySignatures.find(
           (p) => String(p.name) === head,
         );
+        // A segment is consumed here, so a suspension met again further down
+        // the path is a new descent, not a cycle.
         return property !== undefined
-          ? at(property.type, rest, ancestry)
-          : ast.indexSignatures.some((i) => at(i.type, rest, ancestry));
+          ? at(property.type, rest, new Set())
+          : ast.indexSignatures.some((i) => at(i.type, rest, new Set()));
       }
       case "Union":
         return ast.types.some((t) => at(t, path, ancestry));
@@ -650,43 +652,56 @@ const isPlainObject = (value: object): boolean =>
  * subscription that keeps the raw error compares it as it was.
  */
 export const failure = (thrown: unknown, secrets: Secrets): unknown => {
-  const searchable = secrets.searchable();
-  if (searchable.length === 0) return thrown;
+  if (secrets.searchable().length === 0) return thrown;
+  const copyable = (value: object) =>
+    Array.isArray(value) || value instanceof Error || isPlainObject(value);
+  const field = (value: object, key: string | symbol) => {
+    const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
+    return {
+      raw: "value" in descriptor ? descriptor.value : Reflect.get(value, key),
+      enumerable: descriptor.enumerable ?? false,
+    };
+  };
+  // First find whether anything reachable holds a kept secret. Every object is
+  // visited once, so a cycle ends.
+  const visited = new Set<object>();
+  const holdsSecret = (value: unknown): boolean => {
+    if (typeof value === "string") return scrubText(value, secrets) !== value;
+    if (typeof value !== "object" || value === null) return false;
+    if (visited.has(value) || !copyable(value)) return false;
+    visited.add(value);
+    return Reflect.ownKeys(value).some((key) =>
+      holdsSecret(field(value, key).raw),
+    );
+  };
+  if (!holdsSecret(thrown)) return thrown;
+  // Then copy every reachable error, array and plain object. Each copy is
+  // registered before its fields are walked, so a cycle that leads back to it
+  // reaches the copy, never the raw value.
   const copies = new Map<object, unknown>();
-  const go = (value: unknown): unknown => {
+  const copy = (value: unknown): unknown => {
     if (typeof value === "string") return scrubText(value, secrets);
     if (typeof value !== "object" || value === null) return value;
     if (copies.has(value)) return copies.get(value);
-    if (value instanceof ArrayBuffer || ArrayBuffer.isView(value)) return value;
+    if (!copyable(value)) return value;
     if (Array.isArray(value)) {
-      copies.set(value, value);
-      const items = value.map(go);
-      const copy = items.every((item, i) => item === value[i]) ? value : items;
-      copies.set(value, copy);
-      return copy;
+      const items: Array<unknown> = [];
+      copies.set(value, items);
+      for (const item of value) items.push(copy(item));
+      return items;
     }
-    if (!(value instanceof Error) && !isPlainObject(value)) return value;
-    copies.set(value, value);
-    const fields: PropertyDescriptorMap = {};
-    let changed = false;
+    const target: object = Object.create(Object.getPrototypeOf(value));
+    copies.set(value, target);
     for (const key of Reflect.ownKeys(value)) {
-      const descriptor = Object.getOwnPropertyDescriptor(value, key)!;
-      const raw =
-        "value" in descriptor ? descriptor.value : Reflect.get(value, key);
-      const scrubbed = go(raw);
-      if (scrubbed !== raw) changed = true;
-      fields[key] = {
-        value: scrubbed,
+      const { raw, enumerable } = field(value, key);
+      Object.defineProperty(target, key, {
+        value: copy(raw),
         writable: true,
-        enumerable: descriptor.enumerable ?? false,
+        enumerable,
         configurable: true,
-      };
+      });
     }
-    const copy = changed
-      ? Object.create(Object.getPrototypeOf(value), fields)
-      : value;
-    copies.set(value, copy);
-    return copy;
+    return target;
   };
-  return go(thrown);
+  return copy(thrown);
 };

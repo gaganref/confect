@@ -167,8 +167,9 @@ members are all covered. The kernel keeps each secret before validating it, in
 an in-memory store that is replay state and never an artifact. A snapshot
 export writes `{ "$redacted": <n> }`, and a restore given the store puts the
 raw values back. A restore without it refuses with `SnapshotSecretMissing`.
-Failure reports are separate copies of whatever was thrown, marked, and the
-raw error is never changed. Subscription diffs, their causes and read records
+Failure reports are separate copies of whatever was thrown, marked, cycles
+included, and the raw error is never changed. A held attempt's outcome and an
+applied result are marked by the mutation's return shape. Subscription diffs, their causes and read records
 write `[redacted]`. This is row 6 of Frame's backend testing kernel (Frame ADR
 0012). Changeset: `test-kernel-redaction.md`. Upstream: fork only, as the
 kernel is fork-specific.

@@ -139,21 +139,15 @@ const accessor = (
       reported(() => world.prepare(caller, reference, args)).then((view) =>
         world.projectHeld(view),
       ),
-    apply: (id: string) =>
-      reported(() => world.apply(id)).then((applied): Execution.KernelApply =>
-        applied.kind === "conflict"
-          ? { ...applied, next: world.projectHeld(applied.next) }
-          : applied.kind === "refused"
-            ? { ...applied, error: world.redactFailure(applied.error) }
-            : applied.kind === "exhausted"
-              ? {
-                  ...applied,
-                  error: world.redactFailure(
-                    applied.error,
-                  ) as typeof applied.error,
-                }
-              : applied,
-      ),
+    apply: (id: string) => {
+      // The attempt leaves `held` once applied, so its function is read first.
+      const functionPath = world
+        .held()
+        .find((view) => view.id === id)?.functionPath;
+      return reported(() => world.apply(id)).then((applied) =>
+        world.projectApplied(applied, functionPath),
+      );
+    },
     held: () => world.held().map((view) => world.projectHeld(view)),
     subscriber: () => subscriptions.subscriber(caller),
     refresh: () =>
