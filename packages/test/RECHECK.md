@@ -150,8 +150,9 @@ reaches only the function the test called.
 Row 2 published one top-level mutation at a time. Row 3 replaced that with
 read-set validation and held attempts. Scheduling, storage, HTTP, JWT signing
 and transaction limits refuse with `KernelRowPending`, naming the row that
-supplies them. Row 5 lifts the scheduling refusals. Text and vector search
-refuse with `RequiresBinary`.
+supplies them. Row 5 lifts the scheduling refusals, and row 6's storage
+metadata the storage ones. Text and vector search, and storage uploads and
+downloads, refuse with `RequiresBinary`.
 
 `src/internal/ConvexTest.ts` gives the kernel convex-test's `convexTest`
 signature. `vitest.mock-backend.kernel.config.ts` in `@confect/server` aliases
@@ -407,3 +408,53 @@ wrapped the other's accessor once more and every read of these globals went
 deeper. The kernel now leaves an accessor in place when it already reads
 through one of the kernel's, which a sentinel in a fresh copy shows, and the
 chain settles after the first call on each target.
+
+## Storage metadata (row 6)
+
+`src/internal/Storage.ts` is the file model. A file is a row in its
+component's `_storage` table, read and written through the attempt like any
+document, so a mutation's file exists only once it commits, a rolled-back one
+never does, and `getUrl`, `getMetadata` and `get` join the read set. An
+action's store and delete commit at once, and its reads see the latest commit.
+Beside the row the kernel keeps the bytes and a storage UUID; the row holds
+only what the binary's virtual table shows.
+
+Pinned against convex-backend `precompiled-2026-10-28-cccbade`, the local
+backend's version:
+
+- The row is `{ _id, _creationTime, sha256, size, contentType }`
+  (`FileStorageDocMapper`, `crates/model/src/file_storage/virtual_table.rs`).
+  `sha256` is the base64 SHA-256 with padding (`Sha256Digest::as_base64`,
+  `crates/value/src/sha256.rs:24`). `contentType` is `null` when the file has
+  none, though the npm package's `_storage` schema declares it optional. An
+  empty content type is none (`crates/isolate/src/ops/storage.rs:29`).
+- `getMetadata` answers `{ storageId, sha256, size, contentType }` with a hex
+  digest and the storage UUID (`storage_get_metadata`,
+  `crates/isolate/src/environment/udf/async_syscall.rs:1365-1405`).
+- `getUrl` answers `<origin>/api/storage/<uuid>`, with `?component=<id>`
+  outside the root (`FileStorage::get_url_batch`,
+  `crates/file_storage/src/core.rs:158-206`). The kernel's origin is
+  `https://kernel.convex.cloud` and its component ID is the path.
+- A declared digest that differs fails `Sha256 mismatch. Expected: … Actual: …`
+  before the row is written (`FileStorage::upload_file`, `core.rs:395-419`).
+- `delete` of a missing file fails `storage id … not found`
+  (`FileStorage::delete`, `core.rs:209-221`).
+- A storage ID of another table, or a string that is neither an ID nor a UUID,
+  is refused as an argument (`FileStorageId::from_str` and
+  `query_for_storage_id`, `crates/model/src/file_storage/mod.rs:126-143`,
+  `:244-279`). A file's storage UUID still names it.
+
+`packages/server/test/local-backend/storage.test.ts` checks the row, metadata,
+URL, null content type, digest mismatch and delete answers for one stored blob
+on the binary, and `test/Storage.test.ts` checks the same answers on the
+kernel. The binary's `null` content type was the one answer the source left
+open; the local-backend run settled it.
+
+Not simulated: upload streaming, signed upload tokens and durability. An upload
+URL has the binary's shape with an unsigned token, and the kernel's `fetch`
+refuses an upload to it or a download from a file URL with `RequiresBinary`
+(`storageUpload`, `storageDownload`). The bytes are held in memory, not
+streamed, and a deleted file's bytes are only unreachable. File and transaction
+limits are the limits row's.
+
+`integration.test.ts:61` `Storage` now runs in the kernel lane.

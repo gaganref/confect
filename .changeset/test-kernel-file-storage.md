@@ -1,0 +1,5 @@
+---
+"@confect/test": patch
+---
+
+The internal test kernel, and `TestConfect.layer` with `target: "kernel"`, now simulate file storage. A stored file is a row in its component's `_storage` table, with the binary's base64 SHA-256 `sha256`, `size` and `contentType`, which is `null` when the file has none. `storage.store` and `storage.get` work in actions and mutations, a mutation's file exists only once it commits, and a declared `sha256` that differs is refused with the binary's `Sha256 mismatch` error. `getUrl` and `getMetadata` answer the binary's shapes, `delete` of a missing file is refused as `storage id … not found`, and storage reads join the attempt's read set. An upload to a `generateUploadUrl` URL, or a download from a `getUrl` URL, through the kernel's `fetch` refuses with `RequiresBinary`.

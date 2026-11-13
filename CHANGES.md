@@ -116,6 +116,25 @@ The option is removed at promotion, when the kernel replaces convex-test.
 Changeset: `testconfect-kernel-target.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel file storage
+
+The kernel simulates file storage. A stored file is a row in its component's
+`_storage` table, written through the storing attempt, with the fields the
+binary's `_storage` virtual table shows: `sha256` as base64 SHA-256, `size` and
+`contentType`, `null` when the file has none. Actions and mutations store and
+get files; a mutation's file exists only once it commits, and an action's
+store and delete commit at once. A declared `sha256` that differs is refused
+with the binary's `Sha256 mismatch` error and writes nothing. `getUrl` answers
+`/api/storage/<uuid>` on the kernel's origin, `getMetadata` the binary's hex
+digest and storage UUID, and `delete` of a missing file is refused as `storage
+id … not found`. Storage reads join the attempt's read set. Uploads and
+downloads through the kernel's `fetch` refuse with `RequiresBinary`, since
+upload streaming and signed URLs stay on the binary. A local-backend case pins
+the same answers on the binary. The mock-backend `Storage` cases run on the
+kernel. This is row 6's storage parity row of Frame's backend testing kernel
+(Frame ADR 0012). Changeset: `test-kernel-file-storage.md`. Upstream: fork
+only, as the kernel is fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
