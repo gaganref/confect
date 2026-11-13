@@ -14,6 +14,7 @@ import {
 } from "convex/server";
 import { v } from "convex/values";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
+import * as Arr from "effect/Array";
 
 const schema = DatabaseSchema.make({});
 const Test = TestConfect.TestConfect<typeof schema>();
@@ -39,7 +40,7 @@ const texts = (ctx: MutationCtx.MutationCtx<GenericDataModel>) =>
   ctx.db
     .query("notes")
     .collect()
-    .then((rows) => rows.map((row) => row.text as string));
+    .then((rows) => Arr.map(rows, (row) => row.text as string));
 
 const insert = (test: TestConfect.TestConfect<typeof schema>, text: string) =>
   test.run(withCtx((ctx) => ctx.db.insert("notes", { text })));
@@ -115,8 +116,8 @@ it.effect(
       yield* Effect.gen(function* () {
         const other = yield* Test;
         const tops = () =>
-          (["Date", "Math", "crypto"] as const).map(
-            // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
+          Arr.map(
+            ["Date", "Math", "crypto"] as const,
             (name) => Object.getOwnPropertyDescriptor(globalThis, name)?.get,
           );
         yield* insert(kernel, "kernel");
@@ -153,7 +154,7 @@ const kernelNotes = (): KernelControls =>
               ctx.db
                 .query("notes")
                 .collect()
-                .then((rows) => rows.map((row) => row.text)),
+                .then((rows) => Arr.map(rows, (row) => row.text)),
           }),
         }),
     },
@@ -175,8 +176,8 @@ it.effect(
         yield* insert(other, "other");
         yield* Effect.promise(() => t.refresh());
         const tops = () =>
-          (["Date", "Math", "crypto"] as const).map(
-            // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
+          Arr.map(
+            ["Date", "Math", "crypto"] as const,
             (name) => Object.getOwnPropertyDescriptor(globalThis, name)?.get,
           );
         const settled = tops();

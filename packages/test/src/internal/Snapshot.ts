@@ -18,6 +18,9 @@ import {
   type FunctionPath,
   type StoredDocument,
 } from "./KernelValues.js";
+import * as Arr from "effect/Array";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 /**
  * The counters the kernel allocates identities from: the next document ID, the
@@ -389,10 +392,13 @@ export const encode = (image: Image, redact: Redact = asIs): Uint8Array => {
       tables.push({
         componentPath,
         table,
-        rows: sorted(rows, ([id]) => id).map(([, row]) => ({
-          version: row.version,
-          doc: encodeDocument(componentPath, row.doc),
-        })),
+        rows: Arr.map(
+          sorted(rows, ([id]) => id),
+          ([, row]) => ({
+            version: row.version,
+            doc: encodeDocument(componentPath, row.doc),
+          }),
+        ),
       });
     }
   }
@@ -408,23 +414,26 @@ export const encode = (image: Image, redact: Redact = asIs): Uint8Array => {
       identityEpoch: image.identity.identityEpoch,
     },
     tables,
-    jobs: sorted(image.jobs, ([id]) => id).map(([id, target]) => ({
-      id,
-      target: {
-        componentPath: target.functionPath.componentPath,
-        udfPath: target.functionPath.udfPath,
-      },
-      standing: target.standing,
-      world: target.world,
-    })),
+    jobs: Arr.map(
+      sorted(image.jobs, ([id]) => id),
+      ([id, target]) => ({
+        id,
+        target: {
+          componentPath: target.functionPath.componentPath,
+          udfPath: target.functionPath.udfPath,
+        },
+        standing: target.standing,
+        world: target.world,
+      }),
+    ),
     crons: sorted(
       image.crons,
       ({ componentPath, name }) => `${componentPath}\u0000${name}`,
     ) as Array<Body["crons"][number]>,
-    log: state.log.map((commit) => ({
+    log: Arr.map(state.log, (commit) => ({
       version: commit.version,
       commitTs: commit.commitTs.toString(),
-      changes: commit.changes.map((change) => ({
+      changes: Arr.map(commit.changes, (change) => ({
         componentPath: change.componentPath,
         id: change.id,
         before: encodeDocument(change.componentPath, change.before),
@@ -457,7 +466,7 @@ const decodeDocument = (
   if (
     typeof doc !== "object" ||
     doc === null ||
-    Array.isArray(doc) ||
+    Arr.isArray(doc) ||
     typeof (doc as { _id?: unknown })._id !== "string"
   ) {
     throw new Error("a document is not an object with an `_id`");
@@ -475,7 +484,7 @@ const idOf = (doc: unknown): string => {
  * `_id` string and a finite, non-negative `_creationTime`.
  */
 const systemFieldsProblem = (doc: unknown): string | undefined => {
-  if (typeof doc !== "object" || doc === null || Array.isArray(doc))
+  if (typeof doc !== "object" || doc === null || Arr.isArray(doc))
     return "is not an object";
   const { _id, _creationTime } = doc as {
     readonly _id?: unknown;
@@ -544,7 +553,7 @@ export const checkBody = (
   for (const { componentPath, rows } of body.tables)
     byComponent.set(componentPath, [
       ...(byComponent.get(componentPath) ?? []),
-      ...rows.map(({ doc }) => (doc as { _id: string })._id),
+      ...Arr.map(rows, ({ doc }) => (doc as { _id: string })._id),
     ]);
   for (const [componentPath, ids] of byComponent) {
     const id = once(ids, (i) => i);
@@ -627,19 +636,19 @@ const unredactBody = (
   };
   const unredacted: Body = {
     ...body,
-    tables: body.tables.map((entry) => ({
+    tables: Arr.map(body.tables, (entry) => ({
       ...entry,
-      rows: entry.rows.map((row) => ({ ...row, doc: document(row.doc) })),
+      rows: Arr.map(entry.rows, (row) => ({ ...row, doc: document(row.doc) })),
     })),
-    log: body.log.map((commit) => ({
+    log: Arr.map(body.log, (commit) => ({
       ...commit,
-      changes: commit.changes.map((change) => ({
+      changes: Arr.map(commit.changes, (change) => ({
         ...change,
         before: document(change.before),
         after: document(change.after),
       })),
     })),
-    crons: body.crons.map((cron) => ({
+    crons: Arr.map(body.crons, (cron) => ({
       ...cron,
       args: document(cron.args),
       last:
@@ -665,17 +674,20 @@ const imageOf = (body: Body, unredact: Unredact): Image => {
       byId.set(decoded._id, { doc: decoded, version });
     }
   }
-  const log = body.log.map((commit): Kernel.Commit => ({
+  const log = Arr.map(body.log, (commit): Kernel.Commit => ({
     version: commit.version,
     commitTs: BigInt(commit.commitTs),
-    changes: commit.changes.map((change) => ({
+    changes: Arr.map(commit.changes, (change) => ({
       componentPath: change.componentPath,
       id: change.id as DocumentId,
       before: decodeDocument(change.before, unredact),
       after: decodeDocument(change.after, unredact),
     })),
   }));
-  if (log.length !== body.version || log.some((c, i) => c.version !== i + 1)) {
+  if (
+    log.length !== body.version ||
+    Arr.some(log, (c, i) => c.version !== i + 1)
+  ) {
     throw new Error(
       `the write log holds ${log.length} commits for version ${body.version}`,
     );
@@ -691,7 +703,7 @@ const imageOf = (body: Body, unredact: Unredact): Image => {
     floor: body.floor ?? Number.NEGATIVE_INFINITY,
     identity: body.identity,
     jobs: new Map(
-      body.jobs.map((job) => [
+      Arr.map(body.jobs, (job) => [
         job.id as DocumentId,
         {
           functionPath: job.target,
@@ -700,7 +712,7 @@ const imageOf = (body: Body, unredact: Unredact): Image => {
         },
       ]),
     ),
-    crons: body.crons.map((cron) => {
+    crons: Arr.map(body.crons, (cron) => {
       if (cron.last?.kind === "failed" && typeof cron.last.error !== "string") {
         throw new Error(
           `cron job "${cron.name}" records a failure whose text is not a string`,
@@ -734,7 +746,8 @@ const documentText = (doc: StoredDocument | null): string =>
  */
 const counterOf = (id: string): number | undefined => {
   const table = tableNameFromId(id);
-  const digits = table === null ? "" : id.slice(0, id.length - table.length);
+  const digits =
+    table === null ? "" : pipe(id, Str.slice(0, id.length - table.length));
   return /^[0-9]+$/.test(digits) ? Number(digits) : undefined;
 };
 
@@ -826,7 +839,10 @@ export const checkRows = (
   }
   for (const published of replayed.keys()) {
     if (filed.has(published)) continue;
-    const [componentPath, id] = published.split("\u0000") as [string, string];
+    const [componentPath, id] = pipe(published, Str.split("\u0000")) as [
+      string,
+      string,
+    ];
     return Result.fail(
       rowRefusal(
         componentPath,
@@ -1007,7 +1023,9 @@ export const decode = (
       : new TextDecoder("utf-8", { fatal: false }).decode(
           bytes.subarray(0, newline),
         );
-  const expected = head.startsWith(header) ? head.slice(header.length) : "";
+  const expected = pipe(head, Str.startsWith(header))
+    ? pipe(head, Str.slice(header.length))
+    : "";
   if (!/^[0-9a-f]{64}$/.test(expected)) {
     return Result.fail(
       malformed("header", `the first line is not \`${header}<sha256>\``),

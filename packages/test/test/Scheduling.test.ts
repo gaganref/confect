@@ -32,6 +32,7 @@ import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Invocation from "../src/internal/Invocation";
+import * as Arr from "effect/Array";
 
 const start = 1_000_000;
 const runtime = {
@@ -171,7 +172,7 @@ const hostModules = {
         args: { marks: v.array(v.any()) },
         handler: (ctx, { marks }) =>
           Promise.all(
-            marks.map(({ label, ms, next }) =>
+            Arr.map(marks, ({ label, ms, next }) =>
               ctx.scheduler.runAfter(ms, jobs.mark, {
                 label,
                 ...(next === undefined ? {} : { next }),
@@ -222,7 +223,7 @@ const hostModules = {
           ctx.db
             .query("marks")
             .collect()
-            .then((rows) => rows.map(({ label, at }) => ({ label, at }))),
+            .then((rows) => Arr.map(rows, ({ label, at }) => ({ label, at }))),
       }),
       now: mutationGeneric({
         args: {},
@@ -241,7 +242,7 @@ const hostModules = {
           ctx.db
             .query("probes")
             .collect()
-            .then((rows) => rows.map((row) => row.probe)),
+            .then((rows) => Arr.map(rows, (row) => row.probe)),
       }),
       sendMail: mutationGeneric({
         args: { text: v.string() },
@@ -473,7 +474,9 @@ describe("the controlled clock", () => {
         expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([
           { label: "now", at: start },
         ]);
-        expect(t.jobs().map((job) => job.scheduledTime)).toEqual([start + 10]);
+        expect(Arr.map(t.jobs(), (job) => job.scheduledTime)).toEqual([
+          start + 10,
+        ]);
       }),
   );
 });
@@ -500,7 +503,7 @@ describe("jobs", () => {
         expect(
           yield* call(() =>
             Promise.all(
-              [same, later!, fromAction!].map((id) =>
+              Arr.map([same, later!, fromAction!], (id) =>
                 t.query(jobs.state, { id }),
               ),
             ),
@@ -651,7 +654,7 @@ describe("standing sources", () => {
         expect(
           yield* call(() => t.query(components.beat.public.count, {})),
         ).toBe(2);
-        expect(t.jobs().map((job) => job.scheduledTime)).toEqual([
+        expect(Arr.map(t.jobs(), (job) => job.scheduledTime)).toEqual([
           start + 3000,
         ]);
       }),
@@ -819,7 +822,7 @@ const tickerModules = {
           ctx.db
             .query("ticks")
             .collect()
-            .then((rows) => rows.map(({ at }) => at)),
+            .then((rows) => Arr.map(rows, ({ at }) => at)),
       }),
     }),
   "crons.ts": () => {
@@ -1356,7 +1359,9 @@ describe("registered handlers", () => {
           asCallerIn(owner, () => t.mutation(bridged.scheduleTimed, {})),
         );
         expect(now).toBe(start);
-        expect(t.jobs().map((job) => job.scheduledTime)).toEqual([start + 500]);
+        expect(Arr.map(t.jobs(), (job) => job.scheduledTime)).toEqual([
+          start + 500,
+        ]);
         yield* call(() => t.advance(499));
         expect(timedByJobs).toEqual([]);
         yield* call(() => t.advance(1));

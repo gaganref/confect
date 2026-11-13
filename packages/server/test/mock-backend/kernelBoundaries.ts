@@ -1,3 +1,8 @@
+import * as Option from "effect/Option";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 /**
  * The test kernel's accepted differences from the Convex binary as data: a
  * count or refusal the binary makes that the kernel does not simulate, and why.
@@ -77,21 +82,24 @@ export const boundaries: ReadonlyArray<KernelBoundary> = [
  * The entry named `name`, refused unless every field is filled.
  */
 export const boundary = (name: string): KernelBoundary => {
-  const entry = boundaries.find((candidate) => candidate.name === name);
+  const entry = Option.getOrUndefined(
+    Arr.findFirst(boundaries, (candidate) => candidate.name === name),
+  );
   if (entry === undefined) {
     throw new Error(`No kernel boundary is named "${name}".`);
   }
-  const empty = (Object.keys(entry) as Array<keyof KernelBoundary>).filter(
+  const empty = Arr.filter(
+    Rec.keys(entry) as Array<keyof KernelBoundary>,
     (field) => {
       const value = entry[field];
       return typeof value === "string"
-        ? value.trim() === ""
-        : Object.keys(value).length === 0;
+        ? pipe(value, String.trim) === ""
+        : Rec.keys(value).length === 0;
     },
   );
   if (empty.length > 0) {
     throw new Error(
-      `Kernel boundary "${name}" has no ${empty.join(", ")}. Fill every field.`,
+      `Kernel boundary "${name}" has no ${Arr.join(empty, ", ")}. Fill every field.`,
     );
   }
   return entry;

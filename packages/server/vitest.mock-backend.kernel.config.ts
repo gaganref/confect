@@ -6,6 +6,8 @@ import path from "node:path";
 import tsconfigPaths from "vite-tsconfig-paths";
 import { defineConfig, mergeConfig, type Plugin } from "vitest/config";
 import sharedConfig from "../../vitest.shared";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 const shim = path.resolve(
   import.meta.dirname,
@@ -20,10 +22,10 @@ const convexTestRoot = fs.realpathSync(
 );
 
 const withinConvexTest = (id: string) => {
-  const file = id.split("?", 1)[0]!;
+  const file = pipe(id, String.split("?"))[0];
   if (!path.isAbsolute(file) || !fs.existsSync(file)) return false;
   const relative = path.relative(convexTestRoot, fs.realpathSync(file));
-  return !relative.startsWith("..") && !path.isAbsolute(relative);
+  return !pipe(relative, String.startsWith("..")) && !path.isAbsolute(relative);
 };
 
 const refuseConvexTest: Plugin = {

@@ -7,6 +7,8 @@ import { compareValues, getConvexSize, type Value } from "convex/values";
 import * as Schema from "effect/Schema";
 import type { SerializedRangeExpression } from "./KernelValues.js";
 import { evaluateQueryValue } from "./KernelValues.js";
+import * as Arr from "effect/Array";
+import * as Record from "effect/Record";
 
 /**
  * The ceilings one function execution runs under, the binary's
@@ -58,8 +60,8 @@ export const fromBudget = (
   used: Limits,
   ceiling: Limits,
 ): Limits =>
-  Object.fromEntries(
-    (Object.keys(ceiling) as Array<keyof Limits>).map((metric) => [
+  Record.fromEntries(
+    Arr.map(Record.keys(ceiling) as Array<keyof Limits>, (metric) => [
       metric,
       Math.min(
         used[metric] + (budget[metric] ?? ceiling[metric]),
@@ -341,7 +343,7 @@ export class Meter {
   used(): Limits {
     const frames = this.chain();
     const sum = (of: (meter: Meter) => number) =>
-      frames.reduce((total, meter) => total + of(meter), 0);
+      Arr.reduce(frames, 0, (total, meter) => total + of(meter));
     const shared = this.shared;
     return {
       bytesRead: shared.bytesRead,
@@ -364,8 +366,8 @@ export class Meter {
    */
   metrics(limits: Limits): TransactionMetrics {
     const used = this.used();
-    return Object.fromEntries(
-      (Object.keys(limits) as Array<keyof Limits>).map((metric) => [
+    return Record.fromEntries(
+      Arr.map(Record.keys(limits) as Array<keyof Limits>, (metric) => [
         metric,
         { used: used[metric], remaining: limits[metric] - used[metric] },
       ]),

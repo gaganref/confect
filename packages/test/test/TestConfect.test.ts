@@ -28,6 +28,8 @@ import counter from "../../../tools/local-backend/fixtures/components/counter/co
 import env from "../../../tools/local-backend/fixtures/confect/env";
 import registry from "../../../tools/local-backend/fixtures/confect/_generated/testing";
 import refs from "../../../tools/local-backend/fixtures/confect/_generated/refs";
+import * as Arr from "effect/Array";
+import { pipe } from "effect/Function";
 
 beforeEach(() => vi.resetModules());
 
@@ -219,7 +221,7 @@ const notes = {
   list: makeFunctionReference<"query", {}, Array<string>>("notes:list"),
 };
 const texts = (rows: ReadonlyArray<{ readonly text: string }>) =>
-  rows.map((row) => row.text);
+  Arr.map(rows, (row) => row.text);
 const listModule = (table: string) => ({
   add: mutationGeneric({
     args: { text: v.string() },
@@ -428,13 +430,15 @@ it("on the kernel target, an app with an hourly cron opens, two processes with o
     });
   const [one, two, other] = [replay(), replay(), replay("7")];
   expect(
-    [one, two, other].flatMap(({ status, stderr }) => [status, stderr]),
+    Arr.flatMap([one, two, other], ({ status, stderr }) => [status, stderr]),
   ).toEqual([0, "", 0, "", 0, ""]);
   expect(one.stdout).toBe(two.stdout);
   const hourly = (stdout: string) =>
-    (JSON.parse(stdout) as Array<{ name: string; at: number }>)
-      .filter(({ name }) => name === "hourly")
-      .map(({ at }) => at);
+    pipe(
+      JSON.parse(stdout) as Array<{ name: string; at: number }>,
+      Arr.filter(({ name }) => name === "hourly"),
+      Arr.map(({ at }) => at),
+    );
   expect(hourly(one.stdout)).toHaveLength(2);
   expect(hourly(other.stdout)).toHaveLength(2);
   expect(hourly(other.stdout)).not.toEqual(hourly(one.stdout));

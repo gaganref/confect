@@ -15,6 +15,7 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
 import * as Invocation from "../../src/internal/Invocation";
+import * as Array from "effect/Array";
 
 const schema = defineSchema({
   ticks: defineTable({ name: v.string(), at: v.number() }),
@@ -45,7 +46,7 @@ const modules = {
           ctx.db
             .query("ticks")
             .collect()
-            .then((rows) => rows.map(({ name, at }) => ({ name, at }))),
+            .then((rows) => Array.map(rows, ({ name, at }) => ({ name, at }))),
       }),
     }),
   "crons.ts": () => Promise.resolve({ default: crons }),
@@ -100,12 +101,18 @@ const history = Effect.gen(function* () {
         ).run(() => Promise.resolve(null)),
     ),
   );
-  const opened = t.crons().map(({ name, nextRun }) => ({ name, nextRun }));
+  const opened = Array.map(t.crons(), ({ name, nextRun }) => ({
+    name,
+    nextRun,
+  }));
   yield* call(() => t.advance(36 * 60 * 60 * 1000));
   const ticks = yield* call(() =>
     t.query(makeFunctionReference<"query">("cron:ticks"), {}),
   );
-  const after = t.crons().map(({ name, nextRun }) => ({ name, nextRun }));
+  const after = Array.map(t.crons(), ({ name, nextRun }) => ({
+    name,
+    nextRun,
+  }));
   // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The bytes compared are the deadlines as plain JSON.
   process.stdout.write(JSON.stringify({ opened, ticks, crons: after }));
 });

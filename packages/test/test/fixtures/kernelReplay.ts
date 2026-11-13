@@ -10,6 +10,7 @@ import {
 import { convexToJson, v, type GenericId } from "convex/values";
 import * as Effect from "effect/Effect";
 import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
+import * as Array from "effect/Array";
 
 const schema = defineSchema({
   counters: defineTable({ n: v.number() }),
@@ -80,7 +81,7 @@ const history = Effect.gen(function* () {
   yield* call(() => t.mutation(replay.stamp, { label: "first" }));
   yield* call(() => t.mutation(replay.stamp, { label: "second" }));
   const state = yield* call(() => t.query(replay.dump, {}));
-  const steps = [applied, conflict, retried].map((step) =>
+  const steps = Array.map([applied, conflict, retried], (step) =>
     step.kind === "conflict"
       ? { kind: step.kind, next: step.next.number }
       : step.kind === "applied"

@@ -36,6 +36,10 @@ import * as Schema from "effect/Schema";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import type * as Execution from "../src/internal/Execution";
 import * as Invocation from "../src/internal/Invocation";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 type Latch = { readonly promise: Promise<void>; readonly release: () => void };
 
@@ -137,7 +141,7 @@ const storeModules = {
           ctx.db
             .query("rows")
             .collect()
-            .then((rows) => rows.map((row) => row.text)),
+            .then((rows) => Arr.map(rows, (row) => row.text)),
       }),
       whoami: queryGeneric({ args: {}, handler: subjectOf }),
       whoamiThroughQuery: actionGeneric({
@@ -161,7 +165,7 @@ const hostModules = {
           ctx.db
             .query("notes")
             .collect()
-            .then((rows) => rows.map((row) => row.text)),
+            .then((rows) => Arr.map(rows, (row) => row.text)),
       }),
       insertThenFail: mutationGeneric({
         args: {},
@@ -247,7 +251,7 @@ const hostModules = {
             ctx.db
               .query("notes")
               .collect()
-              .then((rows) => rows.map((row) => row.text)),
+              .then((rows) => Arr.map(rows, (row) => row.text)),
           ]).then(([, texts]) => texts),
       }),
       whoami: queryGeneric({ args: {}, handler: subjectOf }),
@@ -669,7 +673,7 @@ describe("module loading", () => {
         yield* Effect.promise(() =>
           t.query(makeFunctionReference<"query">("first:run"), {}),
         );
-        expect(loads.slice(0, -1).toSorted()).toEqual([
+        expect(Arr.sort(loads.slice(0, -1), Str.Order)).toEqual([
           "first",
           "second",
           "store/nested/inner",
@@ -783,8 +787,8 @@ describe("module loading", () => {
             t.registerComponent(
               name,
               schema,
-              Object.fromEntries(
-                Object.entries(modules).map(([path, load]) => {
+              Rec.fromEntries(
+                Arr.map(Rec.toEntries(modules), ([path, load]) => {
                   registered.push(`${name} ${path}`);
                   return [
                     path,
@@ -801,7 +805,8 @@ describe("module loading", () => {
         yield* Effect.promise(() =>
           t.query(makeFunctionReference<"query">("first:run"), {}),
         );
-        const deployable = registered.filter(
+        const deployable = Arr.filter(
+          registered,
           (module) =>
             !/\/_generated\/|\/(schema|convex\.config)\.ts$|\.test\.ts$/.test(
               module,
@@ -809,9 +814,13 @@ describe("module loading", () => {
         );
         expect(deployable).toHaveLength(27);
         expect(loads.at(-1)).toBe("handler");
-        expect(loads.slice(0, -1).toSorted()).toEqual(deployable.toSorted());
+        expect(Arr.sort(loads.slice(0, -1), Str.Order)).toEqual(
+          Arr.sort(deployable, Str.Order),
+        );
         expect(
-          new Set(deployable.map((module) => module.split(" ")[0])),
+          new Set(
+            Arr.map(deployable, (module) => pipe(module, Str.split(" "))[0]),
+          ),
         ).toEqual(
           new Set([
             "workflow",
@@ -908,7 +917,7 @@ const occModules = {
           ctx.db
             .query("seen")
             .collect()
-            .then((rows) => rows.map((row) => row.what)),
+            .then((rows) => Arr.map(rows, (row) => row.what)),
       }),
       stamp: mutationGeneric({
         args: { label: v.string() },
@@ -947,7 +956,7 @@ const occModules = {
           ctx.db
             .query("stamps")
             .collect()
-            .then((rows) => rows.map(({ label, at }) => ({ label, at }))),
+            .then((rows) => Arr.map(rows, ({ label, at }) => ({ label, at }))),
       }),
       remove: mutationGeneric({
         args: { id: v.id("keys") },
@@ -982,7 +991,11 @@ const occModules = {
             })
             .then(({ page }) =>
               ctx.db.insert("seen", {
-                what: `page ${page.map((row) => row.key).join(",")}`,
+                what: `page ${pipe(
+                  page,
+                  Arr.map((row) => row.key),
+                  Arr.join(","),
+                )}`,
               }),
             )
             .then(() => null),
@@ -1110,7 +1123,7 @@ describe("read sets", () => {
         const t = occWorld();
         const id = yield* call(() => t.mutation(occ.create, {}));
         yield* call(() =>
-          Promise.all([1, 2, 3].map(() => t.mutation(occ.bump, { id }))),
+          Promise.all(Arr.map([1, 2, 3], () => t.mutation(occ.bump, { id }))),
         );
         expect(yield* call(() => t.query(occ.counter, { id }))).toBe(3);
       }),
@@ -1432,7 +1445,10 @@ describe("commit timestamps", () => {
       { kind: "conflict", next: 2 },
       { kind: "applied", version: 3, commitTs: at(3n) },
     ]);
-    expect(state.stamps.map((stamp) => stamp.at)).toEqual([at(4n), at(5n)]);
+    expect(Arr.map(state.stamps, (stamp) => stamp.at)).toEqual([
+      at(4n),
+      at(5n),
+    ]);
   }, 60_000);
 });
 

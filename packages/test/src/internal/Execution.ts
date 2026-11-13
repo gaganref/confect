@@ -52,6 +52,11 @@ import {
   validateFunctionArgs,
   validateReturnValue,
 } from "./KernelValues.js";
+import * as Option from "effect/Option";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 const ROOT = "";
 
@@ -441,7 +446,9 @@ const jobRequest = (jobId: DocumentId): Request => ({
 });
 
 const findModulesRoot = (paths: ReadonlyArray<string>): string => {
-  const generated = paths.find((path) => path.includes("_generated"));
+  const generated = Option.getOrUndefined(
+    Arr.findFirst(paths, (path) => pipe(path, Str.includes("_generated"))),
+  );
   if (generated === undefined) {
     throw new Error(
       'Could not find the "_generated" directory, make sure to run ' +
@@ -449,7 +456,7 @@ const findModulesRoot = (paths: ReadonlyArray<string>): string => {
         '`import.meta.glob` includes the files in the "_generated" directory',
     );
   }
-  return generated.split("_generated", 2)[0]!;
+  return pipe(generated, Str.split("_generated"))[0];
 };
 
 const makeComponent = (
@@ -458,25 +465,36 @@ const makeComponent = (
   modules: Modules,
   standing: ReadonlyArray<string> = [],
 ): Component => {
-  const root = findModulesRoot(Object.keys(modules));
-  const relative = Object.entries(modules)
-    .filter(([key]) => key.startsWith(root))
-    .map(([key, load]) => [key.slice(root.length), load] as const);
-  const nested = relative
-    .map(([file]) => file)
-    .filter((file) => file.endsWith("/convex.config.ts"))
-    .map((file) => file.slice(0, -"convex.config.ts".length));
+  const root = findModulesRoot(Rec.keys(modules));
+  const relative = pipe(
+    Rec.toEntries(modules),
+    Arr.filter(([key]) => pipe(key, Str.startsWith(root))),
+    Arr.map(
+      ([key, load]) => [pipe(key, Str.slice(root.length)), load] as const,
+    ),
+  );
+  const nested = pipe(
+    relative,
+    Arr.map(([file]) => file),
+    Arr.filter((file) => pipe(file, Str.endsWith("/convex.config.ts"))),
+    Arr.map((file) => pipe(file, Str.slice(0, -"convex.config.ts".length))),
+  );
   return {
     path,
     schema: KernelQuery.exportSchema(schema),
     loaders: new Map(
-      relative
-        .filter(
+      pipe(
+        relative,
+        Arr.filter(
           ([file]) =>
             isFunctionModule(file) &&
-            !nested.some((dir) => file.startsWith(dir)),
-        )
-        .map(([file, load]) => [file.replace(/\.[^.]+$/, ""), load]),
+            !Arr.some(nested, (dir) => pipe(file, Str.startsWith(dir))),
+        ),
+        Arr.map(([file, load]) => [
+          pipe(file, Str.replace(/\.[^.]+$/, "")),
+          load,
+        ]),
+      ),
     ),
     loaded: new Map(),
     standing: new Set(standing),
@@ -501,26 +519,39 @@ const entryExtensions = [
  * neither loads them nor resolves a function in them.
  */
 const isFunctionModule = (file: string): boolean => {
-  const base = file.split("/").pop()!;
+  const base = pipe(file, Str.split("/")).pop()!;
   return (
-    entryExtensions.some((extension) => file.endsWith(extension)) &&
-    !file.startsWith("_generated/") &&
-    !base.startsWith(".") &&
-    !base.startsWith("#") &&
+    Arr.some(entryExtensions, (extension) =>
+      pipe(file, Str.endsWith(extension)),
+    ) &&
+    !pipe(file, Str.startsWith("_generated/")) &&
+    !pipe(base, Str.startsWith(".")) &&
+    !pipe(base, Str.startsWith("#")) &&
     base !== "schema.ts" &&
     base !== "schema.js" &&
-    (base.match(/\./g) ?? []).length <= 1 &&
-    !file.includes(" ")
+    pipe(
+      base,
+      Str.match(/\./g),
+      Option.match({ onNone: () => 0, onSome: (dots) => dots.length }),
+    ) <= 1 &&
+    !pipe(file, Str.includes(" "))
   );
 };
 
 const unregistered = (world: World, componentPath: string) => {
-  const registered = [...world.components.keys()].filter((p) => p !== ROOT);
+  const registered = Arr.filter(
+    [...world.components.keys()],
+    (p) => p !== ROOT,
+  );
   return new Error(
     `Component "${componentPath}" is not registered on this test backend. ` +
       (registered.length === 0
         ? "No components have been registered."
-        : `Registered components: ${registered.map((p) => `"${p}"`).join(", ")}.`),
+        : `Registered components: ${pipe(
+            registered,
+            Arr.map((p) => `"${p}"`),
+            Arr.join(", "),
+          )}.`),
   );
 };
 
@@ -545,12 +576,12 @@ const functionPathOf = (
   }
   if (address.reference !== undefined) {
     // "_reference/childComponent/<child>/path/to/file/fn"
-    const parts = address.reference.split("/");
+    const parts = pipe(address.reference, Str.split("/"));
     const child = parts[2]!;
     const rest = parts.slice(3);
     return {
       componentPath: from.length > 0 ? `${from}/${child}` : child,
-      udfPath: `${rest.slice(0, -1).join("/")}:${rest[rest.length - 1]}`,
+      udfPath: `${Arr.join(rest.slice(0, -1), "/")}:${rest[rest.length - 1]}`,
     };
   }
   throw new Error("Function address not supported");
@@ -731,7 +762,7 @@ export class World {
         );
       }
       const exported = JSON.parse(declared.export()) as Record<string, unknown>;
-      for (const name of Object.keys(exported).sort()) {
+      for (const name of Rec.keys(exported).sort()) {
         const parsed = Crons.parseSpec(component.path, name, exported[name]);
         if (Result.isFailure(parsed)) throw parsed.failure;
         this.checkCronTarget(component, parsed.success);
@@ -786,7 +817,10 @@ export class World {
    * Refuse a cron job whose function is missing or is no mutation or action.
    */
   private checkCronTarget(component: Component, spec: Crons.Spec) {
-    const [modulePath, exportName = "default"] = spec.udfPath.split(":");
+    const [modulePath, exportName = "default"] = pipe(
+      spec.udfPath,
+      Str.split(":"),
+    );
     const func = component.loaded.get(modulePath!)?.[exportName];
     const refuse = (reason: string) =>
       new KernelRefusal.InvalidCron({
@@ -849,7 +883,7 @@ export class World {
   private checkStanding() {
     for (const component of this.components.values()) {
       for (const name of component.standing) {
-        const [modulePath, exportName = "default"] = name.split(":");
+        const [modulePath, exportName = "default"] = pipe(name, Str.split(":"));
         const func = component.loaded.get(modulePath!)?.[exportName];
         if (func?.isMutation !== true && func?.isAction !== true) {
           throw new KernelRefusal.UnknownStandingSource({
@@ -877,10 +911,10 @@ export class World {
   }
 
   private resolve(functionPath: FunctionPath, kind: UdfType | "any"): Resolved {
-    const [modulePath, maybeExport] = functionPath.udfPath.split(":") as [
-      string,
-      string | undefined,
-    ];
+    const [modulePath, maybeExport] = pipe(
+      functionPath.udfPath,
+      Str.split(":"),
+    ) as [string, string | undefined];
     const exportName = maybeExport ?? "default";
     const component = this.component(functionPath.componentPath);
     const module = component.loaded.get(modulePath);
@@ -1269,11 +1303,19 @@ export class World {
     if (Result.isFailure(checked)) throw checked.failure;
     const registered = [...this.components.keys()].sort();
     const snapshot = [...image.components].sort();
-    if (registered.join("\u0000") !== snapshot.join("\u0000")) {
+    if (Arr.join(registered, "\u0000") !== Arr.join(snapshot, "\u0000")) {
       throw new KernelRefusal.SnapshotComponentMismatch({
         snapshot,
         registered,
-        message: `The snapshot holds components ${snapshot.map((p) => `"${p}"`).join(", ")}, but this test backend registers ${registered.map((p) => `"${p}"`).join(", ")}. Register the same components before restoring.`,
+        message: `The snapshot holds components ${pipe(
+          snapshot,
+          Arr.map((p) => `"${p}"`),
+          Arr.join(", "),
+        )}, but this test backend registers ${pipe(
+          registered,
+          Arr.map((p) => `"${p}"`),
+          Arr.join(", "),
+        )}. Register the same components before restoring.`,
       });
     }
     for (const [id, { functionPath }] of image.jobs) {
@@ -1288,7 +1330,7 @@ export class World {
     const byName = new Map<string, Invocation.World>();
     for (const world of this.own === undefined
       ? worlds
-      : [...worlds.filter((w) => w.name !== this.own!.name), this.own]) {
+      : [...Arr.filter(worlds, (w) => w.name !== this.own!.name), this.own]) {
       if ((byName.get(world.name) ?? world) !== world) {
         throw unresolvedWorld(world.name, "ambiguous");
       }
@@ -1334,7 +1376,7 @@ export class World {
     byName: ReadonlyMap<string, Invocation.World>,
   ): Map<string, CronJob> {
     const declared = new Map(
-      this.declared.map((declaration) => [
+      Arr.map(this.declared, (declaration) => [
         cronKey(declaration.componentPath, declaration.spec.name),
         declaration,
       ]),
@@ -1430,7 +1472,7 @@ export class World {
    * Whether `functionPath`'s component exports a Convex function there.
    */
   private exports({ componentPath, udfPath }: FunctionPath): boolean {
-    const [modulePath, exportName = "default"] = udfPath.split(":");
+    const [modulePath, exportName = "default"] = pipe(udfPath, Str.split(":"));
     const func = this.components.get(componentPath)?.loaded.get(modulePath!)?.[
       exportName
     ];
@@ -1464,7 +1506,7 @@ export class World {
         return new KernelRefusal.SnapshotWorldBusy({
           version,
           held,
-          message: `The test backend holds attempts ${held.join(", ")}, which a snapshot does not carry. Apply them first.`,
+          message: `The test backend holds attempts ${Arr.join(held, ", ")}, which a snapshot does not carry. Apply them first.`,
         });
       },
       subscribers: (count) =>
@@ -1473,7 +1515,7 @@ export class World {
           message: `The test backend has ${count} subscribers, whose identity versions a restore would rewind. Restore into a test backend no client has subscribed to.`,
         }),
     };
-    for (const key of Object.keys(refusals) as Array<keyof typeof counts>) {
+    for (const key of Rec.keys(refusals) as Array<keyof typeof counts>) {
       const { blocks } = Snapshot.contract.live[key];
       if (operation === "export" && blocks === "restore") continue;
       if (counts[key] > 0) throw refusals[key](counts[key]);
@@ -1493,7 +1535,8 @@ export class World {
    * The committed pending jobs, earliest deadline first.
    */
   jobs(): ReadonlyArray<Scheduling.Job> {
-    return Scheduling.pending(this.state, this.targets).map(
+    return Arr.map(
+      Scheduling.pending(this.state, this.targets),
       ({ id, componentPath, name, scheduledTime, standing }) => ({
         id,
         componentPath,
@@ -1508,7 +1551,8 @@ export class World {
    * The declared cron jobs, earliest next run first.
    */
   crons(): ReadonlyArray<Cron> {
-    return this.cronsByNextRun().map(
+    return Arr.map(
+      this.cronsByNextRun(),
       ({ componentPath, spec, nextRun, last }) => ({
         componentPath,
         name: spec.name,
@@ -1545,7 +1589,7 @@ export class World {
       return this.openIn(this.own).then(() => {
         const until = this.now() + ms;
         return this.walk(
-          (pending) => pending.filter((job) => job.scheduledTime <= until),
+          (pending) => Arr.filter(pending, (job) => job.scheduledTime <= until),
           budget,
           until,
         ).then(() => this.raiseFloor(until));
@@ -1560,7 +1604,10 @@ export class World {
   drain(budget = defaultBudget): Promise<void> {
     return this.track("walks", () => {
       return this.openIn(this.own).then(() =>
-        this.walk((pending) => pending.filter((job) => !job.standing), budget),
+        this.walk(
+          (pending) => Arr.filter(pending, (job) => !job.standing),
+          budget,
+        ),
       );
     });
   }
@@ -1583,7 +1630,12 @@ export class World {
       const cron =
         cronsUntil === undefined
           ? undefined
-          : this.cronsByNextRun().find(({ nextRun }) => nextRun <= cronsUntil);
+          : Option.getOrUndefined(
+              Arr.findFirst(
+                this.cronsByNextRun(),
+                ({ nextRun }) => nextRun <= cronsUntil,
+              ),
+            );
       if (
         cron !== undefined &&
         (next === undefined || cron.nextRun < next.scheduledTime)
@@ -1598,13 +1650,13 @@ export class World {
           new KernelRefusal.DrainBudgetExceeded({
             budget,
             pending,
-            message: `Scheduled functions ran ${budget} jobs and work remains: ${pending
-              .map(({ componentPath, name }) =>
+            message: `Scheduled functions ran ${budget} jobs and work remains: ${pipe(
+              pending,
+              Arr.map(({ componentPath, name }) =>
                 componentPath === ROOT ? name : `${name} in "${componentPath}"`,
-              )
-              .join(
-                ", ",
-              )}. A function that schedules its own next run never lets the drain end, so its kit declares it with registerComponent's \`standing\` option.`,
+              ),
+              Arr.join(", "),
+            )}. A function that schedules its own next run never lets the drain end, so its kit declares it with registerComponent's \`standing\` option.`,
           }),
         );
       }
@@ -2425,12 +2477,12 @@ export class World {
   projectReads(
     reads: ReadonlyArray<ReadSet.Read>,
   ): ReadonlyArray<ReadSet.Read> {
-    return reads.map((read) => {
+    return Arr.map(reads, (read) => {
       if (read.kind === "document") return read;
       const shape = this.redaction.table(read.componentPath, read.table);
       const sensitive = (fieldPath: string) =>
         shape !== undefined &&
-        Redaction.sensitiveAt(shape, fieldPath.split("."));
+        Redaction.sensitiveAt(shape, pipe(fieldPath, Str.split(".")));
       const value = (fieldPath: string, v: Value): Value =>
         sensitive(fieldPath)
           ? Redaction.marker
@@ -2438,12 +2490,12 @@ export class World {
       const key = (k: ReadSet.Key | null) =>
         k === null
           ? null
-          : k.map((v, i) =>
+          : Arr.map(k, (v, i) =>
               v === undefined ? undefined : value(read.fields[i] ?? "", v),
             );
       return {
         ...read,
-        range: read.range.map((bound) => ({
+        range: Arr.map(read.range, (bound) => ({
           ...bound,
           value: sensitive(bound.fieldPath)
             ? Redaction.marker
@@ -2606,9 +2658,9 @@ export class World {
   }
 
   private generateId(table: string): DocumentId {
-    const counter = String(this.nextDocId++).padStart(
-      TYPICAL_CONVEX_ID_LENGTH - table.length,
-      "0",
+    const counter = pipe(
+      String(this.nextDocId++),
+      Str.padStart(TYPICAL_CONVEX_ID_LENGTH - table.length, "0"),
     );
     return (counter + table) as DocumentId;
   }
@@ -2860,7 +2912,7 @@ export class World {
 
   jsSyscall(op: string): Promise<never> {
     return Promise.reject(
-      op.startsWith("storage/")
+      pipe(op, Str.startsWith("storage/"))
         ? KernelRefusal.rowPending("storage", 6)
         : new Error(`The test kernel does not support js syscall: "${op}"`),
     );
@@ -2947,7 +2999,7 @@ export class World {
       );
     }
     const convexValue: Record<string, Value | undefined> = {};
-    for (const [key, v] of Object.entries(value)) {
+    for (const [key, v] of Rec.toEntries(value)) {
       if (key !== "_id" && key !== "_creationTime") {
         convexValue[key] = evaluateValue(v);
       }
@@ -3041,7 +3093,7 @@ const refuse = (error: Metering.TransactionLimitExceeded | undefined) => {
 const indexKey = (componentPath: string, table: string, index: string) =>
   `${componentPath}\u0000${table}\u0000${index}`;
 
-const isSystemTable = (table: string) => table.startsWith("_");
+const isSystemTable = (table: string) => pipe(table, Str.startsWith("_"));
 
 const isFieldMap = (value: unknown): value is object =>
   typeof value === "object" && value !== null && isSimpleObject(value);
@@ -3061,23 +3113,24 @@ const sameValue = (a: unknown, b: unknown): boolean => {
   const aPending = a instanceof CommitTsPlaceholder;
   const bPending = b instanceof CommitTsPlaceholder;
   if (aPending || bPending) return aPending && bPending;
-  if (Array.isArray(a) || Array.isArray(b)) {
+  if (Arr.isArray(a) || Arr.isArray(b)) {
     return (
-      Array.isArray(a) &&
-      Array.isArray(b) &&
+      Arr.isArray(a) &&
+      Arr.isArray(b) &&
       a.length === b.length &&
-      a.every((value, i) => sameValue(value, b[i]))
+      Arr.every(a, (value, i) => sameValue(value, b[i]))
     );
   }
   if (isFieldMap(a) || isFieldMap(b)) {
     if (!isFieldMap(a) || !isFieldMap(b)) return false;
     const fields = (value: object) =>
-      Object.entries(value).filter(([, field]) => field !== undefined);
+      Arr.filter(Rec.toEntries(value), ([, field]) => field !== undefined);
     const aFields = fields(a);
     const bFields = new Map(fields(b));
     return (
       aFields.length === bFields.size &&
-      aFields.every(
+      Arr.every(
+        aFields,
         ([key, field]) =>
           bFields.has(key) && sameValue(field, bFields.get(key)),
       )
@@ -3102,7 +3155,7 @@ const sameDocument = (before: StoredDocument, after: StoredDocument) =>
 const budgetOf = (limits: unknown): Metering.Budget | undefined => {
   if (limits === undefined || limits === null) return undefined;
   const budget: Partial<Record<keyof Metering.Limits, number>> = {};
-  for (const metric of Object.keys(Metering.defaults) as Array<
+  for (const metric of Rec.keys(Metering.defaults) as Array<
     keyof Metering.Limits
   >) {
     const value = (limits as Record<string, unknown>)[metric];

@@ -1,4 +1,5 @@
 // oxlint-disable effecttsgo/async-function, effecttsgo/global-date -- The fixtures are plain Convex functions, which are async and read the pinned `Date` as product code does.
+import * as Option from "effect/Option";
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- A forged snapshot needs the SHA-256 its header names.
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "@effect/vitest";
@@ -22,6 +23,10 @@ import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Execution from "../src/internal/Execution";
 import * as Invocation from "../src/internal/Invocation";
 import * as Snapshot from "../src/internal/Snapshot";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 const start = 1_767_225_600_000;
 
@@ -277,7 +282,7 @@ const storeModules = {
           ctx.db
             .query("items")
             .collect()
-            .then((items) => items.map((item) => item.text)),
+            .then((items) => Arr.map(items, (item) => item.text)),
       }),
     }),
 };
@@ -433,7 +438,7 @@ const after = (t: KernelControls, d: Driver, kept: Note) =>
       steps: [applied.kind, conflict.kind, retried.kind],
       pending,
       dump,
-      identity: transitions.map(({ because, from, to }) => ({
+      identity: Arr.map(transitions, ({ because, from, to }) => ({
         because,
         from,
         to,
@@ -543,7 +548,8 @@ describe("snapshot restore", () => {
         const dump = yield* call(() => restored.query(app.dump, {}));
         expect(dump["store"]).toEqual(["tick", "through handle"]);
         expect(
-          (dump["marks"] as Array<{ label: string; world: string | null }>).map(
+          Arr.map(
+            dump["marks"] as Array<{ label: string; world: string | null }>,
             ({ label, world }) => ({ label, world }),
           ),
         ).toEqual([
@@ -567,18 +573,22 @@ describe("snapshot restore", () => {
     {
       name: "a changed value",
       tamper: (snapshot) =>
-        snapshot.replace('"text":"renamed"', '"text":"Renamed"'),
+        pipe(snapshot, String.replace('"text":"renamed"', '"text":"Renamed"')),
     },
     {
       name: "a changed digest",
       tamper: (snapshot) =>
+        // oxlint-disable-next-line effecttsgo/prefer-effect-string -- This replace takes a callback, which effect/String.replace does not accept.
         snapshot.replace(/sha256:[0-9a-f]/, (match) =>
-          match.endsWith("0")
-            ? `${match.slice(0, -1)}1`
-            : `${match.slice(0, -1)}0`,
+          pipe(match, String.endsWith("0"))
+            ? `${pipe(match, String.slice(0, -1))}1`
+            : `${pipe(match, String.slice(0, -1))}0`,
         ),
     },
-    { name: "a cut body", tamper: (snapshot) => snapshot.slice(0, -1) },
+    {
+      name: "a cut body",
+      tamper: (snapshot) => pipe(snapshot, String.slice(0, -1)),
+    },
   ])(
     "a snapshot with $name refuses with SnapshotDigestMismatch and leaves the backend as it was",
     ({ tamper }) =>
@@ -670,7 +680,13 @@ describe("snapshot restore", () => {
  */
 const rehash = (bytes: Uint8Array, edit: (body: any) => void): Uint8Array => {
   const snapshot = text(bytes);
-  const body = JSON.parse(snapshot.slice(snapshot.indexOf("\n") + 1));
+  const bodyStart =
+    pipe(
+      snapshot,
+      String.indexOf("\n"),
+      Option.getOrElse(() => -1),
+    ) + 1;
+  const body = JSON.parse(pipe(snapshot, String.slice(bodyStart)));
   edit(body);
   const edited = JSON.stringify(body);
   return bytesOf(
@@ -978,11 +994,14 @@ describe("snapshot while running", () => {
         const restored = backend(driver());
         yield* call(() => restored.restoreSnapshot(t.exportSnapshot()));
         expect(
-          (
-            (yield* call(() => restored.query(app.dump, {}))) as {
-              notes: Array<{ text: string }>;
-            }
-          ).notes.map((note) => note.text),
+          Arr.map(
+            (
+              (yield* call(() => restored.query(app.dump, {}))) as {
+                notes: Array<{ text: string }>;
+              }
+            ).notes,
+            (note) => note.text,
+          ),
         ).toEqual(["gated", "gated"]);
         expect(restored.jobs()).toEqual([]);
       }),
@@ -1024,11 +1043,14 @@ describe("snapshot live state", () => {
         const restored = backend(driver());
         yield* call(() => restored.restoreSnapshot(exported));
         expect(
-          (
-            (yield* call(() => restored.query(app.dump, {}))) as {
-              notes: Array<{ text: string }>;
-            }
-          ).notes.map((note) => note.text),
+          Arr.map(
+            (
+              (yield* call(() => restored.query(app.dump, {}))) as {
+                notes: Array<{ text: string }>;
+              }
+            ).notes,
+            (note) => note.text,
+          ),
         ).toEqual(["detached"]);
       }),
   );
@@ -1097,8 +1119,8 @@ describe("snapshot live state", () => {
         subscribed.subscriber();
         refusals["subscribers"] = yield* refusal(subscribed);
 
-        expect(Object.keys(refusals).sort()).toEqual(
-          Object.keys(Snapshot.contract.live).sort(),
+        expect(Rec.keys(refusals).sort()).toEqual(
+          Rec.keys(Snapshot.contract.live).sort(),
         );
         expect(refusals).toMatchObject({
           running: { _tag: "SnapshotWorldRunning", registry: "running" },
@@ -1152,7 +1174,7 @@ const cronModules = (declare: Declare) => {
             ctx.db
               .query("ticks")
               .collect()
-              .then((rows) => rows.map(({ name, at }) => ({ name, at }))),
+              .then((rows) => Arr.map(rows, ({ name, at }) => ({ name, at }))),
         }),
       }),
     "crons.ts": () => Promise.resolve({ default: crons }),
@@ -1347,11 +1369,11 @@ describe("snapshot contract", () => {
         const world = new Execution.World(null, {
           "_generated/server.ts": () => Promise.resolve({}),
         });
-        expect(Object.keys(world).sort()).toEqual(
-          Object.keys(Snapshot.contract.world).sort(),
+        expect(Rec.keys(world).sort()).toEqual(
+          Rec.keys(Snapshot.contract.world).sort(),
         );
-        expect(Object.keys(world.liveCounts()).sort()).toEqual(
-          Object.keys(Snapshot.contract.live).sort(),
+        expect(Rec.keys(world.liveCounts()).sort()).toEqual(
+          Rec.keys(Snapshot.contract.live).sort(),
         );
       }),
   );

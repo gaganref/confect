@@ -5,6 +5,7 @@
 // kernel answers a function the way convex-test does. The storage, attempts
 // and execution around them are the kernel's own.
 
+import * as Option from "effect/Option";
 import type { GenericDocument } from "convex/server";
 import {
   CommitTsPlaceholder,
@@ -15,6 +16,10 @@ import {
   convexToJson,
   jsonToConvex,
 } from "convex/values";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 /**
  * A function address inside one test backend: its component and its
@@ -83,11 +88,11 @@ export type TableName = string;
 export type DocumentId = GenericId<TableName>;
 
 export function tableNameFromId(id: string) {
-  const match = id.match(/^[0-9]+/);
+  const match = pipe(id, Str.match(/^[0-9]+/), Option.getOrNull);
   if (!match || match[0].length === id.length) {
     return null;
   }
-  return id.slice(match[0].length);
+  return pipe(id, Str.slice(match[0].length));
 }
 export function deserializeConvexErrorData(thrown: unknown) {
   if (
@@ -126,11 +131,14 @@ export function hasPendingValues(value: Value): boolean {
   if (value instanceof CommitTsPlaceholder) {
     return true;
   }
-  if (Array.isArray(value)) {
-    return value.some(hasPendingValues);
+  if (Arr.isArray(value)) {
+    return Arr.some(value, hasPendingValues);
   }
   if (value !== null && value !== undefined && isSimpleObject(value)) {
-    return Object.values(value).some(hasPendingValues);
+    return Arr.some(
+      Rec.values(value as Record<string, Value>),
+      hasPendingValues,
+    );
   }
   return false;
 }
@@ -158,11 +166,13 @@ export function substituteCommitTs<T extends Value>(
   if (value instanceof CommitTsPlaceholder) {
     return commitTs as T;
   }
-  if (Array.isArray(value)) {
-    return value.map((v) => substituteCommitTs(v, commitTs)) as T;
+  if (Arr.isArray(value)) {
+    return Arr.map(value as ReadonlyArray<Value>, (v) =>
+      substituteCommitTs(v, commitTs),
+    ) as T;
   }
-  return Object.fromEntries(
-    Object.entries(value as object).map(([k, v]) => [
+  return Rec.fromEntries(
+    Arr.map(Rec.toEntries(value as object), ([k, v]) => [
       k,
       substituteCommitTs(v, commitTs),
     ]),
@@ -170,7 +180,7 @@ export function substituteCommitTs<T extends Value>(
 }
 
 export function evaluateFieldPath(fieldPath: string, document: any) {
-  const pathParts = fieldPath.split(".");
+  const pathParts = pipe(fieldPath, Str.split("."));
   let result: Value | undefined = document;
   for (const p of pathParts) {
     result =
@@ -367,20 +377,20 @@ export function validateIndexRangeExpression(
       default:
         throw new Error(
           `Incorrect operator used in \`withIndex\`, ` +
-            `cannot chain \`.${filter.type.toLowerCase()}()\` ` +
-            `after \`.${source.range[filterIndex - 1].type.toLowerCase()}()\``,
+            `cannot chain \`.${pipe(filter.type, Str.toLowerCase)}()\` ` +
+            `after \`.${pipe(source.range[filterIndex - 1].type, Str.toLowerCase)}()\``,
         );
     }
   }
 }
 
 export function printIndexOperator(filter: SerializedRangeExpression) {
-  return `.${filter.type.toLowerCase()}(${filter.fieldPath}, ${JSON.stringify(filter.value)})`;
+  return `.${pipe(filter.type, Str.toLowerCase)}(${filter.fieldPath}, ${JSON.stringify(filter.value)})`;
 }
 
 export function validateFieldNames(validator: ValidatorJSON) {
   if (validator.type === "object") {
-    Object.keys(validator.value).forEach((fieldName) => {
+    Arr.forEach(Rec.keys(validator.value), (fieldName) => {
       if (!isValidIdentifier(fieldName)) {
         throw new Error(
           `Field names must be valid identifiers, got "${fieldName}"`,
@@ -390,7 +400,7 @@ export function validateFieldNames(validator: ValidatorJSON) {
   }
 
   if (validator.type === "union") {
-    validator.value.forEach(validateFieldNames);
+    Arr.forEach(validator.value, validateFieldNames);
   }
 }
 
@@ -513,7 +523,7 @@ export function validateValidator(validator: ValidatorJSON, value: any) {
       return;
     }
     case "array": {
-      if (!Array.isArray(value)) {
+      if (!Arr.isArray(value)) {
         throw new Error(
           `Validator error: Expected \`Array\`, got \`${value}\``,
         );
@@ -536,7 +546,11 @@ export function validateValidator(validator: ValidatorJSON, value: any) {
       }
       if (!isValid) {
         throw new Error(
-          `Validator error: Expected one of ${validator.value.map((v) => v.type).join(", ")}, got \`${JSON.stringify(convexToJson(value))}\``,
+          `Validator error: Expected one of ${pipe(
+            validator.value,
+            Arr.map((v) => v.type),
+            Arr.join(", "),
+          )}, got \`${JSON.stringify(convexToJson(value))}\``,
         );
       }
       return;
@@ -552,7 +566,7 @@ export function validateValidator(validator: ValidatorJSON, value: any) {
           `Validator error: Expected a plain old JavaScript \`object\`, got \`${value}\``,
         );
       }
-      for (const [k, { fieldType, optional }] of Object.entries(
+      for (const [k, { fieldType, optional }] of Rec.toEntries(
         validator.value,
       )) {
         if (value[k] === undefined) {
@@ -565,7 +579,7 @@ export function validateValidator(validator: ValidatorJSON, value: any) {
           validateValidator(fieldType, value[k]);
         }
       }
-      for (const k of Object.keys(value)) {
+      for (const k of Rec.keys(value)) {
         if (validator.value[k] === undefined) {
           throw new Error(
             `Validator error: Unexpected field \`${k}\` in object`,
@@ -602,7 +616,7 @@ export function validateValidator(validator: ValidatorJSON, value: any) {
           `Validator error: Expected a plain old JavaScript \`object\` for a record, got \`${value}\``,
         );
       }
-      for (const [k, fieldValue] of Object.entries(value)) {
+      for (const [k, fieldValue] of Rec.toEntries(value)) {
         validateValidator(validator.keys, k);
         if (fieldValue !== undefined) {
           validateValidator(validator.values.fieldType, fieldValue);
@@ -650,10 +664,12 @@ export function base64UrlEncodeBytes(bytes: Uint8Array) {
   for (const byte of bytes) {
     binary += String.fromCharCode(byte);
   }
-  return btoa(binary)
-    .replace(/\+/g, "-")
-    .replace(/\//g, "_")
-    .replace(/=+$/, "");
+  return pipe(
+    btoa(binary),
+    Str.replace(/\+/g, "-"),
+    Str.replace(/\//g, "_"),
+    Str.replace(/=+$/, ""),
+  );
 }
 
 // Builds the token `withIdentity` pretends the request was authenticated with.
@@ -661,12 +677,12 @@ export function base64UrlEncodeBytes(bytes: Uint8Array) {
 // (`"alg": "none"`, empty signature).
 export function createTestJwt(identity: Record<string, any>) {
   const claims: Record<string, any> = Object.create(null);
-  for (const [attribute, value] of Object.entries(identity)) {
+  for (const [attribute, value] of Rec.toEntries(identity)) {
     if (value === undefined || attribute === "tokenIdentifier") {
       continue;
     }
     // Custom claims are used as is, known attributes use their claim name.
-    const claimName = Object.hasOwn(JWT_CLAIM_BY_IDENTITY_ATTRIBUTE, attribute)
+    const claimName = Rec.has(JWT_CLAIM_BY_IDENTITY_ATTRIBUTE, attribute)
       ? JWT_CLAIM_BY_IDENTITY_ATTRIBUTE[attribute]
       : attribute;
     claims[claimName] = value;
@@ -741,8 +757,12 @@ export function createFunctionHandle(functionPath: FunctionPath) {
  * that is not `function://<componentPath>;<udfPath>` with a function path.
  */
 function readFunctionHandle(handle: string): FunctionPath | undefined {
-  if (!handle.startsWith(FUNCTION_HANDLE_PREFIX)) return undefined;
-  const parts = handle.slice(FUNCTION_HANDLE_PREFIX.length).split(";");
+  if (!pipe(handle, Str.startsWith(FUNCTION_HANDLE_PREFIX))) return undefined;
+  const parts = pipe(
+    handle,
+    Str.slice(FUNCTION_HANDLE_PREFIX.length),
+    Str.split(";"),
+  );
   if (parts.length !== 2 || parts[1] === "") return undefined;
   return { componentPath: parts[0]!, udfPath: parts[1]! };
 }
@@ -757,7 +777,7 @@ export function parseFunctionHandle(handle: string): FunctionPath {
 export function simpleHash(string: string) {
   let hash = 0;
   for (let i = 0; i < string.length; i++) {
-    const char = string.charCodeAt(i);
+    const char = pipe(string, Str.charCodeAt(i), Option.getOrThrow);
     hash = (hash << 5) - hash + char;
     hash = hash & hash; // Convert to 32bit integer
   }

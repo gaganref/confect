@@ -9,10 +9,14 @@
  * time and a random draw.
  */
 
+import * as Option from "effect/Option";
 import type { Value } from "convex/values";
 import { jsonToConvex } from "convex/values";
 import * as Result from "effect/Result";
 import * as KernelRefusal from "./KernelRefusal.js";
+import * as Arr from "effect/Array";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 const second = 1000;
 const minute = 60 * second;
@@ -265,7 +269,7 @@ class Cursor {
    * `digit1` parsed as a `u8`, then checked into `[low, high]`.
    */
   number(low: number, high: number): number | undefined {
-    const match = /^[0-9]+/.exec(this.text.slice(this.at));
+    const match = /^[0-9]+/.exec(pipe(this.text, Str.slice(this.at)));
     if (match === null) return undefined;
     const value = Number(match[0]);
     if (value > 255 || value < low || value > high) return undefined;
@@ -274,7 +278,11 @@ class Cursor {
   }
 
   name(names: ReadonlyArray<string>): number | undefined {
-    const word = this.text.slice(this.at, this.at + 3).toUpperCase();
+    const word = pipe(
+      this.text,
+      Str.slice(this.at, this.at + 3),
+      Str.toUpperCase,
+    );
     const index = names.indexOf(word);
     if (index === -1) return undefined;
     this.at += 3;
@@ -434,7 +442,7 @@ const compile = (
                 ...range(normal.from, field.max),
                 ...range(field.min, normal.to),
               ];
-        sequence.forEach((at, index) => {
+        Arr.forEach(sequence, (at, index) => {
           if (index % normal.step === 0) bits.add(at);
         });
         break;
@@ -449,7 +457,7 @@ const range = (from: number, to: number): Array<number> =>
 
 const fields = (expression: string): Array<string> | undefined => {
   if (!/^[^ \t]+([ \t]+[^ \t]+){4}$/.test(expression)) return undefined;
-  return expression.split(/[ \t]+/);
+  return pipe(expression, Str.split(/[ \t]+/));
 };
 
 /**
@@ -487,14 +495,14 @@ export const parseExpression = (
       days:
         days === "*"
           ? { kind: "star" }
-          : Array.isArray(days)
+          : Arr.isArray(days)
             ? { kind: "pattern", bits: compile(daysField, days) }
             : days,
       months: compile(monthsField, months),
       weekdays:
         weekdays === "*"
           ? { kind: "star" }
-          : Array.isArray(weekdays)
+          : Arr.isArray(weekdays)
             ? { kind: "pattern", bits: compile(weekdaysField, weekdays) }
             : weekdays,
     });
@@ -600,7 +608,7 @@ const lowest = (set: ReadonlySet<number>, from: number, width: number) => {
 const abort = (days: number): never => {
   const { year, month, day: d } = civil(days);
   throw new Aborts(
-    `${String(year).padStart(4, "0")}-${String(month).padStart(2, "0")}-${String(d).padStart(2, "0")}`,
+    `${pipe(String(year), Str.padStart(4, "0"))}-${pipe(String(month), Str.padStart(2, "0"))}-${pipe(String(d), Str.padStart(2, "0"))}`,
   );
 };
 
@@ -765,7 +773,7 @@ const nextWeekday = (weekdays: DaysOfWeek, start: number) => {
           firstOf(weekdays.weekday) + 7 * (weekdays.nth - 1) + 1,
         );
       case "pattern": {
-        const map = new Set([...weekdays.bits].filter((at) => at <= 6));
+        const map = new Set(Arr.filter([...weekdays.bits], (at) => at <= 6));
         const next = lowest(map, current, 8);
         return withDay(
           start,
@@ -917,9 +925,9 @@ const any = (pattern: Pattern): boolean => {
     first = lowest(days.bits, 0, 32) + 1;
   }
   const months = [...pattern.months];
-  const longest = months.some((m) => [0, 2, 4, 6, 7, 9, 11].includes(m))
+  const longest = Arr.some(months, (m) => [0, 2, 4, 6, 7, 9, 11].includes(m))
     ? 31
-    : months.some((m) => [3, 5, 8, 10].includes(m))
+    : Arr.some(months, (m) => [3, 5, 8, 10].includes(m))
       ? 30
       : 29;
   return first <= longest;
@@ -958,7 +966,7 @@ export const parseSpec = (
       }),
     );
   for (const c of name) {
-    const code = c.charCodeAt(0);
+    const code = pipe(c, Str.charCodeAt(0), Option.getOrThrow);
     if (c.length !== 1 || code > 127 || code < 32 || code === 127) {
       return invalid(
         `its name has the character '${c}', and a cron name holds only ASCII characters that are not control characters`,
@@ -972,7 +980,7 @@ export const parseSpec = (
   };
   if (
     typeof entry?.name !== "string" ||
-    !Array.isArray(entry.args) ||
+    !Arr.isArray(entry.args) ||
     typeof entry.schedule !== "object" ||
     entry.schedule === null
   ) {
@@ -992,7 +1000,8 @@ export const parseSpec = (
   const schedule = ((): Result.Result<Schedule, Refusal> => {
     switch (s["type"]) {
       case "interval": {
-        const given = (["seconds", "minutes", "hours"] as const).filter(
+        const given = Arr.filter(
+          ["seconds", "minutes", "hours"] as const,
           (unit) => s[unit] !== undefined,
         );
         if (given.length !== 1) {
@@ -1081,11 +1090,11 @@ export const parseSpec = (
  * canonicalizes `UdfPath`.
  */
 const canonical = (udfPath: string): string => {
-  const [module, exportName = "default"] = udfPath.split(":") as [
+  const [module, exportName = "default"] = pipe(udfPath, Str.split(":")) as [
     string,
     string | undefined,
   ];
-  return `${module.replace(/\.js$/, "")}:${exportName}`;
+  return `${pipe(module, Str.replace(/\.js$/, ""))}:${exportName}`;
 };
 
 // Next runs.

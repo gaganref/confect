@@ -3,6 +3,10 @@ import { afterEach, beforeAll, beforeEach } from "vitest";
 // Imported by relative path, as in `TestConfect.ts`.
 import { ownsConvexGlobal } from "../../../test/src/internal/Execution";
 import { placements } from "./kernelPlacement";
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 type Task = RunnerTestSuite["tasks"][number];
 
@@ -17,20 +21,22 @@ const fullName = (task: Task): string => {
   ) {
     names.unshift(current.name);
   }
-  return names.join(" > ");
+  return Arr.join(names, " > ");
 };
 
 const covers = (name: string | undefined, caseName: string) =>
-  name === undefined || caseName === name || caseName.startsWith(`${name} > `);
+  name === undefined ||
+  caseName === name ||
+  pipe(caseName, String.startsWith(`${name} > `));
 
 const fileName = (file: RunnerTestFile) =>
-  file.filepath.replaceAll("\\", "/").split("/").pop()!;
+  pipe(file.filepath, String.replaceAll("\\", "/"), String.split("/")).pop()!;
 
 const forFile = (file: RunnerTestFile) =>
-  placements.filter((placement) => placement.file === fileName(file));
+  Arr.filter(placements, (placement) => placement.file === fileName(file));
 
 const allCases = (suite: RunnerTestSuite | RunnerTestFile): Array<string> =>
-  suite.tasks.flatMap((task) =>
+  Arr.flatMap(suite.tasks, (task) =>
     task.type === "suite" ? allCases(task) : [fullName(task)],
   );
 
@@ -40,22 +46,27 @@ const allCases = (suite: RunnerTestSuite | RunnerTestFile): Array<string> =>
 beforeAll(({}, suite) => {
   const file = suite as RunnerTestFile;
   const names = allCases(file);
-  const stale = forFile(file).filter(
-    (placement) => !names.some((name) => covers(placement.name, name)),
+  const stale = Arr.filter(
+    forFile(file),
+    (placement) => !Arr.some(names, (name) => covers(placement.name, name)),
   );
   if (stale.length > 0) {
     throw new Error(
-      `kernelPlacement.ts places cases ${fileName(file)} no longer has: ${stale
-        .map((placement) => JSON.stringify(placement.name))
-        .join(", ")}`,
+      `kernelPlacement.ts places cases ${fileName(file)} no longer has: ${pipe(
+        stale,
+        Arr.map((placement) => JSON.stringify(placement.name)),
+        Arr.join(", "),
+      )}`,
     );
   }
 });
 
 beforeEach((context) => {
   const name = fullName(context.task);
-  const placement = forFile(context.task.file).find((entry) =>
-    covers(entry.name, name),
+  const placement = Option.getOrUndefined(
+    Arr.findFirst(forFile(context.task.file), (entry) =>
+      covers(entry.name, name),
+    ),
   );
   if (placement !== undefined) {
     context.skip(`kernel row ${placement.row}: ${placement.needs}`);

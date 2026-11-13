@@ -11,6 +11,8 @@ import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import * as Subscriptions from "./Subscriptions.js";
 import type * as Scheduling from "./Scheduling.js";
+import * as Option from "effect/Option";
+import * as Array from "effect/Array";
 
 type Modules = Record<string, () => Promise<any>>;
 
@@ -146,18 +148,18 @@ const accessor = (
       ),
     apply: (id: string) => {
       // The attempt leaves `held` once applied, so its function is read first.
-      const functionPath = world
-        .held()
-        .find((view) => view.id === id)?.functionPath;
+      const functionPath = Option.getOrUndefined(
+        Array.findFirst(world.held(), (view) => view.id === id),
+      )?.functionPath;
       return reported(() => world.apply(id)).then((applied) =>
         world.projectApplied(applied, functionPath),
       );
     },
-    held: () => world.held().map((view) => world.projectHeld(view)),
+    held: () => Array.map(world.held(), (view) => world.projectHeld(view)),
     subscriber: () => subscriptions.subscriber(caller),
     refresh: () =>
       reported(() => subscriptions.refresh()).then((transitions) =>
-        transitions.map((transition): Subscriptions.Transition => ({
+        Array.map(transitions, (transition): Subscriptions.Transition => ({
           ...transition,
           from: world.redactOutcome(
             transition.from,
@@ -178,17 +180,20 @@ const accessor = (
       ),
     reference: () =>
       reported(() => subscriptions.reference()).then((disagreements) =>
-        disagreements.map((disagreement): Subscriptions.Disagreement => ({
-          ...disagreement,
-          incremental: world.redactOutcome(
-            disagreement.incremental,
-            returnsOf(disagreement.subscription),
-          ),
-          reference: world.redactOutcome(
-            disagreement.reference,
-            returnsOf(disagreement.subscription),
-          ),
-        })),
+        Array.map(
+          disagreements,
+          (disagreement): Subscriptions.Disagreement => ({
+            ...disagreement,
+            incremental: world.redactOutcome(
+              disagreement.incremental,
+              returnsOf(disagreement.subscription),
+            ),
+            reference: world.redactOutcome(
+              disagreement.reference,
+              returnsOf(disagreement.subscription),
+            ),
+          }),
+        ),
       ),
     run: (handler: (ctx: any) => any) =>
       reported(() => world.run(caller, "", handler)),

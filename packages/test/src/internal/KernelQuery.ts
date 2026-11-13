@@ -36,6 +36,11 @@ import {
   validateIndexRangeExpression,
   validateValidator,
 } from "./KernelValues.js";
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
+import * as Rec from "effect/Record";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 /**
  * A component's tables as its schema declares them.
@@ -59,7 +64,7 @@ export const exportSchema = (
     schemaValidation: (schema as unknown as { schemaValidation: boolean })
       .schemaValidation,
     tables: new Map(
-      Object.entries(schema.tables).map(([name, table]) => [
+      Arr.map(Rec.toEntries(schema.tables), ([name, table]) => [
         name,
         (table as unknown as { export: () => any }).export(),
       ]),
@@ -72,7 +77,7 @@ export const exportSchema = (
       );
     }
     validateFieldNames(table.documentType);
-    table.indexes.forEach(({ indexDescriptor }) => {
+    Arr.forEach(table.indexes, ({ indexDescriptor }) => {
       if (!isValidIdentifier(indexDescriptor)) {
         throw new Error(
           `Index names must be valid identifiers, got "${indexDescriptor}"`,
@@ -153,10 +158,10 @@ const resolveSource = (
       break;
     }
     case "IndexRange": {
-      const [tableName, indexName] = source.indexName.split(".") as [
-        string,
-        string,
-      ];
+      const [tableName, indexName] = pipe(
+        source.indexName,
+        String.split("."),
+      ) as [string, string];
       table = tableName;
       index = indexName;
       range = source.range;
@@ -167,11 +172,16 @@ const resolveSource = (
       } else if (indexName === "by_id") {
         fields = ["_id"];
       } else {
-        const declared = view.schema?.tables
-          .get(tableName)
-          ?.indexes.find(
-            ({ indexDescriptor }) => indexDescriptor === indexName,
-          );
+        const indexes = view.schema?.tables.get(tableName)?.indexes;
+        const declared =
+          indexes === undefined
+            ? undefined
+            : Option.getOrUndefined(
+                Arr.findFirst(
+                  indexes,
+                  ({ indexDescriptor }) => indexDescriptor === indexName,
+                ),
+              );
         if (declared === undefined) {
           throw new Error(
             `Cannot use index "${indexName}" for table "${tableName}" because ` +
@@ -182,11 +192,9 @@ const resolveSource = (
       }
       fieldPathsToSortBy = fields;
       validateIndexRangeExpression(source, fields);
-      docs = view
-        .scan(tableName)
-        .filter((doc) =>
-          source.range.every((filter) => evaluateRangeFilter(doc, filter)),
-        );
+      docs = Arr.filter(view.scan(tableName), (doc) =>
+        Arr.every(source.range, (filter) => evaluateRangeFilter(doc, filter)),
+      );
       break;
     }
     case "Search": {
@@ -194,14 +202,19 @@ const resolveSource = (
     }
   }
 
-  const filters = query.operators
-    .filter(
+  const filters = pipe(
+    query.operators,
+    Arr.filter(
       (operator): operator is { filter: FilterJson } => "filter" in operator,
-    )
-    .map((operator) => operator.filter);
+    ),
+    Arr.map((operator) => operator.filter),
+  );
   const limit =
-    query.operators.find(
-      (operator): operator is { limit: number } => "limit" in operator,
+    Option.getOrUndefined(
+      Arr.findFirst(
+        query.operators,
+        (operator): operator is { limit: number } => "limit" in operator,
+      ),
     ) ?? null;
 
   const orderMultiplier = order === "asc" ? 1 : -1;
@@ -218,7 +231,8 @@ const resolveSource = (
 
   return {
     sortedDocs: docs,
-    filterFn: (doc) => filters.every((f) => evaluateFilter(doc, f)),
+    filterFn: (doc) =>
+      Arr.every(filters, (f) => Boolean(evaluateFilter(doc, f))),
     limit: limit?.limit ?? null,
     order,
     interval: {
@@ -265,7 +279,7 @@ const encodeCursor = (
   fieldPaths: ReadonlyArray<string>,
 ): string =>
   JSON.stringify(
-    fieldPaths.map((fp) => {
+    Arr.map(fieldPaths, (fp) => {
       const k = evaluateFieldPath(fp, doc);
       return k === undefined ? null : JSON.stringify(convexToJson(k));
     }),
@@ -273,7 +287,7 @@ const encodeCursor = (
 
 const parseCursor = (c: string | null | undefined) =>
   c
-    ? (JSON.parse(c) as Array<string | null>).map((k) =>
+    ? Arr.map(JSON.parse(c) as Array<string | null>, (k) =>
         k === null ? undefined : jsonToConvex(JSON.parse(k)),
       )
     : null;

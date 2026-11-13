@@ -1,3 +1,4 @@
+import * as Array from "effect/Array";
 /**
  * Lane 1's inventory (`packages/test/RECHECK.md`) as data: the mock-backend
  * cases the kernel lane does not run yet, and the build-order row that first
@@ -65,20 +66,23 @@ export const placements: ReadonlyArray<Placement> = [
     row: 6,
     needs: "JWT verification",
   },
-  ...[
-    "fetches each mounted component with its site URL at construction",
-    "routes mounted HTTP writes into the selected component database",
-    "keeps query strings and headers at the exact mount path",
-    "leaves unmounted paths and partial prefix matches to the root",
-    "restores the site URL after construction fails and accepts another fetch",
-    "preserves structured HTTP compatibility failures across the action boundary",
-    "uses the default site URL when the application variable is empty",
-    "loads component HTTP modules with convex-test's extension handling",
-    "fetches an installation mounted at the root prefix",
-  ].map((name): Placement => ({
-    file: "components.test.ts",
-    name,
-    row: 6,
-    needs: "HTTP routes, after storage",
-  })),
+  ...Array.map(
+    [
+      "fetches each mounted component with its site URL at construction",
+      "routes mounted HTTP writes into the selected component database",
+      "keeps query strings and headers at the exact mount path",
+      "leaves unmounted paths and partial prefix matches to the root",
+      "restores the site URL after construction fails and accepts another fetch",
+      "preserves structured HTTP compatibility failures across the action boundary",
+      "uses the default site URL when the application variable is empty",
+      "loads component HTTP modules with convex-test's extension handling",
+      "fetches an installation mounted at the root prefix",
+    ],
+    (name): Placement => ({
+      file: "components.test.ts",
+      name,
+      row: 6,
+      needs: "HTTP routes, after storage",
+    }),
+  ),
 ];
