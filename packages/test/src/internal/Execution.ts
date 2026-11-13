@@ -1186,7 +1186,15 @@ export class World {
           ),
         ),
         nextRun: cron.nextRun,
-        last: cron.last ?? null,
+        // A failure's text holds whatever the function threw, so a kept secret
+        // in it is written as a marker a restore puts back.
+        last:
+          cron.last?.kind === "failed"
+            ? {
+                kind: "failed" as const,
+                error: Redaction.mark(cron.last.error, [], this.secrets),
+              }
+            : (cron.last ?? null),
         world: cron.world?.name ?? null,
       };
     });
@@ -1389,7 +1397,13 @@ export class World {
       restored.set(key, {
         ...job,
         nextRun: image.nextRun,
-        last: image.last ?? undefined,
+        // Decoding put back any marked secret, so a failure's text is raw again.
+        last:
+          image.last === null
+            ? undefined
+            : image.last.kind === "failed"
+              ? { kind: "failed", error: image.last.error as string }
+              : image.last,
         world,
       });
     }
@@ -1494,9 +1508,23 @@ export class World {
         name: spec.name,
         udfPath: spec.udfPath,
         nextRun,
-        last,
+        last: last === undefined ? undefined : this.reportedOutcome(last),
       }),
     );
+  }
+
+  /**
+   * A cron run's outcome as an artifact shows it: a failure's text through the
+   * failure redaction, every kept secret marked. The raw text stays in the
+   * job's replay state.
+   */
+  private reportedOutcome(last: CronOutcome): CronOutcome {
+    return last.kind === "failed"
+      ? {
+          kind: "failed",
+          error: Redaction.failure(last.error, this.secrets) as string,
+        }
+      : last;
   }
 
   /**

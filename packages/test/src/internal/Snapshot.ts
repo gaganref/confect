@@ -58,7 +58,14 @@ export interface CronImage {
   readonly args: JSONValue;
   readonly schedule: JSONValue;
   readonly nextRun: number;
-  readonly last: Execution.CronOutcome | null;
+  /**
+   * How the latest run ended. A failure's text is Convex JSON: a marker where
+   * it held a kept secret, the raw text once a restore reads it back.
+   */
+  readonly last:
+    | { readonly kind: "success" }
+    | { readonly kind: "failed"; readonly error: JSONValue }
+    | null;
   readonly world: string | null;
 }
 
@@ -300,7 +307,7 @@ const Body = Schema.Struct({
           Schema.Struct({ kind: Schema.Literal("success") }),
           Schema.Struct({
             kind: Schema.Literal("failed"),
-            error: Schema.String,
+            error: Schema.Unknown,
           }),
         ]),
       ),
@@ -632,7 +639,14 @@ const unredactBody = (
         after: document(change.after),
       })),
     })),
-    crons: body.crons.map((cron) => ({ ...cron, args: document(cron.args) })),
+    crons: body.crons.map((cron) => ({
+      ...cron,
+      args: document(cron.args),
+      last:
+        cron.last?.kind === "failed"
+          ? { kind: "failed" as const, error: document(cron.last.error) }
+          : cron.last,
+    })),
   };
   return refusal === undefined
     ? Result.succeed(unredacted)
@@ -686,11 +700,19 @@ const imageOf = (body: Body, unredact: Unredact): Image => {
         },
       ]),
     ),
-    crons: body.crons.map((cron) => ({
-      ...cron,
-      args: cron.args as JSONValue,
-      schedule: cron.schedule as JSONValue,
-    })),
+    crons: body.crons.map((cron) => {
+      if (cron.last?.kind === "failed" && typeof cron.last.error !== "string") {
+        throw new Error(
+          `cron job "${cron.name}" records a failure whose text is not a string`,
+        );
+      }
+      return {
+        ...cron,
+        args: cron.args as JSONValue,
+        schedule: cron.schedule as JSONValue,
+        last: cron.last as CronImage["last"],
+      };
+    }),
   };
 };
 
