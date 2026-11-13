@@ -13,6 +13,7 @@ export class RequiresBinary extends Schema.TaggedError<RequiresBinary>()(
       "storageDownload",
       "oidcDiscovery",
       "remoteJwks",
+      "adminAuthentication",
     ]),
     message: Schema.String,
   },
@@ -285,6 +286,15 @@ export class SnapshotWorldRunning extends Schema.TaggedError<SnapshotWorldRunnin
 ) {}
 
 /**
+ * A world has open sync sockets, whose clients hold state versions and query
+ * values a restore would rewind.
+ */
+export class SnapshotSocketsOpen extends Schema.TaggedError<SnapshotSocketsOpen>()(
+  "SnapshotSocketsOpen",
+  { sockets: Schema.Int, message: Schema.String },
+) {}
+
+/**
  * A world has subscribers, whose identity versions a restore would rewind.
  * Subscriptions are live client state, so a restore needs a world with none.
  */
@@ -406,3 +416,39 @@ const refusals = [
 
 export const isKernelRefusal = (error: unknown): boolean =>
   refusals.some((is) => is(error));
+
+/**
+ * A sync client sent a message the binary's sync worker refuses, so `Sync`
+ * answers it with a `FatalError` and closes the socket. `reason` names the
+ * binary's check.
+ */
+export class SyncProtocolViolation extends Schema.TaggedError<SyncProtocolViolation>()(
+  "SyncProtocolViolation",
+  {
+    reason: Schema.Literals([
+      "BaseVersionMismatch",
+      "QuerySetVersionNotIncreasing",
+      "IdentityVersionMismatch",
+      "DuplicateQueryId",
+      "NonexistentQueryId",
+      "TimestampAhead",
+      "ComponentPathNotAllowed",
+    ]),
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * A sync session sent a mutation under a request ID its ledger already holds,
+ * with other arguments. The binary would answer the recorded outcome of a
+ * different call, so the kernel refuses.
+ */
+export class SyncRequestReused extends Schema.TaggedError<SyncRequestReused>()(
+  "SyncRequestReused",
+  {
+    requestId: Schema.Int,
+    recorded: Schema.String,
+    sent: Schema.String,
+    message: Schema.String,
+  },
+) {}

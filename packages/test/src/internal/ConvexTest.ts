@@ -12,6 +12,7 @@ import * as KernelRefusal from "./KernelRefusal.js";
 import * as Subscriptions from "./Subscriptions.js";
 import type * as Scheduling from "./Scheduling.js";
 import * as Storage from "./Storage.js";
+import * as Sync from "./Sync.js";
 
 type Modules = Record<string, () => Promise<any>>;
 
@@ -35,9 +36,17 @@ export interface KernelControls {
     readonly userAgent?: string | null;
   }) => KernelControls;
   /**
-   * A client's query set under this accessor's caller.
+   * A client's query set under this accessor's caller. Under a presented token,
+   * the subscriber presents it as the sync protocol's Authenticate does, and
+   * its subscriptions wait for the kernel to verify it.
    */
   readonly subscriber: () => Subscriptions.Subscriber;
+  /**
+   * The kernel's end of the Convex client sync protocol. Its `WebSocket` is a
+   * constructor the unmodified `BaseConvexClient` takes as its
+   * `webSocketConstructor`, so a client runs against the kernel in process.
+   */
+  readonly sync: () => Sync.Endpoint;
   /**
    * Rerun every stale subscription. Lists each one whose value changed.
    */
@@ -141,6 +150,7 @@ const isSchemaDefinition = (
 const accessor = (
   world: Execution.World,
   subscriptions: Subscriptions.Registry,
+  sync: Sync.Server,
   caller: Execution.Caller,
   token?: string,
 ): any => {
@@ -179,13 +189,13 @@ const accessor = (
       );
     },
     held: () => world.held().map((view) => world.projectHeld(view)),
-    // A client that presents a token over the sync protocol is `Sync`'s.
     subscriber: () => {
-      if (token !== undefined) {
-        throw KernelRefusal.rowPending("a subscriber that presents a token", 7);
-      }
-      return subscriptions.subscriber(caller);
+      const subscriber = subscriptions.subscriber(caller);
+      // A refusal reaches the subscriber's next subscription.
+      if (token !== undefined) subscriber.present(token).catch(() => undefined);
+      return subscriber;
     },
+    sync: (): Sync.Endpoint => sync.endpoint(),
     refresh: () =>
       reported(() => subscriptions.refresh()).then((transitions) =>
         transitions.map((transition): Subscriptions.Transition => ({
@@ -226,9 +236,14 @@ const accessor = (
     runInComponent: (componentPath: string, handler: (ctx: any) => any) =>
       reported(() => as((who) => world.run(who, componentPath, handler))),
     withIdentity: (identity: Partial<UserIdentity>) =>
-      accessor(world, subscriptions, Execution.withIdentity(caller, identity)),
+      accessor(
+        world,
+        subscriptions,
+        sync,
+        Execution.withIdentity(caller, identity),
+      ),
     withToken: (presented: string) =>
-      accessor(world, subscriptions, caller, presented),
+      accessor(world, subscriptions, sync, caller, presented),
     withRequestMetadata: (metadata: {
       readonly ip?: string | null;
       readonly userAgent?: string | null;
@@ -236,6 +251,7 @@ const accessor = (
       accessor(
         world,
         subscriptions,
+        sync,
         {
           ...caller,
           ip: metadata.ip ?? null,
@@ -331,8 +347,14 @@ export function convexTest(
     );
   }
   const world = new Execution.World(schema, modules, runtime, redaction, own);
+  const subscriptions = new Subscriptions.Registry(world);
   return {
-    ...accessor(world, new Subscriptions.Registry(world), Execution.anonymous),
+    ...accessor(
+      world,
+      subscriptions,
+      new Sync.Server(world, subscriptions),
+      Execution.anonymous,
+    ),
     registerComponent: (
       componentPath: string,
       componentSchema: SchemaDefinition<GenericSchema, boolean>,

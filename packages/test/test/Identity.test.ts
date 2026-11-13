@@ -157,14 +157,76 @@ describe("token verification", () => {
       }),
   );
 
-  it.effect("a subscriber that presents a token waits for Sync", () =>
-    Effect.gen(function* () {
-      const { jwks, cases } = yield* mint(start / 1000);
-      const { t } = world([{ ...provider, jwks }]);
-      expect(() => t.withToken(cases[0]!.token).subscriber()).toThrow(
-        expect.objectContaining({ _tag: "KernelRowPending", row: 7 }),
-      );
-    }),
+  it.effect(
+    "a subscriber that presents a token subscribes under the identity the kernel verified, a new token makes its identity-dependent subscription stale, and a refused token changes nothing and rejects a fresh subscriber's subscriptions",
+    () =>
+      Effect.gen(function* () {
+        const { jwks, cases, signDeclared } = yield* mint(start / 1000);
+        const { t, runs } = world([{ ...provider, jwks }]);
+        const token = (name: VerifierCase["name"]) =>
+          cases.find((c) => c.name === name)!;
+        const valid = token("valid control");
+        const subscriber = t.withToken(valid.token).subscriber();
+        const subscription = yield* Effect.promise(() =>
+          subscriber.subscribe(whoami, {}),
+        );
+        const identity = (
+          valid.expected as { readonly identity: Record<string, unknown> }
+        ).identity;
+        expect(subscription.current().outcome).toEqual({
+          _tag: "returned",
+          value: identity,
+        });
+
+        const before = subscriber.identityVersion;
+        const rejected = yield* Effect.promise(() =>
+          subscriber.present(token("wrong issuer").token).then(
+            () => undefined,
+            (error: unknown) => error,
+          ),
+        );
+        expect(rejected).toMatchObject({
+          _tag: "InvalidToken",
+          code: "NoAuthProvider",
+        });
+        expect(subscriber.identityVersion).toBe(before);
+        expect(yield* Effect.promise(() => t.refresh())).toEqual([]);
+
+        const other = yield* signDeclared({ sub: "other" });
+        yield* Effect.promise(() => subscriber.present(other));
+        expect(subscriber.identityVersion).toBeGreaterThan(before);
+        expect(yield* Effect.promise(() => t.refresh())).toEqual([
+          expect.objectContaining({
+            subscription: subscription.id,
+            to: {
+              _tag: "returned",
+              value: {
+                ...identity,
+                subject: "other",
+                tokenIdentifier: `${provider.issuer}|other`,
+              },
+            },
+            because: expect.objectContaining({ kind: "identity" }),
+          }),
+        ]);
+
+        const counted = runs.count;
+        const refused = yield* Effect.promise(() =>
+          t
+            .withToken(token("foreign key").token)
+            .subscriber()
+            .subscribe(whoami, {})
+            .then(
+              () => undefined,
+              (error: unknown) => error,
+            ),
+        );
+        expect(refused).toMatchObject({
+          _tag: "InvalidToken",
+          code: "InvalidAuthHeader",
+        });
+        expect(runs.count).toBe(counted);
+      }),
   );
 
   it.effect("a provider the binary would refuse at push is refused", () =>

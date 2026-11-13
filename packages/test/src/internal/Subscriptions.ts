@@ -137,10 +137,21 @@ interface Live {
  */
 export class Subscriber {
   private version: number;
+  /**
+   * The latest presented token's verification. A subscription waits for it, so
+   * it never runs under the identity the token replaces.
+   */
+  private presented: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly registry: Registry,
     private who: Execution.Caller,
+    /**
+     * Whether `Sync` pushes this subscriber's changes to a socket. Only `Sync`
+     * refreshes such a subscriber, so a test's `refresh` never takes a change
+     * the socket is owed.
+     */
+    readonly pushed = false,
   ) {
     this.version = registry.identityEpoch();
   }
@@ -153,8 +164,32 @@ export class Subscriber {
     return this.version;
   }
 
-  subscribe(reference: unknown, args?: unknown): Promise<Subscription> {
-    return this.registry.subscribe(this, reference, args ?? {});
+  subscribe(
+    reference: unknown,
+    args?: unknown,
+    journal: string | null = null,
+  ): Promise<Subscription> {
+    return this.presented.then(() =>
+      this.registry.subscribe(this, reference, args ?? {}, journal),
+    );
+  }
+
+  /**
+   * Present `token`, as the sync protocol's Authenticate does: the kernel
+   * verifies it against the app's `auth.config` at its time, then the verified
+   * identity replaces the caller's, bumping the identity version. A refused
+   * token leaves the identity as it was and rejects with `InvalidToken`.
+   */
+  present(token: string): Promise<void> {
+    // A later presentation replaces a refused one, so it starts clean. Until
+    // then, a subscription rejects with the refusal rather than run under an
+    // identity the client never had confirmed.
+    const verified = this.presented
+      .catch(() => undefined)
+      .then(() => this.registry.verify(this.who, token))
+      .then((caller) => this.become(caller));
+    this.presented = verified;
+    return verified;
   }
 
   /**
@@ -162,10 +197,15 @@ export class Subscriber {
    * subscription that read the identity is stale until the next refresh.
    */
   authenticate(identity: Partial<UserIdentity> | null) {
-    this.who =
+    this.become(
       identity === null
         ? { ...this.who, identity: null, token: null }
-        : Execution.withIdentity(this.who, identity);
+        : Execution.withIdentity(this.who, identity),
+    );
+  }
+
+  private become(caller: Execution.Caller) {
+    this.who = caller;
     this.version = this.registry.nextIdentityEpoch();
   }
 }
@@ -181,9 +221,16 @@ export class Registry {
 
   constructor(private readonly world: Execution.World) {}
 
-  subscriber(caller: Execution.Caller): Subscriber {
+  subscriber(caller: Execution.Caller, pushed = false): Subscriber {
     this.world.registerSubscriber();
-    return new Subscriber(this, caller);
+    return new Subscriber(this, caller, pushed);
+  }
+
+  /**
+   * The caller `token` makes from `caller`, verified by the world.
+   */
+  verify(caller: Execution.Caller, token: string): Promise<Execution.Caller> {
+    return this.world.authenticate(caller, token);
   }
 
   /**
@@ -212,40 +259,45 @@ export class Registry {
     subscriber: Subscriber,
     reference: unknown,
     args: unknown,
+    journal: string | null,
   ): Promise<Subscription> {
-    return this.run(subscriber, reference, args, { journal: null }).then(
-      (run) => {
-        const live: Live = {
-          id: `subscription-${this.nextId++}`,
-          subscriber,
-          reference,
-          args,
-          run,
-        };
-        this.live.set(live.id, live);
-        return {
-          id: live.id,
-          // The run's value is the client's own, so it stays raw. Its read
-          // records are the kernel's, so they leave projected.
-          current: () => ({
-            ...live.run,
-            reads: this.world.projectReads(live.run.reads),
-          }),
-          unsubscribe: () => {
-            this.live.delete(live.id);
-          },
-        };
-      },
-    );
+    return this.run(subscriber, reference, args, { journal }).then((run) => {
+      const live: Live = {
+        id: `subscription-${this.nextId++}`,
+        subscriber,
+        reference,
+        args,
+        run,
+      };
+      this.live.set(live.id, live);
+      return {
+        id: live.id,
+        // The run's value is the client's own, so it stays raw. Its read
+        // records are the kernel's, so they leave projected.
+        current: () => ({
+          ...live.run,
+          reads: this.world.projectReads(live.run.reads),
+        }),
+        unsubscribe: () => {
+          this.live.delete(live.id);
+        },
+      };
+    });
   }
 
   /**
-   * Rerun each stale subscription at the latest commit and the kernel's time
-   * now, oldest first, until none is stale. Lists each one whose value
-   * changed.
+   * The stale subscriptions of `subscriber`, or of every subscriber the test
+   * refreshes, and why each is stale.
    */
-  refresh(): Promise<ReadonlyArray<Transition>> {
-    const stale = Array.from(this.live.values()).flatMap((live) => {
+  private staleOf(subscriber: Subscriber | undefined) {
+    return Array.from(this.live.values()).flatMap((live) => {
+      if (
+        subscriber === undefined
+          ? live.subscriber.pushed
+          : live.subscriber !== subscriber
+      ) {
+        return [];
+      }
       const because = invalidation(
         live.run,
         this.world.state,
@@ -253,6 +305,23 @@ export class Registry {
       );
       return because === undefined ? [] : [{ live, because }];
     });
+  }
+
+  /**
+   * Whether any of `subscriber`'s subscriptions is stale now.
+   */
+  stale(subscriber: Subscriber): boolean {
+    return this.staleOf(subscriber).length > 0;
+  }
+
+  /**
+   * Rerun each stale subscription at the latest commit and the kernel's time
+   * now, oldest first, until none is stale. Lists each one whose value changed.
+   * With `subscriber`, only its subscriptions; without, every subscriber's but
+   * those `Sync` pushes.
+   */
+  refresh(subscriber?: Subscriber): Promise<ReadonlyArray<Transition>> {
+    const stale = this.staleOf(subscriber);
     if (stale.length === 0) return Promise.resolve([]);
     return inTurn(stale, ({ live, because }) =>
       this.run(live.subscriber, live.reference, live.args, {
@@ -266,7 +335,7 @@ export class Registry {
           : { subscription: live.id, from, to: run.outcome, because };
       }),
     ).then((transitions) =>
-      this.refresh().then((later) => [...transitions, ...later]),
+      this.refresh(subscriber).then((later) => [...transitions, ...later]),
     );
   }
 

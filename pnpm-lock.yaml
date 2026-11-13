@@ -714,6 +714,12 @@ importers:
         specifier: 1.49.0
         version: 1.49.0(react@19.3.0)
 
+  packages/server/test/local-backend/fixtures/sync:
+    dependencies:
+      convex:
+        specifier: 1.49.0
+        version: 1.49.0(react@19.3.0)
+
   packages/server/test/mock-backend/fixtures:
     dependencies:
       '@confect/core':

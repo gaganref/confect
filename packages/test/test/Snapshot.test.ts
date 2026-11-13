@@ -1093,6 +1093,15 @@ describe("snapshot live state", () => {
         yield* call(() => holding.prepare(app.insert, { text: "held" }));
         refusals["held"] = yield* refusal(holding);
 
+        const connected = backend(driver());
+        const socket = new (connected.sync().WebSocket)("ws://kernel.invalid");
+        refusals["sockets"] = yield* refusal(connected);
+        socket.close();
+        // The closed socket's subscriber outlives it, as any subscriber does.
+        expect(yield* refusal(connected)).toMatchObject({
+          _tag: "SnapshotSubscribed",
+        });
+
         const subscribed = backend(driver());
         subscribed.subscriber();
         refusals["subscribers"] = yield* refusal(subscribed);
@@ -1105,6 +1114,7 @@ describe("snapshot live state", () => {
           walks: { _tag: "SnapshotWorldRunning", registry: "walks" },
           functions: { _tag: "SnapshotWorldRunning", registry: "functions" },
           held: { _tag: "SnapshotWorldBusy" },
+          sockets: { _tag: "SnapshotSocketsOpen", sockets: 1 },
           subscribers: { _tag: "SnapshotSubscribed" },
         });
       }),
