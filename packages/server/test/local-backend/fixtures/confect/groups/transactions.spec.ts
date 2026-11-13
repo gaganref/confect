@@ -72,6 +72,47 @@ export default GroupSpec.make()
   )
   .addFunction(
     FunctionSpec.publicMutation({
+      name: "insertedIntervals",
+      args: () => ({ caseId: Schema.String, count: Schema.Finite }),
+      returns: () =>
+        Schema.Struct({
+          afterInserts: Schema.Finite,
+          afterGet: Schema.Finite,
+          afterScan: Schema.Finite,
+        }),
+    }),
+  )
+  .addFunction(
+    FunctionSpec.internalMutation({
+      name: "idle",
+      args: () => ({}),
+      returns: () => Schema.Null,
+    }),
+  )
+  .addFunction(
+    FunctionSpec.internalQuery({
+      name: "readMetrics",
+      args: () => ({}),
+      returns: () =>
+        Schema.Record(
+          Schema.String,
+          Schema.Struct({ used: Schema.Finite, remaining: Schema.Finite }),
+        ),
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
+      name: "staleMetrics",
+      args: () => ({}),
+      returns: () =>
+        Schema.Record(
+          Schema.String,
+          Schema.Struct({ used: Schema.Finite, remaining: Schema.Finite }),
+        ),
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
       name: "metrics",
       args: () => ({ caseId: Schema.String }),
       returns: () => {
