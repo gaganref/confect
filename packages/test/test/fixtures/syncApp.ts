@@ -23,6 +23,7 @@ export const policy = Redaction.policy({
       "sync:remember": { args: secretArgs({ name: Schema.String }) },
       "sync:reveal": { args: secretArgs({}) },
       "sync:peek": { args: secretArgs({}) },
+      "sync:stash": { args: secretArgs({}) },
     },
   },
 });

@@ -10,6 +10,14 @@ import * as Legs from "./fixtures/syncLegs";
 
 const secret = "canary-7f3a9c";
 
+/**
+ * A secret shorter than the string backstop searches for, so only its
+ * argument's schema marks it.
+ */
+const short = "§¶";
+
+// The tests that mint tokens run live, so this is the host's time, the time
+// the kernel's wall-clock runtime verifies them at.
 const nowSeconds = Clock.currentTimeMillis.pipe(
   Effect.map((millis) => Math.floor(millis / 1000)),
 );
@@ -26,7 +34,7 @@ const tokens = Effect.gen(function* () {
 });
 
 describe("the unmodified client on the kernel", () => {
-  it.effect(
+  it.live(
     "leg 1: two clients see each step's values, outcomes and identities",
     () =>
       Effect.gen(function* () {
@@ -56,7 +64,7 @@ describe("the unmodified client on the kernel", () => {
       }),
   );
 
-  it.effect(
+  it.live(
     "leg 2: concurrent increments contend and none is lost or counted twice",
     () =>
       Effect.gen(function* () {
@@ -68,7 +76,7 @@ describe("the unmodified client on the kernel", () => {
       }),
   );
 
-  it.effect(
+  it.live(
     "leg 3: the client accepts every message, through a lost response and a reconnect",
     () =>
       Effect.gen(function* () {
@@ -133,7 +141,7 @@ const text = (json: unknown) =>
   );
 
 describe("Sync's artifacts", () => {
-  it.effect(
+  it.live(
     "a secret argument sent through Sync reaches no protocol artifact, while the client gets the raw values",
     () =>
       Effect.gen(function* () {
@@ -147,6 +155,9 @@ describe("Sync's artifacts", () => {
         const revealed = yield* Effect.promise(() =>
           client.mutation("sync:reveal", { secret }),
         );
+        const stashed = yield* Effect.promise(() =>
+          client.mutation("sync:stash", { secret: short }),
+        );
         yield* Effect.promise(() =>
           client.until(() => client.value("peek") !== undefined),
         );
@@ -155,6 +166,7 @@ describe("Sync's artifacts", () => {
           failed: { data: { code: "revealed", secret } },
         });
         expect(client.value("peek")).toEqual({ value: `seen ${secret}` });
+        expect(stashed).toEqual({ value: null });
         yield* Effect.promise(() => client.close());
 
         // A call the binary's worker refuses, whose report names its message.
@@ -164,8 +176,8 @@ describe("Sync's artifacts", () => {
           socket.send({
             type: "Mutation",
             requestId: 0,
-            udfPath: "sync:reveal",
-            args: [{ secret }],
+            udfPath: "sync:stash",
+            args: [{ secret: short }],
             componentPath: "child",
           }),
         );
@@ -183,6 +195,7 @@ describe("Sync's artifacts", () => {
         };
         for (const [name, artifact] of Object.entries(artifacts)) {
           expect(text(artifact), name).not.toContain(secret);
+          expect(text(artifact), name).not.toContain(short);
           expect(text(artifact), name).toContain("[redacted]");
         }
         expect(endpoint.failures()).toEqual([
@@ -199,7 +212,7 @@ describe("Sync's artifacts", () => {
       }),
   );
 
-  it.effect(
+  it.live(
     "a successful mutation enters its session's ledger with its arguments' digest, and a resend under its request ID is answered from there",
     () =>
       Effect.gen(function* () {
@@ -246,7 +259,7 @@ describe("Sync's artifacts", () => {
       }),
   );
 
-  it.effect(
+  it.live(
     "a message the binary's worker refuses answers FatalError, closes the socket and leaves a failure report",
     () =>
       Effect.gen(function* () {
@@ -300,7 +313,7 @@ describe("Sync's artifacts", () => {
       }),
   );
 
-  it.effect(
+  it.live(
     "a token that fails to verify answers AuthError for its identity version and closes the socket",
     () =>
       Effect.gen(function* () {
@@ -331,7 +344,7 @@ describe("Sync's artifacts", () => {
       }),
   );
 
-  it.effect(
+  it.live(
     "a commit from the test reaches a socket's client, a test's refresh never takes it, and the full rerun agrees",
     () =>
       Effect.gen(function* () {

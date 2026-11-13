@@ -124,3 +124,12 @@ export const peek = queryGeneric({
   args: { secret: v.string() },
   handler: async (_ctx, { secret }) => `seen ${secret}`,
 });
+
+/**
+ * Take a secret and answer nothing with it, so only its argument's schema can
+ * mark it, as a secret too short for the string backstop.
+ */
+export const stash = mutationGeneric({
+  args: { secret: v.string() },
+  handler: async () => null,
+});
