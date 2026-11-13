@@ -11,6 +11,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
 
 export class NoStableCoreRelease extends Schema.TaggedError<NoStableCoreRelease>()(
   "NoStableCoreRelease",
@@ -20,15 +21,11 @@ export class NoStableCoreRelease extends Schema.TaggedError<NoStableCoreRelease>
 export const selectReleaseTag = (
   tags: ReadonlyArray<string>,
 ): Result.Result<string, NoStableCoreRelease> => {
-  const releases = tags
-    .filter((tag) =>
-      /^@confect\/core@(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(
-        tag,
-      ),
-    )
-    .sort((left, right) =>
-      pipe(right, String.localeCompare(left, ["en"], { numeric: true })),
-    );
+  const releases = Arr.filter(tags, (tag) =>
+    /^@confect\/core@(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(tag),
+  ).sort((left, right) =>
+    pipe(right, String.localeCompare(left, ["en"], { numeric: true })),
+  );
   return releases[0] === undefined
     ? Result.fail(new NoStableCoreRelease({ tags }))
     : Result.succeed(releases[0]);
@@ -169,12 +166,15 @@ export const checkMerge = Effect.fn("MergeRelease.check")(function* (
     scratch,
   );
   if (result.exitCode !== 0) {
-    const files = pipe(
-      yield* git(["diff", "--name-only", "--diff-filter=U"], scratch),
-      String.split("\n"),
-    ).filter(Boolean);
+    const files = Arr.filter(
+      pipe(
+        yield* git(["diff", "--name-only", "--diff-filter=U"], scratch),
+        String.split("\n"),
+      ),
+      Boolean,
+    );
     yield* Console.error(
-      `Merging ${plan.tag} into ${forkRef} failed. Conflicting files:\n${files.join("\n") || "(none; see git output)"}`,
+      `Merging ${plan.tag} into ${forkRef} failed. Conflicting files:\n${Arr.join(files, "\n") || "(none; see git output)"}`,
     );
     if (files.length === 0)
       return yield* new MergeFailed({

@@ -667,7 +667,7 @@ describe("public function descriptions", () => {
         options,
       ),
     ];
-    expect(explicit.map((spec) => spec.description)).toEqual(
+    expect(Array.map(explicit, (spec) => spec.description)).toEqual(
       globalThis.Array(5).fill("Read a value."),
     );
   });
@@ -789,12 +789,15 @@ describe("extend", () => {
     ];
 
     expect(
-      built.map(({ runtimeAndFunctionType, functionProvenance, fields }) => [
-        runtimeAndFunctionType.runtime,
-        runtimeAndFunctionType.functionType,
-        functionProvenance.kind._tag,
-        fields,
-      ]),
+      Array.map(
+        built,
+        ({ runtimeAndFunctionType, functionProvenance, fields }) => [
+          runtimeAndFunctionType.runtime,
+          runtimeAndFunctionType.functionType,
+          functionProvenance.kind._tag,
+          fields,
+        ],
+      ),
     ).toEqual([
       ["Convex", "query", "Standard", { owner: "team" }],
       ["Convex", "mutation", "Standard", { owner: "team" }],
@@ -857,7 +860,7 @@ describe("extend", () => {
       Required.publicNodeAction(options),
       Required.publicPaginatedQuery(options),
     ] as const;
-    expect(specs.map((spec) => [spec.description, spec.fields])).toEqual(
+    expect(Array.map(specs, (spec) => [spec.description, spec.fields])).toEqual(
       globalThis.Array.from({ length: 5 }, () => ["Read notes.", {}]),
     );
     expectTypeOf(specs[0].fields).toEqualTypeOf<{}>();
@@ -1081,7 +1084,7 @@ describe("profile schema wrappers", () => {
     const first = early.functionProvenance.returns;
     expect(early.functionProvenance.returns).toBe(first);
     expect(
-      ["later", "base", "outer"].map((value) =>
+      Array.map(["later", "base", "outer"], (value) =>
         Schema.decodeSync(first)(value),
       ),
     ).toEqual(["later", "base", "outer"]);
@@ -1173,7 +1176,8 @@ describe("profile schema wrappers", () => {
       FunctionSpec.Args<(typeof pairs)[4][0]>["paginationOpts"]["numItems"]
     >().toEqualTypeOf<number>();
     expect(
-      pairs.flat().map(
+      Array.map(
+        pairs.flat(),
         (spec) =>
           Schema.decodeSync(spec.functionProvenance.error!)({
             _tag: "ProfileFailure",
@@ -1232,7 +1236,7 @@ describe("profile schema wrappers", () => {
       "wrapped" | "marked"
     >();
     expect(
-      (["wrapped", "marked"] as const).map((value) =>
+      Array.map(["wrapped", "marked"] as const, (value) =>
         Schema.decodeSync(spec.functionProvenance.returns)(value),
       ),
     ).toEqual(["wrapped", "marked"]);

@@ -4,6 +4,7 @@ import * as Layer from "effect/Layer";
 import databaseSchema from "../_generated/schema";
 import { DatabaseReader, DatabaseWriter } from "../_generated/services";
 import commitTs from "./commitTs.spec";
+import * as Array from "effect/Array";
 
 const stamp = FunctionImpl.make(
   databaseSchema,
@@ -32,7 +33,7 @@ const newestFirst = FunctionImpl.make(
         .table("commitStamps")
         .index("by_caseId_at", (q) => q.eq("caseId", caseId), "desc")
         .collect();
-      return stamps.map(({ label, at }) => ({ label, at }));
+      return Array.map(stamps, ({ label, at }) => ({ label, at }));
     }).pipe(Effect.orDie),
 );
 

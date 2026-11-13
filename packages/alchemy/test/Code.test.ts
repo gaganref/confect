@@ -30,6 +30,7 @@ import { ConvexClient, ConvexFunctionError } from "../src/ConvexClient";
 import { MountInitFailed } from "../src/internal/MountInit";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
 
 const serialize = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const props: CodeProps = {
@@ -552,7 +553,7 @@ describe("Code push lock", () => {
           ],
           { concurrency: "unbounded" },
         );
-        expect(events.slice(0, 2).toSorted()).toEqual([
+        expect(Arr.sort(events.slice(0, 2), String.Order)).toEqual([
           "start brave-fox-456",
           "start happy-otter-123",
         ]);

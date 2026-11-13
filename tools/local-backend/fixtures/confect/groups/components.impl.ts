@@ -8,6 +8,7 @@ import { MutationRunner, QueryRunner } from "../_generated/services";
 import { first, second, left, right } from "../componentBindings";
 import env from "../env";
 import spec from "./components.spec";
+import * as Array from "effect/Array";
 
 const exercise = FunctionImpl.make(schema, spec, "exercise", ({ run }) =>
   Effect.gen(function* () {
@@ -25,16 +26,20 @@ const exercise = FunctionImpl.make(schema, spec, "exercise", ({ run }) =>
         Effect.catchTag("Rejected", (error) => Effect.succeed(error.id)),
       );
     return {
-      first: (yield* runQuery.runQuery(first.counter.list, { run })).map(
+      first: Array.map(
+        yield* runQuery.runQuery(first.counter.list, { run }),
         (doc) => doc.count,
       ),
-      second: (yield* runQuery.runQuery(second.counter.list, { run })).map(
+      second: Array.map(
+        yield* runQuery.runQuery(second.counter.list, { run }),
         (doc) => doc.count,
       ),
-      left: (yield* runQuery.runQuery(left.parent.list, { run })).map(
+      left: Array.map(
+        yield* runQuery.runQuery(left.parent.list, { run }),
         (doc) => doc.count,
       ),
-      right: (yield* runQuery.runQuery(right.parent.list, { run })).map(
+      right: Array.map(
+        yield* runQuery.runQuery(right.parent.list, { run }),
         (doc) => doc.count,
       ),
       rejectedId,
@@ -70,10 +75,12 @@ const list = FunctionImpl.make(schema, spec, "list", (args) =>
   Effect.gen(function* () {
     const runQuery = yield* QueryRunner;
     return {
-      first: (yield* runQuery.runQuery(first.counter.list, args)).map(
+      first: Array.map(
+        yield* runQuery.runQuery(first.counter.list, args),
         (doc) => doc.count,
       ),
-      second: (yield* runQuery.runQuery(second.counter.list, args)).map(
+      second: Array.map(
+        yield* runQuery.runQuery(second.counter.list, args),
         (doc) => doc.count,
       ),
     };
@@ -147,7 +154,8 @@ const declaredError = FunctionImpl.make(
         run: error.run,
         // oxlint-disable-next-line effecttsgo/instance-of-schema -- Class identity is the behavior under test.
         instance: error instanceof Rejected,
-        remaining: (yield* query.runQuery(first.counter.list, { run })).map(
+        remaining: Array.map(
+          yield* query.runQuery(first.counter.list, { run }),
           (doc) => doc.count,
         ),
       };
@@ -166,7 +174,7 @@ const page = FunctionImpl.make(schema, spec, "page", (args) =>
   Effect.gen(function* () {
     const query = yield* QueryRunner;
     const result = yield* query.runQuery(first.counter.page, args);
-    return { ...result, page: result.page.map((doc) => doc.count) };
+    return { ...result, page: Array.map(result.page, (doc) => doc.count) };
   }).pipe(Effect.orDie),
 );
 const environment = FunctionImpl.make(schema, spec, "environment", () =>

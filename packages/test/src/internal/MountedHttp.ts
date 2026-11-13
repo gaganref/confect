@@ -13,6 +13,8 @@ import * as Schema from "effect/Schema";
 import type { HttpMount, RegisterComponent } from "../TestConfect.js";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -56,7 +58,7 @@ const normalizeMounts = (mounts: ReadonlyArray<HttpMount>) => {
       );
     }
     const prefix = pipe(mount.httpPrefix, String.replace(/\/+$/, ""));
-    if (normalized.some((previous) => previous.prefix === prefix)) {
+    if (Arr.some(normalized, (previous) => previous.prefix === prefix)) {
       return Result.fail(
         new InvalidHttpMount({
           ...mount,
@@ -109,20 +111,25 @@ export const make = (
 
   const register: RegisterComponent = (componentPath, schema, modules) => {
     if (
-      !normalized.success.some((mount) => mount.componentPath === componentPath)
+      !Arr.some(
+        normalized.success,
+        (mount) => mount.componentPath === componentPath,
+      )
     ) {
       registerComponent(componentPath, schema, modules);
       return;
     }
-    const generated = Object.keys(modules).find((key) =>
-      pipe(key, String.includes("_generated")),
+    const generated = Option.getOrUndefined(
+      Arr.findFirst(Object.keys(modules), (key) =>
+        pipe(key, String.includes("_generated")),
+      ),
     );
     const root =
       generated === undefined
         ? undefined
         : pipe(generated, String.split("_generated"))[0];
     const moduleLoaders = Object.fromEntries(
-      Object.entries(modules).map(([path, load]) => [
+      Arr.map(Object.entries(modules), ([path, load]) => [
         pipe(path, String.replace(/\.[^.]+$/, "")),
         load,
       ]),
@@ -217,10 +224,13 @@ export const make = (
         });
       }
       const pathname = new URL(`${defaultSiteUrl}${path}`).pathname;
-      const mount = normalized.success.find(
-        ({ prefix }) =>
-          pathname === prefix ||
-          pipe(pathname, String.startsWith(`${prefix}/`)),
+      const mount = Option.getOrUndefined(
+        Arr.findFirst(
+          normalized.success,
+          ({ prefix }) =>
+            pathname === prefix ||
+            pipe(pathname, String.startsWith(`${prefix}/`)),
+        ),
       );
       if (mount === undefined) return accessor.fetch(path, init);
       if (!registered.has(mount.componentPath)) {

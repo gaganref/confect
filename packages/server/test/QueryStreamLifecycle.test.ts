@@ -672,9 +672,9 @@ describe("QueryStream.collect", () => {
   it.effect("collects every row when the byte count equals the budget", () =>
     Effect.gen(function* () {
       const rows = documents.slice(0, 3);
-      expect(rows.reduce((sum, row) => sum + getDocumentSize(row), 0)).toBe(
-        126,
-      );
+      expect(
+        Arr.reduce(rows, 0, (sum, row) => sum + getDocumentSize(row)),
+      ).toBe(126);
       const reader = makeReader(undefined, rows);
       expect(
         yield* QueryStream.collect(reader.stream, { maximumBytesRead: 126 }),
@@ -812,7 +812,7 @@ describe("QueryStream.collect", () => {
         });
         expect(returned).toBe(false);
         expect(demands.documentsRead).toBe(2_001);
-        expect(demands.runs.every((run) => run.returned === 1)).toBe(true);
+        expect(Arr.every(demands.runs, (run) => run.returned === 1)).toBe(true);
       }),
   );
 
@@ -1026,12 +1026,12 @@ it.effect.each(["asc", "desc"] as const)(
         }
         const expected =
           direction === "desc"
-            ? rows.slice(0, count).toReversed()
+            ? Arr.reverse(rows.slice(0, count))
             : rows.slice(0, count);
         expect(collected).toEqual(expected);
-        expect(new Set(collected.map((doc) => doc._id)).size).toBe(count);
+        expect(new Set(Arr.map(collected, (doc) => doc._id)).size).toBe(count);
         expect(yield* Stream.runCollect(QueryStream.reverse(merged))).toEqual(
-          expected.toReversed(),
+          Arr.reverse(expected),
         );
       }
     }),
@@ -1062,7 +1062,7 @@ it.effect(
         yield* Stream.runCollect(
           QueryStream.merge([first, right], { dedupe: true }),
         ),
-      ).toEqual(documents.map((doc) => ({ ...doc, group: "left" })));
+      ).toEqual(Arr.map(documents, (doc) => ({ ...doc, group: "left" })));
       const ties = [
         { ...documents[0]!, _id: "x" },
         { ...documents[0]!, _id: "y" },

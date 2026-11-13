@@ -30,6 +30,7 @@ import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpApiError from "effect/http-api/HttpApiError";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
 
 const api = HttpApi.make("users").add(
   HttpApiGroup.make("users").add(
@@ -53,7 +54,7 @@ const routes = HttpApiBuilder.layer(api).pipe(
 );
 
 const labels = (router: ReturnType<typeof ConfectHttpRouter.make>) =>
-  router.getRoutes().map(([path, method]) => [method, path]);
+  Arr.map(router.getRoutes(), ([path, method]) => [method, path]);
 
 const matchLabel = (
   router: ReturnType<typeof ConfectHttpRouter.make>,
@@ -316,7 +317,7 @@ it.effect("uses one labeled request span and the supplied logger", () =>
     expect(yield* Effect.promise(() => response.json())).toBe("42");
     expect(messages).toEqual([["request"]]);
     expect(
-      spans.map((span) => [
+      Arr.map(spans, (span) => [
         span.name,
         span.attributes.get("kind"),
         span.parent._tag,
@@ -479,7 +480,7 @@ it.effect.each([
             : [],
       );
       if (scenario === "decode") {
-        expect(reports.map(({ cause }) => Cause.squash(cause))).toEqual(
+        expect(Arr.map(reports, ({ cause }) => Cause.squash(cause))).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
               _tag: "HttpApiSchemaError",
@@ -698,7 +699,9 @@ const answering = (
           const request = yield* HttpServerRequest.HttpServerRequest;
           if (request.method !== "OPTIONS") return yield* next;
           const params = Object.entries(yield* HttpRouter.params).flat();
-          return HttpServerResponse.text([method, ...params].join(" "));
+          return HttpServerResponse.text(
+            Arr.join([method, ...Arr.map(params, (param) => param ?? "")], " "),
+          );
         }),
       ).layer,
     ),

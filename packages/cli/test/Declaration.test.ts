@@ -7,6 +7,7 @@ import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Array from "effect/Array";
 
 const ratelimiter = defineComponent("ratelimiter", {
   env: { LIMIT: v.string() },
@@ -319,7 +320,7 @@ export default app;
     const versions = [["convex", "1.46.0"]] as const;
     const digest = Declaration.digest({ files, versions });
     expect(digest).toMatch(/^sha256:[0-9a-f]{64}$/);
-    expect(Declaration.digest({ files: files.toReversed(), versions })).toBe(
+    expect(Declaration.digest({ files: Array.reverse(files), versions })).toBe(
       digest,
     );
     expect(

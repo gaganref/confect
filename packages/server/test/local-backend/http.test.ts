@@ -15,6 +15,7 @@ import * as LocalBackend from "confect-local-backend/LocalBackend";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
+import * as Array from "effect/Array";
 
 const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -95,7 +96,7 @@ layer(
           Stream.runCollect,
           Effect.timeout("20 seconds"),
         );
-        const labels = completions.map(({ identifier }) => identifier);
+        const labels = Array.map(completions, ({ identifier }) => identifier);
         expect(labels).toEqual(["GET /users/:id", "GET /members/:id"]);
         yield* Effect.sync(() => {
           for (const { kind, udfType, identifier } of completions) {

@@ -43,7 +43,7 @@ it.effect.each([
     discoverTableFiles.pipe(
       Effect.provide(listedAs(listing)),
       Effect.map((files) =>
-        expect(files).toEqual(sorted.map((file) => `tables/${file}`)),
+        expect(files).toEqual(Array.map(sorted, (file) => `tables/${file}`)),
       ),
     ),
 );

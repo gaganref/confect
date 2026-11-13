@@ -13,6 +13,7 @@ import * as Ref from "effect/Ref";
 import type * as DatabaseSchema from "./DatabaseSchema.js";
 import type * as FunctionImpl from "./FunctionImpl.js";
 import type * as MiddlewareImpl from "./MiddlewareImpl.js";
+import { pipe } from "effect/Function";
 
 export const TypeId = "~@confect/server/GroupImpl";
 export type TypeId = typeof TypeId;
@@ -121,7 +122,14 @@ export class MissingRequiredMiddlewareError extends Data.TaggedError(
   readonly missing: ReadonlyArray<RegistryItems.MissingMiddleware>;
 }> {
   override get message(): string {
-    return `GroupImpl.finalize: ${this.missing.map(({ functionName, middlewareKey }) => `${functionName} requires middleware "${middlewareKey}"`).join("\n")}`;
+    return `GroupImpl.finalize: ${pipe(
+      this.missing,
+      Array.map(
+        ({ functionName, middlewareKey }) =>
+          `${functionName} requires middleware "${middlewareKey}"`,
+      ),
+      Array.join("\n"),
+    )}`;
   }
 }
 

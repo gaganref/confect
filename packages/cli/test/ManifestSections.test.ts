@@ -15,12 +15,13 @@ import {
 } from "@confect/cli/ManifestSections";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
 
 const section = {
   owner: "test/tags",
   format: 1,
   describe: ({ middleware }: { middleware: ReadonlyArray<{ key: string }> }) =>
-    middleware.map(({ key }) => key),
+    Arr.map(middleware, ({ key }) => key),
 };
 const tags = (tagsSection: ManifestSection.Any = section) => [
   { key: "tags", section: tagsSection },
@@ -94,7 +95,7 @@ describe("ManifestSections", () => {
     const group = GroupSpec.make()
       .addFunction(FunctionSpec.publicQuery({ ...list, name: "b" }))
       .addFunction(FunctionSpec.publicQuery({ ...list, name: "a" }));
-    const leaves = ["Z", "m", "m/n", "b"].map((name) => ({
+    const leaves = Arr.map(["Z", "m", "m/n", "b"], (name) => ({
       relativePath: `${name}.spec.ts`,
       pathSegments: pipe(name, Str.split("/")) as [string, ...string[]],
       spec: group,
@@ -120,7 +121,7 @@ describe("ManifestSections", () => {
       "m:a",
       "m:b",
     ]);
-    expect(collected(leaves.toReversed())).toEqual(forward);
+    expect(collected(Arr.reverse(leaves))).toEqual(forward);
     expect(collected([leaves[2]!, leaves[0]!, leaves[3]!, leaves[1]!])).toEqual(
       forward,
     );
@@ -129,7 +130,7 @@ describe("ManifestSections", () => {
     const registry = Result.getOrThrow(
       collect([...tags(), { key: "other", section }], []),
     );
-    expect([...registry].map(([key, { data }]) => [key, data])).toEqual([
+    expect(Arr.map([...registry], ([key, { data }]) => [key, data])).toEqual([
       ["tags", { format: 1, functions: {} }],
       ["other", { format: 1, functions: {} }],
     ]);
@@ -232,7 +233,7 @@ describe("ManifestSections", () => {
     const summary = Result.getOrThrow(
       summarized(({ modules, functions }) => ({
         format: 1,
-        levels: modules.map(({ exports }) => exports.level),
+        levels: Arr.map(modules, ({ exports }) => exports.level),
         functions,
       })),
     ).get("tags");
@@ -294,85 +295,93 @@ describe("ManifestSections", () => {
       summarizeTags: () => ({ format: 1, levels: new Map() }),
       reason: 'could not summarize as JSON: Expected JSON data at $["levels"]',
     },
-    ...[
-      // oxlint-disable-next-line effecttsgo/global-date -- The refusal is of the raw Date value itself.
-      { returned: "a Date", value: new Date(0) },
-      {
-        returned: "a class instance with toJSON",
-        value: new (class Level {
-          toJSON() {
-            return { n: 1 };
-          }
-        })(),
-      },
-      { returned: "a symbol key", value: { [Symbol("s")]: 1 } },
-      {
-        returned: "an array with toJSON",
-        value: Object.assign([1], { toJSON: () => ({ n: 1 }) }),
-      },
-      {
-        returned: "an array with its own keys",
-        value: Object.assign([1], { keys: 1 }),
-      },
-      {
-        returned: "an array whose methods are its own throwing getters",
-        value: Object.defineProperties(
-          [1],
-          Object.fromEntries(
-            [
-              "keys",
-              "values",
-              "entries",
-              "forEach",
-              "map",
-              "every",
-              "some",
-              Symbol.iterator,
-            ].map((name) => [
-              name,
-              {
-                get: () => {
-                  throw new Error(`${String(name)} getter ran`);
-                },
-              },
-            ]),
-          ),
-        ),
-      },
-      {
-        returned: "an array with a symbol key",
-        value: Object.assign([1], { [Symbol("s")]: 1 }),
-      },
-      // oxlint-disable-next-line no-sparse-arrays -- The refusal is of the hole itself.
-      { returned: "an array with a hole", value: [1, , 2], at: '["1"]' },
-      {
-        returned: "an array subclass",
-        value: new (class Levels extends Array {})(),
-      },
-      {
-        returned: "a hidden toJSON",
-        value: Object.defineProperty({}, "toJSON", { value: () => ({ n: 1 }) }),
-        at: '["toJSON"]',
-      },
-      {
-        returned: "a hidden property",
-        value: Object.defineProperty({}, "n", { value: 1 }),
-        at: '["n"]',
-      },
-      {
-        returned: "a getter",
-        value: {
-          get n() {
-            return 1;
-          },
+    ...Arr.map(
+      [
+        // oxlint-disable-next-line effecttsgo/global-date -- The refusal is of the raw Date value itself.
+        { returned: "a Date", value: new Date(0) },
+        {
+          returned: "a class instance with toJSON",
+          value: new (class Level {
+            toJSON() {
+              return { n: 1 };
+            }
+          })(),
         },
-        at: '["n"]',
-      },
-    ].map(({ returned, value, at = "" }) => ({
-      returned,
-      summarizeTags: () => ({ format: 1, at: value }),
-      reason: `could not summarize as JSON: Expected JSON data at $["at"]${at}`,
-    })),
+        { returned: "a symbol key", value: { [Symbol("s")]: 1 } },
+        {
+          returned: "an array with toJSON",
+          value: Object.assign([1], { toJSON: () => ({ n: 1 }) }),
+        },
+        {
+          returned: "an array with its own keys",
+          value: Object.assign([1], { keys: 1 }),
+        },
+        {
+          returned: "an array whose methods are its own throwing getters",
+          value: Object.defineProperties(
+            [1],
+            Object.fromEntries(
+              Arr.map(
+                [
+                  "keys",
+                  "values",
+                  "entries",
+                  "forEach",
+                  "map",
+                  "every",
+                  "some",
+                  Symbol.iterator,
+                ],
+                (name) => [
+                  name,
+                  {
+                    get: () => {
+                      throw new Error(`${String(name)} getter ran`);
+                    },
+                  },
+                ],
+              ),
+            ),
+          ),
+        },
+        {
+          returned: "an array with a symbol key",
+          value: Object.assign([1], { [Symbol("s")]: 1 }),
+        },
+        // oxlint-disable-next-line no-sparse-arrays -- The refusal is of the hole itself.
+        { returned: "an array with a hole", value: [1, , 2], at: '["1"]' },
+        {
+          returned: "an array subclass",
+          value: new (class Levels extends Array {})(),
+        },
+        {
+          returned: "a hidden toJSON",
+          value: Object.defineProperty({}, "toJSON", {
+            value: () => ({ n: 1 }),
+          }),
+          at: '["toJSON"]',
+        },
+        {
+          returned: "a hidden property",
+          value: Object.defineProperty({}, "n", { value: 1 }),
+          at: '["n"]',
+        },
+        {
+          returned: "a getter",
+          value: {
+            get n() {
+              return 1;
+            },
+          },
+          at: '["n"]',
+        },
+      ],
+      ({ returned, value, at = "" }) => ({
+        returned,
+        summarizeTags: () => ({ format: 1, at: value }),
+        reason: `could not summarize as JSON: Expected JSON data at $["at"]${at}`,
+      }),
+    ),
     {
       returned: "another format",
       summarizeTags: () => ({ format: 2 }),

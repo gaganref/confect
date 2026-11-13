@@ -6,6 +6,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Result from "effect/Result";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as RealBackend from "./RealBackend";
+import * as Arr from "effect/Array";
 
 // Runs the real pinned backend, as RealLocalBackend.test.ts does, on ports
 // 3400-3499. Every push runs the real codegen and `convex deploy`.
@@ -54,7 +55,7 @@ const app = (root: string, name: string) =>
       "node_modules/convex": `${modules}/convex`,
       "node_modules/effect": `${modules}/effect`,
       ...Object.fromEntries(
-        ["cli", "core", "server"].map((dependency) => [
+        Arr.map(["cli", "core", "server"], (dependency) => [
           `node_modules/@confect/${dependency}`,
           `${packages}/${dependency}`,
         ]),
@@ -202,7 +203,7 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
           yield* call("install:send", "bulkEmail", { message: "Synthetic" });
           const sent = (yield* call("events:list")) as ReadonlyArray<Row>;
           expect(
-            sent.map(({ fromName, message }) => ({ fromName, message })),
+            Arr.map(sent, ({ fromName, message }) => ({ fromName, message })),
           ).toEqual([{ fromName: "School office", message: "Synthetic" }]);
 
           const all = Effect.all({

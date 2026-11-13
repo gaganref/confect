@@ -24,6 +24,7 @@ import { userCache } from "./UserCache.js";
 import { extract } from "./Zip.js";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
 
 /**
  * The backend release a new local deployment runs. An existing data directory
@@ -310,7 +311,7 @@ export const boot = Effect.fn("LocalBackend.boot")(function* (
     if (Option.isNone(range) || Option.isNone(range.value)) {
       // A closed server no longer has an address.
       const [port, sitePort] = yield* Effect.all([listen(0), listen(0)]).pipe(
-        Effect.map((servers) => servers.map(portOf)),
+        Effect.map((servers) => Array.map(servers, portOf)),
         Effect.scoped,
       );
       if (port === undefined || sitePort === undefined)

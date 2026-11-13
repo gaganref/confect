@@ -43,18 +43,20 @@ const getEntrypoints = Effect.gen(function* () {
   const path = yield* Path.Path;
   const convex = yield* ConvexDirectory.get;
   const files = yield* fs.readDirectory(convex, { recursive: true });
-  const components = files
-    .filter(
+  const components = pipe(
+    files,
+    Array.filter(
       (file) =>
         path.basename(file) === "convex.config.ts" &&
         path.dirname(file) !== ".",
-    )
-    .map((file) => path.dirname(file) + path.sep);
-  return files.filter((file) => {
+    ),
+    Array.map((file) => path.dirname(file) + path.sep),
+  );
+  return Array.filter(files, (file) => {
     const base = path.basename(file);
     return (
       !pipe(file, String.startsWith("_generated" + path.sep)) &&
-      !components.some((component) =>
+      !Array.some(components, (component) =>
         pipe(file, String.startsWith(component)),
       ) &&
       /\.(?:js|mjs|cjs|ts|tsx|mts|cts|jsx)$/.test(base) &&
@@ -168,7 +170,7 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
   ]);
   // The declared HTTP router first imports each file a manifest section wrote.
   const sectionImports = new Set(
-    (yield* SectionFiles.written).map((file) =>
+    Array.map(yield* SectionFiles.written, (file) =>
       encodeString(
         path.join(confect, "_generated", path.basename(file, ".ts")),
       ),
@@ -188,26 +190,27 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
       continue;
     const tokens = tokenize(contents, absolute, path);
     if (tokens !== undefined) {
+      const shapes = optional.get(relative);
       if (
-        optional
-          .get(relative)
-          ?.some((template) =>
-            matchesShape(
-              relative === "http.ts" ? withoutSectionImports(tokens) : tokens,
-              tokenize(template, absolute, path)!,
-            ),
-          )
+        shapes !== undefined &&
+        Array.some(shapes, (template) =>
+          matchesShape(
+            relative === "http.ts" ? withoutSectionImports(tokens) : tokens,
+            tokenize(template, absolute, path)!,
+          ),
+        )
       )
         continue;
       if (path.extname(relative) === ".ts") {
-        const names = tokens.flatMap((token, index) =>
+        const names = Array.flatMap(tokens, (token, index) =>
           token === "export" && tokens[index + 1] === "const"
             ? [tokens[index + 2]!]
             : [],
         );
         const group = yield* GroupPath.fromGroupModulePath(relative);
         const reusesContext = names.includes("experimental_reuseContext");
-        const functionNames = names.filter(
+        const functionNames = Array.filter(
+          names,
           (name) => name !== "experimental_reuseContext",
         );
         const template = yield* render({

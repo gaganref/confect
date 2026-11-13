@@ -9,6 +9,7 @@ import { ConvexClient } from "./ConvexClient.js";
 import type { Providers } from "./Providers.js";
 import { resourceName } from "./internal/ResourceIdentity.js";
 import { checkpointCreate, shouldAdopt } from "./internal/Lifecycle.js";
+import * as Array from "effect/Array";
 
 export interface ProjectProps {
   readonly teamId: number;
@@ -68,14 +69,15 @@ export const provider = Effect.gen(function* () {
     teamId: number,
     name: string,
   ) {
-    const matches = (yield* client.listProjects(teamId)).filter(
+    const matches = Array.filter(
+      yield* client.listProjects(teamId),
       (project) => project.name === name,
     );
     if (matches.length > 1)
       return yield* new AmbiguousProject({
         teamId,
         name,
-        projectIds: matches.map((project) => project.id),
+        projectIds: Array.map(matches, (project) => project.id),
       });
     return matches[0];
   });

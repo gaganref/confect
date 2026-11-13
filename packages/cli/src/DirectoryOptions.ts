@@ -11,6 +11,7 @@ import * as ConvexDirectory from "./ConvexDirectory.js";
 import * as ProjectRoot from "./ProjectRoot.js";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
 
 export const flags = {
   componentDir: Flag.String("component-dir").pipe(
@@ -71,7 +72,7 @@ export const layer = ({
                 ),
               ),
             );
-          const definition = `${pkg.name}:${pipe(path.relative(projectRoot, absolute), String.split(path.sep)).join("/")}`;
+          const definition = `${pkg.name}:${Array.join(pipe(path.relative(projectRoot, absolute), String.split(path.sep)), "/")}`;
           return ConvexDirectory.ConvexDirectory.of({
             get: Effect.succeed(absolute),
             target: {

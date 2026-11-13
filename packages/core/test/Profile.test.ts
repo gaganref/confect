@@ -3,6 +3,7 @@ import * as Schema from "effect/Schema";
 import * as FunctionSpec from "@confect/core/FunctionSpec";
 import * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
 import * as Profile from "@confect/core/Profile";
+import * as Array from "effect/Array";
 
 interface Quota extends Profile.Fields {
   readonly Type: { readonly quota: number };
@@ -101,7 +102,8 @@ describe("attach", () => {
     });
     const omitted = Described.publicQuery({ name: "list", returns });
     expect(
-      [described, omitted].map(
+      Array.map(
+        [described, omitted],
         (spec) => spec.middlewareAttachments[0]?.options,
       ),
     ).toEqual([

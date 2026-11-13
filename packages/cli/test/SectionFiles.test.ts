@@ -2,6 +2,7 @@ import * as Result from "effect/Result";
 import type { ManifestSection } from "@confect/core";
 import { describe, expect, it } from "@effect/vitest";
 import { builtIn, claims } from "@confect/cli/SectionFiles";
+import * as Array from "effect/Array";
 
 const generating = (file: string): ManifestSection.ManifestSection => ({
   owner: "test/observe",
@@ -15,20 +16,24 @@ const generating = (file: string): ManifestSection.ManifestSection => ({
 });
 const declared = (
   sections: Readonly<Record<string, ManifestSection.ManifestSection>>,
-) => Object.entries(sections).map(([key, section]) => ({ key, section }));
+) =>
+  Array.map(Object.entries(sections), ([key, section]) => ({ key, section }));
 
 describe("SectionFiles", () => {
   it("claims each declared generating section's file, ordered by file", () => {
     expect(
-      Result.getOrThrow(
-        claims(
-          declared({
-            trace: generating("trace.ts"),
-            tags: { owner: "test/tags", format: 1, describe: () => null },
-            observe: generating("observe.ts"),
-          }),
+      Array.map(
+        Result.getOrThrow(
+          claims(
+            declared({
+              trace: generating("trace.ts"),
+              tags: { owner: "test/tags", format: 1, describe: () => null },
+              observe: generating("observe.ts"),
+            }),
+          ),
         ),
-      ).map(({ key, generate }) => [key, generate.file]),
+        ({ key, generate }) => [key, generate.file],
+      ),
     ).toEqual([
       ["observe", "observe.ts"],
       ["trace", "trace.ts"],

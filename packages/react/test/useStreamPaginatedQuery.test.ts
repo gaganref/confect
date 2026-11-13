@@ -458,7 +458,7 @@ describe("useStreamPaginatedQuery", () => {
       { cursor: "c1", endCursor: "c2", items: ["5", "6"] },
     ] as const;
     const encoded = (items: ReadonlyArray<string>) =>
-      items.map((value) => ({ value }));
+      Arr.map(items, (value) => ({ value }));
     for (const { cursor, endCursor, items } of pages) {
       const loaded = {
         page: encoded(items),

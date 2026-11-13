@@ -489,9 +489,12 @@ export const componentContract = Effect.fnUntraced(function* ({
     ...tableNames,
     ...Array.map(systemTables, (name) => `"${name}"`),
   ];
-  const groups = `$Component.Groups<[${Array.map(tableNames, (name) => `typeof ${name}`).join(", ")}]>`;
+  const groups = `$Component.Groups<[${Array.join(
+    Array.map(tableNames, (name) => `typeof ${name}`),
+    ", ",
+  )}]>`;
   yield* cbw.writeLine(
-    `const $component: $Component.Component<typeof $spec, typeof $scope, ${names.join(" | ")}, ${groups}> = $Component.contract($spec, $scope, [${entries.join(", ")}]);`,
+    `const $component: $Component.Component<typeof $spec, typeof $scope, ${Array.join(names, " | ")}, ${groups}> = $Component.contract($spec, $scope, [${Array.join(entries, ", ")}]);`,
   );
   yield* cbw.writeLine("export default $component;");
   return yield* cbw.toString();
@@ -645,7 +648,7 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
     required.length === 0
       ? "groupLayer"
       : // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Emit escaped TypeScript string literals, not JSON payloads.
-        `groupLayer.pipe(GroupImpl.finalize({ required: [${required.map(({ key }) => `{ key: ${JSON.stringify(key)} }`).join(", ")}], groupPath: ${JSON.stringify(groupPath)} }))`;
+        `groupLayer.pipe(GroupImpl.finalize({ required: [${Array.join(", ")(Array.map(required, ({ key }) => `{ key: ${JSON.stringify(key)} }`))}], groupPath: ${JSON.stringify(groupPath)} }))`;
   const groupLayer =
     runtimeImportPath === undefined
       ? finalizedLayer

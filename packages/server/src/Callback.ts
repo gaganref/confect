@@ -42,7 +42,7 @@ const alternatives = (
   validator: GenericValidator,
 ): ReadonlyArray<GenericValidator> =>
   validator.kind === "union"
-    ? validator.members.flatMap(alternatives)
+    ? Array.flatMap(validator.members, alternatives)
     : [validator];
 
 const literalKinds: Record<string, string> = {
@@ -60,12 +60,12 @@ const literalKinds: Record<string, string> = {
 const alternativesOf = (
   validators: ReadonlyArray<GenericValidator>,
 ): ReadonlyArray<GenericValidator> => {
-  const flat = validators.flatMap(alternatives);
-  if (flat.some(({ kind }) => kind === "any")) {
+  const flat = Array.flatMap(validators, alternatives);
+  if (Array.some(flat, ({ kind }) => kind === "any")) {
     return [v.any()];
   }
   const booleans = new Set(
-    flat.flatMap((validator) =>
+    Array.flatMap(flat, (validator) =>
       validator.kind === "literal" && typeof validator.value === "boolean"
         ? [validator.value]
         : [],
@@ -73,8 +73,9 @@ const alternativesOf = (
   );
   const widened =
     booleans.has(true) && booleans.has(false) ? [...flat, v.boolean()] : flat;
-  const kinds = new Set<string>(widened.map(({ kind }) => kind));
-  return widened.filter(
+  const kinds = new Set<string>(Array.map(widened, ({ kind }) => kind));
+  return Array.filter(
+    widened,
     (validator) =>
       validator.kind !== "literal" ||
       !kinds.has(literalKinds[typeof validator.value] ?? ""),
@@ -96,7 +97,7 @@ const keyed = (
  * sorted by it, so union order and repetition do not count as differences.
  */
 const membersOf = (validators: ReadonlyArray<GenericValidator>) =>
-  keyed(alternativesOf(validators).map(describe));
+  keyed(Array.map(alternativesOf(validators), describe));
 
 const unionOf = (
   members: ReadonlyArray<readonly [string, Schema.Json]>,
@@ -104,7 +105,10 @@ const unionOf = (
   const [only, ...rest] = members;
   return only !== undefined && rest.length === 0
     ? only[1]
-    : { kind: "union", members: members.map(([, described]) => described) };
+    : {
+        kind: "union",
+        members: Array.map(members, ([, described]) => described),
+      };
 };
 
 const describe = (validator: GenericValidator): Schema.Json => {
@@ -155,7 +159,7 @@ const errorAlternatives = (schema: Schema.Top): ReadonlyArray<Schema.Top> =>
   SchemaAST.isUnion(schema.ast) &&
   Predicate.hasProperty(schema, "members") &&
   Array.isArray(schema.members)
-    ? schema.members.flatMap((member) =>
+    ? Array.flatMap(schema.members, (member) =>
         Schema.isSchema(member) ? errorAlternatives(member) : [],
       )
     : [schema];
@@ -204,8 +208,8 @@ const describeCompiled = (
 ): Schema.Json =>
   unionOf(
     keyed([
-      ...membersOf(Array.getSuccesses(compiled)).map(([, json]) => json),
-      ...Array.getFailures(compiled).map((error) => ({
+      ...Array.map(membersOf(Array.getSuccesses(compiled)), ([, json]) => json),
+      ...Array.map(Array.getFailures(compiled), (error) => ({
         kind: "unsupported",
         reason: error.message,
       })),
@@ -255,22 +259,25 @@ const verify = (
     }
   }
 
-  const declared = ownError(provenance).flatMap(errorAlternatives);
-  const undeclared = [
-    ...ownError(ref),
-    ...MiddlewareSpec.errorSchemas(ref.middlewareSpecs),
-  ]
-    .flatMap(errorAlternatives)
-    .filter((schema) => !declared.includes(schema));
+  const declared = Array.flatMap(ownError(provenance), errorAlternatives);
+  const undeclared = pipe(
+    [...ownError(ref), ...MiddlewareSpec.errorSchemas(ref.middlewareSpecs)],
+    Array.flatMap(errorAlternatives),
+    Array.filter((schema) => !declared.includes(schema)),
+  );
   if (undeclared.length > 0) {
-    const expectedErrors = declared.map((schema) => compileSchema(schema));
-    const actualErrors = undeclared.map((schema) => compileSchema(schema));
+    const expectedErrors = Array.map(declared, (schema) =>
+      compileSchema(schema),
+    );
+    const actualErrors = Array.map(undeclared, (schema) =>
+      compileSchema(schema),
+    );
     const keys = new Set(
-      membersOf(Array.getSuccesses(expectedErrors)).map(([key]) => key),
+      Array.map(membersOf(Array.getSuccesses(expectedErrors)), ([key]) => key),
     );
     if (
       Array.getFailures(actualErrors).length > 0 ||
-      !membersOf(Array.getSuccesses(actualErrors)).every(([key]) =>
+      !Array.every(membersOf(Array.getSuccesses(actualErrors)), ([key]) =>
         keys.has(key),
       )
     ) {

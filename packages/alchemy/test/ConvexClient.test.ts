@@ -10,6 +10,7 @@ import * as HttpClientError from "effect/http/HttpClientError";
 import type * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { inspect } from "node:util";
+import * as Arr from "effect/Array";
 
 const token = Redacted.make("management-secret-for-tests");
 const deployKey = Redacted.make("deployment-secret-for-tests");
@@ -108,7 +109,7 @@ describe("ConvexClient", () => {
       return Effect.gen(function* () {
         const client = yield* ConvexClient.ConvexClient;
         expect(yield* client.listProjects(7)).toEqual([project, secondProject]);
-        expect(http.requests.map((request) => request.url)).toEqual([
+        expect(Arr.map(http.requests, (request) => request.url)).toEqual([
           "https://api.convex.dev/v1/teams/7/projects",
           "https://api.convex.dev/v1/teams/7/projects?cursor=next%2F%2B",
         ]);
@@ -167,7 +168,9 @@ describe("ConvexClient", () => {
           name: "Renamed",
         });
         expect(yield* client.deleteProject(42)).toBeUndefined();
-        expect(http.requests.map(({ method, url }) => [method, url])).toEqual([
+        expect(
+          Arr.map(http.requests, ({ method, url }) => [method, url]),
+        ).toEqual([
           ["POST", "https://api.convex.dev/v1/teams/7/create_project"],
           ["GET", "https://api.convex.dev/v1/projects/42"],
           ["PATCH", "https://api.convex.dev/v1/projects/42"],
@@ -224,7 +227,9 @@ describe("ConvexClient", () => {
           yield* client.updateDeployment(deployment.name, update),
         ).toBeUndefined();
         expect(yield* client.deleteDeployment(deployment.name)).toBeUndefined();
-        expect(http.requests.map(({ method, url }) => [method, url])).toEqual([
+        expect(
+          Arr.map(http.requests, ({ method, url }) => [method, url]),
+        ).toEqual([
           ["GET", "https://api.convex.dev/v1/projects/42/list_deployments"],
           ["GET", "https://api.convex.dev/v1/deployments/name%2Fwith%20slash"],
           ["POST", "https://api.convex.dev/v1/projects/42/create_deployment"],
@@ -273,7 +278,7 @@ describe("ConvexClient", () => {
         expect(yield* client.listDeployKeys(deployment.name)).toEqual([key]);
         yield* client.deleteDeployKey(deployment.name, created.deployKey);
         yield* client.deleteDeployKey(deployment.name, key.name);
-        expect(http.requests.map(({ url }) => url)).toEqual([
+        expect(Arr.map(http.requests, ({ url }) => url)).toEqual([
           "https://api.convex.dev/v1/deployments/happy-otter-123/create_deploy_key",
           "https://api.convex.dev/v1/deployments/happy-otter-123/list_deploy_keys",
           "https://api.convex.dev/v1/deployments/happy-otter-123/delete_deploy_key",
@@ -343,7 +348,7 @@ describe("ConvexClient", () => {
           deployKey,
           changes,
         );
-        expect(http.requests.map(({ url }) => url)).toEqual([
+        expect(Arr.map(http.requests, ({ url }) => url)).toEqual([
           `${deploymentUrl}/api/v1/list_environment_variables`,
           `${deploymentUrl}/api/v1/update_environment_variables`,
         ]);
@@ -453,7 +458,7 @@ describe("ConvexClient", () => {
     () => {
       const secret = "untrusted-error-body-secret";
       const http = mockHttp(
-        [404, 409, 401, 429, 500, 302].map((status) =>
+        Arr.map([404, 409, 401, 429, 500, 302], (status) =>
           Response.json({ code: secret, message: secret }, { status }),
         ),
       );

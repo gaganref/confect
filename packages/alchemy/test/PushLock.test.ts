@@ -21,6 +21,7 @@ import {
 import { deadPid } from "./fixtures/Processes";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
 
 const serialize = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 
@@ -136,7 +137,7 @@ setTimeout(() => process.exit(0), 600);`,
           concurrency: "unbounded",
         });
         expect(
-          events.map((event) => pipe(event, String.split(" "))[0]),
+          Array.map(events, (event) => pipe(event, String.split(" "))[0]),
         ).toEqual(["start", "end", "start", "end"]);
       }),
     ).pipe(provide),

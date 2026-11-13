@@ -391,7 +391,8 @@ it.effect(
         });
       }
       expect(
-        (yield* t.query(mounts.first.counter.list, { run: "rollback" })).map(
+        Array.map(
+          yield* t.query(mounts.first.counter.list, { run: "rollback" }),
           (row) => row.count,
         ),
       ).toEqual([5]);
@@ -421,7 +422,8 @@ it.effect(
       });
       yield* t.finishAllScheduledFunctions(() => vi.runAllTimers());
       expect(
-        (yield* t.query(mounts.first.counter.list, { run: "cancel" })).map(
+        Array.map(
+          yield* t.query(mounts.first.counter.list, { run: "cancel" }),
           (doc) => doc.count,
         ),
       ).toEqual([17]);
@@ -471,8 +473,8 @@ it.effect(
         numItems: 2,
       });
       expect(
-        [firstPage, secondPage, lastPage].map((page) =>
-          page.page.map((doc) => doc.count),
+        Array.map([firstPage, secondPage, lastPage], (page) =>
+          Array.map(page.page, (doc) => doc.count),
         ),
       ).toEqual([[1, 2], [3, 4], [5]]);
       expect([firstPage.isDone, secondPage.isDone, lastPage.isDone]).toEqual([
@@ -481,7 +483,8 @@ it.effect(
         true,
       ]);
       expect(
-        (yield* t.query(mounts.second.counter.list, { run: "pages" })).map(
+        Array.map(
+          yield* t.query(mounts.second.counter.list, { run: "pages" }),
           (row) => row.count,
         ),
       ).toEqual([99]);
@@ -543,12 +546,12 @@ it.effect(
         (path) => t.withIdentity({ subject: "caller" }).fetch(path),
         { concurrency: "unbounded" },
       );
-      expect(responses.map((response) => response.status)).toEqual([
+      expect(Array.map(responses, (response) => response.status)).toEqual([
         200, 200, 200,
       ]);
       expect(
         yield* Effect.promise(() =>
-          Promise.all(responses.map((response) => response.json())),
+          Promise.all(Array.map(responses, (response) => response.json())),
         ),
       ).toEqual([
         { siteUrl: "https://app.convex.site/email" },
@@ -607,7 +610,7 @@ it.effect("leaves unmounted paths and partial prefix matches to the root", () =>
     );
     expect([
       mounted.status,
-      ...responses.map((response) => response.status),
+      ...Array.map(responses, (response) => response.status),
     ]).toEqual([200, 404, 404, 404]);
   }).pipe(
     Effect.provide(mountedLayer),
@@ -722,10 +725,13 @@ it.effect(
               "first",
               componentSchema,
               Object.fromEntries(
-                Object.entries(componentTesting.modules).map(([path, load]) => [
-                  path === "http.ts" ? "http.mjs" : path,
-                  load,
-                ]),
+                Array.map(
+                  Object.entries(componentTesting.modules),
+                  ([path, load]) => [
+                    path === "http.ts" ? "http.mjs" : path,
+                    load,
+                  ],
+                ),
               ),
             ),
           httpMounts: [{ componentPath: "first", httpPrefix: "/email" }],

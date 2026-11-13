@@ -1174,18 +1174,21 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
   const confectDirectory = yield* ConfectDirectory.get;
   const convexDirectory = yield* ConvexDirectory.get;
   const generated = path.join(confectDirectory, "_generated");
-  const configDisplay = pipe(
-    path.relative(
-      yield* ProjectRoot.get,
-      path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
-    ),
-    String.split(path.sep),
-  ).join("/");
-  const relative = (file: string) => {
-    const value = pipe(
-      path.relative(generated, file),
+  const configDisplay = Array.join(
+    pipe(
+      path.relative(
+        yield* ProjectRoot.get,
+        path.join(convexDirectory, ConvexConfig.CONVEX_CONFIG_FILENAME),
+      ),
       String.split(path.sep),
-    ).join("/");
+    ),
+    "/",
+  );
+  const relative = (file: string) => {
+    const value = Array.join(
+      pipe(path.relative(generated, file), String.split(path.sep)),
+      "/",
+    );
     return pipe(value, String.startsWith(".")) ? value : `./${value}`;
   };
   const imports = [
@@ -1193,21 +1196,22 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
     'import convexSchema from "./convexSchema.js";',
   ];
   const moduleMap = Effect.fnUntraced(function* (directory: string) {
-    const files = (yield* fs.readDirectory(directory, { recursive: true }))
-      .filter(
-        (file) =>
-          /\.[cm]?[jt]s$/.test(file) &&
-          !pipe(file, String.endsWith(".d.ts")) &&
-          !pipe(file, String.split(path.sep)).includes("_generated") &&
-          !pipe(file, String.includes(".config.")),
-      )
-      .sort();
-    return `{ "_generated/testing.ts": () => Promise.resolve({}),\n${files
-      .map((file) => {
+    const files = Array.filter(
+      yield* fs.readDirectory(directory, { recursive: true }),
+      (file) =>
+        /\.[cm]?[jt]s$/.test(file) &&
+        !pipe(file, String.endsWith(".d.ts")) &&
+        !pipe(file, String.split(path.sep)).includes("_generated") &&
+        !pipe(file, String.includes(".config.")),
+    ).sort();
+    return `{ "_generated/testing.ts": () => Promise.resolve({}),\n${pipe(
+      files,
+      Array.map((file) => {
         const specifier = relative(path.join(directory, file));
-        return `${quote(pipe(file, String.split(path.sep)).join("/"))}: () => import(${quote(pipe(specifier, String.replace(/\.([cm]?)[jt]s$/, ".$1js")))}),`;
-      })
-      .join("\n")}\n}`;
+        return `${quote(Array.join(pipe(file, String.split(path.sep)), "/"))}: () => import(${quote(pipe(specifier, String.replace(/\.([cm]?)[jt]s$/, ".$1js")))}),`;
+      }),
+      Array.join("\n"),
+    )}\n}`;
   });
   const declarations: Array<string> = [];
   const identifiers = new Set(["schema", "convexSchema"]);
@@ -1238,7 +1242,12 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
       const name = prefix + component.name;
       const mount =
         prefix === ""
-          ? App.mounts(app).find((declared) => declared.name === component.name)
+          ? Option.getOrUndefined(
+              Array.findFirst(
+                App.mounts(app),
+                (declared) => declared.name === component.name,
+              ),
+            )
           : undefined;
       // A bare definition belongs to another package. Its directory is read
       // here but never written out; tests use the kit its descriptor names,
@@ -1257,8 +1266,10 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
                 `${component.componentDefinitionPath}/test`,
               ]
             : [];
-      const kitEntry = kitEntries.find((entry) =>
-        Option.isSome(Bundler.resolveModule(entry, config)),
+      const kitEntry = Option.getOrUndefined(
+        Array.findFirst(kitEntries, (entry) =>
+          Option.isSome(Bundler.resolveModule(entry, config)),
+        ),
       );
       const resolved = fromPackage
         ? path.dirname(
@@ -1325,7 +1336,7 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
           if (kitEntry === undefined) {
             return yield* new CodegenError.InvalidConvexConfigError({
               configPath: relative(config),
-              reason: `the component package ${quote(component.componentDefinitionPath)} has no ${kitEntries.map(quote).join(" or ")} export. Tests register a component from another package through that entry's \`register(t, name)\`.`,
+              reason: `the component package ${quote(component.componentDefinitionPath)} has no ${pipe(kitEntries, Array.map(quote), Array.join(" or "))} export. Tests register a component from another package through that entry's \`register(t, name)\`.`,
             });
           }
           imports.push(`import * as ${identifier} from ${quote(kitEntry)};`);
@@ -1341,11 +1352,14 @@ const generateTesting = Effect.fnUntraced(function* (app: App.Any) {
   yield* visit(convexDirectory, "", (yield* ConvexDirectory.target).kind, "");
   yield* writeFileStringAndLog(
     path.join(generated, "testing.ts"),
-    [
-      "// Generated by `confect codegen`. Test-only; do not import in backend functions.",
-      ...imports,
-      ...declarations,
-      `export default { httpMounts: [${httpMounts.join(",")}], schema, convexSchema, modules: ${yield* moduleMap(convexDirectory)}, components: {${components.join("\n")}} };`,
-    ].join("\n"),
+    Array.join(
+      [
+        "// Generated by `confect codegen`. Test-only; do not import in backend functions.",
+        ...imports,
+        ...declarations,
+        `export default { httpMounts: [${Array.join(httpMounts, ",")}], schema, convexSchema, modules: ${yield* moduleMap(convexDirectory)}, components: {${Array.join(components, "\n")}} };`,
+      ],
+      "\n",
+    ),
   );
 });

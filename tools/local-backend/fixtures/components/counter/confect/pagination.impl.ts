@@ -12,6 +12,7 @@ import schema from "./_generated/schema";
 import { DatabaseReader } from "./_generated/services";
 import type { scope } from "./_generated/id";
 import spec from "./pagination.spec";
+import * as Arr from "effect/Array";
 
 const MutationCtx = RawMutationCtx.MutationCtx<
   DataModel.ToConvex<DataModel.FromSchema<typeof schema>>,
@@ -56,8 +57,8 @@ const streams = FunctionImpl.make(schema, spec, "streams", ({ run }) =>
       ),
     );
     return {
-      deferred: collected.map((d) => d.count),
-      merged: merged.map((d) => d.count),
+      deferred: Arr.map(collected, (d) => d.count),
+      merged: Arr.map(merged, (d) => d.count),
       budget,
     };
   }).pipe(Effect.orDie),

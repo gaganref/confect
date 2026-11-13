@@ -26,6 +26,7 @@ import * as Option from "effect/Option";
 import * as Result from "effect/Result";
 import { vi } from "vitest";
 import * as TestSpec from "./TestSpec";
+import * as Array from "effect/Array";
 
 const scope = IdScope.component("@example/counter");
 const ItemId = GenericId.GenericId("items", scope);
@@ -202,7 +203,7 @@ describe("published component contracts", () => {
     expect(functionAttachment.options).toBe(functionOptions);
     expect(groupAttachment.spec).toBe(functionAttachment.spec);
     expect(left.items.get.middlewareSpecs).toEqual(
-      attachments.map(({ spec: middleware }) => middleware),
+      Array.map(attachments, ({ spec: middleware }) => middleware),
     );
     expect(MiddlewareAttachment.validateAll(attachments, "bound ref")).toEqual(
       Result.void,

@@ -5,6 +5,7 @@ import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import type * as Table from "../Table.js";
+import * as Array from "effect/Array";
 
 export type EncodedPatch = Record.ReadonlyRecord<
   string,
@@ -59,7 +60,7 @@ const makePatchEncoder = (table: Table.AnyWithProps): PatchEncoder | null => {
       value: unknown,
     ) => Effect.Effect<ReadonlyValue | undefined, Schema.SchemaError>
   > = Object.fromEntries(
-    ast.propertySignatures.map(({ name, type }) => {
+    Array.map(ast.propertySignatures, ({ name, type }) => {
       const key = String(name);
       const encode = Schema.encodeUnknownEffect(
         Schema.Struct({

@@ -154,11 +154,16 @@ export const exportNames = (
     catch: (cause) => new BundlerError({ cause }),
   }).pipe(
     Effect.map(({ metafile, outputFiles }) =>
-      Object.values(metafile.inputs).some(({ format }) => format === "cjs") ||
-      outputFiles.some(({ text }) => /^export \* from /m.test(text))
+      Array.some(
+        Object.values(metafile.inputs),
+        ({ format }) => format === "cjs",
+      ) || Array.some(outputFiles, ({ text }) => /^export \* from /m.test(text))
         ? Option.none()
         : Option.some(
-            Object.values(metafile.outputs).flatMap(({ exports }) => exports),
+            Array.flatMap(
+              Object.values(metafile.outputs),
+              ({ exports }) => exports,
+            ),
           ),
     ),
   );

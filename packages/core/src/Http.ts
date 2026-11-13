@@ -11,6 +11,8 @@ import { scalarDocs } from "./internal/scalarDocs.js";
 import * as App from "./App.js";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
+import * as Option from "effect/Option";
 
 const TypeId = "~@confect/core/Http";
 
@@ -143,7 +145,7 @@ const paramNames = (params: Schema.Top | undefined): ReadonlySet<string> => {
     ast = ast.encoding[ast.encoding.length - 1].to;
   }
   return SchemaAST.isObjects(ast)
-    ? new Set(ast.propertySignatures.map(({ name }) => String(name)))
+    ? new Set(Array.map(ast.propertySignatures, ({ name }) => String(name)))
     : new Set();
 };
 
@@ -156,8 +158,8 @@ interface KeyedRoute {
 }
 
 const apiRoutes = (api: App.Api, owner: Owner): ReadonlyArray<KeyedRoute> =>
-  Object.values<HttpApiGroup.Top>(api.groups).flatMap((group) =>
-    Object.values(group.endpoints).map((endpoint) => {
+  Array.flatMap(Object.values<HttpApiGroup.Top>(api.groups), (group) =>
+    Array.map(Object.values(group.endpoints), (endpoint) => {
       const path = endpoint.path;
       const declared = paramNames(endpoint.params);
       return {
@@ -177,7 +179,7 @@ export const routes = (
   app: App.Any,
   http?: Any,
 ): Result.Result<ReadonlyArray<Route>, RouteError> => {
-  const mounts = App.mounts(app).flatMap(({ name, httpPrefix }) =>
+  const mounts = Array.flatMap(App.mounts(app), ({ name, httpPrefix }) =>
     httpPrefix === undefined
       ? []
       : [{ name, httpPrefix: trimSlash(httpPrefix) }],
@@ -219,8 +221,10 @@ export const routes = (
         ];
 
   for (const { route } of own) {
-    const mount = mounts.find(({ httpPrefix }) =>
-      isUnder(route.path, httpPrefix),
+    const mount = Option.getOrUndefined(
+      Array.findFirst(mounts, ({ httpPrefix }) =>
+        isUnder(route.path, httpPrefix),
+      ),
     );
     if (mount !== undefined) {
       return Result.fail(
@@ -249,5 +253,5 @@ export const routes = (
     }
     seen.set(key, route);
   }
-  return Result.succeed(own.map(({ route }) => route));
+  return Result.succeed(Array.map(own, ({ route }) => route));
 };

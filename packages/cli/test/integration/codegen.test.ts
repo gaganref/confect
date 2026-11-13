@@ -19,6 +19,7 @@ import { vi } from "vitest";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
+import * as Array from "effect/Array";
 
 afterEach(() => vi.unstubAllEnvs());
 
@@ -366,7 +367,7 @@ export default Auth.make(app, { providers: [
         expect(registered.module.default.list.isPublic).toBe(true);
         for (const file of definitions)
           expect(
-            Object.keys(registered.metafile.inputs).some((input) =>
+            Array.some(Object.keys(registered.metafile.inputs), (input) =>
               pipe(input, Str.endsWith(file)),
             ),
           ).toBe(false);
@@ -679,7 +680,7 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
       source:
         'throw new Error("must not evaluate");\nexport const helper = 1;\n',
     },
-    ...["http.ts", "crons.ts"].map((file) => ({
+    ...Array.map(["http.ts", "crons.ts"], (file) => ({
       name: "hand-written optional entrypoint",
       file,
       source: "export default {};\n",
@@ -946,7 +947,11 @@ refs.public.g48;
               "target": "ESNext",
               "verbatimModuleSyntax": true
             },
-            "files": [${consumers.map((consumer) => stringLiteral(consumer)).join(",")}]
+            "files": [${pipe(
+              consumers,
+              Array.map((consumer) => stringLiteral(consumer)),
+              Array.join(","),
+            )}]
           }`,
         );
         const compiler = yield* spawner.spawn(

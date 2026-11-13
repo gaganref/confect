@@ -8,6 +8,7 @@ import * as TestConfect from "./TestConfect";
 import type * as Ref from "@confect/core/Ref";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
 const execute = (
   mode: Ref.Args<typeof refs.public.groups.actionCall.execute>["mode"],
 ) =>
@@ -47,7 +48,10 @@ describe("one-call actions", () => {
       yield* execute("write");
       expect(yield* execute("read")).toBe(2);
       expect(
-        (yield* c.query(refs.public.groups.notes.list)).map((row) => row.text),
+        Array.map(
+          yield* c.query(refs.public.groups.notes.list),
+          (row) => row.text,
+        ),
       ).toEqual(["one call", "one call"]);
     }).pipe(Effect.provide(TestConfect.layer)),
   );
@@ -59,7 +63,10 @@ describe("one-call actions", () => {
       assert(Exit.isFailure(exit));
       expect(Cause.pretty(exit.cause)).toContain("ActionCallAlreadyUsed");
       expect(
-        (yield* c.query(refs.public.groups.notes.list)).map((row) => row.text),
+        Array.map(
+          yield* c.query(refs.public.groups.notes.list),
+          (row) => row.text,
+        ),
       ).toEqual(["first only"]);
     }).pipe(Effect.provide(TestConfect.layer)),
   );
@@ -86,7 +93,9 @@ describe("one-call actions", () => {
         const rows = yield* c.query(refs.public.groups.notes.list);
         expect(rows.length).toBeLessThanOrEqual(1);
         expect(
-          rows.every((row) => pipe(row.text, String.startsWith("parallel"))),
+          Array.every(rows, (row) =>
+            pipe(row.text, String.startsWith("parallel")),
+          ),
         ).toBe(true);
       }).pipe(Effect.provide(TestConfect.layer)),
   );

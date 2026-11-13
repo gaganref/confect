@@ -322,7 +322,10 @@ export const rebase = <
       const fields = (input as { readonly fields: Schema.Struct.Fields })
         .fields;
       const reboundFields = Object.fromEntries(
-        Reflect.ownKeys(fields).map((key) => [key, rebuild(fields[key]!)]),
+        Array.map(Reflect.ownKeys(fields), (key) => [
+          key,
+          rebuild(fields[key]!),
+        ]),
       );
       if (
         ast.encoding === undefined &&

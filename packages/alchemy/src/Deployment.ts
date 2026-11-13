@@ -18,6 +18,7 @@ import type { Providers } from "./Providers.js";
 import { resourceName } from "./internal/ResourceIdentity.js";
 import { checkpointCreate, shouldAdopt } from "./internal/Lifecycle.js";
 import { boot, dataDirectories, remove } from "./internal/LocalBackend.js";
+import * as Array from "effect/Array";
 
 export interface DeploymentProps {
   readonly projectId: number;
@@ -91,7 +92,8 @@ export const provider = Effect.gen(function* () {
     projectId: number,
     reference: string,
   ) {
-    const matches = (yield* client.listDeployments(projectId)).filter(
+    const matches = Array.filter(
+      yield* client.listDeployments(projectId),
       (deployment) =>
         deployment.kind === "cloud" && deployment.reference === reference,
     );

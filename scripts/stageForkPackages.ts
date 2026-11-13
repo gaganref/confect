@@ -16,6 +16,8 @@ import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
 import { publishedPackages } from "./checkPackContents";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
 
 const encodeJson = Schema.encodeSync(
   Schema.fromJsonString(Schema.Unknown, { space: 2 }),
@@ -54,26 +56,27 @@ export const stageForkPackages = (
   const { provenance: _provenance, ...inheritedPublishConfig } =
     manifest.publishConfig ?? {};
   const dependencies = Object.fromEntries(
-    (
-      ["dependencies", "peerDependencies", "optionalDependencies"] as const
-    ).flatMap((field) => {
-      const values = manifest[field];
-      return values === undefined
-        ? []
-        : [
-            [
-              field,
-              Object.fromEntries(
-                Object.entries(values).map(([name, range]) => [
-                  name,
-                  pipe(name, Str.startsWith("@confect/"))
-                    ? `npm:${forkPackageName(name)}@${version}`
-                    : range,
-                ]),
-              ),
-            ],
-          ];
-    }),
+    Arr.flatMap(
+      ["dependencies", "peerDependencies", "optionalDependencies"] as const,
+      (field) => {
+        const values = manifest[field];
+        return values === undefined
+          ? []
+          : [
+              [
+                field,
+                Object.fromEntries(
+                  Arr.map(Object.entries(values), ([name, range]) => [
+                    name,
+                    pipe(name, Str.startsWith("@confect/"))
+                      ? `npm:${forkPackageName(name)}@${version}`
+                      : range,
+                  ]),
+                ),
+              ],
+            ];
+      },
+    ),
   );
   return {
     ...rest,
@@ -120,15 +123,17 @@ class PackageVersionMismatch extends Schema.TaggedError<PackageVersionMismatch>(
 export const packageBaseVersion = (
   manifests: ReadonlyArray<PackageManifest>,
 ): Result.Result<string, MissingCorePackage | PackageVersionMismatch> => {
-  const core = manifests.find((manifest) => manifest.name === "@confect/core");
+  const core = Option.getOrUndefined(
+    Arr.findFirst(manifests, (manifest) => manifest.name === "@confect/core"),
+  );
   if (core === undefined)
     return Result.fail(
       new MissingCorePackage({
-        packages: manifests.map((manifest) => manifest.name),
+        packages: Arr.map(manifests, (manifest) => manifest.name),
       }),
     );
-  const mismatch = manifests.find(
-    (manifest) => manifest.version !== core.version,
+  const mismatch = Option.getOrUndefined(
+    Arr.findFirst(manifests, (manifest) => manifest.version !== core.version),
   );
   return mismatch === undefined
     ? Result.succeed(core.version)
@@ -147,11 +152,13 @@ export const chooseBuildVersion = (
   override = "",
 ): Result.Result<string, InvalidBuildVersion | BuildNumberUnavailable> => {
   const prefix = `${base}-fork.`;
-  const builds = versions
-    .filter((version) => pipe(version, Str.startsWith(prefix)))
-    .map((version) => pipe(version, Str.slice(prefix.length)))
-    .filter((build) => /^(0|[1-9]\d*)$/.test(build))
-    .map(Number);
+  const builds = pipe(
+    versions,
+    Arr.filter((version) => pipe(version, Str.startsWith(prefix))),
+    Arr.map((version) => pipe(version, Str.slice(prefix.length))),
+    Arr.filter((build) => /^(0|[1-9]\d*)$/.test(build)),
+    Arr.map(Number),
+  );
   const highestBuild = Math.max(0, ...builds);
   const build = override === "" ? highestBuild + 1 : Number(override);
   if (
@@ -244,7 +251,7 @@ const stage = Effect.fn("ForkPackages.stage")(function* (
     packages.push({ directory: path.basename(sourceDirectory), manifest });
   }
   const base = yield* Effect.fromResult(
-    packageBaseVersion(packages.map((pkg) => pkg.manifest)),
+    packageBaseVersion(Arr.map(packages, (pkg) => pkg.manifest)),
   );
   yield* Effect.fromResult(chooseBuildVersion(base, [], build));
   const versions = yield* Effect.forEach(

@@ -15,6 +15,7 @@ import type { GenericId } from "convex/values";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import { vi } from "vitest";
+import * as Arr from "effect/Array";
 
 const scheduledFunctionId =
   "scheduled-function-id" as GenericId<"_scheduled_functions">;
@@ -157,7 +158,7 @@ it.effect.each(Forwarding.cases)(
         { count: 1 },
       ]);
       expect(
-        spans.map(({ name, status }) => [
+        Arr.map(spans, ({ name, status }) => [
           name,
           status._tag === "Ended" && status.exit,
         ]),

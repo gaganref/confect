@@ -96,7 +96,9 @@ export const resolveDefinition = (
       : []),
   ];
   return Option.firstSomeOf(
-    candidates.map((candidate) => Bundler.resolveModule(candidate, importer)),
+    Array.map(candidates, (candidate) =>
+      Bundler.resolveModule(candidate, importer),
+    ),
   );
 };
 
@@ -299,8 +301,11 @@ export const discoverInstalledComponents = Effect.fn(
   const components = pipe(
     decoded.childComponents,
     Array.map(({ name, path: componentDefinitionPath }): InstalledComponent => {
-      const httpPrefix = Object.entries(decoded.httpMounts ?? {}).find(
-        ([, reference]) => reference === `_reference/childComponent/${name}`,
+      const httpPrefix = Option.getOrUndefined(
+        Array.findFirst(
+          Object.entries(decoded.httpMounts ?? {}),
+          ([, reference]) => reference === `_reference/childComponent/${name}`,
+        ),
       )?.[0];
       return {
         name,

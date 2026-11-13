@@ -2,6 +2,7 @@ import { App, Env, FunctionSpec, type ManifestSection } from "@confect/core";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
 
 type Names = { readonly format: 2; readonly names: ReadonlyArray<string> };
 type Unformatted = Omit<Names, "format">;
@@ -40,7 +41,7 @@ describe("ManifestSection", () => {
             pipe(relativePath, String.endsWith("door.ts")),
           check: (input) => {
             expectTypeOf(input).toEqualTypeOf<ManifestSection.VerifyInput>();
-            return input.mounts.map(({ name }) => name);
+            return Array.map(input.mounts, ({ name }) => name);
           },
         },
       },

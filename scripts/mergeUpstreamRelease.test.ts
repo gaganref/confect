@@ -11,6 +11,7 @@ import {
 } from "./mergeUpstreamRelease";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
 
 test("selects the newest stable core release numerically", () => {
   expect(
@@ -108,7 +109,8 @@ const makeHistory = (conflict = false) =>
   });
 
 const worktrees = (git: (args: Array<string>) => string) =>
-  pipe(git(["worktree", "list", "--porcelain"]), String.split("\n")).filter(
+  Arr.filter(
+    pipe(git(["worktree", "list", "--porcelain"]), String.split("\n")),
     (line) => pipe(line, String.startsWith("worktree ")),
   );
 
@@ -157,7 +159,7 @@ test.each([false, true])(
           "M shared.txt\n?? untracked.txt",
         );
         expect(
-          pipe(git(["branch", "--list"]), String.split("\n")).map((b) =>
+          Arr.map(pipe(git(["branch", "--list"]), String.split("\n")), (b) =>
             pipe(b, String.trim),
           ),
         ).toEqual(["fork", "* upstream"]);

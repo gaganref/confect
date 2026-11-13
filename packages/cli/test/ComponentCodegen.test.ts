@@ -25,6 +25,7 @@ import * as ChildProcess from "effect/process/ChildProcess";
 import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
 
 const fixture = `${import.meta.dirname}/fixtures/authored-component`;
 const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
@@ -182,14 +183,17 @@ export const serverTags = [MutationCtx.MutationCtx(), QueryCtx.QueryCtx(), Actio
         output,
       ).toHaveLength(component ? 3 : 0);
       expect(
-        [
-          ...pipe(
-            output,
-            String.matchAll(
-              /rawCtx\.ts\((\d+),\d+\): error TS(\d+): Property '(\w+)'/g,
+        Array.map(
+          [
+            ...pipe(
+              output,
+              String.matchAll(
+                /rawCtx\.ts\((\d+),\d+\): error TS(\d+): Property '(\w+)'/g,
+              ),
             ),
-          ),
-        ].map((match) => match.slice(1)),
+          ],
+          (match) => match.slice(1),
+        ),
       ).toEqual(
         component
           ? [
@@ -518,7 +522,7 @@ it.effect("reports the rejected group when rollback itself fails", () =>
       method: "remove",
       pathOrDescriptor: generated,
     });
-    const messages: unknown[] = [];
+    const messages: string[] = [];
     const console = yield* Console.Console;
     const result = yield* codegenHandler.pipe(
       Effect.provide(
@@ -536,7 +540,7 @@ it.effect("reports the rejected group when rollback itself fails", () =>
         new Proxy(console, {
           get: (target, key, receiver) =>
             key === "error"
-              ? (...args: readonly unknown[]) => {
+              ? (...args: readonly string[]) => {
                   messages.push(...args);
                 }
               : Reflect.get(target, key, receiver),
@@ -545,7 +549,7 @@ it.effect("reports the rejected group when rollback itself fails", () =>
       Effect.result,
     );
     expect(result).toEqual(Result.fail(denied));
-    expect(messages.join("\n")).toContain(
+    expect(Array.join(messages, "\n")).toContain(
       'Group "tasks" in tasks.spec.ts uses the Node runtime. Convex components do not support Node.js functions.',
     );
   }).pipe(Effect.scoped, Effect.provide(NodeServices.layer)),
@@ -592,11 +596,12 @@ it.effect.each(["configured", "declared"] as const)(
       const configModifiedAt = (yield* fs.stat(configPath)).mtime;
       const generatedDirectory = `${project.root}/confect/_generated`;
       const readGenerated = Effect.gen(function* () {
-        const files = (yield* fs.readDirectory(generatedDirectory, {
-          recursive: true,
-        }))
-          .filter((file) => pipe(file, String.endsWith(".ts")))
-          .sort();
+        const files = Array.filter(
+          yield* fs.readDirectory(generatedDirectory, {
+            recursive: true,
+          }),
+          (file) => pipe(file, String.endsWith(".ts")),
+        ).sort();
         return yield* Effect.forEach(files, (file) =>
           fs
             .readFileString(`${generatedDirectory}/${file}`)

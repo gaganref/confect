@@ -138,7 +138,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             "manifest.ts",
           );
           const manifestWrites = (files: ReadonlyArray<string>) =>
-            files.filter((file) => file === manifest);
+            Array.filter(files, (file) => file === manifest);
           expect(
             manifestWrites(
               yield* Project.writtenFiles(
@@ -174,17 +174,19 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect.each(
-      [
-        ["confect/notes.spec.ts", 'throw new Error("spec broke");'],
-        ["confect/notes.impl.ts", "export default 1;"],
-        ["confect/notes.spec.ts", "bad"],
-        ["confect/notes.spec.ts", "throw"],
-      ].flatMap(([file, contents]) =>
-        [false, true].map((incremental) => ({
-          file: file!,
-          contents: contents!,
-          incremental,
-        })),
+      Array.flatMap(
+        [
+          ["confect/notes.spec.ts", 'throw new Error("spec broke");'],
+          ["confect/notes.impl.ts", "export default 1;"],
+          ["confect/notes.spec.ts", "bad"],
+          ["confect/notes.spec.ts", "throw"],
+        ],
+        ([file, contents]) =>
+          Array.map([false, true], (incremental) => ({
+            file: file!,
+            contents: contents!,
+            incremental,
+          })),
       ),
     )(
       "retains history only for unrelated failures in $file ($contents, incremental=$incremental)",
@@ -309,7 +311,7 @@ export default App.make({ env: Env.make("other", {}), manifestSections: [{ key: 
             ]) {
               const name = pipe(module, String.split("/")).pop()!;
               yield* fs.makeDirectory(
-                `${project.root}/confect/${pipe(module, String.split("/")).slice(0, -1).join("/")}`,
+                `${project.root}/confect/${Array.join(pipe(module, String.split("/")).slice(0, -1), "/")}`,
                 { recursive: true },
               );
               yield* project.write(`confect/${module}.spec.ts`, stockSpec);
@@ -530,13 +532,16 @@ export class Observe extends MiddlewareSpec.MiddlewareSpec<Observe>()("Observe",
     );
 
     it.effect.each(
-      [true, false].flatMap((sectioned) =>
-        [
-          "<<<<<<< HEAD\nexport default {};\n",
-          "",
-          "export const other = 1;",
-          "export default null;",
-        ].map((contents) => ({ sectioned, contents })),
+      Array.flatMap([true, false], (sectioned) =>
+        Array.map(
+          [
+            "<<<<<<< HEAD\nexport default {};\n",
+            "",
+            "export const other = 1;",
+            "export default null;",
+          ],
+          (contents) => ({ sectioned, contents }),
+        ),
       ),
     )(
       "overwrites unusable history $contents (sectioned=$sectioned)",
@@ -799,9 +804,9 @@ export default ${nested ? "GroupSpec.addGroupsAt(GroupSpec.make(), { child: grou
             ),
           );
           const result = yield* project.provide(codegenHandler);
-          expect([...result.functionPaths].map((fn) => fn.name)).toEqual([
-            "list",
-          ]);
+          expect(Array.map([...result.functionPaths], (fn) => fn.name)).toEqual(
+            ["list"],
+          );
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -2086,7 +2091,11 @@ const recordingKit = (children: ReadonlyArray<string>) =>
   `import { defineSchema } from "convex/server";
 const modules = { "_generated/api.js": () => Promise.resolve({}) };
 export function register(t, name) {
-  for (const path of [name, ...[${children.map((child) => stringLiteral(child)).join(", ")}].map((child) => name + "/" + child)]) {
+  for (const path of [name, ...[${pipe(
+    children,
+    Array.map((child) => stringLiteral(child)),
+    Array.join(", "),
+  )}].map((child) => name + "/" + child)]) {
     (globalThis.registered ??= []).push(path);
     t.registerComponent(path, defineSchema({}), modules);
   }
@@ -2253,9 +2262,15 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           expect(testing).not.toContain("node_modules");
           const generated = path.join(project.root, "confect/_generated");
           const escaping = Array.filter(
-            [
-              ...pipe(testing, String.matchAll(/(?:from |import\()"([^"]+)"/g)),
-            ].map(([, specifier]) => specifier!),
+            Array.map(
+              [
+                ...pipe(
+                  testing,
+                  String.matchAll(/(?:from |import\()"([^"]+)"/g),
+                ),
+              ],
+              ([, specifier]) => specifier!,
+            ),
             (specifier) =>
               pipe(specifier, String.startsWith(".")) &&
               !pipe(
@@ -2281,7 +2296,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
               name: "pool-kit",
               type: "module",
               exports: Object.fromEntries(
-                entries.map((entry) => [`./${entry}`, `./${entry}.js`]),
+                Array.map(entries, (entry) => [`./${entry}`, `./${entry}.js`]),
               ),
             }),
             "testing.js": "export function register() {}\n",
@@ -3088,14 +3103,13 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
             '() => ({ contents: "", errors: ["first refusal", "second refusal"] })',
             ', { key: "trace", section: { owner: "test/trace", format: 1, describe: () => null, generate: { file: "trace.ts", match: () => false, render: () => ({ contents: "", errors: ["third refusal", "fourth refusal"] }) } } }',
           );
-          const messages: unknown[] = [];
+          const messages: string[] = [];
           const error = yield* Effect.flip(
             project.run.pipe(
               Effect.provideService(
                 Console.Console,
                 Object.assign(Object.create(console), {
-                  error: (...args: readonly unknown[]) =>
-                    messages.push(...args),
+                  error: (...args: readonly string[]) => messages.push(...args),
                 }),
               ),
             ),
@@ -3105,11 +3119,11 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
             sectionKey: "observe",
             reason: "first refusal",
           });
-          expect(messages.join("\n")).toContain(
+          expect(Array.join(messages, "\n")).toContain(
             'Manifest section "observe" is invalid: second refusal',
           );
           for (const reason of ["third refusal", "fourth refusal"])
-            expect(messages.join("\n")).toContain(
+            expect(Array.join(messages, "\n")).toContain(
               `Manifest section "trace" is invalid: ${reason}`,
             );
           expect(yield* project.exists("confect/_generated/observe.ts")).toBe(
@@ -3354,7 +3368,8 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
             `${project.root}/confect/_generated`,
           );
           expect(
-            written.filter(
+            Array.filter(
+              written,
               (file) =>
                 pipe(file, String.endsWith(".ts")) &&
                 !SectionFiles.builtIn.has(file),
@@ -3396,7 +3411,7 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
           const project = yield* verifyProject(refusing);
           const { snapshot } = yield* project.provide(generateWithSnapshot);
           yield* project.door(true);
-          const messages: unknown[] = [];
+          const messages: string[] = [];
           const error = yield* Effect.flip(
             project
               .provide(
@@ -3417,7 +3432,7 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
                 Effect.provideService(
                   Console.Console,
                   Object.assign(Object.create(console), {
-                    error: (...args: readonly unknown[]) =>
+                    error: (...args: readonly string[]) =>
                       messages.push(...args),
                   }),
                 ),
@@ -3428,7 +3443,7 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
             sectionKey: "doors",
             reason: "first refusal",
           });
-          expect(messages.join("\n")).toContain(
+          expect(Array.join(messages, "\n")).toContain(
             'Manifest section "doors" is invalid: second refusal',
           );
           yield* project.door(false);
@@ -3667,11 +3682,14 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
               yield* project.read("confect/app.ts"),
               String.replace(
                 'import { BulkEmail } from "./bulkEmail";',
-                [
-                  'import { MountInit as BulkEmail } from "./bulkEmail";',
-                  'import { MountInit as TransactionalEmail } from "./transactionalEmail";',
-                  'import NoticeEmail from "./noticeEmail";',
-                ].join("\n"),
+                Array.join(
+                  [
+                    'import { MountInit as BulkEmail } from "./bulkEmail";',
+                    'import { MountInit as TransactionalEmail } from "./transactionalEmail";',
+                    'import NoticeEmail from "./noticeEmail";',
+                  ],
+                  "\n",
+                ),
               ),
               String.replace(
                 "    BulkEmail,",

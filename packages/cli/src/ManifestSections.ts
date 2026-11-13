@@ -10,13 +10,14 @@ import {
 } from "./CodegenError.js";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
 
 const reserved = new Set(
   pipe("name env http digest __proto__ constructor prototype", Str.split(" ")),
 );
 export const sections = (manifest: Readonly<Record<string, unknown>>) =>
   Object.fromEntries(
-    Object.entries(manifest).filter(([key]) => !reserved.has(key)),
+    Arr.filter(Object.entries(manifest), ([key]) => !reserved.has(key)),
   );
 // Read only property descriptors, through static functions, so no getter,
 // `toJSON` or other method of the input runs before the check and nothing
@@ -31,7 +32,7 @@ const nonJsonPath = (
   if (typeof value === "number")
     return Number.isFinite(value) ? undefined : path;
   if (typeof value !== "object" || ancestors.includes(value)) return path;
-  const isArray = Array.isArray(value);
+  const isArray = Arr.isArray(value);
   const prototypes = isArray ? [Array.prototype] : [Object.prototype, null];
   if (!prototypes.includes(Object.getPrototypeOf(value))) return path;
   const keys = isArray
@@ -127,7 +128,11 @@ const visit = (
           yield* walk(child, `${path}/${name}`, source);
       });
     for (const leaf of leaves)
-      yield* walk(leaf.spec, leaf.pathSegments.join("/"), leaf.relativePath);
+      yield* walk(
+        leaf.spec,
+        Arr.join(leaf.pathSegments, "/"),
+        leaf.relativePath,
+      );
   });
 
 /**
@@ -158,7 +163,7 @@ export const collect = (
 ) =>
   Result.gen(function* () {
     const registry: Registry = new Map(
-      entries.map(({ key, section }) => [
+      Arr.map(entries, ({ key, section }) => [
         key,
         {
           section,
@@ -257,7 +262,7 @@ export const check = (
         errors.push(
           new InvalidManifestSectionError({
             sectionKey: key,
-            reason: [...new Set(checked.errors)].join("\n"),
+            reason: Arr.join([...new Set(checked.errors)], "\n"),
           }),
         );
     } catch (cause) {

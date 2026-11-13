@@ -337,7 +337,7 @@ export const loadSpec = Effect.fn("LeafModule.loadSpec")(function* (
   yield* validateReservedArguments(
     groupSpec,
     leaf.relativePath,
-    leaf.pathSegments.join("/"),
+    Array.join(leaf.pathSegments, "/"),
   );
 
   const warnings = yield* Effect.fromResult(
@@ -465,7 +465,8 @@ const nameUnwrittenSectionFiles = Effect.fnUntraced(function* (
 ) {
   const path = yield* Path.Path;
   const generated = path.join(yield* ConfectDirectory.get, "_generated");
-  const errors = (error.errors as ReadonlyArray<esbuild.Message>).map(
+  const errors = Array.map(
+    error.errors as ReadonlyArray<esbuild.Message>,
     (message) => {
       const specifier = /^Could not resolve "(.+)"$/.exec(message.text)?.[1];
       if (specifier === undefined || message.location === null) return message;

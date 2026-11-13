@@ -11,6 +11,7 @@ import * as Schema from "effect/Schema";
 import * as ConvexClient from "./ConvexClient.js";
 import type { Providers } from "./Providers.js";
 import { checkpointCreate, shouldAdopt } from "./internal/Lifecycle.js";
+import * as Arr from "effect/Array";
 
 export interface EnvironmentVariablesProps {
   readonly url: string;
@@ -57,7 +58,7 @@ export const provider = Effect.gen(function* () {
     names: ReadonlyArray<string>,
   ) =>
     Object.fromEntries(
-      names.flatMap((name) =>
+      Arr.flatMap(names, (name) =>
         !Object.hasOwn(variables, name) ? [] : [[name, variables[name]]],
       ),
     );
@@ -71,7 +72,7 @@ export const provider = Effect.gen(function* () {
       const names = Object.keys(news.variables);
       if (
         names.length !== output.ownedNames.length ||
-        names.some((name) => !output.ownedNames.includes(name))
+        Arr.some(names, (name) => !output.ownedNames.includes(name))
       )
         return { action: "update" };
       const variables = yield* client.listEnvironmentVariables(
@@ -147,7 +148,7 @@ export const provider = Effect.gen(function* () {
           });
       }
       const desired = Object.fromEntries(
-        Object.entries(news.variables).map(([name, value]) => [
+        Arr.map(Object.entries(news.variables), ([name, value]) => [
           name,
           redacted(value),
         ]),

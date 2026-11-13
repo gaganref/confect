@@ -304,8 +304,12 @@ export const runHandlerPromise =
     const observed = Effect.tapCause(effect, (cause) =>
       Effect.gen(function* () {
         const reason =
-          cause.reasons.find(Cause.isDieReason) ??
-          cause.reasons.find(Cause.isFailReason);
+          Option.getOrUndefined(
+            Array.findFirst(cause.reasons, Cause.isDieReason),
+          ) ??
+          Option.getOrUndefined(
+            Array.findFirst(cause.reasons, Cause.isFailReason),
+          );
         if (reason?._tag === "Fail" && errorSchema !== undefined) {
           encodedError = yield* Effect.exit(
             Schema.encodeEffect(errorSchema)(reason.error),
@@ -361,8 +365,12 @@ export const runHandlerPromise =
             ? encodedError.cause
             : exit.cause;
         const reason =
-          cause.reasons.find(Cause.isDieReason) ??
-          cause.reasons.find(Cause.isFailReason);
+          Option.getOrUndefined(
+            Array.findFirst(cause.reasons, Cause.isDieReason),
+          ) ??
+          Option.getOrUndefined(
+            Array.findFirst(cause.reasons, Cause.isFailReason),
+          );
         if (
           encodedError === undefined &&
           reason?._tag === "Die" &&
@@ -423,7 +431,7 @@ export const domainArgs = (
   reservedArgument === undefined
     ? args
     : Object.fromEntries(
-        Object.entries(args).filter(([key]) => key !== reservedArgument),
+        Array.filter(Object.entries(args), ([key]) => key !== reservedArgument),
       );
 
 export const actionFunctionBase = <
@@ -473,7 +481,8 @@ export const actionFunctionBase = <
         Schema.decodeUnknownEffect(args),
         Effect.catchTag("SchemaError", Effect.die),
       );
-      const restricted = resolvedMiddlewares.some(
+      const restricted = Array.some(
+        resolvedMiddlewares,
         ({ middlewareSpec }) =>
           middlewareSpec.key === ActionCallSpec.Middleware.key,
       )

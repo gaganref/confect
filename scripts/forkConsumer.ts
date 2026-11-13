@@ -8,6 +8,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
 
 const encodeJson = Schema.encodeSync(
   Schema.fromJsonString(Schema.Unknown, { space: 2 }),
@@ -64,10 +65,12 @@ type ConsumerManifest = Result.Result.Success<
 >;
 
 export const installCommand = (manifest: ConsumerManifest) =>
-  `pnpm add --strict-peer-dependencies ${Object.entries(manifest.dependencies)
-    .filter(([name]) => pipe(name, String.startsWith("@confect/")))
-    .map(([name, spec]) => `'${name}@${spec}'`)
-    .join(" ")}`;
+  `pnpm add --strict-peer-dependencies ${pipe(
+    Object.entries(manifest.dependencies),
+    Array.filter(([name]) => pipe(name, String.startsWith("@confect/"))),
+    Array.map(([name, spec]) => `'${name}@${spec}'`),
+    Array.join(" "),
+  )}`;
 
 export const writeConsumer = Effect.fn("ConsumerFixture.write")(function* (
   destination: string,
@@ -99,29 +102,38 @@ export const writeConsumer = Effect.fn("ConsumerFixture.write")(function* (
   );
   yield* fs.writeFileString(
     path.join(destination, "pnpm-workspace.yaml"),
-    [
-      "minimumReleaseAgeExclude:",
-      ...Object.values(manifest.dependencies)
-        .filter((spec) => pipe(spec, String.startsWith("npm:@gaganref/")))
-        .map((spec) => `  - "${pipe(spec, String.slice(4))}"`),
-      "",
-      "overrides:",
-      ...Object.entries(manifest.dependencies)
-        .filter(
-          ([name, spec]) =>
-            pipe(name, String.startsWith("@confect/")) &&
-            pipe(spec, String.startsWith("file:")),
-        )
-        .map(([name, spec]) => `  "${name}": "${spec}"`),
-      `  effect: ${manifest.dependencies.effect}`,
-      `  convex: ${manifest.dependencies.convex}`,
-      `  "@effect/platform-node": ${manifest.dependencies["@effect/platform-node"]}`,
-      `  "@effect/platform-node-shared": ${manifest.dependencies["@effect/platform-node"]}`,
-      "allowBuilds:",
-      "  esbuild: false",
-      "  workerd: false",
-      "",
-    ].join("\n"),
+    Array.join(
+      [
+        "minimumReleaseAgeExclude:",
+        ...pipe(
+          Object.values(manifest.dependencies),
+          Array.filter((spec) =>
+            pipe(spec, String.startsWith("npm:@gaganref/")),
+          ),
+          Array.map((spec) => `  - "${pipe(spec, String.slice(4))}"`),
+        ),
+        "",
+        "overrides:",
+        ...pipe(
+          Object.entries(manifest.dependencies),
+          Array.filter(
+            ([name, spec]) =>
+              pipe(name, String.startsWith("@confect/")) &&
+              pipe(spec, String.startsWith("file:")),
+          ),
+          Array.map(([name, spec]) => `  "${name}": "${spec}"`),
+        ),
+        `  effect: ${manifest.dependencies.effect}`,
+        `  convex: ${manifest.dependencies.convex}`,
+        `  "@effect/platform-node": ${manifest.dependencies["@effect/platform-node"]}`,
+        `  "@effect/platform-node-shared": ${manifest.dependencies["@effect/platform-node"]}`,
+        "allowBuilds:",
+        "  esbuild: false",
+        "  workerd: false",
+        "",
+      ],
+      "\n",
+    ),
   );
 });
 

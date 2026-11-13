@@ -9,19 +9,20 @@ import {
 } from "../_generated/services";
 import { first } from "../componentBindings";
 import spec from "./pagination.spec";
+import * as Array from "effect/Array";
 
 const page = FunctionImpl.make(schema, spec, "page", (args) =>
   Effect.gen(function* () {
     const runner = yield* QueryRunner;
     const result = yield* runner.runQuery(first.pagination.page, args);
-    return { ...result, page: result.page.map((d) => d.count) };
+    return { ...result, page: Array.map(result.page, (d) => d.count) };
   }).pipe(Effect.orDie),
 );
 const searchPage = FunctionImpl.make(schema, spec, "searchPage", (args) =>
   Effect.gen(function* () {
     const runner = yield* QueryRunner;
     const result = yield* runner.runQuery(first.pagination.searchPage, args);
-    return { ...result, page: result.page.map((d) => d.count) };
+    return { ...result, page: Array.map(result.page, (d) => d.count) };
   }).pipe(Effect.orDie),
 );
 const twice = FunctionImpl.make(schema, spec, "twice", (args) =>

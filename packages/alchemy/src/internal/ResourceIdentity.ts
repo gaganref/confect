@@ -1,6 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
 
 export const resourceName = Effect.fn("ResourceIdentity.name")(function* (
   kind: string,
@@ -14,9 +15,12 @@ export const resourceName = Effect.fn("ResourceIdentity.name")(function* (
     ),
   );
   const suffix = pipe(
-    Array.from(new Uint8Array(hash), (byte) =>
-      pipe(byte.toString(16), String.padStart(2, "0")),
-    ).join(""),
+    Arr.join(
+      Array.from(new Uint8Array(hash), (byte) =>
+        pipe(byte.toString(16), String.padStart(2, "0")),
+      ),
+      "",
+    ),
     String.slice(0, 24),
   );
   return `confect-${kind}-${suffix}`;

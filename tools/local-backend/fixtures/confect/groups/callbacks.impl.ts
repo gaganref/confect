@@ -21,6 +21,7 @@ import {
 } from "../_generated/services";
 import { first } from "../componentBindings";
 import callbacks from "./callbacks.spec";
+import * as Array from "effect/Array";
 
 const OnEventHandle = CoreCallback.handle(OnEvent);
 
@@ -188,7 +189,7 @@ const events = FunctionImpl.make(
         .table("callbackEvents")
         .index("by_run", (q) => q.eq("run", run))
         .collect();
-      return rows.map((row) => row.status);
+      return Array.map(rows, (row) => row.status);
     }).pipe(Effect.orDie),
 );
 

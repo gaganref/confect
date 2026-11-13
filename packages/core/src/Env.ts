@@ -2,6 +2,7 @@ import * as Config from "effect/Config";
 import type * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
 import type * as Redacted from "effect/Redacted";
+import * as Arr from "effect/Array";
 
 const TypeId = "~@confect/core/Env";
 const EntryTypeId = "~@confect/core/Env/Entry";
@@ -156,7 +157,8 @@ export const make = <
   name: LiteralName<N>,
   fields: Fields,
 ): Env<N, Fields> => {
-  const entries = Object.entries(fields).map(
+  const entries = Arr.map(
+    Object.entries(fields),
     ([key, field]) =>
       [
         key,
@@ -191,7 +193,8 @@ export const name = <E extends Any>(env: E): Name<E> => env[TypeId].name;
 export const descriptors = (
   env: Any,
 ): ReadonlyArray<readonly [string, Descriptor]> =>
-  env[TypeId].entries.map(
+  Arr.map(
+    env[TypeId].entries,
     ([key, entry]) => [key, entry[EntryTypeId].descriptor] as const,
   );
 

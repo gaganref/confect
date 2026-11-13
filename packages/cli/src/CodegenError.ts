@@ -483,12 +483,14 @@ export const renderCodegenError = (error: CodegenError): string => {
   if (error._tag === "RequiredMiddlewareError") {
     return singleLine(
       "Required middleware is missing:\n",
-      error.missing
-        .map(
+      pipe(
+        error.missing,
+        Array.map(
           ({ functionName, middlewareKey }) =>
             `${functionName} requires middleware "${middlewareKey}"`,
-        )
-        .join("\n"),
+        ),
+        Array.join("\n"),
+      ),
     );
   }
   if (error._tag === "RemoveBusyError") {
@@ -536,7 +538,11 @@ export const renderCodegenError = (error: CodegenError): string => {
   }
   if (error._tag === "UnownedConvexEntrypointError") {
     return singleLine(
-      error.filePaths.map((file) => formatPath(file)).join(", "),
+      pipe(
+        error.filePaths,
+        Array.map((file) => formatPath(file)),
+        Array.join(", "),
+      ),
       error.filePaths.length === 1 ? " was" : " were",
       " not written by confect codegen. Generated files only re-export the registry; put authored code outside convex/. If a file is stale generated output, delete it and run codegen again.",
     );

@@ -29,6 +29,7 @@ import * as Effect from "effect/Effect";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import { vi } from "vitest";
+import * as Arr from "effect/Array";
 
 class EventRejected extends Schema.TaggedError<EventRejected>()(
   "EventRejected",
@@ -1069,7 +1070,7 @@ describe("callback carrier", () => {
               yield* scheduler.runAt(DateTime.makeUnsafe(0), handle, args);
             }).pipe(Effect.provide(schedulers));
             expect(scheduled.splice(0)).toEqual(
-              ["Scheduler.runAfter", "Scheduler.runAt"].map((boundary) =>
+              Arr.map(["Scheduler.runAfter", "Scheduler.runAt"], (boundary) =>
                 enabled && options
                   ? { count: "1", observe: { boundary } }
                   : { count: "1" },

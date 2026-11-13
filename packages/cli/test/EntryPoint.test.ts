@@ -144,7 +144,7 @@ it.effect(
           }),
         ),
       );
-      expect(entries.map((entry) => entry._tag)).toEqual([
+      expect(Arr.map(entries, (entry) => entry._tag)).toEqual([
         "Env",
         "App",
         "Http",

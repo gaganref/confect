@@ -232,7 +232,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Evaluation", (it) => {
           const standby = vi.mocked(fork).mock.results[0];
           assert(standby?.type === "return");
           const first = yield* project.provide(Evaluation.generate);
-          expect([...first].map((fn) => fn.name)).toEqual(["list"]);
+          expect(Arr.map([...first], (fn) => fn.name)).toEqual(["list"]);
           expect(
             standby.value.exitCode !== null ||
               standby.value.signalCode !== null,
@@ -268,7 +268,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Evaluation", (it) => {
             pipe(Project.impl, Str.replace('"list"', '"latest"')),
           );
           const recovered = yield* project.provide(Evaluation.generate);
-          expect([...recovered].map((fn) => fn.name)).toEqual(["latest"]);
+          expect(Arr.map([...recovered], (fn) => fn.name)).toEqual(["latest"]);
         }).pipe(Effect.provide(Evaluation.prewarmedLayer));
         expectWorkersExited();
       }).pipe(Effect.scoped),
@@ -290,7 +290,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Evaluation", (it) => {
             standby.value.kill("SIGKILL");
           });
           const recovered = yield* project.provide(Evaluation.generate);
-          expect([...recovered].map((fn) => fn.name)).toEqual(["list"]);
+          expect(Arr.map([...recovered], (fn) => fn.name)).toEqual(["list"]);
         }).pipe(
           Effect.provide(
             Evaluation.prewarmedLayer.pipe(
@@ -298,7 +298,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Evaluation", (it) => {
                 Logger.layer([
                   Logger.make((event) => {
                     if (
-                      Array.isArray(event.message) &&
+                      Arr.isArray(event.message) &&
                       event.message[0] === "Evaluator ready"
                     )
                       Deferred.doneUnsafe(ready, Effect.void);

@@ -14,6 +14,7 @@ import type * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Loopback from "./internal/Loopback.js";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
 
 export type Project = ManagementApi.ProjectResponse;
 export type CreatedProject = ManagementApi.PlatformCreateProjectResponse;
@@ -564,10 +565,10 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
         }),
       );
       return Object.fromEntries(
-        Object.entries(result.environmentVariables).map(([name, value]) => [
-          name,
-          Redacted.make(value),
-        ]),
+        Array.map(
+          Object.entries(result.environmentVariables),
+          ([name, value]) => [name, Redacted.make(value)],
+        ),
       );
     }),
     updateEnvironmentVariables: Effect.fn(
@@ -583,7 +584,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
         `${yield* deploymentUrl("updateEnvironmentVariables", url)}/update_environment_variables`,
         Redacted.make(`Convex ${Redacted.value(key)}`),
         {
-          changes: changes.map(({ name, value }) => ({
+          changes: Array.map(changes, ({ name, value }) => ({
             name,
             ...(value === undefined
               ? {}

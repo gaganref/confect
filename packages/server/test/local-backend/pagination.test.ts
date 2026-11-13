@@ -8,6 +8,7 @@ import { api } from "../../../../tools/local-backend/fixtures/convex/_generated/
 import * as LocalBackend from "confect-local-backend/LocalBackend";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
 
 layer(LocalBackend.layer, {
   timeout: "120 seconds",
@@ -61,9 +62,9 @@ layer(LocalBackend.layer, {
         }),
       );
       expect(page.page).toHaveLength(2);
-      expect(page.page.every((count) => [1, 2, 3, 4, 5].includes(count))).toBe(
-        true,
-      );
+      expect(
+        Arr.every(page.page, (count) => [1, 2, 3, 4, 5].includes(count)),
+      ).toBe(true);
       expect(page.isDone).toBe(false);
       expect(page.continueCursor).not.toBe("");
     }),

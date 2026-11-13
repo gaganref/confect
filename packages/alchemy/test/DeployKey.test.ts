@@ -12,6 +12,7 @@ import { LocalBackendError } from "../src/internal/LocalBackend";
 
 import * as DeployKey from "@confect/alchemy/DeployKey";
 import { key, lifecycle, mockClient } from "./fixtures/ConvexClient";
+import * as Array from "effect/Array";
 
 const props: DeployKey.DeployKeyProps = {
   deploymentName: "happy-otter-123",
@@ -222,7 +223,7 @@ it.effect(
       mock.state.keys = [key(), key({ id: 2 })];
       yield* provider.delete({ ...lifecycle, olds: props, output });
       yield* provider.delete({ ...lifecycle, olds: props, output });
-      expect(mock.state.keys.map((value) => value.id)).toEqual([2]);
+      expect(Array.map(mock.state.keys, (value) => value.id)).toEqual([2]);
       expect(mock.client.createDeployKey).toHaveBeenCalledTimes(1);
     }).pipe(Effect.provide(mock.layer));
   },

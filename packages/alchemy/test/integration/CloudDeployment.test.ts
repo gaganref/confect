@@ -35,6 +35,7 @@ import {
   project as existingProject,
   deployment as existingDeployment,
 } from "../fixtures/ConvexClient";
+import * as Array from "effect/Array";
 
 const makeHarness = (
   client: Layer.Layer<ConvexClient>,
@@ -187,7 +188,9 @@ describe("cloud deployment lifecycle", () => {
           expect(pushes).toBe(1);
         }
         yield* deploy(Effect.succeed({}));
-        expect(names.every((name) => name === "happy-otter-123")).toBe(true);
+        expect(Array.every(names, (name) => name === "happy-otter-123")).toBe(
+          true,
+        );
         expect(fixture.state.projects).toHaveLength(0);
         expect(fixture.state.deployments).toHaveLength(0);
         expect(fixture.state.keys).toHaveLength(0);

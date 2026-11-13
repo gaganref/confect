@@ -950,10 +950,12 @@ const mergeStep =
           { concurrency: (yield* readBudget.isUnlimited) ? "unbounded" : 1 },
         );
         if (
-          remaining.some((source) => MergeSource.$is("BudgetLimited")(source))
+          Array.some(remaining, (source) =>
+            MergeSource.$is("BudgetLimited")(source),
+          )
         )
           return undefined;
-        if (!remaining.some(matches))
+        if (!Array.some(remaining, matches))
           return Tuple.make(representative.element, remaining);
       }
     });

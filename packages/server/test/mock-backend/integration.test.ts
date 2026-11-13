@@ -2451,9 +2451,9 @@ it.effect.each([
             .table("totals")
             .index("by_creation_time")
             .collect();
-          expect(totals.map(({ count, sum }) => ({ count, sum }))).toEqual([
-            { count: 0, sum: 0 },
-          ]);
+          expect(
+            Array.map(totals, ({ count, sum }) => ({ count, sum })),
+          ).toEqual([{ count: 0, sum: 0 }]);
         }),
       );
     }).pipe(Effect.provide(TestConfect.layer)),

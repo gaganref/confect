@@ -1,6 +1,7 @@
 import { assert, describe, expect, expectTypeOf, test } from "@effect/vitest";
 
 import * as StreamPagination from "@confect/react/StreamPagination";
+import * as Array from "effect/Array";
 
 type Response = StreamPagination.PageResult | Error;
 
@@ -39,9 +40,8 @@ const settle = (
     if (view._tag !== "Interpreted" || view.transitions.length === 0) {
       return { state, view };
     }
-    state = view.transitions.reduce(
-      (current, transition) => transition(current),
-      state,
+    state = Array.reduce(view.transitions, state, (current, transition) =>
+      transition(current),
     );
   }
   throw new Error("transitions did not settle");
@@ -86,7 +86,7 @@ const pageItems = [
 const threePages = () => {
   const responses = new Map<string, Response>();
   let state = StreamPagination.initial(2);
-  pinnedPages.forEach((pinned, index) => {
+  Array.forEach(pinnedPages, (pinned, index) => {
     const loaded = page(pageItems[index]!, pinned.endCursor);
     respond(responses, { numItems: 2, cursor: pinned.cursor }, loaded);
     respond(responses, pinned, loaded);
@@ -288,9 +288,9 @@ describe("interpret", () => {
       assert(swapped.view._tag === "Interpreted");
       expect(swapped.view.items).toEqual(["1", "2", "3", "4", "5", "6"]);
       expect(requests(swapped.state)).toEqual(
-        pinnedPages
-          .flatMap((pinned, at) => (at === index ? [] : [pinned]))
-          .concat([firstHalf, secondHalf]),
+        Array.flatMap(pinnedPages, (pinned, at) =>
+          at === index ? [] : [pinned],
+        ).concat([firstHalf, secondHalf]),
       );
     },
   );

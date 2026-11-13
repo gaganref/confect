@@ -50,13 +50,18 @@ export const missingRequired = (
   required: ReadonlyArray<{ readonly key: string }>,
   groupPath = "",
 ): ReadonlyArray<MissingMiddleware> =>
-  Object.entries(items)
-    .sort(([left], [right]) => pipe(left, Str.localeCompare(right)))
-    .flatMap(([functionName, value]) =>
+  Array.flatMap(
+    Object.entries(items).sort(([left], [right]) =>
+      pipe(left, Str.localeCompare(right)),
+    ),
+    ([functionName, value]) =>
       FunctionRegistryItem.isFunctionRegistryItem(value)
-        ? required.flatMap(({ key }) =>
+        ? Array.flatMap(required, ({ key }) =>
             value._tag === "Confect" &&
-            value.middlewareAttachments.some(({ spec }) => spec.key === key)
+            Array.some(
+              value.middlewareAttachments,
+              ({ spec }) => spec.key === key,
+            )
               ? []
               : [
                   {
@@ -69,4 +74,4 @@ export const missingRequired = (
                 ],
           )
         : [],
-    );
+  );

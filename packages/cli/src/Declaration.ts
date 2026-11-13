@@ -7,6 +7,7 @@ import * as Result from "effect/Result";
 import { createHash } from "node:crypto";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
 
 /**
  * A backend's declaration (`confect/env.ts`, `app.ts`, `auth.ts`) reduced to
@@ -251,7 +252,9 @@ export const parse = (input: {
           }),
         );
       }
-      const named = mounts.find((declared) => declared.name === mount.name);
+      const named = Option.getOrUndefined(
+        Arr.findFirst(mounts, (declared) => declared.name === mount.name),
+      );
       if (named !== undefined) {
         return yield* Result.fail(
           new DuplicateMountName({
@@ -296,7 +299,9 @@ export const parse = (input: {
       });
     }
     for (const [component, { importPath }] of definitions) {
-      if (!mounts.some(({ componentName }) => componentName === component)) {
+      if (
+        !Arr.some(mounts, ({ componentName }) => componentName === component)
+      ) {
         return yield* Result.fail(
           new DefinitionWithoutMount({ component, importPath }),
         );
@@ -403,7 +408,11 @@ const validator = (descriptor: Env.Descriptor): string => {
     descriptor.kind === "literals"
       ? descriptor.values.length === 1
         ? `v.literal(${quote(descriptor.values[0])})`
-        : `v.union(${descriptor.values.map((value) => `v.literal(${quote(value)})`).join(", ")})`
+        : `v.union(${pipe(
+            descriptor.values,
+            Arr.map((value) => `v.literal(${quote(value)})`),
+            Arr.join(", "),
+          )})`
       : "v.string()";
   return descriptor.optional ? `v.optional(${base})` : base;
 };
@@ -458,7 +467,8 @@ export const convexConfig = (declaration: Declaration): string => {
       ? []
       : [
           "  env: {",
-          ...declaration.env.map(
+          ...Arr.map(
+            declaration.env,
             ([key, descriptor]) => `    ${key}: ${validator(descriptor)},`,
           ),
           "  },",
@@ -467,17 +477,20 @@ export const convexConfig = (declaration: Declaration): string => {
     lines.push(
       envBlock.length === 0
         ? "const app = defineApp();"
-        : ["const app = defineApp({", ...envBlock, "});"].join("\n"),
+        : Arr.join(["const app = defineApp({", ...envBlock, "});"], "\n"),
     );
   } else {
     lines.push(
       envBlock.length === 0
         ? `const component = defineComponent(${quote(declaration.name)});`
-        : [
-            `const component = defineComponent(${quote(declaration.name)}, {`,
-            ...envBlock,
-            "});",
-          ].join("\n"),
+        : Arr.join(
+            [
+              `const component = defineComponent(${quote(declaration.name)}, {`,
+              ...envBlock,
+              "});",
+            ],
+            "\n",
+          ),
     );
   }
 
@@ -501,7 +514,7 @@ export const convexConfig = (declaration: Declaration): string => {
   }
 
   lines.push("", `export default ${self};`, "");
-  return lines.join("\n");
+  return Arr.join(lines, "\n");
 };
 
 const providerValue = (value: ProviderValue): string => {
@@ -520,57 +533,66 @@ const providerValue = (value: ProviderValue): string => {
  * there.
  */
 export const authConfig = (providers: ReadonlyArray<Provider>): string =>
-  [
-    header("confect/auth.ts"),
-    'import type { AuthConfig } from "convex/server";',
-    "",
-    "export default {",
-    providers.length === 0 ? "  providers: []," : "  providers: [",
-    ...(providers.length === 0
-      ? []
-      : [
-          ...providers.flatMap((provider) => [
-            "    {",
-            ...provider
-              .filter(([field]) => field !== "family" && field !== "name")
-              .map(
-                ([field, value]) => `      ${field}: ${providerValue(value)},`,
+  Arr.join(
+    [
+      header("confect/auth.ts"),
+      'import type { AuthConfig } from "convex/server";',
+      "",
+      "export default {",
+      providers.length === 0 ? "  providers: []," : "  providers: [",
+      ...(providers.length === 0
+        ? []
+        : [
+            ...Arr.flatMap(providers, (provider) => [
+              "    {",
+              ...pipe(
+                provider,
+                Arr.filter(([field]) => field !== "family" && field !== "name"),
+                Arr.map(
+                  ([field, value]) =>
+                    `      ${field}: ${providerValue(value)},`,
+                ),
               ),
-            "    },",
+              "    },",
+            ]),
+            "  ],",
           ]),
-          "  ],",
-        ]),
-    "} satisfies AuthConfig;",
-    "",
-  ].join("\n");
+      "} satisfies AuthConfig;",
+      "",
+    ],
+    "\n",
+  );
 
 /**
  * Runtime issuer data with no dependency on declarations or component
  * definitions.
  */
 export const authProviders = (providers: ReadonlyArray<Provider>): string =>
-  [
-    header("confect/auth.ts"),
-    "",
-    "export const providers = [",
-    ...providers.flatMap((provider) => [
-      "  {",
-      ...provider.flatMap(([field, value]) => {
-        const key =
-          field === "domain"
-            ? "issuer"
-            : field === "applicationID"
-              ? "audience"
-              : field;
-        return ["issuer", "audience", "family", "name"].includes(key)
-          ? [`    ${key}: ${providerValue(value)},`]
-          : [];
-      }),
-      "  },",
-    ]),
-    "] as const;",
-    "",
-  ].join("\n");
+  Arr.join(
+    [
+      header("confect/auth.ts"),
+      "",
+      "export const providers = [",
+      ...Arr.flatMap(providers, (provider) => [
+        "  {",
+        ...Arr.flatMap(provider, ([field, value]) => {
+          const key =
+            field === "domain"
+              ? "issuer"
+              : field === "applicationID"
+                ? "audience"
+                : field;
+          return ["issuer", "audience", "family", "name"].includes(key)
+            ? [`    ${key}: ${providerValue(value)},`]
+            : [];
+        }),
+        "  },",
+      ]),
+      "] as const;",
+      "",
+    ],
+    "\n",
+  );
 
 /**
  * `confect/_generated/manifest.ts`: plain data, no imports, for infra.
@@ -585,7 +607,7 @@ export const manifest = (
     env: Object.fromEntries(declaration.env),
     http: {
       mounts: Object.fromEntries(
-        declaration.mounts.flatMap(({ name, httpPrefix }) =>
+        Arr.flatMap(declaration.mounts, ({ name, httpPrefix }) =>
           httpPrefix === undefined ? [] : [[name, httpPrefix]],
         ),
       ),

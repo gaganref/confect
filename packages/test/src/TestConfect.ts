@@ -22,6 +22,7 @@ import * as Schema from "effect/Schema";
 import * as MountedHttp from "./internal/MountedHttp.js";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
 
 declare const process: { env: Record<string, string | undefined> };
 
@@ -418,13 +419,14 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       registry.convexSchema,
       registry.modules,
       {
-        httpMounts: mounts.flatMap(({ name, httpPrefix }) =>
+        httpMounts: Array.flatMap(mounts, ({ name, httpPrefix }) =>
           httpPrefix === undefined ? [] : [{ componentPath: name, httpPrefix }],
         ),
         register: (registerComponent) => {
           for (const [name, component] of Object.entries(registry.components)) {
             if (
-              mounts.some(
+              Array.some(
+                mounts,
                 (mount) =>
                   name === mount.name ||
                   pipe(name, String.startsWith(`${mount.name}/`)),

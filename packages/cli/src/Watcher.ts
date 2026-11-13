@@ -420,7 +420,10 @@ const entryPointsWatcher = Effect.fnUntraced(function* (
     const revision = yield* watcher.topology.revision;
     const current = yield* Ref.get(watcher.lifecycle);
     const entries = yield* EntryPoint.discover;
-    yield* Ref.set(watcher.declared, entries.some(EntryPoint.Kind.$is("App")));
+    yield* Ref.set(
+      watcher.declared,
+      Array.some(entries, EntryPoint.Kind.$is("App")),
+    );
     const desiredPaths = HashSet.fromIterable(
       Array.map(entries, (entry) => entry.absolutePath),
     );
@@ -878,7 +881,7 @@ const handleConfectChange = ({
   // Sections read the files they match and those files' imports, entry points
   // included. An entry point's own watcher only validates or updates that
   // entry, so an edit to a recorded section input reruns codegen in full.
-  const source = pipe(relativePath, String.split(/[/\\]/)).join("/");
+  const source = Array.join(pipe(relativePath, String.split(/[/\\]/)), "/");
   const regenerateIfInput = SectionFiles.inputs.pipe(
     Effect.map((inputs) => inputs.includes(source)),
     Effect.orElseSucceed(() => false),

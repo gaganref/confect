@@ -32,6 +32,7 @@ import {
 import { PushLock, layer as lockLayer } from "../../dist/internal/PushLock.js";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
 
 export interface Outputs {
   readonly name: string;
@@ -104,10 +105,10 @@ const forwardSlashes = (file: string) =>
  * compared as filesystem paths with forward slashes.
  */
 export const readRegistry = (files: Iterable<string>, harness: string) => {
-  const loaded = [...files].map(forwardSlashes);
+  const loaded = Arr.map([...files], forwardSlashes);
   return {
     listsHarness: loaded.includes(forwardSlashes(harness)),
-    source: loaded.filter((file) => /\/packages\/[^/]+\/src\//.test(file)),
+    source: Arr.filter(loaded, (file) => /\/packages\/[^/]+\/src\//.test(file)),
   };
 };
 
@@ -139,7 +140,7 @@ const runsBuiltPackages = Effect.suspend(() => {
   return source.length === 0
     ? Effect.void
     : die(
-        `The real-backend harness runs the built packages, but this test loaded their source: ${source.join(", ")}`,
+        `The real-backend harness runs the built packages, but this test loaded their source: ${Arr.join(source, ", ")}`,
       );
 });
 
@@ -207,7 +208,7 @@ export const make = Effect.fn("RealBackend.make")(function* (options: {
       Effect.provide(context),
       Effect.scoped,
     );
-  const [low = 0, high = 0] = pipe(ports, String.split("-")).map(Number);
+  const [low, high = 0] = Arr.map(pipe(ports, String.split("-")), Number);
   return { root, ports: { low, high }, session };
 });
 

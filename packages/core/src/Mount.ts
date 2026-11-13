@@ -13,6 +13,7 @@ import type * as GenericId from "./GenericId.js";
 import type * as IdScope from "./IdScope.js";
 import { CallbackContract } from "./internal/annotations.js";
 import * as Ref from "./Ref.js";
+import * as Array from "effect/Array";
 
 const TypeId = "~@confect/core/Mount";
 
@@ -319,7 +320,7 @@ const withMemberHandles = <E, R>(
   value: unknown,
   create: Create<E, R>,
 ): Effect.Effect<unknown, E, R> => {
-  const fitting = members.filter((member) =>
+  const fitting = Array.filter(members, (member) =>
     Schema.is(member)(
       Effect.runSync(withHandles(member, value, placeholderHandle)),
     ),
@@ -327,7 +328,7 @@ const withMemberHandles = <E, R>(
   return fitting.length === 0
     ? Effect.succeed(value)
     : Effect.firstSuccessOf(
-        fitting.map((member) => withHandles(member, value, create)),
+        Array.map(fitting, (member) => withHandles(member, value, create)),
       );
 };
 
@@ -362,7 +363,11 @@ const withHandles = <E, R>(
   if (Predicate.hasProperty(schema, "schema"))
     return withHandles(schema.schema as Schema.Top, value, create);
   if (Predicate.hasProperty(schema, "members") && Array.isArray(schema.members))
-    return withMemberHandles(schema.members, value, create);
+    return withMemberHandles(
+      schema.members as ReadonlyArray<Schema.Top>,
+      value,
+      create,
+    );
   const at = entrySchema(schema);
   if (at === undefined || !Predicate.isObject(value))
     return Effect.succeed(value);
