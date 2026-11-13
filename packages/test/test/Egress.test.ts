@@ -388,5 +388,30 @@ describe("provider ports", () => {
           expect(logged).toEqual([[`${kind} before it returned`]]);
         }),
     );
+
+    it.effect(
+      "a console a test assigns keeps its own methods, and an ended action's later call to it is dropped",
+      () =>
+        Effect.gen(function* () {
+          const t = convexTest({ schema, modules, sources });
+          const original = globalThis.console;
+          const log = vi.fn();
+          const assigned = { ...original, log };
+          globalThis.console = assigned;
+          yield* Effect.promise(() =>
+            t
+              .action(egress.logAroundRefusal, { url: "https://example.com/" })
+              .catch(() => null),
+          ).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                globalThis.console = original;
+              }),
+            ),
+          );
+          expect(assigned.log).toBe(log);
+          expect(log.mock.calls).toEqual([["before the refusal"]]);
+        }),
+    );
   });
 });
