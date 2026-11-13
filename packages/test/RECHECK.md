@@ -638,11 +638,15 @@ with the refusal at once, whatever its handler catches and whether or not the
 handler ever settles, and runs no later syscall, `ctx.runQuery`,
 `ctx.runMutation` or `ctx.runAction`. The fetch never leaves the process.
 
-An ended function's later `console` calls are dropped. On the binary its
-JavaScript stops at termination, and an action's run loop stops once its
-promise settles (`action/mod.rs:1043-1120`), so no later call reaches `trace`
-(`:1545-1570`), the only way an action logs. The kernel cannot stop a handler,
-so `IoBans.ts` wraps `console`'s methods and drops what an ended function logs.
+A function's later `console` calls are dropped once it has settled, whether
+it returned, failed or was ended. On the binary none of its JavaScript runs
+after that: an action's run loop (`action/mod.rs:1043`) breaks once its promise
+rejects (`:1125-1128`) or its result is collected (`:1151`), so no later call
+reaches `trace` (`:1545-1570`), the only way an action logs, and a query's or
+mutation's `run_inner` loop (`udf/mod.rs:1113`) stops the same way. The kernel
+cannot stop a handler, so `IoBans.ts` wraps `console`'s methods and drops what a
+settled function logs, a continuation released after an isolate action
+returned included.
 
 Egress goes through a provider port (`src/internal/Egress.ts`). Inside a kernel
 action a port's call is held as a `{ kind: "provider", port, input }` command,
@@ -665,7 +669,13 @@ conformance exception (`test/mock-backend/conformance.ts`): one exact case, the
 binary behaviour, the outcome each function it calls has there (both return
 `reached /ping`), an owner, the convex-test version and the evidence above. The
 case records each function's outcome, a return value or an error's tag and
-message, before it asserts. `convexTestLane.ts` refuses an entry that names a
+message, before it asserts. Its departure assertion runs through `departs`, which
+records the failure's message and the file that called it. The lane takes the
+failure for the departure only when the case failed with exactly that one
+error, from its own file, with the message the entry pins (`departure`), and
+the recorded outcomes match. It checks in `onTestFinished`, after every hook,
+since an `afterEach` that throws stops the hooks after it: a failing hook adds
+an error of its own and fails the lane. `convexTestLane.ts` refuses an entry that names a
 describe block, a pattern, no case, a missing file or another convex-test
 version, or expects no outcome. An excepted case that passes on convex-test
 fails the lane ("Expect test to fail"). One that records other outcomes, or
