@@ -974,9 +974,13 @@ after that: an action's run loop (`action/mod.rs:1043`) breaks once its promise
 rejects (`:1125-1128`) or its result is collected (`:1151`), so no later call
 reaches `trace` (`:1545-1570`), the only way an action logs, and a query's or
 mutation's `run_inner` loop (`udf/mod.rs:1113`) stops the same way. The kernel
-cannot stop a handler, so `IoBans.ts` wraps `console`'s methods and drops what a
-settled function logs, a continuation released after an isolate action
-returned included.
+cannot stop a handler, so `IoBans.ts` makes `console` an accessor that reads as
+a view of the console beneath it, whose logging methods drop what a settled
+function logs, a continuation released after an isolate action returned
+included. It never writes to the console object, so a console a test assigns
+keeps its own methods: an earlier version wrapped the methods in place, which
+replaced a test's `vi.fn()` spies and failed `http.test.ts`'s per-request
+console case in the kernel lane.
 
 Egress goes through a provider port (`src/internal/Egress.ts`). Inside a kernel
 action a port's call is held as a `{ kind: "provider", port, input }` command,
