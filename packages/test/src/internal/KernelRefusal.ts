@@ -98,6 +98,41 @@ export class UnknownStandingSource extends Schema.TaggedError<UnknownStandingSou
   { componentPath: Schema.String, name: Schema.String, message: Schema.String },
 ) {}
 
+/**
+ * A function would have run with a host global the kernel refuses unguarded: a
+ * test replaced it with a property the kernel cannot redefine.
+ */
+export class UnguardableGlobal extends Schema.TaggedError<UnguardableGlobal>()(
+  "UnguardableGlobal",
+  { names: Schema.Array(Schema.String), message: Schema.String },
+) {}
+
+export const unguardableGlobal = (names: ReadonlyArray<string>) =>
+  new UnguardableGlobal({
+    names,
+    message: `The test kernel cannot guard ${names.map((name) => `globalThis.${name}`).join(", ")}: a test replaced it with a property that cannot be redefined, so a function could reach the host's implementation unchecked. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`,
+  });
+
+/**
+ * The kernel could not tell, or refuses, the runtime a module runs in: a module
+ * with no source when the test gave sources, a `"use node"` directive where the
+ * bundler forbids one, or a Confect Node action in a module without the
+ * directive.
+ */
+export class ModuleRuntime extends Schema.TaggedError<ModuleRuntime>()(
+  "ModuleRuntime",
+  {
+    reason: Schema.Literals([
+      "missingSource",
+      "nodeNotAllowed",
+      "markerDisagrees",
+    ]),
+    componentPath: Schema.String,
+    module: Schema.String,
+    message: Schema.String,
+  },
+) {}
+
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
   new RequiresBinary({
     operation,

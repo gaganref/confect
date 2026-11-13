@@ -33,6 +33,13 @@ export type RegisterOptions = {
    * `finishAllScheduledFunctions` must finish. convex-test ignores it.
    */
   readonly standing?: ReadonlyArray<string>;
+  /**
+   * The component's module sources, keyed as its modules are, such as
+   * `import.meta.glob(pattern, { query: "?raw", import: "default" })` gives.
+   * The test kernel reads each module's `"use node"` directive from them, as
+   * Convex's bundler does. convex-test ignores it.
+   */
+  readonly sources?: Record<string, () => Promise<string>>;
 };
 
 /**
@@ -77,6 +84,14 @@ export type LayerOptions = TargetOptions & {
    * Explicit HTTP mounts. The test layer does not evaluate convex.config.ts.
    */
   readonly httpMounts?: ReadonlyArray<HttpMount>;
+  /**
+   * The modules' sources, keyed as the modules are, such as
+   * `import.meta.glob(pattern, { query: "?raw", import: "default" })` gives.
+   * The test kernel reads each module's `"use node"` directive from them, so a
+   * plain Convex Node action runs with Node's globals. Without them only a
+   * Confect Node action does. convex-test ignores it.
+   */
+  readonly sources?: Record<string, () => Promise<string>>;
 };
 
 export type TestConfectWithoutIdentity<
@@ -492,10 +507,16 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   Layer.sync(TestConfect<DatabaseSchema_>(), () => {
     process.env.CONVEX_CLOUD_URL ??= "https://some-deployment.convex.cloud";
     process.env.CONVEX_SITE_URL ??= "https://some.convex.site";
-    const testConvex = (options.target === "kernel" ? kernelTest : convexTest)(
-      convexSchemaDefinition,
-      modules,
-    );
+    const testConvex =
+      options.target === "kernel"
+        ? kernelTest({
+            schema: convexSchemaDefinition,
+            modules,
+            ...(options.sources === undefined
+              ? {}
+              : { sources: options.sources }),
+          })
+        : convexTest(convexSchemaDefinition, modules);
     // convex-test takes three arguments and ignores the options. The kernel
     // reads `standing`.
     const registerComponent =
