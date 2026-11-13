@@ -1,14 +1,6 @@
 {
   "effecttsgo/api-stability-leak": {
-    "packages/alchemy/src/Code.ts": 8,
-    "packages/alchemy/src/DeployKey.ts": 4,
-    "packages/alchemy/src/Deployment.ts": 5,
-    "packages/alchemy/src/index.ts": 5,
-    "packages/core/src/App.ts": 2,
-    "packages/core/src/Http.ts": 6,
-    "packages/core/src/index.ts": 3,
-    "packages/server/src/HttpRouter.ts": 1,
-    "packages/server/src/internal/httpBody.ts": 1
+    "packages/alchemy/src/index.ts": 5
   },
   "effecttsgo/global-json": {
     "packages/alchemy/test/ConvexClient.test.ts": 2,

@@ -18,6 +18,8 @@ export type HttpPrefix = `/${string}`;
 
 /**
  * Any `HttpApi`, with its identifier and groups erased.
+ *
+ * @stability unstable
  */
 export type Api = HttpApi.HttpApi<string, any>;
 

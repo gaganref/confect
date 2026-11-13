@@ -12,6 +12,8 @@ import { pipe } from "effect/Function";
  * decoding. Configure maxBytes from the endpoint's policy. Non-identity
  * Content-Encoding receives 415 and a body past the cap 413. Stream readers and
  * decoders downstream see the same counted bytes.
+ *
+ * @stability unstable
  */
 export const withBodyLimit = <A, E, R>(
   effect: Effect.Effect<A, E, R>,

@@ -373,17 +373,7 @@
       }
     },
     {
-      "files": [
-        "packages/alchemy/src/Code.ts",
-        "packages/alchemy/src/DeployKey.ts",
-        "packages/alchemy/src/Deployment.ts",
-        "packages/alchemy/src/index.ts",
-        "packages/core/src/App.ts",
-        "packages/core/src/Http.ts",
-        "packages/core/src/index.ts",
-        "packages/server/src/HttpRouter.ts",
-        "packages/server/src/internal/httpBody.ts"
-      ],
+      "files": ["packages/alchemy/src/index.ts"],
       "rules": {
         "effecttsgo/api-stability-leak": "off"
       }

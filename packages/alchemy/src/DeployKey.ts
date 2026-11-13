@@ -244,6 +244,8 @@ export const provider = Effect.gen(function* () {
  * Under `alchemy dev` the deploy key is the admin key the local deployment
  * generated. It is read on every apply, so a recreated backend's new key
  * replaces the old one.
+ *
+ * @stability unstable
  */
 export const localProvider = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
@@ -277,4 +279,7 @@ export const localProvider = Effect.gen(function* () {
 });
 
 export const layer = Provider.effect(DeployKey, provider);
+/**
+ * @stability unstable
+ */
 export const localLayer = Provider.effect(DeployKey, localProvider);

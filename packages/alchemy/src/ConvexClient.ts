@@ -620,6 +620,8 @@ export class ConvexClient extends Context.Service<
 /**
  * `mode: "local"` sends deployment requests only to a loopback backend over
  * HTTP; the default accepts only Convex cloud HTTPS origins.
+ *
+ * @stability unstable
  */
 export const layer = (options?: {
   readonly token?: Redacted.Redacted<string>;

@@ -24,6 +24,8 @@ const TypeId = "~@confect/core/Http";
  * It does not reference `confect/app.ts`: `http.ts` runs in every HTTP action,
  * and `app.ts` imports component definitions that only load in Convex's config
  * analysis. Codegen checks these routes against the app's mounts.
+ *
+ * @stability unstable
  */
 export interface Http<Api extends App.Api, Routes extends Layer.Any> {
   readonly [TypeId]: typeof TypeId;
@@ -32,6 +34,9 @@ export interface Http<Api extends App.Api, Routes extends Layer.Any> {
   readonly routes: Routes;
 }
 
+/**
+ * @stability unstable
+ */
 export type Any = Http<App.Api, Layer.Any>;
 
 /**
@@ -45,6 +50,8 @@ export type Any = Http<App.Api, Layer.Any>;
  *   docs: "/docs",
  * });
  * ```
+ *
+ * @stability unstable
  */
 export const make = <
   Id extends string,
@@ -184,6 +191,8 @@ const apiRoutes = (api: App.Api, owner: Owner): ReadonlyArray<KeyedRoute> =>
  * under a mount's prefix (Convex accepts that and lets the app route silently
  * shadow the component's), when two routes share a method and path, or when two
  * mount prefixes overlap.
+ *
+ * @stability unstable
  */
 export const routes = (
   app: App.Any,

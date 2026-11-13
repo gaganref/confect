@@ -230,6 +230,8 @@ interface LocalConfig {
  * reloads of the stack and stops when the dev session ends. Its data lives in
  * `.alchemy/convex/<stack>/<stage>/<name>` and is removed only when the
  * deployment is destroyed.
+ *
+ * @stability unstable
  */
 export const localLayer = LocalProvider.make(
   Deployment,
