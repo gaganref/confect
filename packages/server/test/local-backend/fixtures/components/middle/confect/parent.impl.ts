@@ -4,6 +4,7 @@ import * as Layer from "effect/Layer";
 import schema from "./_generated/schema";
 import { MutationRunner, QueryRunner } from "./_generated/services";
 import { child } from "./child";
+import { identityChain } from "./identityChain";
 import parent from "./parent.spec";
 
 const create = FunctionImpl.make(schema, parent, "create", (args) =>
@@ -25,6 +26,6 @@ const location = FunctionImpl.make(schema, parent, "location", () =>
   }).pipe(Effect.orDie),
 );
 export default GroupImpl.make(schema, parent).pipe(
-  Layer.provide([create, list, location]),
+  Layer.provide([create, list, location, FunctionImpl.make(schema, parent, "identityChain", identityChain)]),
   GroupImpl.finalize,
 );

@@ -4,6 +4,7 @@ import * as Layer from "effect/Layer";
 import schema from "./_generated/schema";
 import { MutationRunner, QueryRunner } from "./_generated/services";
 import { child, deep } from "./child";
+import { identityChain } from "./identityChain";
 import parent from "./parent.spec";
 
 const create = FunctionImpl.make(schema, parent, "create", (args) =>
@@ -41,6 +42,6 @@ const deepLocation = FunctionImpl.make(schema, parent, "deepLocation", () =>
   }).pipe(Effect.orDie),
 );
 export default GroupImpl.make(schema, parent).pipe(
-  Layer.provide([create, list, deepCreate, deepList, deepLocation]),
+  Layer.provide([create, list, deepCreate, deepList, deepLocation, FunctionImpl.make(schema, parent, "identityChain", identityChain)]),
   GroupImpl.finalize,
 );
