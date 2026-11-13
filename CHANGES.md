@@ -300,15 +300,23 @@ messages in order, mutations in order, actions at once, and a transition after
 each query-set change, identity change, answered request or commit that
 changed what one of its queries read. Each session keeps a request ledger,
 keyed by request ID with the digest of the arguments' artifact form, so a
-mutation the client resends after a lost response is answered once. A token
-the client presents is verified with the JWT row's verifier, and a new token
-makes identity-dependent queries stale; a subscriber on the shim under
-`withToken` now presents its token the same way instead of refusing. The
+mutation the client resends after a lost response is answered once; a resend
+is told from a reuse by its raw arguments' digest, which stays in memory. A
+token the client presents is verified with the JWT row's verifier, its expiry
+is checked before each request and update as the binary checks it, and a new
+token reruns every query of the socket through a model of the binary's query
+cache, so a time query keeps its value until the cache age passes; a
+subscriber on the shim under `withToken` now presents its token the same way
+instead of refusing. A reused request ID with other arguments is refused,
+where the binary answers the recorded result: the one recorded conformance
+exception. The
 ledger, the transcript of every message and the failure reports leave marked
 by the redaction policy. Open sockets join the snapshot's live registries, so a
 restore refuses while any is open. A local-backend probe runs three legs of the
 unmodified client against a binary the run starts and against the kernel, and
-records each leg bound to the binary's process, checksum and ports. This is row
+records each leg bound to the binary's process, checksum and ports; a leg's
+record is `incomplete` until it finishes, every step has a deadline, and the
+probe is skipped off Linux. This is row
 7 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-sync.md`. Upstream: fork only, as the kernel is fork-specific.
 

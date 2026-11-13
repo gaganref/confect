@@ -302,7 +302,7 @@ export const contract = {
   outside: {
     subscriptions: {
       excluded:
-        "Live client state: subscribers, their callers and runs. A restore requires a world with no subscribers (`live.subscribers`) and starts with none. Identity versions continue through `identityEpoch`.",
+        "Live client state: subscribers, their callers and runs, and the query cache of the subscribers `Sync` pushes, whose results name commits of the world that ran them. A restore requires a world with no subscribers (`live.subscribers`) and starts with none. Identity versions continue through `identityEpoch`.",
     },
     sync: {
       excluded:
