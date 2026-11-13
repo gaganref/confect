@@ -141,7 +141,8 @@ runs cron runs and jobs in time order, and a drain never runs a cron run.
 Cron expressions follow saffron's search, including `L`, `W` and `#`. A search
 that reaches saffron's `u32` underflow, which aborts the overflow-checked binary,
 is refused with `CronAbortsBinary`. A snapshot carries every cron job's run
-state, and a restore installs it without a draw. A cron run's function is
+state, and a restore installs it without a draw. A failed run's text reaches
+`crons()` and a snapshot only through the failure redaction. A cron run's function is
 metered as any mutation, and the cron bookkeeping charges no counter, as on the
 binary, where it writes only system tables.
 Why: design row 5 lists declared schedules among the kernel's standing sources,

@@ -662,7 +662,10 @@ land: file bytes, storage ID mappings, `nextFile` and upload-token counters
 Cron state (#133) is in the snapshot, format version 2. Each declared job
 exports its declaration (name, function, arguments as Convex JSON with secrets
 marked as a job's arguments are, and schedule, a cron expression by its text),
-its next run, its latest outcome and its world by name. A cron job's fields are
+its next run, its latest outcome and its world by name. A failed outcome's text
+is whatever the function threw, so it can hold a kept secret: the export writes
+it through `Redaction.mark`, a marker a restore unmarks, and `crons()` reports it
+through `Redaction.failure`. The raw text stays in the job's replay state. A cron job's fields are
 checked by type against `Execution.CronJob`. A restore never redeclares a cron
 and never draws a fresh random value. The world reads its app's declarations
 when its modules load, which draws nothing, and only the call that opens the
