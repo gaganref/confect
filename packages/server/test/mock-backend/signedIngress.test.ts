@@ -198,17 +198,19 @@ const shapes: ReadonlyArray<{
 describe("signed ingress", () => {
   it.effect("accepts a correctly signed envelope and records it", () =>
     Effect.gen(function* () {
-      expect(yield* protectedRows).toBe("[]");
-      expect(
-        yield* send(yield* Effect.promise(() => signed(acceptedBody))),
-      ).toStrictEqual({ status: 200, body: "accepted paid evt_1" });
+      const protectedRowsValue = yield* protectedRows;
+      expect(protectedRowsValue).toBe("[]");
+      const resolved = yield* Effect.promise(() => signed(acceptedBody));
+      const sendResult = yield* send(resolved);
+      expect(sendResult).toStrictEqual({
+        status: 200,
+        body: "accepted paid evt_1",
+      });
       const c = yield* TestConfect.TestConfect;
-      expect(
-        Array.map(
-          yield* c.query(refs.public.groups.notes.list),
-          (row) => row.text,
-        ),
-      ).toStrictEqual(["paid:evt_1"]);
+      const query2 = yield* c.query(refs.public.groups.notes.list);
+      expect(Array.map(query2, (row) => row.text)).toStrictEqual([
+        "paid:evt_1",
+      ]);
     }).pipe(Effect.provide(TestConfect.layer)),
   );
 
@@ -216,12 +218,14 @@ describe("signed ingress", () => {
     "refuses $name with its declared refusal and leaves the protected table unchanged",
     ({ envelope, refusal }) =>
       Effect.gen(function* () {
-        yield* send(yield* Effect.promise(() => signed(acceptedBody)));
+        const resolved = yield* Effect.promise(() => signed(acceptedBody));
+        yield* send(resolved);
         const before = yield* protectedRows;
-        expect(yield* send(yield* Effect.promise(envelope))).toStrictEqual(
-          refusal,
-        );
-        expect(yield* protectedRows).toBe(before);
+        const resolved2 = yield* Effect.promise(envelope);
+        const sendResult = yield* send(resolved2);
+        expect(sendResult).toStrictEqual(refusal);
+        const protectedRowsValue = yield* protectedRows;
+        expect(protectedRowsValue).toBe(before);
       }).pipe(Effect.provide(TestConfect.layer)),
   );
 });

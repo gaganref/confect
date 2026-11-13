@@ -139,17 +139,21 @@ layer(
           Effect.promise(() => SignedEnvelope.sign(body));
         const acceptedText = yield* encodeJson({ id: "evt_1", event: "paid" });
         const accepted = new TextEncoder().encode(acceptedText);
-        expect(yield* send(accepted, yield* sign(accepted))).toStrictEqual({
+        const signResult = yield* sign(accepted);
+        const sendResult = yield* send(accepted, signResult);
+        expect(sendResult).toStrictEqual({
           status: 200,
           body: "accepted paid evt_1",
         });
         const tampered = Uint8Array.from(accepted);
         tampered[tampered.length - 2] ^= 1;
-        expect(yield* send(tampered, yield* sign(accepted))).toStrictEqual(
-          SignedEnvelope.refusals.badSignature,
-        );
+        const signResult2 = yield* sign(accepted);
+        const sendResult2 = yield* send(tampered, signResult2);
+        expect(sendResult2).toStrictEqual(SignedEnvelope.refusals.badSignature);
         const notUtf8 = Uint8Array.of(0x7b, 0xff, 0x7d);
-        expect(yield* send(notUtf8, yield* sign(notUtf8))).toStrictEqual(
+        const signResult3 = yield* sign(notUtf8);
+        const sendResult3 = yield* send(notUtf8, signResult3);
+        expect(sendResult3).toStrictEqual(
           SignedEnvelope.refusals.malformedJson,
         );
       }),

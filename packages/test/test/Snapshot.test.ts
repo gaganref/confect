@@ -1200,7 +1200,8 @@ describe("snapshot file storage", () => {
         expect(text(restored.exportSnapshot())).toBe(text(exported));
         for (const id of [ids.typed, ids.untyped]) {
           const source = yield* describeFile(t, id);
-          expect(yield* describeFile(restored, id)).toEqual(source);
+          const describeFileResult = yield* describeFile(restored, id);
+          expect(describeFileResult).toEqual(source);
           // A file's storage UUID still names it after a restore.
           const byUuid = yield* describeFile(
             restored,
@@ -1214,7 +1215,8 @@ describe("snapshot file storage", () => {
         const read = yield* contents(restored, ids.typed);
         expect(read?.type).toBe("application/octet-stream");
         expect(new Uint8Array(read!.bytes)).toStrictEqual(binary);
-        expect(yield* contents(restored, ids.gone)).toBeNull();
+        const contentsResult = yield* contents(restored, ids.gone);
+        expect(contentsResult).toBeNull();
       }),
   );
 
@@ -1245,11 +1247,10 @@ describe("snapshot file storage", () => {
         );
         expect(new Set(uuids).size).toBe(4);
         expect(uuids[3]).toBe("00000000-0000-4000-8000-000000000004");
-        expect(
-          yield* call(() =>
-            restored.mutation((ctx: any) => ctx.storage.generateUploadUrl()),
-          ),
-        ).toMatch(/token=kernel-unsigned-2$/);
+        const callResult = yield* call(() =>
+          restored.mutation((ctx: any) => ctx.storage.generateUploadUrl()),
+        );
+        expect(callResult).toMatch(/token=kernel-unsigned-2$/);
       }),
   );
 
@@ -1311,9 +1312,10 @@ describe("snapshot file storage", () => {
       const ids = yield* storeFiles(t);
       const forged = rehash(t.exportSnapshot(), (body) => edit(body, ids));
       const restored = backend(driver());
-      expect(
-        yield* failure(() => restored.restoreSnapshot(forged)),
-      ).toMatchObject(refusal);
+      const failureResult = yield* failure(() =>
+        restored.restoreSnapshot(forged),
+      );
+      expect(failureResult).toMatchObject(refusal);
       expect(restored.exportSnapshot()).toStrictEqual(
         backend(driver()).exportSnapshot(),
       );
@@ -1335,9 +1337,10 @@ describe("snapshot file storage", () => {
           ) + '"bytes":"'.length;
         const flipped = Uint8Array.from(exported);
         flipped[at] = flipped[at] === 0x41 ? 0x42 : 0x41;
-        expect(
-          yield* failure(() => backend(driver()).restoreSnapshot(flipped)),
-        ).toMatchObject({ _tag: "SnapshotDigestMismatch" });
+        const failureResult = yield* failure(() =>
+          backend(driver()).restoreSnapshot(flipped),
+        );
+        expect(failureResult).toMatchObject({ _tag: "SnapshotDigestMismatch" });
       }),
   );
 });

@@ -200,9 +200,8 @@ describe("HTTP routes", () => {
           "x-signature": "sha256=abc",
           "x-length": "5",
         });
-        expect(
-          new Uint8Array(yield* call(() => response.arrayBuffer())),
-        ).toStrictEqual(body);
+        const callResult = yield* call(() => response.arrayBuffer());
+        expect(new Uint8Array(callResult)).toStrictEqual(body);
       }),
   );
 
@@ -213,12 +212,13 @@ describe("HTTP routes", () => {
         const t = httpWorld();
         const get = yield* call(() => t.fetch("/echo?q=1"));
         expect(get.headers.get("x-route")).toBe("get");
-        expect(yield* call(() => get.text())).toBe("get ?q=1");
+        const callResult = yield* call(() => get.text());
+        expect(callResult).toBe("get ?q=1");
         const file = yield* call(() => t.fetch("/files/a/b.txt"));
-        expect(yield* call(() => file.text())).toBe("/files/a/b.txt");
-        expect(yield* call(() => t.query(hits.list, {}))).toStrictEqual([
-          "/files/a/b.txt",
-        ]);
+        const callResult2 = yield* call(() => file.text());
+        expect(callResult2).toBe("/files/a/b.txt");
+        const callResult3 = yield* call(() => t.query(hits.list, {}));
+        expect(callResult3).toStrictEqual(["/files/a/b.txt"]);
       }),
   );
 
@@ -242,9 +242,8 @@ describe("HTTP routes", () => {
       expect(response.headers.get("content-type")).toBe(
         "text/plain; charset=utf-8",
       );
-      expect(yield* call(() => response.text())).toBe(
-        "No matching routes found",
-      );
+      const callResult = yield* call(() => response.text());
+      expect(callResult).toBe("No matching routes found");
     }),
   );
 
@@ -264,7 +263,8 @@ describe("HTTP routes", () => {
       const response = yield* call(() => t.fetch("/echo", { method: "HEAD" }));
       expect(response.status).toBe(200);
       expect(response.headers.get("x-route")).toBe("get");
-      expect(yield* call(() => response.text())).toBe("");
+      const callResult = yield* call(() => response.text());
+      expect(callResult).toBe("");
     }),
   );
 
@@ -272,11 +272,13 @@ describe("HTTP routes", () => {
     Effect.gen(function* () {
       const t = httpWorld();
       const anonymous = yield* call(() => t.fetch("/whoami"));
-      expect(yield* call(() => anonymous.text())).toBe("anonymous");
+      const callResult = yield* call(() => anonymous.text());
+      expect(callResult).toBe("anonymous");
       const named = yield* call(() =>
         t.withIdentity({ subject: "caller" }).fetch("/whoami"),
       );
-      expect(yield* call(() => named.text())).toBe("caller");
+      const callResult2 = yield* call(() => named.text());
+      expect(callResult2).toBe("caller");
     }),
   );
 
@@ -361,7 +363,8 @@ describe("HTTP request and response edges", () => {
         const response = yield* call(() => t.fetch(path, { method: "HEAD" }));
         expect(response.status).toBe(status);
         expect(response.headers.get("content-type")).toBe(type);
-        expect(yield* call(() => response.text())).toBe("");
+        const callResult = yield* call(() => response.text());
+        expect(callResult).toBe("");
       }),
   );
 
@@ -374,9 +377,8 @@ describe("HTTP request and response edges", () => {
           t.fetch("/echo", { method, body: "discarded" }),
         );
         expect(response.status).toBe(200);
-        expect(yield* call(() => response.text())).toBe(
-          method === "OPTIONS" ? "received 0" : "get ",
-        );
+        const callResult = yield* call(() => response.text());
+        expect(callResult).toBe(method === "OPTIONS" ? "received 0" : "get ");
       }),
   );
 
@@ -413,9 +415,8 @@ describe("HTTP request and response edges", () => {
           _tag: "SnapshotWorldRunning",
         });
         released.resolve();
-        expect(yield* call(() => pending.then((r) => r.text()))).toBe(
-          "through",
-        );
+        const callResult = yield* call(() => pending.then((r) => r.text()));
+        expect(callResult).toBe("through");
         expect(t.exportSnapshot()).toBeInstanceOf(Uint8Array);
       }),
   );
@@ -475,9 +476,8 @@ describe("mounted HTTP routes", () => {
         const init: RequestInit = { method, body: "discarded" };
         const response = yield* call(() => fetch("/mail/echo", init));
         expect(response.status).toBe(200);
-        expect(yield* call(() => response.text())).toBe(
-          method === "GET" ? "received 0" : "",
-        );
+        const callResult = yield* call(() => response.text());
+        expect(callResult).toBe(method === "GET" ? "received 0" : "");
       }),
   );
 
@@ -505,12 +505,14 @@ describe("mounted HTTP routes", () => {
         const fetch = mounted();
         const miss = yield* call(() => fetch("/mail/missing"));
         expect(miss.status).toBe(404);
-        expect(yield* call(() => miss.text())).toBe("No matching routes found");
+        const callResult = yield* call(() => miss.text());
+        expect(callResult).toBe("No matching routes found");
         const head = yield* call(() =>
           fetch("/mail/missing", { method: "HEAD" }),
         );
         expect(head.status).toBe(404);
-        expect(yield* call(() => head.text())).toBe("");
+        const callResult2 = yield* call(() => head.text());
+        expect(callResult2).toBe("");
       }),
   );
 
@@ -520,7 +522,8 @@ describe("mounted HTTP routes", () => {
       const response = yield* call(() =>
         fetch("/mail/ping", { method: "OPTIONS", body: "discarded" }),
       );
-      expect(yield* call(() => response.text())).toBe("received 0");
+      const callResult = yield* call(() => response.text());
+      expect(callResult).toBe("received 0");
     }),
   );
 

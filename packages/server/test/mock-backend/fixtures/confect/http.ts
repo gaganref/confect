@@ -89,7 +89,8 @@ const ingress = HttpRouter.add(
   SignedEnvelope.path,
   Effect.gen(function* () {
     const request = yield* HttpServerRequest.HttpServerRequest;
-    const body = new Uint8Array(yield* request.arrayBuffer);
+    const arrayBuffer2 = yield* request.arrayBuffer;
+    const body = new Uint8Array(arrayBuffer2);
     const verdict = yield* Effect.promise(() =>
       SignedEnvelope.verify((name) => request.headers[name], body),
     );

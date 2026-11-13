@@ -11,8 +11,9 @@ describe("HTTP route errors", () => {
     () =>
       Effect.gen(function* () {
         const c = yield* TestConfect.TestConfect;
+        const fetch2 = yield* c.fetch("/convex-native/throws-convex-error");
         yield* expectServerError(
-          yield* c.fetch("/convex-native/throws-convex-error"),
+          fetch2,
           'Uncaught ConvexError: {"code":"denied","attempt":2}',
           { attempt: 2, code: "denied" },
         );

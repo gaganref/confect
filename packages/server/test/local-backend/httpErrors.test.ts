@@ -137,7 +137,8 @@ layer(
       expect(response.headers["content-type"]).toBe(
         "text/plain; charset=utf-8",
       );
-      expect(yield* response.text).toBe("No matching routes found");
+      const text2 = yield* response.text;
+      expect(text2).toBe("No matching routes found");
     }),
   );
 
@@ -178,7 +179,8 @@ layer(
         const response = yield* Effect.promise(() =>
           kernel().fetch("/echo", { method: "OPTIONS", body: "discarded" }),
         );
-        expect(yield* Effect.promise(() => response.text())).toBe(binary.body);
+        const resolved = yield* Effect.promise(() => response.text());
+        expect(resolved).toBe(binary.body);
       }),
   );
 
@@ -206,7 +208,8 @@ layer(
             ],
           }),
         );
-        expect(yield* Effect.promise(() => response.text())).toBe(binary.body);
+        const resolved = yield* Effect.promise(() => response.text());
+        expect(resolved).toBe(binary.body);
         expect(response.headers.getSetCookie()).toEqual(
           lines(binary.rawHeaders, "set-cookie"),
         );

@@ -400,7 +400,8 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
         );
         expect(new URL(described.url).search).toBe("");
 
-        const untyped = yield* describe(yield* store("", ""));
+        const storeResult = yield* store("", "");
+        const untyped = yield* describe(storeResult);
         expect(Arr.sort(Record.keys(untyped.doc), Str.Order)).toStrictEqual(
           Arr.sort(Record.keys(described.doc), Str.Order),
         );
@@ -413,8 +414,10 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
           ),
         );
 
-        expect(yield* Effect.promise(() => deleteRaw(typed))).toBeNull();
-        expect(yield* describe(typed)).toStrictEqual({
+        const resolved = yield* Effect.promise(() => deleteRaw(typed));
+        expect(resolved).toBeNull();
+        const describeResult = yield* describe(typed);
+        expect(describeResult).toStrictEqual({
           doc: null,
           metadata: null,
           url: null,
@@ -475,9 +478,9 @@ const onKernel = <A, E>(
   ) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
-    return yield* program(
-      yield* TestConfect.TestConfect<typeof registry.schema>(),
-    );
+    const testConfect =
+      yield* TestConfect.TestConfect<typeof registry.schema>();
+    return yield* program(testConfect);
   }).pipe(Effect.provide(TestConfect.layer(registry, { target: "kernel" })));
 
 const MiB = 1 << 20;
@@ -650,11 +653,10 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
             ),
           );
           expect(binary).toContain(answer);
-          expect(
-            yield* onKernel((test) =>
-              test.mutation(storage.storeInMutation, args),
-            ),
-          ).toBe(binary);
+          const onKernelResult = yield* onKernel((test) =>
+            test.mutation(storage.storeInMutation, args),
+          );
+          expect(onKernelResult).toBe(binary);
         }),
     );
 

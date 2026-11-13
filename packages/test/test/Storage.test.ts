@@ -139,14 +139,13 @@ describe("storage metadata", () => {
         expect(described.url).toBe(
           `https://kernel.convex.cloud/api/storage/${described.metadata.storageId}`,
         );
-        // A file's storage UUID still names it, as before Convex 1.6.
-        expect(
-          yield* call(() =>
-            t.query((ctx: QueryCtx) =>
-              ctx.storage.getUrl(described.metadata.storageId),
-            ),
+        const callResult = yield* call(() =>
+          t.query((ctx: QueryCtx) =>
+            ctx.storage.getUrl(described.metadata.storageId),
           ),
-        ).toBe(described.url);
+        );
+        // A file's storage UUID still names it, as before Convex 1.6.
+        expect(callResult).toBe(described.url);
       }),
   );
 
@@ -161,14 +160,13 @@ describe("storage metadata", () => {
         const described = yield* call(() => t.query(describeFile(id)));
         expect(described.doc.contentType).toBeNull();
         expect(described.metadata.contentType).toBeNull();
-        expect(
-          yield* call(() =>
-            t.action(async (ctx: ActionCtx) => {
-              const blob = await ctx.storage.get(id);
-              return blob === null ? null : [blob.type, await blob.text()];
-            }),
-          ),
-        ).toStrictEqual(["", hello.text]);
+        const callResult = yield* call(() =>
+          t.action(async (ctx: ActionCtx) => {
+            const blob = await ctx.storage.get(id);
+            return blob === null ? null : [blob.type, await blob.text()];
+          }),
+        );
+        expect(callResult).toStrictEqual(["", hello.text]);
       }),
   );
 
@@ -194,9 +192,11 @@ describe("storage metadata", () => {
             `Sha256 mismatch. Expected: ${world} Actual: ${hello.sha256}`,
           ),
         );
-        expect(yield* call(() => t.query(allFiles))).toBe(before);
+        const callResult = yield* call(() => t.query(allFiles));
+        expect(callResult).toBe(before);
         const id = yield* call(() => store(t, hello.sha256));
-        expect(yield* call(() => t.query(describeFile(id)))).toMatchObject({
+        const callResult2 = yield* call(() => t.query(describeFile(id)));
+        expect(callResult2).toMatchObject({
           doc: { sha256: hello.sha256 },
         });
       }),
@@ -216,7 +216,8 @@ describe("storage metadata", () => {
             "Invalid argument `sha256` for `storage.store`: sha256 not 32 bytes",
           ),
         );
-        expect(yield* call(() => t.query(allFiles))).toBe("[]");
+        const callResult = yield* call(() => t.query(allFiles));
+        expect(callResult).toBe("[]");
       }),
   );
 
@@ -228,17 +229,20 @@ describe("storage metadata", () => {
         const id = yield* call(() =>
           t.action(storeFromAction(new Blob([hello.text]))),
         );
-        expect(
-          yield* call(() => t.run((ctx) => ctx.storage.delete(id))),
-        ).toBeNull();
-        expect(yield* call(() => t.query(describeFile(id)))).toStrictEqual({
+        const callResult = yield* call(() =>
+          t.run((ctx) => ctx.storage.delete(id)),
+        );
+        expect(callResult).toBeNull();
+        const callResult2 = yield* call(() => t.query(describeFile(id)));
+        expect(callResult2).toStrictEqual({
           doc: null,
           metadata: null,
           url: null,
         });
-        expect(
-          yield* call(() => t.action((ctx: ActionCtx) => ctx.storage.get(id))),
-        ).toBeNull();
+        const callResult3 = yield* call(() =>
+          t.action((ctx: ActionCtx) => ctx.storage.get(id)),
+        );
+        expect(callResult3).toBeNull();
         yield* call(() =>
           expect(t.run((ctx) => ctx.storage.delete(id))).rejects.toThrow(
             `storage id ${id} not found`,
@@ -259,7 +263,8 @@ describe("storage metadata", () => {
         t.action(storeFromAction(new Blob([hello.text]))),
       );
       yield* call(() => t.action((ctx: ActionCtx) => ctx.storage.delete(id)));
-      expect(yield* call(() => t.query(allFiles))).toBe("[]");
+      const callResult = yield* call(() => t.query(allFiles));
+      expect(callResult).toBe("[]");
     }),
   );
 
@@ -276,7 +281,8 @@ describe("storage metadata", () => {
             }),
           ).rejects.toThrow("The mutation failed after storing."),
         );
-        expect(yield* call(() => t.query(allFiles))).toBe("[]");
+        const callResult = yield* call(() => t.query(allFiles));
+        expect(callResult).toBe("[]");
         const text = yield* call(() =>
           t.run(async (ctx) => {
             const id = await ctx.storage.store(
@@ -302,19 +308,19 @@ describe("storage metadata", () => {
         yield* call(() => t.run((ctx) => ctx.storage.delete(id)));
         const applied = yield* call(() => t.apply(held.id));
         assert(applied.kind === "conflict");
-        expect(yield* call(() => t.apply(applied.next.id))).toMatchObject({
+        const callResult = yield* call(() => t.apply(applied.next.id));
+        expect(callResult).toMatchObject({
           kind: "applied",
         });
-        expect(
-          yield* call(() =>
-            t.query((ctx: QueryCtx) =>
-              ctx.db
-                .query("notes")
-                .collect()
-                .then((notes) => Array.map(notes, (note) => note.text)),
-            ),
+        const callResult2 = yield* call(() =>
+          t.query((ctx: QueryCtx) =>
+            ctx.db
+              .query("notes")
+              .collect()
+              .then((notes) => Array.map(notes, (note) => note.text)),
           ),
-        ).toStrictEqual(["gone"]);
+        );
+        expect(callResult2).toStrictEqual(["gone"]);
       }),
   );
 
@@ -329,16 +335,19 @@ describe("storage metadata", () => {
         const subscription = yield* call(() =>
           t.subscriber().subscribe(files.urlOf, { id }),
         );
-        expect(yield* call(() => t.reference())).toStrictEqual([]);
+        const callResult = yield* call(() => t.reference());
+        expect(callResult).toStrictEqual([]);
         yield* call(() => t.action((ctx: ActionCtx) => ctx.storage.delete(id)));
-        expect(yield* call(() => t.reference())).toMatchObject([
+        const callResult2 = yield* call(() => t.reference());
+        expect(callResult2).toMatchObject([
           {
             subscription: subscription.id,
             reference: { _tag: "returned", value: null },
           },
         ]);
         yield* call(() => t.refresh());
-        expect(yield* call(() => t.reference())).toStrictEqual([]);
+        const callResult3 = yield* call(() => t.reference());
+        expect(callResult3).toStrictEqual([]);
       }),
   );
 
@@ -412,7 +421,8 @@ describe("storage metadata", () => {
             `Invalid argument \`contentType\` for \`storage.store\`: mime parse error: ${reason}`,
           ),
         );
-        expect(yield* call(() => t.query(allFiles))).toBe("[]");
+        const callResult = yield* call(() => t.query(allFiles));
+        expect(callResult).toBe("[]");
       }),
   );
 
@@ -460,9 +470,10 @@ describe("storage metadata", () => {
           t.runInComponent("files", (ctx) => ctx.storage.getUrl(id)),
         );
         expect(new URL(url).search).toBe("?component=files");
-        expect(
-          yield* call(() => t.run((ctx) => ctx.storage.getUrl(id))),
-        ).toBeNull();
+        const callResult = yield* call(() =>
+          t.run((ctx) => ctx.storage.getUrl(id)),
+        );
+        expect(callResult).toBeNull();
       }),
   );
 });
@@ -579,25 +590,23 @@ describe("storage redaction", () => {
             secrets: t.secrets(),
           }),
         );
-        expect(
-          yield* call(() =>
-            restored.query((ctx: QueryCtx) =>
-              ctx.db
-                .query("attachments")
-                .collect()
-                .then((rows) =>
-                  Array.map(rows, (row) => [row["file"], row["token"]]),
-                ),
-            ),
+        const callResult = yield* call(() =>
+          restored.query((ctx: QueryCtx) =>
+            ctx.db
+              .query("attachments")
+              .collect()
+              .then((rows) =>
+                Array.map(rows, (row) => [row["file"], row["token"]]),
+              ),
           ),
-        ).toStrictEqual([[file, canary]]);
-        expect(
-          yield* call(() =>
-            restored.action(async (ctx: ActionCtx) =>
-              (await ctx.storage.get(file))!.text(),
-            ),
+        );
+        expect(callResult).toStrictEqual([[file, canary]]);
+        const callResult2 = yield* call(() =>
+          restored.action(async (ctx: ActionCtx) =>
+            (await ctx.storage.get(file))!.text(),
           ),
-        ).toBe("attachment body");
+        );
+        expect(callResult2).toBe("attachment body");
       }),
   );
 
@@ -615,27 +624,25 @@ describe("storage redaction", () => {
         expect(text(exported)).not.toContain(
           Base64.fromByteArray(new TextEncoder().encode(contents)),
         );
-        expect(
-          yield* call(() =>
-            redactedWorld()
-              .restoreSnapshot(exported)
-              .then(
-                () => null,
-                (error: unknown) => error,
-              ),
-          ),
-        ).toMatchObject({ _tag: "SnapshotSecretMissing" });
+        const callResult = yield* call(() =>
+          redactedWorld()
+            .restoreSnapshot(exported)
+            .then(
+              () => null,
+              (error: unknown) => error,
+            ),
+        );
+        expect(callResult).toMatchObject({ _tag: "SnapshotSecretMissing" });
         const restored = redactedWorld();
         yield* call(() =>
           restored.restoreSnapshot(exported, { secrets: t.secrets() }),
         );
-        expect(
-          yield* call(() =>
-            restored.action(async (ctx: ActionCtx) =>
-              (await ctx.storage.get(leaky))!.text(),
-            ),
+        const callResult2 = yield* call(() =>
+          restored.action(async (ctx: ActionCtx) =>
+            (await ctx.storage.get(leaky))!.text(),
           ),
-        ).toBe(contents);
+        );
+        expect(callResult2).toBe(contents);
         expect(text(restored.exportSnapshot())).toBe(text(exported));
       }),
   );

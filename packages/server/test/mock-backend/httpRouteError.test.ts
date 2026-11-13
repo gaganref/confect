@@ -11,10 +11,8 @@ describe("HTTP route errors", () => {
     () =>
       Effect.gen(function* () {
         const c = yield* TestConfect.TestConfect;
-        yield* expectServerError(
-          yield* c.fetch("/convex-native/throws"),
-          "Uncaught Error: The route failed.",
-        );
+        const fetch2 = yield* c.fetch("/convex-native/throws");
+        yield* expectServerError(fetch2, "Uncaught Error: The route failed.");
       }).pipe(Effect.provide(TestConfect.layer)),
   );
 });

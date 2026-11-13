@@ -797,8 +797,9 @@ it.effect(
   () =>
     Effect.gen(function* () {
       const t = yield* TestConfect.TestConfect<typeof hostSchema>();
+      const fetch2 = yield* t.fetch("/email/ping");
       yield* expectServerError(
-        yield* t.fetch("/email/ping"),
+        fetch2,
         "Uncaught Error: The mounted route failed.",
       );
     }).pipe(
