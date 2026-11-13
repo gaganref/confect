@@ -46,13 +46,6 @@ export const placements: ReadonlyArray<Placement> = [
   ),
   {
     file: "integration.test.ts",
-    name: "TestConfect JWT signing > rejects tokens from another TestConfect instance",
-    row: "binary",
-    needs:
-      "a deployment key of its own per backend: two kernel backends with one seed draw one key, by design",
-  },
-  {
-    file: "integration.test.ts",
     name: "DatabaseReader > uses the canonical Doc decoder for a text search",
     row: "binary",
     needs: "text search, which the kernel never simulates (RequiresBinary)",
