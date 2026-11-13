@@ -7,6 +7,7 @@ import { componentsGeneric } from "convex/server";
 import * as Execution from "./Execution.js";
 import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
+import * as Subscriptions from "./Subscriptions.js";
 import type * as Scheduling from "./Scheduling.js";
 
 type Modules = Record<string, () => Promise<any>>;
@@ -25,6 +26,24 @@ export interface KernelControls {
   ) => Promise<Execution.HeldAttempt>;
   readonly apply: (id: string) => Promise<Execution.KernelApply>;
   readonly held: () => ReadonlyArray<Execution.HeldAttempt>;
+  readonly withIdentity: (identity: Partial<UserIdentity>) => KernelControls;
+  readonly withRequestMetadata: (metadata: {
+    readonly ip?: string | null;
+    readonly userAgent?: string | null;
+  }) => KernelControls;
+  /**
+   * A client's query set under this accessor's caller.
+   */
+  readonly subscriber: () => Subscriptions.Subscriber;
+  /**
+   * Rerun every stale subscription. Lists each one whose value changed.
+   */
+  readonly refresh: () => Promise<ReadonlyArray<Subscriptions.Transition>>;
+  /**
+   * Rerun every subscription from scratch. Lists each one whose value differs
+   * from the full rerun.
+   */
+  readonly reference: () => Promise<ReadonlyArray<Subscriptions.Disagreement>>;
   /**
    * The same backend as a client that presents `token`. Each call verifies it
    * against the app's `auth.config` providers at the kernel's time before
@@ -88,6 +107,7 @@ const isSchemaDefinition = (
  */
 const accessor = (
   world: Execution.World,
+  subscriptions: Subscriptions.Registry,
   caller: Execution.Caller,
   token?: string,
 ): any => {
@@ -106,19 +126,30 @@ const accessor = (
       as((who) => world.prepare(who, reference, args)),
     apply: (id: string) => world.apply(id),
     held: () => world.held(),
+    // A client that presents a token over the sync protocol is `Sync`'s.
+    subscriber: () => {
+      if (token !== undefined) {
+        throw KernelRefusal.rowPending("a subscriber that presents a token", 7);
+      }
+      return subscriptions.subscriber(caller);
+    },
+    refresh: () => subscriptions.refresh(),
+    reference: () => subscriptions.reference(),
     run: (handler: (ctx: any) => any) =>
       as((who) => world.run(who, "", handler)),
     runInComponent: (componentPath: string, handler: (ctx: any) => any) =>
       as((who) => world.run(who, componentPath, handler)),
     withIdentity: (identity: Partial<UserIdentity>) =>
-      accessor(world, Execution.withIdentity(caller, identity)),
-    withToken: (presented: string) => accessor(world, caller, presented),
+      accessor(world, subscriptions, Execution.withIdentity(caller, identity)),
+    withToken: (presented: string) =>
+      accessor(world, subscriptions, caller, presented),
     withRequestMetadata: (metadata: {
       readonly ip?: string | null;
       readonly userAgent?: string | null;
     }) =>
       accessor(
         world,
+        subscriptions,
         {
           ...caller,
           ip: metadata.ip ?? null,
@@ -147,7 +178,9 @@ const accessor = (
  * it, and `apply` validates and publishes a held attempt. `mutation` applies
  * each attempt it prepares at once and prepares the next on a conflict, up to
  * attempt 5. `runtime` supplies the clock and commit timestamps. Scheduled
- * functions run on the kernel's clock, never on a host timer.
+ * functions run on the kernel's clock, never on a host timer. A subscriber's
+ * subscriptions go stale when a commit changes what they read or the identity
+ * they read changes, and `refresh` reruns them.
  */
 export function convexTest(
   schemaOrOptions?:
@@ -179,7 +212,7 @@ export function convexTest(
   }
   const world = new Execution.World(schema, modules, runtime);
   return {
-    ...accessor(world, Execution.anonymous),
+    ...accessor(world, new Subscriptions.Registry(world), Execution.anonymous),
     registerComponent: (
       componentPath: string,
       componentSchema: SchemaDefinition<GenericSchema, boolean>,

@@ -20,6 +20,7 @@ import { ConvexDirectory } from "../ConvexDirectory.js";
 import * as Declaration from "../Declaration.js";
 import * as ManifestSections from "../ManifestSections.js";
 import type { LoadedLeafModule } from "../LeafModule.js";
+import type * as SectionFiles from "../SectionFiles.js";
 import { logWarn, logFileRemoved } from "../log.js";
 import { ProjectRoot } from "../ProjectRoot.js";
 import * as templates from "../templates.js";
@@ -252,6 +253,7 @@ const sectionDigest = (
 
 export const syncManifestSections = Effect.fnUntraced(
   function* (
+    declared: ReadonlyArray<ManifestSection.Entry>,
     leaves: ReadonlyArray<LoadedLeafModule>,
     previous: Readonly<Record<string, unknown>>,
     baseDigest: string | undefined,
@@ -260,7 +262,7 @@ export const syncManifestSections = Effect.fnUntraced(
     if (baseDigest === undefined) return;
     const current = yield* readManifest;
     const registry = yield* Effect.fromResult(
-      ManifestSections.collect(leaves).pipe(
+      ManifestSections.collect(declared, leaves).pipe(
         Result.flatMap((described) =>
           ManifestSections.summarize(described, modules),
         ),
@@ -335,6 +337,8 @@ const writeDeclaration = Effect.fnUntraced(function* (
     ),
     Effect.fromResult,
   );
+  const manifestSections = App.isApp(appValue) ? appValue.manifestSections : [];
+  yield* Effect.fromResult(ManifestSections.declared(manifestSections));
 
   const convexConfigPath = path.join(
     convexDirectory,
@@ -402,7 +406,10 @@ const writeDeclaration = Effect.fnUntraced(function* (
   return {
     app: App.isApp(appValue) ? Option.some(appValue) : Option.none<App.Any>(),
     digest,
-    target: Option.some(sectionTarget),
+    backend: Option.some<SectionFiles.Backend>({
+      target: sectionTarget,
+      sections: manifestSections,
+    }),
   };
 });
 
@@ -421,7 +428,7 @@ export const syncDeclaration = Effect.fnUntraced(function* (
     return {
       app: Option.none<App.Any>(),
       digest: undefined,
-      target: Option.none<ManifestSection.Target>(),
+      backend: Option.none<SectionFiles.Backend>(),
     };
   }
   return yield* writeDeclaration(previous).pipe(
