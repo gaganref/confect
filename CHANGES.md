@@ -199,7 +199,10 @@ stale or versionless entries, a skipped case, an unrelated failure and an
 excepted case that passes. Egress goes through an internal provider port: inside
 a kernel action its call is held as a `{ kind: "provider" }` command that the
 shim's `commands()` lists and `answer(id, output)` settles, until the action
-ends, when its commands are cancelled and a later call is refused. This is the
+ends, when its commands are cancelled and a later call is refused. A snapshot
+carries the command allocator and the cancelled commands, so a restored world
+numbers its next command and refuses a stale answer as its source would
+(snapshot format 4). This is the
 action egress row of Frame's backend testing kernel (Frame ADR 0012, row 6).
 Changeset: `test-kernel-action-egress.md`. Upstream: fork only, as the kernel is
 fork-specific.

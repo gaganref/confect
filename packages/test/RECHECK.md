@@ -978,7 +978,14 @@ command belongs to its action. Once the action ends, by a refusal or by
 settling on its own, a port call it makes is refused (with its refusal, or
 `ActionEnded`), its held commands are cancelled and never settle, and an answer
 to a cancelled command is refused with `StaleCommand` `cancelled`. An answer to
-a command already answered or never held is `StaleCommand` `notHeld`. In a query
+a command already answered or never held is `StaleCommand` `notHeld`. A
+snapshot carries the command allocator (`identity.nextCommandId`) and the
+cancelled commands (`cancelledCommands`), so after a restore the next command's
+ID and a stale answer's reason are the uninterrupted run's. It refuses an
+allocator at or behind a cancelled command's number, and a cancelled ID the
+kernel never mints. Held commands stay out: a snapshot waits for every function
+to settle, and an action's commands close with it. The format is
+`confect-kernel-snapshot 4`. In a query
 or mutation, outside the kernel and in production, a port calls its live
 provider, whose own `fetch` the I/O bans then answer as the binary does. The
 kernel finds ports through `Symbol.for("@confect/test/Egress")` on `globalThis`,
@@ -1013,7 +1020,7 @@ are not intercepted. The row names `fetch`.
 ## Snapshots (row 6)
 
 `src/internal/Snapshot.ts` encodes the kernel's committed state and reads it
-back. A snapshot is a header line, `confect-kernel-snapshot 3 sha256:<digest>`,
+back. A snapshot is a header line, `confect-kernel-snapshot 4 sha256:<digest>`,
 then the body as JSON. The body holds the registered component paths, the
 version and latest commit timestamp, the clock's floor, the identity counters
 (the next document ID, the latest creation time handed out, the next held
