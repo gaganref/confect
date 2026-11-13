@@ -834,6 +834,12 @@ draws a random nonce (`:308`), which no verifier can tell from a deterministic
 one. `test/fixtures/signedReplay.ts` stores signed tokens through a held and an
 applied attempt, and two processes print the same bytes.
 
+Snapshots do not carry the deployment key yet. A world that drew it, by signing
+or serving its JWKS, refuses `exportSnapshot` and `restoreSnapshot` with
+`SnapshotSigningKey`, so a token in its tables never outlives the key that
+verifies it. The snapshot contract lists `deploymentKey`, `authConfig` and
+`providers` as excluded and owes the drawn seed as a secret marker.
+
 `test/fixtures/minted.ts` mints five tokens with keys the test makes: a valid
 control, a wrong issuer, a wrong audience, a foreign key under the declared
 key's `kid`, and an expired token. `test/Identity.test.ts` runs them on the
