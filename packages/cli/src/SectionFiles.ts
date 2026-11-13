@@ -13,6 +13,7 @@ import {
   logCodegenError,
 } from "./CodegenError.js";
 import { ConfectDirectory } from "./ConfectDirectory.js";
+import * as ConvexConfig from "./ConvexConfig.js";
 import type { LoadedLeafModule } from "./LeafModule.js";
 import { logFileRemoved } from "./log.js";
 import {
@@ -41,10 +42,20 @@ const Sources = Schema.fromJsonString(Schema.Array(Schema.String));
 const encodeSources = Schema.encodeSync(Sources);
 const decodeSources = Schema.decodeUnknownOption(Sources);
 const INPUTS = "sectionInputs.json";
+const VERIFY_INPUTS = "verifyInputs.json";
 
 interface Claim {
   readonly key: string;
   readonly generate: ManifestSection.Generate;
+}
+
+/**
+ * A declared backend: the target codegen generates and the sections its
+ * `App.make` names.
+ */
+export interface Backend {
+  readonly target: ManifestSection.Target;
+  readonly sections: ReadonlyArray<ManifestSection.Entry>;
 }
 
 const visit = (
@@ -66,18 +77,15 @@ const visit = (
 };
 
 /**
- * One claim per section key that generates a file, ordered by file. A name that
- * is built in, not a `.ts` file directly in `_generated`, or claimed by two
- * keys is refused.
+ * One claim per declared section that generates a file, ordered by file. A name
+ * that is built in, not a `.ts` file directly in `_generated`, or claimed by
+ * two keys is refused.
  */
-export const claims = (leaves: ReadonlyArray<Leaf>) =>
+export const claims = (sections: ReadonlyArray<ManifestSection.Entry>) =>
   Result.gen(function* () {
     const byKey = new Map<string, ManifestSection.Generate>();
-    visit(leaves, (spec) => {
-      for (const { key, section } of spec.manifestSections ?? [])
-        if (section.generate !== undefined && !byKey.has(key))
-          byKey.set(key, section.generate);
-    });
+    for (const { key, section } of sections)
+      if (section.generate !== undefined) byKey.set(key, section.generate);
     const byFile = new Map<string, string>();
     for (const [key, { file }] of byKey) {
       const other = byFile.get(file);
@@ -114,25 +122,19 @@ const sourceFiles = Effect.gen(function* () {
     .sort();
 });
 
-const render = Effect.fnUntraced(function* (
-  { key, generate }: Claim,
-  target: ManifestSection.Target,
-  input: Pick<ManifestSection.GenerateInput, "functions" | "mounts" | "files">,
+/**
+ * Bundle each matched `confect/` file and return its exports, adding it and
+ * every first-party file it imports to `watched`.
+ */
+const load = Effect.fnUntraced(function* (
+  matched: ReadonlyArray<string>,
   watched: Set<string>,
+  plugins: ReadonlyArray<esbuild.Plugin> = [],
 ) {
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
-  const failed = (cause: unknown) =>
-    new InvalidManifestSectionError({
-      sectionKey: key,
-      reason: `generate failed: ${String(cause)}`,
-    });
-  const matched = yield* Effect.try({
-    try: () => input.files.filter((file) => generate.match(file)),
-    catch: failed,
-  });
   for (const file of matched) watched.add(file);
-  const modules = yield* Effect.forEach(matched, (relativePath) => {
+  return yield* Effect.forEach(matched, (relativePath) => {
     const entry = path.join(confectDirectory, relativePath);
     // Inputs are recorded once esbuild finishes, before the module runs, so a
     // module that throws on load still has its imports watched. `confect dev`
@@ -143,6 +145,9 @@ const render = Effect.fnUntraced(function* (
       setup: (build) =>
         build.onEnd(({ metafile }) => {
           for (const loaded of Object.keys(metafile?.inputs ?? {})) {
+            // A plugin's own namespace, such as the component config
+            // wrapper, is not a file.
+            if (/^[^/\\]+:/.test(loaded) && !path.isAbsolute(loaded)) continue;
             const file = toPosixPath(
               path,
               path.relative(
@@ -155,22 +160,51 @@ const render = Effect.fnUntraced(function* (
           }
         }),
     };
-    return Bundler.bundle(entry, { plugins: [recordInputs] }).pipe(
+    return Bundler.bundle(entry, { plugins: [...plugins, recordInputs] }).pipe(
       Effect.map(({ module }) => ({ relativePath, exports: module })),
       Effect.mapError((error) =>
         fromBundlerError(`confect/${relativePath}`, error),
       ),
     );
   });
-  const { contents, errors } = yield* Effect.try({
-    try: () => generate.render({ ...input, modules, target, confectDirectory }),
-    catch: failed,
-  });
-  const [error, ...more] = errors.map(
+});
+
+/**
+ * Fail with the first of a section's refusals after logging the rest.
+ */
+const refuse = Effect.fnUntraced(function* (
+  key: string,
+  reasons: ReadonlyArray<string>,
+) {
+  const [error, ...more] = reasons.map(
     (reason) => new InvalidManifestSectionError({ sectionKey: key, reason }),
   );
   for (const other of more) yield* logCodegenError(other);
   if (error !== undefined) return yield* error;
+});
+
+const render = Effect.fnUntraced(function* (
+  { key, generate }: Claim,
+  target: ManifestSection.Target,
+  input: Pick<ManifestSection.GenerateInput, "functions" | "mounts" | "files">,
+  watched: Set<string>,
+) {
+  const confectDirectory = yield* ConfectDirectory.get;
+  const failed = (cause: unknown) =>
+    new InvalidManifestSectionError({
+      sectionKey: key,
+      reason: `generate failed: ${String(cause)}`,
+    });
+  const matched = yield* Effect.try({
+    try: () => input.files.filter((file) => generate.match(file)),
+    catch: failed,
+  });
+  const modules = yield* load(matched, watched);
+  const { contents, errors } = yield* Effect.try({
+    try: () => generate.render({ ...input, modules, target, confectDirectory }),
+    catch: failed,
+  });
+  yield* refuse(key, errors);
   return {
     modules,
     contents: [
@@ -198,43 +232,48 @@ export const written = Effect.gen(function* () {
   );
 });
 
-/**
- * The `confect/` files the generating sections matched and the `confect/` files
- * those import, as recorded by the last codegen run that loaded them.
- */
-export const inputs = Effect.gen(function* () {
+const record = Effect.fnUntraced(function* (name: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const record = path.join(yield* ConfectDirectory.get, "_generated", INPUTS);
+  const file = path.join(yield* ConfectDirectory.get, "_generated", name);
   const none: ReadonlyArray<string> = [];
-  if (!(yield* fs.exists(record))) return none;
+  if (!(yield* fs.exists(file))) return none;
   return Option.getOrElse(
-    decodeSources(yield* fs.readFileString(record)),
+    decodeSources(yield* fs.readFileString(file)),
     () => none,
   );
 });
 
 /**
- * Write each claimed file into `confect/_generated` once every section has
- * rendered for the `declared` backend's target; an undeclared backend renders
- * none. Every section renders before codegen fails with the first error after
- * logging the rest. The record of section inputs is written either way, keeping
- * the previous inputs after a failure, so `confect dev` sees the fix. Returns
- * the claimed file names, whether they differ from the section files that
- * existed before, and the modules each section key matched.
+ * The `confect/` files the declared sections' `generate` and `verify` matched
+ * and the `confect/` files those import, as recorded by the last codegen run
+ * that loaded them.
+ */
+export const inputs = Effect.map(
+  Effect.all([record(INPUTS), record(VERIFY_INPUTS)]),
+  ([rendered, verified]) => [...new Set([...rendered, ...verified])].sort(),
+);
+
+/**
+ * Write each claimed file into `confect/_generated` once every section the
+ * declared backend names has rendered for its target; an undeclared backend
+ * renders none. Every section renders before codegen fails with the first error
+ * after logging the rest. The record of section inputs is written either way,
+ * keeping the previous inputs after a failure, so `confect dev` sees the fix.
+ * Returns the claimed file names, whether they differ from the section files
+ * that existed before, and the modules each section key matched.
  */
 export const sync = Effect.fnUntraced(function* (
-  declared: Option.Option<ManifestSection.Target>,
+  backend: Option.Option<Backend>,
   leaves: ReadonlyArray<Leaf>,
   mounts: ManifestSection.GenerateInput["mounts"],
 ) {
   const path = yield* Path.Path;
   const generated = path.join(yield* ConfectDirectory.get, "_generated");
-  const claimed = Option.isSome(declared)
-    ? (yield* Effect.fromResult(claims(leaves))).map((claim) => ({
-        claim,
-        target: declared.value,
-      }))
+  const claimed = Option.isSome(backend)
+    ? (yield* Effect.fromResult(claims(backend.value.sections))).map(
+        (claim) => ({ claim, target: backend.value.target }),
+      )
     : [];
   const functions: Array<{ path: string; source: string }> = [];
   visit(leaves, (_, functionPath, source) =>
@@ -249,7 +288,8 @@ export const sync = Effect.fnUntraced(function* (
         Effect.map((output) => ({ ...claim, ...output })),
       ),
   );
-  if (failures.length > 0) for (const file of yield* inputs) watched.add(file);
+  if (failures.length > 0)
+    for (const file of yield* record(INPUTS)) watched.add(file);
   yield* claimed.length === 0
     ? removePathIfExists(path.join(generated, INPUTS))
     : writeFileStringAndLog(
@@ -270,6 +310,70 @@ export const sync = Effect.fnUntraced(function* (
       names.length !== existing.length ||
       names.some((file) => !existing.includes(file)),
   };
+});
+
+/**
+ * Run each declared section's `verify` once every `_generated` file exists:
+ * bundle the `confect/` files its `match` selects as codegen bundles a
+ * declaration, and hand their exports, the mounts and the target to its
+ * `check`. Every section checks before codegen fails with the first refusal
+ * after logging the rest. The files each loaded are recorded as section inputs,
+ * keeping the previous ones after a failure, so `confect dev` checks again when
+ * one changes.
+ */
+export const verify = Effect.fnUntraced(function* (
+  backend: Option.Option<Backend>,
+  mounts: ManifestSection.VerifyInput["mounts"],
+) {
+  const path = yield* Path.Path;
+  const recorded = path.join(
+    yield* ConfectDirectory.get,
+    "_generated",
+    VERIFY_INPUTS,
+  );
+  const checks = Option.match(backend, {
+    onNone: () => [],
+    onSome: ({ sections }) =>
+      sections.flatMap(({ key, section }) =>
+        section.generate?.verify === undefined
+          ? []
+          : [{ key, verifier: section.generate.verify }],
+      ),
+  });
+  if (Option.isNone(backend) || checks.length === 0)
+    return yield* removePathIfExists(recorded);
+  const { target } = backend.value;
+  const files = yield* sourceFiles;
+  const watched = new Set<string>();
+  const [, failures] = yield* Effect.partition(checks, ({ key, verifier }) =>
+    Effect.gen(function* () {
+      const failed = (cause: unknown) =>
+        new InvalidManifestSectionError({
+          sectionKey: key,
+          reason: `verify failed: ${String(cause)}`,
+        });
+      const matched = yield* Effect.try({
+        try: () => files.filter((file) => verifier.match(file)),
+        catch: failed,
+      });
+      const modules = yield* load(matched, watched, [
+        ConvexConfig.componentConfigPlugin(path),
+      ]);
+      yield* refuse(
+        key,
+        yield* Effect.try({
+          try: () => verifier.check({ modules, mounts, target }),
+          catch: failed,
+        }),
+      );
+    }),
+  );
+  if (failures.length > 0)
+    for (const file of yield* record(VERIFY_INPUTS)) watched.add(file);
+  yield* writeFileStringAndLog(recorded, encodeSources([...watched].sort()));
+  const [error, ...more] = failures;
+  for (const other of more) yield* logCodegenError(other);
+  if (error !== undefined) return yield* error;
 });
 
 /**

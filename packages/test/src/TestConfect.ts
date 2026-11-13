@@ -7,7 +7,6 @@ import type {
 } from "convex-test";
 import { convexTest } from "convex-test";
 import type {
-  GenericDataModel,
   GenericMutationCtx,
   GenericSchema,
   SchemaDefinition,
@@ -18,17 +17,32 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
+import { convexTest as kernelTest } from "./internal/ConvexTest.js";
 import * as MountedHttp from "./internal/MountedHttp.js";
 
 declare const process: { env: Record<string, string | undefined> };
 
 /**
+ * How a kit registers a component beyond its schema and modules.
+ */
+export type RegisterOptions = {
+  /**
+   * The component's functions, as `module:export`, that schedule their own next
+   * run, such as the crons component's `public:rescheduler`. The test kernel
+   * never treats a job that runs one, or that one schedules, as work
+   * `finishAllScheduledFunctions` must finish. convex-test ignores it.
+   */
+  readonly standing?: ReadonlyArray<string>;
+};
+
+/**
  * Register a component's Convex schema and modules at its installation path.
  */
 export type RegisterComponent = (
-  ...args: Parameters<
-    TestConvexForDataModelAndIdentity<GenericDataModel>["registerComponent"]
-  >
+  componentPath: string,
+  schema: SchemaDefinition<GenericSchema, boolean>,
+  modules: Record<string, () => Promise<any>>,
+  options?: RegisterOptions,
 ) => void;
 
 /**
@@ -39,7 +53,22 @@ export type HttpMount = {
   readonly httpPrefix: string;
 };
 
-export type LayerOptions = {
+/**
+ * The in-process backend a test layer runs on.
+ */
+export type Target = "convex-test" | "kernel";
+
+export type TargetOptions = {
+  /**
+   * `"kernel"` runs every function and component the layer registers on
+   * Confect's test kernel, which runs scheduled functions on its own clock and
+   * reads `registerComponent`'s `standing`. Defaults to `"convex-test"`. The
+   * option goes once the kernel replaces convex-test.
+   */
+  readonly target?: Target;
+};
+
+export type LayerOptions = TargetOptions & {
   /**
    * Register component kits synchronously before the test service is available.
    */
@@ -106,6 +135,7 @@ export type TestConfect<ConfectSchema extends DatabaseSchema.AnyWithProps> = {
     componentPath: string,
     schema: SchemaDefinition<GenericSchema, boolean>,
     modules: Record<string, () => Promise<any>>,
+    options?: RegisterOptions,
   ) => Effect.Effect<void>;
   withIdentity: (
     userIdentity: Partial<UserIdentity>,
@@ -261,9 +291,9 @@ class TestConfectImpl<
 
   readonly registerComponent: TestConfect<ConfectSchema>["registerComponent"] =
     Effect.fn("TestConfect.registerComponent")(
-      (componentPath, schema, modules) =>
+      (componentPath, schema, modules, options) =>
         Effect.sync(() =>
-          this.mountedHttp.register(componentPath, schema, modules),
+          this.mountedHttp.register(componentPath, schema, modules, options),
         ),
     );
 
@@ -366,9 +396,12 @@ export type DeclaredApp<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> =
 /**
  * Build a fresh test backend from a declaration and its generated
  * `confect/_generated/testing` registry, without restating component mounts.
+ * Pass `{ target: "kernel" }` to run it on Confect's test kernel instead of
+ * convex-test.
  */
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   app: DeclaredApp<DatabaseSchema_>,
+  options?: TargetOptions,
 ): Layer.Layer<TestConfect<DatabaseSchema_>>;
 export function layer<
   A extends App.Any,
@@ -383,6 +416,7 @@ export function layer<
       >
     >;
   },
+  options?: TargetOptions,
 ): Layer.Layer<TestConfect<DatabaseSchema_>>;
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   databaseSchema: DatabaseSchema_,
@@ -392,20 +426,22 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
 ): Layer.Layer<TestConfect<DatabaseSchema_>>;
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   appOrSchema: App.Any | DeclaredApp<DatabaseSchema_> | DatabaseSchema_,
-  registryOrSchema?:
+  second?:
     | Registry<DatabaseSchema_>
-    | SchemaDefinition<GenericSchema, true>,
-  modules?: Record<string, () => Promise<any>>,
+    | SchemaDefinition<GenericSchema, true>
+    | TargetOptions,
+  third?: Record<string, () => Promise<any>> | TargetOptions,
   options: LayerOptions = {},
 ): Layer.Layer<TestConfect<DatabaseSchema_>> {
   if (App.isApp(appOrSchema)) {
-    const registry = registryOrSchema as Registry<DatabaseSchema_>;
+    const registry = second as Registry<DatabaseSchema_>;
     const mounts = App.mounts(appOrSchema);
     return schemaLayer(
       registry.schema,
       registry.convexSchema,
       registry.modules,
       {
+        ...targetOf(third as TargetOptions | undefined),
         httpMounts: mounts.flatMap(({ name, httpPrefix }) =>
           httpPrefix === undefined ? [] : [{ componentPath: name, httpPrefix }],
         ),
@@ -427,6 +463,7 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   if ("httpMounts" in appOrSchema) {
     const app = appOrSchema as DeclaredApp<DatabaseSchema_>;
     return schemaLayer(app.schema, app.convexSchema, app.modules, {
+      ...targetOf(second as TargetOptions | undefined),
       httpMounts: app.httpMounts,
       register: (registerComponent) => {
         for (const [name, component] of Object.entries(app.components)) {
@@ -437,11 +474,14 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   }
   return schemaLayer(
     appOrSchema as DatabaseSchema_,
-    registryOrSchema as SchemaDefinition<GenericSchema, true>,
-    modules!,
+    second as SchemaDefinition<GenericSchema, true>,
+    third as Record<string, () => Promise<any>>,
     options,
   );
 }
+
+const targetOf = (options: TargetOptions | undefined): TargetOptions =>
+  options?.target === undefined ? {} : { target: options.target };
 
 const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   databaseSchema: DatabaseSchema_,
@@ -452,9 +492,16 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   Layer.sync(TestConfect<DatabaseSchema_>(), () => {
     process.env.CONVEX_CLOUD_URL ??= "https://some-deployment.convex.cloud";
     process.env.CONVEX_SITE_URL ??= "https://some.convex.site";
-    const testConvex = convexTest(convexSchemaDefinition, modules);
+    const testConvex = (options.target === "kernel" ? kernelTest : convexTest)(
+      convexSchemaDefinition,
+      modules,
+    );
+    // convex-test takes three arguments and ignores the options. The kernel
+    // reads `standing`.
+    const registerComponent =
+      testConvex.registerComponent as unknown as RegisterComponent;
     const mountedHttp = MountedHttp.make(options.httpMounts ?? [], (...args) =>
-      testConvex.registerComponent(...args),
+      registerComponent(...args),
     );
     options.register?.(mountedHttp.register);
     return new TestConfectImpl(databaseSchema, testConvex as any, mountedHttp);

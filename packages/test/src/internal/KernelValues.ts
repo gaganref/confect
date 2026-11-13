@@ -419,6 +419,12 @@ export type ValidatorJSON =
   | { type: "array"; value: ValidatorJSON }
   | { type: "object"; value: Record<string, ObjectFieldType> }
   | { type: "record"; keys: ValidatorJSON; values: ObjectFieldType }
+  | {
+      type: "function";
+      fnType?: string;
+      args?: ValidatorJSON;
+      returns?: ValidatorJSON;
+    }
   | { type: "union"; value: ValidatorJSON[] };
 
 export function validateValidator(validator: ValidatorJSON, value: any) {
@@ -568,6 +574,24 @@ export function validateValidator(validator: ValidatorJSON, value: any) {
       }
       return;
     }
+    case "function": {
+      // The pinned binary, `precompiled-2026-10-28-cccbade`, accepts a string
+      // that parses as a function handle
+      // (`common/src/schemas/validator.rs:156-164`), and its parser requires a
+      // document id after the prefix
+      // (`common/src/bootstrap_model/components/handles.rs:100-112`). The
+      // kernel mints convex-test's handle format instead, so it accepts a
+      // string that parses as that format.
+      if (
+        typeof value !== "string" ||
+        readFunctionHandle(value) === undefined
+      ) {
+        throw new Error(
+          `Validator error: Expected a function handle, got \`${value}\``,
+        );
+      }
+      return;
+    }
     case "record": {
       if (
         value === null ||
@@ -706,13 +730,29 @@ export function validateReturnValue(
   }
 }
 
+const FUNCTION_HANDLE_PREFIX = "function://";
+
 export function createFunctionHandle(functionPath: FunctionPath) {
-  return `function://${functionPath.componentPath};${functionPath.udfPath}`;
+  return `${FUNCTION_HANDLE_PREFIX}${functionPath.componentPath};${functionPath.udfPath}`;
 }
 
-export function parseFunctionHandle(handle: string) {
-  const [componentPath, udfPath] = handle.split("function://")[1].split(";");
-  return { componentPath, udfPath };
+/**
+ * The function a handle the kernel minted names, or `undefined` for a string
+ * that is not `function://<componentPath>;<udfPath>` with a function path.
+ */
+function readFunctionHandle(handle: string): FunctionPath | undefined {
+  if (!handle.startsWith(FUNCTION_HANDLE_PREFIX)) return undefined;
+  const parts = handle.slice(FUNCTION_HANDLE_PREFIX.length).split(";");
+  if (parts.length !== 2 || parts[1] === "") return undefined;
+  return { componentPath: parts[0]!, udfPath: parts[1]! };
+}
+
+export function parseFunctionHandle(handle: string): FunctionPath {
+  const functionPath = readFunctionHandle(handle);
+  if (functionPath === undefined) {
+    throw new Error(`Invalid function handle \`${handle}\``);
+  }
+  return functionPath;
 }
 export function simpleHash(string: string) {
   let hash = 0;

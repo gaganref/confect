@@ -15,6 +15,7 @@ import { vi } from "vitest";
 import {
   actionGeneric,
   componentsGeneric,
+  createFunctionHandle,
   defineSchema,
   defineTable,
   makeFunctionReference,
@@ -402,6 +403,70 @@ describe("identity", () => {
           yield* Effect.promise(() => t.query(store.rows.whoami, {})),
         ).toBeNull();
       }),
+  );
+});
+
+describe("function validators", () => {
+  const callbacks = {
+    target: makeFunctionReference<"query">("callbacks:target"),
+    mint: makeFunctionReference<"mutation", {}, string>("callbacks:mint"),
+    store: makeFunctionReference<"mutation", { handle: unknown }>(
+      "callbacks:store",
+    ),
+  };
+  const callbackWorld = () =>
+    convexTest(defineSchema({}), {
+      "_generated/server.ts": () => Promise.resolve({}),
+      "callbacks.ts": () =>
+        Promise.resolve({
+          target: queryGeneric({ args: {}, handler: () => null }),
+          mint: mutationGeneric({
+            args: {},
+            handler: () => createFunctionHandle(callbacks.target),
+          }),
+          store: mutationGeneric({
+            args: { handle: v.function() },
+            handler: () => null,
+          }),
+        }),
+    });
+  const outcome = (run: () => Promise<unknown>) =>
+    Effect.promise(() =>
+      run().then(
+        () => "accepted",
+        (error: Error) => error.message,
+      ),
+    );
+
+  it.effect(
+    "a function validator accepts a handle the kernel minted and refuses a string that is no handle",
+    () =>
+      Effect.gen(function* () {
+        const t = callbackWorld();
+        const handle = yield* call(() => t.mutation(callbacks.mint, {}));
+        expect(
+          yield* outcome(() => t.mutation(callbacks.store, { handle })),
+        ).toBe("accepted");
+        expect(
+          yield* outcome(() =>
+            t.mutation(callbacks.store, { handle: "callbacks:target" }),
+          ),
+        ).toContain("Expected a function handle");
+      }),
+  );
+
+  it.effect.each([
+    ["the bare prefix", "function://"],
+    ["a prefix without a component separator", "function://not-a-valid-handle"],
+    ["a prefix with no function path", "function://;"],
+    ["a prefix with two separators", "function://;callbacks:target;extra"],
+  ])("a function validator refuses %s", ([, handle]) =>
+    Effect.gen(function* () {
+      const t = callbackWorld();
+      expect(
+        yield* outcome(() => t.mutation(callbacks.store, { handle })),
+      ).toContain("Expected a function handle");
+    }),
   );
 });
 
@@ -1013,6 +1078,27 @@ describe("read sets", () => {
           2,
           "applied",
         ]);
+        expect(yield* call(() => t.query(occ.counter, { id }))).toBe(2);
+      }),
+  );
+
+  it.effect(
+    "two held attempts applied together publish one at its own version and conflict the other",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld();
+        const id = yield* call(() => t.mutation(occ.create, {}));
+        const first = yield* call(() => t.prepare(occ.bump, { id }));
+        const second = yield* call(() => t.prepare(occ.bump, { id }));
+        const [applied, conflict] = yield* call(() =>
+          Promise.all([t.apply(first.id), t.apply(second.id)]),
+        );
+        expect(applied).toMatchObject({ kind: "applied", version: 2 });
+        const next = conflicted(conflict);
+        expect(yield* call(() => t.apply(next.id))).toMatchObject({
+          kind: "applied",
+          version: 3,
+        });
         expect(yield* call(() => t.query(occ.counter, { id }))).toBe(2);
       }),
   );

@@ -80,6 +80,25 @@ interface Bridge {
 const key = Symbol.for("@confect/test/Invocation");
 
 /**
+ * A fresh invocation of `world` for a request of its own, as an action or a
+ * scheduled job starts: attempt 1, the world's services and random stream, and
+ * a start time read from the world's clock.
+ */
+export const fresh = (
+  world: World,
+  componentPath: string,
+  { ip, userAgent, requestId, scheduledFunctionId }: Invocation["request"],
+): Invocation => ({
+  world,
+  componentPath,
+  attempt: 1,
+  request: { ip, userAgent, requestId, scheduledFunctionId },
+  services: world.services,
+  startedAt: world.clock(),
+  random: world.random,
+});
+
+/**
  * The invocation a function of `functionType` called from `running` joins. A
  * query or mutation an action calls is a transaction of its own, so it starts
  * at the world's time when it begins. Any other call shares its caller's
@@ -106,16 +125,7 @@ const resolve = (
     request !== undefined &&
     request.scheduledFunctionId !== bound.request.scheduledFunctionId
   ) {
-    const { ip, userAgent, requestId, scheduledFunctionId } = request;
-    return {
-      world: bound.world,
-      componentPath,
-      attempt: 1,
-      request: { ip, userAgent, requestId, scheduledFunctionId },
-      services: bound.world.services,
-      startedAt: bound.world.clock(),
-      random: bound.world.random,
-    };
+    return fresh(bound.world, componentPath, request);
   }
   return componentPath === bound.componentPath
     ? bound
@@ -204,8 +214,8 @@ const pin = (
   const host = globalThis;
   const previous = { Date: host.Date, Math: host.Math, crypto: host.crypto };
   // On the kernel, `Date` already answers the running function's time on the
-  // kernel's clock, and a query that reads it records the read. The bridge
-  // leaves it there.
+  // kernel's clock, so `runAfter` schedules on it, and a query that reads it
+  // records the read. The bridge leaves it there.
   const kernelDate = Clock.answersInvocation(previous.Date);
   const pinned = {
     Date: kernelDate
@@ -290,6 +300,15 @@ export const bind = <A>(
     { invocation, functionType: undefined },
     start,
   );
+
+/**
+ * Run `start` with no invocation bound, so every registered handler it reaches
+ * keeps its production runtime, whatever the caller has bound.
+ */
+export const unbound = <A>(start: () => Promise<A>): Promise<A> => {
+  const bridge = installed[key];
+  return bridge === undefined ? start() : bridge.storage.exit(start);
+};
 
 /**
  * The invocation the calling handler runs under, if one is bound.

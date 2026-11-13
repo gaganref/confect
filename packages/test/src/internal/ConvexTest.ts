@@ -8,6 +8,7 @@ import * as Execution from "./Execution.js";
 import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import * as Subscriptions from "./Subscriptions.js";
+import type * as Scheduling from "./Scheduling.js";
 
 type Modules = Record<string, () => Promise<any>>;
 
@@ -26,6 +27,10 @@ export interface KernelControls {
   readonly apply: (id: string) => Promise<Execution.KernelApply>;
   readonly held: () => ReadonlyArray<Execution.HeldAttempt>;
   readonly withIdentity: (identity: Partial<UserIdentity>) => KernelControls;
+  readonly withRequestMetadata: (metadata: {
+    readonly ip?: string | null;
+    readonly userAgent?: string | null;
+  }) => KernelControls;
   /**
    * A client's query set under this accessor's caller.
    */
@@ -39,6 +44,40 @@ export interface KernelControls {
    * from the full rerun.
    */
   readonly reference: () => Promise<ReadonlyArray<Subscriptions.Disagreement>>;
+  /**
+   * Move the kernel's clock forward, running each job due on the way at its
+   * deadline.
+   */
+  readonly advance: (ms: number) => Promise<void>;
+  /**
+   * The pending jobs, earliest deadline first.
+   */
+  readonly jobs: () => ReadonlyArray<Scheduling.Job>;
+  /**
+   * Run the jobs due now. No future deadline is crossed.
+   */
+  readonly finishInProgressScheduledFunctions: () => Promise<void>;
+  /**
+   * Run jobs at their deadlines until only standing jobs remain, or fail with
+   * `DrainBudgetExceeded` after `maxIterations` jobs. The kernel keeps its own
+   * clock, so it never calls `advanceTimers`.
+   */
+  readonly finishAllScheduledFunctions: (
+    advanceTimers?: () => void,
+    maxIterations?: number,
+  ) => Promise<void>;
+}
+
+/**
+ * How a kit registers a component beyond its schema and modules.
+ */
+export interface RegisterOptions {
+  /**
+   * The component's functions, as `module:export`, that schedule their own next
+   * run, such as the crons component's `public:rescheduler`. A job that runs
+   * one, or that one schedules, is never drain work.
+   */
+  readonly standing?: ReadonlyArray<string>;
 }
 
 const isSchemaDefinition = (
@@ -81,10 +120,13 @@ const accessor = (
     }),
   fetch: () => Promise.reject(KernelRefusal.rowPending("HTTP routes", 6)),
   jwks: () => Promise.reject(KernelRefusal.rowPending("JWT verification", 6)),
-  finishInProgressScheduledFunctions: () =>
-    Promise.reject(KernelRefusal.rowPending("the scheduler", 5)),
-  finishAllScheduledFunctions: () =>
-    Promise.reject(KernelRefusal.rowPending("the scheduler", 5)),
+  advance: (ms: number) => world.advance(ms),
+  jobs: () => world.jobs(),
+  finishInProgressScheduledFunctions: () => world.advance(0),
+  finishAllScheduledFunctions: (
+    _advanceTimers?: () => void,
+    maxIterations?: number,
+  ) => world.drain(maxIterations),
 });
 
 /**
@@ -95,7 +137,8 @@ const accessor = (
  * Beyond convex-test, `prepare` runs a mutation to its commit point and holds
  * it, and `apply` validates and publishes a held attempt. `mutation` applies
  * each attempt it prepares at once and prepares the next on a conflict, up to
- * attempt 5. `runtime` supplies the clock and commit timestamps. A subscriber's
+ * attempt 5. `runtime` supplies the clock and commit timestamps. Scheduled
+ * functions run on the kernel's clock, never on a host timer. A subscriber's
  * subscriptions go stale when a commit changes what they read or the identity
  * they read changes, and `refresh` reruns them.
  */
@@ -134,8 +177,14 @@ export function convexTest(
       componentPath: string,
       componentSchema: SchemaDefinition<GenericSchema, boolean>,
       componentModules: Modules,
+      options?: RegisterOptions,
     ) => {
-      world.register(componentPath, componentSchema, componentModules);
+      world.register(
+        componentPath,
+        componentSchema,
+        componentModules,
+        options?.standing,
+      );
       return (componentsGeneric() as any)[componentPath];
     },
   };

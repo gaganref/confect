@@ -441,6 +441,18 @@ describe("middleware options", () => {
     returns: () => Schema.String,
   });
 
+  it("refuses to attach middleware to a spec that carries manifestSections", () => {
+    const tagged = Object.assign(
+      FunctionSpec.publicQuery({ name: "get", returns: () => Schema.String }),
+      { manifestSections: [] },
+    );
+
+    expect(() => tagged.middleware(Observe)).toThrow(
+      /"get" carries manifestSections.*App\.make\(\{ manifestSections \}\)/,
+    );
+    expect(() => query.middleware(Observe)).not.toThrow();
+  });
+
   it("requires exactly the declared attachment options", () => {
     query.middleware(RequireRole, { roles: ["Internal"] });
     query.middleware(Observe);
@@ -912,6 +924,18 @@ describe("extend", () => {
     FunctionSpec.extend<Named>()({ middleware: [] });
     // @ts-expect-error Only string can require description, not a literal type.
     FunctionSpec.extend<LiteralDescription>()({ middleware: [] });
+  });
+
+  it("refuses the manifest option at runtime, on a profile and on an extension", () => {
+    const untyped = { middleware: [], manifest: {} } as never;
+
+    expect(() => FunctionSpec.extend()(untyped)).toThrow(
+      /manifest.*App\.make\(\{ manifestSections \}\)/,
+    );
+    expect(() => Subjected.extend()(untyped)).toThrow(
+      /manifest.*App\.make\(\{ manifestSections \}\)/,
+    );
+    expect(() => FunctionSpec.extend()({ middleware: [] })).not.toThrow();
   });
 
   it("refuses a field named after a builder option for the function it names", () => {

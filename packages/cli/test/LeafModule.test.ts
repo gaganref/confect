@@ -524,8 +524,8 @@ layer(LeafModuleLayer)("discovery", (it) => {
           ),
         );
         expect(implFiles).toEqual([
-          "notes.impl.ts",
           path.join("groups", "nested.impl.ts"),
+          "notes.impl.ts",
         ]);
         expectTypeOf(implFiles).toEqualTypeOf<ImplModulePath[]>();
         expect(files).toHaveLength(5);
@@ -565,6 +565,62 @@ layer(LeafModuleLayer)("discovery", (it) => {
         Array.join(["groups", "middleware.impl.ts"], path.sep),
       );
     }),
+  );
+
+  // Node's recursive `readdir` order differs across Node versions, so every
+  // listing order a version could return must discover the same files in the
+  // same order. `B` before `a` and `a.` before `a/` tell a code-unit comparison
+  // from a locale-aware one.
+  const sortedNames = ["B", "a", "a/x", "a/y", "b", "z/m"];
+  const listings = [
+    sortedNames,
+    Array.reverse(sortedNames),
+    ["a/y", "B", "z/m", "a", "b", "a/x"],
+  ];
+  it.effect.each([
+    { suffix: ".spec.ts", discover: discoverLeafSpecFiles },
+    { suffix: ".impl.ts", discover: discoverLeafImplFiles },
+  ] as const)(
+    "discovers $suffix files in code-unit order whatever order the directory lists them",
+    ({ suffix, discover }) =>
+      Effect.gen(function* () {
+        const path = yield* Path.Path;
+        const hostPaths = (names: ReadonlyArray<string>) =>
+          Array.map(names, (name) =>
+            Array.join(String.split(`${name}${suffix}`, "/"), path.sep),
+          );
+        for (const listed of listings) {
+          const discovered = yield* discover.pipe(
+            Effect.provide(
+              FileSystem.layerNoop({
+                readDirectory: () => Effect.succeed(hostPaths(listed)),
+              }),
+            ),
+          );
+          expect(discovered).toEqual(hostPaths(sortedNames));
+        }
+      }),
+  );
+
+  it.effect(
+    "orders discovered paths by their POSIX form, so Windows and POSIX agree",
+    () =>
+      Effect.gen(function* () {
+        // `/` sorts before `0`, `\` after it, so the host form orders these
+        // two the other way round.
+        const specFiles = yield* discoverLeafSpecFiles.pipe(
+          Effect.provide(
+            Layer.mergeAll(
+              NodePath.layerWin32,
+              FileSystem.layerNoop({
+                readDirectory: () =>
+                  Effect.succeed(["a0.spec.ts", "a\\x.spec.ts"]),
+              }),
+            ),
+          ),
+        );
+        expect(specFiles).toEqual(["a\\x.spec.ts", "a0.spec.ts"]);
+      }),
   );
 });
 

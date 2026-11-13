@@ -94,6 +94,48 @@ kernel there. This is row 4 of Frame's backend testing kernel (Frame ADR 0012).
 Changeset: `test-kernel-subscriptions.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel scheduler, crons, handles and workflow events
+
+The kernel runs scheduled functions on its own clock, never on a host timer. A
+job is a row in its component's `_scheduled_functions`, written through the
+scheduling attempt, so it exists only once that mutation commits. An action's
+schedule and cancel commit at once. `advance(ms)` runs every job whose deadline
+falls in the window, in deadline order, jobs those jobs schedule included, and
+starts each one at its deadline. `Date` inside a query or mutation reads its
+start time, which Convex's `runAfter` uses. On the kernel the invocation bridge
+leaves `Date` to this clock, so a bound handler reads it too, whatever start
+time its invocation carries, and draws from its invocation's random stream. A scheduled call has no identity
+and fresh request metadata carrying its job ID. It runs as a fresh invocation
+of the test world that scheduled it, with that world's services, or unbound
+when none was bound, whatever invocation the drain runs under.
+`finishAllScheduledFunctions` runs jobs until only standing ones remain, and
+fails with `DrainBudgetExceeded` after 100. `registerComponent` takes
+`{ standing }`, the self-rescheduling functions of a component, so a kit can
+declare the crons component's `public:rescheduler`. A job that runs one, or that
+one schedules, is never drain work. A standing name the component does not
+export is refused at open. Convex's own `crons.ts` schedules are not simulated.
+A lint fence refuses host timers in the kernel's modules. Row 2's
+`KernelRowPending` refusals for the scheduler are lifted, a `v.function()`
+validator accepts a function handle and refuses any other value, and the six row-5
+mock-backend cases run on the kernel. This is row 5 of Frame's backend testing
+kernel (Frame ADR 0012). Changeset: `test-kernel-scheduler.md`. Upstream: fork
+only, as the kernel and its option are fork-specific.
+
+## TestConfect kernel target
+
+`TestConfect.layer` takes `{ target: "kernel" }` in each of its three forms. It
+builds the test backend on the kernel's convex-test shim instead of
+convex-test, so every module and component the layer registers runs on the
+kernel, with `registerComponent`'s `standing` honoured. Layers on the two
+targets stay live together: the kernel answers `globalThis.Convex` only inside
+its own functions and hands every other syscall to convex-test. The default stays
+`"convex-test"`, so no current test changes until it opts in. This is how
+Frame's generated test backend and its half of build-order row 5 reach the
+kernel without a new export path: the package keeps `./internal/*` unexported.
+The option is removed at promotion, when the kernel replaces convex-test.
+Changeset: `testconfect-kernel-target.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
@@ -170,13 +212,17 @@ before checking the exported table. The local-backend consumer shares that table
 fixture. Changeset: `schema-bundle-imports.md`. Upstream: planned; no proposal
 submitted.
 
-## Profile manifest sections
+## Manifest sections
 
-Profiles describe app functions in import-free manifest sections, including their middleware. Codegen identifies definitions by key, owner and format, rejects reserved keys and conflicts, and includes sections in the digest. Incremental spec edits update and remove sections without a full rebuild. Changeset: `profile-manifest-sections.md`. Upstream: planned; no proposal submitted.
+Manifest sections describe app functions in import-free data, including their middleware. Codegen rejects reserved keys and includes sections in the digest. Incremental spec edits update sections without a full rebuild. Changeset: `profile-manifest-sections.md`. Upstream: planned; no proposal submitted.
+
+### Declare sections on App.make
+
+A backend declares its manifest sections once, in `App.make({ manifestSections })`, for an app or a component. Codegen takes the manifest's sections and the `_generated` files it claims from that list only, and seeds each section before it visits a function. A function-less backend, such as an HTTP-only receiver, still gets its files and manifest entries, and every registered function joins a section whatever builder made it. A spec that carries `manifestSections` fails codegen and points at `App.make`, `FunctionSpec.extend` throws when its config carries the old `manifest` option, and attaching middleware to a spec that carries `manifestSections` throws rather than dropping it. An implementation that imports a `_generated` file no declared section writes fails at the import, naming the file and `App.make`. The profile `manifest` option, `FunctionSpec.manifestSections`, the owner and format reconciliation across specs and the note for a section without participants are gone. Before, a component built with Frame's `/component` kit got no `_generated/observe.ts` and failed codegen, and Docket's observe catalogue missed 14 of its 66 functions, because only one of Frame's builders attached sections. Frame is the only caller and drops its spec tags in the release that takes this build. Changeset: `app-manifest-sections.md`. Upstream: not planned; `App` and sections are fork concepts.
 
 ### Validate sections against previous output
 
-Codegen checks previous section data, prints notes and removes the manifest only when the section step fails. Unreadable, empty, missing-default and null previous manifests act as empty history. The early declaration write preserves previous sections, so unrelated failures retain history. Unchanged runs write nothing; a spec-only section edit writes the manifest once. A section that loses its last participant gets one generic note naming its former functions, without running a callback. Full and incremental generation share this behavior. Declaration edits replace reserved fields rather than restoring them from history. Thrown checks become typed diagnostics and every failing section is reported. Changeset: `profile-manifest-checks.md`. Upstream: planned; no proposal submitted.
+Codegen checks previous section data, prints notes and removes the manifest only when the section step fails. Unreadable, empty, missing-default and null previous manifests act as empty history. The early declaration write preserves previous sections, so unrelated failures retain history. Unchanged runs write nothing; a spec-only section edit writes the manifest once. Full and incremental generation share this behavior. Declaration edits replace reserved fields rather than restoring them from history. Thrown checks become typed diagnostics and every failing section is reported. Changeset: `profile-manifest-checks.md`. Upstream: planned; no proposal submitted.
 
 ### Require JSON description values
 
@@ -216,11 +262,17 @@ A section's `summarize` also receives `sources`, the spec file under `confect/` 
 
 A declared component's codegen now runs each section's `generate`, so `confect codegen --component-dir` writes the section's file into the component's `confect/_generated` and its registration files import it. `describe`, `summarize` and `check` stay app-only, because a component has no manifest. `render` also receives `target`, `{ kind: "app" }` or `{ kind: "component", name }` with the component's `defineComponent` name, and `confectDirectory`, the absolute path of `confect/`. Sections that ignore the new fields render the same file. Frame's observe door needs this so a component's `confect/runtime.ts` stays one line with no hand-written registry import. Changeset: `manifest-section-component-generate.md`. Upstream: planned; no proposal submitted.
 
+### Verify the backend after generation
+
+A generating section's optional `verify` runs last, once every `_generated` file exists, in full runs and incremental spec edits. Codegen bundles the `confect/` files `verify.match` accepts as it bundles `confect/app.ts`, so they may import any generated file and a component's `convex.config`. It hands their exports, the mounts and the target to `check`, and fails with each string `check` returns under the section key. `confect dev` checks again when a loaded file changes, an implementation or spec file included, through `_generated/verifyInputs.json`. Frame's authz door needs this to refuse, at codegen, an app mount whose callback slots no door owns or two doors own; a `render` input cannot import `_generated/authz.ts`, which does not exist yet when sections bundle. Changeset: `manifest-section-verify.md`. Upstream: not planned; sections are fork concepts.
+
 ## Reserved arguments
 
 Profiles and internal mutation, action and Node action constructors can reserve one argument without changing domain schemas or visibility. Refs, including component refs, retain the name. Registration accepts any optional value, strips it before decoding and refuses domain collisions. Queries ignore the option to preserve cache keys. Changeset: `reserved-argument.md`. Upstream: planned; no proposal submitted.
 
 Reserving invocations expose `{ value, requestId, deployment }` through `RegisteredFunction.Received` at root creation. The runner reads the cloud URL and passes only the request ID from private request metadata. Queries and unreserved functions have no received value; calls without a runtime layer add no metadata reads. Changeset: `received-argument.md`. Upstream: planned; no proposal submitted.
+
+Registered functions pass the function's visibility to the root span, as `visibility` on the received value, next to `value`, `requestId` and `deployment`. It is `"public"` or `"internal"` as Convex reports it, and absent when Convex gives none. Changeset: `received-visibility.md`. Upstream: unrecorded.
 
 `RegisteredFunction.Forward` supplies context from the active call boundary for reserving refs. Mutation/action runners, action-call profiles, mutation transaction calls and scheduling add it after encoding. An absent, undefined, throwing or unserialisable provider leaves the call unchanged. Queries and non-reserving component calls receive nothing. Each action-call profile call opens an `ActionCall.call` span. Scheduling opens named spans whose successful exit is the job ID; argument encoding now runs when the scheduling effect executes. Changeset: `forward-argument.md`. Upstream: planned; no proposal submitted.
 
@@ -728,6 +780,22 @@ Changeset: `mount-init-on-push.md`.
 Upstream: planned; no linked proposal verified.
 
 ## CLI generation and recovery
+
+### Directory order
+
+Codegen's output no longer depends on the order Node lists a directory in. Node's
+recursive `readdir` order differs across versions, so one project gave a different
+manifest order and digest on Node 24 and Node 26, with whole module groups moving
+as blocks. Discovery of specs, implementations and tables sorts paths by code
+unit after converting them to POSIX separators, and each manifest section lists
+its functions sorted by function path, so a section's data never depends on load
+order. The digest of a project whose modules were listed out of order changes once.
+Codegen's cleanup reads, the Convex entrypoint scan and the section `generate`
+inputs are unchanged. The first two feed removals and a sorted error list only,
+and the third follows the sorted leaves.
+
+Changeset: `codegen-directory-order.md`.
+Upstream: unrecorded.
 
 ### Own generated entrypoints
 

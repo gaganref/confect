@@ -158,7 +158,9 @@ export const conflict = (
  */
 export interface KernelRuntime {
   /**
-   * The time in milliseconds, for each inserted document's creation time.
+   * The time in milliseconds. The kernel's clock never reads earlier than the
+   * latest deadline `advance` reached, so a runtime that stands still still
+   * lets jobs run on time.
    */
   readonly now: () => number;
   /**
