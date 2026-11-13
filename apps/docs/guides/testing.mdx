@@ -366,7 +366,7 @@ On the kernel, scheduled functions run on the kernel's own clock and never on a 
 
 ## The generated test backend
 
-For an app, `confect codegen` writes `TestBackend` into `confect/_generated/testing.ts`, beside the registry. It follows the same `confect/app.ts` mounts and specs as the production entrypoints, and it holds:
+For an app that can import `@confect/test`, `confect codegen` writes `TestBackend` into `confect/_generated/testing.ts`, beside the registry. Without it the file holds the registry alone, so a backend that does not test with Confect still compiles. It follows the same `confect/app.ts` mounts and specs as the production entrypoints, and it holds:
 
 - `groups`: every group with a public function, keyed by its path, such as `tasks/tasks`. Each has its `owner`, `"product"` or the door that hosts it, its public functions' refs, and `open`, the functions a role held for `public`, `signedIn` or `self` admits.
 - `obligations`: an `access` proof per public group, `realm` when `confect/auth.ts` declares verifiers, and whatever a manifest section declares.

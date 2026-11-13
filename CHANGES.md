@@ -156,8 +156,8 @@ fork-specific.
 
 ## Generated test backend
 
-For an app, codegen writes `TestBackend` into `_generated/testing.ts` from the
-same `App.make` mounts and specs as the production entrypoints. It holds each
+For an app that can import `@confect/test`, codegen writes `TestBackend` into
+`_generated/testing.ts` from the same `App.make` mounts and specs as the production entrypoints. It holds each
 public group with its owner and open list, an access obligation per public
 group, a realm obligation when `confect/auth.ts` declares verifiers, the
 schema laws `decodes` and `idScope` per table, ports, the manifest digest, the

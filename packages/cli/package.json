@@ -17,6 +17,7 @@
     "exsolve": "^1.1.3"
   },
   "devDependencies": {
+    "@confect/test": "workspace:*",
     "@convex-dev/workpool": "0.4.14",
     "@effect/tsgo": "0.44.0",
     "@effect/vitest": "4.0.4",
