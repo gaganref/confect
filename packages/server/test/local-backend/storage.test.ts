@@ -77,6 +77,88 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
     }),
   );
 
+  // The test kernel's storage metadata parity cases
+  // (`packages/test/test/Storage.test.ts`) expect these same answers.
+  it.effect(
+    "keeps one stored blob's _storage row, metadata, URL and delete as the test kernel simulates them",
+    () =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        const storage = refs.public.groups.storage;
+        const hello = "LPJNul+wow4m6DsqxbninhsWHlwfp0JecwQzYpOLmCQ=";
+        const world = "SG6kYiTRu0+2gPNPfJrZao8k7Ii+c+qOWmxlJg6cuKc=";
+        const storeWith = (contentType: string, sha256: string) =>
+          client.action(getFunctionReference(storage.storeWith), {
+            text: "hello",
+            contentType,
+            sha256,
+          });
+        const store = (contentType: string, sha256: string) =>
+          Effect.promise(() => storeWith(contentType, sha256));
+        const describe = (storageId: GenericId<"_storage">) =>
+          Effect.promise(() =>
+            client.query(getFunctionReference(storage.describe), {
+              storageId,
+            }),
+          ).pipe(Effect.map((json): any => JSON.parse(json)));
+        const deleteRaw = (storageId: GenericId<"_storage">) =>
+          client.mutation(getFunctionReference(storage.deleteRaw), {
+            storageId,
+          });
+
+        const typed = yield* store("text/plain", hello);
+        const described = yield* describe(typed);
+        expect(described.doc).toStrictEqual({
+          _id: typed,
+          _creationTime: described.doc._creationTime,
+          sha256: hello,
+          size: 5,
+          contentType: "text/plain",
+        });
+        expect(typeof described.doc._creationTime).toBe("number");
+        expect(described.metadata).toStrictEqual({
+          storageId: described.metadata.storageId,
+          sha256:
+            "2cf24dba5fb0a30e26e83b2ac5b9e29e1b161e5c1fa7425e73043362938b9824",
+          size: 5,
+          contentType: "text/plain",
+        });
+        expect(described.metadata.storageId).toMatch(
+          /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/,
+        );
+        expect(new URL(described.url).pathname).toBe(
+          `/api/storage/${described.metadata.storageId}`,
+        );
+        expect(new URL(described.url).search).toBe("");
+
+        const untyped = yield* describe(yield* store("", ""));
+        expect(Object.keys(untyped.doc).toSorted()).toStrictEqual(
+          Object.keys(described.doc).toSorted(),
+        );
+        expect(untyped.doc.contentType).toBeNull();
+        expect(untyped.metadata.contentType).toBeNull();
+
+        yield* Effect.promise(() =>
+          expect(storeWith("", world)).rejects.toThrow(
+            `Sha256 mismatch. Expected: ${world} Actual: ${hello}`,
+          ),
+        );
+
+        expect(yield* Effect.promise(() => deleteRaw(typed))).toBeNull();
+        expect(yield* describe(typed)).toStrictEqual({
+          doc: null,
+          metadata: null,
+          url: null,
+        });
+        yield* Effect.promise(() =>
+          expect(deleteRaw(typed)).rejects.toThrow(
+            `storage id ${typed} not found`,
+          ),
+        );
+      }),
+    60_000,
+  );
+
   it.effect(
     "generateUploadUrl decodes the isolate's string URL, and getUrl resolves an uploaded blob",
     () =>

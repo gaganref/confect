@@ -15,4 +15,7 @@ export default {
 ["store"]: RegisteredConvexFunction.register({ ...definitions["store"], handler: forward(definitions["store"].handler) }),
 ["get"]: RegisteredConvexFunction.register({ ...definitions["get"], handler: forward(definitions["get"].handler) }),
 ["deleteBlob"]: RegisteredConvexFunction.register({ ...definitions["deleteBlob"], handler: forward(definitions["deleteBlob"].handler) }),
+["storeWith"]: RegisteredConvexFunction.register({ ...definitions["storeWith"], handler: forward(definitions["storeWith"].handler) }),
+["describe"]: RegisteredConvexFunction.register({ ...definitions["describe"], handler: forward(definitions["describe"].handler) }),
+["deleteRaw"]: RegisteredConvexFunction.register({ ...definitions["deleteRaw"], handler: forward(definitions["deleteRaw"].handler) }),
 } as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/storage.spec.js")["default"]>;
