@@ -22,5 +22,6 @@ export default {
 ["idle"]: RegisteredConvexFunction.register({ ...definitions["idle"], handler: forward(definitions["idle"].handler) }),
 ["readMetrics"]: RegisteredConvexFunction.register({ ...definitions["readMetrics"], handler: forward(definitions["readMetrics"].handler) }),
 ["staleMetrics"]: RegisteredConvexFunction.register({ ...definitions["staleMetrics"], handler: forward(definitions["staleMetrics"].handler) }),
+["systemShare"]: RegisteredConvexFunction.register({ ...definitions["systemShare"], handler: forward(definitions["systemShare"].handler) }),
 ["metrics"]: RegisteredConvexFunction.register({ ...definitions["metrics"], handler: forward(definitions["metrics"].handler) }),
 } as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../../groups/transactions.spec.js")["default"]>;

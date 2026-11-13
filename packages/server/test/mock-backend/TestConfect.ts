@@ -23,4 +23,16 @@ export const layer = TestConfect_.layer(
     "./fixtures/convex/**/*.js",
     "!./fixtures/convex/**/*.*.*",
   ]),
+  {
+    // The same files as text, so the test kernel reads each module's
+    // `"use node"` directive as Convex's bundler does.
+    sources: import.meta.glob<string>(
+      [
+        "./fixtures/convex/**/*.ts",
+        "./fixtures/convex/**/*.js",
+        "!./fixtures/convex/**/*.*.*",
+      ],
+      { query: "?raw", import: "default" },
+    ),
+  },
 );

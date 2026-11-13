@@ -56,6 +56,12 @@ const TYPICAL_CONVEX_ID_LENGTH = 32;
 type Modules = Record<string, () => Promise<any>>;
 
 /**
+ * Each module's source as text, keyed as `Modules` is, such as
+ * `import.meta.glob(pattern, { query: "?raw", import: "default" })` gives.
+ */
+type Sources = Record<string, () => Promise<string>>;
+
+/**
  * One registered component: its schema, its function modules, each loaded once
  * when the world opens, and its standing sources.
  */
@@ -69,6 +75,15 @@ interface Component {
    * that runs one, or that one schedules, is never drain work.
    */
   readonly standing: ReadonlySet<string>;
+  /**
+   * Each function module's source, when the test supplied them, so its `"use
+   * node"` directive decides its runtime as the bundler's does.
+   */
+  readonly sources: ReadonlyMap<string, () => Promise<string>> | undefined;
+  /**
+   * Each loaded module's runtime, read from its source when the world opens.
+   */
+  readonly runtimes: Map<string, IoBans.Runtime>;
 }
 
 /**
@@ -370,29 +385,23 @@ const whileRunning = <A>(execution: Execution, start: () => Promise<A>) => {
 const unlessEnded = <A>(execution: Execution, outcome: Promise<A>) =>
   Promise.race([outcome, endingOf(execution).ended]);
 
-/**
- * Whether a Confect function is a Node action, which runs in Node rather than
- * the isolate. `RegisteredNodeFunction.make` in `@confect/server` marks it.
- */
-const nodeAction = Symbol.for("@confect/server/NodeAction");
-
-const runtimeOf = (func: unknown): IoBans.Runtime =>
-  (func as { [nodeAction]?: boolean } | undefined)?.[nodeAction] === true
-    ? "node"
-    : "isolate";
-
-const installIoBans = () => {
-  IoBans.install();
+const installIoBans = (): ReadonlyArray<string> => {
+  const unguarded = IoBans.install();
   IoBans.bind(ioHooks);
+  return unguarded;
 };
 
 /**
  * Run a function's code as `execution`, with its own copy of the globals a test
- * invocation pins, and the host APIs Convex refuses refused.
+ * invocation pins, and the host APIs Convex refuses refused. A guarded global a
+ * test replaced is adopted beneath a fresh guard first, and one that cannot be
+ * guarded refuses the function before it runs.
  */
 const enter = <A>(execution: Execution, run: () => A): A => {
   installConvexGlobal();
-  installIoBans();
+  // A function runs only with every banned global guarded.
+  const unguarded = installIoBans();
+  if (unguarded.length > 0) throw KernelRefusal.unguardableGlobal(unguarded);
   return Globals.own(() => executions.run(execution, run));
 };
 const kernelBrand = Symbol.for("@confect/test/Kernel");
@@ -461,11 +470,23 @@ const makeComponent = (
   schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
   modules: Modules,
   standing: ReadonlyArray<string> = [],
+  sources?: Sources,
 ): Component => {
   const root = findModulesRoot(Object.keys(modules));
   const relative = Object.entries(modules)
     .filter(([key]) => key.startsWith(root))
     .map(([key, load]) => [key.slice(root.length), load] as const);
+  const relativeSources =
+    sources === undefined
+      ? undefined
+      : new Map(
+          Object.entries(sources)
+            .filter(([key]) => key.startsWith(root))
+            .map(
+              ([key, read]) =>
+                [key.slice(root.length).replace(/\.[^.]+$/, ""), read] as const,
+            ),
+        );
   const nested = relative
     .map(([file]) => file)
     .filter((file) => file.endsWith("/convex.config.ts"))
@@ -484,6 +505,8 @@ const makeComponent = (
     ),
     loaded: new Map(),
     standing: new Set(standing),
+    sources: relativeSources,
+    runtimes: new Map(),
   };
 };
 
@@ -516,6 +539,138 @@ const isFunctionModule = (file: string): boolean => {
     (base.match(/\./g) ?? []).length <= 1 &&
     !file.includes(" ")
   );
+};
+
+/**
+ * Whether `source` opens with a `"use node"` directive: a string-literal
+ * statement in its directive prologue, which is what the bundler reads
+ * (`hasUseNodeDirective`, `npm-packages/convex/src/bundler/index.ts:508-548`,
+ * at the local backend's `cccbade4`, which takes Babel's `program.directives`).
+ * Comments and a hashbang may come before it.
+ */
+export const hasUseNodeDirective = (source: string): boolean => {
+  if (!source.includes("use node")) return false;
+  let at = 0;
+  const skipTrivia = (newlines: boolean) => {
+    for (;;) {
+      const rest = source.slice(at);
+      const space = newlines ? /^\s+/.exec(rest) : /^[ \t]+/.exec(rest);
+      if (space !== null) {
+        at += space[0].length;
+      } else if (rest.startsWith("//") || (at === 0 && rest.startsWith("#!"))) {
+        if (!newlines) return;
+        const end = source.indexOf("\n", at);
+        at = end === -1 ? source.length : end;
+      } else if (rest.startsWith("/*")) {
+        const end = source.indexOf("*/", at + 2);
+        at = end === -1 ? source.length : end + 2;
+      } else {
+        return;
+      }
+    }
+  };
+  for (;;) {
+    skipTrivia(true);
+    const quote = source[at];
+    if (quote !== '"' && quote !== "'") return false;
+    let end = at + 1;
+    while (end < source.length && source[end] !== quote) {
+      end += source[end] === "\\" ? 2 : 1;
+    }
+    if (end >= source.length) return false;
+    const value = source.slice(at + 1, end);
+    at = end + 1;
+    skipTrivia(false);
+    // A directive is a whole statement: the literal ends at `;`, a line end,
+    // the end of the file, or a comment that runs to one.
+    const next = source[at];
+    const ended =
+      next === undefined ||
+      next === ";" ||
+      next === "\n" ||
+      next === "\r" ||
+      source.startsWith("//", at) ||
+      source.startsWith("/*", at);
+    if (!ended) return false;
+    if (value === "use node") return true;
+    if (next === ";") at += 1;
+  }
+};
+
+/**
+ * Modules the bundler refuses to run in Node (`mustBeIsolate`,
+ * `bundler/index.ts:551-556`).
+ */
+const mustBeIsolate = (path: string) =>
+  ["http", "crons", "schema", "auth.config"].includes(path);
+
+/**
+ * The runtime of the module at `path`, read from the source the test supplied:
+ * `"node"` for a `"use node"` directive, else `"isolate"`, as the bundler's
+ * `determineEnvironment` decides (`bundler/index.ts:558-588`). `undefined` when
+ * the test supplied no sources for the component.
+ */
+const runtimeFromSource = (
+  component: Component,
+  path: string,
+): Promise<IoBans.Runtime | undefined> => {
+  if (component.sources === undefined) return Promise.resolve(undefined);
+  const read = component.sources.get(path);
+  if (read === undefined) {
+    return Promise.reject(
+      new KernelRefusal.ModuleRuntime({
+        reason: "missingSource",
+        componentPath: component.path,
+        module: path,
+        message: `Module "${path}" has no source among the sources the test gave${component.path === ROOT ? "" : ` component "${component.path}"`}, so its "use node" directive cannot be read. Give a source for every module, as a ?raw glob of the same files does.`,
+      }),
+    );
+  }
+  return read().then((source) => {
+    if (!hasUseNodeDirective(source)) return "isolate";
+    if (mustBeIsolate(path)) {
+      throw new KernelRefusal.ModuleRuntime({
+        reason: "nodeNotAllowed",
+        componentPath: component.path,
+        module: path,
+        message: `"use node" directive is not allowed for ${path}.`,
+      });
+    }
+    return "node";
+  });
+};
+
+/**
+ * Whether a Confect function is a Node action. `RegisteredNodeFunction.make` in
+ * `@confect/server` marks it, and the kernel checks the mark against the
+ * module's directive.
+ */
+const nodeAction = Symbol.for("@confect/server/NodeAction");
+
+/**
+ * The runtime a function runs in: its module's, read from the directive. With
+ * no source, Confect's mark decides. A function marked Node in a module without
+ * `"use node"` is refused, as the two disagree.
+ */
+const runtimeOfFunction = (
+  component: Component,
+  modulePath: string,
+  exportName: string,
+  func: unknown,
+): IoBans.Runtime => {
+  const marked =
+    (func as { [nodeAction]?: boolean } | undefined)?.[nodeAction] === true;
+  const declared = component.runtimes.get(modulePath);
+  if (declared === undefined) return marked ? "node" : "isolate";
+  if (marked && declared !== "node") {
+    throw new KernelRefusal.ModuleRuntime({
+      reason: "markerDisagrees",
+      componentPath: component.path,
+      module: modulePath,
+      message: `${modulePath}:${exportName} is a Confect Node action, but module "${modulePath}" has no "use node" directive, so Convex would run it in its isolate.`,
+    });
+  }
+  return declared;
 };
 
 const unregistered = (world: World, componentPath: string) => {
@@ -571,6 +726,7 @@ interface Resolved {
   readonly handler: (ctx: any, args: any) => any;
   readonly args: ValidatorJSON;
   readonly returns: ValidatorJSON | null;
+  readonly runtime: IoBans.Runtime;
 }
 
 const kindCheck = {
@@ -623,12 +779,16 @@ export class World {
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
     modules: Modules,
     private readonly runtime: Kernel.KernelRuntime = Kernel.wallClock(),
+    sources?: Sources,
   ) {
     installConvexGlobal();
     Clock.install(pinnedTime, () => executions.getStore() !== undefined);
     installIoBans();
     Egress.install(egressHolder);
-    this.components.set(ROOT, makeComponent(ROOT, schema, modules));
+    this.components.set(
+      ROOT,
+      makeComponent(ROOT, schema, modules, [], sources),
+    );
   }
 
   register(
@@ -636,6 +796,7 @@ export class World {
     schema: SchemaDefinition<GenericSchema, boolean>,
     modules: Modules,
     standing: ReadonlyArray<string> = [],
+    sources?: Sources,
   ) {
     if (this.opened !== undefined) {
       throw new KernelRefusal.RegisteredAfterOpen({
@@ -645,20 +806,28 @@ export class World {
     }
     this.components.set(
       componentPath,
-      makeComponent(componentPath, schema, modules, standing),
+      makeComponent(componentPath, schema, modules, standing, sources),
     );
   }
 
   /**
    * Load every registered module of every component, once, before any function
-   * runs, then check that each standing source names an exported function.
+   * runs, with its runtime read from its source when the test supplied them,
+   * then check that each standing source names an exported function.
    */
   open(): Promise<void> {
     this.opened ??= Promise.all(
       Array.from(this.components.values(), (component) =>
         Promise.all(
           Array.from(component.loaders, ([path, load]) =>
-            load().then((module) => component.loaded.set(path, module)),
+            Promise.all([load(), runtimeFromSource(component, path)]).then(
+              ([module, runtime]) => {
+                component.loaded.set(path, module);
+                if (runtime !== undefined)
+                  component.runtimes.set(path, runtime);
+                return undefined;
+              },
+            ),
           ),
         ),
       ),
@@ -734,7 +903,13 @@ export class World {
           `Args validator must be an object or any`,
       );
     }
-    return { func, handler, args, returns: JSON.parse(func.exportReturns()) };
+    return {
+      func,
+      handler,
+      args,
+      returns: JSON.parse(func.exportReturns()),
+      runtime: runtimeOfFunction(component, modulePath, exportName, func),
+    };
   }
 
   // Calls from the test.
@@ -1560,7 +1735,7 @@ export class World {
   private runAction(
     functionPath: FunctionPath,
     resolved: Pick<Resolved, "handler" | "args" | "returns"> &
-      Partial<Pick<Resolved, "func">>,
+      Partial<Pick<Resolved, "runtime">>,
     args: any,
     from: From,
   ): Promise<any> {
@@ -1571,7 +1746,7 @@ export class World {
       from,
       undefined,
       undefined,
-      runtimeOf(resolved.func),
+      resolved.runtime ?? "isolate",
     );
     const inner: From = { request: from.request, parent: execution };
     const a = actionGeneric({

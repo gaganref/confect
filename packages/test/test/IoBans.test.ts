@@ -4,6 +4,8 @@ import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as FunctionRegistryItem from "@confect/server/FunctionRegistryItem";
 import * as RegisteredConvexFunction from "@confect/server/RegisteredConvexFunction";
 import { RegisteredNodeFunction } from "@confect/server/node";
+import * as Util from "node:util";
+import * as Vm from "node:vm";
 import { assert, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import {
@@ -20,6 +22,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { convexTest } from "../src/internal/ConvexTest";
 import type * as KernelRefusal from "../src/internal/KernelRefusal";
+import { hasUseNodeDirective } from "../src/internal/Execution";
 import { keptFetch, keptSetImmediate } from "./fixtures/keptAtImport";
 import { loopback } from "./fixtures/loopback";
 
@@ -197,6 +200,13 @@ const io = {
     "io:fetchThenWrite",
   ),
   addNote: makeFunctionReference<"mutation", { text: string }>("io:addNote"),
+  promisifiedTimerInQuery: makeFunctionReference<"query">(
+    "io:promisifiedTimerInQuery",
+  ),
+  fakedStackInQuery: makeFunctionReference<"query">("io:fakedStackInQuery"),
+  namedNodeScriptInQuery: makeFunctionReference<"query">(
+    "io:namedNodeScriptInQuery",
+  ),
 };
 
 // The writes an action made after its raw fetch, so a test waits for them.
@@ -352,6 +362,48 @@ const modules = {
         args: { text: v.string() },
         handler: (ctx, { text }) =>
           ctx.db.insert("notes", { text }).then(() => null),
+      }),
+      promisifiedTimerInQuery: queryGeneric({
+        args: {},
+        handler: async () => {
+          await Util.promisify(setTimeout)(10);
+          return "returned";
+        },
+      }),
+      fakedStackInQuery: queryGeneric({
+        args: {},
+        // A user's prepareStackTrace that claims every frame is Node's fetch,
+        // and that the kernel's own assignment cannot replace.
+        handler: () => {
+          const original = Object.getOwnPropertyDescriptor(
+            Error,
+            "prepareStackTrace",
+          );
+          Object.defineProperty(Error, "prepareStackTrace", {
+            get: () => () => [
+              { getFileName: () => "node:internal/deps/undici/undici" },
+            ],
+            set: () => {},
+            configurable: true,
+          });
+          try {
+            return typeof queueMicrotask;
+          } finally {
+            if (original === undefined) {
+              Reflect.deleteProperty(Error, "prepareStackTrace");
+            } else {
+              Object.defineProperty(Error, "prepareStackTrace", original);
+            }
+          }
+        },
+      }),
+      namedNodeScriptInQuery: queryGeneric({
+        args: {},
+        // A script that names itself as one of Node's modules.
+        handler: () =>
+          Vm.runInThisContext("typeof queueMicrotask", {
+            filename: "node:internal/deps/undici/undici-lookalike",
+          }) as string,
       }),
       timersInAction: actionGeneric({
         args: {},
@@ -820,5 +872,232 @@ describe("I/O bans", () => {
         ).toEqual({ returned: "ada" });
       }),
     );
+  });
+});
+
+describe("replaced globals", () => {
+  const original = (name: string) =>
+    Object.getOwnPropertyDescriptor(globalThis, name)!;
+
+  it.effect(
+    "a fetch a test redefined with defineProperty is adopted and still refused in a query",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest(schema, modules);
+        yield* Effect.promise(() => t.query(io.notes, {}));
+        const before = original("fetch");
+        const stub = vi.fn(() => Promise.resolve(new Response("stubbed")));
+        Object.defineProperty(globalThis, "fetch", {
+          value: stub,
+          writable: true,
+          configurable: true,
+        });
+        const outcome = yield* Effect.promise(() =>
+          t.query(io.fetchInQuery, { url }),
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() =>
+              Object.defineProperty(globalThis, "fetch", before),
+            ),
+          ),
+        );
+        expect(outcome).toEqual(fetchRefusal);
+        expect(stub).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect(
+    "a fetch a test deleted and assigned again is adopted and still refused in a query",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest(schema, modules);
+        yield* Effect.promise(() => t.query(io.notes, {}));
+        const before = original("fetch");
+        const stub = vi.fn(() => Promise.resolve(new Response("stubbed")));
+        Reflect.deleteProperty(globalThis, "fetch");
+        Reflect.set(globalThis, "fetch", stub);
+        const outcome = yield* Effect.promise(() =>
+          t.query(io.fetchInQuery, { url }),
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() =>
+              Object.defineProperty(globalThis, "fetch", before),
+            ),
+          ),
+        );
+        expect(outcome).toEqual(fetchRefusal);
+        expect(stub).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect(
+    "a stub vi.stubGlobal made is adopted, still refused in a query, and called outside one",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest(schema, modules);
+        yield* Effect.promise(() => t.query(io.notes, {}));
+        const stub = vi.fn(() => Promise.resolve(new Response("stubbed")));
+        vi.stubGlobal("fetch", stub);
+        const outcome = yield* Effect.promise(() =>
+          t.query(io.fetchInQuery, { url }),
+        );
+        const outside = yield* Effect.promise(() =>
+          fetch("https://example.com/").then((response) => response.text()),
+        ).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals())));
+        expect(outcome).toEqual(fetchRefusal);
+        expect(outside).toBe("stubbed");
+        expect(stub).toHaveBeenCalledOnce();
+      }),
+  );
+
+  it.effect(
+    "util.promisify(setTimeout) in a query ends it with the binary's error",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest(schema, modules);
+        expect(
+          yield* failureOf(t.query(io.promisifiedTimerInQuery, {})),
+        ).toEqual({ failed: timerRefusal("setTimeout") });
+      }),
+  );
+});
+
+describe("Node callers", () => {
+  it.effect(
+    "a user's prepareStackTrace cannot pass a query's code off as Node's",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest(schema, modules);
+        expect(
+          yield* Effect.promise(() => t.query(io.fakedStackInQuery, {})),
+        ).toBe("undefined");
+      }),
+  );
+
+  it.effect("a script named like a Node module is not Node's own", () =>
+    Effect.gen(function* () {
+      const t = convexTest(schema, modules);
+      expect(
+        yield* Effect.promise(() => t.query(io.namedNodeScriptInQuery, {})),
+      ).toBe("undefined");
+    }),
+  );
+});
+
+describe("module runtimes", () => {
+  const runtimeModules = import.meta.glob("./fixtures/runtime/**/*.ts");
+  const runtimeSources = import.meta.glob<string>(
+    "./fixtures/runtime/**/*.ts",
+    {
+      query: "?raw",
+      import: "default",
+    },
+  );
+  const only = <A>(map: Record<string, A>, files: ReadonlyArray<string>) =>
+    Object.fromEntries(
+      Object.entries(map).filter(([key]) =>
+        ["_generated/server.ts", ...files].some((file) =>
+          key.endsWith(`/runtime/${file}`),
+        ),
+      ),
+    );
+  const runtimeRefusalOf = (call: Promise<unknown>) =>
+    Effect.promise(() =>
+      call.then(
+        (value) => ({ returned: value }),
+        (error: {
+          readonly _tag?: string;
+          readonly reason?: string;
+          readonly message?: string;
+        }) => ({
+          failed: error._tag,
+          reason: error.reason,
+          message: error.message,
+        }),
+      ),
+    );
+  const surfaceOf = (module: string) =>
+    makeFunctionReference<"action">(`${module}:surface`);
+  const node = { setImmediate: "function", queueMicrotask: "function" };
+
+  it.effect(
+    "a plain Convex \"use node\" action has Node's globals, and a module without the directive the isolate's",
+    () =>
+      Effect.gen(function* () {
+        const files = ["plainNode.ts", "plainIsolate.ts"];
+        const t = convexTest({
+          schema: defineSchema({}),
+          modules: only(runtimeModules, files),
+          sources: only(runtimeSources, files),
+        });
+        expect(
+          yield* Effect.promise(() => t.action(surfaceOf("plainNode"), {})),
+        ).toEqual(node);
+        expect(
+          yield* Effect.promise(() => t.action(surfaceOf("plainIsolate"), {})),
+        ).toEqual(absent);
+      }),
+  );
+
+  it.effect(
+    'a Confect Node action in a module without "use node" is refused, as Convex would run it in its isolate',
+    () =>
+      Effect.gen(function* () {
+        const files = ["markedNode.ts"];
+        const t = convexTest({
+          schema: defineSchema({}),
+          modules: only(runtimeModules, files),
+          sources: only(runtimeSources, files),
+        });
+        expect(
+          yield* runtimeRefusalOf(t.action(surfaceOf("markedNode"), {})),
+        ).toMatchObject({ failed: "ModuleRuntime", reason: "markerDisagrees" });
+      }),
+  );
+
+  it.effect(
+    '"use node" in http.ts is refused with the bundler\'s message',
+    () =>
+      Effect.gen(function* () {
+        const files = ["http.ts", "plainIsolate.ts"];
+        const t = convexTest({
+          schema: defineSchema({}),
+          modules: only(runtimeModules, files),
+          sources: only(runtimeSources, files),
+        });
+        expect(
+          yield* runtimeRefusalOf(t.action(surfaceOf("plainIsolate"), {})),
+        ).toEqual({
+          failed: "ModuleRuntime",
+          reason: "nodeNotAllowed",
+          message: '"use node" directive is not allowed for http.',
+        });
+      }),
+  );
+
+  it.effect("a module without a source is refused when sources are given", () =>
+    Effect.gen(function* () {
+      const t = convexTest({
+        schema: defineSchema({}),
+        modules: only(runtimeModules, ["plainNode.ts", "plainIsolate.ts"]),
+        sources: only(runtimeSources, ["plainIsolate.ts"]),
+      });
+      expect(
+        yield* runtimeRefusalOf(t.action(surfaceOf("plainIsolate"), {})),
+      ).toMatchObject({ failed: "ModuleRuntime", reason: "missingSource" });
+    }),
+  );
+
+  it("reads the directive prologue as the bundler does", () => {
+    expect(hasUseNodeDirective('"use node";\nexport {};')).toBe(true);
+    expect(hasUseNodeDirective("'use node'\nexport {};")).toBe(true);
+    expect(
+      hasUseNodeDirective(
+        '#!/usr/bin/env node\n// a note\n/* more */ "use strict";\n"use node";',
+      ),
+    ).toBe(true);
+    expect(hasUseNodeDirective('import x from "y";\n"use node";')).toBe(false);
+    expect(hasUseNodeDirective('"use node".length;')).toBe(false);
+    expect(hasUseNodeDirective('const note = "use node";')).toBe(false);
   });
 });

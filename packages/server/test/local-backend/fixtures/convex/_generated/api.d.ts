@@ -612,6 +612,12 @@ export declare const api: {
         { caseId: string; stale: boolean },
         Array<string>
       >;
+      systemShare: FunctionReference<
+        "mutation",
+        "public",
+        {},
+        { nested: number; root: number; stale: number }
+      >;
     };
   };
   ioBansNode: {

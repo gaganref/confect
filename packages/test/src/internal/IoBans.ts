@@ -24,6 +24,8 @@ import * as KernelRefusal from "./KernelRefusal.js";
  * performs it. Egress goes through a provider port (`Egress.ts`) instead.
  */
 
+import * as Util from "node:util";
+
 type UdfType = "query" | "mutation" | "action";
 
 /**
@@ -140,26 +142,33 @@ const inIsolate = (state: State): boolean =>
   !state.probing && runningOf(state)?.runtime === "isolate";
 
 /**
- * Whether the code reading or calling a global, the frame that called `reader`,
- * is one of Node's own modules. Node's `fetch`, streams and timers read and
- * call globals such as `queueMicrotask` while running a function's work, and
- * the binary's own built-ins need none of them, so only the function's own code
- * finds them absent.
+ * Node's own modules that read or call a global the isolate lacks while doing a
+ * function's work: its `fetch`, `Request` and `Response`, whose bodies schedule
+ * `queueMicrotask`. The binary's own built-ins need none of these globals, so
+ * only the function's own code finds them absent. The set holds the exact
+ * `node:` URLs the kernel's suites showed, so no other script, a user's that
+ * names itself `node:` included, passes.
  */
-const readByNode = (reader: Fn): boolean => {
-  // oxlint-disable-next-line typescript/unbound-method -- Restored as it was, never called here.
-  const prepare = Error.prepareStackTrace;
-  const limit = Error.stackTraceLimit;
-  const holder: { stack?: ReadonlyArray<NodeJS.CallSite> } = {};
-  try {
-    Error.prepareStackTrace = (_error, callSites) => callSites;
-    Error.stackTraceLimit = 1;
-    Error.captureStackTrace(holder, reader);
-    return holder.stack?.[0]?.getFileName()?.startsWith("node:") === true;
-  } finally {
-    Error.prepareStackTrace = prepare;
-    Error.stackTraceLimit = limit;
-  }
+const nodeCallers: ReadonlySet<string> = new Set([
+  "node:internal/deps/undici/undici",
+]);
+
+/**
+ * `util.getCallSites` (Node 22.9 and later), kept when this module loads. It
+ * reads the stack without `Error.prepareStackTrace`, so a user's override
+ * cannot change what it reports. Without it no caller counts as Node's.
+ */
+const callSites: typeof Util.getCallSites | undefined = Util.getCallSites;
+
+const here = callSites?.(1)[0]?.scriptName;
+
+/**
+ * Whether the code reading or calling a global, the first frame outside this
+ * module, is one of Node's own modules in {@link nodeCallers}.
+ */
+const readByNode = (): boolean => {
+  const caller = callSites?.(12).find((site) => site.scriptName !== here);
+  return caller !== undefined && nodeCallers.has(caller.scriptName);
 };
 
 /**
@@ -218,17 +227,46 @@ const absentRule =
     throw new ReferenceError(`${name} is not defined`);
   };
 
+/**
+ * `util.promisify(setTimeout)` and `util.promisify(setInterval)` read the
+ * timer's promisified form. In a query or mutation it ends the function as the
+ * timer does, and its promise never settles, as an ended function runs no more
+ * JavaScript.
+ */
+const promisedTimerRule =
+  (name: Timer): Rule =>
+  (state, running) => {
+    if (!inTransaction(running)) return undefined;
+    state.hooks?.end(timerInTransaction(name));
+    // oxlint-disable-next-line effecttsgo/new-promise -- A promise that never settles, as an ended function's await never resumes.
+    return { answer: new Promise(() => {}) };
+  };
+
 const guarded: ReadonlyArray<{
   readonly name: string;
   readonly rule: Rule;
+  /**
+   * What a guard of the implementation's promisified form does, if not `rule`.
+   */
+  readonly promised?: Rule;
   /**
    * Whether the global reads `undefined` inside an isolate function.
    */
   readonly absent: boolean;
 }> = [
   { name: "fetch", rule: fetchRule, absent: false },
-  { name: "setTimeout", rule: timerRule("setTimeout"), absent: false },
-  { name: "setInterval", rule: timerRule("setInterval"), absent: false },
+  {
+    name: "setTimeout",
+    rule: timerRule("setTimeout"),
+    promised: promisedTimerRule("setTimeout"),
+    absent: false,
+  },
+  {
+    name: "setInterval",
+    rule: timerRule("setInterval"),
+    promised: promisedTimerRule("setInterval"),
+    absent: false,
+  },
   { name: "setImmediate", rule: absentRule("setImmediate"), absent: true },
   { name: "queueMicrotask", rule: absentRule("queueMicrotask"), absent: true },
 ];
@@ -238,23 +276,34 @@ const makeGuard = (
   name: string,
   rule: Rule,
   implementation: () => unknown,
+  promised?: Rule,
 ): Fn => {
   function guard(this: unknown, ...args: Array<unknown>): unknown {
     const running = runningOf(state);
     const refused =
       running === undefined
         ? undefined
-        : rule(state, running, args, () => readByNode(guard));
+        : rule(state, running, args, readByNode);
     if (refused !== undefined) return refused.answer;
     return Reflect.apply(implementation() as Fn, this, args);
   }
   Object.defineProperty(guard, "name", { value: name });
-  // `util.promisify(setTimeout)` reads the implementation's promisified form.
+  // `util.promisify(setTimeout)` reads the implementation's promisified
+  // form, which is guarded too.
+  const promisified = new WeakMap<object, Fn>();
   Object.defineProperty(guard, promisifyCustom, {
-    get: () =>
-      (implementation() as Record<symbol, unknown> | undefined)?.[
+    get: () => {
+      const form = (implementation() as Record<symbol, unknown> | undefined)?.[
         promisifyCustom
-      ],
+      ];
+      if (typeof form !== "function") return form;
+      let guardedForm = promisified.get(form);
+      if (guardedForm === undefined) {
+        guardedForm = makeGuard(state, name, promised ?? rule, () => form);
+        promisified.set(form, guardedForm);
+      }
+      return guardedForm;
+    },
     configurable: true,
   });
   state.made.add(guard);
@@ -292,33 +341,40 @@ const readsThrough = (state: State, accessor: PropertyDescriptor): boolean => {
  */
 const guardGlobal = (
   state: State,
-  { name, rule, absent }: (typeof guarded)[number],
-) => {
+  { name, rule, promised, absent }: (typeof guarded)[number],
+): boolean => {
   const global = globalThis as unknown as Global;
   const own = Object.getOwnPropertyDescriptor(global, name);
-  if (own === undefined || own.configurable === false) return;
+  // A global that is gone leaves a function nothing of the host's to reach.
+  if (own === undefined) return true;
   // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
-  if (own.get !== undefined && state.made.has(own.get)) return;
-  if (own.get !== undefined && readsThrough(state, own)) return;
+  if (own.get !== undefined && state.made.has(own.get)) return true;
+  if (own.get !== undefined && readsThrough(state, own)) return true;
+  // A replacement the kernel cannot redefine stays the host's.
+  if (own.configurable === false) return false;
   let beneath: PropertyDescriptor = own;
   // Another library's accessor beneath answers per read, so one guard reads
   // through it at each call.
-  const throughAccessor = makeGuard(state, name, rule, () =>
-    beneath.get?.call(global),
+  const throughAccessor = makeGuard(
+    state,
+    name,
+    rule,
+    () => beneath.get?.call(global),
+    promised,
   );
   const guards = new WeakMap<object, Fn>();
   const guardOf = (implementation: unknown): unknown => {
     if (typeof implementation !== "function") return implementation;
     let guard = guards.get(implementation);
     if (guard === undefined) {
-      guard = makeGuard(state, name, rule, () => implementation);
+      guard = makeGuard(state, name, rule, () => implementation, promised);
       guards.set(implementation, guard);
       state.guarding.set(guard, implementation);
     }
     return guard;
   };
   const get = (): unknown => {
-    if (absent && inIsolate(state) && !readByNode(get)) return undefined;
+    if (absent && inIsolate(state) && !readByNode()) return undefined;
     return "value" in beneath ? guardOf(beneath.value) : throughAccessor;
   };
   const set = (value: unknown) => {
@@ -333,12 +389,17 @@ const guardGlobal = (
     beneath = { value: implementation, writable: true };
   };
   state.made.add(get);
-  Object.defineProperty(global, name, {
-    get,
-    set,
-    configurable: true,
-    enumerable: own.enumerable ?? false,
-  });
+  try {
+    Object.defineProperty(global, name, {
+      get,
+      set,
+      configurable: true,
+      enumerable: own.enumerable ?? false,
+    });
+  } catch {
+    return false;
+  }
+  return true;
 };
 
 /**
@@ -427,15 +488,20 @@ const stateOf = (): State =>
  * Guard `fetch`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`,
  * multipart `formData()` and `console`, unless they are already guarded.
  * `@confect/test/setup` calls this before any test module loads, and the kernel
- * again whenever a world opens or a function starts, which guards again a
- * global a test redefined, as `vi.stubGlobal` does.
+ * again whenever a world opens or a function starts, which adopts a global a
+ * test redefined, as `vi.stubGlobal` does, as the implementation beneath a
+ * fresh guard. It answers the names it could not guard: a replacement made
+ * non-configurable, or one the realm refused to redefine.
  */
-export const install = () => {
+export const install = (): ReadonlyArray<string> => {
   const state = stateOf();
-  for (const entry of guarded) guardGlobal(state, entry);
+  const unguarded = guarded
+    .filter((entry) => !guardGlobal(state, entry))
+    .map(({ name }) => name);
   guardFormData(state, Request.prototype);
   guardFormData(state, Response.prototype);
   guardConsole(state);
+  return unguarded;
 };
 
 /**

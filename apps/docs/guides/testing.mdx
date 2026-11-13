@@ -372,6 +372,18 @@ export default defineConfig({
 });
 ```
 
+A Node action runs with Node's globals. On the kernel a Confect Node action is one by its registration. For a plain Convex module, pass the modules' sources so the kernel reads its `"use node"` directive as Convex's bundler does:
+
+```ts
+TestConfect.layer(schema, convexSchema, modules, {
+  target: "kernel",
+  sources: import.meta.glob("../convex/**/*.ts", {
+    query: "?raw",
+    import: "default",
+  }),
+});
+```
+
 #### Reach the network from an action
 
 Convex lets an action call `fetch`, but the kernel does not: a raw `fetch` in an action, a Node action included, fails the action with `BackendRefusal` `UndeclaredFetch`, which names the action and the host. The request never leaves the test, so the test cannot depend on the network and a run replays. Reach a provider through a provider port instead. On the kernel each port call waits as a held command until the test answers it with the provider's outcome. Provider ports are internal to `@confect/test` until the kernel is promoted.

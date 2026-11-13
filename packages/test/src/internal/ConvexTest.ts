@@ -86,6 +86,12 @@ export interface RegisterOptions {
    * one, or that one schedules, is never drain work.
    */
   readonly standing?: ReadonlyArray<string>;
+  /**
+   * Each module's source, keyed as the modules are, such as
+   * `import.meta.glob(pattern, { query: "?raw", import: "default" })` gives.
+   * The kernel reads each module's `"use node"` directive from it.
+   */
+  readonly sources?: Record<string, () => Promise<string>>;
 }
 
 const isSchemaDefinition = (
@@ -162,11 +168,17 @@ export function convexTest(
         readonly modules?: Modules;
         readonly transactionLimits?: unknown;
         readonly runtime?: Kernel.KernelRuntime;
+        /**
+         * Each module's source, keyed as `modules` is, so the kernel reads each
+         * module's `"use node"` directive as Convex's bundler does.
+         */
+        readonly sources?: Record<string, () => Promise<string>>;
       },
   modules?: Modules,
 ): any {
   let schema: SchemaDefinition<GenericSchema, boolean> | undefined;
   let runtime: Kernel.KernelRuntime | undefined;
+  let sources: Record<string, () => Promise<string>> | undefined;
   if (isSchemaDefinition(schemaOrOptions)) {
     schema = schemaOrOptions;
   } else if (schemaOrOptions !== undefined) {
@@ -176,13 +188,14 @@ export function convexTest(
     schema = schemaOrOptions.schema;
     modules = schemaOrOptions.modules;
     runtime = schemaOrOptions.runtime;
+    sources = schemaOrOptions.sources;
   }
   if (modules === undefined) {
     throw new Error(
       "The test kernel needs the modules map: pass `import.meta.glob(...)` as the second argument.",
     );
   }
-  const world = new Execution.World(schema, modules, runtime);
+  const world = new Execution.World(schema, modules, runtime, sources);
   return {
     ...accessor(world, new Subscriptions.Registry(world), Execution.anonymous),
     registerComponent: (
@@ -196,6 +209,7 @@ export function convexTest(
         componentSchema,
         componentModules,
         options?.standing,
+        options?.sources,
       );
       return (componentsGeneric() as any)[componentPath];
     },
