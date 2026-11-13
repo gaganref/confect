@@ -450,7 +450,7 @@ let nextRequestId = 0;
 const newRequest = (caller: Caller): Request => ({
   ip: caller.ip,
   userAgent: caller.userAgent,
-  requestId: (nextRequestId++).toString(16).padStart(16, "0"),
+  requestId: Str.padStart(16, "0")((nextRequestId++).toString(16)),
   scheduledFunctionId: null,
   authToken: caller.token,
 });

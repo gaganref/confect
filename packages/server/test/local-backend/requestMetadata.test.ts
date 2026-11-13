@@ -16,9 +16,7 @@ import { Recorded } from "../../../../tools/local-backend/fixtures/confect/group
 import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 const requests = refs.public.groups.requests;
-const decodeRecorded = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(Recorded),
-);
+const RecordedJson = Schema.fromJsonString(Recorded);
 
 layer(LocalBackend.layer, {
   timeout: "120 seconds",
@@ -66,7 +64,7 @@ layer(LocalBackend.layer, {
           action,
           schedule,
           scheduled: yield* Effect.forEach(recorded, (row) =>
-            decodeRecorded(row),
+            Schema.decodeEffect(RecordedJson)(row),
           ),
         };
         expect(normalize(observed, { ...client, token })).toEqual(expected);

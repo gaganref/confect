@@ -1,6 +1,7 @@
 import { FunctionImpl, GroupImpl } from "@confect/server";
 import * as Auth from "@confect/server/Auth";
 import * as Duration from "effect/Duration";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -29,7 +30,7 @@ const read = Effect.gen(function* () {
   };
 });
 
-const encodeRecorded = Schema.encodeEffect(Schema.fromJsonString(Recorded));
+const RecordedJson = Schema.fromJsonString(Recorded);
 
 const mutation = FunctionImpl.make(schema, spec, "mutation", () =>
   Effect.gen(function* () {
@@ -87,7 +88,7 @@ const recorded = FunctionImpl.make(schema, spec, "recorded", ({ caseId }) =>
       .table("transactionNotes")
       .index("by_caseId", (q) => q.eq("caseId", caseId))
       .collect();
-    return notes.map((note) => note.value);
+    return Arr.map(notes, (note) => note.value);
   }).pipe(Effect.orDie),
 );
 
@@ -101,7 +102,7 @@ const scheduledMutation = FunctionImpl.make(
   "scheduledMutation",
   ({ caseId }) =>
     Effect.gen(function* () {
-      const value = yield* encodeRecorded({
+      const value = yield* Schema.encodeEffect(RecordedJson)({
         label: "mutation",
         own: yield* read,
         nested: null,
@@ -124,7 +125,11 @@ const scheduledAction = FunctionImpl.make(
         refs.internal.groups.requests.read,
         {},
       );
-      const value = yield* encodeRecorded({ label: "action", own, nested });
+      const value = yield* Schema.encodeEffect(RecordedJson)({
+        label: "action",
+        own,
+        nested,
+      });
       yield* mutations.runMutation(refs.internal.groups.requests.record, {
         caseId,
         value,

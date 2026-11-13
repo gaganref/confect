@@ -1,4 +1,5 @@
 import { Ref } from "@confect/core";
+import * as Rec from "effect/Record";
 import testing from "../../../../tools/local-backend/fixtures/confect/_generated/testing";
 import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
 
@@ -9,7 +10,7 @@ import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
  */
 export const localBackendWorld = (): KernelControls => {
   const t = convexTest(testing.convexSchema, testing.modules);
-  for (const [name, kit] of Object.entries(testing.components)) {
+  for (const [name, kit] of Rec.toEntries(testing.components)) {
     t.registerComponent(name, kit.schema, kit.modules);
   }
   return t;

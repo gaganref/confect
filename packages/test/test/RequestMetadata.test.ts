@@ -13,9 +13,7 @@ import {
 } from "./fixtures/requestProbe";
 
 const requests = refs.public.groups.requests;
-const decodeRecorded = Schema.decodeUnknownEffect(
-  Schema.fromJsonString(Recorded),
-);
+const RecordedJson = Schema.fromJsonString(Recorded);
 
 const issuer = "https://confect-auth.invalid";
 const identity = {
@@ -46,7 +44,9 @@ const observe = Effect.gen(function* () {
     mutation,
     action,
     schedule,
-    scheduled: yield* Effect.forEach(recorded, (row) => decodeRecorded(row)),
+    scheduled: yield* Effect.forEach(recorded, (row) =>
+      Schema.decodeEffect(RecordedJson)(row),
+    ),
   };
   return normalize(observed, { ...client, token: createTestJwt(identity) });
 });
@@ -56,7 +56,8 @@ describe("request metadata on the kernel", () => {
     "gives each client call its own request, carries it into nested calls, and starts each job fresh with its ID",
     () =>
       Effect.gen(function* () {
-        expect(yield* observe).toEqual(expected);
+        const observed = yield* observe;
+        expect(observed).toEqual(expected);
       }),
   );
 });

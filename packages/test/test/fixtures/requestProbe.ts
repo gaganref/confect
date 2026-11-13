@@ -1,3 +1,4 @@
+import * as Arr from "effect/Array";
 import type {
   Reading,
   Recorded,
@@ -85,8 +86,8 @@ export const normalize = (observed: Observed, presented: Client) => {
     subject: reading.subject,
   });
   const scheduled = (label: "mutation" | "action") => {
-    const found = observed.scheduled.filter((row) => row.label === label);
-    return found.map(({ own, nested }) => ({
+    const found = Arr.filter(observed.scheduled, (row) => row.label === label);
+    return Arr.map(found, ({ own, nested }) => ({
       own: role(own),
       nested: nested === null ? null : role(nested),
     }));
