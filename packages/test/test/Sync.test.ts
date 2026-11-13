@@ -96,7 +96,7 @@ describe("the unmodified client on the kernel", () => {
  * client never sends. It waits on the socket's callbacks and a short host
  * timer, as a client of the WebSocket surface does.
  */
-// oxlint-disable effecttsgo/new-promise, effecttsgo/global-timers, unicorn/prefer-add-event-listener -- The kernel socket has the `on*` surface the Convex client uses, whose callbacks these promises wrap.
+// oxlint-disable effecttsgo/new-promise, effecttsgo/global-timers, unicorn/prefer-add-event-listener, effecttsgo/prefer-schema-over-json -- The kernel socket has the `on*` surface the Convex client uses, whose callbacks these promises wrap, and its frames are JSON text.
 const rawSocket = (t: KernelControls) => {
   const ws = new (t.sync().WebSocket)("ws://kernel.invalid");
   const received: Array<Record<string, any>> = [];
@@ -341,6 +341,108 @@ describe("Sync's artifacts", () => {
           _tag: "InvalidToken",
           code: "InvalidAuthHeader",
         });
+      }),
+  );
+
+  it.live(
+    "a query whose arguments its validator refuses fails for its client, which keeps its socket and its other queries, and removing it answers QueryRemoved",
+    () =>
+      Effect.gen(function* () {
+        const t = kernelApp("");
+        const socket = rawSocket(t);
+        yield* Effect.promise(() => socket.send(connectMessage("invalid")));
+        yield* Effect.promise(() =>
+          socket.send({
+            type: "ModifyQuerySet",
+            baseVersion: 0,
+            newVersion: 1,
+            modifications: [
+              {
+                type: "Add",
+                queryId: 0,
+                udfPath: "sync:counter",
+                args: [{ name: 5 }],
+              },
+              {
+                type: "Add",
+                queryId: 1,
+                udfPath: "sync:counter",
+                args: [{ name: "fine" }],
+              },
+            ],
+          }),
+        );
+        yield* Effect.promise(() =>
+          socket.send({
+            type: "ModifyQuerySet",
+            baseVersion: 1,
+            newVersion: 2,
+            modifications: [{ type: "Remove", queryId: 0 }],
+          }),
+        );
+        const transitions = socket.received.filter(
+          (message) => message["type"] === "Transition",
+        );
+        expect(transitions[0]?.["modifications"]).toEqual([
+          expect.objectContaining({ type: "QueryFailed", queryId: 0 }),
+          expect.objectContaining({
+            type: "QueryUpdated",
+            queryId: 1,
+            value: 0,
+          }),
+        ]);
+        expect(transitions[0]?.["modifications"][0]).not.toHaveProperty(
+          "errorData",
+        );
+        expect(transitions[1]?.["modifications"]).toEqual([
+          { type: "QueryRemoved", queryId: 0 },
+        ]);
+        expect(socket.state.closed).toBeUndefined();
+        expect(t.sync().failures()).toEqual([]);
+      }),
+  );
+
+  it.live(
+    "a query a socket added just before it closed leaves no subscription behind, so a later commit leaves the full rerun in agreement",
+    () =>
+      Effect.gen(function* () {
+        const t = kernelApp("");
+        const ws = new (t.sync().WebSocket)("ws://kernel.invalid");
+        yield* Effect.promise(
+          () =>
+            new Promise<void>((resolve) => {
+              ws.onopen = () => resolve();
+            }),
+        );
+        ws.send(JSON.stringify(connectMessage("closing")));
+        ws.send(
+          JSON.stringify({
+            type: "ModifyQuerySet",
+            baseVersion: 0,
+            newVersion: 1,
+            modifications: [
+              {
+                type: "Add",
+                queryId: 0,
+                udfPath: "sync:counter",
+                args: [{ name: "late" }],
+              },
+            ],
+          }),
+        );
+        // The update has started and the world is still loading the app's
+        // modules for the query's first run.
+        yield* Effect.promise(
+          () => new Promise<void>((resolve) => setTimeout(resolve, 0)),
+        );
+        ws.close();
+        yield* Effect.promise(
+          () => new Promise<void>((resolve) => setTimeout(resolve, 100)),
+        );
+        yield* Effect.promise(() =>
+          t.mutation(makeFunctionReference("sync:increment"), { name: "late" }),
+        );
+        expect(yield* Effect.promise(() => t.reference())).toEqual([]);
       }),
   );
 

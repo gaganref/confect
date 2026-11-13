@@ -84,6 +84,8 @@ export type ClientMessage =
     }
   | { readonly type: "Event" };
 
+// The binary leaves `errorData` out of a failure that carries none, which the
+// client reads as a plain error rather than a `ConvexError`.
 type StateModification =
   | {
       readonly type: "QueryUpdated";
@@ -97,7 +99,7 @@ type StateModification =
       readonly queryId: number;
       readonly errorMessage: string;
       readonly logLines: ReadonlyArray<string>;
-      readonly errorData: JSONValue;
+      readonly errorData?: JSONValue;
       readonly journal: string | null;
     }
   | { readonly type: "QueryRemoved"; readonly queryId: number };
@@ -262,7 +264,7 @@ const failurePayload = (
  */
 const modification = (
   queryId: number,
-  run: Execution.QueryRun,
+  run: Pick<Execution.QueryRun, "outcome" | "journal">,
 ): StateModification => {
   if (run.outcome._tag === "returned") {
     return {
@@ -279,7 +281,7 @@ const modification = (
     queryId,
     errorMessage: message,
     logLines: [],
-    errorData: errorData ?? null,
+    ...(errorData === undefined ? {} : { errorData }),
     journal: run.journal,
   };
 };
@@ -506,11 +508,16 @@ export class Connection {
   private session: Session | undefined;
   private sessionId = "";
   private readonly subscriber: Subscriptions.Subscriber;
+  /**
+   * The socket's queries. A query that could not run at all, such as one whose
+   * arguments its validator refused, has no subscription: the binary answers it
+   * with `QueryFailed` and keeps it in the set until the client removes it.
+   */
   private readonly queries = new Map<
     number,
     {
       readonly functionPath: FunctionPath;
-      readonly subscription: Subscriptions.Subscription;
+      readonly subscription: Subscriptions.Subscription | undefined;
     }
   >();
   private readonly bySubscription = new Map<string, number>();
@@ -561,7 +568,7 @@ export class Connection {
     if (this.closed) return;
     this.closed = true;
     for (const { subscription } of this.queries.values()) {
-      subscription.unsubscribe();
+      subscription?.unsubscribe();
     }
     this.queries.clear();
     this.counted.close();
@@ -929,9 +936,11 @@ export class Connection {
                 message: `Nonexistent query id: ${change.queryId}`,
               });
             }
-            query.subscription.unsubscribe();
+            query.subscription?.unsubscribe();
             this.queries.delete(change.queryId);
-            this.bySubscription.delete(query.subscription.id);
+            if (query.subscription !== undefined) {
+              this.bySubscription.delete(query.subscription.id);
+            }
             modifications.set(change.queryId, {
               type: "QueryRemoved",
               queryId: change.queryId,
@@ -952,8 +961,11 @@ export class Connection {
               jsonToConvex(change.args[0] ?? {}),
               change.journal ?? null,
             )
-            .then((subscription) =>
-              this.added(change.queryId, functionPath, subscription),
+            .then(
+              (subscription) =>
+                this.added(change.queryId, functionPath, subscription),
+              (error: unknown) =>
+                this.unrunnable(change.queryId, functionPath, error),
             )
             .then((run) => {
               functionPaths.set(change.queryId, functionPath);
@@ -972,7 +984,9 @@ export class Connection {
           const queryId = this.bySubscription.get(subscription);
           const query =
             queryId === undefined ? undefined : this.queries.get(queryId);
-          if (queryId === undefined || query === undefined) continue;
+          if (queryId === undefined || query?.subscription === undefined) {
+            continue;
+          }
           functionPaths.set(queryId, query.functionPath);
           modifications.set(
             queryId,
@@ -1024,9 +1038,29 @@ export class Connection {
     functionPath: FunctionPath,
     subscription: Subscriptions.Subscription,
   ): Execution.QueryRun {
-    this.queries.set(queryId, { functionPath, subscription });
-    this.bySubscription.set(subscription.id, queryId);
+    // A socket that closed while the query ran sends nothing more, so its
+    // subscription must not outlive it.
+    if (this.closed) {
+      subscription.unsubscribe();
+    } else {
+      this.queries.set(queryId, { functionPath, subscription });
+      this.bySubscription.set(subscription.id, queryId);
+    }
     return subscription.current();
+  }
+
+  /**
+   * A query that failed before it ran, such as one whose arguments its
+   * validator refused or whose function does not exist. The binary answers it
+   * with `QueryFailed`, not a fatal error.
+   */
+  private unrunnable(
+    queryId: number,
+    functionPath: FunctionPath,
+    error: unknown,
+  ): Pick<Execution.QueryRun, "outcome" | "journal"> {
+    this.queries.set(queryId, { functionPath, subscription: undefined });
+    return { outcome: { _tag: "failed", error }, journal: null };
   }
 
   // Artifact forms.
