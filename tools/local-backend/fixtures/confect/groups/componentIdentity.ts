@@ -2,8 +2,8 @@ import { components } from "../../convex/_generated/api";
 import { action, mutation, query } from "../../convex/_generated/server";
 
 /**
- * The identity the host function reads, and what each nested mount under
- * `left` reads, as plain Convex functions and components read `ctx.auth`.
+ * The identity the host function reads, and what each nested mount under `left`
+ * reads, as plain Convex functions and components read `ctx.auth`.
  */
 type Reading = {
   readonly caller: string | null;

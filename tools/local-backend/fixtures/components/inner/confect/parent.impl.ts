@@ -26,6 +26,11 @@ const location = FunctionImpl.make(schema, parent, "location", () =>
   }).pipe(Effect.orDie),
 );
 export default GroupImpl.make(schema, parent).pipe(
-  Layer.provide([create, list, location, FunctionImpl.make(schema, parent, "identityChain", identityChain)]),
+  Layer.provide([
+    create,
+    list,
+    location,
+    FunctionImpl.make(schema, parent, "identityChain", identityChain),
+  ]),
   GroupImpl.finalize,
 );

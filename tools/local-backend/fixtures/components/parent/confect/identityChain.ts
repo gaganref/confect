@@ -1,11 +1,18 @@
-import { components } from "../convex/_generated/api";
-import { query } from "../convex/_generated/server";
+import { componentsGeneric, queryGeneric } from "convex/server";
+import type { ComponentApi } from "../../middle/convex/_generated/component";
+
+// The generated `api.ts` and `server.ts` sit outside the typechecked graph
+// (see the root tsconfig), so the query is built from `convex/server` and
+// the nested mount is typed by its own `ComponentApi`.
+const components = componentsGeneric() as unknown as {
+  deep: ComponentApi<"deep">;
+};
 
 /**
  * The identity this component reads from `ctx.auth`, then each nested mount's
  * below it, as plain Convex reads it.
  */
-export const identityChain = query({
+export const identityChain = queryGeneric({
   args: {},
   // oxlint-disable-next-line effecttsgo/async-function -- A vanilla Convex function reads ctx.auth as a raw component does.
   handler: async (
@@ -15,7 +22,7 @@ export const identityChain = query({
   > => {
     const identity = await ctx.auth.getUserIdentity();
     const { componentPath } = await ctx.meta.getFunctionMetadata();
-  const below = await ctx.runQuery(components.deep.parent.identityChain, {});
+    const below = await ctx.runQuery(components.deep.parent.identityChain, {});
     return [{ componentPath, subject: identity?.subject ?? null }, ...below];
   },
 });

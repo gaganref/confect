@@ -1,9 +1,5 @@
 import { FunctionSpec, GroupSpec } from "@confect/core";
-import type {
-  fromAction,
-  fromMutation,
-  fromQuery,
-} from "./componentIdentity";
+import type { fromAction, fromMutation, fromQuery } from "./componentIdentity";
 
 export default GroupSpec.make()
   .addFunction(FunctionSpec.convexPublicQuery<typeof fromQuery>()("fromQuery"))

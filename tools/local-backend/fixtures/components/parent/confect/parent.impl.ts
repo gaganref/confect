@@ -42,6 +42,13 @@ const deepLocation = FunctionImpl.make(schema, parent, "deepLocation", () =>
   }).pipe(Effect.orDie),
 );
 export default GroupImpl.make(schema, parent).pipe(
-  Layer.provide([create, list, deepCreate, deepList, deepLocation, FunctionImpl.make(schema, parent, "identityChain", identityChain)]),
+  Layer.provide([
+    create,
+    list,
+    deepCreate,
+    deepList,
+    deepLocation,
+    FunctionImpl.make(schema, parent, "identityChain", identityChain),
+  ]),
   GroupImpl.finalize,
 );
