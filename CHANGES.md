@@ -289,6 +289,25 @@ row 6's HTTP parity row of Frame's backend testing kernel (Frame ADR 0012).
 Changeset: `test-kernel-http.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel on Effect 4.1 and upstream 10.6.0
+
+The test kernel moved onto the fork's Effect 4.1.4 and upstream 10.6.0
+stack, and its code lints clean under the stack's Effect rules with no
+baseline. Convex's syscalls carry JSON strings and the kernel answers them
+synchronously, so the kernel's JSON goes through one internal helper. Six
+refusals rename their `name` payload field, which hid the refusal's own
+name. Four cron refusals take `cronName`, `UnknownStandingSource` takes
+`functionName` and `SnapshotWorldUnresolved` takes `worldName`. Each kernel
+function now wraps the realm's `Date` again as it enters, so a test that
+fakes `Date` after its layer opened the backend still reads the pinned
+time. The kernel lane places upstream's new mock-backend cases. JWT signing
+and a deployment-wide `transactionLimits` wait for row 6, and text search
+and a file with no content type stay on the binary. The local-backend
+harness lives in `tools/local-backend` with main's configurable ports, and
+its fixture's system-table share measures 21. Changeset:
+`kernel-refusal-field-names.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
