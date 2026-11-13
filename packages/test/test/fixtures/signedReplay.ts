@@ -66,21 +66,15 @@ const history = Effect.gen(function* () {
   const stored = yield* call(() => t.mutation(tokens.store, {}));
   const rows = yield* call(() => t.query(tokens.dump, {}));
   const jwks = yield* call(() => t.jwks());
+  const recorded = convexToJson({
+    held: held.outcome._tag === "returned" ? held.outcome.value : "failed",
+    applied: applied.kind === "applied" ? applied.result : applied.kind,
+    stored,
+    rows,
+    jwks: jwks as any,
+  });
   // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The bytes compared are Convex's own JSON encoding of the history.
-  process.stdout.write(
-    JSON.stringify(
-      convexToJson({
-        held:
-          held.outcome._tag === "returned"
-            ? held.outcome.value
-            : held.outcome._tag,
-        applied: applied.kind === "applied" ? applied.result : applied.kind,
-        stored,
-        rows,
-        jwks: jwks as any,
-      }),
-    ),
-  );
+  process.stdout.write(JSON.stringify(recorded));
 });
 
 void Effect.runPromise(history);

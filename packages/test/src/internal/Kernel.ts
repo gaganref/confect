@@ -189,6 +189,7 @@ export const wallClock = (): KernelRuntime => {
   const now = Clock.hostNow;
   return {
     now,
+    // oxlint-disable-next-line effecttsgo/global-random -- The wall-clock runtime is the host's, its random stream included.
     random: () => Globals.host(() => Math.random()),
     commitTs: () => {
       const nanos = BigInt(now()) * 1_000_000n;
