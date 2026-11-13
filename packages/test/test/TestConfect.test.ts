@@ -5,7 +5,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { TestConfect } from "@confect/test";
 import { DatabaseSchema, MutationCtx } from "@confect/server";
 import * as Layer from "effect/Layer";
-import { assert, beforeEach, expect, it } from "@effect/vitest";
+import { beforeEach, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -31,6 +31,7 @@ import refs from "../../../tools/local-backend/fixtures/confect/_generated/refs"
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Json from "../src/internal/Json";
+import { assertIs } from "./internal/assertIs";
 
 beforeEach(() => vi.resetModules());
 
@@ -314,8 +315,8 @@ const program = Effect.gen(function* () {
       ]).then(([hostNotes, rows]) => ({ notes: hostNotes, rows })),
     ),
     Schema.Struct({
-      notes: Schema.mutable(Schema.Array(Schema.String)),
-      rows: Schema.mutable(Schema.Array(Schema.String)),
+      notes: Schema.String.pipe(Schema.Array, Schema.mutable),
+      rows: Schema.String.pipe(Schema.Array, Schema.mutable),
     }),
   );
 });
@@ -370,7 +371,7 @@ it.effect(
     Effect.gen(function* () {
       yield* drainBeat(["public:tick"]);
       const exit = yield* Effect.exit(drainBeat(undefined));
-      assert(Exit.isFailure(exit));
+      assertIs(exit, Exit.isFailure);
       expect(Cause.squash(exit.cause)).toMatchObject({
         _tag: "DrainBudgetExceeded",
         pending: [{ componentPath: "beat", name: "public:tick" }],
@@ -477,7 +478,7 @@ it.effect(
           ),
         ),
       );
-      assert(Exit.isFailure(exit));
+      assertIs(exit, Exit.isFailure);
       const report = Cause.pretty(exit.cause);
       expect(report).toContain("the stored key is [redacted]");
       expect(report).not.toContain(vaultCanary);
@@ -515,7 +516,7 @@ it.effect(
           ),
         ),
       );
-      assert(Exit.isFailure(exit));
+      assertIs(exit, Exit.isFailure);
       const report = Cause.pretty(exit.cause);
       expect(report).toContain("the stored token is [redacted]");
       expect(report).not.toContain(hookCanary);

@@ -26,7 +26,7 @@ const layer = (target: TestConfect.Target) =>
     { target },
   );
 
-const Texts = Schema.mutable(Schema.Array(Schema.String));
+const Texts = Schema.String.pipe(Schema.Array, Schema.mutable);
 
 const withCtx = <A>(
   use: (ctx: MutationCtx.MutationCtx<GenericDataModel>) => Promise<A>,
