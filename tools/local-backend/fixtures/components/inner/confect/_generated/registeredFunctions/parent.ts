@@ -10,4 +10,5 @@ export default {
 ["create"]: RegisteredConvexFunction.register({ ...definitions["create"], handler: forward(definitions["create"].handler) }),
 ["list"]: RegisteredConvexFunction.register({ ...definitions["list"], handler: forward(definitions["list"].handler) }),
 ["location"]: RegisteredConvexFunction.register({ ...definitions["location"], handler: forward(definitions["location"].handler) }),
+["identityChain"]: definitions["identityChain"].handler,
 } as RegisteredFunctions.RegisteredFunctionsForGroupSpec<typeof import("../../parent.spec.js")["default"]>;

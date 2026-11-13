@@ -1,5 +1,6 @@
 import { Component, FunctionSpec, GroupSpec } from "@confect/core";
 import * as Schema from "effect/Schema";
+import type { identityChain } from "./identityChain";
 import {
   counterId as childId,
   counterDoc as childDoc,
@@ -29,4 +30,7 @@ export default GroupSpec.make()
       name: "location",
       returns: () => Schema.String,
     }),
+  )
+  .addFunction(
+    FunctionSpec.convexPublicQuery<typeof identityChain>()("identityChain"),
   );

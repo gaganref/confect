@@ -31,6 +31,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         string,
         Name
       >;
+      identityChain: FunctionReference<"query", "internal", {}, any, Name>;
       list: FunctionReference<
         "query",
         "internal",

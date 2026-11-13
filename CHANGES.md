@@ -337,6 +337,22 @@ to Convex values. A plain local-backend fixture runs every caller and payload on
 the binary and on the kernel. Changeset: `test-kernel-nested-convex-error.md`.
 Upstream: fork only, as the kernel is fork-specific.
 
+## Test kernel component identity
+
+A component the kernel calls from a query or a mutation sees the caller's
+identity at every depth, because the binary reads identity from the caller's
+transaction. One an action calls sees none, as the binary's
+`propagate_component_auth` keeps identity only from the app to the app, and
+neither does any call below it. A test that calls a component directly gets
+none, as a client reaches only the app's functions. This replaces row 2's rule
+that a component never sees an identity. Confect's own component context still
+drops `ctx.auth`, which is its API rather than parity. A probe reads `ctx.auth`
+through plain Convex queries chained across three nested mounts, on the kernel
+and on the binary. With them the fixture's system-table share measures 22.
+This is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-component-identity.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## Generated test backend
 
 For an app that can import `@confect/test`, codegen writes `TestBackend` into
