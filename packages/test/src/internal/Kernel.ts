@@ -1,5 +1,7 @@
+import * as Globals from "./Globals.js";
 import type { DocumentId, StoredDocument } from "./KernelValues.js";
 import { resolveCommittedValues, tableNameFromId } from "./KernelValues.js";
+import * as ReadSet from "./ReadSet.js";
 
 /**
  * The number of commits the kernel has published. The empty world is 0.
@@ -32,10 +34,20 @@ export interface Write {
   readonly doc: StoredDocument | null;
 }
 
+/**
+ * One document a commit changed: its value before and after. `null` is absent.
+ */
+export interface Change {
+  readonly componentPath: string;
+  readonly id: DocumentId;
+  readonly before: StoredDocument | null;
+  readonly after: StoredDocument | null;
+}
+
 export interface Commit {
   readonly version: Version;
   readonly commitTs: bigint;
-  readonly writes: ReadonlyArray<Write>;
+  readonly changes: ReadonlyArray<Change>;
 }
 
 /**
@@ -81,31 +93,29 @@ export const rows = (
   state.tables.get(componentPath)?.get(tableName)?.values() ?? [];
 
 /**
- * Publish one attempt's writes as a single commit. Every component's writes
- * land in the same version, so a reader sees all of them or none.
- *
- * A commit with no writes publishes nothing and leaves the state as it was.
- * `now` is the wall clock in milliseconds. The commit timestamp is its
- * nanoseconds, bumped past the previous commit's when the clock stands still.
+ * Publish one attempt's writes as a single commit at `commitTs`. Every
+ * component's writes land in the same version, so a reader sees all of them or
+ * none. A commit with no writes publishes nothing and leaves the state as it
+ * was.
  */
 export const apply = (
   state: State,
   writes: ReadonlyArray<Write>,
-  now: number,
+  commitTs: bigint,
 ): State => {
   if (writes.length === 0) return state;
   const version = state.version + 1;
-  const commitTs = nextCommitTs(state, now);
   const tables = new Map(
     Array.from(state.tables, ([path, byTable]) => [path, new Map(byTable)]),
   );
-  const resolved = writes.map((write): Write =>
-    write.doc === null
-      ? write
-      : { ...write, doc: resolveCommittedValues(write.doc, commitTs) },
-  );
+  const changes = writes.map(({ componentPath, id, doc }): Change => ({
+    componentPath,
+    id,
+    before: get(state, componentPath, id)?.doc ?? null,
+    after: doc === null ? null : resolveCommittedValues(doc, commitTs),
+  }));
   const touched = new Set<string>();
-  for (const { componentPath, id, doc } of resolved) {
+  for (const { componentPath, id, after } of changes) {
     const tableName = tableNameFromId(id)!;
     const byTable = tables.get(componentPath) ?? new Map();
     tables.set(componentPath, byTable);
@@ -115,25 +125,66 @@ export const apply = (
       : new Map(byTable.get(tableName) ?? []);
     touched.add(key);
     byTable.set(tableName, table);
-    if (doc === null) table.delete(id);
-    else table.set(id, { doc, version });
+    if (after === null) table.delete(id);
+    else table.set(id, { doc: after, version });
   }
   return {
     tables,
     version,
     commitTs,
-    log: [...state.log, { version, commitTs, writes: resolved }],
+    log: [...state.log, { version, commitTs, changes }],
   };
 };
 
-const nextCommitTs = (state: State, now: number): bigint => {
-  const nowNanos = BigInt(now) * 1_000_000n;
-  return nowNanos > state.commitTs ? nowNanos : state.commitTs + 1n;
+/**
+ * The first change published after version `snapshot` that invalidates one of
+ * `reads`, if any.
+ */
+export const conflict = (
+  state: State,
+  snapshot: Version,
+  reads: ReadonlyArray<ReadSet.Read>,
+): Change | undefined => {
+  for (const commit of state.log.slice(snapshot)) {
+    for (const change of commit.changes) {
+      if (reads.some((read) => ReadSet.covers(read, change))) return change;
+    }
+  }
+  return undefined;
 };
 
 /**
- * The commit timestamp a mutation that began at `before` resolves its result
- * with: its commit's, or the next one when it wrote nothing.
+ * What the driver supplies. The kernel holds no clock of its own.
  */
-export const commitTsAt = (after: State, before: State, now: number) =>
-  after.version === before.version ? nextCommitTs(before, now) : after.commitTs;
+export interface KernelRuntime {
+  /**
+   * The time in milliseconds, for each inserted document's creation time.
+   */
+  readonly now: () => number;
+  /**
+   * The commit timestamp of `version`, asked once as it is published. The
+   * answers strictly increase. A mutation that wrote nothing publishes no
+   * version and asks nothing.
+   */
+  readonly commitTs: (version: Version) => bigint;
+}
+
+/**
+ * The wall clock, as convex-test reads it. Each answer is the time in
+ * nanoseconds when it is asked for, bumped past the previous answer when the
+ * clock stands still.
+ */
+export const wallClock = (): KernelRuntime => {
+  let latest = 0n;
+  // The host's clock, never the copy a bound handler pinned.
+  // oxlint-disable-next-line effecttsgo/global-date -- The default runtime is the wall clock. A driver that replays supplies its own.
+  const now = () => Globals.host(() => Date.now());
+  return {
+    now,
+    commitTs: () => {
+      const nanos = BigInt(now()) * 1_000_000n;
+      latest = nanos > latest ? nanos : latest + 1n;
+      return latest;
+    },
+  };
+};

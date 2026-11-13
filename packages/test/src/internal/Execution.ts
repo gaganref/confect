@@ -11,9 +11,12 @@ import {
 } from "convex/server";
 import { convexToJson, jsonToConvex, type Value } from "convex/values";
 import { KernelAttempt } from "./Attempt.js";
+import * as Globals from "./Globals.js";
+import * as Invocation from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
 import * as KernelRefusal from "./KernelRefusal.js";
+import type * as ReadSet from "./ReadSet.js";
 import type {
   DocumentId,
   FunctionPath,
@@ -90,6 +93,63 @@ interface Request {
 type UdfType = "query" | "mutation" | "action";
 
 /**
+ * How a prepared attempt's function ended.
+ */
+export type Outcome =
+  | { readonly _tag: "returned"; readonly value: Value }
+  | { readonly _tag: "failed"; readonly error: unknown };
+
+/**
+ * A mutation attempt run to its commit point and held until `apply`.
+ */
+export interface HeldAttempt {
+  readonly id: string;
+  readonly request: string;
+  readonly number: Invocation.Attempt;
+  readonly snapshot: Kernel.Version;
+  readonly reads: ReadonlyArray<ReadSet.Read>;
+  readonly outcome: Outcome;
+}
+
+/**
+ * What `apply` did with a held attempt. A conflict discards the attempt and
+ * holds exactly one next attempt, run against the latest commit. Nothing is
+ * retried until that one is applied in turn.
+ */
+export type KernelApply =
+  | {
+      readonly kind: "applied";
+      readonly version: Kernel.Version;
+      readonly commitTs: bigint;
+      readonly result: Value;
+    }
+  | { readonly kind: "conflict"; readonly next: HeldAttempt }
+  | {
+      readonly kind: "exhausted";
+      readonly error: KernelRefusal.OptimisticConcurrencyControlFailure;
+    }
+  | { readonly kind: "refused"; readonly tag: string; readonly error: unknown };
+
+interface Held {
+  readonly view: HeldAttempt;
+  readonly attempt: KernelAttempt;
+  readonly again: (number: Invocation.Attempt) => Promise<Held>;
+}
+
+const lastAttempt: Invocation.Attempt = 5;
+
+const tagOf = (error: unknown): string => {
+  const tagged = (value: unknown): value is { readonly _tag: string } =>
+    typeof value === "object" &&
+    value !== null &&
+    typeof (value as { _tag?: unknown })._tag === "string";
+  const data = (error as { data?: unknown } | null)?.data;
+  if (tagged(data)) return data._tag;
+  if (tagged(error)) return error._tag;
+  return error instanceof Error ? error.name : "Error";
+};
+
+/**
  * One running function. Queries and mutations read and write through their
  * attempt. Every async syscall of a query or a mutation, nested calls included,
  * takes its turn on `turn` in the order the function made it.
@@ -142,6 +202,13 @@ const settled = <A>(execution: Execution, result: A): Promise<A> =>
   execution.turn.idle().then(() => result);
 
 const executions = new AsyncLocalStorage<Execution>();
+
+/**
+ * Run a function's code as `execution`, with its own copy of the globals a test
+ * invocation pins.
+ */
+const enter = <A>(execution: Execution, run: () => A): A =>
+  Globals.own(() => executions.run(execution, run));
 const kernelBrand = Symbol.for("@confect/test/Kernel");
 
 const current = (): Execution => {
@@ -307,13 +374,13 @@ export class World {
   private lastCreationTime = 0;
   private nextQueryId = 1;
   private readonly queries = new Map<number, Iterator<any>>();
-  // Row 2 publishes one top-level mutation at a time. Row 3 replaces this
-  // with read-set validation and held attempts.
-  private readonly commits = new Turn();
+  private readonly holding = new Map<string, Held>();
+  private nextAttemptId = 1;
 
   constructor(
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
     modules: Modules,
+    private readonly runtime: Kernel.KernelRuntime = Kernel.wallClock(),
   ) {
     installConvexGlobal();
     this.components.set(ROOT, makeComponent(ROOT, schema, modules));
@@ -457,6 +524,46 @@ export class World {
     });
   }
 
+  // Held attempts.
+
+  /**
+   * Run a mutation to its commit point and hold it as attempt 1.
+   */
+  prepare(caller: Caller, reference: any, args: any): Promise<HeldAttempt> {
+    return this.open().then(() => {
+      const functionPath = pathOfReference(reference, ROOT);
+      const resolved = this.resolve(functionPath, "mutation");
+      validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
+      return this.prepareMutation(
+        functionPath,
+        resolved,
+        args,
+        { caller, request: newRequest(caller) },
+        1,
+        Invocation.current(),
+      ).then((held) => held.view);
+    });
+  }
+
+  apply(id: string): Promise<KernelApply> {
+    const held = this.holding.get(id);
+    return held === undefined
+      ? Promise.reject(
+          new KernelRefusal.StaleAttempt({
+            id,
+            message: `The test kernel holds no attempt "${id}". It was already applied, or never prepared.`,
+          }),
+        )
+      : this.applyHeld(held);
+  }
+
+  /**
+   * The held attempts, oldest first.
+   */
+  held(): ReadonlyArray<HeldAttempt> {
+    return Array.from(this.holding.values(), (held) => held.view);
+  }
+
   // Calls by address, from the test or from a running function.
 
   private queryAt(
@@ -549,10 +656,9 @@ export class World {
       handler: (ctx: any, a: any) =>
         resolved.handler({ ...ctx, auth: queryAuth(execution) }, a),
     }) as unknown as { invokeQuery: (args: string) => Promise<string> };
-    return executions
-      .run(execution, () =>
-        q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
-      )
+    return enter(execution, () =>
+      q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
+    )
       .then((raw) => settled(execution, raw))
       .then((raw) => {
         const result = jsonToConvex(JSON.parse(raw));
@@ -570,6 +676,29 @@ export class World {
       });
   }
 
+  private invokeMutation(
+    execution: Execution,
+    resolved: Pick<Resolved, "handler" | "returns">,
+    args: any,
+  ): Promise<Value> {
+    const m = mutationGeneric({
+      handler: (ctx: any, a: any) =>
+        resolved.handler({ ...ctx, auth: mutationAuth(execution) }, a),
+    }) as unknown as { invokeMutation: (args: string) => Promise<string> };
+    return enter(execution, () =>
+      m.invokeMutation(JSON.stringify(convexToJson([parseArgs(args)]))),
+    )
+      .then((raw) => settled(execution, raw))
+      .then((raw) => {
+        const result = jsonToConvex(JSON.parse(raw));
+        validateReturnValue(resolved.returns, result, "mutation", {
+          componentPath: execution.componentPath,
+          udfPath: execution.udfPath,
+        });
+        return result;
+      });
+  }
+
   private runMutation(
     functionPath: FunctionPath,
     resolved: Pick<Resolved, "handler" | "args" | "returns">,
@@ -577,62 +706,182 @@ export class World {
     from: From,
   ): Promise<any> {
     const parentAttempt = from.parent?.attempt;
-    const invoke = (attempt: KernelAttempt): Promise<Value> => {
+    if (parentAttempt !== undefined) {
+      const frame = parentAttempt.child();
       const execution = this.execution(
         functionPath,
         "mutation",
-        attempt,
+        frame,
         from,
         undefined,
       );
-      const m = mutationGeneric({
-        handler: (ctx: any, a: any) =>
-          resolved.handler({ ...ctx, auth: mutationAuth(execution) }, a),
-      }) as unknown as { invokeMutation: (args: string) => Promise<string> };
-      return executions
-        .run(execution, () =>
-          m.invokeMutation(JSON.stringify(convexToJson([parseArgs(args)]))),
-        )
-        .then((raw) => settled(execution, raw))
-        .then((raw) => {
-          const result = jsonToConvex(JSON.parse(raw));
-          validateReturnValue(
-            resolved.returns,
-            result,
-            "mutation",
-            functionPath,
-          );
-          return result;
-        });
-    };
-    if (parentAttempt !== undefined) {
-      const frame = parentAttempt.child();
-      return invoke(frame).then(
-        (result) => {
-          frame.merge();
-          return result;
-        },
+      // As at the top level, a nested mutation ends once its function has
+      // returned and every syscall it started has settled. Convex runs a
+      // nested function's syscall queue to the end before it commits its
+      // subtransaction, so a detached fiber's late write lands in this frame
+      // and merges with it. A failed one ends at once and rolls back.
+      return this.invokeMutation(execution, resolved, args).then(
+        (result) =>
+          frame.drained().then(() => {
+            frame.close();
+            frame.merge();
+            return result;
+          }),
         (error: unknown) => {
+          frame.close();
           throw deserializeConvexErrorData(error);
         },
       );
     }
-    return this.commits.take(() => {
-      const attempt = new KernelAttempt(this.state);
-      return invoke(attempt).then(
-        (result) => {
-          // oxlint-disable-next-line effecttsgo/global-date -- The controlled clock is a later kernel row. Until then a commit reads the wall clock, as convex-test does.
-          const now = Date.now();
-          this.state = Kernel.apply(this.state, attempt.writes(), now);
-          return resolveCommittedValues(
-            result,
-            Kernel.commitTsAt(this.state, attempt.snapshot, now),
-          );
-        },
-        (error: unknown) => {
-          throw deserializeConvexErrorData(error);
-        },
+    return this.prepareMutation(
+      functionPath,
+      resolved,
+      args,
+      from,
+      1,
+      Invocation.current(),
+    ).then((held) => this.publish(held));
+  }
+
+  /**
+   * Run one attempt of a top-level mutation against the latest commit, then
+   * hold it. The commit point is once the function has returned and every
+   * syscall it started has settled. A test invocation bound when the mutation
+   * was first called reaches each attempt's handler with that attempt's
+   * number.
+   */
+  private prepareMutation(
+    functionPath: FunctionPath,
+    resolved: Pick<Resolved, "handler" | "returns">,
+    args: any,
+    from: From,
+    number: Invocation.Attempt,
+    bound: Invocation.Invocation | undefined,
+  ): Promise<Held> {
+    const attempt = new KernelAttempt(this.state, number);
+    const execution = this.execution(
+      functionPath,
+      "mutation",
+      attempt,
+      from,
+      undefined,
+    );
+    const run = () => this.invokeMutation(execution, resolved, args);
+    const started =
+      bound === undefined
+        ? run()
+        : Invocation.bind({ ...bound, attempt: number }, run);
+    return started
+      .then(
+        (value) =>
+          attempt.drained().then((): Outcome => ({ _tag: "returned", value })),
+        (error: unknown): Outcome => ({
+          _tag: "failed",
+          error: deserializeConvexErrorData(error),
+        }),
+      )
+      .then((outcome) => {
+        attempt.close();
+        const held: Held = {
+          view: {
+            id: `attempt-${this.nextAttemptId++}`,
+            request: from.request.requestId,
+            number,
+            snapshot: attempt.snapshot.version,
+            reads: attempt.reads,
+            outcome,
+          },
+          attempt,
+          again: (next) =>
+            this.prepareMutation(
+              functionPath,
+              resolved,
+              args,
+              from,
+              next,
+              bound,
+            ),
+        };
+        this.holding.set(held.view.id, held);
+        return held;
+      });
+  }
+
+  /**
+   * Validate a held attempt's reads against every commit since its snapshot,
+   * then publish its writes or prepare its next attempt. An attempt that wrote
+   * nothing publishes nothing and has nothing to validate. It answers its
+   * snapshot's version and commit timestamp.
+   */
+  private applyHeld({ view, attempt, again }: Held): Promise<KernelApply> {
+    this.holding.delete(view.id);
+    const { outcome } = view;
+    if (outcome._tag === "failed") {
+      return Promise.resolve({
+        kind: "refused",
+        tag: tagOf(outcome.error),
+        error: outcome.error,
+      });
+    }
+    const writes = attempt.writes();
+    if (writes.length === 0) {
+      // As on the binary, a mutation that wrote nothing is serialized at its
+      // snapshot and allocates no timestamp for a later commit.
+      const { version, commitTs } = attempt.snapshot;
+      return Promise.resolve({
+        kind: "applied",
+        version,
+        commitTs,
+        result: resolveCommittedValues(outcome.value, commitTs),
+      });
+    }
+    if (
+      Kernel.conflict(this.state, view.snapshot, attempt.reads) !== undefined
+    ) {
+      if (view.number === lastAttempt) {
+        return Promise.resolve({
+          kind: "exhausted",
+          error: new KernelRefusal.OptimisticConcurrencyControlFailure({
+            attempts: lastAttempt,
+            message: `Documents read by the mutation changed before each of its ${lastAttempt} attempts could commit.`,
+          }),
+        });
+      }
+      return again((view.number + 1) as Invocation.Attempt).then(
+        (next): KernelApply => ({ kind: "conflict", next: next.view }),
       );
+    }
+    const commitTs = this.runtime.commitTs(this.state.version + 1);
+    if (commitTs <= this.state.commitTs) {
+      return Promise.reject(
+        new KernelRefusal.CommitTsNotIncreasing({
+          version: this.state.version + 1,
+          previous: this.state.commitTs,
+          commitTs,
+          message: `The runtime answered commit timestamp ${commitTs} for version ${this.state.version + 1}, which is not greater than the previous commit's ${this.state.commitTs}.`,
+        }),
+      );
+    }
+    this.state = Kernel.apply(this.state, writes, commitTs);
+    return Promise.resolve({
+      kind: "applied",
+      version: this.state.version,
+      commitTs,
+      result: resolveCommittedValues(outcome.value, commitTs),
+    });
+  }
+
+  /**
+   * Apply until the mutation publishes, is refused or is exhausted, as the
+   * binary retries a mutation that conflicts.
+   */
+  private publish(held: Held): Promise<Value> {
+    return this.applyHeld(held).then((applied) => {
+      if (applied.kind === "applied") return applied.result;
+      if (applied.kind === "conflict") {
+        return this.publish(this.holding.get(applied.next.id)!);
+      }
+      throw applied.error;
     });
   }
 
@@ -680,13 +929,34 @@ export class World {
     }) as unknown as {
       invokeAction: (requestId: string, args: string) => Promise<string>;
     };
-    return executions
-      .run(execution, () =>
+    const run = () =>
+      enter(execution, () =>
         a.invokeAction(
           from.request.requestId,
           JSON.stringify(convexToJson([parseArgs(args)])),
         ),
-      )
+      );
+    // An action another function calls is an invocation of its own, with its
+    // world's services, a start time read from its world's clock and its
+    // world's random stream, as a scheduled job is.
+    const bound = from.parent === undefined ? undefined : Invocation.current();
+    const { ip, userAgent, requestId, scheduledFunctionId } = from.request;
+    const started =
+      bound === undefined
+        ? run()
+        : Invocation.bind(
+            {
+              world: bound.world,
+              componentPath: functionPath.componentPath,
+              attempt: 1,
+              request: { ip, userAgent, requestId, scheduledFunctionId },
+              services: bound.world.services,
+              startedAt: bound.world.clock(),
+              random: bound.world.random,
+            },
+            run,
+          );
+    return started
       .then((raw) => {
         const result = jsonToConvex(JSON.parse(raw));
         validateReturnValue(resolved.returns, result, "action", functionPath);
@@ -708,6 +978,12 @@ export class World {
     return {
       schema: this.schema(execution.componentPath),
       scan: (tableName) => attempt.scan(execution.componentPath, tableName),
+      read: (interval, after) =>
+        attempt.readInterval({
+          ...interval,
+          componentPath: execution.componentPath,
+          after,
+        }),
     };
   }
 
@@ -722,6 +998,7 @@ export class World {
   syscall(op: string, jsonArgs: string): string {
     const args = JSON.parse(jsonArgs);
     const execution = current();
+    if (execution.attempt?.closed === true) throw closed(execution, op);
     switch (op) {
       case "1.0/getSnapshotTs":
         return JSON.stringify(
@@ -766,10 +1043,19 @@ export class World {
    */
   asyncSyscall(op: string, jsonArgs: string): Promise<string> {
     const execution = current();
-    const run = () => this.dispatchAsync(op, JSON.parse(jsonArgs), execution);
-    return execution.attempt === undefined
-      ? Promise.resolve().then(run)
-      : execution.turn.take(run);
+    const attempt = execution.attempt;
+    if (attempt === undefined) {
+      return Promise.resolve().then(() =>
+        this.dispatchAsync(op, JSON.parse(jsonArgs), execution),
+      );
+    }
+    if (attempt.closed) return Promise.reject(closed(execution, op));
+    // A syscall counts toward its frame's lifetime from the moment it is
+    // queued, so a frame never closes with a write still waiting its turn.
+    const end = attempt.begin();
+    return execution.turn
+      .take(() => this.dispatchAsync(op, JSON.parse(jsonArgs), execution))
+      .finally(end);
   }
 
   private dispatchAsync(
@@ -821,11 +1107,21 @@ export class World {
       case "1.0/remove":
         this.remove(execution, args.table, args.id);
         return JSON.stringify({});
-      case "1.0/count":
+      case "1.0/count": {
+        const attempt = transaction(execution);
+        attempt.readInterval({
+          kind: "interval",
+          componentPath: execution.componentPath,
+          table: args.table,
+          fields: ["_creationTime", "_id"],
+          order: "asc",
+          range: [],
+          after: null,
+        })("end");
         return JSON.stringify(
-          transaction(execution).scan(execution.componentPath, args.table)
-            .length,
+          attempt.scan(execution.componentPath, args.table).length,
         );
+      }
       case "1.0/getFunctionMetadata":
         return JSON.stringify(
           convexToJson({
@@ -916,7 +1212,9 @@ export class World {
 
   private get(execution: Execution, tableName: unknown, id: unknown) {
     validateId(tableName, id);
-    return transaction(execution).get(execution.componentPath, id);
+    const attempt = transaction(execution);
+    attempt.readDocument(execution.componentPath, id);
+    return attempt.get(execution.componentPath, id);
   }
 
   private insert(execution: Execution, table: string, value: any): DocumentId {
@@ -927,8 +1225,7 @@ export class World {
       value,
     );
     const _id = this.generateId(table);
-    // oxlint-disable-next-line effecttsgo/global-date -- The controlled clock is a later kernel row. Until then creation times read the wall clock, as convex-test does.
-    const now = Date.now();
+    const now = this.runtime.now();
     const _creationTime =
       now <= this.lastCreationTime ? this.lastCreationTime + 0.001 : now;
     this.lastCreationTime = _creationTime;
@@ -953,7 +1250,9 @@ export class World {
         `Invalid argument \`value\` in \`db.${write}\`, expected object but got '${typeof value}': ${value as any}`,
       );
     }
-    const document = transaction(execution).get(execution.componentPath, id);
+    const attempt = transaction(execution);
+    attempt.readDocument(execution.componentPath, id);
+    const document = attempt.get(execution.componentPath, id);
     if (document === null) {
       throw new Error(
         write === "delete"
@@ -1053,6 +1352,12 @@ type From =
       readonly parent?: undefined;
     }
   | { readonly parent: Execution; readonly request: Request };
+
+const closed = (execution: Execution, operation: string) =>
+  new KernelRefusal.ClosedAttempt({
+    operation,
+    message: `"${operation}" reached mutation ${execution.udfPath} after it returned and its syscalls settled. Await every read and write inside the handler.`,
+  });
 
 const transaction = (execution: Execution): KernelAttempt => {
   if (execution.attempt === undefined) {

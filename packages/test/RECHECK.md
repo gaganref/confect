@@ -83,8 +83,8 @@ assignment inside a handler lands in that copy only (its `dist/index.js:1744`,
 their own. A bound handler that runs without such a copy would change these
 globals for every caller. The bridge checks each assignment from the test's
 own async context, puts back any that reached it, and refuses the handler
-before it runs. Row 2's
-kernel owns its globals and replaces this reliance. Effect's default `Clock`
+before it runs. The kernel gives each function call it starts such a copy
+too, as recorded under row 3. Effect's default `Clock`
 and `Random` read these globals, so the kernel provides neither as a service,
 and a door-built handler that strips `effect/Random` still draws from the
 stream. A query keeps the query base's `queryClock`. Its effectful reads call
@@ -105,10 +105,8 @@ time through its run. A job convex-test starts from a timer
 inherits the async context of the handler that scheduled it. Convex gives it its
 own `scheduledFunctionId`, so the bridge gives it a fresh record with the
 world's services, a start time read from the world's clock, the world's stream
-and the job's request metadata. The attempt is always 1 until row 3 adds
-attempts. A nested action joins its caller's record too. The design gives it a
-fresh one, which differs from the joined record only once an attempt can
-differ, so it lands with row 3. The bridge does not reach HTTP route handlers,
+and the job's request metadata. Row 3 gives each mutation attempt its number and a
+nested action a fresh record, as recorded below. The bridge does not reach HTTP route handlers,
 `t.run` or mount `init`, as recorded above.
 
 ## Storage and attempts (row 2)
@@ -149,7 +147,7 @@ Convex gives a component no `ctx.auth` of its caller's. A nested call in the
 host takes its parent's identity, even when that is none, and a test's caller
 reaches only the function the test called.
 
-Row 2 publishes one top-level mutation at a time. Row 3 replaces that with
+Row 2 published one top-level mutation at a time. Row 3 replaced that with
 read-set validation and held attempts. Scheduling, storage, HTTP, JWT signing
 and transaction limits refuse with `KernelRowPending`, naming the row that
 supplies them. Text and vector search refuse with `RequiresBinary`.
@@ -185,3 +183,100 @@ facts differ from it.
   its own `register`. All 27 deployable modules of Workflow, Workpool and Batch
   Worker load before the first handler runs, with no preload, and none of the
   kit's test files loads.
+
+## Read sets, held attempts and lifetime (row 3)
+
+An attempt records what it reads, in `src/internal/ReadSet.ts`'s terms. A read
+of a document by ID records the ID, so a later commit that creates, changes or
+deletes that document invalidates it. A query records an interval: its index's
+fields with the `_creationTime` and `_id` tie-breakers, the index range
+expression, a page's cursor as an exclusive start, and how far the query
+examined, inclusive. `.first()` and `.take(n)` read only the rows they
+examined, filtered rows included. An empty result reads the whole range, so an
+insert into it conflicts. A page reads from its cursor up to its end cursor,
+inclusive, and a page from the terminal cursor reads nothing, as the binary's
+`IndexRange::new` cuts the interval (`index_range.rs:111-127`). Writes outside
+what the page could hold leave it valid. A nested query reads into its
+caller's attempt. A nested mutation that fails drops its writes and keeps its
+reads. `count` reads the whole table.
+
+`World.prepare` runs a top-level mutation to its commit point and holds it as
+attempt 1. `World.apply` checks the attempt's reads against every commit since
+its snapshot (`Kernel.conflict`). It answers one of four results:
+
+- `applied`, with the version and the commit timestamp;
+- `conflict`, with the one next attempt, which it ran against the latest
+  commit and holds;
+- `exhausted`, with `OptimisticConcurrencyControlFailure`, when attempt 5
+  conflicts;
+- `refused`, when the function failed. Nothing is published.
+
+An attempt that wrote nothing publishes nothing, so it is not checked. The
+kernel has no retry loop. The shim's convex-test `mutation` applies each
+attempt as soon as it is prepared and prepares the next on a conflict, as the
+binary retries. Top-level mutations no longer take turns, so concurrent calls
+conflict and run again.
+
+`Kernel.KernelRuntime` supplies the clock and commit timestamps. A commit takes
+`runtime.commitTs(version)`. One no greater than the previous commit's is
+refused with `CommitTsNotIncreasing`. A mutation that wrote nothing asks for
+no timestamp. As on the binary, it is serialized at its snapshot and answers
+the snapshot's commit timestamp (`committer.rs:1596-1600` and
+`application_function_runner/mod.rs:1117-1122` in convex-backend 1.49.0).
+convex-test 0.0.65 gives it a fresh one (`index.ts:3214-3231`). The kernel's
+snapshot moves only with commits, so empty mutations with no commit between
+them answer the same timestamp. The default runtime is the wall clock, bumped
+by a nanosecond when it stands still. A test passes its own runtime as
+`convexTest({ schema, modules, runtime })`, and two processes that replay one
+history with it print the same bytes. ID allocation and randomness stay with
+later rows.
+
+A mutation's commit point is once its function has returned and a whole turn
+of the event loop passes with no syscall of its attempt running or started. So
+a write a detached fiber makes after the handler settled lands in the attempt,
+as on the binary. A throwaway spike showed convex-test and row 2 both lose
+that write when the fiber reads once or five times before writing. Past the
+commit point the attempt is closed, and any syscall on it fails with
+`ClosedAttempt` instead of writing to an attempt that is already held or
+published. The drain waits on `node:timers/promises`, which fake timers leave
+alone.
+
+A nested mutation's frame has the same lifetime. It ends once its function has
+returned and its own syscalls have drained, then closes and merges into its
+caller's frame, so a detached fiber's write made after the nested handler
+settled merges with it. Convex 1.49 runs a nested function through the same
+`run_inner` loop as a top-level one (`execute_nested_udf` and `run_nested` in
+`crates/isolate/src/environment/udf/mod.rs:546-600`). The loop ends only when
+its promise settled and its syscall queue is empty (`:1125-1270`), and only
+then does the caller commit the subtransaction (`async_syscall.rs:703-776`).
+A syscall that reaches a closed nested frame fails with `ClosedAttempt`. Each
+frame shares its attempt's reads but has its own lifetime, since a nested call
+is a syscall of its caller until it ends, and a shared count would wait on
+itself. A failed nested mutation closes at once and is dropped, as the binary
+stops a function at its rejection.
+
+Each attempt's handler starts under the invocation bound when the mutation was
+first called, with that attempt's number. A nested action starts under a fresh
+record with its world's services, a start time read from its world's clock, its
+world's stream and attempt 1, as the design gives actions and scheduled
+functions. On convex-test, the second target, a nested action still
+joins its caller's record, since convex-test runs no attempts. The record
+carries no identity, so the design's "reset identity" does not reach it. The
+kernel's identity rule is row 2's. The request-metadata row resets identity
+only for scheduled calls.
+
+Row 1's pins rely on each handler call having its own `Date`, `Math` and
+`crypto`, and the kernel gave a handler none, so the bridge refused every
+handler the kernel started under a bound invocation. `src/internal/Globals.ts`
+gives each query, mutation and action the kernel starts its own copy, as
+convex-test does, and a nested call starts from the test environment's. A
+bound handler on the kernel then reads its invocation's time, as row 1 sets it
+for its function type, and its stream, a nested action its world's stream, and
+test code keeps the host's. The kernel's
+default wall clock reads the host's `Date`, never a handler's copy, so a
+document a bound mutation inserts takes its `_creationTime` from the kernel's
+clock, as every commit timestamp does. On convex-test it takes the pinned
+start time, as recorded under row 1.
+
+No inventory case is placed in row 3, and no refusal named row 3, so the lane's
+placements are unchanged.
