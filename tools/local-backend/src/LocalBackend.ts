@@ -287,8 +287,8 @@ export const consumerLayer = Layer.effect(
 ).pipe(Layer.provide(NodeServices.layer));
 
 /**
- * Plain Convex HTTP actions, with no Confect router in front, for probes of the
- * binary's own HTTP answers. It needs no codegen or seeding.
+ * Plain Convex functions and HTTP actions, with no Confect router in front, for
+ * probes of the binary's own answers. It needs no codegen or seeding.
  *
  * @internal
  */

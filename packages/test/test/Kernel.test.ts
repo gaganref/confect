@@ -25,7 +25,7 @@ import {
   type GenericDataModel,
   type GenericMutationCtx,
 } from "convex/server";
-import { jsonToConvex, v, type GenericId } from "convex/values";
+import { ConvexError, jsonToConvex, v, type GenericId } from "convex/values";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Deferred from "effect/Deferred";
@@ -41,6 +41,12 @@ import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 import * as Json from "../src/internal/Json";
+import {
+  payloads,
+  type Caught,
+  type Payload,
+  type Target,
+} from "../../../tools/local-backend/fixtures/plain/convex/convexErrors";
 
 type Latch = { readonly promise: Promise<void>; readonly release: () => void };
 
@@ -2014,6 +2020,138 @@ describe("invocations", () => {
           Invocation.bind(caller, () => t.reference()),
         );
         expect(callResult).toEqual([]);
+      }),
+  );
+});
+
+const convexErrorModules = {
+  "_generated/server.ts": () => Promise.resolve({}),
+  "convexErrors.ts": () =>
+    import("../../../tools/local-backend/fixtures/plain/convex/convexErrors"),
+  "http.ts": () =>
+    import("../../../tools/local-backend/fixtures/plain/convex/http"),
+};
+
+const convexErrors = {
+  throwingQuery: makeFunctionReference<"query", { payload: Payload }>(
+    "convexErrors:throwingQuery",
+  ),
+  throwingMutation: makeFunctionReference<"mutation", { payload: Payload }>(
+    "convexErrors:throwingMutation",
+  ),
+  throwingAction: makeFunctionReference<"action", { payload: Payload }>(
+    "convexErrors:throwingAction",
+  ),
+  queryCaller: makeFunctionReference<"query", { payload: Payload }, Caught>(
+    "convexErrors:queryCaller",
+  ),
+  mutationCaller: makeFunctionReference<
+    "mutation",
+    { payload: Payload; target: "query" | "mutation" },
+    Caught
+  >("convexErrors:mutationCaller"),
+  actionCaller: makeFunctionReference<
+    "action",
+    { payload: Payload; target: Target },
+    Caught
+  >("convexErrors:actionCaller"),
+};
+
+/**
+ * The kernel with its HTTP entry point, which the shim returns untyped.
+ */
+type ConvexErrorWorld = KernelControls & {
+  readonly fetch: (path: string) => Promise<Response>;
+};
+
+type ConvexErrorCase =
+  | { readonly caller: "query"; readonly target: "query" }
+  | { readonly caller: "mutation"; readonly target: "query" | "mutation" }
+  | { readonly caller: "action" | "HTTP action"; readonly target: Target };
+
+/**
+ * What reaches `caller` when it calls a `target` that throws with `payload`
+ * data. An action's `ctx.run*` reach the kernel directly, and an HTTP action's
+ * go through Convex's action syscalls.
+ */
+const caughtIn = (
+  t: ConvexErrorWorld,
+  { caller, target }: ConvexErrorCase,
+  payload: Payload,
+): Promise<Caught> => {
+  switch (caller) {
+    case "query":
+      return t.query(convexErrors.queryCaller, { payload });
+    case "mutation":
+      return t.mutation(convexErrors.mutationCaller, { payload, target });
+    case "action":
+      return t.action(convexErrors.actionCaller, { payload, target });
+    case "HTTP action":
+      return t
+        .fetch(`/nested-convex-error?payload=${payload}&target=${target}`)
+        .then((response) => response.json())
+        .then((json) => jsonToConvex(json) as Caught);
+  }
+};
+
+const convexErrorCases: ReadonlyArray<ConvexErrorCase> = [
+  { caller: "query", target: "query" },
+  { caller: "mutation", target: "query" },
+  { caller: "mutation", target: "mutation" },
+  { caller: "action", target: "query" },
+  { caller: "action", target: "mutation" },
+  { caller: "action", target: "action" },
+  { caller: "HTTP action", target: "query" },
+  { caller: "HTTP action", target: "mutation" },
+  { caller: "HTTP action", target: "action" },
+];
+
+const payloadNames = Rec.keys(payloads) as ReadonlyArray<Payload>;
+
+describe("nested ConvexError data", () => {
+  it.effect.each(
+    Arr.flatMap(payloadNames, (payload) =>
+      Arr.map(convexErrorCases, (c) => ({ ...c, payload })),
+    ),
+  )(
+    "a ConvexError with $payload data thrown in a called $target reaches its $caller caller as that ConvexError and data",
+    ({ payload, ...c }) =>
+      Effect.gen(function* () {
+        const t: ConvexErrorWorld = convexTest(undefined, convexErrorModules);
+        const caught = yield* call(() => caughtIn(t, c, payload));
+        expect(caught).toEqual({
+          convexError: true,
+          data: payloads[payload](),
+        });
+      }),
+  );
+
+  it.effect.each(
+    Arr.flatMap(payloadNames, (payload) =>
+      Arr.map(["query", "mutation", "action"] as const, (kind) => ({
+        kind,
+        payload,
+      })),
+    ),
+  )(
+    "a ConvexError with $payload data thrown in the $kind the test calls reaches it with that data as a Convex value",
+    ({ kind, payload }) =>
+      Effect.gen(function* () {
+        const t: KernelControls = convexTest(undefined, convexErrorModules);
+        const run = (): Promise<unknown> =>
+          kind === "query"
+            ? t.query(convexErrors.throwingQuery, { payload })
+            : kind === "mutation"
+              ? t.mutation(convexErrors.throwingMutation, { payload })
+              : t.action(convexErrors.throwingAction, { payload });
+        const error = yield* call(() =>
+          run().then(
+            () => undefined,
+            (thrown: unknown) => thrown,
+          ),
+        );
+        assert(error instanceof ConvexError);
+        expect(error.data).toEqual(payloads[payload]());
       }),
   );
 });

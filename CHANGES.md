@@ -321,6 +321,22 @@ its fixture's system-table share measures 21. Changeset:
 `kernel-refusal-field-names.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel nested ConvexError data
+
+A function calling another through `ctx.runQuery`, `ctx.runMutation` or
+`ctx.runAction` makes a syscall, and Convex's syscall wrapper decodes a rejected
+call's `ConvexError` data from Convex JSON (`convex`
+`src/server/impl/syscall.ts:46-51`). The binary hands it Convex JSON
+(convex-backend `cccbade4`, `crates/isolate/src/environment/helpers/promise.rs:77-88`).
+The kernel decoded the data to Convex values first, so the wrapper decoded it
+again: an int64 reached the caller as `Error: Unexpected type of 42`, and bytes
+as `{}`. A call made through a syscall now leaves its `ConvexError` data as
+Convex JSON, and the caller's one decode is the only one. A call from the test,
+or an action's own `ctx.run*`, which the kernel answers directly, still decodes
+to Convex values. A plain local-backend fixture runs every caller and payload on
+the binary and on the kernel. Changeset: `test-kernel-nested-convex-error.md`.
+Upstream: fork only, as the kernel is fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
@@ -331,6 +347,21 @@ widened name, and disagreed with `DataModel.Id`. Frame's aggregate engine binds
 its tables as `Table<...> & Aggregated<...>`. `Indexes` stays inferred, because
 a generic table's index names resolve only that way. Changeset:
 `tableinfo-extended-table-scope.md`. Upstream: unrecorded.
+
+## Exact JSON Schema for IDs
+
+A `GenericId` ends in an always-true refinement that narrows only the
+TypeScript type. On Effect 4.1 a filter without a `toJsonSchema` annotation
+makes the JSON Schema approximate, so a reader that admits only checks their
+JSON Schema states refused every ID. Frame's dev admission is one such reader,
+and it cannot compare the refinement's predicate, because Effect wraps it in a
+fresh closure. The refinement now states `toJsonSchema: () => ({})`, an exact
+schema that adds nothing to the string. A plain ID still exports as
+`{ "type": "string" }`. A `oneOf` union that holds an ID, in JSON Schema or an
+OpenAPI document, now stays `oneOf` instead of falling back to `anyOf`. This
+replaces Frame's patch of `@gaganref/confect-core@10.6.0-fork.1`. Changeset:
+`generic-id-exact-json-schema.md`. Upstream: unrecorded; upstream's `GenericId`
+has the same refinement.
 
 ## Commit timestamps
 
