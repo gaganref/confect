@@ -153,6 +153,9 @@ export const specPathForImpl = (implRelativePath: string) =>
 export const implPathForSpec = (specRelativePath: string) =>
   swapModuleSuffix(specRelativePath, SPEC_SUFFIX, IMPL_SUFFIX);
 
+/**
+ * @internal
+ */
 export const registeredFunctionsRelativePath = Effect.fnUntraced(function* (
   leaf: LeafModule,
 ) {
@@ -654,6 +657,9 @@ export const withImplFiles = Effect.fnUntraced(function* <A, E, R>(
   );
 });
 
+/**
+ * @internal
+ */
 export const validateImplFiles = Effect.fn("LeafModule.validateImplFiles")(
   (relativePaths: ReadonlyArray<ImplModulePath>) =>
     withImplFiles(relativePaths, validateAllImpls),
