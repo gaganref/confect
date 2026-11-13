@@ -1,7 +1,29 @@
 import { Ref } from "@confect/core";
+import * as Context from "effect/Context";
 import * as Rec from "effect/Record";
 import testing from "../../../../tools/local-backend/fixtures/confect/_generated/testing";
+import * as Clock from "../../src/internal/Clock";
 import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
+import type * as Invocation from "../../src/internal/Invocation";
+
+/**
+ * The world each backend here is given, as `TestConfect.layer` gives its own:
+ * no services, the host's clock and a fixed stream. Some fixture modules draw
+ * while they load, which the kernel draws from this stream when no invocation
+ * is bound.
+ */
+const ownWorld = (): Invocation.World => {
+  let state = 1;
+  return {
+    name: "localBackendWorld",
+    services: Context.empty(),
+    clock: Clock.hostNow,
+    random: () => {
+      state = (state * 48_271) % 2_147_483_647;
+      return state / 2_147_483_647;
+    },
+  };
+};
 
 /**
  * The local-backend fixture's app, every component mounted as on the binary, on
@@ -9,7 +31,11 @@ import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
  * binary lane calls over HTTP.
  */
 export const localBackendWorld = (): KernelControls => {
-  const t = convexTest(testing.convexSchema, testing.modules);
+  const t = convexTest({
+    schema: testing.convexSchema,
+    modules: testing.modules,
+    world: ownWorld(),
+  });
   for (const [name, kit] of Rec.toEntries(testing.components)) {
     t.registerComponent(name, kit.schema, kit.modules);
   }

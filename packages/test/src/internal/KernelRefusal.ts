@@ -142,6 +142,21 @@ export class CronRandomUnavailable extends Schema.TaggedError<
 }) {}
 
 /**
+ * A module drew a random value while it loaded, and no test world was bound
+ * when the backend opened, nor given to the backend, to draw it from. The
+ * binary seeds a module's load once per push; the kernel holds no generator of
+ * its own.
+ */
+export class LoadRandomUnavailable extends Schema.TaggedError<
+  LoadRandomUnavailable,
+  { readonly brand: unique symbol }
+>()("LoadRandomUnavailable", {
+  componentPath: Schema.String,
+  modulePath: Schema.String,
+  message: Schema.String,
+}) {}
+
+/**
  * Computing a cron job's next run reaches arithmetic that aborts the Convex
  * binary, which is built with overflow checks.
  */

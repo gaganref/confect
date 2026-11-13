@@ -1111,8 +1111,11 @@ module deployed without that seed refuses, with `NoRandomDuringImport`
 `getRandomValues` at module scope deploys on `precompiled-2026-10-28-cccbade`.
 
 On the kernel a bound invocation's `Math.random` and `getRandomValues` draw from
-its supplied stream, as row 1 pinned them. `getRandomValues` now answers as the
-binary's does rather than the host's (`npm-packages/udf-runtime/src/00_crypto.ts:28-53`):
+its supplied stream, as row 1 pinned them, and `randomUUID` now does too: it
+builds a version 4 UUID from 16 bytes of the stream, as the binary's
+`op_crypto_random_uuid` builds one from 16 bytes of its generator
+(`ops/crypto.rs:8-12`). `getRandomValues` now answers as the binary's does
+rather than the host's (`npm-packages/udf-runtime/src/00_crypto.ts:28-53`):
 
 - a fill of more than 65,536 bytes throws `TypeError` "Byte length (N) exceeds
   the number of bytes of entropy available via this API (65536)", where Node
@@ -1121,6 +1124,31 @@ binary's does rather than the host's (`npm-packages/udf-runtime/src/00_crypto.ts
   is not an integer array type", where Node's message differs;
 - a detached or rebound call draws, where Node throws `TypeError`, because the
   binary's method never reads its receiver.
+
+### Load draws
+
+The kernel holds no generator, so a module's draws while it loads come from
+the driver too. `World.load` loads each module under its own copy of the
+globals, whose `Math.random`, `getRandomValues` and `randomUUID` draw from the
+random stream of the world the backend opens in: the bound invocation's world,
+or else the world given to the backend, which for `TestConfect.layer` is the
+stream its `seed` starts, the one row 5c's cron delays draw from. Modules load
+one at a time, components in registration order and each component's modules
+in its map's order, so the draws land in one order and a replay with the same
+seed draws them again. A restore that loads the modules draws from the
+restoring backend's world, as a push draws from its own seed. What a module
+drew is code state, which a snapshot does not carry.
+
+With neither world, a module that draws refuses with `LoadRandomUnavailable`
+(`componentPath`, `modulePath`), and so does the open, even when the module
+caught the draw. A module that draws nothing loads as before. The binary
+refuses only a module deployed without a seed (`udf/phase.rs:500-507`), which
+a push never is, so the refusal stands where the kernel has no seed to give,
+as `CronRandomUnavailable` does for a cron's delay.
+
+The host runtime evaluates a module once per process, so only the first
+backend to load it draws. A later backend in the same test file sees the first
+one's values, where each binary push draws its own.
 
 ### Boundary check
 
@@ -1132,16 +1160,20 @@ the 4-byte fill their module drew while it loaded. `test/fixtures/randomnessProb
 the binary's answer. `packages/server/test/local-backend/randomness.test.ts`
 gets it from the binary and `test/Randomness.test.ts` from the kernel, which
 also checks that `Math.random` and the 4-byte fill are the supplied stream's
-first draws in all three function types.
+first draws in all three function types, and that the module's load draws are
+its world's stream's first draws. `test/fixtures/loadDrawReplay.ts` opens a
+module that draws from all three sources while it loads, through
+`TestConfect.layer` on the kernel target. `test/Randomness.test.ts` runs it in
+two processes with one seed and gets the same bytes, and with another seed
+gets others.
 
 ### Left on the binary
 
 - The native seeding policy, as the design says.
-- `crypto.randomUUID` and `crypto.subtle` keep the host's; the design names
-  neither.
-- The load-time seed. Both targets let a module draw while it loads, but the
-  binary draws from its per-push seed and the kernel, which loads modules
-  outside any invocation, from the host's.
+- `crypto.subtle` keeps the host's, so its key generation draws from the
+  host's entropy; the design names it nowhere.
+- The per-push seed itself: the kernel draws a load from the driver's stream,
+  and a module evaluated once per process draws once per process.
 - A plain Convex function, such as an official component's, runs outside
   `runHandlerPromise` and so outside the row 1 pin: it reads the host's
   `Math.random` and `crypto` even under a bound invocation.

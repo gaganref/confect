@@ -721,28 +721,74 @@ export class World {
   }
 
   private openIn(world: Invocation.World | undefined): Promise<void> {
-    return this.load().then(() => this.scheduleFirstRuns(world));
+    return this.load(world).then(() => this.scheduleFirstRuns(world));
   }
 
   /**
    * Load every registered module of every component, once, before any function
    * runs, check that each standing source names an exported function, and read
-   * each component's cron declarations. Nothing here draws a random value, so a
-   * restore can load without one.
+   * each component's cron declarations. Reading declarations draws nothing.
    */
-  private load(): Promise<void> {
-    this.opened ??= Promise.all(
-      Array.from(this.components.values(), (component) =>
-        Promise.all(
-          Array.from(component.loaders, ([path, load]) =>
-            load().then((module) => component.loaded.set(path, module)),
-          ),
-        ),
-      ),
-    )
+  private load(world: Invocation.World | undefined): Promise<void> {
+    this.opened ??= this.loadModules(world)
       .then(() => this.checkStanding())
       .then(() => this.readDeclarations());
     return this.opened;
+  }
+
+  /**
+   * Load each module under its own copy of the globals, whose `Math.random`,
+   * `crypto.getRandomValues` and `crypto.randomUUID` draw from `world`'s random
+   * stream. The binary lets a module draw while it loads, from a generator
+   * seeded once per push
+   * (`crates/isolate/src/environment/udf/phase.rs:186-193`,
+   * `crates/isolate/src/environment/analyze.rs:284`, convex-backend
+   * `cccbade4`); the kernel holds no generator, so the driver's stream stands
+   * in for the seed. Modules load one at a time, components in registration
+   * order and each component's modules in the order its map lists them, so the
+   * draws land in one order and a replay with the same stream draws them again.
+   * With no world, a draw refuses with `LoadRandomUnavailable`, and the load
+   * refuses with it too, even when the module caught it. A module the host
+   * runtime already evaluated is not evaluated again, so it draws nothing.
+   */
+  private loadModules(world: Invocation.World | undefined): Promise<void> {
+    let refused: KernelRefusal.LoadRandomUnavailable | undefined;
+    const loads = Arr.flatMap(
+      Array.from(this.components.values()),
+      (component) =>
+        Arr.map(Array.from(component.loaders), ([modulePath, load]) => ({
+          component,
+          modulePath,
+          load,
+        })),
+    );
+    const loadOne = ({
+      component,
+      modulePath,
+      load,
+    }: (typeof loads)[number]): Promise<unknown> => {
+      const random =
+        world?.random ??
+        (() => {
+          refused ??= KernelRefusal.LoadRandomUnavailable.make({
+            componentPath: component.path,
+            modulePath,
+            message: `Module "${modulePath}"${component.path === ROOT ? "" : ` of component "${component.path}"`} draws a random value while it loads, which Convex draws from a generator seeded once per push, and no test world was bound when the backend opened, nor given to it, to draw it from. The kernel holds no generator. Open the backend under a bound invocation, or give it a world, whose random stream the load draws from.`,
+          });
+          throw refused;
+        });
+      return Globals.own(() => {
+        const drawing = Invocation.drawingGlobals(globalThis, random);
+        globalThis.Math = drawing.Math;
+        globalThis.crypto = drawing.crypto;
+        return load();
+      }).then((module) => component.loaded.set(modulePath, module));
+    };
+    return Arr.reduce(
+      loads,
+      Promise.resolve<unknown>(undefined),
+      (previous, entry) => previous.then(() => loadOne(entry)),
+    ).then(() => (refused === undefined ? undefined : Promise.reject(refused)));
   }
 
   private readDeclarations() {
@@ -1384,7 +1430,7 @@ export class World {
       readonly secrets?: Redaction.Secrets;
     } = {},
   ): Promise<void> {
-    return this.load().then(() =>
+    return this.load(Invocation.current()?.world ?? this.own).then(() =>
       this.restore(
         bytes,
         options.worlds ?? [],
