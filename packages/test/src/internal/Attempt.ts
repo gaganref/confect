@@ -1,4 +1,4 @@
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- The drain waits a real turn of the event loop. Fake timers in a test replace the global `setImmediate`, not this one.
+// oxlint-disable-next-line effecttsgo/node-builtin-import, no-restricted-imports -- An attempt's drain waits one real turn of the event loop, which is no deadline. Fake timers in a test replace the global `setImmediate`, not this one.
 import { setImmediate } from "node:timers/promises";
 import type { Attempt as AttemptNumber } from "./Invocation.js";
 import * as Kernel from "./Kernel.js";

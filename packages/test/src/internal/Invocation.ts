@@ -1,6 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { FunctionMetadata, RequestMetadata } from "convex/server";
 import type * as Context from "effect/Context";
+import * as Clock from "./Clock.js";
 
 /**
  * Four re-executions after the first try. A conflict on attempt 5 exhausts.
@@ -79,6 +80,25 @@ interface Bridge {
 const key = Symbol.for("@confect/test/Invocation");
 
 /**
+ * A fresh invocation of `world` for a request of its own, as an action or a
+ * scheduled job starts: attempt 1, the world's services and random stream, and
+ * a start time read from the world's clock.
+ */
+export const fresh = (
+  world: World,
+  componentPath: string,
+  { ip, userAgent, requestId, scheduledFunctionId }: Invocation["request"],
+): Invocation => ({
+  world,
+  componentPath,
+  attempt: 1,
+  request: { ip, userAgent, requestId, scheduledFunctionId },
+  services: world.services,
+  startedAt: world.clock(),
+  random: world.random,
+});
+
+/**
  * The invocation a function of `functionType` called from `running` joins. A
  * query or mutation an action calls is a transaction of its own, so it starts
  * at the world's time when it begins. Any other call shares its caller's
@@ -105,16 +125,7 @@ const resolve = (
     request !== undefined &&
     request.scheduledFunctionId !== bound.request.scheduledFunctionId
   ) {
-    const { ip, userAgent, requestId, scheduledFunctionId } = request;
-    return {
-      world: bound.world,
-      componentPath,
-      attempt: 1,
-      request: { ip, userAgent, requestId, scheduledFunctionId },
-      services: bound.world.services,
-      startedAt: bound.world.clock(),
-      random: bound.world.random,
-    };
+    return fresh(bound.world, componentPath, request);
   }
   return componentPath === bound.componentPath
     ? bound
@@ -202,13 +213,18 @@ const pin = (
 ): void => {
   const host = globalThis;
   const previous = { Date: host.Date, Math: host.Math, crypto: host.crypto };
+  // On the kernel, `Date` already answers the running function's time on the
+  // kernel's clock, so `runAfter` schedules on it. The bridge leaves it there.
+  const kernelDate = Clock.answersInvocation(previous.Date);
   const pinned = {
-    Date: pinnedDate(previous.Date, clockOf(invocation, functionType)),
+    Date: kernelDate
+      ? previous.Date
+      : pinnedDate(previous.Date, clockOf(invocation, functionType)),
     Math: drawingMath(previous.Math, invocation.random),
     crypto: drawingCrypto(previous.crypto, invocation.random),
   };
   try {
-    host.Date = pinned.Date;
+    if (!kernelDate) host.Date = pinned.Date;
     host.Math = pinned.Math;
     host.crypto = pinned.crypto;
   } catch {
@@ -216,7 +232,7 @@ const pin = (
     // refuses the handler.
   }
   const reached = outside(() => ({
-    Date: host.Date === pinned.Date,
+    Date: !kernelDate && host.Date === pinned.Date,
     Math: host.Math === pinned.Math,
     crypto: host.crypto === pinned.crypto,
   }));
@@ -283,6 +299,15 @@ export const bind = <A>(
     { invocation, functionType: undefined },
     start,
   );
+
+/**
+ * Run `start` with no invocation bound, so every registered handler it reaches
+ * keeps its production runtime, whatever the caller has bound.
+ */
+export const unbound = <A>(start: () => Promise<A>): Promise<A> => {
+  const bridge = installed[key];
+  return bridge === undefined ? start() : bridge.storage.exit(start);
+};
 
 /**
  * The invocation the calling handler runs under, if one is bound.

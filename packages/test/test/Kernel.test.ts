@@ -15,6 +15,7 @@ import { vi } from "vitest";
 import {
   actionGeneric,
   componentsGeneric,
+  createFunctionHandle,
   defineSchema,
   defineTable,
   makeFunctionReference,
@@ -402,6 +403,70 @@ describe("identity", () => {
           yield* Effect.promise(() => t.query(store.rows.whoami, {})),
         ).toBeNull();
       }),
+  );
+});
+
+describe("function validators", () => {
+  const callbacks = {
+    target: makeFunctionReference<"query">("callbacks:target"),
+    mint: makeFunctionReference<"mutation", {}, string>("callbacks:mint"),
+    store: makeFunctionReference<"mutation", { handle: unknown }>(
+      "callbacks:store",
+    ),
+  };
+  const callbackWorld = () =>
+    convexTest(defineSchema({}), {
+      "_generated/server.ts": () => Promise.resolve({}),
+      "callbacks.ts": () =>
+        Promise.resolve({
+          target: queryGeneric({ args: {}, handler: () => null }),
+          mint: mutationGeneric({
+            args: {},
+            handler: () => createFunctionHandle(callbacks.target),
+          }),
+          store: mutationGeneric({
+            args: { handle: v.function() },
+            handler: () => null,
+          }),
+        }),
+    });
+  const outcome = (run: () => Promise<unknown>) =>
+    Effect.promise(() =>
+      run().then(
+        () => "accepted",
+        (error: Error) => error.message,
+      ),
+    );
+
+  it.effect(
+    "a function validator accepts a handle the kernel minted and refuses a string that is no handle",
+    () =>
+      Effect.gen(function* () {
+        const t = callbackWorld();
+        const handle = yield* call(() => t.mutation(callbacks.mint, {}));
+        expect(
+          yield* outcome(() => t.mutation(callbacks.store, { handle })),
+        ).toBe("accepted");
+        expect(
+          yield* outcome(() =>
+            t.mutation(callbacks.store, { handle: "callbacks:target" }),
+          ),
+        ).toContain("Expected a function handle");
+      }),
+  );
+
+  it.effect.each([
+    ["the bare prefix", "function://"],
+    ["a prefix without a component separator", "function://not-a-valid-handle"],
+    ["a prefix with no function path", "function://;"],
+    ["a prefix with two separators", "function://;callbacks:target;extra"],
+  ])("a function validator refuses %s", ([, handle]) =>
+    Effect.gen(function* () {
+      const t = callbackWorld();
+      expect(
+        yield* outcome(() => t.mutation(callbacks.store, { handle })),
+      ).toContain("Expected a function handle");
+    }),
   );
 });
 
@@ -1018,6 +1083,27 @@ describe("read sets", () => {
   );
 
   it.effect(
+    "two held attempts applied together publish one at its own version and conflict the other",
+    () =>
+      Effect.gen(function* () {
+        const t = occWorld();
+        const id = yield* call(() => t.mutation(occ.create, {}));
+        const first = yield* call(() => t.prepare(occ.bump, { id }));
+        const second = yield* call(() => t.prepare(occ.bump, { id }));
+        const [applied, conflict] = yield* call(() =>
+          Promise.all([t.apply(first.id), t.apply(second.id)]),
+        );
+        expect(applied).toMatchObject({ kind: "applied", version: 2 });
+        const next = conflicted(conflict);
+        expect(yield* call(() => t.apply(next.id))).toMatchObject({
+          kind: "applied",
+          version: 3,
+        });
+        expect(yield* call(() => t.query(occ.counter, { id }))).toBe(2);
+      }),
+  );
+
+  it.effect(
     "concurrent mutations each publish once, because a conflicting attempt runs again",
     () =>
       Effect.gen(function* () {
@@ -1376,6 +1462,8 @@ let gate = Deferred.makeUnsafe<void>();
 let exited = Deferred.makeUnsafe<Exit.Exit<void>>();
 const order: Array<string> = [];
 const attempts: Array<number | null> = [];
+// Runs inside `movingAction`, between its two readings of the time.
+let duringAction = () => {};
 
 const life = {
   bed: makeFunctionReference<"mutation", {}, GenericId<"beds">>("life:bed"),
@@ -1411,6 +1499,11 @@ const life = {
     { outer: Pinned; nested: Pinned; after: Pinned }
   >("life:pinnedOuter"),
   pinnedInner: makeFunctionReference<"action", {}, Pinned>("life:pinnedInner"),
+  movingAction: makeFunctionReference<
+    "action",
+    {},
+    { before: number; after: number; called: number }
+  >("life:movingAction"),
   stamped: makeFunctionReference<
     "mutation",
     {},
@@ -1568,6 +1661,29 @@ const lifeModule = {
         return { outer, nested, after };
       }),
   ),
+  movingAction: register(
+    FunctionSpec.publicAction({
+      name: "movingAction",
+      args: () => ({}),
+      returns: () =>
+        Schema.Struct({
+          before: Schema.Finite,
+          after: Schema.Finite,
+          called: Schema.Finite,
+        }),
+    }),
+    () =>
+      Effect.gen(function* () {
+        const before = (yield* pinned).now;
+        yield* Effect.sync(() => duringAction());
+        const after = (yield* pinned).now;
+        const ctx = yield* ActionCtx.ActionCtx<GenericDataModel>();
+        const { now: called } = yield* Effect.promise(() =>
+          ctx.runMutation(life.stamped, {}),
+        );
+        return { before, after, called };
+      }),
+  ),
   pinnedInner: register(
     FunctionSpec.internalAction({
       name: "pinnedInner",
@@ -1596,17 +1712,27 @@ const lifeModule = {
   ),
 };
 
-const lifeWorld = (): KernelControls =>
-  convexTest(
-    defineSchema({
+const lifeWorld = (runtime?: {
+  readonly now: () => number;
+  readonly commitTs: (version: number) => bigint;
+}): KernelControls =>
+  convexTest({
+    schema: defineSchema({
       beds: defineTable({ room: v.string() }),
       counters: defineTable({ n: v.number() }),
     }),
-    {
+    modules: {
       "_generated/server.ts": () => Promise.resolve({}),
       "life.ts": () => Promise.resolve(lifeModule),
     },
-  );
+    ...(runtime === undefined ? {} : { runtime }),
+  });
+
+// The kernel's clock stands at 5000, apart from every invocation's start time.
+const kernelAt5000 = {
+  now: () => 5_000,
+  commitTs: (version: number) => BigInt(version),
+};
 
 describe("lifetime", () => {
   it.effect(
@@ -1756,37 +1882,59 @@ describe("invocations", () => {
   );
 
   it.effect(
-    "a bound action reads its world's clock and its invocation's stream, a nested action its world's stream, and test code the host's",
+    "a bound handler reads the kernel's clock and its invocation's stream, a nested action its world's stream, and test code the host's",
     () =>
       Effect.gen(function* () {
-        const t = lifeWorld();
+        const t = lifeWorld(kernelAt5000);
         const host = { Date: globalThis.Date, Math: globalThis.Math };
         const seen = yield* call(() =>
           Invocation.bind(caller, () => t.action(life.pinnedOuter, {})),
         );
         expect(seen).toEqual({
-          outer: { now: 2_000, random: 0.25 },
-          nested: { now: 2_000, random: 0.75 },
-          after: { now: 2_000, random: 0.25 },
+          outer: { now: 5_000, random: 0.25 },
+          nested: { now: 5_000, random: 0.75 },
+          after: { now: 5_000, random: 0.25 },
         });
         expect({ Date: globalThis.Date, Math: globalThis.Math }).toEqual(host);
         // oxlint-disable-next-line effecttsgo/global-date-in-effect -- Test code reads the host's clock, which no handler's pin may reach.
-        expect(Date.now()).toBeGreaterThan(2_000);
+        expect(Date.now()).toBeGreaterThan(5_000);
       }),
   );
 
   it.effect(
-    "a bound mutation's document takes its creation time from the kernel's clock, not the pinned start time",
+    "a bound action reads the kernel's clock as it runs, and a mutation it calls starts at the kernel's time then, whatever its world's clock says",
     () =>
       Effect.gen(function* () {
-        const t = lifeWorld();
-        // oxlint-disable-next-line effecttsgo/global-date-in-effect -- Test code reads the host's clock, which the kernel's wall clock follows.
-        const before = Date.now();
+        let now = 5_000;
+        const t = lifeWorld({
+          now: () => now,
+          commitTs: (version) => BigInt(version),
+        });
+        duringAction = () => {
+          now = 7_000;
+        };
+        const seen = yield* call(() =>
+          Invocation.bind(caller, () => t.action(life.movingAction, {})),
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              duringAction = () => {};
+            }),
+          ),
+        );
+        expect(seen).toEqual({ before: 5_000, after: 7_000, called: 7_000 });
+      }),
+  );
+
+  it.effect(
+    "a bound mutation reads the kernel's clock, not its invocation's start time, and its document's creation time follows it",
+    () =>
+      Effect.gen(function* () {
+        const t = lifeWorld(kernelAt5000);
         const seen = yield* call(() =>
           Invocation.bind(caller, () => t.mutation(life.stamped, {})),
         );
-        expect(seen.now).toBe(1_000);
-        expect(seen.created).toBeGreaterThanOrEqual(before);
+        expect(seen).toEqual({ now: 5_000, created: 5_000 });
       }),
   );
 });

@@ -74,6 +74,30 @@ export class CommitTsNotIncreasing extends Schema.TaggedError<CommitTsNotIncreas
   },
 ) {}
 
+/**
+ * Draining scheduled functions ran its budget of jobs and work still remained.
+ * A self-rescheduling function keeps the drain from ending unless its kit
+ * declares it standing.
+ */
+export class DrainBudgetExceeded extends Schema.TaggedError<DrainBudgetExceeded>()(
+  "DrainBudgetExceeded",
+  {
+    budget: Schema.Int,
+    pending: Schema.Array(
+      Schema.Struct({ componentPath: Schema.String, name: Schema.String }),
+    ),
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * A component declared a standing source its modules do not export.
+ */
+export class UnknownStandingSource extends Schema.TaggedError<UnknownStandingSource>()(
+  "UnknownStandingSource",
+  { componentPath: Schema.String, name: Schema.String, message: Schema.String },
+) {}
+
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
   new RequiresBinary({
     operation,

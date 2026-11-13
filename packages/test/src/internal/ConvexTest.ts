@@ -7,6 +7,7 @@ import { componentsGeneric } from "convex/server";
 import * as Execution from "./Execution.js";
 import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
+import type * as Scheduling from "./Scheduling.js";
 
 type Modules = Record<string, () => Promise<any>>;
 
@@ -24,6 +25,40 @@ export interface KernelControls {
   ) => Promise<Execution.HeldAttempt>;
   readonly apply: (id: string) => Promise<Execution.KernelApply>;
   readonly held: () => ReadonlyArray<Execution.HeldAttempt>;
+  /**
+   * Move the kernel's clock forward, running each job due on the way at its
+   * deadline.
+   */
+  readonly advance: (ms: number) => Promise<void>;
+  /**
+   * The pending jobs, earliest deadline first.
+   */
+  readonly jobs: () => ReadonlyArray<Scheduling.Job>;
+  /**
+   * Run the jobs due now. No future deadline is crossed.
+   */
+  readonly finishInProgressScheduledFunctions: () => Promise<void>;
+  /**
+   * Run jobs at their deadlines until only standing jobs remain, or fail with
+   * `DrainBudgetExceeded` after `maxIterations` jobs. The kernel keeps its own
+   * clock, so it never calls `advanceTimers`.
+   */
+  readonly finishAllScheduledFunctions: (
+    advanceTimers?: () => void,
+    maxIterations?: number,
+  ) => Promise<void>;
+}
+
+/**
+ * How a kit registers a component beyond its schema and modules.
+ */
+export interface RegisterOptions {
+  /**
+   * The component's functions, as `module:export`, that schedule their own next
+   * run, such as the crons component's `public:rescheduler`. A job that runs
+   * one, or that one schedules, is never drain work.
+   */
+  readonly standing?: ReadonlyArray<string>;
 }
 
 const isSchemaDefinition = (
@@ -59,10 +94,13 @@ const accessor = (world: Execution.World, caller: Execution.Caller): any => ({
     }),
   fetch: () => Promise.reject(KernelRefusal.rowPending("HTTP routes", 6)),
   jwks: () => Promise.reject(KernelRefusal.rowPending("JWT verification", 6)),
-  finishInProgressScheduledFunctions: () =>
-    Promise.reject(KernelRefusal.rowPending("the scheduler", 5)),
-  finishAllScheduledFunctions: () =>
-    Promise.reject(KernelRefusal.rowPending("the scheduler", 5)),
+  advance: (ms: number) => world.advance(ms),
+  jobs: () => world.jobs(),
+  finishInProgressScheduledFunctions: () => world.advance(0),
+  finishAllScheduledFunctions: (
+    _advanceTimers?: () => void,
+    maxIterations?: number,
+  ) => world.drain(maxIterations),
 });
 
 /**
@@ -73,7 +111,8 @@ const accessor = (world: Execution.World, caller: Execution.Caller): any => ({
  * Beyond convex-test, `prepare` runs a mutation to its commit point and holds
  * it, and `apply` validates and publishes a held attempt. `mutation` applies
  * each attempt it prepares at once and prepares the next on a conflict, up to
- * attempt 5. `runtime` supplies the clock and commit timestamps.
+ * attempt 5. `runtime` supplies the clock and commit timestamps. Scheduled
+ * functions run on the kernel's clock, never on a host timer.
  */
 export function convexTest(
   schemaOrOptions?:
@@ -110,8 +149,14 @@ export function convexTest(
       componentPath: string,
       componentSchema: SchemaDefinition<GenericSchema, boolean>,
       componentModules: Modules,
+      options?: RegisterOptions,
     ) => {
-      world.register(componentPath, componentSchema, componentModules);
+      world.register(
+        componentPath,
+        componentSchema,
+        componentModules,
+        options?.standing,
+      );
       return (componentsGeneric() as any)[componentPath];
     },
   };

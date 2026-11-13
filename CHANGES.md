@@ -74,6 +74,33 @@ Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-read-sets.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel scheduler, crons, handles and workflow events
+
+The kernel runs scheduled functions on its own clock, never on a host timer. A
+job is a row in its component's `_scheduled_functions`, written through the
+scheduling attempt, so it exists only once that mutation commits. An action's
+schedule and cancel commit at once. `advance(ms)` runs every job whose deadline
+falls in the window, in deadline order, jobs those jobs schedule included, and
+starts each one at its deadline. `Date` inside a query or mutation reads its
+start time, which Convex's `runAfter` uses. On the kernel the invocation bridge
+leaves `Date` to this clock, so a bound handler reads it too, whatever start
+time its invocation carries, and draws from its invocation's random stream. A scheduled call has no identity
+and fresh request metadata carrying its job ID. It runs as a fresh invocation
+of the test world that scheduled it, with that world's services, or unbound
+when none was bound, whatever invocation the drain runs under.
+`finishAllScheduledFunctions` runs jobs until only standing ones remain, and
+fails with `DrainBudgetExceeded` after 100. `registerComponent` takes
+`{ standing }`, the self-rescheduling functions of a component, so a kit can
+declare the crons component's `public:rescheduler`. A job that runs one, or that
+one schedules, is never drain work. A standing name the component does not
+export is refused at open. Convex's own `crons.ts` schedules are not simulated.
+A lint fence refuses host timers in the kernel's modules. Row 2's
+`KernelRowPending` refusals for the scheduler are lifted, a `v.function()`
+validator accepts a function handle and refuses any other value, and the six row-5
+mock-backend cases run on the kernel. This is row 5 of Frame's backend testing
+kernel (Frame ADR 0012). Changeset: `test-kernel-scheduler.md`. Upstream: fork
+only, as the kernel and its option are fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector

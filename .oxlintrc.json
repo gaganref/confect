@@ -176,6 +176,73 @@
         "confect/prefer-effect-vitest": "error",
         "confect/prefer-test-each": "error"
       }
+    },
+    {
+      "files": ["packages/test/src/internal/**/*.ts"],
+      "rules": {
+        "no-restricted-imports": [
+          "error",
+          {
+            "paths": [
+              {
+                "name": "effect",
+                "message": "Import Effect modules from their submodule path so they tree-shake, e.g. `import * as Schema from \"effect/Schema\"`. Bare helpers (pipe, flow, identity) come from \"effect/Function\".",
+                "allowTypeImports": true
+              },
+              {
+                "name": "node:timers",
+                "message": "The test kernel keeps its own clock. Schedule work as a kernel job, which runs when the clock reaches its deadline, never on a host timer."
+              },
+              {
+                "name": "timers",
+                "message": "The test kernel keeps its own clock. Schedule work as a kernel job, which runs when the clock reaches its deadline, never on a host timer."
+              },
+              {
+                "name": "node:timers/promises",
+                "message": "The test kernel keeps its own clock. Schedule work as a kernel job, which runs when the clock reaches its deadline, never on a host timer."
+              },
+              {
+                "name": "timers/promises",
+                "message": "The test kernel keeps its own clock. Schedule work as a kernel job, which runs when the clock reaches its deadline, never on a host timer."
+              }
+            ],
+            "patterns": [
+              {
+                "group": ["@effect/*", "!@effect/vitest", "!@effect/tsgo/**"],
+                "message": "Import @effect/* modules from their submodule path so they tree-shake, e.g. `import * as Path from \"@effect/platform/Path\"`.",
+                "allowTypeImports": true
+              }
+            ]
+          }
+        ],
+        "no-restricted-globals": [
+          "error",
+          {
+            "name": "setTimeout",
+            "message": "The test kernel keeps its own clock. Schedule work as a kernel job, which runs when the clock reaches its deadline, never on a host timer."
+          },
+          {
+            "name": "setInterval",
+            "message": "The test kernel keeps its own clock. Schedule work as a kernel job, which runs when the clock reaches its deadline, never on a host timer."
+          },
+          {
+            "name": "setImmediate",
+            "message": "The test kernel keeps its own clock. Schedule work as a kernel job, which runs when the clock reaches its deadline, never on a host timer."
+          },
+          {
+            "name": "clearTimeout",
+            "message": "The test kernel keeps its own clock. Schedule work as a kernel job, which runs when the clock reaches its deadline, never on a host timer."
+          },
+          {
+            "name": "clearInterval",
+            "message": "The test kernel keeps its own clock. Schedule work as a kernel job, which runs when the clock reaches its deadline, never on a host timer."
+          },
+          {
+            "name": "clearImmediate",
+            "message": "The test kernel keeps its own clock. Schedule work as a kernel job, which runs when the clock reaches its deadline, never on a host timer."
+          }
+        ]
+      }
     }
   ]
 }

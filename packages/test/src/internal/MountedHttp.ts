@@ -102,11 +102,16 @@ export const make = (
   const registered = new Set<string>();
   let tail = Promise.resolve();
 
-  const register: RegisterComponent = (componentPath, schema, modules) => {
+  const register: RegisterComponent = (
+    componentPath,
+    schema,
+    modules,
+    options,
+  ) => {
     if (
       !normalized.success.some((mount) => mount.componentPath === componentPath)
     ) {
-      registerComponent(componentPath, schema, modules);
+      registerComponent(componentPath, schema, modules, options);
       return;
     }
     const generated = Object.keys(modules).find((key) =>
@@ -188,10 +193,12 @@ export const make = (
         }
       },
     });
-    registerComponent(componentPath, schema, {
-      ...modules,
-      [bridgePath]: () => Promise.resolve({ invoke }),
-    });
+    registerComponent(
+      componentPath,
+      schema,
+      { ...modules, [bridgePath]: () => Promise.resolve({ invoke }) },
+      options,
+    );
     registered.add(componentPath);
   };
 

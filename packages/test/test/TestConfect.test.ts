@@ -3,7 +3,16 @@ import { beforeEach, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import * as Effect from "effect/Effect";
 import { App, Mount } from "@confect/core";
-import { defineSchema } from "convex/server";
+import {
+  componentsGeneric,
+  defineSchema,
+  defineTable,
+  makeFunctionReference,
+  mutationGeneric,
+  type FunctionReference,
+  type GenericDataModel,
+} from "convex/server";
+import { v } from "convex/values";
 import Counter from "../../server/test/local-backend/fixtures/components/counter/client";
 import counter from "../../server/test/local-backend/fixtures/components/counter/convex/convex.config";
 import env from "../../server/test/local-backend/fixtures/confect/env";
@@ -153,4 +162,73 @@ it.effect("registers a component through its test entry's register", () =>
       }),
     ),
   ),
+);
+
+// A component whose `tick` schedules its own next run forever, as the official
+// crons component's `public:rescheduler` does.
+const tick = makeFunctionReference<"mutation">("public:tick");
+const beat = {
+  schema: defineSchema({ beats: defineTable({ n: v.number() }) }),
+  modules: {
+    "_generated/server.ts": () => Promise.resolve({}),
+    "public.ts": () =>
+      Promise.resolve({
+        tick: mutationGeneric({
+          args: {},
+          handler: (ctx) =>
+            ctx.db
+              .insert("beats", { n: 0 })
+              .then(() => ctx.scheduler.runAfter(1000, tick, {}))
+              .then(() => null),
+        }),
+      }),
+  },
+};
+
+it.effect(
+  "hands a kit's standing sources to the backend, so the test kernel's drain ends with their next run pending",
+  () =>
+    Effect.gen(function* () {
+      vi.doMock("convex-test", () => import("../src/internal/ConvexTest"));
+      // The modules reset before each test, so the service keys come from the
+      // same fresh imports as the layer.
+      const [{ TestConfect: OnKernel }, { DatabaseSchema, MutationCtx }] =
+        yield* Effect.promise(() =>
+          Promise.all([import("@confect/test"), import("@confect/server")]),
+        );
+      const host = DatabaseSchema.make({});
+      const start = (
+        componentsGeneric() as unknown as {
+          readonly beat: {
+            readonly public: {
+              readonly tick: FunctionReference<"mutation", "internal">;
+            };
+          };
+        }
+      ).beat.public.tick;
+      yield* Effect.gen(function* () {
+        const test = yield* OnKernel.TestConfect<typeof host>();
+        yield* test.run(
+          Effect.gen(function* () {
+            const ctx = yield* MutationCtx.MutationCtx<GenericDataModel>();
+            yield* Effect.promise(() => ctx.runMutation(start, {}));
+          }),
+        );
+        yield* test.finishAllScheduledFunctions(() => {});
+      }).pipe(
+        Effect.provide(
+          OnKernel.layer(
+            host,
+            defineSchema({}),
+            { "_generated/server.ts": () => Promise.resolve({}) },
+            {
+              register: (registerComponent) =>
+                registerComponent("beat", beat.schema, beat.modules, {
+                  standing: ["public:tick"],
+                }),
+            },
+          ),
+        ),
+      );
+    }).pipe(Effect.ensuring(Effect.sync(() => vi.doUnmock("convex-test")))),
 );
