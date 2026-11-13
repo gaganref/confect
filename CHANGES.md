@@ -388,7 +388,9 @@ with `RequiresBinary` in an action. `kernelBoundaries.ts` records the action
 cases as `ActionCryptoRandomness` and `ActionLoadCryptoRandomness`. A function with no invocation bound draws from the backend's own world, so an
 unbound `TestConfect.layer` call is seeded and replays, and with no world it
 refuses with `FunctionRandomUnavailable` rather than read the host's. Only a
-reference kept before the kernel ran any code keeps the host's. The bridge
+reference kept before the kernel ran any code keeps the host's. When a test
+leaves `Math` or `crypto` as a property the kernel cannot redefine, the open or
+the function refuses with `UnguardableGlobal` before its code runs. The bridge
 that pins a bound handler on the convex-test target refuses the same `subtle`
 operations by function type. The fixture's system-table share measures 23
 with the probe beside component identity's chain.

@@ -425,6 +425,55 @@ describe("randomness on the kernel", () => {
     ]);
   }, 120_000);
 
+  describe("a Math or crypto the kernel cannot redefine refuses with UnguardableGlobal before any code runs", () => {
+    const loader = pathToFileURL(
+      createRequire(import.meta.url).resolve("tsx/esm"),
+    ).href;
+    const script = fileURLToPath(
+      new URL("fixtures/unguardableEntropy.ts", import.meta.url),
+    );
+    const outcome = (name: string): unknown => {
+      const run = spawnSync(
+        process.execPath,
+        ["--import", loader, script, name],
+        { encoding: "utf8" },
+      );
+      expect([run.status, run.stderr], name).toEqual([0, ""]);
+      return Json.parse(run.stdout) as unknown;
+    };
+    const refused = (global: string, holds: string, loaded: boolean) => ({
+      outcome: "refused",
+      _tag: "UnguardableGlobal",
+      reason: "notConfigurable",
+      globals: [global],
+      message: expect.stringContaining(
+        `globalThis.${global} is ${holds} that cannot be redefined`,
+      ),
+      loaded,
+      ran: false,
+    });
+    it("a frozen Math refuses the open before the module loads", () => {
+      expect(outcome("frozen-math")).toEqual(
+        refused("Math", "a non-writable value", false),
+      );
+    }, 60_000);
+    it("a frozen crypto refuses the open before the module loads", () => {
+      expect(outcome("frozen-crypto")).toEqual(
+        refused("crypto", "a non-writable value", false),
+      );
+    }, 60_000);
+    it("a getter-only crypto refuses the open before the module loads", () => {
+      expect(outcome("getter-only-crypto")).toEqual(
+        refused("crypto", "a getter with no setter", false),
+      );
+    }, 60_000);
+    it("a Math frozen after the open refuses the next function before its handler runs", () => {
+      expect(outcome("frozen-math-after-open")).toEqual(
+        refused("Math", "a non-writable value", true),
+      );
+    }, 60_000);
+  });
+
   it("two processes opening a module that draws while it loads, through TestConfect.layer with one seed, replay its draws byte for byte, and another seed moves them", () => {
     const loader = pathToFileURL(
       createRequire(import.meta.url).resolve("tsx/esm"),

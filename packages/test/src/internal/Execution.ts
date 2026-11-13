@@ -418,13 +418,35 @@ const kernelMaths = new WeakMap<Math, Math>();
 const kernelCryptos = new WeakMap<Crypto, Crypto>();
 
 /**
+ * What `globalThis[name]` holds, for a refusal: a property the kernel cannot
+ * redefine, as a test that freezes or redefines the global leaves it.
+ */
+const heldAs = (name: "Math" | "crypto"): string => {
+  const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+  if (descriptor === undefined) return "missing";
+  const fixed =
+    descriptor.configurable === true ? "" : " that cannot be redefined";
+  if ("value" in descriptor) {
+    return descriptor.writable === true
+      ? `a value that did not take the assignment${fixed}`
+      : `a non-writable value${fixed}`;
+  }
+  return descriptor.set === undefined
+    ? `a getter with no setter${fixed}`
+    : `an accessor whose setter did not take the assignment${fixed}`;
+};
+
+/**
  * Point this copy of the globals' `Math` and `crypto` at the kernel's, built
  * once over the host's. The kernel calls it in each function's and each module
  * load's own copy, so plain Convex functions, component functions and code a
  * function imports lazily all draw through it. A reference to the host's
  * `Math.random` or `crypto` taken outside every kernel copy, before the kernel
  * ran any code, stays the host's: the lazy-loading contract, as for the
- * kernel's other globals.
+ * kernel's other globals. When either global does not take the kernel's, a test
+ * left it as a property `Globals` cannot redefine: it refuses with
+ * `UnguardableGlobal`, before the load's or the function's code runs, and never
+ * carries on with the host's.
  */
 const installEntropy = () => {
   const host = Globals.host(() => ({
@@ -441,11 +463,19 @@ const installEntropy = () => {
     crypto = Entropy.kernelCrypto(host.crypto, entropySource);
     kernelCryptos.set(host.crypto, crypto);
   }
-  try {
-    globalThis.Math = math;
-    globalThis.crypto = crypto;
-  } catch {
-    // A global `Globals` could not give a per-call copy stays the host's.
+  const failed = Arr.filter(
+    [
+      ["Math", math],
+      ["crypto", crypto],
+    ] as const,
+    ([name, value]) =>
+      !Reflect.set(globalThis, name, value) ||
+      Reflect.get(globalThis, name) !== value,
+  );
+  if (failed.length > 0) {
+    throw KernelRefusal.uninstallableEntropy(
+      Arr.map(failed, ([name]) => ({ global: name, holds: heldAs(name) })),
+    );
   }
 };
 

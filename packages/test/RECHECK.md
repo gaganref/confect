@@ -1377,6 +1377,21 @@ case that draws, `integration.test.ts > ActionRunner > getNumberViaRunner`,
 runs on the kernel. No other kernel-lane case changes its outcome under that
 seed.
 
+The kernel's `Math` and `crypto` go into each copy by assignment through
+`Globals`' accessors. A test can leave a global as a property `Globals` cannot
+redefine: a frozen value, or a getter with no setter, either non-configurable.
+The assignment then does not take, and the copy would keep the host's sources.
+`installEntropy` checks that both globals hold the kernel's after it assigns
+them. If either does not, it refuses with `UnguardableGlobal` (`reason:
+"notConfigurable"`, `globals`) before the load's or the function's code runs,
+and its message names each global and what it holds. It never carries on with
+the host's. The class is #136's, at #136's place, so the I/O guards and the
+entropy install refuse alike. `test/fixtures/unguardableEntropy.ts` freezes
+`Math`, freezes `crypto` or leaves `crypto` a getter, each in a process of its
+own because a frozen global cannot be undone. In each case the open refuses
+before the module loads. A `Math` frozen after the open makes the next function
+refuse before its handler runs.
+
 One reference stays the host's. A reference taken outside every kernel copy,
 before the kernel ran any code, such as a module a test file imports, keeps
 what it read. That is the lazy-loading contract #136 states for `fetch` and

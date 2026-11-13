@@ -240,6 +240,45 @@ export class SnapshotCronMismatch extends Schema.TaggedError<
   message: Schema.String,
 }) {}
 
+/**
+ * A function would have run, or ran, with a host global the kernel refuses
+ * unguarded. `notConfigurable`: a test replaced it with a property the kernel
+ * cannot redefine, so the function did not start. `replacedWhileRunning`: its
+ * descriptor was replaced while the function ran, so a call made through the
+ * replacement reached it unchecked. The function fails at settlement, a
+ * mutation publishes none of its writes, and the guard is installed again.
+ */
+export class UnguardableGlobal extends Schema.TaggedError<
+  UnguardableGlobal,
+  { readonly brand: unique symbol }
+>()("UnguardableGlobal", {
+  reason: Schema.Literals(["notConfigurable", "replacedWhileRunning"]),
+  globals: Schema.Array(Schema.String),
+  message: Schema.String,
+}) {}
+
+/**
+ * The kernel could not place its own `Math` or `crypto` in a function's or a
+ * module load's copy of the globals, because a test left the global as a
+ * property it cannot redefine. Each entry names the global and what it holds.
+ * The load or function refuses before any of its code runs, so nothing draws
+ * from the host's randomness in the kernel's place.
+ */
+export const uninstallableEntropy = (
+  failures: ReadonlyArray<{ readonly global: string; readonly holds: string }>,
+) =>
+  UnguardableGlobal.make({
+    reason: "notConfigurable",
+    globals: Array.map(failures, ({ global }) => global),
+    message: `The test kernel cannot install its own random sources: ${Array.join(
+      Array.map(
+        failures,
+        ({ global, holds }) => `globalThis.${global} is ${holds}`,
+      ),
+      "; ",
+    )}. Code that read it would draw from the host's randomness, so the kernel refuses before any module or function code runs. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`,
+  });
+
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
   RequiresBinary.make({
     operation,
@@ -460,6 +499,7 @@ const refusals = Array.map(
     RequiresBinary,
     KernelRowPending,
     FunctionRandomUnavailable,
+    UnguardableGlobal,
     RegisteredAfterOpen,
     ClosedAttempt,
     StaleAttempt,
