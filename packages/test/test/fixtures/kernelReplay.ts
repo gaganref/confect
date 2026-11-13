@@ -10,6 +10,10 @@ import {
 import { convexToJson, v, type GenericId } from "convex/values";
 import * as Effect from "effect/Effect";
 import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
+import * as Array from "effect/Array";
+import * as Schema from "effect/Schema";
+
+const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 
 const schema = defineSchema({
   counters: defineTable({ n: v.number() }),
@@ -80,15 +84,17 @@ const history = Effect.gen(function* () {
   yield* call(() => t.mutation(replay.stamp, { label: "first" }));
   yield* call(() => t.mutation(replay.stamp, { label: "second" }));
   const state = yield* call(() => t.query(replay.dump, {}));
-  const steps = [applied, conflict, retried].map((step) =>
+  const steps = Array.map([applied, conflict, retried], (step) =>
     step.kind === "conflict"
       ? { kind: step.kind, next: step.next.number }
       : step.kind === "applied"
         ? { kind: step.kind, version: step.version, commitTs: step.commitTs }
         : { kind: step.kind },
   );
-  // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The bytes compared are Convex's own JSON encoding of the history.
-  process.stdout.write(JSON.stringify(convexToJson({ steps, state })));
+  const output = yield* Schema.encodeEffect(UnknownJson)(
+    convexToJson({ steps, state }),
+  );
+  process.stdout.write(output);
 });
 
 void Effect.runPromise(history);

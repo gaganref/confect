@@ -1,4 +1,4 @@
-import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as NodeServices from "../fixtures/NodeTestServices";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import { apply } from "alchemy/Apply";
 import { provideFreshArtifactStore } from "alchemy/Artifacts";
@@ -20,6 +20,7 @@ import type * as Redacted from "effect/Redacted";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import { tmpdir } from "node:os";
 import { fileURLToPath } from "node:url";
+import * as Option from "effect/Option";
 // The built package, not its source, so these tests run what ships.
 import { Convex } from "../../dist/index.js";
 import * as ConvexClient from "../../dist/ConvexClient.js";
@@ -29,6 +30,10 @@ import {
   layer as runnerLayer,
 } from "../../dist/internal/CommandRunner.js";
 import { PushLock, layer as lockLayer } from "../../dist/internal/PushLock.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
 
 export interface Outputs {
   readonly name: string;
@@ -92,7 +97,8 @@ interface VitestGlobal {
   };
 }
 
-const forwardSlashes = (file: string) => file.replaceAll("\\", "/");
+const forwardSlashes = (file: string) =>
+  pipe(file, String.replaceAll("\\", "/"));
 
 /**
  * What vitest's module registry shows of a test process. Windows paths differ
@@ -100,10 +106,10 @@ const forwardSlashes = (file: string) => file.replaceAll("\\", "/");
  * compared as filesystem paths with forward slashes.
  */
 export const readRegistry = (files: Iterable<string>, harness: string) => {
-  const loaded = [...files].map(forwardSlashes);
+  const loaded = Arr.map([...files], forwardSlashes);
   return {
     listsHarness: loaded.includes(forwardSlashes(harness)),
-    source: loaded.filter((file) => /\/packages\/[^/]+\/src\//.test(file)),
+    source: Arr.filter(loaded, (file) => /\/packages\/[^/]+\/src\//.test(file)),
   };
 };
 
@@ -135,7 +141,7 @@ const runsBuiltPackages = Effect.suspend(() => {
   return source.length === 0
     ? Effect.void
     : die(
-        `The real-backend harness runs the built packages, but this test loaded their source: ${source.join(", ")}`,
+        `The real-backend harness runs the built packages, but this test loaded their source: ${Arr.join(source, ", ")}`,
       );
 });
 
@@ -144,6 +150,8 @@ const runsBuiltPackages = Effect.suspend(() => {
  * of a deployment, its key and `Code`, which starts the real pinned backend, or
  * restarts it on the state's data, then runs `during` and stops the backend. It
  * binds a port in `ports`; CONFECT_LOCAL_BACKEND_PORTS overrides the range.
+ *
+ * @internal
  */
 export const make = Effect.fn("RealBackend.make")(function* (options: {
   readonly name: string;
@@ -189,21 +197,32 @@ export const make = Effect.fn("RealBackend.make")(function* (options: {
     code: Code,
     during: (outputs: Outputs) => Effect.Effect<B, E>,
   ) =>
-    stack(code).pipe(
-      Stack.make({ name: options.name, providers: Convex.providers(), state }),
-      Effect.flatMap((compiled) =>
-        Plan.make(compiled).pipe(
-          Effect.flatMap(apply),
-          Effect.flatMap(during),
-          Effect.provideContext(compiled.services),
-        ),
-      ),
-      Effect.provide(state),
-      provideFreshArtifactStore,
-      Effect.provide(context),
-      Effect.scoped,
-    );
-  const [low = 0, high = 0] = ports.split("-").map(Number);
+    Effect.gen(function* () {
+      const services5 = yield* Layer.build(context);
+      return yield* Effect.gen(function* () {
+        const services2 = yield* Layer.build(state);
+        return yield* stack(code).pipe(
+          Stack.make({
+            name: options.name,
+            providers: Convex.providers(),
+            state,
+          }),
+          Effect.flatMap((compiled) =>
+            Plan.make(compiled).pipe(
+              Effect.flatMap(apply),
+              Effect.flatMap(during),
+              Effect.provideContext(compiled.services),
+            ),
+          ),
+          Effect.provideContext(services2),
+        );
+      }).pipe(
+        Effect.scoped,
+        provideFreshArtifactStore,
+        Effect.provideContext(services5),
+      );
+    }).pipe(Effect.scoped, Effect.scoped);
+  const [low, high = 0] = Arr.map(pipe(ports, String.split("-")), Number);
   return { root, ports: { low, high }, session };
 });
 
@@ -211,6 +230,8 @@ export const make = Effect.fn("RealBackend.make")(function* (options: {
  * Copy `fixture` to `directory` as a private ESM package named for the
  * directory, each `links` entry a symlink at that relative path to an absolute
  * source.
+ *
+ * @internal
  */
 export const copyApp = Effect.fn("RealBackend.copyApp")(function* (
   fixture: string,
@@ -219,16 +240,38 @@ export const copyApp = Effect.fn("RealBackend.copyApp")(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   yield* fs.copy(fixture, directory);
-  for (const [at, source] of Object.entries(links)) {
+  for (const [at, source] of Rec.toEntries(links)) {
     const link = `${directory}/${at}`;
-    yield* fs.makeDirectory(link.slice(0, link.lastIndexOf("/")), {
-      recursive: true,
-    });
+    yield* fs.makeDirectory(
+      pipe(
+        link,
+        String.slice(
+          0,
+          pipe(
+            link,
+            String.lastIndexOf("/"),
+            Option.getOrElse(() => -1),
+          ),
+        ),
+      ),
+      {
+        recursive: true,
+      },
+    );
     yield* fs.symlink(source, link);
   }
   yield* fs.writeFileString(
     `${directory}/package.json`,
-    `{ "name": "${directory.slice(directory.lastIndexOf("/") + 1)}", "private": true, "type": "module", "dependencies": { "convex": "*" } }\n`,
+    `{ "name": "${pipe(
+      directory,
+      String.slice(
+        pipe(
+          directory,
+          String.lastIndexOf("/"),
+          Option.getOrElse(() => -1),
+        ) + 1,
+      ),
+    )}", "private": true, "type": "module", "dependencies": { "convex": "*" } }\n`,
   );
 });
 
@@ -242,15 +285,18 @@ export const call = (
   args: unknown = {},
 ) =>
   Effect.gen(function* () {
-    const client = yield* ConvexClient.ConvexClient;
-    return yield* client.runFunction(
-      outputs.url,
-      outputs.adminKey,
-      functionPath,
-      args,
-      componentPath,
-    );
-  }).pipe(Effect.provide(localClient), Effect.orDie);
+    const services3 = yield* Layer.build(localClient);
+    return yield* Effect.gen(function* () {
+      const client = yield* ConvexClient.ConvexClient;
+      return yield* client.runFunction(
+        outputs.url,
+        outputs.adminKey,
+        functionPath,
+        args,
+        componentPath,
+      );
+    }).pipe(Effect.provideContext(services3));
+  }).pipe(Effect.scoped, Effect.orDie);
 
 /**
  * Hooks to line two pushes up: `attempting` runs as a push asks for the lock,
@@ -337,18 +383,18 @@ export const push = (
   events: Array<string> = [],
   probe: Probe = {},
 ) =>
-  deploy(
-    {
-      deployment: { name: outputs.name, url: outputs.url },
-      deployKey: outputs.adminKey,
-      ...props,
-    },
-    "local",
-  ).pipe(
-    Effect.provide(
+  Effect.gen(function* () {
+    const services4 = yield* Layer.build(
       recording(tag, events, probe).pipe(
         Layer.provideMerge(NodeServices.layer),
       ),
-    ),
-    Effect.result,
-  );
+    );
+    return yield* deploy(
+      {
+        deployment: { name: outputs.name, url: outputs.url },
+        deployKey: outputs.adminKey,
+        ...props,
+      },
+      "local",
+    ).pipe(Effect.provideContext(services4));
+  }).pipe(Effect.scoped, Effect.result);

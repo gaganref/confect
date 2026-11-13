@@ -11,29 +11,37 @@ import { actionGeneric } from "convex/server";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { HttpMount, RegisterComponent } from "../TestConfect.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
+import * as Rec from "effect/Record";
 import * as Execution from "./Execution.js";
 import * as Http from "./Http.js";
 
 declare const process: { env: Record<string, string | undefined> };
 
-class InvalidHttpMount extends Schema.TaggedError<InvalidHttpMount>()(
-  "InvalidHttpMount",
-  {
-    componentPath: Schema.String,
-    httpPrefix: Schema.String,
-    message: Schema.String,
-  },
-) {}
+class InvalidHttpMount extends Schema.TaggedError<
+  InvalidHttpMount,
+  { readonly brand: unique symbol }
+>()("InvalidHttpMount", {
+  componentPath: Schema.String,
+  httpPrefix: Schema.String,
+  message: Schema.String,
+}) {}
 
-class ComponentHttpError extends Schema.TaggedError<ComponentHttpError>()(
-  "ComponentHttpError",
-  { componentPath: Schema.String, message: Schema.String },
-) {}
+class ComponentHttpError extends Schema.TaggedError<
+  ComponentHttpError,
+  { readonly brand: unique symbol }
+>()("ComponentHttpError", {
+  componentPath: Schema.String,
+  message: Schema.String,
+}) {}
 
-class InvalidFetchPath extends Schema.TaggedError<InvalidFetchPath>()(
-  "InvalidFetchPath",
-  { path: Schema.String, message: Schema.String },
-) {}
+class InvalidFetchPath extends Schema.TaggedError<
+  InvalidFetchPath,
+  { readonly brand: unique symbol }
+>()("InvalidFetchPath", { path: Schema.String, message: Schema.String }) {}
 
 type NormalizedMount = {
   readonly componentPath: string;
@@ -43,19 +51,22 @@ type NormalizedMount = {
 const normalizeMounts = (mounts: ReadonlyArray<HttpMount>) => {
   const normalized: Array<NormalizedMount> = [];
   for (const mount of mounts) {
-    if (!mount.httpPrefix.startsWith("/") || /[?#]/.test(mount.httpPrefix)) {
+    if (
+      !pipe(mount.httpPrefix, String.startsWith("/")) ||
+      /[?#]/.test(mount.httpPrefix)
+    ) {
       return Result.fail(
-        new InvalidHttpMount({
+        InvalidHttpMount.make({
           ...mount,
           message:
             "httpPrefix must be an absolute path without a query or fragment.",
         }),
       );
     }
-    const prefix = mount.httpPrefix.replace(/\/+$/, "");
-    if (normalized.some((previous) => previous.prefix === prefix)) {
+    const prefix = pipe(mount.httpPrefix, String.replace(/\/+$/, ""));
+    if (Arr.some(normalized, (previous) => previous.prefix === prefix)) {
       return Result.fail(
-        new InvalidHttpMount({
+        InvalidHttpMount.make({
           ...mount,
           message: "Each httpPrefix must select one component installation.",
         }),
@@ -112,25 +123,33 @@ export const make = (
     options,
   ) => {
     if (
-      !normalized.success.some((mount) => mount.componentPath === componentPath)
+      !Arr.some(
+        normalized.success,
+        (mount) => mount.componentPath === componentPath,
+      )
     ) {
       registerComponent(componentPath, schema, modules, options);
       return;
     }
-    const generated = Object.keys(modules).find((key) =>
-      key.includes("_generated"),
+    const generated = Option.getOrUndefined(
+      Arr.findFirst(Rec.keys(modules), (key) =>
+        pipe(key, String.includes("_generated")),
+      ),
     );
-    const root = generated?.split("_generated", 2)[0];
-    const moduleLoaders = Object.fromEntries(
-      Object.entries(modules).map(([path, load]) => [
-        path.replace(/\.[^.]+$/, ""),
+    const root =
+      generated === undefined
+        ? undefined
+        : pipe(generated, String.split("_generated"))[0];
+    const moduleLoaders = Rec.fromEntries(
+      Arr.map(Rec.toEntries(modules), ([path, load]) => [
+        pipe(path, String.replace(/\.[^.]+$/, "")),
         load,
       ]),
     );
     const loadHttp =
       root === undefined ? undefined : moduleLoaders[`${root}http`];
     if (root === undefined || loadHttp === undefined) {
-      throw new ComponentHttpError({
+      throw ComponentHttpError.make({
         componentPath,
         message:
           "Mounted components need an HTTP module and Convex _generated modules.",
@@ -138,7 +157,7 @@ export const make = (
     }
     const bridgePath = `${root}${bridgeModule}.ts`;
     if (`${root}${bridgeModule}` in moduleLoaders) {
-      throw new ComponentHttpError({
+      throw ComponentHttpError.make({
         componentPath,
         message: `${bridgeModule} is reserved for mounted HTTP tests.`,
       });
@@ -167,7 +186,7 @@ export const make = (
           } else {
             const action = route[0];
             if (!isInvokable(action)) {
-              throw new ComponentHttpError({
+              throw ComponentHttpError.make({
                 componentPath,
                 message:
                   "This Convex version does not expose invokeHttpAction for HTTP tests.",
@@ -210,9 +229,11 @@ export const make = (
     // a deployment builds a mounted component's router at its mount. So the
     // backend never loads the HTTP module on its own: the test kernel would
     // otherwise construct it at open, under no mount's site URL.
-    const backendModules = Object.fromEntries(
-      Object.entries(modules).filter(
-        ([path]) => path.replace(/\.[^.]+$/, "") !== `${root}http`,
+    const backendModules = Rec.fromEntries(
+      Arr.filter(
+        Rec.toEntries(modules),
+        ([path]) =>
+          pipe(path, String.replace(/\.[^.]+$/, "")) !== `${root}http`,
       ),
     );
     registerComponent(
@@ -231,27 +252,32 @@ export const make = (
   ): Promise<Response> => {
     if (normalized.success.length === 0) return accessor.fetch(path, init);
     const run = async () => {
-      if (!path.startsWith("/")) {
-        throw new InvalidFetchPath({
+      if (!pipe(path, String.startsWith("/"))) {
+        throw InvalidFetchPath.make({
           path,
           message: 'Path given to fetch must start with a "/".',
         });
       }
       const pathname = new URL(`${defaultSiteUrl}${path}`).pathname;
-      const mount = normalized.success.find(
-        ({ prefix }) =>
-          pathname === prefix || pathname.startsWith(`${prefix}/`),
+      const mount = Option.getOrUndefined(
+        Arr.findFirst(
+          normalized.success,
+          ({ prefix }) =>
+            pathname === prefix ||
+            pipe(pathname, String.startsWith(`${prefix}/`)),
+        ),
       );
       if (mount === undefined) return accessor.fetch(path, init);
       if (!registered.has(mount.componentPath)) {
-        throw new ComponentHttpError({
+        throw ComponentHttpError.make({
           componentPath: mount.componentPath,
           message: "Register the mounted component before calling fetch.",
         });
       }
-      const appSiteUrl = (
-        process.env.CONVEX_SITE_URL || defaultSiteUrl
-      ).replace(/\/$/, "");
+      const appSiteUrl = pipe(
+        process.env.CONVEX_SITE_URL || defaultSiteUrl,
+        String.replace(/\/$/, ""),
+      );
       // The body goes before the request is built: a GET or HEAD request with
       // one cannot be built at all, and the binary discards it anyway.
       const request = new Request(
@@ -271,7 +297,7 @@ export const make = (
       const response = await accessor.action(reference, {
         siteUrl: `${appSiteUrl}${mount.prefix}`,
         url: request.url,
-        pathname: pathname.slice(mount.prefix.length) || "/",
+        pathname: pipe(pathname, String.slice(mount.prefix.length)) || "/",
         method: request.method,
         headers: [...request.headers],
         body: Http.discardsBody(request.method)

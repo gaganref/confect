@@ -3,6 +3,7 @@ import { pipe } from "effect/Function";
 import * as Record from "effect/Record";
 import * as FunctionRegistryItem from "./FunctionRegistryItem.js";
 import * as MiddlewareRegistryItem from "./MiddlewareRegistryItem.js";
+import * as Str from "effect/String";
 
 /**
  * Runtime tree that mirrors a `Spec`'s group structure. Values remain unknown
@@ -49,23 +50,30 @@ export const missingRequired = (
   required: ReadonlyArray<{ readonly key: string }>,
   groupPath = "",
 ): ReadonlyArray<MissingMiddleware> =>
-  Object.entries(items)
-    .sort(([left], [right]) => left.localeCompare(right))
-    .flatMap(([functionName, value]) =>
+  Array.flatMap(
+    Record.toEntries(items).sort(([left], [right]) =>
+      pipe(left, Str.localeCompare(right)),
+    ),
+    ([functionName, value]) =>
       FunctionRegistryItem.isFunctionRegistryItem(value)
-        ? required.flatMap(({ key }) =>
-            value._tag === "Confect" &&
-            value.middlewareAttachments.some(({ spec }) => spec.key === key)
-              ? []
-              : [
-                  {
+        ? // reduce skips a sparse list's holes, which effect/Array's flatMap visits.
+          Array.reduce(
+            required,
+            Array.empty<MissingMiddleware>(),
+            (missing, { key }) =>
+              value._tag === "Confect" &&
+              Array.some(
+                value.middlewareAttachments,
+                ({ spec }) => spec.key === key,
+              )
+                ? missing
+                : Array.append(missing, {
                     functionName:
                       groupPath === ""
                         ? functionName
                         : `${groupPath}.${functionName}`,
                     middlewareKey: key,
-                  },
-                ],
+                  }),
           )
         : [],
-    );
+  );

@@ -72,7 +72,7 @@ import { HttpRouter } from "@confect/server";
 import schema from "../confect/_generated/schema";
 import http from "../confect/http";
 
-export default HttpRouter.forSchema(schema)(http.routes, { api: http.api });
+export default HttpRouter.make(schema, http.routes, { api: http.api });
 ```
 
 Write tables under `confect/tables/` and functions in sibling `*.spec.ts` / `*.impl.ts` files using the same APIs as an application. Codegen writes IDs, schemas, services, refs, registered functions and `confect/_generated/component.ts`, the publishable contract that `Component.contract(spec, scope, tables)` builds. Only public functions enter that contract. Breaking change: replace `Component.make(spec, scope, tables)` with `Component.contract(spec, scope, tables)`. Rerun `confect codegen` for generated callers.
@@ -215,7 +215,7 @@ import { HttpRouter } from "@confect/server";
 import schema from "../confect/_generated/schema";
 import http from "../confect/http";
 
-export default HttpRouter.forSchema(schema)(http.routes, { api: http.api });
+export default HttpRouter.make(schema, http.routes, { api: http.api });
 ```
 
 Import `env.ts` in handlers, never `app.ts`. Component definitions load only during Convex config analysis. Without `confect/app.ts`, the declaration is opt-in and you manage `convex/convex.config.ts` yourself with Convex's API.
@@ -283,7 +283,7 @@ List each mount in `App.make`'s `mounts` and the component's `convex.config` def
 
 ## How HTTP routes compose
 
-The host serves `/health`. The counter declares `/health` relative to its installation, so the mount serves `/counter/health`. Convex selects each installation's HTTP action. `HttpRouter.forSchema` prefixes the component's Effect router with the pathname of its `CONVEX_SITE_URL`, including ancestor mount prefixes; it preserves the original request and body. Host middleware does not wrap the component's routes.
+The host serves `/health`. The counter declares `/health` relative to its installation, so the mount serves `/counter/health`. Convex selects each installation's HTTP action. `HttpRouter.make` prefixes a component's Effect router with the pathname of its `CONVEX_SITE_URL`, including ancestor mount prefixes; it preserves the original request and body. Host middleware does not wrap the component's routes.
 
 Codegen calls `Http.routes(app, http)` to validate the route inventory. It returns a `Result` failure for:
 

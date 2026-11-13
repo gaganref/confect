@@ -2,6 +2,8 @@ import type { UserIdentity } from "convex/server";
 import { compareValues, convexToJson, type Value } from "convex/values";
 import * as Execution from "./Execution.js";
 import * as Kernel from "./Kernel.js";
+import * as Arr from "effect/Array";
+import * as Json from "./Json.js";
 
 /**
  * One run of a subscribed query, and the identity version its subscriber had
@@ -55,7 +57,7 @@ const thrownKey = (thrown: unknown): unknown => {
 };
 
 const errorKey = (error: unknown): string =>
-  JSON.stringify(
+  Json.stringify(
     error instanceof Error
       ? [
           "error",
@@ -106,12 +108,10 @@ const inTurn = <A, B>(
   items: ReadonlyArray<A>,
   f: (item: A) => Promise<B | undefined>,
 ): Promise<Array<B>> =>
-  items.reduce<Promise<Array<B>>>(
-    (previous, item) =>
-      previous.then((kept) =>
-        f(item).then((b) => (b === undefined ? kept : [...kept, b])),
-      ),
-    Promise.resolve([]),
+  Arr.reduce(items, Promise.resolve<Array<B>>([]), (previous, item) =>
+    previous.then((kept) =>
+      f(item).then((b) => (b === undefined ? kept : [...kept, b])),
+    ),
   );
 
 export interface Subscription {
@@ -245,7 +245,7 @@ export class Registry {
    * changed.
    */
   refresh(): Promise<ReadonlyArray<Transition>> {
-    const stale = Array.from(this.live.values()).flatMap((live) => {
+    const stale = Arr.flatMap(Array.from(this.live.values()), (live) => {
       const because = invalidation(
         live.run,
         this.world.state,

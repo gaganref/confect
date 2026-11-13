@@ -16,7 +16,10 @@ import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as HttpClient from "effect/http/HttpClient";
 import { convexTest } from "../../../test/src/internal/ConvexTest";
 import { expectServerError } from "../mock-backend/serverError";
-import * as LocalBackend from "./LocalBackend";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
+import * as Arr from "effect/Array";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 /**
  * One raw request to the plain probe: its status, raw header lines and body.
@@ -65,8 +68,10 @@ const raw = (
  * The values a raw response sent under `name`, one per header line.
  */
 const lines = (rawHeaders: ReadonlyArray<string>, name: string) =>
-  rawHeaders.flatMap((value, i) =>
-    i % 2 === 0 && value.toLowerCase() === name ? [rawHeaders[i + 1]!] : [],
+  Arr.flatMap(rawHeaders, (value, i) =>
+    i % 2 === 0 && pipe(value, String.toLowerCase) === name
+      ? [rawHeaders[i + 1]!]
+      : [],
   );
 
 /**
@@ -75,7 +80,8 @@ const lines = (rawHeaders: ReadonlyArray<string>, name: string) =>
 const kernel = () =>
   convexTest(undefined, {
     "_generated/server.ts": () => Promise.resolve({}),
-    "http.ts": () => import("./fixtures/plain/convex/http"),
+    "http.ts": () =>
+      import("../../../../tools/local-backend/fixtures/plain/convex/http"),
   }) as {
     readonly fetch: (path: string, init?: RequestInit) => Promise<Response>;
   };
@@ -131,7 +137,8 @@ layer(
       expect(response.headers["content-type"]).toBe(
         "text/plain; charset=utf-8",
       );
-      expect(yield* response.text).toBe("No matching routes found");
+      const text2 = yield* response.text;
+      expect(text2).toBe("No matching routes found");
     }),
   );
 
@@ -172,7 +179,8 @@ layer(
         const response = yield* Effect.promise(() =>
           kernel().fetch("/echo", { method: "OPTIONS", body: "discarded" }),
         );
-        expect(yield* Effect.promise(() => response.text())).toBe(binary.body);
+        const resolved = yield* Effect.promise(() => response.text());
+        expect(resolved).toBe(binary.body);
       }),
   );
 
@@ -190,7 +198,7 @@ layer(
           "b=2; Path=/",
         ]);
         const multi = lines(binary.rawHeaders, "x-multi");
-        expect(multi.join(", ")).toBe("first, second");
+        expect(Arr.join(multi, ", ")).toBe("first, second");
 
         const response = yield* Effect.promise(() =>
           kernel().fetch("/headers", {
@@ -200,11 +208,12 @@ layer(
             ],
           }),
         );
-        expect(yield* Effect.promise(() => response.text())).toBe(binary.body);
+        const resolved = yield* Effect.promise(() => response.text());
+        expect(resolved).toBe(binary.body);
         expect(response.headers.getSetCookie()).toEqual(
           lines(binary.rawHeaders, "set-cookie"),
         );
-        expect(response.headers.get("x-multi")).toBe(multi.join(", "));
+        expect(response.headers.get("x-multi")).toBe(Arr.join(multi, ", "));
       }),
   );
 });

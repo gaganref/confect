@@ -1,4 +1,8 @@
 import { remove } from "@confect/cli/Remove";
+import * as Arr from "effect/Array";
+import { pipe } from "effect/Function";
+import * as Str from "effect/String";
+import * as Rec from "effect/Record";
 import * as Effect from "effect/Effect";
 import * as Clock from "effect/Clock";
 import * as FileSystem from "effect/FileSystem";
@@ -44,12 +48,15 @@ import notes from "./notes.spec";
 export default GroupImpl.make(databaseSchema, notes).pipe(GroupImpl.finalize);
 `;
 
+/**
+ * @internal
+ */
 export const writtenFiles = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const writes = yield* Ref.make<ReadonlyArray<string>>([]);
     const record = (file: string) =>
-      file.endsWith(".ts")
+      pipe(file, Str.endsWith(".ts"))
         ? Ref.update(writes, (paths) => [...paths, file])
         : Effect.void;
     yield* effect.pipe(
@@ -64,6 +71,31 @@ export const writtenFiles = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     return yield* Ref.get(writes);
   });
 
+/**
+ * @internal
+ */
+export const installPackages = Effect.fnUntraced(function* (root: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  for (const name of ["core", "server"]) {
+    const source = path.resolve(import.meta.dirname, "../../../", name);
+    const installed = path.join(root, "node_modules", "@confect", name);
+    yield* fs.makeDirectory(installed, { recursive: true });
+    yield* fs.copyFile(
+      path.join(source, "package.json"),
+      path.join(installed, "package.json"),
+    );
+    yield* fs.copy(path.join(source, "dist"), path.join(installed, "dist"));
+    yield* fs.symlink(
+      path.join(source, "node_modules"),
+      path.join(installed, "node_modules"),
+    );
+  }
+});
+
+/**
+ * @internal
+ */
 export const make = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -78,6 +110,7 @@ export const make = Effect.gen(function* () {
         Effect.orDie,
       ),
   );
+  yield* installPackages(root);
   const write = (file: string, contents: string) =>
     fs.writeFileString(path.join(root, file), contents);
   yield* fs.makeDirectory(path.join(root, "confect", "tables"), {
@@ -124,7 +157,7 @@ export const make = Effect.gen(function* () {
     );
     const waitFor = (text: string) =>
       Queue.take(lines).pipe(
-        Effect.repeat({ while: (line) => !line.includes(text) }),
+        Effect.repeat({ while: (line) => !pipe(line, Str.includes(text)) }),
         Effect.timeoutOption("15 seconds"),
         Effect.flatMap((result) =>
           Ref.get(output).pipe(
@@ -140,23 +173,21 @@ export const make = Effect.gen(function* () {
     const files = yield* Effect.forEach(
       ["confect/_generated", "convex"],
       (directory) =>
-        fs
-          .readDirectory(path.join(root, directory), { recursive: true })
-          .pipe(
-            Effect.map((entries) =>
-              entries
-                .filter((entry) => entry.endsWith(".ts"))
-                .map((entry) => path.join(directory, entry)),
+        fs.readDirectory(path.join(root, directory), { recursive: true }).pipe(
+          Effect.map((entries) =>
+            Arr.map(
+              Arr.filter(entries, (entry) => pipe(entry, Str.endsWith(".ts"))),
+              (entry) => path.join(directory, entry),
             ),
           ),
+        ),
     );
-    return Object.fromEntries(
-      yield* Effect.forEach(files.flat(), (file) =>
-        fs
-          .readFileString(path.join(root, file))
-          .pipe(Effect.map((contents) => [file, contents] as const)),
-      ),
+    const actual = yield* Effect.forEach(files.flat(), (file) =>
+      fs
+        .readFileString(path.join(root, file))
+        .pipe(Effect.map((contents) => [file, contents] as const)),
     );
+    return Rec.fromEntries(actual);
   });
   const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
     effect.pipe(
@@ -171,6 +202,9 @@ export const make = Effect.gen(function* () {
   return { root, write, start, generatedFiles, provide };
 });
 
+/**
+ * @internal
+ */
 export const makeNodeComponent = Effect.gen(function* () {
   const project = yield* make;
   const fs = yield* FileSystem.FileSystem;

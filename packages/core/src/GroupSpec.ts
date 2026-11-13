@@ -1,3 +1,5 @@
+import * as Option from "effect/Option";
+import * as Array from "effect/Array";
 import * as MiddlewareAttachment from "./MiddlewareAttachment.js";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
@@ -26,6 +28,7 @@ export interface GroupSpec<
 > {
   readonly [TypeId]: TypeId;
   readonly runtime: Runtime;
+  readonly experimental_reuseContext: boolean;
   readonly name: Name_;
   readonly functions: {
     [
@@ -139,7 +142,7 @@ const Proto = {
   [TypeId]: TypeId,
 
   get middlewareSpecs() {
-    return this.middlewareAttachments.map(({ spec }) => spec);
+    return Array.map(this.middlewareAttachments, ({ spec }) => spec);
   },
 
   addFunction<Function extends FunctionSpec.AnyWithProps>(
@@ -148,22 +151,25 @@ const Proto = {
   ) {
     const this_ = this as AnyWithProps;
 
-    const overlapping = function_.middlewareAttachments.find(
+    const overlapping = Array.findFirst(
+      function_.middlewareAttachments,
       ({ spec: functionMiddlewareSpec }) =>
         !("options" in functionMiddlewareSpec) &&
-        this_.middlewareAttachments.some(
+        Array.some(
+          this_.middlewareAttachments,
           ({ spec: groupMiddlewareSpec }) =>
             groupMiddlewareSpec.key === functionMiddlewareSpec.key,
         ),
     );
-    if (overlapping !== undefined) {
+    if (Option.isSome(overlapping)) {
       throw new Error(
-        `Middleware "${overlapping.spec.key}" is attached to both function "${function_.name}" and its group`,
+        `Middleware "${overlapping.value.spec.key}" is attached to both function "${function_.name}" and its group`,
       );
     }
 
     return makeProto({
       runtime: this_.runtime,
+      experimental_reuseContext: this_.experimental_reuseContext,
       name: this_.name,
       functions: Record.set(this_.functions, function_.name, function_),
       groups: this_.groups,
@@ -180,7 +186,8 @@ const Proto = {
 
     if (
       !("options" in middlewareSpec) &&
-      this_.middlewareAttachments.some(
+      Array.some(
+        this_.middlewareAttachments,
         ({ spec }) => spec.key === middlewareSpec.key,
       )
     ) {
@@ -189,10 +196,11 @@ const Proto = {
       );
     }
 
-    for (const function_ of Object.values(this_.functions)) {
+    for (const function_ of Record.values(this_.functions)) {
       if (
         !("options" in middlewareSpec) &&
-        function_.middlewareAttachments.some(
+        Array.some(
+          function_.middlewareAttachments,
           ({ spec }) => spec.key === middlewareSpec.key,
         )
       ) {
@@ -204,6 +212,7 @@ const Proto = {
 
     return makeProto({
       runtime: this_.runtime,
+      experimental_reuseContext: this_.experimental_reuseContext,
       name: this_.name,
       functions: this_.functions,
       groups: this_.groups,
@@ -224,12 +233,14 @@ const makeProto = <
     ReadonlyArray<MiddlewareAttachment.MiddlewareAttachment>,
 >({
   runtime,
+  experimental_reuseContext,
   name,
   functions,
   groups,
   middlewareAttachments,
 }: {
   runtime: Runtime;
+  experimental_reuseContext?: boolean | undefined;
   name: Name_;
   functions: Record.ReadonlyRecord<string, Functions_>;
   groups: Record.ReadonlyRecord<string, Groups_>;
@@ -243,6 +254,10 @@ const makeProto = <
 > =>
   Object.assign(Object.create(Proto), {
     runtime,
+    experimental_reuseContext:
+      experimental_reuseContext === undefined
+        ? false
+        : experimental_reuseContext,
     name,
     functions,
     groups,
@@ -255,9 +270,12 @@ const makeProto = <
     MiddlewareAttachments_[number]["spec"]
   >;
 
-export const make = (): GroupSpec<"Convex", ""> =>
+export const make = (
+  options: { readonly experimental_reuseContext?: boolean | undefined } = {},
+): GroupSpec<"Convex", ""> =>
   makeProto({
     runtime: "Convex",
+    experimental_reuseContext: options.experimental_reuseContext,
     name: "",
     functions: Record.empty(),
     groups: Record.empty(),
@@ -287,6 +305,7 @@ export function withName(name: string, group: Any): AnyWithProps {
 
   return makeProto({
     runtime: group_.runtime,
+    experimental_reuseContext: group_.experimental_reuseContext,
     name,
     functions: group_.functions,
     groups: group_.groups,
@@ -300,6 +319,7 @@ export const addGroupsAt = (
 ): AnyWithProps =>
   makeProto({
     runtime: group.runtime,
+    experimental_reuseContext: group.experimental_reuseContext,
     name: group.name,
     functions: group.functions,
     groups: Record.union(
@@ -318,12 +338,12 @@ export const validateMiddleware = (
       group.middlewareAttachments,
       `group "${group.name}"`,
     );
-    for (const function_ of Object.values(group.functions)) {
+    for (const function_ of Record.values(group.functions)) {
       yield* MiddlewareAttachment.validateAll(
         [...group.middlewareAttachments, ...function_.middlewareAttachments],
         `function "${function_.name}"`,
       );
     }
-    for (const child of Object.values(group.groups))
+    for (const child of Record.values(group.groups))
       yield* validateMiddleware(child);
   });

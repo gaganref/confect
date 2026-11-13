@@ -5,8 +5,8 @@ import {
   expected,
   normalize,
 } from "../../../test/test/fixtures/randomnessProbe";
-import refs from "./fixtures/confect/_generated/refs";
-import * as LocalBackend from "./LocalBackend";
+import refs from "confect-local-backend/refs";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 
 const probe = refs.public.groups.randomness;
 

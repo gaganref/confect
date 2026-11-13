@@ -1,7 +1,7 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import refs from "../../server/test/local-backend/fixtures/confect/_generated/refs";
+import refs from "../../../tools/local-backend/fixtures/confect/_generated/refs";
 import * as Invocation from "../src/internal/Invocation";
 import { call, localBackendWorld } from "./fixtures/localBackendWorld";
 import { expected, normalize } from "./fixtures/randomnessProbe";

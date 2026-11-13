@@ -1,3 +1,9 @@
+import * as Result from "effect/Result";
+import type * as ConvexServer from "convex/server";
+import { vi } from "vitest";
+import * as RecordEffect from "effect/Record";
+import * as Option from "effect/Option";
+import * as Arr from "effect/Array";
 import { AiGatewayDecisionModel } from "@confect/server";
 import { assert, describe, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
@@ -12,6 +18,13 @@ import * as InternalAiGatewayDecisionClient from "../src/internal/AiGatewayDecis
 import { AiGatewayServiceToken } from "../src/internal/AiGatewayServiceToken";
 
 const modelId = "typesafe/jev-1.13";
+
+vi.mock("convex/server", (importOriginal) =>
+  importOriginal<typeof ConvexServer>().then((original) => ({
+    ...original,
+    getServiceUrl: () => Promise.resolve("https://ai-gateway.convex.dev"),
+  })),
+);
 
 const TicketTriage = Decision.make({
   input: Schema.Struct({ message: Schema.String }),
@@ -75,10 +88,15 @@ const jsonResponse = (
 ) =>
   HttpClientResponse.fromWeb(
     request,
-    new Response(JSON.stringify(body), {
-      status,
-      headers: { "content-type": "application/json" },
-    }),
+    new Response(
+      Schema.encodeResult(Schema.fromJsonString(Schema.Unknown))(body).pipe(
+        Result.getOrThrow,
+      ),
+      {
+        status,
+        headers: { "content-type": "application/json" },
+      },
+    ),
   );
 
 describe("AiGatewayDecisionModel", () => {
@@ -97,10 +115,8 @@ describe("AiGatewayDecisionModel", () => {
     ([, modelLayer]) =>
       Effect.gen(function* () {
         let requests = 0;
-        const result = yield* DecisionModel.decide(TicketTriage, {
-          input: { message: "Nobody can sign in" },
-        }).pipe(
-          Effect.provide(
+        const result = yield* Effect.gen(function* () {
+          const services = yield* Layer.build(
             modelLayer.pipe(
               Layer.provide(
                 clientLayer((request) =>
@@ -117,48 +133,49 @@ describe("AiGatewayDecisionModel", () => {
                     );
                     assert.strictEqual(request.body._tag, "Uint8Array");
                     if (request.body._tag === "Uint8Array") {
-                      assert.deepStrictEqual(
-                        yield* Schema.decodeEffect(
-                          Schema.fromJsonString(Schema.Unknown),
-                        )(new TextDecoder().decode(request.body.body)).pipe(
-                          Effect.orDie,
-                        ),
-                        {
-                          model: modelId,
-                          state: { message: "Nobody can sign in" },
-                          questions: {
-                            priority: {
-                              type: "choice",
-                              instructions: "Choose the ticket priority",
-                              criteria: {
-                                urgent: "An outage",
-                                normal: "Has a workaround",
-                              },
+                      const pipeResult = yield* Schema.decodeEffect(
+                        Schema.fromJsonString(Schema.Unknown),
+                      )(new TextDecoder().decode(request.body.body)).pipe(
+                        Effect.orDie,
+                      );
+                      assert.deepStrictEqual(pipeResult, {
+                        model: modelId,
+                        state: { message: "Nobody can sign in" },
+                        questions: {
+                          priority: {
+                            type: "choice",
+                            instructions: "Choose the ticket priority",
+                            criteria: {
+                              urgent: "An outage",
+                              normal: "Has a workaround",
                             },
-                            severity: {
-                              type: "score",
-                              instructions: "Rate the impact",
-                              criteria: ["low", "medium", "high"],
-                            },
-                            escalate: {
-                              type: "noul",
-                              instructions: "Needs human attention",
-                              criteria: {
-                                false: "Self-service",
-                                true: "Needs a human",
-                              },
+                          },
+                          severity: {
+                            type: "score",
+                            instructions: "Rate the impact",
+                            criteria: ["low", "medium", "high"],
+                          },
+                          escalate: {
+                            type: "noul",
+                            instructions: "Needs human attention",
+                            criteria: {
+                              false: "Self-service",
+                              true: "Needs a human",
                             },
                           },
                         },
-                      );
+                      });
                     }
                     return jsonResponse(request, responseBody);
                   }),
                 ),
               ),
             ),
-          ),
-        );
+          );
+          return yield* DecisionModel.decide(TicketTriage, {
+            input: { message: "Nobody can sign in" },
+          }).pipe(Effect.provideContext(services));
+        }).pipe(Effect.scoped);
 
         assert.strictEqual(requests, 1);
         assert.strictEqual(result.answers.priority.label, "urgent");
@@ -222,10 +239,8 @@ describe("AiGatewayDecisionModel", () => {
           },
         },
       };
-      const result = yield* DecisionModel.decide(definition, {
-        input: "Help",
-      }).pipe(
-        Effect.provide(
+      const result = yield* Effect.gen(function* () {
+        const services = yield* Layer.build(
           AiGatewayDecisionModel.model(modelId).pipe(
             Layer.provide(
               clientLayer((request) =>
@@ -233,8 +248,11 @@ describe("AiGatewayDecisionModel", () => {
               ),
             ),
           ),
-        ),
-      );
+        );
+        return yield* DecisionModel.decide(definition, {
+          input: "Help",
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped);
       assert.strictEqual(result.answers.neutral3.label, "group_a");
       assert.strictEqual(result.answers.urgency5.label, "Low priority");
       assert.strictEqual(result.answers.urgency5.rating, 0.77);
@@ -254,18 +272,25 @@ describe("AiGatewayDecisionModel", () => {
           },
         ],
       ] as const) {
-        for (const [label, probability] of Object.entries(probabilities)) {
-          const expectedProbability = Object.entries(expected).find(
-            ([key]) => key === label,
+        for (const [label, probability] of RecordEffect.toEntries<
+          string,
+          number
+        >(probabilities)) {
+          const expectedProbability = Option.getOrUndefined(
+            Arr.findFirst(
+              RecordEffect.toEntries<string, number>(expected),
+              ([key]) => key === label,
+            ),
           )?.[1];
           assert(typeof expectedProbability === "number");
           assert(Math.abs(probability - expectedProbability / 0.99) < 1e-10);
         }
         assert(
           Math.abs(
-            Object.values(probabilities).reduce(
-              (total, value) => total + value,
+            Arr.reduce(
+              RecordEffect.values<string, number>(probabilities),
               0,
+              (total, value) => total + value,
             ) - 1,
           ) < 1e-10,
         );
@@ -300,10 +325,8 @@ describe("AiGatewayDecisionModel", () => {
       ],
     ] as const)("for %s despite rounding tolerance", ([decision, answer]) =>
       Effect.gen(function* () {
-        const error = yield* DecisionModel.decide(TicketTriage, {
-          input: { message: "Help" },
-        }).pipe(
-          Effect.provide(
+        const error = yield* Effect.gen(function* () {
+          const services = yield* Layer.build(
             AiGatewayDecisionModel.model(modelId).pipe(
               Layer.provide(
                 clientLayer((request) =>
@@ -319,9 +342,11 @@ describe("AiGatewayDecisionModel", () => {
                 ),
               ),
             ),
-          ),
-          Effect.flip,
-        );
+          );
+          return yield* DecisionModel.decide(TicketTriage, {
+            input: { message: "Help" },
+          }).pipe(Effect.provideContext(services));
+        }).pipe(Effect.scoped, Effect.flip);
         assert(error._tag === "AiError");
         assert.strictEqual(error.reason._tag, "InvalidOutputError");
       }),
@@ -365,10 +390,8 @@ describe("AiGatewayDecisionModel", () => {
     ],
   ] as const)("rejects %s through AiError", ([, body]) =>
     Effect.gen(function* () {
-      const error = yield* DecisionModel.decide(TicketTriage, {
-        input: { message: "Help" },
-      }).pipe(
-        Effect.provide(
+      const error = yield* Effect.gen(function* () {
+        const services = yield* Layer.build(
           AiGatewayDecisionModel.model(modelId).pipe(
             Layer.provide(
               clientLayer((request) =>
@@ -376,9 +399,11 @@ describe("AiGatewayDecisionModel", () => {
               ),
             ),
           ),
-        ),
-        Effect.flip,
-      );
+        );
+        return yield* DecisionModel.decide(TicketTriage, {
+          input: { message: "Help" },
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped, Effect.flip);
       assert(error._tag === "AiError");
       assert.strictEqual(error.reason._tag, "InvalidOutputError");
     }),
@@ -395,16 +420,18 @@ describe("AiGatewayDecisionModel", () => {
           }),
         },
       });
-      const error = yield* DecisionModel.decide(definition, { input: 42 }).pipe(
-        Effect.provide(
+      const error = yield* Effect.gen(function* () {
+        const services = yield* Layer.build(
           AiGatewayDecisionModel.model(modelId).pipe(
             Layer.provide(
               clientLayer(() => Effect.die("Unexpected HTTP request")),
             ),
           ),
-        ),
-        Effect.flip,
-      );
+        );
+        return yield* DecisionModel.decide(definition, { input: 42 }).pipe(
+          Effect.provideContext(services),
+        );
+      }).pipe(Effect.scoped, Effect.flip);
       assert(error._tag === "AiError");
       assert.strictEqual(error.reason._tag, "InvalidUserInputError");
     }),
@@ -412,10 +439,8 @@ describe("AiGatewayDecisionModel", () => {
 
   it.effect("preserves HTTP failures in the AiError channel", () =>
     Effect.gen(function* () {
-      const error = yield* DecisionModel.decide(TicketTriage, {
-        input: { message: "Help" },
-      }).pipe(
-        Effect.provide(
+      const error = yield* Effect.gen(function* () {
+        const services = yield* Layer.build(
           AiGatewayDecisionModel.model(modelId).pipe(
             Layer.provide(
               clientLayer((request) =>
@@ -435,9 +460,11 @@ describe("AiGatewayDecisionModel", () => {
               ),
             ),
           ),
-        ),
-        Effect.flip,
-      );
+        );
+        return yield* DecisionModel.decide(TicketTriage, {
+          input: { message: "Help" },
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped, Effect.flip);
       assert(error._tag === "AiError");
       assert.strictEqual(error.reason._tag, "InternalProviderError");
     }),

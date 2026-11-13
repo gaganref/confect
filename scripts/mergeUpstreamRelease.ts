@@ -9,24 +9,25 @@ import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import * as ChildProcess from "effect/process/ChildProcess";
 import * as ChildProcessSpawner from "effect/process/ChildProcessSpawner";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
 
-export class NoStableCoreRelease extends Schema.TaggedError<NoStableCoreRelease>()(
-  "NoStableCoreRelease",
-  { tags: Schema.Array(Schema.String) },
-) {}
+export class NoStableCoreRelease extends Schema.TaggedError<
+  NoStableCoreRelease,
+  { readonly brand: unique symbol }
+>()("NoStableCoreRelease", { tags: Schema.Array(Schema.String) }) {}
 
 export const selectReleaseTag = (
   tags: ReadonlyArray<string>,
 ): Result.Result<string, NoStableCoreRelease> => {
-  const releases = tags
-    .filter((tag) =>
-      /^@confect\/core@(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(
-        tag,
-      ),
-    )
-    .sort((left, right) => right.localeCompare(left, "en", { numeric: true }));
+  const releases = Arr.filter(tags, (tag) =>
+    /^@confect\/core@(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)$/.test(tag),
+  ).sort((left, right) =>
+    pipe(right, String.localeCompare(left, ["en"], { numeric: true })),
+  );
   return releases[0] === undefined
-    ? Result.fail(new NoStableCoreRelease({ tags }))
+    ? Result.fail(NoStableCoreRelease.make({ tags }))
     : Result.succeed(releases[0]);
 };
 
@@ -44,31 +45,34 @@ export const planMerge = (
   _tag: history.base === history.target ? "AlreadyMerged" : "Merge",
 });
 
-class GitCommandFailed extends Schema.TaggedError<GitCommandFailed>()(
-  "GitCommandFailed",
-  {
-    args: Schema.Array(Schema.String),
-    directory: Schema.String,
-    exitCode: Schema.Finite,
-    output: Schema.String,
-  },
-) {}
+class GitCommandFailed extends Schema.TaggedError<
+  GitCommandFailed,
+  { readonly brand: unique symbol }
+>()("GitCommandFailed", {
+  args: Schema.Array(Schema.String),
+  directory: Schema.String,
+  exitCode: Schema.Finite,
+  output: Schema.String,
+}) {}
 
-class MergeFailed extends Schema.TaggedError<MergeFailed>()("MergeFailed", {
+class MergeFailed extends Schema.TaggedError<
+  MergeFailed,
+  { readonly brand: unique symbol }
+>()("MergeFailed", {
   tag: Schema.String,
   base: Schema.String,
   output: Schema.String,
 }) {}
 
-class MergeConflict extends Schema.TaggedError<MergeConflict>()(
-  "MergeConflict",
-  {
-    tag: Schema.String,
-    base: Schema.String,
-    files: Schema.Array(Schema.String),
-    output: Schema.String,
-  },
-) {}
+class MergeConflict extends Schema.TaggedError<
+  MergeConflict,
+  { readonly brand: unique symbol }
+>()("MergeConflict", {
+  tag: Schema.String,
+  base: Schema.String,
+  files: Schema.Array(Schema.String),
+  output: Schema.String,
+}) {}
 
 const gitResult = Effect.fn("MergeRelease.commandResult")(function* (
   args: Array<string>,
@@ -102,23 +106,27 @@ const git = Effect.fn("MergeRelease.git")(function* (
 ) {
   const result = yield* gitResult(args, directory);
   if (result.exitCode !== 0)
-    return yield* new GitCommandFailed({
+    return yield* GitCommandFailed.make({
       args,
       directory,
       exitCode: result.exitCode,
       output: result.stdout + result.stderr,
     });
-  return result.stdout.trim();
+  return pipe(result.stdout, String.trim);
 });
 
+/**
+ * @internal
+ */
 export const inspectRelease = Effect.fn("MergeRelease.inspect")(function* (
   directory: string,
   forkRef: string,
 ) {
-  const tags = (yield* git(
+  const gitResult2 = yield* git(
     ["tag", "--list", "@confect/core@*"],
     directory,
-  )).split("\n");
+  );
+  const tags = pipe(gitResult2, String.split("\n"));
   const tag = yield* Effect.fromResult(selectReleaseTag(tags));
   const forkHead = yield* git(["rev-parse", `${forkRef}^{commit}`], directory);
   const target = yield* git(["rev-parse", `${tag}^{commit}`], directory);
@@ -126,6 +134,9 @@ export const inspectRelease = Effect.fn("MergeRelease.inspect")(function* (
   return planMerge({ tag, target, base, forkHead });
 });
 
+/**
+ * @internal
+ */
 export const checkMerge = Effect.fn("MergeRelease.check")(function* (
   directory: string,
   forkRef: string,
@@ -165,22 +176,21 @@ export const checkMerge = Effect.fn("MergeRelease.check")(function* (
     scratch,
   );
   if (result.exitCode !== 0) {
-    const files = (yield* git(
+    const gitResult2 = yield* git(
       ["diff", "--name-only", "--diff-filter=U"],
       scratch,
-    ))
-      .split("\n")
-      .filter(Boolean);
+    );
+    const files = Arr.filter(pipe(gitResult2, String.split("\n")), Boolean);
     yield* Console.error(
-      `Merging ${plan.tag} into ${forkRef} failed. Conflicting files:\n${files.join("\n") || "(none; see git output)"}`,
+      `Merging ${plan.tag} into ${forkRef} failed. Conflicting files:\n${Arr.join(files, "\n") || "(none; see git output)"}`,
     );
     if (files.length === 0)
-      return yield* new MergeFailed({
+      return yield* MergeFailed.make({
         tag: plan.tag,
         base: plan.base,
         output: result.stdout + result.stderr,
       });
-    return yield* new MergeConflict({
+    return yield* MergeConflict.make({
       tag: plan.tag,
       base: plan.base,
       files,

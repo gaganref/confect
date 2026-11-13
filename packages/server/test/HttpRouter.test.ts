@@ -1,6 +1,8 @@
 import { recording } from "./internal/recording";
 import * as IdScope from "@confect/core/IdScope";
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
+import type * as DataModel from "@confect/server/DataModel";
+import type * as VectorSearch from "@confect/server/VectorSearch";
 import * as ConfectHttpRouter from "@confect/server/HttpRouter";
 import { assert, describe, expect, expectTypeOf, it } from "@effect/vitest";
 import { vi } from "vitest";
@@ -26,6 +28,10 @@ import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as HttpApiMiddleware from "effect/http-api/HttpApiMiddleware";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpApiError from "effect/http-api/HttpApiError";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Arr from "effect/Array";
+import * as Record from "effect/Record";
 
 const api = HttpApi.make("users").add(
   HttpApiGroup.make("users").add(
@@ -49,7 +55,7 @@ const routes = HttpApiBuilder.layer(api).pipe(
 );
 
 const labels = (router: ReturnType<typeof ConfectHttpRouter.make>) =>
-  router.getRoutes().map(([path, method]) => [method, path]);
+  Arr.map(router.getRoutes(), ([path, method]) => [method, path]);
 
 const matchLabel = (
   router: ReturnType<typeof ConfectHttpRouter.make>,
@@ -57,9 +63,23 @@ const matchLabel = (
   method: "GET" | "POST" | "HEAD" = "GET",
 ) => router.lookup(path, method)?.slice(1);
 
+it("requires a database schema and types vector search by it", () => {
+  const health = HttpRouter.add("GET", "/", HttpServerResponse.text("ok"));
+  const schemaless = () =>
+    // @ts-expect-error A router takes its database schema first.
+    ConfectHttpRouter.make(health);
+  void schemaless;
+  const empty = DatabaseSchema.make({});
+  expectTypeOf<
+    VectorSearch.VectorSearch<DataModel.FromSchema<typeof empty>>
+  >().toExtend<ConfectHttpRouter.Services<typeof empty>>();
+});
+
 describe("HttpRouter", () => {
   it("lists reflected endpoint methods and patterns without catch-all rows", () => {
-    const router = ConfectHttpRouter.make(routes, { api });
+    const router = ConfectHttpRouter.make(DatabaseSchema.make({}), routes, {
+      api,
+    });
     expect(labels(router)).toEqual([
       ["POST", "/users"],
       ["GET", "/users/:id"],
@@ -67,11 +87,15 @@ describe("HttpRouter", () => {
   });
 
   it("labels matching requests and keeps the catch-all for unmatched requests", () => {
-    const router = ConfectHttpRouter.make(routes, { api });
-    expect(matchLabel(ConfectHttpRouter.make(routes), "/nope")).toEqual([
-      "GET",
-      "/*",
-    ]);
+    const router = ConfectHttpRouter.make(DatabaseSchema.make({}), routes, {
+      api,
+    });
+    expect(
+      matchLabel(
+        ConfectHttpRouter.make(DatabaseSchema.make({}), routes),
+        "/nope",
+      ),
+    ).toEqual(["GET", "/*"]);
     expect([
       matchLabel(router, "/users/42"),
       matchLabel(router, "/users", "POST"),
@@ -88,7 +112,9 @@ describe("HttpRouter", () => {
   });
 
   it("keeps explicit Convex routes ahead of reflected routes", () => {
-    const router = ConfectHttpRouter.make(routes, { api });
+    const router = ConfectHttpRouter.make(DatabaseSchema.make({}), routes, {
+      api,
+    });
     const exact = httpActionGeneric(() =>
       Promise.resolve(new Response("exact")),
     );
@@ -117,6 +143,7 @@ describe("HttpRouter", () => {
 
   it("keeps catch-all labels for plain Effect routes beside an API", () => {
     const router = ConfectHttpRouter.make(
+      DatabaseSchema.make({}),
       Layer.mergeAll(
         routes,
         HttpRouter.add("GET", "/health", HttpServerResponse.text("ok")),
@@ -136,7 +163,7 @@ it("labels component routes relative to the component, with the same reflected A
       scope: IdScope.component("users"),
     },
   );
-  const router = ConfectHttpRouter.forSchema(schema)(routes, { api });
+  const router = ConfectHttpRouter.make(schema, routes, { api });
   expect(labels(router)).toEqual([
     ["POST", "/users"],
     ["GET", "/users/:id"],
@@ -160,13 +187,13 @@ it("keeps unmatched component labels relative to a prefixed API", () => {
       ),
     ),
   );
-  const router = ConfectHttpRouter.forSchema(schema)(prefixedRoutes, {
+  const router = ConfectHttpRouter.make(schema, prefixedRoutes, {
     api: prefixedApi,
   });
   expect(matchLabel(router, "/v1/users/42")).toEqual(["GET", "/v1/users/:id"]);
   expect(router.lookup("/nope", "GET")?.slice(1)).toEqual(["GET", "/*"]);
   expect(
-    ConfectHttpRouter.forSchema(schema)(prefixedRoutes)
+    ConfectHttpRouter.make(schema, prefixedRoutes)
       .lookup("/nope", "GET")
       ?.slice(1),
   ).toEqual(["GET", "/*"]);
@@ -187,7 +214,9 @@ it("labels prefixed wildcard routes at their base path and descendants", () => {
       ),
     ),
   );
-  const router = ConfectHttpRouter.make(assetsRoutes, { api: assetsApi });
+  const router = ConfectHttpRouter.make(DatabaseSchema.make({}), assetsRoutes, {
+    api: assetsApi,
+  });
   expect(labels(router)).toEqual([["GET", "/v1/assets/*"]]);
   expect([
     matchLabel(router, "/v1/assets"),
@@ -226,7 +255,11 @@ it("distinguishes declared parameters from literal colons in API paths", () => {
       ),
     ),
   );
-  const router = ConfectHttpRouter.make(actionsRoutes, { api: actionsApi });
+  const router = ConfectHttpRouter.make(
+    DatabaseSchema.make({}),
+    actionsRoutes,
+    { api: actionsApi },
+  );
   expect([
     matchLabel(router, "/items/42:cancel", "POST"),
     matchLabel(router, "/items/42:archive", "POST"),
@@ -248,7 +281,8 @@ it("keeps a component mountable when its label API has no routable endpoints", (
       scope: IdScope.component("health"),
     },
   );
-  const router = ConfectHttpRouter.forSchema(schema)(
+  const router = ConfectHttpRouter.make(
+    schema,
     HttpRouter.add("GET", "/health", HttpServerResponse.text("ok")),
     { api: HttpApi.make("empty") },
   );
@@ -271,7 +305,7 @@ it.effect("uses one labeled request span and the supplied logger", () =>
       {},
       { kind: "component", scope: IdScope.component("users") },
     );
-    const router = ConfectHttpRouter.forSchema(schema)(routes, {
+    const router = ConfectHttpRouter.make(schema, routes, {
       api,
       observability,
     });
@@ -281,10 +315,11 @@ it.effect("uses one labeled request span and the supplied logger", () =>
         Promise.resolve({ default: router }),
     });
     const response = yield* Effect.promise(() => t.fetch("/mounted/users/42"));
-    expect(yield* Effect.promise(() => response.json())).toBe("42");
+    const resolved = yield* Effect.promise(() => response.json());
+    expect(resolved).toBe("42");
     expect(messages).toEqual([["request"]]);
     expect(
-      spans.map((span) => [
+      Arr.map(spans, (span) => [
         span.name,
         span.attributes.get("kind"),
         span.parent._tag,
@@ -304,9 +339,12 @@ it.effect.each([
   "reports the original HTTP %s outcome on one request span",
   (scenario) =>
     Effect.gen(function* () {
-      class Denied extends Schema.TaggedError<Denied>()("Denied", {}) {}
-      const denied = new Denied();
-      const forbidden = new HttpApiError.Forbidden();
+      class Denied extends Schema.TaggedError<
+        Denied,
+        { readonly brand: unique symbol }
+      >()("Denied", {}) {}
+      const denied = Denied.make({});
+      const forbidden = HttpApiError.Forbidden.make({});
       const defect = new Error("broken");
       const recorder = recording();
       const { spans } = recorder;
@@ -365,10 +403,14 @@ it.effect.each([
           ),
         ),
       );
-      const router = ConfectHttpRouter.make(outcomeRoutes, {
-        api: outcomeApi,
-        observability,
-      });
+      const router = ConfectHttpRouter.make(
+        DatabaseSchema.make({}),
+        outcomeRoutes,
+        {
+          api: outcomeApi,
+          observability,
+        },
+      );
       const t = convexTest(undefined, {
         ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
         "./mock-backend/fixtures/convex/http.ts": () =>
@@ -394,7 +436,11 @@ it.effect.each([
         ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
         "./mock-backend/fixtures/convex/http.ts": () =>
           Promise.resolve({
-            default: ConfectHttpRouter.make(outcomeRoutes, { api: outcomeApi }),
+            default: ConfectHttpRouter.make(
+              DatabaseSchema.make({}),
+              outcomeRoutes,
+              { api: outcomeApi },
+            ),
           }),
       });
       const unobserved = yield* Effect.promise(() =>
@@ -439,7 +485,7 @@ it.effect.each([
             : [],
       );
       if (scenario === "decode") {
-        expect(reports.map(({ cause }) => Cause.squash(cause))).toEqual(
+        expect(Arr.map(reports, ({ cause }) => Cause.squash(cause))).toEqual(
           expect.arrayContaining([
             expect.objectContaining({
               _tag: "HttpApiSchemaError",
@@ -487,6 +533,7 @@ it.effect("keeps ConvexLogger for HTTP without a runtime layer", () =>
     const info = vi.spyOn(globalThis.console, "info");
     try {
       const router = ConfectHttpRouter.make(
+        DatabaseSchema.make({}),
         HttpRouter.add(
           "GET",
           "/log",
@@ -504,11 +551,10 @@ it.effect("keeps ConvexLogger for HTTP without a runtime layer", () =>
         "./mock-backend/fixtures/convex/http.ts": () =>
           Promise.resolve({ default: router }),
       });
-      expect(
-        yield* Effect.promise(() =>
-          t.fetch("/log").then((response) => response.text()),
-        ),
-      ).toBe("no span");
+      const resolved = yield* Effect.promise(() =>
+        t.fetch("/log").then((response) => response.text()),
+      );
+      expect(resolved).toBe("no span");
       expect(info).toHaveBeenCalledExactlyOnceWith(
         expect.objectContaining({ message: "default http" }),
       );
@@ -586,6 +632,7 @@ it.effect(
         );
       const send = fetcher(
         ConfectHttpRouter.make(
+          DatabaseSchema.make({}),
           HttpApiBuilder.layer(optionsApi).pipe(
             Layer.provide([
               HttpApiBuilder.group(optionsApi, "endpoints", (handlers) =>
@@ -622,8 +669,10 @@ it.effect(
           { api: optionsApi },
         ),
       );
-      expect(yield* send("/probe", "POST")).toEqual([401, ""]);
-      expect(yield* send("/probe", "OPTIONS")).toEqual([204, ""]);
+      const sendResult = yield* send("/probe", "POST");
+      expect(sendResult).toEqual([401, ""]);
+      const sendResult2 = yield* send("/probe", "OPTIONS");
+      expect(sendResult2).toEqual([204, ""]);
       for (const [path, method] of [
         ["/trigger", undefined],
         ["/trigger", "POST"],
@@ -633,10 +682,13 @@ it.effect(
         ["/raw", "POST"],
         ["/grouped", "POST"],
         ["/missing", undefined],
-      ] as const)
-        expect(yield* send(path, "OPTIONS", method)).toEqual([404, ""]);
+      ] as const) {
+        const preflight = yield* send(path, "OPTIONS", method);
+        expect(preflight).toEqual([404, ""]);
+      }
       expect(calls).toBe(0);
-      expect(yield* send("/trigger", "POST")).toEqual([200, '"handler ran"']);
+      const sendResult3 = yield* send("/trigger", "POST");
+      expect(sendResult3).toEqual([200, '"handler ran"']);
       expect(calls).toBe(1);
     }),
 );
@@ -655,8 +707,11 @@ const answering = (
         Effect.gen(function* () {
           const request = yield* HttpServerRequest.HttpServerRequest;
           if (request.method !== "OPTIONS") return yield* next;
-          const params = Object.entries(yield* HttpRouter.params).flat();
-          return HttpServerResponse.text([method, ...params].join(" "));
+          const params2 = yield* HttpRouter.params;
+          const params = Record.toEntries(params2).flat();
+          return HttpServerResponse.text(
+            Arr.join([method, ...Arr.map(params, (param) => param ?? "")], " "),
+          );
         }),
       ).layer,
     ),
@@ -762,13 +817,16 @@ it.effect.each([
   "dispatches OPTIONS on router-equivalent paths $paths",
   ({ layer, request, preflights }) =>
     Effect.gen(function* () {
-      const send = fetcher(ConfectHttpRouter.make(layer));
+      const send = fetcher(
+        ConfectHttpRouter.make(DatabaseSchema.make({}), layer),
+      );
       const [method, path, body] = request;
-      expect(yield* send(path, method)).toEqual([200, body]);
-      for (const [preflightPath, requested, ...expected] of preflights)
-        expect(yield* send(preflightPath, "OPTIONS", requested)).toEqual(
-          expected,
-        );
+      const sendResult = yield* send(path, method);
+      expect(sendResult).toEqual([200, body]);
+      for (const [preflightPath, requested, ...expected] of preflights) {
+        const preflight = yield* send(preflightPath, "OPTIONS", requested);
+        expect(preflight).toEqual(expected);
+      }
     }),
 );
 
@@ -789,6 +847,12 @@ it.effect(
           })
             .annotate(BodyLimit, ByteSize.bytes(64))
             .middleware(Guard),
+          HttpApiEndpoint.post("json", "/json", {
+            payload: Schema.Struct({ value: Schema.String }),
+            success: Schema.String,
+          })
+            .annotate(BodyLimit, ByteSize.bytes(64))
+            .middleware(Guard),
           HttpApiEndpoint.post("bytes", "/bytes", {
             payload: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
             success: Schema.String,
@@ -802,6 +866,7 @@ it.effect(
           HttpApiBuilder.group(bodyApi, "body", (h) =>
             h
               .handle("run", ({ payload }) => Effect.succeed(payload.value))
+              .handle("json", ({ payload }) => Effect.succeed(payload.value))
               .handle("bytes", ({ payload }) =>
                 Effect.succeed(new TextDecoder().decode(payload)),
               ),
@@ -815,7 +880,10 @@ it.effect(
                 // The bytes verifier consumes the stream before its decoder
                 // reads arrayBuffer.
                 let text: string;
-                if (endpoint.identifier === "bytes") {
+                if (
+                  endpoint.identifier === "bytes" ||
+                  endpoint.identifier === "json"
+                ) {
                   text = yield* request.stream.pipe(
                     Stream.decodeText(),
                     Stream.mkString,
@@ -836,7 +904,11 @@ it.effect(
           ),
         ),
       );
-      const router = ConfectHttpRouter.make(bodyRoutes, { api: bodyApi });
+      const router = ConfectHttpRouter.make(
+        DatabaseSchema.make({}),
+        bodyRoutes,
+        { api: bodyApi },
+      );
       const t = convexTest(undefined, {
         ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
         "./mock-backend/fixtures/convex/http.ts": () =>
@@ -846,7 +918,9 @@ it.effect(
         ["/body", '{"value":"signed"}', "identity", 200, '"signed"'],
         ["/body", '{"value":"changed"}', "identity", 401, ""],
         ["/body", '{"value":"signed"}', "gzip", 415, ""],
-        ["/body", "x".repeat(65), "identity", 413, ""],
+        ["/body", pipe("x", Str.repeat(65)), "identity", 413, ""],
+        ["/json", '{"value":"signed"}', "identity", 200, '"signed"'],
+        ["/json", '{"value":"changed"}', "identity", 401, ""],
         [
           "/bytes",
           '{"value":"signed"}',
@@ -861,7 +935,7 @@ it.effect(
             method: "POST",
             headers: {
               "Content-Type":
-                path === "/body"
+                path === "/body" || path === "/json"
                   ? "application/json"
                   : "application/octet-stream",
               "Content-Encoding": encoding,
@@ -941,9 +1015,41 @@ it.effect("stops a chunked body after the cap and one transport chunk", () =>
   }),
 );
 
+it.effect(
+  "refuses a declared length over the cap without reading the body",
+  () =>
+    Effect.gen(function* () {
+      let pulled = 0;
+      const source = new Request("http://localhost/body", {
+        method: "POST",
+        headers: { "Content-Length": String(ByteSize.mebibytes(2)) },
+        duplex: "half",
+        body: new ReadableStream<Uint8Array>(
+          {
+            pull(controller) {
+              pulled += 65536;
+              controller.enqueue(new Uint8Array(65536));
+            },
+          },
+          { highWaterMark: 0 },
+        ),
+      } as RequestInit & { duplex: "half" });
+      const response = yield* ConfectHttpRouter.withBodyLimit(
+        Effect.succeed(HttpServerResponse.empty()),
+        { maxBytes: ByteSize.mebibytes(1) },
+      ).pipe(
+        Effect.provideService(
+          HttpServerRequest.HttpServerRequest,
+          HttpServerRequest.fromWeb(source),
+        ),
+      );
+      expect([response.status, pulled]).toEqual([413, 0]);
+    }),
+);
+
 it("requires a byte size and preserves the downstream error type", () => {
   const limited = ConfectHttpRouter.withBodyLimit(
-    Effect.fail(new HttpApiError.Unauthorized()),
+    Effect.fail(HttpApiError.Unauthorized.make({})),
     { maxBytes: ByteSize.bytes(1) },
   );
   expectTypeOf(limited).toEqualTypeOf<

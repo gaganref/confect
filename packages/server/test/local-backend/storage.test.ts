@@ -15,10 +15,13 @@ import * as Schema from "effect/Schema";
 import * as HttpBody from "effect/http/HttpBody";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
+import refs from "confect-local-backend/refs";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
+import registry from "../../../../tools/local-backend/fixtures/confect/_generated/testing";
 import { TestConfect } from "../../../test/src/index";
-import refs from "./fixtures/confect/_generated/refs";
-import registry from "./fixtures/confect/_generated/testing";
-import * as LocalBackend from "./LocalBackend";
+import * as Record from "effect/Record";
+import * as Arr from "effect/Array";
+import * as Str from "effect/String";
 
 const UploadResponse = Schema.fromJsonString(
   Schema.Struct({ storageId: Schema.String }),
@@ -27,6 +30,272 @@ const UploadResponse = Schema.fromJsonString(
 layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
   timeout: "120 seconds",
 })("Storage services inside the Convex isolate", (it) => {
+  it.effect(
+    "stores and reads Blobs in mutations with MIME and SHA256 validation",
+    () =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        const storage = refs.public.groups.storage;
+        for (const type of ["text/plain;charset=utf-8", ""]) {
+          const stored = yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(storage.storeMutation), {
+              text: "abc",
+              type,
+              sha256: "ungWv48Bz+pBQUDeXa4iI7ADYaOWF3qctBD/YfIAFa0=",
+            }),
+          );
+          expect(stored).toEqual({
+            storageId: expect.any(String),
+            text: "abc",
+            type,
+            size: 3,
+          });
+          const read = yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(storage.getMutation), {
+              storageId: stored.storageId,
+            }),
+          );
+          expect(read).toEqual(stored);
+          const actionRead = yield* Effect.promise(() =>
+            client.action(getFunctionReference(storage.get), {
+              storageId: stored.storageId,
+            }),
+          );
+          expect(actionRead).toBe("abc");
+          const deleted = yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(storage.deleteAndGet), {
+              storageId: stored.storageId,
+            }),
+          );
+          expect(deleted).toEqual({
+            id: stored.storageId,
+            tag: "BlobNotFoundError",
+          });
+          yield* Effect.promise(() =>
+            expect(
+              client.mutation(getFunctionReference(storage.getMutation), {
+                storageId: stored.storageId,
+              }),
+            ).rejects.toThrow(/BlobNotFoundError/),
+          );
+          const missing = yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(storage.limitedFiles), {
+              storageIds: [stored.storageId],
+              sizes: [],
+              limits: {
+                filesRead: 0,
+                fileReadBytes: 0,
+                filesWritten: 0,
+                fileWriteBytes: 0,
+              },
+            }),
+          );
+          expect(missing.failures).toHaveLength(1);
+          expect(missing.failures[0]).toContain("BlobNotFoundError");
+          expect(missing.metrics).toEqual({
+            filesRead: 0,
+            fileReadBytes: 0,
+            filesWritten: 0,
+            fileWriteBytes: 0,
+          });
+        }
+        yield* Effect.promise(() =>
+          expect(
+            client.mutation(getFunctionReference(storage.storeMutation), {
+              text: "abc",
+              type: "text/plain",
+              sha256: "AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=",
+            }),
+          ).rejects.toThrow(/sha256 mismatch/i),
+        );
+      }),
+  );
+
+  it.effect(
+    "restores the parent's pending file after nested rollback and retains read usage",
+    () =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        const storage = refs.public.groups.storage;
+        const readId = yield* Effect.promise(() =>
+          client.action(getFunctionReference(storage.store), {
+            text: "existing",
+          }),
+        );
+        const result = yield* Effect.promise(() =>
+          client.mutation(getFunctionReference(storage.rollback), {
+            readId,
+          }),
+        );
+        expect(result.metrics).toEqual({
+          filesRead: 1,
+          fileReadBytes: 8,
+          filesWritten: 1,
+          fileWriteBytes: 6,
+        });
+        for (const [storageId, text] of [
+          [readId, "existing"],
+          [result.parentId, "parent"],
+        ] as const) {
+          const blob = yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(storage.getMutation), {
+              storageId,
+            }),
+          );
+          expect(blob.text).toBe(text);
+        }
+        yield* Effect.promise(() =>
+          expect(
+            client.mutation(getFunctionReference(storage.getMutation), {
+              storageId: result.rolledBackId,
+            }),
+          ).rejects.toThrow(/BlobNotFoundError/),
+        );
+        yield* Effect.promise(() =>
+          expect(
+            client.query(getFunctionReference(storage.getUrl), {
+              storageId: result.rolledBackId,
+            }),
+          ).rejects.toThrow(/BlobNotFoundError/),
+        );
+      }),
+  );
+
+  it.effect(
+    "hides pending storage metadata from stale snapshots without hiding the Blob from its mutation",
+    () =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        const storage = refs.public.groups.storage;
+        for (const stale of [false, true]) {
+          const result = yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(storage.staleRead), {
+              stale,
+            }),
+          );
+          expect(result.text).toBe("pending");
+          if (stale) expect(result.url).toBeNull();
+          else expect(result.url).toContain("/api/storage/");
+          const committed = yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(storage.getMutation), {
+              storageId: result.storageId,
+            }),
+          );
+          expect(committed.text).toBe("pending");
+        }
+      }),
+  );
+
+  it.effect.each([
+    {
+      filesWritten: 1,
+      fileWriteBytes: 100,
+      sizes: [3, 1, 1],
+      written: 1,
+      bytes: 3,
+      error: /Too many files stored/i,
+    },
+    {
+      filesWritten: 10,
+      fileWriteBytes: 4,
+      sizes: [3, 2, 2, 1],
+      written: 2,
+      bytes: 4,
+      error: /Too large total size of the files stored/i,
+    },
+  ])(
+    "enforces nested file write limits without charging caught failures: $filesWritten files, $fileWriteBytes bytes",
+    ({ filesWritten, fileWriteBytes, sizes, written, bytes, error }) =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        const storage = refs.public.groups.storage;
+        const result = yield* Effect.promise(() =>
+          client.mutation(getFunctionReference(storage.limitedFiles), {
+            sizes,
+            storageIds: [],
+            limits: {
+              filesRead: 0,
+              fileReadBytes: 0,
+              filesWritten,
+              fileWriteBytes,
+            },
+          }),
+        );
+        expect(result.failures).toHaveLength(2);
+        for (const failure of result.failures) expect(failure).toMatch(error);
+        expect(result.storageIds).toHaveLength(written);
+        expect(result.metrics).toEqual({
+          filesRead: 0,
+          fileReadBytes: 0,
+          filesWritten: written,
+          fileWriteBytes: bytes,
+        });
+        let committedBytes = 0;
+        for (const storageId of result.storageIds) {
+          const blob = yield* Effect.promise(() =>
+            client.mutation(getFunctionReference(storage.getMutation), {
+              storageId,
+            }),
+          );
+          committedBytes += blob.size;
+        }
+        expect(committedBytes).toBe(bytes);
+      }),
+  );
+
+  it.effect.each([
+    { filesRead: 1, fileReadBytes: 100, error: /Too many files read/i },
+    {
+      filesRead: 10,
+      fileReadBytes: 4,
+      error: /Too large total size of the files read/i,
+    },
+  ])(
+    "counts distinct reads and rejects repeated over-budget reads: $filesRead files, $fileReadBytes bytes",
+    ({ filesRead, fileReadBytes, error }) =>
+      Effect.gen(function* () {
+        const { client } = yield* LocalBackend.LocalBackend;
+        const storage = refs.public.groups.storage;
+        const first = yield* Effect.promise(() =>
+          client.mutation(getFunctionReference(storage.storeMutation), {
+            text: "abcd",
+            type: "text/plain",
+          }),
+        );
+        const second = yield* Effect.promise(() =>
+          client.mutation(getFunctionReference(storage.storeMutation), {
+            text: "e",
+            type: "text/plain",
+          }),
+        );
+        const result = yield* Effect.promise(() =>
+          client.mutation(getFunctionReference(storage.limitedFiles), {
+            sizes: [],
+            storageIds: [
+              first.storageId,
+              first.storageId,
+              second.storageId,
+              second.storageId,
+            ],
+            limits: {
+              filesRead,
+              fileReadBytes,
+              filesWritten: 0,
+              fileWriteBytes: 0,
+            },
+          }),
+        );
+        expect(result.failures).toHaveLength(2);
+        for (const failure of result.failures) expect(failure).toMatch(error);
+        expect(result.metrics).toEqual({
+          filesRead: 1,
+          fileReadBytes: 4,
+          filesWritten: 0,
+          fileWriteBytes: 0,
+        });
+      }),
+  );
+
   it.effect("shares stored blobs across actions, queries, and mutations", () =>
     Effect.gen(function* () {
       const { client } = yield* LocalBackend.LocalBackend;
@@ -49,19 +318,17 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
         }),
       );
       expect(new URL(url).pathname).toContain("/api/storage/");
-      expect(
-        yield* HttpClient.get(url).pipe(
-          Effect.flatMap(HttpClientResponse.filterStatusOk),
-          Effect.flatMap((response) => response.text),
-        ),
-      ).toBe(text);
-      expect(
-        yield* Effect.promise(() =>
-          client.mutation(getFunctionReference(storage.deleteBlob), {
-            storageId,
-          }),
-        ),
-      ).toBeNull();
+      const pipeResult = yield* HttpClient.get(url).pipe(
+        Effect.flatMap(HttpClientResponse.filterStatusOk),
+        Effect.flatMap((response) => response.text),
+      );
+      expect(pipeResult).toBe(text);
+      const promiseResult = yield* Effect.promise(() =>
+        client.mutation(getFunctionReference(storage.deleteBlob), {
+          storageId,
+        }),
+      );
+      expect(promiseResult).toBeNull();
       yield* Effect.promise(() =>
         expect(
           client.query(getFunctionReference(storage.getUrl), {
@@ -102,7 +369,13 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
             client.query(getFunctionReference(storage.describe), {
               storageId,
             }),
-          ).pipe(Effect.map((json): any => JSON.parse(json)));
+          ).pipe(
+            Effect.flatMap((json) =>
+              Schema.decodeEffect(Schema.fromJsonString(Schema.Any))(json).pipe(
+                Effect.orDie,
+              ),
+            ),
+          );
         const deleteRaw = (storageId: GenericId<"_storage">) =>
           client.mutation(getFunctionReference(storage.deleteRaw), {
             storageId,
@@ -133,9 +406,10 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
         );
         expect(new URL(described.url).search).toBe("");
 
-        const untyped = yield* describe(yield* store("", ""));
-        expect(Object.keys(untyped.doc).toSorted()).toStrictEqual(
-          Object.keys(described.doc).toSorted(),
+        const storeResult = yield* store("", "");
+        const untyped = yield* describe(storeResult);
+        expect(Arr.sort(Record.keys(untyped.doc), Str.Order)).toStrictEqual(
+          Arr.sort(Record.keys(described.doc), Str.Order),
         );
         expect(untyped.doc.contentType).toBeNull();
         expect(untyped.metadata.contentType).toBeNull();
@@ -146,8 +420,10 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
           ),
         );
 
-        expect(yield* Effect.promise(() => deleteRaw(typed))).toBeNull();
-        expect(yield* describe(typed)).toStrictEqual({
+        const resolved = yield* Effect.promise(() => deleteRaw(typed));
+        expect(resolved).toBeNull();
+        const describeResult = yield* describe(typed);
+        expect(describeResult).toStrictEqual({
           doc: null,
           metadata: null,
           url: null,
@@ -208,10 +484,15 @@ const onKernel = <A, E>(
   ) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
-    return yield* program(
-      yield* TestConfect.TestConfect<typeof registry.schema>(),
+    const services2 = yield* Layer.build(
+      TestConfect.layer(registry, { target: "kernel" }),
     );
-  }).pipe(Effect.provide(TestConfect.layer(registry, { target: "kernel" })));
+    return yield* Effect.gen(function* () {
+      const testConfect =
+        yield* TestConfect.TestConfect<typeof registry.schema>();
+      return yield* program(testConfect);
+    }).pipe(Effect.provideContext(services2));
+  }).pipe(Effect.scoped);
 
 const MiB = 1 << 20;
 const deployment = {
@@ -383,11 +664,10 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
             ),
           );
           expect(binary).toContain(answer);
-          expect(
-            yield* onKernel((test) =>
-              test.mutation(storage.storeInMutation, args),
-            ),
-          ).toBe(binary);
+          const onKernelResult = yield* onKernel((test) =>
+            test.mutation(storage.storeInMutation, args),
+          );
+          expect(onKernelResult).toBe(binary);
         }),
     );
 

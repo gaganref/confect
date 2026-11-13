@@ -5,6 +5,10 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { DocumentId, StoredDocument } from "./KernelValues.js";
 import { tableNameFromId } from "./KernelValues.js";
+import * as Arr from "effect/Array";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
 
 /**
  * Convex's file storage table as functions read it. Each component has its own.
@@ -33,32 +37,39 @@ export interface File {
  * The storage ID named no file in its component, as the binary's
  * `FileStorage::delete` refuses (`StorageIdNotFound`).
  */
-export class StorageIdNotFound extends Schema.TaggedError<StorageIdNotFound>()(
-  "StorageIdNotFound",
-  { storageId: Schema.String, message: Schema.String },
-) {}
+export class StorageIdNotFound extends Schema.TaggedError<
+  StorageIdNotFound,
+  { readonly brand: unique symbol }
+>()("StorageIdNotFound", {
+  storageId: Schema.String,
+  message: Schema.String,
+}) {}
 
 /**
  * A storage operation's argument did not parse, as the binary's
  * `with_argument_error` refuses (`InvalidArgument`).
  */
-export class InvalidStorageArgument extends Schema.TaggedError<InvalidStorageArgument>()(
-  "InvalidStorageArgument",
-  {
-    operation: Schema.String,
-    argument: Schema.String,
-    message: Schema.String,
-  },
-) {}
+export class InvalidStorageArgument extends Schema.TaggedError<
+  InvalidStorageArgument,
+  { readonly brand: unique symbol }
+>()("InvalidStorageArgument", {
+  operation: Schema.String,
+  argument: Schema.String,
+  message: Schema.String,
+}) {}
 
 /**
  * The digest a caller declared is not the stored bytes' digest, as the binary's
  * `FileStorage::upload_file` refuses (`Sha256Mismatch`).
  */
-export class Sha256Mismatch extends Schema.TaggedError<Sha256Mismatch>()(
-  "Sha256Mismatch",
-  { expected: Schema.String, actual: Schema.String, message: Schema.String },
-) {}
+export class Sha256Mismatch extends Schema.TaggedError<
+  Sha256Mismatch,
+  { readonly brand: unique symbol }
+>()("Sha256Mismatch", {
+  expected: Schema.String,
+  actual: Schema.String,
+  message: Schema.String,
+}) {}
 
 export type StorageError =
   | StorageIdNotFound
@@ -67,7 +78,7 @@ export type StorageError =
   | Sha256Mismatch;
 
 const invalid = (operation: string, argument: string, cause: string) =>
-  new InvalidStorageArgument({
+  InvalidStorageArgument.make({
     operation,
     argument,
     message: `Invalid argument \`${argument}\` for \`${operation}\`: ${cause}`,
@@ -103,7 +114,10 @@ export const parseId = (
     );
   }
   if (uuidPattern.test(storageId)) {
-    return Result.succeed({ kind: "legacy", uuid: storageId.toLowerCase() });
+    return Result.succeed({
+      kind: "legacy",
+      uuid: pipe(storageId, Str.toLowerCase),
+    });
   }
   const tableName = tableNameFromId(storageId);
   if (tableName === null) {
@@ -117,7 +131,7 @@ export const parseId = (
   }
   if (tableName !== table) {
     return Result.fail(
-      new InvalidStorageArgument({
+      InvalidStorageArgument.make({
         operation,
         argument: "storageId",
         message:
@@ -137,9 +151,12 @@ export const digest = (bytes: Uint8Array): string =>
   createHash("sha256").update(bytes).digest("base64");
 
 const hex = (base64: string): string =>
-  Array.from(Base64.toByteArray(base64), (byte) =>
-    byte.toString(16).padStart(2, "0"),
-  ).join("");
+  Arr.join(
+    Array.from(Base64.toByteArray(base64), (byte) =>
+      pipe(byte.toString(16), Str.padStart(2, "0")),
+    ),
+    "",
+  );
 
 /**
  * Check a declared digest against the bytes' own. The binary decodes the
@@ -175,7 +192,7 @@ export const checkDigest = (
   return canonical === actual
     ? Result.void
     : Result.fail(
-        new Sha256Mismatch({
+        Sha256Mismatch.make({
           expected: canonical,
           actual,
           message: `Sha256 mismatch. Expected: ${canonical} Actual: ${actual}`,
@@ -188,7 +205,7 @@ const isToken = (c: number): boolean =>
   (c >= 0x30 && c <= 0x39) ||
   (c >= 0x41 && c <= 0x5a) ||
   (c >= 0x61 && c <= 0x7a) ||
-  "!#$%&'*+-.^_`|~".includes(String.fromCharCode(c));
+  pipe("!#$%&'*+-.^_`|~", Str.includes(String.fromCharCode(c)));
 
 // `is_restricted_quoted_char` (`src/parse.rs:390-392`).
 const isQuotedChar = (c: number): boolean => c > 31 && c !== 127;
@@ -216,7 +233,7 @@ export const mediaTypeMessage = (error: MediaTypeError): string =>
         ? "an equals sign (=) was missing between a parameter and its value"
         : error.kind === "missingQuote"
           ? 'a quote (") was missing from a parameter value'
-          : `an invalid token was encountered, ${error.byte.toString(16).toUpperCase()} at position ${error.pos}`
+          : `an invalid token was encountered, ${pipe(error.byte.toString(16), Str.toUpperCase)} at position ${error.pos}`
   }`;
 
 /**
@@ -231,7 +248,12 @@ export const parseMediaType = (
   text: string,
 ): Result.Result<string, MediaTypeError> => {
   if (text === "*/*") return Result.succeed(text);
-  const at = (i: number) => text.charCodeAt(i);
+  const at = (i: number) =>
+    pipe(
+      text,
+      Str.charCodeAt(i),
+      Option.getOrElse(() => Number.NaN),
+    );
   const invalidToken = (pos: number) =>
     Result.fail<MediaTypeError>({ kind: "invalidToken", pos, byte: at(pos) });
   const n = text.length;
@@ -246,7 +268,7 @@ export const parseMediaType = (
   let start = i + 1;
   // The subtype, up to a semicolon.
   for (i = start; ; i++) {
-    if (i === n) return Result.succeed(text.toLowerCase());
+    if (i === n) return Result.succeed(pipe(text, Str.toLowerCase));
     const c = at(i);
     if ((c === 0x2b || c === 0x3b) && i > start) {
       if (c === 0x3b) break;
@@ -329,20 +351,22 @@ export const parseMediaType = (
     params.push({ name, value });
   }
   if (params.length === 0)
-    return Result.succeed(text.slice(0, semicolon).toLowerCase());
+    return Result.succeed(pipe(text, Str.slice(0, semicolon), Str.toLowerCase));
   // `lower_ascii_with_params` (`src/parse.rs:307-321`).
   const chars = Array.from(text);
   const lower = (from: number, to: number) => {
-    for (let k = from; k < to; k++) chars[k] = chars[k]!.toLowerCase();
+    for (let k = from; k < to; k++) chars[k] = pipe(chars[k]!, Str.toLowerCase);
   };
   lower(0, semicolon);
   for (const { name, value } of params) {
     lower(name[0], name[1]);
-    if (text.slice(name[0], name[1]).toLowerCase() === "charset") {
+    if (
+      pipe(text, Str.slice(name[0], name[1]), Str.toLowerCase) === "charset"
+    ) {
       lower(value[0], value[1]);
     }
   }
-  return Result.succeed(chars.join(""));
+  return Result.succeed(Arr.join(chars, ""));
 };
 
 /**
@@ -350,10 +374,13 @@ export const parseMediaType = (
  * (`InvalidContentTypeHeader`, `run_storage_store`,
  * `crates/isolate/src/environment/action/storage.rs:55-60`).
  */
-export class InvalidContentType extends Schema.TaggedError<InvalidContentType>()(
-  "InvalidContentType",
-  { code: Schema.Literal("InvalidContentTypeHeader"), message: Schema.String },
-) {}
+export class InvalidContentType extends Schema.TaggedError<
+  InvalidContentType,
+  { readonly brand: unique symbol }
+>()("InvalidContentType", {
+  code: Schema.Literal("InvalidContentTypeHeader"),
+  message: Schema.String,
+}) {}
 
 /**
  * A file's content type: none for an empty one, as the binary filters it, and
@@ -388,7 +415,7 @@ export const contentType = (
   return Result.fail(
     path === "mutation"
       ? invalid("storage.store", "contentType", message)
-      : new InvalidContentType({ code: "InvalidContentTypeHeader", message }),
+      : InvalidContentType.make({ code: "InvalidContentTypeHeader", message }),
   );
 };
 
@@ -449,7 +476,7 @@ export const uploadUrl = (token: string): string =>
  * replay mints the same ones.
  */
 export const uuid = (n: number): string =>
-  `00000000-0000-4000-8000-${n.toString(16).padStart(12, "0")}`;
+  `00000000-0000-4000-8000-${pipe(n.toString(16), Str.padStart(12, "0"))}`;
 
 /**
  * The count `uuid` minted `value` from, or `undefined` for a UUID it never
@@ -468,8 +495,10 @@ export const uuidCounter = (value: string): number | undefined => {
 export const endpoint = (
   url: string,
 ): "storageUpload" | "storageDownload" | undefined => {
-  if (!url.startsWith(`${origin}/`)) return undefined;
+  if (!pipe(url, Str.startsWith(`${origin}/`))) return undefined;
   const { pathname } = new URL(url);
   if (pathname === "/api/storage/upload") return "storageUpload";
-  return pathname.startsWith("/api/storage/") ? "storageDownload" : undefined;
+  return pipe(pathname, Str.startsWith("/api/storage/"))
+    ? "storageDownload"
+    : undefined;
 };

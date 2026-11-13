@@ -1,7 +1,7 @@
 import type {
   Sample,
   Use,
-} from "../../../server/test/local-backend/fixtures/confect/groups/randomness.spec";
+} from "../../../../tools/local-backend/fixtures/confect/groups/randomness.spec";
 
 /**
  * A use without the values it drew, which only the kernel's supplied stream

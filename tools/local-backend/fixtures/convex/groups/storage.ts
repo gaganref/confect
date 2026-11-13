@@ -1,0 +1,22 @@
+import registeredFunctions from "../../confect/_generated/registeredFunctions/groups/storage.js";
+
+export const deleteAndGet = registeredFunctions.deleteAndGet;
+export const deleteBlob = registeredFunctions.deleteBlob;
+export const deleteRaw = registeredFunctions.deleteRaw;
+export const describe = registeredFunctions.describe;
+export const exerciseFiles = registeredFunctions.exerciseFiles;
+export const fileProbe = registeredFunctions.fileProbe;
+export const generateUploadUrl = registeredFunctions.generateUploadUrl;
+export const get = registeredFunctions.get;
+export const getMutation = registeredFunctions.getMutation;
+export const getUrl = registeredFunctions.getUrl;
+export const limitedFiles = registeredFunctions.limitedFiles;
+export const pendingUrl = registeredFunctions.pendingUrl;
+export const replaceThenFail = registeredFunctions.replaceThenFail;
+export const rollback = registeredFunctions.rollback;
+export const staleRead = registeredFunctions.staleRead;
+export const store = registeredFunctions.store;
+export const storeAndRead = registeredFunctions.storeAndRead;
+export const storeInMutation = registeredFunctions.storeInMutation;
+export const storeMutation = registeredFunctions.storeMutation;
+export const storeWith = registeredFunctions.storeWith;

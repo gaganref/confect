@@ -27,10 +27,6 @@ import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpMiddleware from "effect/http/HttpMiddleware";
 import type * as HttpServerRequest from "effect/http/HttpServerRequest";
 import * as HttpServer from "effect/http/HttpServer";
-import type * as ActionRunner from "./ActionRunner.js";
-import type * as Auth from "./Auth.js";
-import type { ExecutionMetadata } from "./ExecutionMetadata.js";
-import type { RequestMetadata } from "./RequestMetadata.js";
 import type * as DatabaseSchema from "./DatabaseSchema.js";
 import type * as DataModel from "./DataModel.js";
 import type * as Handler from "./Handler.js";
@@ -38,54 +34,24 @@ import * as ConvexConfigProvider from "./ConvexConfigProvider.js";
 import * as ObservabilityRuntime from "./internal/observability.js";
 import { withOptions } from "./internal/httpOptions.js";
 import * as ConvexLogger from "./ConvexLogger.js";
-import type * as MutationRunner from "./MutationRunner.js";
-import type * as QueryRunner from "./QueryRunner.js";
 import * as RegisteredFunction from "./RegisteredFunction.js";
-import type * as Scheduler from "./Scheduler.js";
-import type { Storage } from "./Storage.js";
-import type { StorageActionWriter } from "./StorageActionWriter.js";
-import type { StorageReader } from "./StorageReader.js";
-import type { StorageWriter } from "./StorageWriter.js";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
 
 /**
  * The Confect services available to HTTP route handlers and middleware,
- * supplied per request from the Convex action context.
+ * supplied per request from the Convex action context and typed by the
+ * generated database schema, including its vector indexes.
  */
-export type Services =
-  | QueryRunner.QueryRunner
-  | MutationRunner.MutationRunner
-  | ActionRunner.ActionRunner
-  | Scheduler.Scheduler
-  | Auth.Auth
-  | ExecutionMetadata
-  | RequestMetadata
-  | Storage
-  | StorageReader
-  | StorageWriter
-  | StorageActionWriter;
+export type Services<Schema extends DatabaseSchema.AnyWithProps> =
+  Handler.ActionServices<Schema>;
 
-/**
- * A layer that registers routes on the HTTP router—the input to {@link make}.
- *
- * Compose it from Effect's `effect/http` and `effect/http-api` modules:
- * `HttpApiBuilder.layer(api)` registers an `HttpApi`'s endpoints (provide its
- * group handler layers with `Layer.provide`), `HttpApiScalar.layer(api, ...)`
- * serves interactive API docs, `HttpRouter.add` registers a plain route, and
- * `HttpRouter.middleware(fn, { global: true })` applies middleware to every
- * route. Merge any number of these with `Layer.mergeAll`.
- *
- * Route handlers and middleware may require any of the Confect {@link Services},
- * which surface as request-level `Requires` markers and are supplied per
- * request. Anything else the layer requires is a type error—notably, an
- * `HttpApiBuilder.layer(api)` whose group handler layers are not provided
- * leaves an `HttpApiGroup.ToService` requirement behind, so a missing handler
- * group is caught at compile time.
- *
- * Layers are built with Confect's Convex-aware `ConfigProvider` in context, so
- * `Config` reads (e.g. in `Layer.unwrap`) resolve against Convex environment
- * variables.
- */
-export type Routes<Services_ = Services> = Layer.Layer<
+export type Routes<Schema extends DatabaseSchema.AnyWithProps> = RouteLayer<
+  Services<Schema>
+>;
+
+type RouteLayer<Services_> = Layer.Layer<
   never,
   never,
   | HttpRouter.HttpRouter
@@ -117,55 +83,44 @@ export type Routes<Services_ = Services> = Layer.Layer<
  * Plain Convex routes can still be added to the returned router—Convex matches
  * exact paths first and longer path prefixes before the catch-all, so they take
  * precedence.
+ *
+ * The generated database schema types the routes' services, including
+ * `VectorSearch`, and selects application or component routing. Component
+ * routes are relative to their installation's HTTP mount prefix, and their
+ * labels stay component-relative.
+ *
+ * @stability unstable
  */
-export const make = <Id extends string, Groups extends HttpApiGroup.Constraint>(
-  routes: Routes,
+export const make = <
+  Schema extends DatabaseSchema.AnyWithProps,
+  Id extends string,
+  Groups extends HttpApiGroup.Constraint,
+>(
+  schema: Schema,
+  routes: Routes<NoInfer<Schema>>,
   options?: {
     readonly observability?: Layer.Layer<never> | undefined;
     readonly api?: HttpApi.HttpApi<Id, Groups> | undefined;
   },
 ): ConvexHttpRouter =>
-  makeWithLayer(
-    routes,
-    RegisteredFunction.baseActionLayer,
+  makeWithLayer<
+    Services<Schema>,
+    DataModel.ToConvex<DataModel.FromSchema<Schema>>,
+    Id,
+    Groups
+  >(
+    Match.value(schema.target.kind).pipe(
+      Match.when("app", () => routes),
+      Match.when("component", () =>
+        routes.pipe(Layer.provide(componentRouter)),
+      ),
+      Match.exhaustive,
+    ),
+    (ctx) => RegisteredFunction.actionLayer(schema, ctx),
     options?.api,
     options?.observability,
+    schema.target.kind === "component",
   );
-
-/**
- * Derive HTTP capabilities and ID scopes from the generated database schema.
- * Component routes are relative to their installation's HTTP mount prefix.
- * Supply `{ api }` as in {@link make}; labels stay component-relative.
- */
-export const forSchema =
-  <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
-    schema: DatabaseSchema_,
-  ) =>
-  <Id extends string, Groups extends HttpApiGroup.Constraint>(
-    routes: Routes<Handler.ActionServices<DatabaseSchema_>>,
-    options?: {
-      readonly observability?: Layer.Layer<never> | undefined;
-      readonly api?: HttpApi.HttpApi<Id, Groups> | undefined;
-    },
-  ): ConvexHttpRouter =>
-    makeWithLayer<
-      Handler.ActionServices<DatabaseSchema_>,
-      DataModel.ToConvex<DataModel.FromSchema<DatabaseSchema_>>,
-      Id,
-      Groups
-    >(
-      Match.value(schema.target.kind).pipe(
-        Match.when("app", () => routes),
-        Match.when("component", () =>
-          routes.pipe(Layer.provide(componentRouter)),
-        ),
-        Match.exhaustive,
-      ),
-      (ctx) => RegisteredFunction.actionLayer(schema, ctx),
-      options?.api,
-      options?.observability,
-      schema.target.kind === "component",
-    );
 
 // Convex uses a component-relative path to select its HTTP action but passes
 // the original request URL to that action. Its CONVEX_SITE_URL includes the
@@ -189,7 +144,7 @@ const makeWithLayer = <
   Id extends string,
   Groups extends HttpApiGroup.Constraint,
 >(
-  routes: Routes<Services_>,
+  routes: RouteLayer<Services_>,
   layer: (ctx: GenericActionCtx<DataModel_>) => Layer.Layer<Services_>,
   api: HttpApi.HttpApi<Id, Groups> | undefined,
   observability?: Layer.Layer<never>,
@@ -201,14 +156,18 @@ const makeWithLayer = <
     HttpMiddleware.SpanNameGenerator,
     Effect.gen(function* () {
       const prefix = siteRelative
-        ? (yield* Config.schema(
-            Schema.URLFromString,
-            "CONVEX_SITE_URL",
-          )).pathname.replace(/\/$/, "")
+        ? pipe(
+            (yield* Config.schema(Schema.URLFromString, "CONVEX_SITE_URL"))
+              .pathname,
+            Str.replace(/\/$/, ""),
+          )
         : "";
       return (request: HttpServerRequest.HttpServerRequest) =>
         convexHttpRouter.lookup(
-          new URL(request.originalUrl).pathname.slice(prefix.length) || "/",
+          pipe(
+            new URL(request.originalUrl).pathname,
+            Str.slice(prefix.length),
+          ) || "/",
           request.method as (typeof ROUTABLE_HTTP_METHODS)[number],
         )?.[2] ?? "/*";
     }).pipe(Effect.orDie),
@@ -262,10 +221,10 @@ const makeWithLayer = <
     // so the scope can close as soon as the context is built.
     // Convex's HTTP registration erases the data model. The supplied generated
     // schema restores it; this does not change the runtime context or services.
-    const services = Effect.runSync(
-      Effect.scoped(
-        Layer.build(layer(ctx as unknown as GenericActionCtx<DataModel_>)),
-      ),
+    const services = layer(ctx as unknown as GenericActionCtx<DataModel_>).pipe(
+      Layer.build,
+      Effect.scoped,
+      Effect.runSync,
     );
     return handler(
       request,
@@ -290,8 +249,11 @@ const makeWithLayer = <
     HttpApi.reflect(api, {
       onGroup: () => {},
       onEndpoint: ({ endpoint }) => {
-        const method = ROUTABLE_HTTP_METHODS.find(
-          (candidate) => candidate === endpoint.method,
+        const method = Option.getOrUndefined(
+          Array.findFirst(
+            ROUTABLE_HTTP_METHODS,
+            (candidate) => candidate === endpoint.method,
+          ),
         );
         if (method === undefined) return;
         const path = apiRouterPath(
@@ -300,15 +262,20 @@ const makeWithLayer = <
         );
         matcher.on(method, path, endpoint.path);
         // Effect also matches a wildcard route's base path without its slash.
-        if (path.endsWith("/*")) {
-          matcher.on(method, path.slice(0, -2) as `/${string}`, endpoint.path);
+        if (pipe(path, Str.endsWith("/*"))) {
+          matcher.on(
+            method,
+            pipe(path, Str.slice(0, -2)) as `/${string}`,
+            endpoint.path,
+          );
         }
         reflected.push([endpoint.path, method, httpAction]);
       },
     });
     reflected.sort(
       ([pathA, methodA], [pathB, methodB]) =>
-        pathA.localeCompare(pathB) || methodA.localeCompare(methodB),
+        pipe(pathA, Str.localeCompare(pathB)) ||
+        pipe(methodA, Str.localeCompare(methodB)),
     );
 
     const getRoutes = convexHttpRouter.getRoutes;
@@ -316,7 +283,10 @@ const makeWithLayer = <
       reflected.length === 0
         ? getRoutes()
         : [
-            ...getRoutes().filter(([, , action]) => action !== httpAction),
+            ...Array.filter(
+              getRoutes(),
+              ([, , action]) => action !== httpAction,
+            ),
             ...reflected,
           ];
     const lookup = convexHttpRouter.lookup;
@@ -366,7 +336,7 @@ const apiRouterPath = (
   path: FindMyWay.PathInput,
   params: Schema.Top | undefined,
 ): FindMyWay.PathInput => {
-  if (params === undefined || !path.includes(":")) return path;
+  if (params === undefined || !pipe(path, Str.includes(":"))) return path;
   let ast = params.ast;
   while (ast.encoding !== undefined) {
     ast = ast.encoding[ast.encoding.length - 1].to;
@@ -374,7 +344,7 @@ const apiRouterPath = (
   if (!SchemaAST.isObjects(ast) || ast.indexSignatures.length !== 0)
     return path;
   const names = new Set(
-    ast.propertySignatures.map((property) => String(property.name)),
+    Array.map(ast.propertySignatures, (property) => String(property.name)),
   );
   let normalized = "";
   let depth = 0;
@@ -392,13 +362,13 @@ const apiRouterPath = (
       normalized += "::";
       i++;
     } else {
-      const param = /^:(\w+)/.exec(path.slice(i));
+      const param = /^:(\w+)/.exec(pipe(path, Str.slice(i)));
       if (param !== null && names.has(param[1])) {
         normalized += param[0];
         i += param[0].length - 1;
         const next = path[i + 1];
         if (next === "(") regexStart = i + 1;
-        else if (next !== undefined && !"/.-?".includes(next))
+        else if (next !== undefined && !pipe("/.-?", Str.includes(next)))
           normalized += "(.*?)";
       } else {
         normalized += "::";
