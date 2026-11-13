@@ -5,7 +5,6 @@ import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as HashSet from "effect/HashSet";
 import * as Match from "effect/Match";
-import * as Schema from "effect/Schema";
 import * as String from "effect/String";
 import { UnownedConvexEntrypointError } from "./CodegenError.js";
 import * as Declaration from "./Declaration.js";
@@ -25,6 +24,7 @@ import {
 } from "./utils.js";
 import { ProjectRoot } from "./ProjectRoot.js";
 import * as Option from "effect/Option";
+import { quote } from "./Json.js";
 
 const RESERVED_CONVEX_TS_FILE_NAMES = new Set([
   "schema.ts",
@@ -93,7 +93,7 @@ const tokenize = (
     ) {
       const literal = pipe(value, String.slice(1, -1));
       tokens.push(
-        JSON.stringify(
+        quote(
           pipe(literal, String.startsWith("."))
             ? path.resolve(
                 path.dirname(modulePath),
@@ -106,8 +106,6 @@ const tokenize = (
   }
   return tokens;
 };
-
-const encodeString = Schema.encodeSync(Schema.fromJsonString(Schema.String));
 
 const matchesShape = (
   actual: readonly string[],
@@ -175,9 +173,7 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
   // The declared HTTP router first imports each file a manifest section wrote.
   const sectionImports = new Set(
     Array.map(written2, (file) =>
-      encodeString(
-        path.join(confect, "_generated", path.basename(file, ".ts")),
-      ),
+      quote(path.join(confect, "_generated", path.basename(file, ".ts"))),
     ),
   );
   const withoutSectionImports = (

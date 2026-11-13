@@ -382,12 +382,6 @@
       "files": [
         "packages/alchemy/test/ConvexClient.test.ts",
         "packages/alchemy/test/integration/MountInit.test.ts",
-        "packages/cli/src/Declaration.ts",
-        "packages/cli/src/FunctionModule.ts",
-        "packages/cli/src/ManifestSections.ts",
-        "packages/cli/src/SectionFiles.ts",
-        "packages/cli/src/confect/codegen.ts",
-        "packages/cli/src/templates.ts",
         "packages/cli/test/ManifestSections.test.ts",
         "packages/cli/test/SectionFiles.test.ts",
         "packages/cli/test/codegen.test.ts",
@@ -402,15 +396,6 @@
       ],
       "rules": {
         "effecttsgo/global-json": "off"
-      }
-    },
-    {
-      "files": [
-        "packages/cli/src/ConvexConfig.ts",
-        "packages/cli/src/templates.ts"
-      ],
-      "rules": {
-        "effecttsgo/global-json-in-effect": "off"
       }
     },
     {
@@ -437,19 +422,11 @@
       }
     },
     {
-      "files": ["packages/cli/src/ConvexConfig.ts"],
-      "rules": {
-        "effecttsgo/prefer-schema-over-json": "off"
-      }
-    },
-    {
       "files": [
         "packages/alchemy/test/Code.test.ts",
         "packages/alchemy/test/FileLock.test.ts",
         "packages/alchemy/test/LocalBackend.test.ts",
         "packages/alchemy/test/PushLock.test.ts",
-        "packages/cli/src/FunctionModule.ts",
-        "packages/cli/src/SectionFiles.ts",
         "packages/cli/test/ComponentCodegen.test.ts",
         "packages/cli/test/codegen.test.ts",
         "packages/cli/test/integration/codegen.test.ts",

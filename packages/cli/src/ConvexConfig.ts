@@ -192,6 +192,7 @@ export const componentConfigPlugin = (path: Path.Path): esbuild.Plugin => ({
             contents: Array.join(
               [
                 `import real from ${modulePath};`,
+                // oxlint-disable-next-line effecttsgo/prefer-schema-over-json, effecttsgo/global-json-in-effect -- Emit an escaped JavaScript string and object literal into the virtual module, not a JSON payload.
                 `export default { ...real, componentDefinitionPath: ${definitionPath}, defaultName: real._name, [${JSON.stringify(COMPONENT_IMPORT_KEY)}]: ${JSON.stringify({ specifier, path: args.path })} };`,
               ],
               "\n",

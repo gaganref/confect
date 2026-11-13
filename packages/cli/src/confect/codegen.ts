@@ -70,6 +70,7 @@ import {
   syncDeclaredHttp,
 } from "./declaration.js";
 import * as String from "effect/String";
+import { quote } from "../Json.js";
 
 const GENERATED_DIRNAME = "_generated";
 
@@ -1131,11 +1132,6 @@ const logGenerated = <E, R>(
       }),
     ),
   );
-
-/**
- * Test-only imports never enter the runtime schema or function wrappers.
- */
-const quote = (value: string) => JSON.stringify(value);
 
 /**
  * A descriptor's `testing` kit must be a package specifier, so the generated

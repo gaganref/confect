@@ -12,6 +12,7 @@ import * as Str from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
+import { quote, stringify } from "./Json.js";
 
 const reserved = new Set(
   pipe("name env http digest __proto__ constructor prototype", Str.split(" ")),
@@ -44,7 +45,7 @@ const nonJsonPath = (
     : Reflect.ownKeys(value);
   for (const key of keys) {
     if (typeof key === "symbol") return path;
-    const at = `${path}[${JSON.stringify(key)}]`;
+    const at = `${path}[${quote(key)}]`;
     const descriptor = Object.getOwnPropertyDescriptor(value, key);
     if (
       key === "__proto__" ||
@@ -64,7 +65,8 @@ const nonJsonPath = (
 const json = (value: unknown): Result.Result<unknown, string> => {
   const path = nonJsonPath(value);
   return path === undefined
-    ? Result.succeed(JSON.parse(JSON.stringify(value)))
+    ? // oxlint-disable-next-line effecttsgo/global-json -- A sync clone of data the path check above proved is JSON, so it cannot throw; json returns a Result for callers outside an Effect.
+      Result.succeed(JSON.parse(stringify(value)))
     : Result.fail(`Expected JSON data at ${path}`);
 };
 export type Registry = Map<

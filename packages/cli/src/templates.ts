@@ -220,7 +220,7 @@ const idEffect = Effect.fnUntraced(function* ({
   yield* cbw.blankLine();
   if (scope !== undefined) {
     yield* cbw.writeLine(
-      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Emit an escaped TypeScript string literal, not a JSON payload.
+      // oxlint-disable-next-line effecttsgo/prefer-schema-over-json, effecttsgo/global-json-in-effect -- Emit an escaped TypeScript string literal, not a JSON payload.
       `export const scope = IdScope.component(${JSON.stringify(pipe(scope, String.slice("component:".length)))});`,
     );
     yield* cbw.writeLine(
@@ -647,7 +647,7 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
   const finalizedLayer =
     required.length === 0
       ? "groupLayer"
-      : // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- Emit escaped TypeScript string literals, not JSON payloads.
+      : // oxlint-disable-next-line effecttsgo/prefer-schema-over-json, effecttsgo/global-json-in-effect, effecttsgo/global-json -- Emit escaped TypeScript string literals, not JSON payloads.
         `groupLayer.pipe(GroupImpl.finalize({ required: [${Array.join(", ")(Array.map(required, ({ key }) => `{ key: ${JSON.stringify(key)} }`))}], groupPath: ${JSON.stringify(groupPath)} }))`;
   const groupLayer =
     runtimeImportPath === undefined

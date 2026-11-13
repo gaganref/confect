@@ -5,12 +5,6 @@
   "effecttsgo/global-json": {
     "packages/alchemy/test/ConvexClient.test.ts": 2,
     "packages/alchemy/test/integration/MountInit.test.ts": 1,
-    "packages/cli/src/Declaration.ts": 4,
-    "packages/cli/src/FunctionModule.ts": 1,
-    "packages/cli/src/ManifestSections.ts": 3,
-    "packages/cli/src/SectionFiles.ts": 3,
-    "packages/cli/src/confect/codegen.ts": 1,
-    "packages/cli/src/templates.ts": 1,
     "packages/cli/test/ManifestSections.test.ts": 1,
     "packages/cli/test/SectionFiles.test.ts": 1,
     "packages/cli/test/codegen.test.ts": 1,
@@ -22,10 +16,6 @@
     "packages/server/test/RegisteredConvexFunction.test.ts": 1,
     "packages/test/src/TestConfect.ts": 1,
     "scripts/stageForkPackages.test.ts": 1
-  },
-  "effecttsgo/global-json-in-effect": {
-    "packages/cli/src/ConvexConfig.ts": 2,
-    "packages/cli/src/templates.ts": 2
   },
   "effecttsgo/missed-pipeable-opportunity": {
     "packages/alchemy/test/Code.test.ts": 2,
@@ -42,16 +32,11 @@
   "effecttsgo/prefer-effect-string": {
     "packages/core/src/Http.ts": 1
   },
-  "effecttsgo/prefer-schema-over-json": {
-    "packages/cli/src/ConvexConfig.ts": 2
-  },
   "effecttsgo/schema-sync": {
     "packages/alchemy/test/Code.test.ts": 1,
     "packages/alchemy/test/FileLock.test.ts": 1,
     "packages/alchemy/test/LocalBackend.test.ts": 1,
     "packages/alchemy/test/PushLock.test.ts": 1,
-    "packages/cli/src/FunctionModule.ts": 1,
-    "packages/cli/src/SectionFiles.ts": 1,
     "packages/cli/test/ComponentCodegen.test.ts": 1,
     "packages/cli/test/codegen.test.ts": 1,
     "packages/cli/test/integration/codegen.test.ts": 1,
