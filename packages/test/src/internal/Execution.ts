@@ -2,6 +2,7 @@ import { AsyncLocalStorage } from "node:async_hooks";
 import {
   actionGeneric,
   getFunctionAddress,
+  httpActionGeneric,
   mutationGeneric,
   queryGeneric,
   type FunctionReference,
@@ -10,22 +11,30 @@ import {
   type UserIdentity,
 } from "convex/server";
 import {
+  Base64,
   CommitTsPlaceholder,
   compareValues,
   convexToJson,
   jsonToConvex,
+  type JSONValue,
   type Value,
 } from "convex/values";
+import * as Result from "effect/Result";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
+import * as Crons from "./Crons.js";
 import * as Globals from "./Globals.js";
+import * as Http from "./Http.js";
 import * as Invocation from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import * as Metering from "./Metering.js";
 import type * as ReadSet from "./ReadSet.js";
+import * as Redaction from "./Redaction.js";
 import * as Scheduling from "./Scheduling.js";
+import * as Storage from "./Storage.js";
+import * as Snapshot from "./Snapshot.js";
 import type {
   DocumentId,
   FunctionPath,
@@ -49,6 +58,28 @@ import {
 } from "./KernelValues.js";
 
 const ROOT = "";
+
+/**
+ * A cron job's declaration as a snapshot writes it and a restore compares it:
+ * its name, function, arguments as Convex JSON through `args`, and schedule, a
+ * cron expression by its text.
+ */
+const declarationJson = (
+  { spec }: Pick<CronJob, "spec">,
+  args: (json: JSONValue) => JSONValue,
+) => ({
+  name: spec.name,
+  udfPath: spec.udfPath,
+  args: args(convexToJson(spec.args)),
+  schedule: (spec.schedule.kind === "cron"
+    ? { kind: "cron", expression: spec.schedule.expression }
+    : spec.schedule) as unknown as JSONValue,
+});
+
+const cronKey = (componentPath: string, name: string) =>
+  `${componentPath}\u0000${name}`;
+
+const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
 const TYPICAL_CONVEX_ID_LENGTH = 32;
 
 type Modules = Record<string, () => Promise<any>>;
@@ -72,6 +103,49 @@ interface Component {
 /**
  * Who is calling: the identity and the request attributes a test accessor set.
  */
+/**
+ * A declared cron job and its next run. The binary keeps this in the
+ * component's `_cron_jobs` and `_cron_next_run` system tables, which no
+ * function reads, so the kernel keeps it beside its tables.
+ */
+export interface CronJob {
+  readonly componentPath: string;
+  readonly spec: Crons.Spec;
+  readonly nextRun: number;
+  readonly last: CronOutcome | undefined;
+  /**
+   * The world bound when the test backend opened, which the binary's push
+   * stands for. Each run starts as a fresh invocation of it, or unbound.
+   */
+  readonly world: Invocation.World | undefined;
+}
+
+/**
+ * A cron job as its component declares it, before any run is scheduled.
+ */
+interface CronDeclaration {
+  readonly componentPath: string;
+  readonly spec: Crons.Spec;
+}
+
+export type CronOutcome =
+  | { readonly kind: "success" }
+  | { readonly kind: "failed"; readonly error: string };
+
+/**
+ * A declared cron job as a driver sees it.
+ */
+export interface Cron {
+  readonly componentPath: string;
+  readonly name: string;
+  readonly udfPath: string;
+  readonly nextRun: number;
+  /**
+   * How the latest run ended, as the binary's cron log records it.
+   */
+  readonly last: CronOutcome | undefined;
+}
+
 export interface Caller {
   readonly identity: UserIdentity | null;
   readonly token: string | null;
@@ -119,6 +193,11 @@ export type Outcome =
  */
 export interface HeldAttempt {
   readonly id: string;
+  /**
+   * The mutation the attempt runs, whose return shape marks its outcome in an
+   * artifact.
+   */
+  readonly functionPath: FunctionPath;
   readonly request: string;
   readonly number: Invocation.Attempt;
   readonly snapshot: Kernel.Version;
@@ -230,6 +309,13 @@ interface Execution {
    * level, its caller's inside a nested call, tightened by the call's budget.
    */
   readonly limits: Metering.Limits;
+  /**
+   * The first kernel refusal a syscall of this call, or of a call nested in it,
+   * threw. Convex's `performAsyncSyscall` rethrows a syscall's error as a plain
+   * `Error`, so the refusal is kept here for whatever must surface it, such as
+   * an HTTP route that would otherwise answer 500.
+   */
+  readonly refused: { first?: unknown };
 }
 
 /**
@@ -297,6 +383,39 @@ const pinnedTime = (): number | undefined => {
  * `finishAllScheduledFunctions` defaults to.
  */
 const defaultBudget = 100;
+
+const unresolvedWorld = (
+  name: string,
+  reason: "missing" | "ambiguous",
+): KernelRefusal.SnapshotWorldUnresolved =>
+  new KernelRefusal.SnapshotWorldUnresolved({
+    name,
+    reason,
+    message:
+      reason === "missing"
+        ? `A snapshot job runs under the test world "${name}", which no world passed to restore is named. Pass that world.`
+        : `Two different test worlds are named "${name}", so a snapshot cannot tell their jobs apart. Name each world uniquely.`,
+  });
+
+/**
+ * `shape` placed at `at`, or no placement when there is no shape.
+ */
+const placed = (
+  shape: Redaction.Shape | undefined,
+  at: ReadonlyArray<string> = [],
+): ReadonlyArray<Redaction.Placement> =>
+  shape === undefined ? [] : [{ at, shape }];
+
+const running = (
+  registry: KernelRefusal.SnapshotWorldRunning["registry"],
+  count: number,
+  what: string,
+) =>
+  new KernelRefusal.SnapshotWorldRunning({
+    registry,
+    count,
+    message: `The test backend is running ${count} ${what}, whose effects a snapshot would split. Await them first.`,
+  });
 
 const current = (): Execution => {
   const execution = executions.getStore();
@@ -487,11 +606,54 @@ export class World {
    */
   private floor = Number.NEGATIVE_INFINITY;
   private readonly targets = new Map<DocumentId, Scheduling.Target>();
+  private readonly files = new Map<DocumentId, Storage.File>();
+  private readonly legacyIds = new Map<string, DocumentId>();
+  private nextFile = 1;
+  private nextUploadToken = 1;
+  private nextErrorRequest = 1;
+  private readonly cronJobs = new Map<string, CronJob>();
+  /**
+   * Every component's cron declarations, read once the modules load.
+   */
+  private declared: ReadonlyArray<CronDeclaration> = [];
+  /**
+   * Whether the declared jobs have their runs: first runs scheduled, or a
+   * snapshot's installed.
+   */
+  private cronsScheduled = false;
+  /**
+   * The raw secrets this world has seen under a secret schema node. Replay
+   * state, kept in memory and never written to an artifact.
+   */
+  private secrets = new Redaction.Secrets();
+  /**
+   * The live registries `Snapshot.contract.live` names, each a count: calls
+   * from the test, scheduler walks, function executions (nested and detached
+   * ones included) and registered subscribers. Held attempts are `holding`.
+   */
+  private readonly live = {
+    running: 0,
+    walks: 0,
+    functions: 0,
+    subscribers: 0,
+  };
+  /**
+   * The latest identity version a subscriber's `authenticate` reached. Each
+   * subscriber starts at the epoch, and each identity change advances it, so a
+   * restored world never hands out a version its source already used.
+   */
+  private identityEpoch = 0;
 
   constructor(
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
     modules: Modules,
     private readonly runtime: Kernel.KernelRuntime = Kernel.wallClock(),
+    private readonly redaction: Redaction.Policy = Redaction.none,
+    /**
+     * The world the driver gives the backend itself, which a backend opened
+     * with no invocation bound declares its cron jobs in.
+     */
+    private readonly own?: Invocation.World,
   ) {
     installConvexGlobal();
     Clock.install(pinnedTime, () => executions.getStore() !== undefined);
@@ -517,10 +679,27 @@ export class World {
   }
 
   /**
-   * Load every registered module of every component, once, before any function
-   * runs, then check that each standing source names an exported function.
+   * Load every registered module, read each component's cron declarations, and
+   * schedule their first runs, once. The first runs start in the world of the
+   * invocation bound by the call that opened the backend, or else the world the
+   * driver gave the backend. `advance` and `drain` open with the driver's,
+   * since their binding never reaches a job.
    */
   open(): Promise<void> {
+    return this.openIn(Invocation.current()?.world ?? this.own);
+  }
+
+  private openIn(world: Invocation.World | undefined): Promise<void> {
+    return this.load().then(() => this.scheduleFirstRuns(world));
+  }
+
+  /**
+   * Load every registered module of every component, once, before any function
+   * runs, check that each standing source names an exported function, and read
+   * each component's cron declarations. Nothing here draws a random value, so a
+   * restore can load without one.
+   */
+  private load(): Promise<void> {
     this.opened ??= Promise.all(
       Array.from(this.components.values(), (component) =>
         Promise.all(
@@ -529,8 +708,156 @@ export class World {
           ),
         ),
       ),
-    ).then(() => this.checkStanding());
+    )
+      .then(() => this.checkStanding())
+      .then(() => this.readDeclarations());
     return this.opened;
+  }
+
+  private readDeclarations() {
+    this.declared = this.readCrons();
+  }
+
+  /**
+   * Read each component's `crons.ts` as the binary reads `crons.js` at push
+   * (`crates/model/src/cron_jobs/mod.rs:151-195`) and refuse what the push
+   * would (`crates/isolate/src/environment/analyze.rs:1016-1089`,
+   * `crates/application/src/application_function_runner/mod.rs:1932-1979`).
+   * Jobs come in name order, as the binary walks them.
+   */
+  private readCrons(): ReadonlyArray<CronDeclaration> {
+    const declarations: Array<CronDeclaration> = [];
+    for (const component of this.components.values()) {
+      const module = component.loaded.get("crons");
+      if (module === undefined) continue;
+      const refuse = (message: string) =>
+        new KernelRefusal.InvalidCron({
+          componentPath: component.path,
+          name: "",
+          message,
+        });
+      if (!("default" in module)) {
+        throw refuse(
+          "`convex/crons.js` must have a default export of a Crons object.",
+        );
+      }
+      const declared = module.default;
+      if (declared?.isCrons !== true || typeof declared.export !== "function") {
+        throw refuse(
+          "The default export of `convex/crons.js` is not a Crons object.",
+        );
+      }
+      const exported = JSON.parse(declared.export()) as Record<string, unknown>;
+      for (const name of Object.keys(exported).sort()) {
+        const parsed = Crons.parseSpec(component.path, name, exported[name]);
+        if (Result.isFailure(parsed)) throw parsed.failure;
+        this.checkCronTarget(component, parsed.success);
+        declarations.push({
+          componentPath: component.path,
+          spec: parsed.success,
+        });
+      }
+    }
+    return declarations;
+  }
+
+  /**
+   * Schedule each declared job's first run from the kernel's time now, once, in
+   * `world`. A clock schedule draws its delay from `world`'s random stream, so
+   * with no world it is refused. A restore installs the snapshot's runs instead
+   * and never comes here.
+   */
+  private scheduleFirstRuns(world: Invocation.World | undefined) {
+    if (this.cronsScheduled) return;
+    const scheduled = new Map<string, CronJob>();
+    for (const { componentPath, spec } of this.declared) {
+      if (spec.schedule.kind !== "interval" && world === undefined) {
+        throw new KernelRefusal.CronRandomUnavailable({
+          componentPath,
+          name: spec.name,
+          message: `Cron job "${spec.name}" runs on a ${spec.schedule.kind} schedule, which Convex delays by a random number of seconds, and no test world was bound when the backend opened to draw it from. The kernel holds no generator. Open the backend under a bound invocation, whose world's random stream the delay draws from.`,
+        });
+      }
+      const job: CronJob = {
+        componentPath,
+        spec,
+        nextRun: 0,
+        last: undefined,
+        world,
+      };
+      scheduled.set(cronKey(componentPath, spec.name), {
+        ...job,
+        nextRun: this.searched(
+          job,
+          Crons.nextRun(spec.schedule, undefined, this.now(), (bound) =>
+            this.draw(job, bound),
+          ),
+        ),
+      });
+    }
+    for (const [key, job] of scheduled) this.cronJobs.set(key, job);
+    this.cronsScheduled = true;
+  }
+
+  /**
+   * Refuse a cron job whose function is missing or is no mutation or action.
+   */
+  private checkCronTarget(component: Component, spec: Crons.Spec) {
+    const [modulePath, exportName = "default"] = spec.udfPath.split(":");
+    const func = component.loaded.get(modulePath!)?.[exportName];
+    const refuse = (reason: string) =>
+      new KernelRefusal.InvalidCron({
+        componentPath: component.path,
+        name: spec.name,
+        message: `The cron job '${spec.name}' ${reason}: ${spec.udfPath}`,
+      });
+    if (func === undefined) {
+      throw refuse("schedules a function that does not exist");
+    }
+    if (func.isQuery === true) {
+      throw refuse(
+        "schedules a query function, only actions and mutations can be scheduled",
+      );
+    }
+    if (func.isHttp === true) {
+      throw refuse(
+        "schedules an HTTP action, only actions and mutations can be scheduled",
+      );
+    }
+    if (func.isMutation !== true && func.isAction !== true) {
+      throw refuse("schedules a function that does not exist");
+    }
+  }
+
+  /**
+   * A whole number in `[0, bound)`, drawn from the random stream of the world
+   * the cron job runs in, the stream its handlers draw from. `declareCrons`
+   * refused a clock schedule with no world, and an interval never draws.
+   */
+  private draw(cron: CronJob, bound: number): number {
+    return Math.floor(cron.world!.random() * bound);
+  }
+
+  /**
+   * A computed run time, or the refusal for a search the binary cannot finish.
+   */
+  private searched(
+    cron: CronJob,
+    result: Result.Result<number, Crons.SearchFailure>,
+  ): number {
+    if (Result.isSuccess(result)) return result.success;
+    const { name, schedule } = cron.spec;
+    const expression = schedule.kind === "cron" ? schedule.expression : name;
+    throw result.failure._tag === "BinaryAborts"
+      ? new KernelRefusal.CronAbortsBinary({
+          componentPath: cron.componentPath,
+          name,
+          date: result.failure.date,
+          message: `Cron job "${name}" searches "${expression}" from ${result.failure.date}, a Monday, where saffron subtracts below zero (saffron/src/lib.rs:663). The Convex binary is built with overflow checks and aborts there, so the kernel refuses rather than answer.`,
+        })
+      : new Error(
+          `Cron job "${name}" has no next run, though its schedule passed saffron's \`any\` when it was read.`,
+        );
   }
 
   /**
@@ -607,44 +934,50 @@ export class World {
   // Calls from the test.
 
   query(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.open().then(() => {
-      const from = { caller, request: newRequest(caller) };
-      return typeof reference === "function"
-        ? this.runQuery(
-            { componentPath: ROOT, udfPath: "inline" },
-            { handler: reference, args: { type: "any" }, returns: null },
-            args ?? {},
-            from,
-          )
-        : this.queryAt(pathOfReference(reference, ROOT), args, from);
+    return this.during(() => {
+      return this.open().then(() => {
+        const from = { caller, request: newRequest(caller) };
+        return typeof reference === "function"
+          ? this.runQuery(
+              { componentPath: ROOT, udfPath: "inline" },
+              { handler: reference, args: { type: "any" }, returns: null },
+              args ?? {},
+              from,
+            )
+          : this.queryAt(pathOfReference(reference, ROOT), args, from);
+      });
     });
   }
 
   mutation(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.open().then(() => {
-      const from = { caller, request: newRequest(caller) };
-      return typeof reference === "function"
-        ? this.runMutation(
-            { componentPath: ROOT, udfPath: "inline" },
-            { handler: reference, args: { type: "any" }, returns: null },
-            args ?? {},
-            from,
-          )
-        : this.mutationAt(pathOfReference(reference, ROOT), args, from);
+    return this.during(() => {
+      return this.open().then(() => {
+        const from = { caller, request: newRequest(caller) };
+        return typeof reference === "function"
+          ? this.runMutation(
+              { componentPath: ROOT, udfPath: "inline" },
+              { handler: reference, args: { type: "any" }, returns: null },
+              args ?? {},
+              from,
+            )
+          : this.mutationAt(pathOfReference(reference, ROOT), args, from);
+      });
     });
   }
 
   action(caller: Caller, reference: any, args: any): Promise<any> {
-    return this.open().then(() => {
-      const from = { caller, request: newRequest(caller) };
-      return typeof reference === "function"
-        ? this.runAction(
-            { componentPath: ROOT, udfPath: "inline" },
-            { handler: reference, args: { type: "any" }, returns: null },
-            args ?? {},
-            from,
-          )
-        : this.actionAt(pathOfReference(reference, ROOT), args, from);
+    return this.during(() => {
+      return this.open().then(() => {
+        const from = { caller, request: newRequest(caller) };
+        return typeof reference === "function"
+          ? this.runAction(
+              { componentPath: ROOT, udfPath: "inline" },
+              { handler: reference, args: { type: "any" }, returns: null },
+              args ?? {},
+              from,
+            )
+          : this.actionAt(pathOfReference(reference, ROOT), args, from);
+      });
     });
   }
 
@@ -653,15 +986,92 @@ export class World {
     componentPath: string,
     handler: (ctx: any) => any,
   ): Promise<any> {
-    return this.open().then(() => {
-      this.component(componentPath);
-      return this.runMutation(
-        { componentPath, udfPath: "custom" },
-        { handler, args: { type: "any" }, returns: null },
-        {},
-        { caller, request: newRequest(caller) },
-      );
+    return this.during(() => {
+      return this.open().then(() => {
+        this.component(componentPath);
+        return this.runMutation(
+          { componentPath, udfPath: "custom" },
+          { handler, args: { type: "any" }, returns: null },
+          {},
+          { caller, request: newRequest(caller) },
+        );
+      });
     });
+  }
+
+  /**
+   * Send `path` to the root component's HTTP router, as the binary routes a
+   * request: the router's `lookup` picks the route by pathname and method, and
+   * the route's handler runs as an action with the caller's identity. With no
+   * route, the binary's 404, and for a handler that throws, its 500.
+   */
+  fetch(caller: Caller, path: unknown, init?: RequestInit): Promise<Response> {
+    return this.during(() =>
+      this.open().then(() => this.route(caller, path, init)),
+    );
+  }
+
+  private route(
+    caller: Caller,
+    path: unknown,
+    init: RequestInit | undefined,
+  ): Promise<Response> {
+    const url = orThrow(Http.requestUrl(path));
+    const method = init?.method ?? "GET";
+    const request = new Request(
+      url,
+      Http.discardsBody(method) ? { ...init, body: null } : init,
+    );
+    const router = this.component(ROOT).loaded.get("http")?.["default"] as
+      | {
+          readonly lookup: (
+            path: string,
+            method: string,
+          ) => readonly [any, string, string] | null;
+        }
+      | undefined;
+    const route = router?.lookup(url.pathname, request.method) ?? null;
+    if (route === null) {
+      return Promise.resolve(Http.forMethod(request.method, Http.noRoute()));
+    }
+    const [endpoint] = route;
+    const handler: (
+      ctx: any,
+      request: globalThis.Request,
+    ) => Promise<Response> =
+      "_handler" in endpoint ? endpoint._handler : endpoint;
+    const execution = this.execution(
+      { componentPath: ROOT, udfPath: "http" },
+      "action",
+      undefined,
+      { caller, request: newRequest(caller) },
+      undefined,
+    );
+    const action = httpActionGeneric((ctx, received) =>
+      handler({ ...ctx, auth: queryAuth(execution) }, received),
+    ) as unknown as {
+      invokeHttpAction: (request: globalThis.Request) => Promise<Response>;
+    };
+    // A handler that throws gets the binary's 500, not a rejected fetch. A
+    // kernel refusal is no handler error: it surfaces as itself.
+    return this.track("functions", () =>
+      enter(execution, () => action.invokeHttpAction(request)),
+    ).then(
+      (response) => Http.forMethod(request.method, response),
+      (thrown: unknown) => {
+        const refusal = refusalOf(thrown, execution);
+        if (refusal !== undefined) throw refusal;
+        // The report is an artifact, so it leaves through the failure
+        // redaction a rejected call's report does.
+        return Http.forMethod(
+          request.method,
+          Http.serverError(
+            this.redactFailure(thrown),
+            Http.errorRequestId(this.nextErrorRequest++),
+          ),
+        );
+      },
+    );
   }
 
   // Held attempts.
@@ -670,31 +1080,36 @@ export class World {
    * Run a mutation to its commit point and hold it as attempt 1.
    */
   prepare(caller: Caller, reference: any, args: any): Promise<HeldAttempt> {
-    return this.open().then(() => {
-      const functionPath = pathOfReference(reference, ROOT);
-      const resolved = this.resolve(functionPath, "mutation");
-      validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
-      return this.prepareMutation(
-        functionPath,
-        resolved,
-        args,
-        { caller, request: newRequest(caller) },
-        1,
-        Invocation.current(),
-      ).then((held) => held.view);
+    return this.during(() => {
+      return this.open().then(() => {
+        const functionPath = pathOfReference(reference, ROOT);
+        const resolved = this.resolve(functionPath, "mutation");
+        this.keepArgs(functionPath, args);
+        validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
+        return this.prepareMutation(
+          functionPath,
+          resolved,
+          args,
+          { caller, request: newRequest(caller) },
+          1,
+          Invocation.current(),
+        ).then((held) => held.view);
+      });
     });
   }
 
   apply(id: string): Promise<KernelApply> {
-    const held = this.holding.get(id);
-    return held === undefined
-      ? Promise.reject(
-          new KernelRefusal.StaleAttempt({
-            id,
-            message: `The test kernel holds no attempt "${id}". It was already applied, or never prepared.`,
-          }),
-        )
-      : this.applyHeld(held);
+    return this.during(() => {
+      const held = this.holding.get(id);
+      return held === undefined
+        ? Promise.reject(
+            new KernelRefusal.StaleAttempt({
+              id,
+              message: `The test kernel holds no attempt "${id}". It was already applied, or never prepared.`,
+            }),
+          )
+        : this.applyHeld(held);
+    });
   }
 
   /**
@@ -718,35 +1133,471 @@ export class World {
     args: any,
     pinned: { readonly time?: number; readonly journal: string | null },
   ): Promise<QueryRun> {
-    return this.open().then(() => {
-      const functionPath = pathOfReference(reference, ROOT);
-      const resolved = this.resolve(functionPath, "query");
-      validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
-      const top: TopQuery = {
-        attempt: new KernelAttempt(this.state),
-        pagination: { calls: 0, journal: pinned.journal, end: null },
-        startTime: pinned.time,
-      };
-      const run = (outcome: Outcome): QueryRun => ({
-        outcome,
-        snapshot: top.attempt.snapshot.version,
-        reads: top.attempt.reads,
-        observedIdentity: top.attempt.observedIdentity,
-        time: top.attempt.observedTime,
-        journal: pinned.journal ?? top.pagination.end,
+    return this.during(() => {
+      return this.open().then(() => {
+        const functionPath = pathOfReference(reference, ROOT);
+        const resolved = this.resolve(functionPath, "query");
+        this.keepArgs(functionPath, args);
+        validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
+        const top: TopQuery = {
+          attempt: new KernelAttempt(this.state),
+          pagination: { calls: 0, journal: pinned.journal, end: null },
+          startTime: pinned.time,
+        };
+        const run = (outcome: Outcome): QueryRun => ({
+          outcome,
+          snapshot: top.attempt.snapshot.version,
+          reads: top.attempt.reads,
+          observedIdentity: top.attempt.observedIdentity,
+          time: top.attempt.observedTime,
+          journal: pinned.journal ?? top.pagination.end,
+        });
+        return this.runQuery(
+          functionPath,
+          resolved,
+          args,
+          { caller, request: newRequest(caller) },
+          false,
+          top,
+        ).then(
+          (value: Value) => run({ _tag: "returned", value }),
+          (error: unknown) => run({ _tag: "failed", error }),
+        );
       });
-      return this.runQuery(
-        functionPath,
-        resolved,
-        args,
-        { caller, request: newRequest(caller) },
-        false,
-        top,
-      ).then(
-        (value: Value) => run({ _tag: "returned", value }),
-        (error: unknown) => run({ _tag: "failed", error }),
-      );
     });
+  }
+
+  /**
+   * Run `call`, a call from the test, counted as running until it settles.
+   */
+  private during<A>(call: () => Promise<A>): Promise<A> {
+    return this.track("running", call);
+  }
+
+  /**
+   * Run `work` counted in the live registry `registry` until it settles.
+   */
+  private track<A>(
+    registry: "running" | "walks" | "functions",
+    work: () => Promise<A>,
+  ): Promise<A> {
+    this.live[registry]++;
+    const settle = () => {
+      this.live[registry]--;
+    };
+    try {
+      return work().finally(settle);
+    } catch (error) {
+      settle();
+      throw error;
+    }
+  }
+
+  /**
+   * How many entries each live registry holds now.
+   */
+  liveCounts(): {
+    readonly [K in keyof typeof Snapshot.contract.live]: number;
+  } {
+    return {
+      running: this.live.running,
+      walks: this.live.walks,
+      functions: this.live.functions,
+      held: this.holding.size,
+      subscribers: this.live.subscribers,
+    };
+  }
+
+  /**
+   * Count a subscriber the shim's registry created. Subscribers live as long as
+   * their test, so the count never falls.
+   */
+  registerSubscriber() {
+    this.live.subscribers++;
+  }
+
+  // Identity versions.
+
+  /**
+   * The identity version a new subscriber starts at.
+   */
+  currentIdentityEpoch(): number {
+    return this.identityEpoch;
+  }
+
+  /**
+   * The next identity version, for a subscriber whose identity changed.
+   */
+  nextIdentityEpoch(): number {
+    return ++this.identityEpoch;
+  }
+
+  // Snapshots.
+
+  /**
+   * The committed state as snapshot bytes: every component's rows and the
+   * version that wrote each, the write log, the jobs and their targets, the
+   * clock's floor and the identity counters. Each job's world is recorded by
+   * name. Two exports of the same state are the same bytes. A world running a
+   * call or holding attempts refuses, since a snapshot carries neither.
+   */
+  exportSnapshot(): Uint8Array {
+    this.refuseBusy(0, "export");
+    const names = new Map<string, Invocation.World>();
+    const jobs = new Map<DocumentId, Snapshot.JobTarget>();
+    for (const byTable of this.state.tables.values()) {
+      for (const id of byTable.get(Scheduling.table)?.keys() ?? []) {
+        const target = this.targets.get(id);
+        if (target === undefined) continue;
+        const world = target.world;
+        if (world !== undefined) {
+          if ((names.get(world.name) ?? world) !== world) {
+            throw unresolvedWorld(world.name, "ambiguous");
+          }
+          names.set(world.name, world);
+        }
+        jobs.set(id, {
+          functionPath: target.functionPath,
+          standing: target.standing,
+          world: world?.name ?? null,
+        });
+      }
+    }
+    // A file's bytes travel with its committed row. Bytes a rolled-back or
+    // deleted file left behind are unreachable, so no export carries them.
+    const files = new Map<DocumentId, Storage.File>();
+    for (const byTable of this.state.tables.values()) {
+      for (const id of byTable.get(Storage.table)?.keys() ?? []) {
+        const file = this.files.get(id);
+        if (file !== undefined) files.set(id, file);
+      }
+    }
+    const crons = Array.from(this.cronJobs.values(), (cron) => {
+      if (cron.world !== undefined) {
+        if ((names.get(cron.world.name) ?? cron.world) !== cron.world) {
+          throw unresolvedWorld(cron.world.name, "ambiguous");
+        }
+        names.set(cron.world.name, cron.world);
+      }
+      const target = {
+        componentPath: cron.componentPath,
+        udfPath: cron.spec.udfPath,
+      };
+      return {
+        componentPath: cron.componentPath,
+        ...declarationJson(cron, (json) =>
+          Redaction.mark(
+            json,
+            placed(this.redaction.args(target)),
+            this.secrets,
+          ),
+        ),
+        nextRun: cron.nextRun,
+        // A failure's text holds whatever the function threw, so a kept secret
+        // in it is written as a marker a restore puts back.
+        last:
+          cron.last?.kind === "failed"
+            ? {
+                kind: "failed" as const,
+                error: Redaction.mark(cron.last.error, [], this.secrets),
+              }
+            : (cron.last ?? null),
+        world: cron.world?.name ?? null,
+      };
+    });
+    return Snapshot.encode(
+      {
+        components: [...this.components.keys()],
+        state: this.state,
+        floor: this.floor,
+        identity: {
+          nextDocumentId: this.nextDocId,
+          lastCreationTime: this.lastCreationTime,
+          nextAttemptId: this.nextAttemptId,
+          identityEpoch: this.identityEpoch,
+          nextFile: this.nextFile,
+          nextUploadToken: this.nextUploadToken,
+        },
+        jobs,
+        files,
+        crons,
+      },
+      (componentPath, table, json) =>
+        Redaction.mark(
+          json,
+          this.documentPlacements(
+            componentPath,
+            table,
+            json as { readonly _id: unknown; readonly name?: unknown },
+          ),
+          this.secrets,
+        ),
+      (bytes) => Redaction.markBytes(bytes, this.secrets),
+    );
+  }
+
+  /**
+   * Replace this world's state with a snapshot's. The world must register the
+   * snapshot's components, run nothing, and have committed nothing and hold
+   * nothing. Each job's world resolves by name among `worlds`. Bytes whose
+   * digest does not match, and state the kernel could not have reached, refuse
+   * before anything changes.
+   */
+  restoreSnapshot(
+    bytes: Uint8Array,
+    options: {
+      readonly worlds?: ReadonlyArray<Invocation.World>;
+      readonly secrets?: Redaction.Secrets;
+    } = {},
+  ): Promise<void> {
+    return this.load().then(() =>
+      this.restore(
+        bytes,
+        options.worlds ?? [],
+        options.secrets ?? new Redaction.Secrets(),
+      ),
+    );
+  }
+
+  private restore(
+    bytes: Uint8Array,
+    worlds: ReadonlyArray<Invocation.World>,
+    secrets: Redaction.Secrets,
+  ) {
+    this.refuseBusy(this.state.version, "restore");
+    const decoded = Snapshot.decode(bytes, (json) =>
+      Redaction.unmark(json, secrets),
+    );
+    if (Result.isFailure(decoded)) throw decoded.failure;
+    const image = decoded.success;
+    const checked = Snapshot.check(image, Scheduling.table);
+    if (Result.isFailure(checked)) throw checked.failure;
+    const registered = [...this.components.keys()].sort();
+    const snapshot = [...image.components].sort();
+    if (registered.join("\u0000") !== snapshot.join("\u0000")) {
+      throw new KernelRefusal.SnapshotComponentMismatch({
+        snapshot,
+        registered,
+        message: `The snapshot holds components ${snapshot.map((p) => `"${p}"`).join(", ")}, but this test backend registers ${registered.map((p) => `"${p}"`).join(", ")}. Register the same components before restoring.`,
+      });
+    }
+    for (const [id, { functionPath }] of image.jobs) {
+      if (!this.exports(functionPath)) {
+        throw new KernelRefusal.SnapshotJobInconsistent({
+          id,
+          reason: "function",
+          message: `The snapshot's job ${id} targets ${functionPath.udfPath} in "${functionPath.componentPath}", which that component does not export.`,
+        });
+      }
+    }
+    const byName = new Map<string, Invocation.World>();
+    for (const world of this.own === undefined
+      ? worlds
+      : [...worlds.filter((w) => w.name !== this.own!.name), this.own]) {
+      if ((byName.get(world.name) ?? world) !== world) {
+        throw unresolvedWorld(world.name, "ambiguous");
+      }
+      byName.set(world.name, world);
+    }
+    const targets = Array.from(
+      image.jobs,
+      ([id, { functionPath, standing, world }]): [
+        DocumentId,
+        Scheduling.Target,
+      ] => {
+        const resolved = world === null ? undefined : byName.get(world);
+        if (world !== null && resolved === undefined) {
+          throw unresolvedWorld(world, "missing");
+        }
+        return [id, { functionPath, standing, world: resolved }];
+      },
+    );
+    const cronJobs = this.restoredCrons(image.crons, byName);
+    this.state = image.state;
+    this.floor = image.floor;
+    this.nextDocId = image.identity.nextDocumentId;
+    this.lastCreationTime = image.identity.lastCreationTime;
+    this.nextAttemptId = image.identity.nextAttemptId;
+    this.identityEpoch = image.identity.identityEpoch;
+    this.nextFile = image.identity.nextFile;
+    this.nextUploadToken = image.identity.nextUploadToken;
+    this.files.clear();
+    this.legacyIds.clear();
+    for (const [id, file] of image.files) {
+      this.files.set(id, file);
+      this.legacyIds.set(file.uuid, id);
+    }
+    this.targets.clear();
+    for (const [id, target] of targets) this.targets.set(id, target);
+    this.cronJobs.clear();
+    for (const [key, cron] of cronJobs) this.cronJobs.set(key, cron);
+    this.cronsScheduled = true;
+    this.secrets = secrets.copy();
+  }
+
+  /**
+   * The snapshot's cron jobs as this world runs them, refusing unless the app
+   * declares exactly the snapshot's jobs, each with the same function,
+   * arguments and schedule. Each job keeps the snapshot's next run and latest
+   * outcome, and its world resolves by name. Nothing is redeclared and nothing
+   * is drawn.
+   */
+  private restoredCrons(
+    images: ReadonlyArray<Snapshot.CronImage>,
+    byName: ReadonlyMap<string, Invocation.World>,
+  ): Map<string, CronJob> {
+    const declared = new Map(
+      this.declared.map((declaration) => [
+        cronKey(declaration.componentPath, declaration.spec.name),
+        declaration,
+      ]),
+    );
+    const mismatch = (
+      componentPath: string,
+      name: string,
+      reason: KernelRefusal.SnapshotCronMismatch["reason"],
+      detail: string,
+    ) =>
+      new KernelRefusal.SnapshotCronMismatch({
+        componentPath,
+        name,
+        reason,
+        message: `The snapshot's cron job "${name}" of component "${componentPath}" ${detail}. Restore into an app that declares the same cron jobs.`,
+      });
+    const restored = new Map<string, CronJob>();
+    for (const image of images) {
+      const key = cronKey(image.componentPath, image.name);
+      const declaration = declared.get(key);
+      if (declaration === undefined) {
+        throw mismatch(
+          image.componentPath,
+          image.name,
+          "undeclared",
+          "is not declared by this app",
+        );
+      }
+      const job: CronJob = {
+        ...declaration,
+        nextRun: 0,
+        last: undefined,
+        world: undefined,
+      };
+      const ours = declarationJson(job, (json) => json);
+      if (
+        JSON.stringify(ours) !==
+        JSON.stringify({
+          name: image.name,
+          udfPath: image.udfPath,
+          args: image.args,
+          schedule: image.schedule,
+        })
+      ) {
+        throw mismatch(
+          image.componentPath,
+          image.name,
+          "changed",
+          "is declared here with another function, arguments or schedule",
+        );
+      }
+      const world = image.world === null ? undefined : byName.get(image.world);
+      if (image.world !== null && world === undefined) {
+        throw unresolvedWorld(image.world, "missing");
+      }
+      if (
+        declaration.spec.schedule.kind !== "interval" &&
+        world === undefined
+      ) {
+        throw new KernelRefusal.CronRandomUnavailable({
+          componentPath: image.componentPath,
+          name: image.name,
+          message: `The snapshot's cron job "${image.name}" runs on a ${declaration.spec.schedule.kind} schedule but names no test world to draw its delays from.`,
+        });
+      }
+      restored.set(key, {
+        ...job,
+        nextRun: image.nextRun,
+        // Decoding put back any marked secret, so a failure's text is raw again.
+        last:
+          image.last === null
+            ? undefined
+            : image.last.kind === "failed"
+              ? { kind: "failed", error: image.last.error as string }
+              : image.last,
+        world,
+      });
+    }
+    for (const [key, { componentPath, spec }] of declared) {
+      if (!restored.has(key)) {
+        throw mismatch(
+          componentPath,
+          spec.name,
+          "missing",
+          "is declared by this app but not held by the snapshot",
+        );
+      }
+    }
+    return restored;
+  }
+
+  /**
+   * Whether `functionPath`'s component exports a Convex function there.
+   */
+  private exports({ componentPath, udfPath }: FunctionPath): boolean {
+    const [modulePath, exportName = "default"] = udfPath.split(":");
+    const func = this.components.get(componentPath)?.loaded.get(modulePath!)?.[
+      exportName
+    ];
+    return (
+      func?.isQuery === true ||
+      func?.isMutation === true ||
+      func?.isAction === true
+    );
+  }
+
+  /**
+   * Refuse a snapshot while any live registry `operation` waits on is
+   * non-empty, or, restoring, once `version` shows the world committed
+   * something of its own.
+   */
+  private refuseBusy(version: Kernel.Version, operation: "export" | "restore") {
+    const counts = this.liveCounts();
+    const refusals: {
+      readonly [K in keyof typeof counts]: (count: number) => Error;
+    } = {
+      running: (count) => running("running", count, "calls from the test"),
+      walks: (count) => running("walks", count, "scheduler walks"),
+      functions: (count) =>
+        running(
+          "functions",
+          count,
+          "functions, nested and detached ones included",
+        ),
+      held: () => {
+        const held = [...this.holding.keys()];
+        return new KernelRefusal.SnapshotWorldBusy({
+          version,
+          held,
+          message: `The test backend holds attempts ${held.join(", ")}, which a snapshot does not carry. Apply them first.`,
+        });
+      },
+      subscribers: (count) =>
+        new KernelRefusal.SnapshotSubscribed({
+          subscribers: count,
+          message: `The test backend has ${count} subscribers, whose identity versions a restore would rewind. Restore into a test backend no client has subscribed to.`,
+        }),
+    };
+    for (const key of Object.keys(refusals) as Array<keyof typeof counts>) {
+      const { blocks } = Snapshot.contract.live[key];
+      if (operation === "export" && blocks === "restore") continue;
+      if (counts[key] > 0) throw refusals[key](counts[key]);
+    }
+    if (operation === "restore" && version !== 0) {
+      throw new KernelRefusal.SnapshotWorldBusy({
+        version,
+        held: [],
+        message: `The test backend has committed ${version} versions of its own. Restore a snapshot into a fresh test backend.`,
+      });
+    }
   }
 
   // Scheduled functions, on the kernel's clock.
@@ -767,18 +1618,51 @@ export class World {
   }
 
   /**
-   * Move the clock forward `ms`, running every job whose deadline falls on the
-   * way, in deadline order, each starting at its deadline. Jobs those jobs
+   * The declared cron jobs, earliest next run first.
+   */
+  crons(): ReadonlyArray<Cron> {
+    return this.cronsByNextRun().map(
+      ({ componentPath, spec, nextRun, last }) => ({
+        componentPath,
+        name: spec.name,
+        udfPath: spec.udfPath,
+        nextRun,
+        last: last === undefined ? undefined : this.reportedOutcome(last),
+      }),
+    );
+  }
+
+  /**
+   * A cron run's outcome as an artifact shows it: a failure's text through the
+   * failure redaction, every kept secret marked. The raw text stays in the
+   * job's replay state.
+   */
+  private reportedOutcome(last: CronOutcome): CronOutcome {
+    return last.kind === "failed"
+      ? {
+          kind: "failed",
+          error: Redaction.failure(last.error, this.secrets) as string,
+        }
+      : last;
+  }
+
+  /**
+   * Move the clock forward `ms`, running every job and cron run whose time
+   * falls on the way, in time order, each starting at its time. Jobs those
    * schedule inside the window run too. `advance(0)` runs what is due now and
-   * crosses no future deadline.
+   * crosses no future deadline. A cron run never counts against the budget:
+   * each one moves its job's next run later.
    */
   advance(ms: number, budget = defaultBudget): Promise<void> {
-    return this.open().then(() => {
-      const until = this.now() + ms;
-      return this.walk(
-        (pending) => pending.filter((job) => job.scheduledTime <= until),
-        budget,
-      ).then(() => this.raiseFloor(until));
+    return this.track("walks", () => {
+      return this.openIn(this.own).then(() => {
+        const until = this.now() + ms;
+        return this.walk(
+          (pending) => pending.filter((job) => job.scheduledTime <= until),
+          budget,
+          until,
+        ).then(() => this.raiseFloor(until));
+      });
     });
   }
 
@@ -787,22 +1671,39 @@ export class World {
    * standing jobs are pending. Every job run counts against `budget`.
    */
   drain(budget = defaultBudget): Promise<void> {
-    return this.open().then(() =>
-      this.walk((pending) => pending.filter((job) => !job.standing), budget),
-    );
+    return this.track("walks", () => {
+      return this.openIn(this.own).then(() =>
+        this.walk((pending) => pending.filter((job) => !job.standing), budget),
+      );
+    });
   }
 
   /**
-   * Run the first of `select(pending)` until it is empty, moving the clock to
-   * each job's deadline as it starts.
+   * Run the first of `select(pending)`, and with `cronsUntil` each cron run due
+   * by then, until none is left, earliest first and moving the clock to each
+   * one's time as it starts. The binary runs jobs and cron runs on separate
+   * executors, so at one instant it orders neither before the other. The kernel
+   * runs jobs first.
    */
   private walk(
     select: (pending: Array<Scheduling.Due>) => Array<Scheduling.Due>,
     budget: number,
+    cronsUntil?: number,
   ): Promise<void> {
     const step = (ran: number): Promise<void> => {
       const left = select(Scheduling.pending(this.state, this.targets));
       const next = left[0];
+      const cron =
+        cronsUntil === undefined
+          ? undefined
+          : this.cronsByNextRun().find(({ nextRun }) => nextRun <= cronsUntil);
+      if (
+        cron !== undefined &&
+        (next === undefined || cron.nextRun < next.scheduledTime)
+      ) {
+        this.raiseFloor(cron.nextRun);
+        return this.runCron(cron).then(() => step(ran));
+      }
       if (next === undefined) return Promise.resolve();
       if (ran === budget) {
         const pending = Scheduling.functions(left);
@@ -824,6 +1725,79 @@ export class World {
       return this.runJob(next).then(() => step(ran + 1));
     };
     return step(0);
+  }
+
+  /**
+   * Run one cron run as its own request, then schedule the next. The request is
+   * a system one: no identity, no IP or user agent, a fresh request ID and no
+   * scheduled function ID (`crates/application/src/cron_jobs/mod.rs:441-446`,
+   * `crates/common/src/types/functions.rs:236-242`). A mutation's writes, jobs
+   * it schedules included, publish only if it commits. Its next run comes from
+   * the time it finished, whether it succeeded or failed
+   * (`crates/application/src/cron_jobs/mod.rs:475-619`).
+   */
+  private runCron(cron: CronJob): Promise<void> {
+    const request = newRequest(anonymous);
+    const from: From = { caller: anonymous, request };
+    const target: FunctionPath = {
+      componentPath: cron.componentPath,
+      udfPath: cron.spec.udfPath,
+    };
+    const run = () =>
+      Promise.resolve().then(() =>
+        this.resolve(target, "any").func.isMutation
+          ? this.mutationAt(target, cron.spec.args, from)
+          : this.actionAt(target, cron.spec.args, from),
+      );
+    return (
+      cron.world === undefined
+        ? Invocation.unbound(run)
+        : Invocation.bind(
+            Invocation.fresh(cron.world, cron.componentPath, request),
+            run,
+          )
+    )
+      .then(
+        (): CronOutcome => ({ kind: "success" }),
+        (error: unknown): CronOutcome => ({
+          kind: "failed",
+          error: error instanceof Error ? error.message : String(error),
+        }),
+      )
+      .then((last) => this.scheduleNextRun(cron, last));
+  }
+
+  /**
+   * Record how a cron run ended and schedule the job's next run from the time
+   * the run finished.
+   */
+  private scheduleNextRun(cron: CronJob, last: CronOutcome) {
+    const next = this.searched(
+      cron,
+      Result.map(
+        Crons.following(cron.spec.schedule, cron.nextRun, this.now(), (bound) =>
+          this.draw(cron, bound),
+        ),
+        ({ next: at }) => at,
+      ),
+    );
+    this.cronJobs.set(cronKey(cron.componentPath, cron.spec.name), {
+      ...cron,
+      nextRun: next,
+      last,
+    });
+  }
+
+  /**
+   * The cron jobs, earliest next run first, then by component and name.
+   */
+  private cronsByNextRun(): Array<CronJob> {
+    return Array.from(this.cronJobs.values()).sort(
+      (a, b) =>
+        a.nextRun - b.nextRun ||
+        compare(a.componentPath, b.componentPath) ||
+        compare(a.spec.name, b.spec.name),
+    );
   }
 
   private raiseFloor(to: number) {
@@ -930,6 +1904,7 @@ export class World {
     const target = functionPathOf(args, execution.componentPath);
     this.component(target.componentPath);
     const jobArgs = jsonToConvex(args.args);
+    this.keepArgs(target, jobArgs);
     if (hasPendingValues(jobArgs)) {
       throw new Error(
         `Invalid arguments for "${target.udfPath}": a scheduled function cannot take an unresolved placeholder value.`,
@@ -1007,6 +1982,7 @@ export class World {
     snapshotOnly = false,
   ) {
     const resolved = this.resolve(functionPath, "query");
+    this.keepArgs(functionPath, args);
     validateFunctionArgs(
       resolved.args,
       args ?? {},
@@ -1018,6 +1994,7 @@ export class World {
 
   private mutationAt(functionPath: FunctionPath, args: any, from: From) {
     const resolved = this.resolve(functionPath, "mutation");
+    this.keepArgs(functionPath, args);
     validateFunctionArgs(
       resolved.args,
       args ?? {},
@@ -1029,6 +2006,7 @@ export class World {
 
   private actionAt(functionPath: FunctionPath, args: any, from: From) {
     const resolved = this.resolve(functionPath, "action");
+    this.keepArgs(functionPath, args);
     validateFunctionArgs(resolved.args, args ?? {}, functionPath, false);
     return this.runAction(functionPath, resolved, args, from);
   }
@@ -1080,6 +2058,7 @@ export class World {
       pagination,
       turn: new Turn(),
       limits,
+      refused: from.parent?.refused ?? {},
     };
   }
 
@@ -1091,50 +2070,53 @@ export class World {
     snapshotOnly = false,
     top?: TopQuery,
   ): Promise<any> {
-    const parentAttempt = from.parent?.attempt;
-    const isNested = parentAttempt !== undefined;
-    const attempt =
-      top?.attempt ??
-      (parentAttempt === undefined
-        ? new KernelAttempt(this.state)
-        : snapshotOnly
-          ? parentAttempt.staleSnapshot()
-          : parentAttempt);
-    const execution = this.execution(
-      functionPath,
-      "query",
-      attempt,
-      from,
-      top?.pagination ??
-        ((isNested && from.parent?.pagination) || {
-          calls: 0,
-          journal: null,
-          end: null,
-        }),
-      top?.startTime,
-    );
-    const q = queryGeneric({
-      handler: (ctx: any, a: any) =>
-        resolved.handler({ ...ctx, auth: queryAuth(execution) }, a),
-    }) as unknown as { invokeQuery: (args: string) => Promise<string> };
-    return enter(execution, () =>
-      q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
-    )
-      .then((raw) => settled(execution, raw))
-      .then((raw) => {
-        const result = jsonToConvex(JSON.parse(raw));
-        if (!isNested && hasPendingValues(result)) {
-          throw new Error(
-            `Function ${functionPath.udfPath} return value invalid: queries ` +
-              `cannot return an unresolved placeholder value.`,
-          );
-        }
-        validateReturnValue(resolved.returns, result, "query", functionPath);
-        return result;
-      })
-      .catch((error: unknown) => {
-        throw deserializeConvexErrorData(error);
-      });
+    return this.track("functions", () => {
+      const parentAttempt = from.parent?.attempt;
+      const isNested = parentAttempt !== undefined;
+      const attempt =
+        top?.attempt ??
+        (parentAttempt === undefined
+          ? new KernelAttempt(this.state)
+          : snapshotOnly
+            ? parentAttempt.staleSnapshot()
+            : parentAttempt);
+      const execution = this.execution(
+        functionPath,
+        "query",
+        attempt,
+        from,
+        top?.pagination ??
+          ((isNested && from.parent?.pagination) || {
+            calls: 0,
+            journal: null,
+            end: null,
+          }),
+        top?.startTime,
+      );
+      const q = queryGeneric({
+        handler: (ctx: any, a: any) =>
+          resolved.handler({ ...ctx, auth: queryAuth(execution) }, a),
+      }) as unknown as { invokeQuery: (args: string) => Promise<string> };
+      return enter(execution, () =>
+        q.invokeQuery(JSON.stringify(convexToJson([parseArgs(args)]))),
+      )
+        .then((raw) => settled(execution, raw))
+        .then((raw) => {
+          const result = jsonToConvex(JSON.parse(raw));
+          if (!isNested && hasPendingValues(result)) {
+            throw new Error(
+              `Function ${functionPath.udfPath} return value invalid: queries ` +
+                `cannot return an unresolved placeholder value.`,
+            );
+          }
+          this.keepReturns(functionPath, result);
+          validateReturnValue(resolved.returns, result, "query", functionPath);
+          return result;
+        })
+        .catch((error: unknown) => {
+          throw deserializeConvexErrorData(error);
+        });
+    });
   }
 
   private invokeMutation(
@@ -1152,10 +2134,12 @@ export class World {
       .then((raw) => settled(execution, raw))
       .then((raw) => {
         const result = jsonToConvex(JSON.parse(raw));
-        validateReturnValue(resolved.returns, result, "mutation", {
+        const functionPath = {
           componentPath: execution.componentPath,
           udfPath: execution.udfPath,
-        });
+        };
+        this.keepReturns(functionPath, result);
+        validateReturnValue(resolved.returns, result, "mutation", functionPath);
         return result;
       });
   }
@@ -1166,42 +2150,44 @@ export class World {
     args: any,
     from: From,
   ): Promise<any> {
-    const parentAttempt = from.parent?.attempt;
-    if (parentAttempt !== undefined) {
-      const frame = parentAttempt.child();
-      const execution = this.execution(
-        functionPath,
-        "mutation",
-        frame,
-        from,
-        undefined,
-      );
-      // As at the top level, a nested mutation ends once its function has
-      // returned and every syscall it started has settled. Convex runs a
-      // nested function's syscall queue to the end before it commits its
-      // subtransaction, so a detached fiber's late write lands in this frame
-      // and merges with it. A failed one ends at once and rolls back.
-      return this.invokeMutation(execution, resolved, args).then(
-        (result) =>
-          frame.drained().then(() => {
+    return this.track("functions", () => {
+      const parentAttempt = from.parent?.attempt;
+      if (parentAttempt !== undefined) {
+        const frame = parentAttempt.child();
+        const execution = this.execution(
+          functionPath,
+          "mutation",
+          frame,
+          from,
+          undefined,
+        );
+        // As at the top level, a nested mutation ends once its function has
+        // returned and every syscall it started has settled. Convex runs a
+        // nested function's syscall queue to the end before it commits its
+        // subtransaction, so a detached fiber's late write lands in this frame
+        // and merges with it. A failed one ends at once and rolls back.
+        return this.invokeMutation(execution, resolved, args).then(
+          (result) =>
+            frame.drained().then(() => {
+              frame.close();
+              frame.merge();
+              return result;
+            }),
+          (error: unknown) => {
             frame.close();
-            frame.merge();
-            return result;
-          }),
-        (error: unknown) => {
-          frame.close();
-          throw deserializeConvexErrorData(error);
-        },
-      );
-    }
-    return this.prepareMutation(
-      functionPath,
-      resolved,
-      args,
-      from,
-      1,
-      Invocation.current(),
-    ).then((held) => this.publish(held));
+            throw deserializeConvexErrorData(error);
+          },
+        );
+      }
+      return this.prepareMutation(
+        functionPath,
+        resolved,
+        args,
+        from,
+        1,
+        Invocation.current(),
+      ).then((held) => this.publish(held));
+    });
   }
 
   /**
@@ -1219,53 +2205,58 @@ export class World {
     number: Invocation.Attempt,
     bound: Invocation.Invocation | undefined,
   ): Promise<Held> {
-    const attempt = new KernelAttempt(this.state, number);
-    const execution = this.execution(
-      functionPath,
-      "mutation",
-      attempt,
-      from,
-      undefined,
-    );
-    const run = () => this.invokeMutation(execution, resolved, args);
-    const started =
-      bound === undefined
-        ? run()
-        : Invocation.bind({ ...bound, attempt: number }, run);
-    return started
-      .then(
-        (value) =>
-          attempt.drained().then((): Outcome => ({ _tag: "returned", value })),
-        (error: unknown): Outcome => ({
-          _tag: "failed",
-          error: deserializeConvexErrorData(error),
-        }),
-      )
-      .then((outcome) => {
-        attempt.close();
-        const held: Held = {
-          view: {
-            id: `attempt-${this.nextAttemptId++}`,
-            request: from.request.requestId,
-            number,
-            snapshot: attempt.snapshot.version,
-            reads: attempt.reads,
-            outcome,
-          },
-          attempt,
-          again: (next) =>
-            this.prepareMutation(
+    return this.track("functions", () => {
+      const attempt = new KernelAttempt(this.state, number);
+      const execution = this.execution(
+        functionPath,
+        "mutation",
+        attempt,
+        from,
+        undefined,
+      );
+      const run = () => this.invokeMutation(execution, resolved, args);
+      const started =
+        bound === undefined
+          ? run()
+          : Invocation.bind({ ...bound, attempt: number }, run);
+      return started
+        .then(
+          (value) =>
+            attempt
+              .drained()
+              .then((): Outcome => ({ _tag: "returned", value })),
+          (error: unknown): Outcome => ({
+            _tag: "failed",
+            error: deserializeConvexErrorData(error),
+          }),
+        )
+        .then((outcome) => {
+          attempt.close();
+          const held: Held = {
+            view: {
+              id: `attempt-${this.nextAttemptId++}`,
               functionPath,
-              resolved,
-              args,
-              from,
-              next,
-              bound,
-            ),
-        };
-        this.holding.set(held.view.id, held);
-        return held;
-      });
+              request: from.request.requestId,
+              number,
+              snapshot: attempt.snapshot.version,
+              reads: attempt.reads,
+              outcome,
+            },
+            attempt,
+            again: (next) =>
+              this.prepareMutation(
+                functionPath,
+                resolved,
+                args,
+                from,
+                next,
+                bound,
+              ),
+          };
+          this.holding.set(held.view.id, held);
+          return held;
+        });
+    });
   }
 
   /**
@@ -1348,75 +2339,299 @@ export class World {
     args: any,
     from: From,
   ): Promise<any> {
-    const execution = this.execution(
-      functionPath,
-      "action",
-      undefined,
-      from,
-      undefined,
-    );
-    const inner: From = { request: from.request, parent: execution };
-    const a = actionGeneric({
-      handler: (ctx: any, innerArgs: any) =>
-        resolved.handler(
-          {
-            ...ctx,
-            runQuery: (reference: any, queryArgs: any) =>
-              this.queryAt(
-                pathOfReference(reference, functionPath.componentPath),
-                queryArgs,
-                inner,
-              ),
-            runMutation: (reference: any, mutationArgs: any) =>
-              this.mutationAt(
-                pathOfReference(reference, functionPath.componentPath),
-                mutationArgs,
-                inner,
-              ),
-            runAction: (reference: any, actionArgs: any) =>
-              this.actionAt(
-                pathOfReference(reference, functionPath.componentPath),
-                actionArgs,
-                inner,
-              ),
-            auth: queryAuth(execution),
-          },
-          innerArgs,
-        ),
-    }) as unknown as {
-      invokeAction: (requestId: string, args: string) => Promise<string>;
-    };
-    const run = () =>
-      enter(execution, () =>
-        a.invokeAction(
-          from.request.requestId,
-          JSON.stringify(convexToJson([parseArgs(args)])),
-        ),
+    return this.track("functions", () => {
+      const execution = this.execution(
+        functionPath,
+        "action",
+        undefined,
+        from,
+        undefined,
       );
-    // An action another function calls is an invocation of its own, with its
-    // world's services, a start time read from its world's clock and its
-    // world's random stream, as a scheduled job is.
-    const bound = from.parent === undefined ? undefined : Invocation.current();
-    const started =
-      bound === undefined
-        ? run()
-        : Invocation.bind(
-            Invocation.fresh(
-              bound.world,
-              functionPath.componentPath,
-              from.request,
+      const inner: From = { request: from.request, parent: execution };
+      const a = actionGeneric({
+        handler: (ctx: any, innerArgs: any) =>
+          resolved.handler(
+            {
+              ...ctx,
+              runQuery: (reference: any, queryArgs: any) =>
+                this.queryAt(
+                  pathOfReference(reference, functionPath.componentPath),
+                  queryArgs,
+                  inner,
+                ),
+              runMutation: (reference: any, mutationArgs: any) =>
+                this.mutationAt(
+                  pathOfReference(reference, functionPath.componentPath),
+                  mutationArgs,
+                  inner,
+                ),
+              runAction: (reference: any, actionArgs: any) =>
+                this.actionAt(
+                  pathOfReference(reference, functionPath.componentPath),
+                  actionArgs,
+                  inner,
+                ),
+              auth: queryAuth(execution),
+            },
+            innerArgs,
+          ),
+      }) as unknown as {
+        invokeAction: (requestId: string, args: string) => Promise<string>;
+      };
+      const run = () =>
+        enter(execution, () =>
+          a.invokeAction(
+            from.request.requestId,
+            JSON.stringify(convexToJson([parseArgs(args)])),
+          ),
+        );
+      // An action another function calls is an invocation of its own, with its
+      // world's services, a start time read from its world's clock and its
+      // world's random stream, as a scheduled job is.
+      const bound =
+        from.parent === undefined ? undefined : Invocation.current();
+      const started =
+        bound === undefined
+          ? run()
+          : Invocation.bind(
+              Invocation.fresh(
+                bound.world,
+                functionPath.componentPath,
+                from.request,
+              ),
+              run,
+            );
+      return started
+        .then((raw) => {
+          const result = jsonToConvex(JSON.parse(raw));
+          this.keepReturns(functionPath, result);
+          validateReturnValue(resolved.returns, result, "action", functionPath);
+          return result;
+        })
+        .catch((error: unknown) => {
+          throw deserializeConvexErrorData(error);
+        });
+    });
+  }
+
+  // Secrets.
+
+  private keepArgs(functionPath: FunctionPath, args: unknown) {
+    Redaction.keep(
+      args ?? {},
+      placed(this.redaction.args(functionPath)),
+      this.secrets,
+    );
+  }
+
+  private keepReturns(functionPath: FunctionPath, result: Value) {
+    Redaction.keep(
+      result,
+      placed(this.redaction.returns(functionPath)),
+      this.secrets,
+    );
+  }
+
+  private keepRow(componentPath: string, table: string, value: unknown) {
+    Redaction.keep(
+      value,
+      placed(this.redaction.table(componentPath, table)),
+      this.secrets,
+    );
+  }
+
+  /**
+   * Where a stored document holds secrets: its table's shape at its root, and
+   * for a job's row, its target's argument shape at `args.0`.
+   */
+  private documentPlacements(
+    componentPath: string,
+    table: string,
+    doc: { readonly _id: unknown; readonly name?: unknown },
+  ): ReadonlyArray<Redaction.Placement> {
+    const own = placed(this.redaction.table(componentPath, table));
+    if (table !== Scheduling.table) return own;
+    const target = this.targets.get(doc._id as DocumentId)?.functionPath ?? {
+      componentPath,
+      udfPath: String(doc.name),
+    };
+    return own.concat(placed(this.redaction.args(target), ["args", "0"]));
+  }
+
+  /**
+   * A copy of the raw secrets this world has kept, for a restore of its
+   * snapshots. It lives in memory only.
+   */
+  keptSecrets(): Redaction.Secrets {
+    return this.secrets.copy();
+  }
+
+  /**
+   * The failure report for `thrown`, whatever was thrown, with every kept
+   * secret marked. `thrown` itself is never changed.
+   */
+  redactFailure(thrown: unknown): unknown {
+    return Redaction.failure(thrown, this.secrets);
+  }
+
+  /**
+   * `outcome` as an artifact writes it: a value marked by the shape of what
+   * `functionPath` returns, a failure as its report.
+   */
+  redactOutcome(outcome: Outcome, functionPath?: FunctionPath): Outcome {
+    return outcome._tag === "returned"
+      ? {
+          _tag: "returned",
+          value: Redaction.markValue(
+            outcome.value,
+            placed(
+              functionPath === undefined
+                ? undefined
+                : this.redaction.returns(functionPath),
             ),
-            run,
-          );
-    return started
-      .then((raw) => {
-        const result = jsonToConvex(JSON.parse(raw));
-        validateReturnValue(resolved.returns, result, "action", functionPath);
-        return result;
-      })
-      .catch((error: unknown) => {
-        throw deserializeConvexErrorData(error);
-      });
+            this.secrets,
+          ),
+        }
+      : { _tag: "failed", error: this.redactFailure(outcome.error) };
+  }
+
+  /**
+   * A changed document as an artifact writes it, marked by its table's shape.
+   */
+  redactChange(change: Kernel.Change): Kernel.Change {
+    const document = (doc: StoredDocument | null) =>
+      doc === null
+        ? null
+        : (Redaction.markValue(
+            doc as Value,
+            this.documentPlacements(
+              change.componentPath,
+              tableNameFromId(doc._id) ?? "",
+              doc,
+            ),
+            this.secrets,
+          ) as StoredDocument);
+    return {
+      ...change,
+      before: document(change.before),
+      after: document(change.after),
+    };
+  }
+
+  /**
+   * The function a subscription's or call's reference names, if it names one.
+   */
+  functionPathOf(reference: unknown): FunctionPath | undefined {
+    try {
+      return typeof reference === "function"
+        ? undefined
+        : pathOfReference(reference as FunctionReference<any>, ROOT);
+    } catch {
+      return undefined;
+    }
+  }
+
+  /**
+   * Read records as an artifact writes them. A key or range bound on a field
+   * its table's shape holds secret is the marker, and so is any string holding
+   * a kept secret.
+   */
+  projectReads(
+    reads: ReadonlyArray<ReadSet.Read>,
+  ): ReadonlyArray<ReadSet.Read> {
+    return reads.map((read) => {
+      if (read.kind === "document") return read;
+      const shape = this.redaction.table(read.componentPath, read.table);
+      const sensitive = (fieldPath: string) =>
+        shape !== undefined &&
+        Redaction.sensitiveAt(shape, fieldPath.split("."));
+      const value = (fieldPath: string, v: Value): Value =>
+        sensitive(fieldPath)
+          ? Redaction.marker
+          : Redaction.markValue(v, [], this.secrets);
+      const key = (k: ReadSet.Key | null) =>
+        k === null
+          ? null
+          : k.map((v, i) =>
+              v === undefined ? undefined : value(read.fields[i] ?? "", v),
+            );
+      return {
+        ...read,
+        range: read.range.map((bound) => ({
+          ...bound,
+          value: sensitive(bound.fieldPath)
+            ? Redaction.marker
+            : convexToJson(
+                Redaction.markValue(
+                  jsonToConvex(bound.value),
+                  [],
+                  this.secrets,
+                ),
+              ),
+        })),
+        after: key(read.after),
+        through:
+          read.through === "end" || read.through === null
+            ? read.through
+            : key(read.through),
+      };
+    });
+  }
+
+  /**
+   * A held attempt as an artifact writes it: its read records projected and its
+   * outcome marked.
+   */
+  projectHeld(view: HeldAttempt): HeldAttempt {
+    return {
+      ...view,
+      reads: this.projectReads(view.reads),
+      outcome: this.redactOutcome(view.outcome, view.functionPath),
+    };
+  }
+
+  /**
+   * What `apply` answered as an artifact writes it: an applied result marked by
+   * the shape of what `functionPath` returns, a conflict's next attempt
+   * projected, a refusal as its report.
+   */
+  projectApplied(
+    applied: KernelApply,
+    functionPath: FunctionPath | undefined,
+  ): KernelApply {
+    switch (applied.kind) {
+      case "applied": {
+        const outcome = this.redactOutcome(
+          { _tag: "returned", value: applied.result },
+          functionPath,
+        );
+        return outcome._tag === "returned"
+          ? { ...applied, result: outcome.value }
+          : applied;
+      }
+      case "conflict":
+        return { ...applied, next: this.projectHeld(applied.next) };
+      case "refused":
+        return { ...applied, error: this.redactFailure(applied.error) };
+      case "exhausted":
+        return {
+          ...applied,
+          error: this.redactFailure(applied.error) as typeof applied.error,
+        };
+    }
+  }
+
+  /**
+   * A function's arguments as an artifact writes them, marked by the shape of
+   * its arguments. A command log of provider calls (#137's `commands()`) writes
+   * each command's input through this.
+   */
+  projectArguments(functionPath: FunctionPath, args: Value): Value {
+    return Redaction.markValue(
+      args,
+      placed(this.redaction.args(functionPath)),
+      this.secrets,
+    );
   }
 
   // Syscalls.
@@ -1513,8 +2728,20 @@ export class World {
   }
 
   syscall(op: string, jsonArgs: string): string {
-    const args = JSON.parse(jsonArgs);
     const execution = current();
+    try {
+      return this.syncSyscall(op, jsonArgs, execution);
+    } catch (error) {
+      throw keepRefusal(error, execution);
+    }
+  }
+
+  private syncSyscall(
+    op: string,
+    jsonArgs: string,
+    execution: Execution,
+  ): string {
+    const args = JSON.parse(jsonArgs);
     if (execution.attempt?.closed === true) throw closed(execution, op);
     switch (op) {
       case "1.0/getSnapshotTs":
@@ -1560,6 +2787,18 @@ export class World {
    */
   asyncSyscall(op: string, jsonArgs: string): Promise<string> {
     const execution = current();
+    return this.queueSyscall(op, jsonArgs, execution).catch(
+      (error: unknown) => {
+        throw keepRefusal(error, execution);
+      },
+    );
+  }
+
+  private queueSyscall(
+    op: string,
+    jsonArgs: string,
+    execution: Execution,
+  ): Promise<string> {
     const attempt = execution.attempt;
     if (attempt === undefined) {
       return Promise.resolve().then(() =>
@@ -1735,10 +2974,67 @@ export class World {
           this.cancelJob(attempt, execution, args.id),
         );
         return JSON.stringify({});
-      case "1.0/storageDelete":
-      case "1.0/storageGetUrl":
+      case "1.0/storageGetUrl": {
+        const found = this.findFile(
+          execution,
+          "storage.getUrl",
+          args.storageId,
+        );
+        return JSON.stringify(
+          found === null ? null : Storage.fileUrl(found.file),
+        );
+      }
+      case "1.0/storageGetMetadata": {
+        const found = this.findFile(
+          execution,
+          "storage.getMetadata",
+          args.storageId,
+        );
+        return JSON.stringify(
+          found === null ? null : Storage.metadata(found.doc, found.file),
+        );
+      }
+      case "1.0/storageGet": {
+        const found = this.findFile(execution, "storage.get", args.storageId);
+        if (found !== null) {
+          refuse(
+            transaction(execution).meter.readFile(
+              found.id,
+              found.file.bytes.length,
+              execution.limits,
+            ),
+          );
+        }
+        return JSON.stringify(
+          found === null
+            ? null
+            : {
+                blob: Base64.fromByteArray(found.file.bytes),
+                contentType: found.doc["contentType"],
+              },
+        );
+      }
       case "1.0/storageGenerateUploadUrl":
-        throw KernelRefusal.rowPending("storage", 6);
+        return JSON.stringify(
+          Storage.uploadUrl(`kernel-unsigned-${this.nextUploadToken++}`),
+        );
+      case "1.0/storageStore":
+        return JSON.stringify(
+          this.storageWrite(execution, (attempt) =>
+            this.storeFile(
+              execution,
+              attempt,
+              Base64.toByteArray(args.blob),
+              args.contentType,
+              args.sha256,
+            ),
+          ),
+        );
+      case "1.0/storageDelete":
+        this.storageWrite(execution, (attempt) =>
+          this.deleteFile(execution, attempt, args.storageId),
+        );
+        return JSON.stringify(null);
       case "1.0/getTransactionMetrics":
         // An action has no transaction, and the binary's action syscalls do
         // not know this one (`crates/isolate/src/environment/action/async_syscall.rs:105`).
@@ -1757,12 +3053,185 @@ export class World {
     }
   }
 
-  jsSyscall(op: string): Promise<never> {
-    return Promise.reject(
-      op.startsWith("storage/")
-        ? KernelRefusal.rowPending("storage", 6)
-        : new Error(`The test kernel does not support js syscall: "${op}"`),
+  /**
+   * An action's `storage.store` and `storage.get`. The binary streams the blob
+   * through its upload and download paths (`storeBlob` and `getBlob` in
+   * `npm-packages/udf-runtime/src/storage.ts`). The kernel holds the bytes in
+   * memory and keeps the same rows and refusals.
+   */
+  jsSyscall(op: string, args: any): Promise<any> {
+    return Promise.resolve().then((): unknown => {
+      const execution = current();
+      switch (op) {
+        case "storage/storeBlob": {
+          const { blob, options } = args as {
+            blob: unknown;
+            options?: { sha256?: string };
+          };
+          if (!(blob instanceof Blob)) {
+            throw new Error(
+              "store() expects a Blob. If you are trying to store a Request, `await request.blob()` will give you the correct input.",
+            );
+          }
+          return blob
+            .arrayBuffer()
+            .then((buffer) =>
+              this.storageWrite(execution, (attempt) =>
+                this.storeFile(
+                  execution,
+                  attempt,
+                  new Uint8Array(buffer),
+                  blob.type,
+                  options?.sha256,
+                ),
+              ),
+            );
+        }
+        case "storage/getBlob": {
+          const { storageId } = args as { storageId: unknown };
+          if (typeof storageId !== "string") {
+            throw new Error(
+              `storage.get requires a string storageId but received ${String(storageId)}`,
+            );
+          }
+          const found = this.findFile(execution, "storage.get", storageId);
+          return found === null
+            ? null
+            : new Blob([found.file.bytes as Uint8Array<ArrayBuffer>], {
+                type: (found.doc["contentType"] as string | null) ?? "",
+              });
+        }
+        default:
+          throw new Error(
+            `The test kernel does not support js syscall: "${op}"`,
+          );
+      }
+    });
+  }
+
+  // File storage. A file is a row in its component's `_storage` table, read
+  // and written through the attempt like any document, and its bytes beside it.
+
+  /**
+   * Where a function reads storage: its attempt, or, from an action, the latest
+   * commit, as the binary's action callbacks read it.
+   */
+  private reader(execution: Execution): KernelAttempt {
+    return execution.attempt ?? new KernelAttempt(this.state);
+  }
+
+  /**
+   * Write through the function's attempt, or, from an action, commit at once.
+   */
+  private storageWrite<A>(
+    execution: Execution,
+    write: (attempt: KernelAttempt) => A,
+  ): A {
+    return execution.attempt === undefined
+      ? this.commitNow(write)
+      : write(execution.attempt);
+  }
+
+  /**
+   * The file a storage ID names in the function's component, read through
+   * `attempt`, or `null` when it names none.
+   */
+  private findFile(
+    execution: Execution,
+    operation: string,
+    storageId: unknown,
+    attempt: KernelAttempt = this.reader(execution),
+  ): {
+    readonly id: DocumentId;
+    readonly doc: StoredDocument;
+    readonly file: Storage.File;
+  } | null {
+    const parsed = orThrow(Storage.parseId(operation, storageId));
+    const id =
+      parsed.kind === "document" ? parsed.id : this.legacyIds.get(parsed.uuid);
+    if (id === undefined) return null;
+    attempt.readDocument(execution.componentPath, id);
+    const doc = attempt.get(execution.componentPath, id);
+    const file = this.files.get(id);
+    return doc === null || file === undefined ? null : { id, doc, file };
+  }
+
+  /**
+   * Store `bytes` as a new file in the function's component. The content type
+   * and the declared digest are checked before anything is written.
+   */
+  private storeFile(
+    execution: Execution,
+    attempt: KernelAttempt,
+    bytes: Uint8Array,
+    type: unknown,
+    expectedSha256: unknown,
+  ): DocumentId {
+    const contentType = orThrow(
+      Storage.contentType(
+        execution.udfType === "action" ? "action" : "mutation",
+        type,
+      ),
     );
+    orThrow(
+      Storage.checkDigest(
+        "storage.store",
+        expectedSha256,
+        Storage.digest(bytes),
+      ),
+    );
+    // A query or mutation stores within its transaction's file limits. An
+    // action's store is no transaction, and the binary counts it toward none.
+    const metered = execution.attempt !== undefined;
+    if (metered)
+      refuse(attempt.meter.checkStore(bytes.length, execution.limits));
+    const id = this.generateId(Storage.table);
+    if (metered) attempt.meter.storeFile(id, bytes.length);
+    const file: Storage.File = {
+      componentPath: execution.componentPath,
+      uuid: Storage.uuid(this.nextFile++),
+      bytes,
+    };
+    this.files.set(id, file);
+    this.legacyIds.set(file.uuid, id);
+    attempt.write(
+      execution.componentPath,
+      id,
+      Storage.row(
+        id,
+        this.creationTime(
+          execution.udfType === "action" ? this.now() : execution.startTime,
+        ),
+        bytes,
+        contentType,
+      ),
+    );
+    return id;
+  }
+
+  /**
+   * Delete a file's row. A storage ID that names no file is refused, as the
+   * binary's `FileStorage::delete` refuses it.
+   */
+  private deleteFile(
+    execution: Execution,
+    attempt: KernelAttempt,
+    storageId: unknown,
+  ) {
+    const found = this.findFile(
+      execution,
+      "storage.delete",
+      storageId,
+      attempt,
+    );
+    if (found === null) {
+      throw new Storage.StorageIdNotFound({
+        storageId: String(storageId),
+        message: `storage id ${String(storageId)} not found`,
+      });
+    }
+    attempt.write(execution.componentPath, found.id, null);
+    attempt.meter.deleteFile(found.id);
   }
 
   // Documents. The checks and messages are convex-test's.
@@ -1774,6 +3243,7 @@ export class World {
 
   private insert(execution: Execution, table: string, value: any): DocumentId {
     const attempt = transaction(execution);
+    this.keepRow(execution.componentPath, table, value);
     KernelQuery.validateDocument(
       this.schema(execution.componentPath),
       table,
@@ -1862,6 +3332,7 @@ export class World {
     const document = this.existing(execution, tableName, id, "patch", value);
     const { _id, _creationTime, ...fields } = document;
     const merged = { ...fields, ...this.fields(document, value) };
+    this.keepRow(execution.componentPath, tableNameFromId(_id)!, merged);
     const next = { _id, _creationTime, ...merged } as StoredDocument;
     if (sameDocument(document, next)) return;
     KernelQuery.validateDocument(
@@ -1880,6 +3351,11 @@ export class World {
   ) {
     const document = this.existing(execution, tableName, id, "replace", value);
     const fields = this.fields(document, value);
+    this.keepRow(
+      execution.componentPath,
+      tableNameFromId(document._id)!,
+      fields,
+    );
     const next = {
       ...fields,
       _id: document._id,
@@ -2014,6 +3490,44 @@ const closed = (execution: Execution, operation: string) =>
     operation,
     message: `"${operation}" reached mutation ${execution.udfPath} after it returned and its syscalls settled. Await every read and write inside the handler.`,
   });
+
+const orThrow = <A, E>(result: Result.Result<A, E>): A => {
+  if (Result.isFailure(result)) throw result.failure;
+  return result.success;
+};
+
+/**
+ * Keep `error` as `execution`'s refusal if it is one, and hand it back.
+ */
+const keepRefusal = (error: unknown, execution: Execution): unknown => {
+  if (KernelRefusal.isKernelRefusal(error)) execution.refused.first ??= error;
+  return error;
+};
+
+/**
+ * The kernel refusal behind a function's failure, if any: the thrown value
+ * itself, or the first refusal one of its syscalls threw.
+ */
+const refusalOf = (thrown: unknown, execution: Execution): unknown =>
+  KernelRefusal.isKernelRefusal(thrown) ? thrown : execution.refused.first;
+
+/**
+ * `thrown` as the running kernel function's world reports a failure: a copy
+ * with every kept secret marked. Outside a kernel function, as on convex-test,
+ * `thrown` itself.
+ */
+export const redactCurrentFailure = (thrown: unknown): unknown =>
+  executions.getStore()?.world.redactFailure(thrown) ?? thrown;
+
+/**
+ * The kernel refusal behind a failure inside the running kernel function, if
+ * any. Outside one, as on convex-test, only a refusal thrown as itself.
+ */
+export const currentRefusal = (thrown: unknown): unknown => {
+  const execution = executions.getStore();
+  if (execution !== undefined) return refusalOf(thrown, execution);
+  return KernelRefusal.isKernelRefusal(thrown) ? thrown : undefined;
+};
 
 const transaction = (execution: Execution): KernelAttempt => {
   if (execution.attempt === undefined) {

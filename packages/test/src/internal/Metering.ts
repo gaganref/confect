@@ -87,6 +87,10 @@ export class TransactionLimitExceeded extends Schema.TaggedError<TransactionLimi
       "TooManyBytesWritten",
       "TooManyFunctionsScheduled",
       "ScheduledFunctionsArgumentsTooLarge",
+      "TooManyFilesWritten",
+      "FilesWrittenTooLarge",
+      "TooManyFilesRead",
+      "FilesReadTooLarge",
     ]),
     limit: Schema.Int,
     message: Schema.String,
@@ -263,9 +267,16 @@ class Shared {
   bytesRead = 0;
   functionsScheduled = 0;
   scheduledFunctionArgsBytes = 0;
-  // File storage counters stay at zero until the kernel stores files.
-  readonly filesRead = 0;
-  readonly fileReadBytes = 0;
+  filesRead = 0;
+  fileReadBytes = 0;
+  /**
+   * The files this transaction has downloaded. The binary keeps one download
+   * cache for a transaction and its nested calls and counts a file once, when
+   * it first downloads it (`storage_get_batch`,
+   * `crates/isolate/src/environment/udf/async_syscall.rs:575-606`; the cache
+   * reaches a nested call at `:732`).
+   */
+  readonly downloaded = new Set<string>();
 
   /**
    * A stale-snapshot query's counters: the scheduling and file-read counters
@@ -276,6 +287,9 @@ class Shared {
     const copy = new Shared();
     copy.functionsScheduled = this.functionsScheduled;
     copy.scheduledFunctionArgsBytes = this.scheduledFunctionArgsBytes;
+    copy.filesRead = this.filesRead;
+    copy.fileReadBytes = this.fileReadBytes;
+    for (const id of this.downloaded) copy.downloaded.add(id);
     return copy;
   }
 }
@@ -295,14 +309,24 @@ const saturatingSub = (a: number, b: number) => (a > b ? a - b : 0);
 export class Meter {
   private documentsWritten = 0;
   private bytesWritten = 0;
-  // File storage counters stay at zero until the kernel stores files.
-  private readonly filesWritten = 0;
-  private readonly fileWriteBytes = 0;
+  /**
+   * The files this frame's transaction has stored and not deleted, with their
+   * sizes. The binary keeps them as nested pending writes: a nested call starts
+   * from its caller's, a commit keeps the nested call's and a rollback drops
+   * them (`NestedWrites<FileUploads>`,
+   * `crates/database/src/transaction.rs:186`, `:425-451`), and a delete removes
+   * a file stored in the same transaction (`remove_pending`,
+   * `crates/database/src/file_uploads.rs:68-79`, called from
+   * `file_storage_delete`, `async_syscall.rs:521-529`).
+   */
+  private files: Map<string, number>;
 
   constructor(
     private readonly shared: Shared = new Shared(),
     private readonly parent?: Meter,
-  ) {}
+  ) {
+    this.files = new Map(parent?.files);
+  }
 
   child(): Meter {
     return new Meter(this.shared, this);
@@ -329,6 +353,7 @@ export class Meter {
     }
     this.parent.documentsWritten += this.documentsWritten;
     this.parent.bytesWritten += this.bytesWritten;
+    this.parent.files = this.files;
   }
 
   private chain(): Array<Meter> {
@@ -351,8 +376,11 @@ export class Meter {
       bytesWritten: sum((meter) => meter.bytesWritten),
       functionsScheduled: shared.functionsScheduled,
       scheduledFunctionArgsBytes: shared.scheduledFunctionArgsBytes,
-      filesWritten: sum((meter) => meter.filesWritten),
-      fileWriteBytes: sum((meter) => meter.fileWriteBytes),
+      filesWritten: this.files.size,
+      fileWriteBytes: [...this.files.values()].reduce(
+        (total, size) => total + size,
+        0,
+      ),
       filesRead: shared.filesRead,
       fileReadBytes: shared.fileReadBytes,
     };
@@ -515,6 +543,82 @@ export class Meter {
     }
     shared.functionsScheduled += 1;
     shared.scheduledFunctionArgsBytes += size;
+    return undefined;
+  }
+
+  /**
+   * Whether a mutation may store a file of `size` bytes. The binary checks
+   * before it writes the file's row, so a refused store counts and allocates
+   * nothing (`file_storage_store`,
+   * `crates/isolate/src/environment/udf/async_syscall.rs:478-497`).
+   */
+  checkStore(
+    size: number,
+    limits: Limits,
+  ): TransactionLimitExceeded | undefined {
+    const used = this.used();
+    if (used.filesWritten >= limits.filesWritten) {
+      return new TransactionLimitExceeded({
+        code: "TooManyFilesWritten",
+        limit: limits.filesWritten,
+        message: `Too many files stored by this mutation (limit: ${limits.filesWritten})`,
+      });
+    }
+    if (used.fileWriteBytes + size > limits.fileWriteBytes) {
+      return new TransactionLimitExceeded({
+        code: "FilesWrittenTooLarge",
+        limit: limits.fileWriteBytes,
+        message: `Too large total size of the files stored by this mutation (limit: ${limits.fileWriteBytes} bytes)`,
+      });
+    }
+    return undefined;
+  }
+
+  /**
+   * A file `checkStore` allowed was stored.
+   */
+  storeFile(id: string, size: number) {
+    this.files.set(id, size);
+  }
+
+  /**
+   * A file this transaction stored was deleted, so it is no longer stored.
+   */
+  deleteFile(id: string) {
+    this.files.delete(id);
+  }
+
+  /**
+   * A query or mutation reading a file's contents. A file this transaction
+   * stored, or already downloaded, counts nothing. Otherwise the binary checks
+   * before it counts (`check_file_read_limits`,
+   * `crates/isolate/src/environment/udf/async_syscall.rs:1291-1311`;
+   * `add_file_storage_read`, `crates/database/src/transaction.rs:546-549`).
+   */
+  readFile(
+    id: string,
+    size: number,
+    limits: Limits,
+  ): TransactionLimitExceeded | undefined {
+    const shared = this.shared;
+    if (this.files.has(id) || shared.downloaded.has(id)) return undefined;
+    if (shared.filesRead >= limits.filesRead) {
+      return new TransactionLimitExceeded({
+        code: "TooManyFilesRead",
+        limit: limits.filesRead,
+        message: `Too many files read by this mutation (limit: ${limits.filesRead})`,
+      });
+    }
+    if (shared.fileReadBytes + size > limits.fileReadBytes) {
+      return new TransactionLimitExceeded({
+        code: "FilesReadTooLarge",
+        limit: limits.fileReadBytes,
+        message: `Too large total size of the files read by this mutation (limit: ${limits.fileReadBytes} bytes)`,
+      });
+    }
+    shared.filesRead += 1;
+    shared.fileReadBytes += size;
+    shared.downloaded.add(id);
     return undefined;
   }
 }

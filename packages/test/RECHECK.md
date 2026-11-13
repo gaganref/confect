@@ -150,9 +150,10 @@ reaches only the function the test called.
 Row 2 published one top-level mutation at a time. Row 3 replaced that with
 read-set validation and held attempts. Scheduling, storage, HTTP, JWT signing
 and transaction limits refuse with `KernelRowPending`, naming the row that
-supplies them. Row 5 lifts the scheduling refusals, and the limits row lifts
-the transaction limits refusal. Text and vector search
-refuse with `RequiresBinary`.
+supplies them. Row 5 lifts the scheduling refusals, the limits row the
+transaction limits refusal, and row 6's storage metadata and HTTP rows the
+storage and HTTP refusals. Text and vector search, and storage uploads and
+downloads, refuse with `RequiresBinary`.
 
 `src/internal/ConvexTest.ts` gives the kernel convex-test's `convexTest`
 signature. `vitest.mock-backend.kernel.config.ts` in `@confect/server` aliases
@@ -448,10 +449,90 @@ The six row-5 cases now run in the kernel lane: `integration.test.ts:360`
 `Scheduler`, `components.test.ts:408` job cancellation, and the stored-handle
 cases at `:768`, `:807`, `:819` and `:831`.
 
-Open: Convex's own `crons.ts` schedules are not simulated, though the design's
-kernel scope lists declared schedules. convex-test does not run them either, and
-no inventory case or row-5 check uses them. A raw host timer in a handler is row
-6's I/O ban.
+Declared cron jobs (`src/internal/Crons.ts`) are simulated as standing
+sources, pinned to convex-backend `precompiled-2026-10-28-cccbade`, the binary
+the fork's local backend runs. When the backend opens, the kernel reads each
+component's `crons` module as the push reads `crons.js`
+(`crates/model/src/cron_jobs/mod.rs:151-223`). It refuses with `InvalidCron`
+what the push refuses: a default export that is no `Crons` object
+(`crates/isolate/src/environment/analyze.rs:1016-1048`), a schedule
+`CronSpec::from_exported_json` rejects (`crates/model/src/cron_jobs/types.rs:270-478`),
+a name with a character that is not printable ASCII (`types.rs:156-166`), and a
+target that is missing, a query or an HTTP action
+(`crates/application/src/application_function_runner/mod.rs:1932-1979`). Jobs
+are created in name order, each with its first run computed from the kernel's
+time at open.
+
+Each run's time is `compute_next_ts` (`crates/model/src/cron_jobs/next_ts.rs:129-189`).
+An interval's first run is due at once, and each later one an interval after the
+previous run's time, not its finish. A clock schedule's run is saffron's next
+occurrence strictly after the minute holding `now` less the previous run's
+delay, plus the next run's delay. The delay (`cron_splay`, `next_ts.rs:56-127`)
+is a whole number of seconds below `CRON_SPLAY_SECONDS`, 60 by default
+(`crates/common/src/knobs.rs:620-621`), for a pinned minute or a cron
+expression, and below 3600 when `minuteUTC` is left out. A first run counts its
+fresh delay as already in effect, so it can land in the current minute or hour.
+Later runs carry the delay through the previous run's timestamp, and draw again
+only when it was 0. The kernel holds no generator: the delay draws from the
+random stream of the world bound by the call that opened the backend, the stream
+that world's handlers draw from (row 1). With no invocation bound, it draws from
+the world the driver gave the backend (`convexTest`'s `world` option). `advance`
+and `drain` open with the driver's world. `TestConfect.layer`'s kernel target is
+such a driver: its world's stream is mulberry32 seeded by the layer's `seed`,
+`0` by default, so two runs with one seed replay the same delays. A backend with
+neither world has nothing to draw from, so it refuses a clock schedule with
+`CronRandomUnavailable`. An interval never draws. When `now` is no later than the
+previous delay, the binary's checked subtraction fails and the search starts at
+`now` itself (`next_ts.rs:180`, `Timestamp::sub` at
+`crates/convex/sync_types/src/timestamp.rs:72-78`), so an epoch clock with a 15 s
+delay first runs at 75 s, not 15 s. When a run finishes, the next is
+computed from that time, and every run already past is skipped
+(`complete_job_run`, `crates/application/src/cron_jobs/mod.rs:852-965`).
+
+Cron expressions follow saffron at the rev the binary pins
+(`convex/saffron@1d842379`): five fields split by spaces or tabs, numbers,
+three-letter month and weekday names in any case, `*`, ranges, steps and lists,
+weekdays 0-6 from Sunday, a lone `L` for Saturday, and a day of the month and a
+weekday that are both restricted matching either (`saffron/src/lib.rs:975-1003`).
+saffron's quirks are kept: a wrapping range such as `22-2` starts one value
+early, at 21 (`lib.rs:393-407`), and a wrapping step reads its bounds off by one
+for days, months and weekdays (`lib.rs:418-425`). The binary refuses a pattern
+saffron's `any` says never matches (`types.rs:453-459`).
+
+The search is a line-by-line port of saffron's `next_after` (`lib.rs:1134-1436`),
+not a scan for matching minutes. The first day is tested with `contains_date`
+(`lib.rs:623-678` for the day of the month, `:153-173` for the weekday, `:992-1003`
+for both), and every later day is found by `find_next_day_of_month`
+(`:1253-1310`) or `find_next_weekday` (`:1314-1387`). The two can disagree for
+the `L` and `W` forms, and the port keeps both. `L` is the last day, `L-n` n days
+before it, `LW` and `L-nW` the nearest weekday to those, `nW` the nearest weekday
+to day n within the month, `nL` the month's last weekday n, and `n#k` its k-th
+weekday n. A month without the day has no run. One case cannot be simulated: an
+`L-nW` test on a Monday computes `day + n - days_in_month` in `u32` (`:663`), and
+below zero that underflows. convex-backend builds with `overflow-checks = true`
+and `panic = "abort"` (`Cargo.toml:271-274`), so the binary process aborts. The
+kernel refuses with `CronAbortsBinary` instead. A differential harness built
+without overflow checks would wrap there and answer no match.
+
+A cron run is a system request: no identity, no IP or user agent, a fresh
+request ID and no scheduled function ID (`cron_jobs/mod.rs:441-446`,
+`crates/common/src/types/functions.rs:236-242`). It starts as a fresh
+invocation of the world bound by the call that opened the backend, or unbound.
+`advance` and `drain` open the backend with no world, as their binding never
+reaches a job. A mutation's writes, jobs it schedules included, publish only if
+it commits. A failed run still schedules the next (`cron_jobs/mod.rs:585-619`).
+The binary keeps the job in `_cron_jobs` and `_cron_next_run`, which no function
+reads, so the kernel keeps it beside its tables, and `crons()` lists each job's
+next run and how its latest run ended.
+
+`advance` runs cron runs and jobs in time order, each at its time. The binary
+runs them on separate executors, so at one instant it orders neither first. The
+kernel runs jobs first, then cron runs by component and name. A cron run never
+counts against the budget, since each moves its job's next run later. A drain
+never runs a cron run. The design asks that the crons door's suite pass on both
+targets with the plain drain; that suite lives in Frame and is not run here.
+
+A raw host timer in a handler is row 6's I/O ban.
 
 `TestConfect.layer`'s `target: "kernel"` builds the layer's backend on this
 shim, in each of the layer's three forms, so a consumer reaches the kernel
@@ -478,6 +559,330 @@ wrapped the other's accessor once more and every read of these globals went
 deeper. The kernel now leaves an accessor in place when it already reads
 through one of the kernel's, which a sentinel in a fresh copy shows, and the
 chain settles after the first call on each target.
+
+## Storage metadata (row 6)
+
+`src/internal/Storage.ts` is the file model. A file is a row in its
+component's `_storage` table, read and written through the attempt like any
+document, so a mutation's file exists only once it commits, a rolled-back one
+never does, and `getUrl`, `getMetadata` and `get` join the read set. An
+action's store and delete commit at once, and its reads see the latest commit.
+Beside the row the kernel keeps the bytes and a storage UUID; the row holds
+only what the binary's virtual table shows.
+
+Pinned against convex-backend `precompiled-2026-10-28-cccbade`, the local
+backend's version:
+
+- The row is `{ _id, _creationTime, sha256, size, contentType }`
+  (`FileStorageDocMapper`, `crates/model/src/file_storage/virtual_table.rs`).
+  `sha256` is the base64 SHA-256 with padding (`Sha256Digest::as_base64`,
+  `crates/value/src/sha256.rs:24`). `contentType` is `null` when the file has
+  none, though the npm package's `_storage` schema declares it optional. An
+  empty content type is none (`crates/isolate/src/ops/storage.rs:29`).
+- `getMetadata` answers `{ storageId, sha256, size, contentType }` with a hex
+  digest and the storage UUID (`storage_get_metadata`,
+  `crates/isolate/src/environment/udf/async_syscall.rs:1365-1405`).
+- `getUrl` answers `<origin>/api/storage/<uuid>`, with `?component=<id>`
+  outside the root (`FileStorage::get_url_batch`,
+  `crates/file_storage/src/core.rs:158-206`). The kernel's origin is
+  `https://kernel.convex.cloud` and its component ID is the path.
+- A declared digest that differs fails `Sha256 mismatch. Expected: … Actual: …`
+  before the row is written (`FileStorage::upload_file`, `core.rs:395-419`).
+- `delete` of a missing file fails `storage id … not found`
+  (`FileStorage::delete`, `core.rs:209-221`).
+- A storage ID of another table, or a string that is neither an ID nor a UUID,
+  is refused as an argument (`FileStorageId::from_str` and
+  `query_for_storage_id`, `crates/model/src/file_storage/mod.rs:126-143`,
+  `:244-279`). A file's storage UUID still names it.
+
+`packages/server/test/local-backend/storage.test.ts` checks the row, metadata,
+URL, null content type, digest mismatch and delete answers for one stored blob
+on the binary, and `test/Storage.test.ts` checks the same answers on the
+kernel. The binary's `null` content type was the one answer the source left
+open; the local-backend run settled it.
+
+Not simulated: upload streaming, signed upload tokens and durability. An upload
+URL has the binary's shape with an unsigned token, and the kernel's `fetch`
+refuses an upload to it or a download from a file URL with `RequiresBinary`
+(`storageUpload`, `storageDownload`). The bytes are held in memory, not
+streamed, and a deleted file's bytes are only unreachable.
+
+Fix round 2, after the limits, snapshot and redaction rows merged:
+
+- **Limits.** File storage charges the four file counters through
+  `Metering.ts`'s one meter. A mutation's store checks
+  `filesWritten` and `fileWriteBytes` before it writes the row
+  (`file_storage_store`, `crates/isolate/src/environment/udf/async_syscall.rs:478-497`),
+  refusing with `TooManyFilesWritten` or `FilesWrittenTooLarge`. Stored files
+  are nested pending writes: a nested mutation starts from its caller's, a
+  commit keeps its own and a rollback drops them, and a delete frees a file
+  stored in the same transaction (`NestedWrites<FileUploads>`,
+  `crates/database/src/transaction.rs:186`, `:425-451`;
+  `crates/database/src/file_uploads.rs:68-79`; `async_syscall.rs:521-529`). A
+  query's or mutation's `storage.get` counts a file once per transaction, never
+  one it stored, against `filesRead` and `fileReadBytes`
+  (`check_file_read_limits`, `async_syscall.rs:1291-1311`; the download cache
+  reaches nested calls at `:732`). `getUrl` and `getMetadata` count nothing,
+  and an action's store and get count toward no transaction. The local-backend
+  probes in `storage.test.ts` cross each limit, at the deployment's ceiling and
+  under a nested budget, and the binary and the kernel give the same message.
+  A nested call's uncaught error reaches its caller as the binary rethrows it,
+  `Uncaught Error: ` and a stack around the message, where the kernel passes
+  the error itself, so nested probes compare the message.
+- **Snapshots.** A snapshot carries every committed `_storage` row's file:
+  bytes (base64), component and storage UUID, and `identity.nextFile` and
+  `identity.nextUploadToken`. `Snapshot.contract.file` covers `Storage.File`
+  by type, and `contract.world` lists `files`, `legacyIds`, `nextFile` and
+  `nextUploadToken`. A restore rebuilds the UUID mappings from the files, and
+  refuses with `SnapshotFileInconsistent` a file with no committed row, a row
+  with no file, bytes whose SHA-256 or size is not the row's, and a UUID the
+  kernel would not mint or two files share, and with `SnapshotAllocatorBehind`
+  a `nextFile` at or behind a stored UUID. Bytes a rolled-back or deleted file
+  left behind are unreachable and not exported.
+- **Redaction.** `_storage` rows pass through every projection as documents,
+  and a declared secret in a row that references a file stays marked. File
+  bytes have no schema, so the backstop's rule applies to them: bytes holding
+  a kept secret's text are written as a marker, which a restore given the
+  secrets puts back, and refuses with `SnapshotSecretMissing` without them.
+- **Content types.** A content type is parsed as the binary's `mime` 0.3.17
+  parses it (`src/parse.rs:111-305`): its tokens, quoted values, spaces after a
+  `;`, an empty subtype, and a bare trailing `;`, which it drops. A mutation's
+  store refuses a malformed one as an argument (`async_syscall.rs:1272-1276`),
+  ``Invalid argument `contentType` for `storage.store`: mime parse error: …``,
+  and an action's as its content type header
+  (`crates/isolate/src/environment/action/storage.rs:55-60`), `mime parse
+  error: …`. The kernel stores the type as `mime` prints it.
+
+`LocalBackend.ts` reads `CONFECT_LOCAL_BACKEND_PORT` (default 3210) for its
+backends' ports, so the local-backend suite can run beside another checkout's
+on one machine. Every anonymous local deployment is named `anonymous-agent`,
+and `convex dev` waits for its recorded port to stop whoever holds it
+(`cli/lib/localDeployment/run.ts:290-342` in the npm package), so a run on
+other ports also moves the fixtures' local deployment config.
+
+`integration.test.ts:61` `Storage` now runs in the kernel lane.
+
+## HTTP routes and signed ingress (row 6)
+
+`World.fetch` sends a test's request to the root component's `http` router.
+The binary looks the route up with the router's own `lookup` and answers a miss
+itself, with 404 and the text `No matching routes found`
+(`run_http_action_inner`, `crates/isolate/src/environment/action/mod.rs:557-578`;
+the body's content type is `text/plain; charset=utf-8`,
+`crates/udf/src/http_action.rs:122-131`). The kernel does the same, so the npm
+router's own `runRequest` fallback, `No HttpAction routed for …`, which
+convex-test answers, never appears. A deployment with no HTTP module answers
+every path that way. The route's handler runs as an action at
+`https://some.convex.site` plus the path, with the request's headers and body
+bytes as sent and the caller's identity, and a HEAD request gets the GET
+route's status and headers and no body.
+
+A mounted component's HTTP module now reaches only `MountedHttp`'s bridge,
+which builds the router once per site URL. Registered as a backend module, the
+kernel loaded it at open, under no mount's site URL, and a module that failed
+to build failed every call to the world. The binary fails the push of a
+deployment whose module throws at import, so this is a test-only isolation: a
+mount's router is built at that mount's site URL, as the binary builds it, and
+a failure there fails that mount's requests and no others.
+
+`packages/server/test/signedEnvelope.ts` is a route-local ingress rule: a JSON
+envelope `{ id, event }` whose `x-confect-signature` is the HMAC-SHA-256 of the
+exact body bytes under a test-owned secret. It declares one refusal per
+malformed shape, checked before anything is written. The mock-backend and
+local-backend fixtures each mount it at `POST /ingress/events`.
+`test/mock-backend/signedIngress.test.ts` runs a positive control and sixteen
+garbage shapes on both lanes and checks after each refusal that the protected
+`notes` table is byte-identical. The local-backend case in
+`test/local-backend/http.test.ts` sends the accepted envelope, a tampered one
+and a signed non-UTF-8 body to the binary and gets the same answers.
+
+A route whose handler throws answers as the binary does, on the root and
+through the mounted bridge alike: 500, `content-type: application/json`, and
+`{ code, trace }`, plus `data` for a `ConvexError`. `code` is
+`[Request ID: <16 hex digits>] Server Error: Uncaught <name>: <message>`, and
+`trace` is that uncaught line and the error's stack frames, one per line, each
+line ending in a newline. The binary builds it in
+`RedactedJsError::to_http_response_parts`
+(`crates/application/src/redaction.rs:143-160`), sends it from
+`Application::run_http_action` (`crates/application/src/lib.rs:1542-1548`) with
+a fresh request ID, and sets the content type in
+`HttpActionResponsePart::from_json` (`crates/udf/src/http_action.rs:133-141`).
+`test/local-backend/httpErrors.test.ts` pins it on the binary through
+`LocalBackend.plainLayer`, a fixture of plain Convex HTTP actions on port 3230,
+since a Confect router answers a handler's failure itself. The kernel's frames
+are the host's, its request IDs are counted, and its `data` is the parsed JSON
+where the binary writes a float as `2.0`.
+
+convex-test rejects the `fetch` instead. The two root cases
+(`test/mock-backend/httpRouteError.test.ts` and `httpRouteConvexError.test.ts`)
+are conformance exceptions in the convex-test lane. #137's `conformance.ts`
+machinery is not on `main` yet, so they are recorded the way the lane records
+an exception today: `vitest.mock-backend.config.ts` lists each one, its exact
+case, the binary behaviour, an owner, the convex-test version and the binary
+evidence, and excludes its file, which holds that one case. An entry checked
+against another convex-test version fails the lane. The mounted case runs on
+both lanes, since the bridge is the adapter's own.
+
+Fix round 2:
+
+- A HEAD request's 404 and 500 end with no body, as its 200 does: the binary
+  routes HEAD as GET (`RoutableMethod::try_from`,
+  `crates/common/src/types/actions.rs:127`) and sends no HEAD body.
+- A mounted router's miss answers the binary's `No matching routes found`, on
+  both targets, where the bridge answered convex-test's `No HttpAction routed`.
+  A component router runs through the same `run_http_action_inner`, so its
+  miss is the root's (`crates/isolate/src/environment/action/mod.rs:557-578`).
+  No local fixture mounts a plain component router, so this one is pinned by
+  source, not by a binary run.
+- GET, OPTIONS and HEAD requests reach their route with no body, at the root
+  and through the bridge, as the binary discards one
+  (`ExtractHttpRequestMetadata`, `crates/local_backend/src/http_actions.rs:131-140`).
+- A kernel refusal inside a route is no handler error, so it surfaces as
+  itself rather than as a 500. Convex's `performAsyncSyscall` rethrows a
+  syscall's error as a plain `Error`, so the kernel keeps the first refusal a
+  call's syscalls threw, its nested calls' included, and the root `fetch` and
+  the bridge rethrow it. Loader and compatibility failures stay outside the
+  handler's catch and reject as before.
+- `fetch` now counts in the live registries a snapshot waits on (`running`,
+  then `functions` while the route runs), so a snapshot refuses mid-request.
+- Fix round 3: the bridge drops a GET or HEAD body before it builds the
+  request, which cannot be built with one, as the root does. The 500 body is
+  an artifact, so the root and the bridge build it from the failure
+  redaction's copy of the thrown value: a kept secret a route's error carries
+  is marked there as in a rejected call's report.
+
+`test/local-backend/httpErrors.test.ts` pins on the binary, through raw
+`node:http` requests on their own connections: HEAD answers to `/ok`, a missing
+route and a throwing route, an OPTIONS body never reaching its route, two
+values of one request header reaching the route as `a, b`, and a route's two
+`set-cookie` values leaving as two header lines. The test kernel answers each
+the same.
+
+Identity comes from the test's accessor, not from an `Authorization` header,
+which is the JWT row's. Not simulated: TLS, streaming request and response
+bodies, and edge limits.
+
+`http.test.ts` and the mounted HTTP route cases, `components.test.ts:534` to
+`:736`, now run in the kernel lane.
+
+## Snapshots (row 6)
+
+`src/internal/Snapshot.ts` encodes the kernel's committed state and reads it
+back. A snapshot is a header line, `confect-kernel-snapshot 3 sha256:<digest>`,
+then the body as JSON. The body holds the registered component paths, the
+version and latest commit timestamp, the clock's floor, the identity counters
+(the next document ID, the latest creation time handed out, the next held
+attempt's ID), every component's rows with the version that wrote each, every
+committed job's target, standing and world name, and the write log with each
+change's before and after values. Components, tables, rows and jobs are sorted,
+so the bytes do not depend on the order a world met them. Each document keeps
+its own field order, which a query on the kernel returns, so a restored world
+answers the same bytes. The binary keeps an object's fields sorted
+(`ConvexObject.fields` is a `BTreeMap`, `crates/value/src/object.rs:51` at
+`precompiled-2026-10-28-cccbade`), which the kernel, like convex-test, does not.
+
+Values use Convex's encoded JSON (`convexToJson`), the binary's
+`ConvexEncodedJSON`, which the websocket and the HTTP API's
+`format: "convex_encoded_json"` return (`crates/value/src/export.rs:20-24`,
+`:45-50`, `crates/local_backend/src/public_api.rs:75-81`). An int64 is
+`{"$integer": <base64, little-endian>}`, bytes are `{"$bytes": …}`, and a
+negative zero, an infinity or a NaN is `{"$float": …}`
+(`crates/value/src/json/mod.rs:103-127`). A throwaway probe through
+`packages/server/test/local-backend/LocalBackend.ts` stamped a `commitStamps`
+row on the binary, read it back through `/api/query` in that format, and
+stamped the same row on the kernel with the binary's commit timestamp: both
+encode the row's `at` and `label` as
+`{"at":{"$integer":"zWXE04qE5xg="},"label":"probe é"}`.
+
+The write log is carried whole. `Kernel.conflict` finds the commits after a
+snapshot version by position in the log, so a restored world whose log were cut
+would validate a later attempt against the wrong commits. A job's world is
+recorded by its name and resolved among the worlds the restore is given. A
+backend holding attempts refuses to export, since a held attempt is a running
+closure, not state. Restore refuses a backend that committed or holds attempts,
+registers other components, or is not given a job's world. Subscriptions are
+the client's, not the kernel's, and are not carried.
+
+Not simulated: the binary's own snapshot import and export. The binary exports
+a ZIP of `<table>/documents.jsonl` in `ConvexExportJSON`
+(`crates/exports/src/zip_uploader.rs:57-65`) and imports ZIP, JSONL, JSON and
+CSV files (`crates/application/src/snapshot_import/parse.rs:173-258`). A kernel
+snapshot is neither, so there is no binary import to drive against it. Native
+import compatibility stays on the binary.
+
+The digest binds integrity, not origin. Bytes a writer rehashes after editing
+pass the digest, so a restore checks that the body is state the kernel could
+have reached before it installs any of it, each rule with its own refusal:
+
+- `SnapshotRowInconsistent`: replaying the write log from the empty world,
+  each change replacing the value the log last published, gives exactly the
+  rows, each at the version that last wrote it, under its ID's table and in a
+  registered component.
+- `SnapshotAllocatorBehind`: the next document ID is past every ID's counter,
+  the latest creation time at or past every document's, the next attempt ID
+  positive and the identity epoch non-negative. A rewound counter would hand
+  out an identity the state already holds, and the next insert would overwrite
+  its row.
+- `SnapshotTimestampInconsistent`: commit timestamps strictly increase through
+  the log, and the latest is the log's last.
+- `SnapshotJobInconsistent`: every job names a committed job row, a registered
+  component and a function that component exports, every job row has its job,
+  and no job is running.
+
+A world refuses to export or restore while any live registry the contract
+names is non-empty. These are calls from the test, scheduler walks, function
+executions (nested and detached ones included) and held attempts, refused with
+`SnapshotWorldRunning` or `SnapshotWorldBusy`. A restore also refuses while a
+subscriber is registered, with `SnapshotSubscribed`: subscriptions are live
+client state, and a restore would rewind an existing subscriber's identity
+version so its next `authenticate` reused one. A scheduled action awaiting
+something would otherwise commit after the export, and a nested mutation an
+action leaves running would write after it. The binary lets detached work
+finish within its function's lifetime (#122), so a snapshot waits for it
+rather than cancel it.
+
+Before any map is built, a restore checks the decoded body, so its order
+cannot change the result. Components, tables, a component's rows and jobs
+each appear once, and every stored or logged document has an `_id` string and
+a finite, non-negative `_creationTime`, logged under its own ID. A duplicate
+table listed empty first would otherwise be overwritten by its populated
+twin, and a missing creation time would make the allocator check compare
+against `NaN`.
+
+The identity epoch is #125's identity version made world-wide. A subscriber
+starts at the world's epoch, and each `authenticate` advances it, so a
+restored world continues the versions its source handed out and replays the
+same identity transitions.
+
+`Snapshot.contract` lists every piece of kernel state as exported or excluded
+with its reason. Its comment names the limit of the fresh-world field test, which
+cannot see lazy, symbol-keyed, `#private` or closure-held state, so every live
+registry is also listed in `contract.live`, reported by a `liveCounts` typed
+against it, and refused on restore while non-empty. A field added to `Kernel.State`, `Scheduling.Target`,
+`Execution.CronJob` or `Storage.File` without an entry fails to compile. A `World`'s fields are private, so a test
+compares a fresh world's own fields with the contract. Subscriptions and their
+callers are live client state, so a restore starts with none. Owed when they
+land: component init markers.
+
+Cron state (#133) is in the snapshot, from format version 2. Storage state
+(#138) joined it as version 3: `files` and the identity counters `nextFile` and
+`nextUploadToken`. Each declared job
+exports its declaration (name, function, arguments as Convex JSON with secrets
+marked as a job's arguments are, and schedule, a cron expression by its text),
+its next run, its latest outcome and its world by name. A failed outcome's text
+is whatever the function threw, so it can hold a kept secret: the export writes
+it through `Redaction.mark`, a marker a restore unmarks, and `crons()` reports it
+through `Redaction.failure`. The raw text stays in the job's replay state. A cron job's fields are
+checked by type against `Execution.CronJob`. A restore never redeclares a cron
+and never draws a fresh random value. The world reads its app's declarations
+when its modules load, which draws nothing, and only the call that opens the
+backend schedules first runs, the one step that draws. A restore loads without
+that step, refuses with `SnapshotCronMismatch` unless the app declares exactly
+the snapshot's jobs with the same function, arguments and schedule, resolves
+each job's world by name among `worlds` and the backend's own, and installs the
+snapshot's runs. A clock schedule restored with no world is refused with
+`CronRandomUnavailable`. A snapshot taken before its backend opened holds no
+cron jobs, so restoring it into an app that declares some refuses.
 
 ## Transaction limits (row 6)
 
@@ -525,8 +930,9 @@ negative: `Metering.ts` asserts it.
 difference by name. `SystemTableReadIntervals` is the one this row adds. The
 binary's `databaseQueries` also counts the system-table intervals it reads to
 run a function: the backend state, the module, the UDF config and the
-component. On the local-backend fixture a root mutation starts at 19, its first
-nested call adds 2, and a stale-snapshot query starts at 19 again. That share
+component. On the local-backend fixture a root mutation starts at 18, its first
+nested call adds 2, and a stale-snapshot query starts at 18 again (19 before
+the storage row's probe functions joined the fixture). That share
 depends on the deployment, so the kernel does not simulate it.
 
 Each read maps a total `x` to `max(0, x - before) + after`, which never
@@ -536,8 +942,8 @@ the kernel's and the kernel's plus the system share:
 - While neither count saturates, the binary's is exactly the kernel's plus the
   share, and the binary refuses `TooManyReads` that many reads sooner.
 - A read that covers inserted IDs can saturate only the kernel's lower count,
-  and the gap shrinks. One insert and a read of its ID answer 19 on the binary
-  and 1 on the kernel, a gap of 18.
+  and the gap shrinks. One insert and a read of its ID answer 18 on the binary
+  and 1 on the kernel, a gap of 17.
 - Once a read saturates both, they agree. 100 inserts and a read of one answer
   100 on both.
 
@@ -564,6 +970,98 @@ on the local backend and on `TestConfect.layer(registry, { target: "kernel" })`.
   counters, 1 function and 4 bytes.
 - `groups/commitTs:maxAfterPending` pins that a pending timestamp patched to
   `9223372036854775807n` is a second write that stores the integer.
+
+## Redaction (row 6)
+
+`src/internal/Redaction.ts` finds secret schema nodes and marks what they
+hold. A secret node is a `Schema.Redacted` declaration, which
+`Schema.RedactedFromValue` decodes to (its representation id is
+`effect/schema/Redacted`). Convex validators carry no secret flag, and a
+Confect-registered function keeps only its validators at runtime, so the
+kernel cannot read secret nodes from the modules it loads. A policy names them:
+`tablesOf` reads a Confect database schema's tables, and a declaration names
+argument and return schemas per function and tables per component. Each schema
+is a thunk built the first time the kernel needs it, so Confect's lazy table
+schemas stay unbuilt until then. `TestConfect.layer`'s kernel target passes the
+app's tables merged with its `secrets` option, or the generated registry's
+`secrets`, which row 8's codegen fills from the Confect specs.
+
+A policy hands out shapes, the type side of each schema's AST, and every
+marking walks a value together with its shape. The value bounds the walk, so a
+recursive schema ends at the value's depth, and a suspension reused at another
+field is walked again there. A union applies each member the value fits,
+and a secret member fits only what its inner type encodes to. Where the value's
+structure departs from a shape that holds a secret beneath it, the walk treats
+the value as secret whole. The walk never enters a marker, so overlapping union
+members mark a shared field once and marking is idempotent.
+
+The kernel keeps every value at a secret position, before it validates it, in
+the world's `Secrets` store: a function's arguments as it is called, a job's
+arguments as it is scheduled, a return value, and a document's fields as they
+are written. A compound secret is kept whole, and every string beneath it is
+kept for searching free text. The store is replay state. It lives in memory,
+positions values in the order first seen, and no artifact writes it. The
+writers:
+
+- A snapshot export marks each secret position of a document, by its table's
+  shape and, for a job row, its target's argument shape at `args.0`, with
+  `{ "$redacted": <n> }`, `n` its position in the store. Convex's encoded JSON
+  allows no object key that starts with `$` (`crates/value/src/json/mod.rs:9`
+  at `precompiled-2026-10-28-cccbade`), so no stored value reads as a marker. A
+  restore given the store puts the raw values back and adopts a copy of it, so
+  its own exports are the same bytes. It puts them back before any body check, so a
+  document's system fields and IDs are checked as the kernel stored them, and
+  still before any map is built. Without the store it refuses with
+  `SnapshotSecretMissing`.
+- A failure report, whether a rejection or the error in a held attempt's
+  outcome, is a separate report of whatever was thrown. A string, an `Error`,
+  a frozen `Error` and a plain object all get their text, data and causes
+  marked as `[redacted]`. When something is marked, the report is a copy with
+  the thrown value's prototype and fields, so its class and tag read the same.
+  The thrown value is never changed, so a subscription's cached error compares
+  as it was. The report is built in two passes: the first finds
+  whether anything reachable holds a kept secret, and the second copies every
+  reachable error, array and plain object, registering each copy before its
+  fields are walked. An array copy keeps its own properties, such as a
+  `code`, beside its entries. So an error whose cause is itself, or two errors that are
+  each other's cause, report copies that cycle to each other, never to a raw
+  error.
+- A subscription diff marks each outcome by the shape of what its query
+  returns, and a commit cause's documents by their tables' shapes. A
+  subscription's own value is replay state and stays raw.
+- Read records, in held attempts and a subscription's `current()`, mark a key
+  or range bound on a field its table's shape holds secret. Each field-path segment
+  consumed starts a fresh ancestry, so a suspension reused down the path, as
+  in `data.child.child.token`, is followed again.
+- A held attempt's outcome, in `prepare`, `held` and a conflict's next attempt,
+  and an applied result are marked by the shape of what the attempt's mutation
+  returns: the held view carries its `functionPath`. A normal call returns its
+  value to its caller, which is replay state, so it stays raw.
+- `projectArguments` marks a function's arguments by its argument shape. #137's
+  `commands()` writes each provider command's input through it when the stacks
+  meet.
+
+Every value artifact then passes a string backstop: a string holding a kept
+secret of four characters or more is marked. The backstop never marks a document's `_id` or
+`_creationTime`: an ID is its document's identity, not a secret value, even
+when a secret field holds the same ID. Free text has no schema, so a
+failure report's message and stack are searched for kept secret strings. A
+secret string shorter than four characters is marked in values by its schema,
+not in free text.
+
+The binary has no schema-level secret marking. It redacts by visibility: with
+logging blocked, a client's log lines are dropped and an error reads "Server
+Error" (`crates/application/src/redaction.rs:39-50`, `:96-140`). Rejecting
+credential-shaped text by pattern stays with the artifact filer, not here. The
+kernel writes no logs of its own, and a handler's `console` output goes to the
+host unmarked. Each wire canary lands with its wire.
+
+Canaries cover every route found so far. These are an argument never stored, an
+argument stored in a secret field, a row written directly, a provider's
+answer, a bare throw and a frozen error. They also include a failing
+subscription, a compound secret, a reused suspension, a recursive value, two
+union members sharing a field, and an index read on a secret field. None
+reaches the snapshot, a failure report, a diff or a read record.
 
 ## Request metadata (row 6)
 
@@ -607,3 +1105,4 @@ the one literal both targets must answer.
 with a token its `auth.config` accepts, `x-forwarded-for` and `user-agent`, and
 `test/RequestMetadata.test.ts` calls the kernel with the same identity, address
 and agent.
+||||||| b5e7f80c
