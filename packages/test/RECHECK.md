@@ -150,7 +150,8 @@ reaches only the function the test called.
 Row 2 published one top-level mutation at a time. Row 3 replaced that with
 read-set validation and held attempts. Scheduling, storage, HTTP, JWT signing
 and transaction limits refuse with `KernelRowPending`, naming the row that
-supplies them. Row 5 lifts the scheduling refusals. Text and vector search
+supplies them. Row 5 lifts the scheduling refusals, and the limits row lifts
+the transaction limits refusal. Text and vector search
 refuse with `RequiresBinary`.
 
 `src/internal/ConvexTest.ts` gives the kernel convex-test's `convexTest`
@@ -525,3 +526,89 @@ import compatibility stays on the binary.
 
 The digest binds integrity, not origin. Bytes a writer rehashes after editing
 pass the digest and then meet the body's shape check, `SnapshotMalformed`.
+
+## Transaction limits (row 6)
+
+`src/internal/Metering.ts` is the kernel's one record of what an attempt has
+used, and `1.0/getTransactionMetrics` reads it, so `TransactionMetadata` and
+the limit checks share a single writer. The limits, the counting rules and the
+messages are convex-backend's at the local backend's pin,
+`precompiled-2026-10-28-cccbade`:
+
+| Metric                                                         | Default                                     | Counted when                                                                                                         | Message on crossing                                                                                         |
+| -------------------------------------------------------------- | ------------------------------------------- | -------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
+| `documentsRead`, `bytesRead`                                   | 32000, 16 MiB (`knobs.rs:641-647`)          | a get, patch, replace, delete or query reads a user document, sized as `getConvexSize` sizes it (`reads.rs:365-445`) | `Too many documents read …`, `Too many bytes read … (limit: N bytes)`, each with the binary's help sentence |
+| `databaseQueries`                                              | 4096 (`knobs.rs:657-658`)                   | a read adds a disjoint interval to its index's merged set (`reads.rs:447-480`, `interval_set.rs:150-230`)            | `Too many reads …` with the help sentence                                                                   |
+| `documentsWritten`, `bytesWritten`                             | 16000, 16 MiB (`knobs.rs:406-412`)          | each user write, a delete with no bytes (`writes.rs:241-310`)                                                        | `Too many writes …`, `Too many bytes written … (limit: 16 MiB)`                                             |
+| `functionsScheduled`, `scheduledFunctionArgsBytes`             | 1000, 16 MiB (`knobs.rs:514-536`)           | a schedule, checked before it counts, its arguments sized as `[args]` (`scheduled_jobs/mod.rs:162-196`)              | `Too many functions scheduled by this mutation …`, `Too large total size of the arguments …`                |
+| `filesWritten`, `fileWriteBytes`, `filesRead`, `fileReadBytes` | 10, 16 MiB, 10, 16 MiB (`knobs.rs:539-556`) | never yet: the storage row counts them                                                                               | none yet                                                                                                    |
+
+A failed nested mutation's writes leave the count with its frame; its reads,
+intervals and schedules stay, as the binary keeps them outside its
+subtransaction token (`transaction.rs:418-454`). A stale-snapshot query meters
+on a clone that keeps the caller's scheduling counters and starts reads and
+writes from zero, and the caller drops it (`clone_for_snapshot_query`,
+`transaction.rs:1460-1485`). A nested call's `transactionLimits` budget
+tightens only that call, from what the transaction has used, never above its
+caller's ceiling (`execution_size.rs:97-160`, `async_syscall.rs:700-706`). A
+patch or replace that changes nothing reads the document and writes nothing
+(`transaction.rs:713-790`). Whether it changed anything is structural, so a
+pending commit timestamp equals only another pending timestamp, at any depth
+(`PendingValue` derives `PartialEq`, `pending.rs:56-75`). Each retried attempt
+counts from zero. A limit refuses inside the function with a catchable error,
+as on the binary.
+
+`databaseQueries` follows `record_indexed_directly` (`reads.rs:447-480`): a
+read drops the total by its index's interval count before the read, saturating
+at zero, and adds the count after. An inserted ID joins its table's `by_id`
+intervals without counting (`register_new_id`, `writes.rs:426-441`;
+`record_indexed_derived`, `reads.rs:333-344`), so a later read of that index
+can saturate the total. After 100 inserts, reading one inserted ID answers 100
+on both targets, and a `by_id` scan then answers 1. The total is never
+negative: `Metering.ts` asserts it.
+
+### What stays on the binary
+
+`packages/server/test/mock-backend/kernelBoundaries.ts` records each accepted
+difference by name. `SystemTableReadIntervals` is the one this row adds. The
+binary's `databaseQueries` also counts the system-table intervals it reads to
+run a function: the backend state, the module, the UDF config and the
+component. On the local-backend fixture a root mutation starts at 19, its first
+nested call adds 2, and a stale-snapshot query starts at 19 again. That share
+depends on the deployment, so the kernel does not simulate it.
+
+Each read maps a total `x` to `max(0, x - before) + after`, which never
+decreases and never moves two totals apart. So the binary's count stays between
+the kernel's and the kernel's plus the system share:
+
+- While neither count saturates, the binary's is exactly the kernel's plus the
+  share, and the binary refuses `TooManyReads` that many reads sooner.
+- A read that covers inserted IDs can saturate only the kernel's lower count,
+  and the gap shrinks. One insert and a read of its ID answer 19 on the binary
+  and 1 on the kernel, a gap of 18.
+- Once a read saturates both, they agree. 100 inserts and a read of one answer
+  100 on both.
+
+The binary refuses no later than the kernel, and at most the system share
+sooner. CPU, heap and duration stay on the binary, as the design says.
+
+### Boundary check
+
+`packages/server/test/local-backend/transactionControls.test.ts` runs each case
+on the local backend and on `TestConfect.layer(registry, { target: "kernel" })`.
+
+- `groups/transactions:metrics` runs one fixed workload over three seeded
+  notes: an index read, a read by ID, a write, a write that changes nothing, a
+  delete, a nested query, a nested mutation that fails and one that commits, an
+  insert and a schedule. Every metric but `databaseQueries` is equal at the
+  start and the end. `databaseQueries` on the binary is the kernel's plus the
+  boundary's `rootMutationStart` at the start, and plus `firstNestedCall` too at
+  the end. The case reads both amounts from the entry, and its name is the
+  entry's `probe`.
+- `groups/transactions:insertedIntervals` pins the saturating count above,
+  with 100 inserts where both counts saturate, and with 1 insert where only the
+  kernel's does and the gap shrinks to 18.
+- `groups/transactions:staleMetrics` pins a stale-snapshot query's scheduling
+  counters, 1 function and 4 bytes.
+- `groups/commitTs:maxAfterPending` pins that a pending timestamp patched to
+  `9223372036854775807n` is a second write that stores the integer.
