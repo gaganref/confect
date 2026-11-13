@@ -421,7 +421,9 @@ unbound `TestConfect.layer` call is seeded and replays, and with no world it
 refuses with `FunctionRandomUnavailable` rather than read the host's. Only a
 reference kept before the kernel ran any code keeps the host's. When a test
 leaves `Math` or `crypto` as a property the kernel cannot redefine, the open or
-the function refuses with `UnguardableGlobal` before its code runs. The bridge
+the function refuses with `UnguardableGlobal` before its code runs. A sync socket runs every frame and
+update in the context of the code that opened it, so a rerun a commit
+invalidated draws from the socket's stream, never the committer's. The bridge
 that pins a bound handler on the convex-test target refuses the same `subtle`
 operations by function type. The fixture's system-table share measures 23
 with the probe beside component identity's chain.

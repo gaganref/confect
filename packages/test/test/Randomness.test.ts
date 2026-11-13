@@ -5,12 +5,16 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
 import {
   defineSchema,
+  defineTable,
   makeFunctionReference,
+  mutationGeneric,
   queryGeneric,
 } from "convex/server";
+import { v } from "convex/values";
 import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
 import * as Context from "effect/Context";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import refs from "../../../tools/local-backend/fixtures/confect/_generated/refs";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
@@ -21,6 +25,7 @@ import {
   calls,
   drawingBackend,
   drawnFrom,
+  invocationOf,
   streamFor,
 } from "./fixtures/drawingBackend";
 import { expectedOnKernel, normalize } from "./fixtures/randomnessProbe";
@@ -473,6 +478,168 @@ describe("randomness on the kernel", () => {
       );
     }, 60_000);
   });
+
+  /**
+   * A socket subscribed to a plain query that reads `ticks` and draws, then a
+   * mutation bound to `committer` that commits to `ticks`. The socket is opened
+   * inside `opener`'s invocation when given, and every frame is sent from
+   * unbound test code. With `mutate`, the socket also sends a Mutation frame
+   * for a mutation that draws and writes nothing, between the first run and the
+   * commit. Answers the runs' values, then the mutation's result.
+   */
+  const socketRuns = (
+    committer: () => number,
+    opener?: () => number,
+    mutate = false,
+  ) =>
+    Effect.gen(function* () {
+      const t: KernelControls = convexTest({
+        schema: defineSchema({ ticks: defineTable({ n: v.number() }) }),
+        world: { ...worldOf("own"), random: streamFor(200) },
+        modules: {
+          "_generated/server.ts": () => Promise.resolve({}),
+          "ticks.ts": () =>
+            Promise.resolve({
+              read: queryGeneric({
+                args: {},
+                handler: (ctx) =>
+                  ctx.db
+                    .query("ticks")
+                    .collect()
+                    .then((rows) => ({
+                      count: rows.length,
+                      // oxlint-disable-next-line effecttsgo/global-random -- A plain query reads the ambient Math.random the kernel gives it.
+                      draw: Math.random(),
+                    })),
+              }),
+              bump: mutationGeneric({
+                args: {},
+                handler: (ctx) =>
+                  ctx.db.insert("ticks", { n: 1 }).then(() => null),
+              }),
+              drawM: mutationGeneric({
+                args: {},
+                // oxlint-disable-next-line effecttsgo/global-random -- A plain mutation reads the ambient Math.random the kernel gives it.
+                handler: () => Promise.resolve(Math.random()),
+              }),
+            }),
+        },
+      });
+      const received: Array<Record<string, any>> = [];
+      const open = () => {
+        const socket = new (t.sync().WebSocket)("ws://kernel.invalid");
+        // oxlint-disable-next-line unicorn/prefer-add-event-listener -- The kernel's socket has only the `on*` handlers the Convex client uses.
+        socket.onmessage = (event) => {
+          // A frame arrives in the socket's callback, which cannot run an Effect.
+          received.push(Json.parse(event.data) as Record<string, any>);
+        };
+        const { promise: opened, resolve } = Promise.withResolvers<void>();
+        // oxlint-disable-next-line unicorn/prefer-add-event-listener -- See above.
+        socket.onopen = () => resolve();
+        return { socket, opened };
+      };
+      const { socket: ws, opened } =
+        opener === undefined
+          ? open()
+          : yield* Effect.promise(() =>
+              Invocation.bind(invocationOf(opener), () =>
+                Promise.resolve(open()),
+              ),
+            );
+      yield* Effect.promise(() => opened);
+      const send = (message: object) =>
+        Effect.sync(() => ws.send(Json.stringify(message))).pipe(
+          Effect.andThen(Effect.sleep(Duration.millis(50))),
+        );
+      yield* send({
+        type: "Connect",
+        sessionId: "draws",
+        connectionCount: 0,
+        lastCloseReason: "InitialConnect",
+        clientTs: 0,
+      });
+      yield* send({
+        type: "ModifyQuerySet",
+        baseVersion: 0,
+        newVersion: 1,
+        modifications: [
+          { type: "Add", queryId: 0, udfPath: "ticks:read", args: [{}] },
+        ],
+      });
+      if (mutate) {
+        yield* send({
+          type: "Mutation",
+          requestId: 0,
+          udfPath: "ticks:drawM",
+          args: [{}],
+        });
+      }
+      yield* Effect.promise(() =>
+        Invocation.bind(invocationOf(committer), () =>
+          t.mutation(makeFunctionReference<"mutation">("ticks:bump"), {}),
+        ),
+      );
+      yield* Effect.sleep(Duration.millis(100));
+      ws.close();
+      const transitions: ReadonlyArray<Record<string, any>> = Arr.filter(
+        received,
+        (message) => message["type"] === "Transition",
+      );
+      const mutated = Arr.map(
+        Arr.filter(
+          received,
+          (message) => message["type"] === "MutationResponse",
+        ),
+        (message) => message["result"] as unknown,
+      );
+      return [
+        ...Arr.flatMap(transitions, (message): ReadonlyArray<unknown> =>
+          Arr.map(
+            message["modifications"] as ReadonlyArray<Record<string, any>>,
+            (modification) => modification["value"],
+          ),
+        ),
+        ...mutated,
+      ];
+    });
+
+  it.live(
+    "a sync socket's rerun of a query a bound mutation's commit invalidated draws from the backend's own world, never the committer's stream",
+    () =>
+      Effect.gen(function* () {
+        const committer = streamFor(300);
+        const values = yield* socketRuns(committer);
+        // Both runs are the socket's own, unbound requests: the first and the
+        // second draw of the backend's world.
+        const own = streamFor(200);
+        expect(values).toEqual([
+          { count: 0, draw: own() },
+          { count: 1, draw: own() },
+        ]);
+        // The committing mutation drew nothing, and the rerun left its stream
+        // alone.
+        expect(committer()).toBe(streamFor(300)());
+      }),
+  );
+
+  it.live(
+    "a sync socket opened under a bound invocation runs its first query, a mutation it sends and its rerun from that invocation's stream, whoever sent the frame or committed",
+    () =>
+      Effect.gen(function* () {
+        const committer = streamFor(300);
+        const values = yield* socketRuns(committer, streamFor(400), true);
+        // The first run, then the socket's mutation, then the rerun, each the
+        // opener's next draw.
+        const opener = streamFor(400);
+        const [first, mutation, rerun] = [opener(), opener(), opener()];
+        expect(values).toEqual([
+          { count: 0, draw: first },
+          { count: 1, draw: rerun },
+          mutation,
+        ]);
+        expect(committer()).toBe(streamFor(300)());
+      }),
+  );
 
   it("two processes opening a module that draws while it loads, through TestConfect.layer with one seed, replay its draws byte for byte, and another seed moves them", () => {
     const loader = pathToFileURL(

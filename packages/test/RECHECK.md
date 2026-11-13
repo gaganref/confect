@@ -1644,6 +1644,20 @@ own because a frozen global cannot be undone. In each case the open refuses
 before the module loads. A `Math` frozen after the open makes the next function
 refuse before its handler runs.
 
+Row 7's Sync serving runs every query, mutation and action through the same
+`enter`, so each gets the kernel's `Math` and `crypto`. Its runs had leaked
+context, though. A commit wakes a socket's update from inside the committing
+mutation's turn, and the update ran in that turn's async context. So a rerun
+of a query the commit invalidated drew from the committer's bound invocation's
+stream, consuming the committer's draws. A frame's handling likewise ran in
+the context of whatever code sent it. Each socket now keeps the async context
+of the code that opened it, its client, and runs every frame and update in it.
+This mirrors the binary, which runs each of a socket's requests as the
+socket's own. An unbound socket's runs draw from the backend's own world, and a
+socket opened under a bound invocation draws from that invocation's stream,
+whoever committed or sent the frame. `World.verify` runs no user code of its
+own beyond the open's module loads, which already go through the install.
+
 One reference stays the host's. A reference taken outside every kernel copy,
 before the kernel ran any code, such as a module a test file imports, keeps
 what it read. That is the lazy-loading contract #136 states for `fetch` and
