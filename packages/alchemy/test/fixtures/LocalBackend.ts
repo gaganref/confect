@@ -49,6 +49,8 @@ export interface FakeBehaviour {
  * `behaviour` can change between boots, and `attempts` records the arguments of
  * every backend start, served or not. Node commands (codegen, `convex deploy`)
  * succeed and record the push target.
+ *
+ * @internal
  */
 export const fakeBackend = (options?: Partial<FakeBehaviour>) => {
   const behaviour: FakeBehaviour = {

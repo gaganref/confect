@@ -58,6 +58,8 @@ const hasDeployModule = Effect.fn("MountInit.hasDeployModule")(function* (
  * path, one at a time, and visit a nested component's own steps after its
  * `init`. The first failing mount stops the run. Each `init` is its own
  * transaction, so earlier mounts stay applied and a rerun converges.
+ *
+ * @internal
  */
 export const run = Effect.fn("MountInit.run")(function* (
   url: string,

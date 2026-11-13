@@ -44,6 +44,8 @@ const isAlive = (pid: number) => {
  * leaves waiters timing out rather than overlapping. A timeout that lands while
  * an attempt succeeds still fails, and the published lock is removed only when
  * the ambient scope closes.
+ *
+ * @internal
  */
 export const acquire = Effect.fn("FileLock.acquire")(function* (
   file: string,
