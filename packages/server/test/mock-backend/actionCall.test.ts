@@ -1,6 +1,6 @@
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
-import { assert, describe, expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import { MutationCtx } from "./fixtures/confect/_generated/services";
 import refs from "./fixtures/confect/_generated/refs";
@@ -9,6 +9,7 @@ import type * as Ref from "@confect/core/Ref";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
+import { assertIs } from "../internal/assertIs";
 const execute = (
   mode: Ref.Args<typeof refs.public.groups.actionCall.execute>["mode"],
 ) =>
@@ -22,7 +23,7 @@ describe("one-call actions", () => {
       const c = yield* TestConfect.TestConfect;
       for (const mode of ["scheduleAfter", "scheduleAt"] as const) {
         const exit = yield* Effect.exit(execute(mode));
-        assert(Exit.isFailure(exit));
+        assertIs(exit, Exit.isFailure);
         expect(Cause.pretty(exit.cause)).toContain("SchedulingNotAllowed");
       }
       const query2 = yield* c.query(refs.public.groups.notes.list);
@@ -62,7 +63,7 @@ describe("one-call actions", () => {
     Effect.gen(function* () {
       const c = yield* TestConfect.TestConfect;
       const exit = yield* Effect.exit(execute("twice"));
-      assert(Exit.isFailure(exit));
+      assertIs(exit, Exit.isFailure);
       expect(Cause.pretty(exit.cause)).toContain("ActionCallAlreadyUsed");
       const query2 = yield* c.query(refs.public.groups.notes.list);
       expect(Array.map(query2, (row) => row.text)).toEqual(["first only"]);
@@ -75,16 +76,16 @@ describe("one-call actions", () => {
       Effect.gen(function* () {
         const c = yield* TestConfect.TestConfect;
         const parallel = yield* Effect.exit(execute("parallel"));
-        assert(Exit.isFailure(parallel));
+        assertIs(parallel, Exit.isFailure);
         expect(Cause.pretty(parallel.cause)).toContain("ActionCallAlreadyUsed");
         const unused = yield* Effect.exit(execute("unused"));
-        assert(Exit.isFailure(unused));
+        assertIs(unused, Exit.isFailure);
         expect(Cause.pretty(unused.cause)).toContain("ActionCallNotUsed");
         const encoding = yield* Effect.exit(execute("failedEncoding"));
-        assert(Exit.isFailure(encoding));
+        assertIs(encoding, Exit.isFailure);
         expect(Cause.pretty(encoding.cause)).toContain("ActionCallNotUsed");
         const preflight = yield* Effect.exit(execute("preflight"));
-        assert(Exit.isFailure(preflight));
+        assertIs(preflight, Exit.isFailure);
         expect(Cause.pretty(preflight.cause)).toContain(
           "ActionCallAlreadyUsed",
         );

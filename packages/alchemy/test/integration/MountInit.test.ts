@@ -1,5 +1,5 @@
 import * as NodeServices from "../fixtures/NodeTestServices";
-import { assert, describe, expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -8,6 +8,7 @@ import { ChildProcess, ChildProcessSpawner } from "effect/process";
 import * as RealBackend from "./RealBackend";
 import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
+import { assertIs } from "../internal/assertIs";
 
 // Runs the real pinned backend, as RealLocalBackend.test.ts does, on ports
 // 3400-3499. Every push runs the real codegen and `convex deploy`.
@@ -188,7 +189,7 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             ...trimmed,
             bulkEmail: { fromName: "FAIL_AFTER_WRITE" },
           });
-          assert(Result.isFailure(failed));
+          assertIs(failed, Result.isFailure);
           expect(failed.failure).toMatchObject({
             _tag: "MountInitFailed",
             mount: "bulkEmail",
@@ -237,7 +238,7 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             ...second,
             transactionalEmail: { fromName: "FAIL_AFTER_WRITE" },
           });
-          assert(Result.isFailure(stopped));
+          assertIs(stopped, Result.isFailure);
           expect(stopped.failure).toMatchObject({
             message:
               "transactionalEmail: init failed; earlier mounts are applied, and the next push retries",
@@ -272,7 +273,7 @@ describe.skipIf(process.platform === "win32")("mount init on a push", () => {
             "D",
             deleted,
           );
-          assert(Result.isFailure(refused));
+          assertIs(refused, Result.isFailure);
           expect(refused.failure).toMatchObject({
             _tag: "MountInitFailed",
             mount: "bulkEmail",

@@ -29,6 +29,7 @@ import { ProjectRoot } from "@confect/cli/ProjectRoot";
 import * as GenerationSnapshot from "@confect/cli/GenerationSnapshot";
 import { SpecModulePath } from "@confect/cli/SpecModulePath";
 import * as Project from "./integration/Project";
+import { assertIs } from "./internal/assertIs";
 
 vi.mock("node:child_process", (importOriginal) =>
   importOriginal<typeof ChildProcess>().then((original) => ({
@@ -254,7 +255,7 @@ layer(NodeServices.layer, { excludeTestServices: true })("Evaluation", (it) => {
           const failed = yield* project
             .provide(Evaluation.validate(paths))
             .pipe(Effect.result);
-          assert(Result.isFailure(failed));
+          assertIs(failed, Result.isFailure);
           expect(failed.failure).toMatchObject({
             _tag: "EvaluationError",
             diagnostic: expect.stringContaining("23"),

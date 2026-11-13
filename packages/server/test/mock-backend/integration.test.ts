@@ -72,6 +72,7 @@ import * as TestConfect from "./TestConfect";
 import * as TestConfect_ from "../../../test/src/TestConfect";
 import * as Str from "effect/String";
 import { pipe } from "effect/Function";
+import { assertIs } from "../internal/assertIs";
 
 it.layer(TestConfect.layer, { buildPerTest: true })(
   "TestConfect JWT signing",
@@ -2410,7 +2411,7 @@ it.effect(
             const result = yield* Effect.result(
               writer.patch(id, { text: "missing" }),
             );
-            assert(Result.isFailure(result));
+            assertIs(result, Result.isFailure);
             expect(result.failure).toMatchObject({
               _tag: "GetByIdFailure",
               tableName: "notes",
@@ -2431,7 +2432,7 @@ it.effect.each([
     Effect.gen(function* () {
       const c = yield* TestConfect.TestConfect;
       const failed = yield* Effect.exit(c.mutation(ref, { fail: true }));
-      assert(Exit.isFailure(failed));
+      assertIs(failed, Exit.isFailure);
       expect(Cause.pretty(failed.cause)).toContain("hook refused write");
       yield* c.run(
         Effect.gen(function* () {

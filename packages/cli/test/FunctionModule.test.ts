@@ -25,6 +25,7 @@ import {
   render,
   generateGroupModule,
 } from "@confect/cli/FunctionModule";
+import { assertIs } from "./internal/assertIs";
 
 const fixtureRoot = `${import.meta.dirname}/../../server/test/mock-backend/fixtures`;
 const fixtureConvex = `${fixtureRoot}/convex`;
@@ -422,7 +423,7 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
       const result = yield* project
         .provide(assertOwnedEntrypoints)
         .pipe(Effect.result);
-      assert(Result.isFailure(result));
+      assertIs(result, Result.isFailure);
       expect(result.failure).toMatchObject({
         _tag: "UnownedConvexEntrypointError",
       });
@@ -437,7 +438,7 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
       const result = yield* project
         .provide(assertOwnedEntrypoints)
         .pipe(Effect.result);
-      assert(Result.isFailure(result));
+      assertIs(result, Result.isFailure);
       expect(result.failure).toMatchObject({
         _tag: "UnownedConvexEntrypointError",
         filePaths: ["convex/one.ts", "convex/two.ts"],

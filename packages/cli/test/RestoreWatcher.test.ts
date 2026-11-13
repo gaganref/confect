@@ -3,12 +3,13 @@ import * as Fiber from "effect/Fiber";
 import * as Exit from "effect/Exit";
 import * as Option from "effect/Option";
 import * as TestClock from "effect/testing/TestClock";
-import { assert, expect, it } from "@effect/vitest";
+import { expect, it } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Queue from "effect/Queue";
 import * as Stream from "effect/Stream";
 import * as RestoreWatcher from "@confect/cli/RestoreWatcher";
+import { assertIs } from "./internal/assertIs";
 
 const watchConfect = (
   onEvent: (event: FileSystem.WatchEvent) => Effect.Effect<void>,
@@ -129,8 +130,8 @@ it.effect("propagates cleanup defects when the watcher is paused", () =>
     );
     yield* TestClock.adjust("1 second");
     const outcome = yield* Fiber.join(fiber);
-    assert(Option.isSome(outcome));
-    assert(Exit.isFailure(outcome.value));
+    assertIs(outcome, Option.isSome);
+    assertIs(outcome.value, Exit.isFailure);
     expect(Cause.findDie(outcome.value.cause)).toMatchObject({
       _tag: "Success",
       success: { defect: "watcher cleanup failed" },

@@ -11,18 +11,6 @@
     "packages/server/test/RegisteredConvexFunction.test.ts": 1,
     "scripts/stageForkPackages.test.ts": 1
   },
-  "effecttsgo/missed-pipeable-opportunity": {
-    "packages/alchemy/test/Code.test.ts": 2,
-    "packages/alchemy/test/integration/MountInit.test.ts": 3,
-    "packages/cli/test/ComponentCodegen.test.ts": 6,
-    "packages/cli/test/Declaration.test.ts": 7,
-    "packages/cli/test/Evaluation.test.ts": 1,
-    "packages/cli/test/FunctionModule.test.ts": 2,
-    "packages/cli/test/RestoreWatcher.test.ts": 2,
-    "packages/cli/test/codegen.test.ts": 4,
-    "packages/server/test/mock-backend/actionCall.test.ts": 6,
-    "packages/server/test/mock-backend/integration.test.ts": 2
-  },
   "effecttsgo/schema-sync": {
     "packages/alchemy/test/Code.test.ts": 1,
     "packages/alchemy/test/FileLock.test.ts": 1,

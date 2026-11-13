@@ -1,6 +1,6 @@
 import * as CommandArgs from "./fixtures/CommandArgs";
 import * as NodeServices from "./fixtures/NodeTestServices";
-import { assert, describe, expect, it } from "@effect/vitest";
+import { describe, expect, it } from "@effect/vitest";
 import {
   provider as codeProvider,
   type CodeProps,
@@ -31,6 +31,7 @@ import { MountInitFailed } from "../src/internal/MountInit";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
+import { assertIs } from "./internal/assertIs";
 
 const serialize = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
 const props: CodeProps = {
@@ -813,7 +814,7 @@ describe("Code mount init", () => {
         "init relay",
         "release",
       ]);
-      assert(Result.isFailure(result));
+      assertIs(result, Result.isFailure);
       expect(result.failure).toBeInstanceOf(MountInitFailed);
       expect(result.failure.message).toBe(
         "relay: init failed; earlier mounts are applied, and the next push retries",
@@ -840,7 +841,7 @@ describe("Code mount init", () => {
         "steps",
         "release",
       ]);
-      assert(Result.isFailure(result));
+      assertIs(result, Result.isFailure);
       expect(result.failure).toMatchObject({
         _tag: "MountInitFailed",
         mount: "bulkEmail",

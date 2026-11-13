@@ -392,23 +392,6 @@
     {
       "files": [
         "packages/alchemy/test/Code.test.ts",
-        "packages/alchemy/test/integration/MountInit.test.ts",
-        "packages/cli/test/ComponentCodegen.test.ts",
-        "packages/cli/test/Declaration.test.ts",
-        "packages/cli/test/Evaluation.test.ts",
-        "packages/cli/test/FunctionModule.test.ts",
-        "packages/cli/test/RestoreWatcher.test.ts",
-        "packages/cli/test/codegen.test.ts",
-        "packages/server/test/mock-backend/actionCall.test.ts",
-        "packages/server/test/mock-backend/integration.test.ts"
-      ],
-      "rules": {
-        "effecttsgo/missed-pipeable-opportunity": "off"
-      }
-    },
-    {
-      "files": [
-        "packages/alchemy/test/Code.test.ts",
         "packages/alchemy/test/FileLock.test.ts",
         "packages/alchemy/test/LocalBackend.test.ts",
         "packages/alchemy/test/PushLock.test.ts",

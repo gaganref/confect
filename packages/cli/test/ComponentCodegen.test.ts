@@ -1,5 +1,5 @@
 import { fileURLToPath } from "node:url";
-import { assert, expect, it } from "@effect/vitest";
+import { expect, it } from "@effect/vitest";
 import * as NodeServices from "@effect/platform-node/NodeServices";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -26,6 +26,7 @@ import { ChildProcessSpawner } from "effect/process/ChildProcessSpawner";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
+import { assertIs } from "./internal/assertIs";
 
 const fixture = `${import.meta.dirname}/fixtures/authored-component`;
 const stringLiteral = Schema.encodeSync(Schema.fromJsonString(Schema.String));
@@ -366,7 +367,7 @@ it.effect(
           ),
         ),
       );
-      assert(Result.isFailure(result));
+      assertIs(result, Result.isFailure);
       expect(result.failure).toMatchObject({
         _tag: "InvalidConvexConfigError",
         reason: expect.stringContaining("authentication"),
@@ -447,7 +448,7 @@ export default GroupSpec.addGroupsAt(GroupSpec.make(), { worker: GroupSpec.makeN
           ),
         ),
       );
-      assert(Result.isFailure(result));
+      assertIs(result, Result.isFailure);
       expect(result.failure).toMatchObject({
         _tag: "ComponentNodeGroupError",
         specPath: "tasks.spec.ts",
@@ -507,7 +508,7 @@ it.effect(
         Effect.provideService(FileSystem.FileSystem, guardedFs),
         Effect.result,
       );
-      assert(Result.isFailure(result));
+      assertIs(result, Result.isFailure);
       expect(result.failure).toMatchObject({
         _tag: "ComponentNodeGroupError",
         groupPath: "tasks",
@@ -631,7 +632,7 @@ it.effect.each(["configured", "declared"] as const)(
         );
       }
       const result = yield* Effect.result(run);
-      assert(Result.isFailure(result));
+      assertIs(result, Result.isFailure);
       expect(result.failure).toMatchObject({
         _tag: "ComponentNodeGroupError",
         groupPath: "tasks",
@@ -678,7 +679,7 @@ it.effect.each([
           Effect.result,
         ),
       );
-      assert(Result.isFailure(result));
+      assertIs(result, Result.isFailure);
       expect(result.failure).toMatchObject({
         _tag: "DeclarationKindMismatchError",
         declarationPath: "confect/app.ts",
@@ -731,7 +732,7 @@ it.effect.each(["configured", "declared"] as const)(
         `${directory}/confect/callbacks.ts`,
       );
       const result = yield* Effect.result(run);
-      assert(Result.isFailure(result));
+      assertIs(result, Result.isFailure);
       expect(result.failure).toMatchObject({
         _tag: "CallbackPrefixError",
         declarationPath: "confect/callbacks.ts",

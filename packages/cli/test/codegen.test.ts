@@ -48,6 +48,7 @@ import * as Project from "./integration/Project";
 import { DatabaseSchema } from "@confect/server";
 import { TestConfect } from "../../test/src";
 import { defineSchema } from "convex/server";
+import { assertIs } from "./internal/assertIs";
 
 vi.mock("esbuild", (importOriginal) =>
   importOriginal<typeof esbuild>().then((original) => ({
@@ -426,7 +427,7 @@ export default App.make({ env: Env.make("other", {}), manifestSections: [{ key: 
             _tag: "InvalidDeclarationError",
             declarationPath: "confect/notes.spec.ts",
           });
-          assert(isCodegenError(error));
+          assertIs(error, isCodegenError);
           expect(renderCodegenError(error)).toContain(
             "notes:list carries manifestSections, which codegen no longer reads from a function spec. Declare the backend's manifest sections once, on App.make({ manifestSections }) in confect/app.ts.",
           );
@@ -476,7 +477,7 @@ export class Observe extends MiddlewareSpec.MiddlewareSpec<Observe>()("Observe",
           const error = yield* Effect.flip(
             project.provide(generateWithSnapshot),
           );
-          assert(isCodegenError(error));
+          assertIs(error, isCodegenError);
           expect(renderCodegenError(error)).toContain(
             'Function "list" carries manifestSections, which middleware would drop. Declare the backend\'s manifest sections once, on App.make({ manifestSections }) in confect/app.ts.',
           );
@@ -502,7 +503,7 @@ export class Observe extends MiddlewareSpec.MiddlewareSpec<Observe>()("Observe",
           const error = yield* Effect.flip(
             project.provide(generateWithSnapshot),
           );
-          assert(isCodegenError(error));
+          assertIs(error, isCodegenError);
           const rendered = renderCodegenError(error);
           expect(rendered).toContain("notes.impl.ts");
           if (names) {
@@ -610,7 +611,7 @@ check: (next) => ({ errors: "stock:list" in next.functions ? ["notes:list and st
                 : generateWithSnapshot.pipe(Effect.asVoid),
             ),
           );
-          assert(isCodegenError(error));
+          assertIs(error, isCodegenError);
           expect(renderCodegenError(error)).toContain(
             'Manifest section "tags" is invalid: notes:list and stock:list declare conflicting tags',
           );
