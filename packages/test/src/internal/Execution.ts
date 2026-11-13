@@ -1036,9 +1036,11 @@ export class World {
     pagination: Pagination | undefined,
     startTime?: number,
   ): Execution {
-    // A function in a component runs with no identity, whoever called it, as
-    // Convex gives a component no `ctx.auth` of the caller's. A nested call in
-    // the host takes its parent's identity, even when that is none.
+    // A function in a component runs with no identity, whoever called it, by
+    // the design's rule. The binary gives a component its caller's identity
+    // when a query or a mutation calls it (RECHECK.md, conformance exception
+    // `componentIdentityThroughTransactions`). A nested call in the host takes
+    // its parent's identity, even when that is none.
     const identity =
       functionPath.componentPath !== ROOT
         ? null

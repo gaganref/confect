@@ -2,7 +2,7 @@ import { Ref } from "@confect/core";
 import { expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import {
-  expected,
+  binary,
   subject,
 } from "../../../test/test/fixtures/componentIdentityProbe";
 import { mintToken, send } from "./clientCall";
@@ -16,7 +16,7 @@ layer(LocalBackend.layer, {
   excludeTestServices: true,
 })("component identity on a real backend", (it) => {
   it.effect(
-    "a component and every mount nested under it read no identity, whether a query, a mutation or an action calls in",
+    "a component and every mount nested under it read the caller's identity when a query or a mutation calls in, and none when an action does",
     () =>
       Effect.gen(function* () {
         const headers = {
@@ -38,7 +38,7 @@ layer(LocalBackend.layer, {
             {},
             send("action", headers),
           ),
-        }).toEqual(expected);
+        }).toEqual(binary);
       }),
   );
 });

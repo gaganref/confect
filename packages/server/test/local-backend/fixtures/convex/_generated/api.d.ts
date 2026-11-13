@@ -126,6 +126,11 @@ export declare const api: {
         string
       >;
     };
+    componentIdentity: {
+      fromAction: FunctionReference<"action", "public", {}, any>;
+      fromMutation: FunctionReference<"mutation", "public", {}, any>;
+      fromQuery: FunctionReference<"query", "public", {}, any>;
+    };
     components: {
       cancel: FunctionReference<"mutation", "public", { id: string }, null>;
       declaredError: FunctionReference<

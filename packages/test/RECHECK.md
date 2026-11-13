@@ -564,3 +564,40 @@ on the local backend and on `TestConfect.layer(registry, { target: "kernel" })`.
   counters, 1 function and 4 bytes.
 - `groups/commitTs:maxAfterPending` pins that a pending timestamp patched to
   `9223372036854775807n` is a second write that stores the integer.
+
+## Component identity (row 6)
+
+Since row 2 a function in a mounted component runs with no identity on the
+kernel, nested mounts included, whoever calls it (`World.execution` in
+`Execution.ts`). No `KernelCaller` type carries that yet: the rule is a runtime
+branch on the component path.
+
+### Boundary check
+
+The local-backend fixture's `left` (parent), `left/deep` (middle) and
+`left/deep/child` (inner) mounts each expose a plain Convex `identityChain`
+query. It reads `ctx.auth.getUserIdentity()` and its component path, then calls
+the next mount's. `groups/componentIdentity` calls the chain from a query, a
+mutation and an action, beside the host's own reading. Plain Convex functions
+read `ctx.auth` as an official component does. Confect drops `ctx.auth` from a
+component's context, so a Confect handler could not probe it.
+`packages/server/test/local-backend/componentIdentity.test.ts` calls the three
+with a token the fixture's `auth.config` accepts, and `test/ComponentIdentity.test.ts`
+calls them under `withIdentity`.
+
+### Conformance exception `componentIdentityThroughTransactions`
+
+- **Test.** The binary leg in `componentIdentity.test.ts`.
+- **Binary behaviour.** A component reads the caller's identity at every depth
+  when a query or a mutation calls it, and none when an action does. Only an
+  action's call passes the identity through `propagate_component_auth`
+  (`crates/isolate/src/environment/action/async_syscall.rs:166`,
+  `crates/model/src/components/auth.rs:6-19`, convex-backend `cccbade4`). A
+  query's or mutation's nested call runs on the caller's transaction
+  (`isolate/src/environment/udf/async_syscall.rs:629-724`), and
+  `getUserIdentity` reads that transaction's identity in a component as in the
+  host (`:1111-1141`). Measured on `precompiled-2026-10-28-cccbade`.
+- **Kernel behaviour.** None at every depth from all three, as the design's row
+  states.
+- **Owner.** The kernel design's component-identity row, which decides whether
+  the kernel follows the binary or keeps the rule as a deliberate departure.
