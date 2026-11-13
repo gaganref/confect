@@ -276,7 +276,8 @@ targets; convex-test rejects the root `fetch` instead, so those two cases are
 convex-test lane exceptions, pinned on the binary by a plain-route probe.
 HEAD answers end with no body, a mounted miss answers `No matching routes
 found`, GET, OPTIONS and HEAD bodies never reach a route, and a kernel refusal
-inside a route surfaces as itself, not as a 500.
+inside a route surfaces as itself, not as a 500. A route's 500 body marks the
+kept secrets its error carries, through the failure redaction.
 A route-local signed-envelope rule (`packages/server/test/signedEnvelope.ts`,
 HMAC-SHA-256 with a test-owned secret) backs a route in both server fixtures:
 the mock-backend suite runs a positive control and sixteen malformed shapes,

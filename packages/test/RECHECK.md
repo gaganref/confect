@@ -745,6 +745,11 @@ Fix round 2:
   handler's catch and reject as before.
 - `fetch` now counts in the live registries a snapshot waits on (`running`,
   then `functions` while the route runs), so a snapshot refuses mid-request.
+- Fix round 3: the bridge drops a GET or HEAD body before it builds the
+  request, which cannot be built with one, as the root does. The 500 body is
+  an artifact, so the root and the bridge build it from the failure
+  redaction's copy of the thrown value: a kept secret a route's error carries
+  is marked there as in a rejected call's report.
 
 `test/local-backend/httpErrors.test.ts` pins on the binary, through raw
 `node:http` requests on their own connections: HEAD answers to `/ok`, a missing
