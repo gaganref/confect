@@ -113,13 +113,42 @@ fails with `DrainBudgetExceeded` after 100. `registerComponent` takes
 `{ standing }`, the self-rescheduling functions of a component, so a kit can
 declare the crons component's `public:rescheduler`. A job that runs one, or that
 one schedules, is never drain work. A standing name the component does not
-export is refused at open. Convex's own `crons.ts` schedules are not simulated.
+export is refused at open. Each component's `crons.ts` is simulated too: see
+"Test kernel cron jobs".
 A lint fence refuses host timers in the kernel's modules. Row 2's
 `KernelRowPending` refusals for the scheduler are lifted, a `v.function()`
 validator accepts a function handle and refuses any other value, and the six row-5
 mock-backend cases run on the kernel. This is row 5 of Frame's backend testing
 kernel (Frame ADR 0012). Changeset: `test-kernel-scheduler.md`. Upstream: fork
 only, as the kernel and its option are fork-specific.
+
+## Test kernel cron jobs
+
+The kernel runs the cron jobs each component's `crons.ts` declares, as standing
+sources on its own clock. It reads them when the backend opens and refuses with
+`InvalidCron` what a Convex push refuses. Each run's time follows convex-backend's
+`compute_next_ts` and saffron at the revisions the pinned binary uses: an
+interval first at once, then an interval after the previous run's time; a clock
+schedule at its next UTC occurrence plus Convex's random delay within the
+minute, or within the hour when `minuteUTC` is left out. The delay draws from
+the random stream of the world bound when the backend opened, or else the
+world its driver gave it. `TestConfect.layer`'s kernel target gives it a world
+whose stream is seeded by the new `seed` option, `0` by default. A direct kernel
+open with neither world refuses a clock schedule with `CronRandomUnavailable`. A run that finishes after later runs came
+due skips them. A run is a system request with no identity and fresh request
+metadata, and a mutation's writes and jobs exist only if it commits. `advance`
+runs cron runs and jobs in time order, and a drain never runs a cron run.
+Cron expressions follow saffron's search, including `L`, `W` and `#`. A search
+that reaches saffron's `u32` underflow, which aborts the overflow-checked binary,
+is refused with `CronAbortsBinary`. A snapshot carries every cron job's run
+state, and a restore installs it without a draw. A failed run's text reaches
+`crons()` and a snapshot only through the failure redaction. A cron run's function is
+metered as any mutation, and the cron bookkeeping charges no counter, as on the
+binary, where it writes only system tables.
+Why: design row 5 lists declared schedules among the kernel's standing sources,
+and #123 left them out. This is row 5 of Frame's backend testing kernel (Frame
+ADR 0012). Changeset: `test-kernel-crons.md`. Upstream: fork only, as the kernel
+is fork-specific.
 
 ## Test kernel transaction limits
 
@@ -194,7 +223,10 @@ without their rows or targets, documents without their system fields, and
 duplicate components, tables, rows or jobs. Each has a tagged refusal. The snapshot also
 carries the identity epoch that subscribers' identity versions come from, and
 `Snapshot.contract` names every piece of kernel state as exported or excluded,
-checked by type and by a test.
+checked by type and by a test. With cron jobs (#133) the format is version 2:
+each declared job's declaration, next run, latest outcome and world by name. A
+restore installs them without redeclaring a job or drawing a random value, and
+refuses with `SnapshotCronMismatch` when the app declares other jobs.
 Replaying the same driver choices after a restore reaches the bytes of the run
 that never stopped, and a function handle stored in a row resolves to its
 component's function after restore. The format is the kernel's own, not the

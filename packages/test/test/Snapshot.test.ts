@@ -6,6 +6,7 @@ import {
   actionGeneric,
   componentsGeneric,
   createFunctionHandle,
+  cronJobs,
   defineSchema,
   defineTable,
   makeFunctionReference,
@@ -613,7 +614,7 @@ describe("snapshot restore", () => {
         ).toMatchObject({ _tag: "SnapshotMalformed", reason: "header" });
         // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The forged body is raw bytes, as a tampering writer would make them.
         const body = JSON.stringify({ components: [""], version: "one" });
-        const forged = `confect-kernel-snapshot 1 sha256:${createHash("sha256")
+        const forged = `confect-kernel-snapshot 2 sha256:${createHash("sha256")
           .update(body)
           .digest("hex")}\n${body}`;
         expect(
@@ -673,7 +674,7 @@ const rehash = (bytes: Uint8Array, edit: (body: any) => void): Uint8Array => {
   edit(body);
   const edited = JSON.stringify(body);
   return bytesOf(
-    `confect-kernel-snapshot 1 sha256:${createHash("sha256")
+    `confect-kernel-snapshot 2 sha256:${createHash("sha256")
       .update(edited)
       .digest("hex")}\n${edited}`,
   );
@@ -1106,6 +1107,234 @@ describe("snapshot live state", () => {
           held: { _tag: "SnapshotWorldBusy" },
           subscribers: { _tag: "SnapshotSubscribed" },
         });
+      }),
+  );
+});
+
+// Cron state across a snapshot. The world counts every draw from its stream,
+// and each draw is a quarter of its bound, never a zero delay, so no run ever
+// draws again after its first.
+const cronTicks = {
+  tick: makeFunctionReference<"mutation", { name: string }>("cronApp:tick"),
+  list: makeFunctionReference<"query", {}, Array<{ name: string; at: number }>>(
+    "cronApp:list",
+  ),
+};
+const cronSchema = defineSchema({
+  ticks: defineTable({ name: v.string(), at: v.number() }),
+});
+type Declare = (crons: ReturnType<typeof cronJobs>) => void;
+const declareAll: Declare = (crons) => {
+  crons.interval("interval", { minutes: 15 }, cronTicks.tick, {
+    name: "interval",
+  });
+  crons.hourly("hourly", {}, cronTicks.tick, { name: "hourly" });
+  crons.cron("expression", "*/7 * * * *", cronTicks.tick, {
+    name: "expression",
+  });
+  crons.cron("weekday", "0 6 15W * *", cronTicks.tick, { name: "weekday" });
+};
+const cronModules = (declare: Declare) => {
+  const crons = cronJobs();
+  declare(crons);
+  return {
+    "_generated/server.ts": () => Promise.resolve({}),
+    "cronApp.ts": () =>
+      Promise.resolve({
+        tick: mutationGeneric({
+          args: { name: v.string() },
+          handler: (ctx, { name }) =>
+            ctx.db.insert("ticks", { name, at: Date.now() }).then(() => null),
+        }),
+        list: queryGeneric({
+          args: {},
+          handler: (ctx) =>
+            ctx.db
+              .query("ticks")
+              .collect()
+              .then((rows) => rows.map(({ name, at }) => ({ name, at }))),
+        }),
+      }),
+    "crons.ts": () => Promise.resolve({ default: crons }),
+  };
+};
+const counted = () => {
+  let draws = 0;
+  const world: Invocation.World = {
+    name: "crons",
+    services: Context.empty(),
+    clock: () => start,
+    random: () => {
+      draws += 1;
+      return 0.25;
+    },
+  };
+  return { world, draws: () => draws };
+};
+const cronBackend = (
+  d: Driver,
+  world: Invocation.World,
+  declare: Declare = declareAll,
+): KernelControls =>
+  convexTest({
+    schema: cronSchema,
+    modules: cronModules(declare),
+    runtime: d.runtime,
+    world,
+  });
+const hours = (n: number) => n * 60 * 60 * 1000;
+
+describe("snapshot cron state", () => {
+  it.effect(
+    "a restored backend's next cron runs equal the run that never stopped, byte for byte, and the restore draws nothing",
+    () =>
+      Effect.gen(function* () {
+        const d = driver();
+        const source = counted();
+        const t = cronBackend(d, source.world);
+        yield* call(() => t.advance(hours(30)));
+        const snapshot = t.exportSnapshot();
+        const atSnapshot = t.crons();
+        yield* call(() => t.advance(hours(40)));
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The run's state is compared as the bytes it prints.
+        const straight = JSON.stringify({
+          crons: t.crons(),
+          ticks: yield* call(() => t.query(cronTicks.list, {})),
+        });
+
+        const restoring = counted();
+        const restored = cronBackend(driver(), restoring.world);
+        yield* call(() => restored.restoreSnapshot(snapshot));
+        expect(restoring.draws()).toBe(0);
+        expect(restored.crons()).toEqual(atSnapshot);
+        yield* call(() => restored.advance(hours(40)));
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The run's state is compared as the bytes it prints.
+        const replayed = JSON.stringify({
+          crons: restored.crons(),
+          ticks: yield* call(() => restored.query(cronTicks.list, {})),
+        });
+
+        expect(replayed).toBe(straight);
+        expect(restoring.draws()).toBe(0);
+        expect(source.draws()).toBe(3);
+        expect(text(restored.exportSnapshot())).toBe(text(t.exportSnapshot()));
+      }),
+  );
+
+  it.effect(
+    "a restore refuses when the app declares other cron jobs than the snapshot holds, and draws nothing",
+    () =>
+      Effect.gen(function* () {
+        const t = cronBackend(driver(), counted().world);
+        yield* call(() => t.advance(hours(1)));
+        const snapshot = t.exportSnapshot();
+        const into = (declare: Declare) => {
+          const restoring = counted();
+          const restored = cronBackend(driver(), restoring.world, declare);
+          return failure(() => restored.restoreSnapshot(snapshot)).pipe(
+            Effect.map((error) => ({ error, draws: restoring.draws() })),
+          );
+        };
+        expect(
+          yield* into((crons) => {
+            declareAll(crons);
+            delete (crons as unknown as { crons: Record<string, unknown> })
+              .crons["expression"];
+          }),
+        ).toMatchObject({
+          error: {
+            _tag: "SnapshotCronMismatch",
+            name: "expression",
+            reason: "undeclared",
+          },
+          draws: 0,
+        });
+        expect(
+          yield* into((crons) => {
+            declareAll(crons);
+            crons.interval("extra", { seconds: 5 }, cronTicks.tick, {
+              name: "extra",
+            });
+          }),
+        ).toMatchObject({
+          error: {
+            _tag: "SnapshotCronMismatch",
+            name: "extra",
+            reason: "missing",
+          },
+          draws: 0,
+        });
+        expect(
+          yield* into((crons) => {
+            crons.interval("interval", { seconds: 60 }, cronTicks.tick, {
+              name: "interval",
+            });
+            crons.hourly("hourly", {}, cronTicks.tick, { name: "hourly" });
+            crons.cron("expression", "*/7 * * * *", cronTicks.tick, {
+              name: "expression",
+            });
+            crons.cron("weekday", "0 6 15W * *", cronTicks.tick, {
+              name: "weekday",
+            });
+          }),
+        ).toMatchObject({
+          error: {
+            _tag: "SnapshotCronMismatch",
+            name: "interval",
+            reason: "changed",
+          },
+          draws: 0,
+        });
+        expect(
+          yield* into((crons) => {
+            declareAll(crons);
+            (
+              crons as unknown as {
+                crons: Record<string, { args: Array<unknown> }>;
+              }
+            ).crons["hourly"]!.args = [{ name: "renamed" }];
+          }),
+        ).toMatchObject({
+          error: {
+            _tag: "SnapshotCronMismatch",
+            name: "hourly",
+            reason: "changed",
+          },
+          draws: 0,
+        });
+      }),
+  );
+
+  it.effect(
+    "a cron job's world is restored by name, and a restore with no world of that name refuses",
+    () =>
+      Effect.gen(function* () {
+        const t = cronBackend(driver(), counted().world);
+        yield* call(() => t.advance(hours(1)));
+        const snapshot = t.exportSnapshot();
+        const elsewhere = convexTest({
+          schema: cronSchema,
+          modules: cronModules(declareAll),
+          runtime: driver().runtime,
+        });
+        expect(
+          yield* failure(() => elsewhere.restoreSnapshot(snapshot)),
+        ).toMatchObject({
+          _tag: "SnapshotWorldUnresolved",
+          name: "crons",
+          reason: "missing",
+        });
+        const named = convexTest({
+          schema: cronSchema,
+          modules: cronModules(declareAll),
+          runtime: driver().runtime,
+        });
+        const restoring = counted();
+        yield* call(() =>
+          named.restoreSnapshot(snapshot, { worlds: [restoring.world] }),
+        );
+        expect(named.crons()).toEqual(t.crons());
+        expect(restoring.draws()).toBe(0);
       }),
   );
 });

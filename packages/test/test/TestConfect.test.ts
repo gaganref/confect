@@ -1,3 +1,7 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- The replay test compares the exact stdout of fresh Node processes.
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import { TestConfect } from "@confect/test";
 import { DatabaseSchema, MutationCtx } from "@confect/server";
 import { assert, beforeEach, expect, it } from "@effect/vitest";
@@ -374,6 +378,30 @@ it.effect.each([
   }),
 );
 
+it("on the kernel target, an app with an hourly cron opens, two processes with one seed replay its runs byte for byte, and another seed moves its jitter", () => {
+  const loader = pathToFileURL(
+    createRequire(import.meta.url).resolve("tsx/esm"),
+  ).href;
+  const script = fileURLToPath(
+    new URL("fixtures/testConfectCronReplay.ts", import.meta.url),
+  );
+  const replay = (...seed: Array<string>) =>
+    spawnSync(process.execPath, ["--import", loader, script, ...seed], {
+      encoding: "utf8",
+    });
+  const [one, two, other] = [replay(), replay(), replay("7")];
+  expect(
+    [one, two, other].flatMap(({ status, stderr }) => [status, stderr]),
+  ).toEqual([0, "", 0, "", 0, ""]);
+  expect(one.stdout).toBe(two.stdout);
+  const hourly = (stdout: string) =>
+    (JSON.parse(stdout) as Array<{ name: string; at: number }>)
+      .filter(({ name }) => name === "hourly")
+      .map(({ at }) => at);
+  expect(hourly(one.stdout)).toHaveLength(2);
+  expect(hourly(other.stdout)).toHaveLength(2);
+  expect(hourly(other.stdout)).not.toEqual(hourly(one.stdout));
+}, 120_000);
 const vaultCanary = "canary-vault-9a6e3f10";
 const vault = DatabaseSchema.make({
   keys: Table.make(() =>

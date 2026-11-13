@@ -6,6 +6,7 @@ import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import { describe, expect, it } from "@effect/vitest";
 import {
   actionGeneric,
+  cronJobs,
   defineSchema,
   defineTable,
   makeFunctionReference,
@@ -916,7 +917,7 @@ describe("redaction routes", () => {
         // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The marked body is written as raw bytes.
         const edited = JSON.stringify(body);
         const marked = new TextEncoder().encode(
-          `confect-kernel-snapshot 1 sha256:${createHash("sha256")
+          `confect-kernel-snapshot 2 sha256:${createHash("sha256")
             .update(edited)
             .digest("hex")}\n${edited}`,
         );
@@ -948,6 +949,73 @@ describe("redaction routes", () => {
         expect(reported.details.code).toBe("E42");
         expect(reported.details.attempt).toBe(3);
         expect(details[1]).toContain(cycleCanary);
+      }),
+  );
+});
+
+// A cron job whose function throws its own secret argument.
+const cronCanary = "canary-cron-1b7e4d93";
+const failWith = makeFunctionReference<"mutation", { token: string }>(
+  "cronFail:failWith",
+);
+const cronBackend = (): KernelControls => {
+  const crons = cronJobs();
+  crons.interval("leaky", { minutes: 1 }, failWith, { token: cronCanary });
+  return convexTest({
+    schema: defineSchema({}),
+    modules: {
+      "_generated/server.ts": () => Promise.resolve({}),
+      "cronFail.ts": () =>
+        Promise.resolve({
+          failWith: mutationGeneric({
+            args: { token: v.string() },
+            handler: (_ctx, { token }) =>
+              Promise.reject(new Error(`failed with ${token}`)),
+          }),
+        }),
+      "crons.ts": () => Promise.resolve({ default: crons }),
+    },
+    runtime,
+    redaction: Redaction.policy({
+      functions: {
+        "": {
+          "cronFail:failWith": { args: () => Schema.Struct({ token: Token }) },
+        },
+      },
+    }),
+  });
+};
+
+describe("cron outcomes", () => {
+  it.effect(
+    "a cron run's failure text reaches crons() and a snapshot only marked, and a restore puts the raw text back for the next export",
+    () =>
+      Effect.gen(function* () {
+        const t = cronBackend();
+        yield* call(() => t.advance(0));
+        const [leaky] = t.crons();
+        expect(leaky!.last).toEqual({
+          kind: "failed",
+          error: expect.stringContaining(`failed with ${Redaction.marker}`),
+        });
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The canary is searched for in the text a runner would print.
+        expect(JSON.stringify(t.crons())).not.toContain(cronCanary);
+        const bytes = t.exportSnapshot();
+        const exported = new TextDecoder().decode(bytes);
+        expect(exported).not.toContain(cronCanary);
+        expect(exported).toContain('"error":{"$redacted":');
+        const after = t.crons();
+        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The canary is searched for in the text a runner would print.
+        expect(JSON.stringify(after)).not.toContain(cronCanary);
+
+        const restored = cronBackend();
+        yield* call(() =>
+          restored.restoreSnapshot(bytes, { secrets: t.secrets() }),
+        );
+        expect(restored.crons()).toEqual(after);
+        expect(new TextDecoder().decode(restored.exportSnapshot())).toBe(
+          exported,
+        );
       }),
   );
 });

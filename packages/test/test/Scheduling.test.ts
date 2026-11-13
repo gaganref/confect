@@ -1,4 +1,8 @@
 // oxlint-disable effecttsgo/async-function, effecttsgo/global-date -- The fixtures are plain Convex functions, which are async and read the pinned `Date` as product code does.
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- The replay test compares the exact stdout of two fresh Node processes.
+import { spawnSync } from "node:child_process";
+import { createRequire } from "node:module";
+import { fileURLToPath, pathToFileURL } from "node:url";
 import * as FunctionSpec from "@confect/core/FunctionSpec";
 import * as ActionCtx from "@confect/server/ActionCtx";
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
@@ -11,6 +15,7 @@ import {
   actionGeneric,
   componentsGeneric,
   createFunctionHandle,
+  cronJobs,
   defineSchema,
   defineTable,
   makeFunctionReference,
@@ -670,6 +675,492 @@ describe("standing sources", () => {
   );
 });
 
+// Declared cron jobs. The clock starts ten seconds into 2026. Each backend
+// opens under a bound invocation of `cronOwner`, whose random stream every cron
+// run's delay draws from: a quarter of its bound, 15 seconds for a pinned
+// minute.
+const cronStart = Date.UTC(2026, 0, 1, 0, 0, 10);
+const cronRuntime = {
+  now: () => cronStart,
+  commitTs: (version: number) => 10n + BigInt(version),
+};
+const cronOwner: Invocation.World = {
+  name: "crons",
+  services: Context.empty(),
+  clock: () => cronStart,
+  random: () => 0.25,
+};
+
+/**
+ * Open `t` under a bound invocation of `owner`, as the call that opens the
+ * backend binds the world its cron jobs draw from.
+ */
+const openIn = (t: KernelControls, owner: Invocation.World = cronOwner) =>
+  Invocation.bind(
+    {
+      world: owner,
+      componentPath: "",
+      attempt: 1,
+      request: {
+        ip: null,
+        userAgent: null,
+        requestId: `${owner.name}-open`,
+        scheduledFunctionId: null,
+      },
+      services: owner.services,
+      startedAt: owner.clock(),
+      random: owner.random,
+    },
+    () =>
+      (
+        t as unknown as {
+          run: (handler: () => Promise<null>) => Promise<null>;
+        }
+      ).run(() => Promise.resolve(null)),
+  );
+const utc = (minutes: number, seconds: number) =>
+  Date.UTC(2026, 0, 1, 0, minutes, seconds);
+
+const ticks = {
+  log: makeFunctionReference<"mutation", { label: string }>("ticks:log"),
+  logFromAction: makeFunctionReference<"action", { label: string }>(
+    "ticks:logFromAction",
+  ),
+  failAfterScheduling: makeFunctionReference<"mutation">(
+    "ticks:failAfterScheduling",
+  ),
+  scheduledRows: makeFunctionReference<"query", {}, number>(
+    "ticks:scheduledRows",
+  ),
+  missing: makeFunctionReference<"mutation">("ticks:missing"),
+  scheduleMany: makeFunctionReference<"mutation", { count: number }>(
+    "ticks:scheduleMany",
+  ),
+};
+
+const ticksModule = {
+  log: mutationGeneric({
+    args: { label: v.string() },
+    handler: (ctx, { label }) =>
+      ctx.db.insert("marks", { label, at: Date.now() }).then(() => null),
+  }),
+  logFromAction: actionGeneric({
+    args: { label: v.string() },
+    handler: (ctx, { label }) => ctx.runMutation(ticks.log, { label }),
+  }),
+  failAfterScheduling: mutationGeneric({
+    args: {},
+    handler: async (ctx) => {
+      await ctx.db.insert("marks", { label: "failed", at: Date.now() });
+      await ctx.scheduler.runAfter(0, jobs.mark, { label: "orphan" });
+      throw new Error("The cron's mutation failed.");
+    },
+  }),
+  scheduleMany: mutationGeneric({
+    args: { count: v.number() },
+    handler: (ctx, { count }) =>
+      Promise.all(
+        Array.from({ length: count }, (_, i) =>
+          ctx.scheduler.runAfter(60_000, jobs.mark, { label: `job ${i}` }),
+        ),
+      ).then(() => null),
+  }),
+  scheduledRows: queryGeneric({
+    args: {},
+    handler: (ctx) =>
+      ctx.db.system
+        .query("_scheduled_functions")
+        .collect()
+        .then((rows) => rows.length),
+  }),
+};
+
+const cronControls = (
+  declare: (crons: ReturnType<typeof cronJobs>) => void,
+  register: Parameters<typeof world>[0] = () => {},
+): KernelControls => {
+  const crons = cronJobs();
+  declare(crons);
+  const t = convexTest({
+    schema: hostSchema,
+    modules: {
+      ...hostModules,
+      "ticks.ts": () => Promise.resolve(ticksModule),
+      "crons.ts": () => Promise.resolve({ default: crons }),
+    },
+    runtime: cronRuntime,
+  });
+  register(t);
+  return t;
+};
+
+const cronWorld = (
+  declare: (crons: ReturnType<typeof cronJobs>) => void,
+  register: Parameters<typeof world>[0] = () => {},
+) =>
+  Effect.promise(() => {
+    const t = cronControls(declare, register);
+    return openIn(t).then(() => t);
+  });
+
+// A component that declares its own cron job.
+const tickerModules = {
+  "_generated/server.ts": () => Promise.resolve({}),
+  "ticker.ts": () =>
+    Promise.resolve({
+      tick: mutationGeneric({
+        args: {},
+        handler: (ctx) =>
+          ctx.db.insert("ticks", { at: Date.now() }).then(() => null),
+      }),
+      list: queryGeneric({
+        args: {},
+        handler: (ctx) =>
+          ctx.db
+            .query("ticks")
+            .collect()
+            .then((rows) => rows.map(({ at }) => at)),
+      }),
+    }),
+  "crons.ts": () => {
+    const crons = cronJobs();
+    crons.interval(
+      "tick",
+      { seconds: 20 },
+      makeFunctionReference<"mutation">("ticker:tick"),
+    );
+    return Promise.resolve({ default: crons });
+  },
+};
+const tickerSchema = defineSchema({ ticks: defineTable({ at: v.number() }) });
+const ticker = (
+  componentsGeneric() as unknown as {
+    readonly ticker: {
+      readonly ticker: {
+        readonly list: FunctionReference<
+          "query",
+          "internal",
+          {},
+          Array<number>
+        >;
+      };
+    };
+  }
+).ticker.ticker;
+
+describe("declared cron jobs", () => {
+  it.effect(
+    "advance runs two crons and a scheduled job in time order, each at its own time: an interval first at once, a cron expression in the current minute after its delay",
+    () =>
+      Effect.gen(function* () {
+        const t = yield* cronWorld((crons) => {
+          crons.interval("pulse", { seconds: 45 }, ticks.log, {
+            label: "pulse",
+          });
+          crons.cron("minutely", "* * * * *", ticks.logFromAction, {
+            label: "minutely",
+          });
+        });
+        yield* call(() =>
+          t.mutation(jobs.schedule, { marks: [{ label: "job", ms: 60_000 }] }),
+        );
+        expect(t.crons()).toEqual([
+          expect.objectContaining({ name: "pulse", nextRun: cronStart }),
+          expect.objectContaining({ name: "minutely", nextRun: utc(0, 15) }),
+        ]);
+        yield* call(() => t.advance(130_000));
+        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([
+          { label: "pulse", at: utc(0, 10) },
+          { label: "minutely", at: utc(0, 15) },
+          { label: "pulse", at: utc(0, 55) },
+          { label: "job", at: utc(1, 10) },
+          { label: "minutely", at: utc(1, 15) },
+          { label: "pulse", at: utc(1, 40) },
+          { label: "minutely", at: utc(2, 15) },
+        ]);
+        expect(t.crons()).toEqual([
+          {
+            componentPath: "",
+            name: "pulse",
+            udfPath: "ticks:log",
+            nextRun: utc(2, 25),
+            last: { kind: "success" },
+          },
+          {
+            componentPath: "",
+            name: "minutely",
+            udfPath: "ticks:logFromAction",
+            nextRun: utc(3, 15),
+            last: { kind: "success" },
+          },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "a drain never runs a cron, so with the kit's self-rescheduler declared standing it ends within budget",
+    () =>
+      Effect.gen(function* () {
+        const t = yield* cronWorld(
+          (crons) =>
+            crons.interval("pulse", { seconds: 1 }, ticks.log, {
+              label: "pulse",
+            }),
+          (kit) =>
+            kit.registerComponent("beat", beatSchema, beatModules, {
+              standing: ["public:tick"],
+            }),
+        );
+        yield* call(() => t.mutation(components.beat.public.start, {}));
+        yield* call(() => t.finishAllScheduledFunctions());
+        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([]);
+        expect(t.crons()).toEqual([
+          expect.objectContaining({ name: "pulse", nextRun: cronStart }),
+        ]);
+      }),
+  );
+
+  it.effect(
+    "a cron whose mutation throws leaves no job row and no write, and its next run is still scheduled",
+    () =>
+      Effect.gen(function* () {
+        const t = yield* cronWorld((crons) =>
+          crons.interval("failing", { minutes: 1 }, ticks.failAfterScheduling),
+        );
+        yield* call(() => t.advance(0));
+        expect(yield* call(() => t.query(ticks.scheduledRows, {}))).toBe(0);
+        expect(t.jobs()).toEqual([]);
+        yield* call(() => t.finishAllScheduledFunctions());
+        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([]);
+        expect(t.crons()).toEqual([
+          expect.objectContaining({
+            name: "failing",
+            nextRun: cronStart + 60_000,
+            last: {
+              kind: "failed",
+              error: expect.stringContaining("The cron's mutation failed."),
+            },
+          }),
+        ]);
+      }),
+  );
+
+  it.effect(
+    "a cron run has no identity and fresh request metadata with no scheduled function id",
+    () =>
+      Effect.gen(function* () {
+        const t = (yield* cronWorld((crons) =>
+          crons.interval("probe", { seconds: 30 }, jobs.probe, {
+            label: "cron",
+          }),
+        )) as KernelControls & {
+          withIdentity: (identity: object) => KernelControls;
+        };
+        yield* call(() => t.withIdentity({ subject: "ada" }).advance(30_000));
+        const probes = yield* call(() => t.query(jobs.probes, {}));
+        expect(probes).toEqual([
+          {
+            label: "cron",
+            subject: null,
+            ip: null,
+            userAgent: null,
+            requestId: expect.any(String),
+            scheduledFunctionId: null,
+          },
+          {
+            label: "cron",
+            subject: null,
+            ip: null,
+            userAgent: null,
+            requestId: expect.any(String),
+            scheduledFunctionId: null,
+          },
+        ]);
+        expect(probes[0]!["requestId"]).not.toBe(probes[1]!["requestId"]);
+      }),
+  );
+
+  it.effect(
+    "a cron run's commit makes a subscription that read its table stale, and refresh catches it up",
+    () =>
+      Effect.gen(function* () {
+        const t = yield* cronWorld((crons) =>
+          crons.interval("pulse", { seconds: 30 }, ticks.log, {
+            label: "pulse",
+          }),
+        );
+        const subscription = yield* call(() =>
+          t.subscriber().subscribe(jobs.marks, {}),
+        );
+        yield* call(() => t.advance(0));
+        expect(yield* call(() => t.refresh())).toHaveLength(1);
+        expect(subscription.current().outcome).toEqual({
+          _tag: "returned",
+          value: [{ label: "pulse", at: cronStart }],
+        });
+        expect(yield* call(() => t.reference())).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "a cron run's mutation is metered as any mutation: it schedules 1000 jobs, and one that schedules 1001 fails with the binary's message and leaves no row",
+    () =>
+      Effect.gen(function* () {
+        const t = yield* cronWorld((crons) => {
+          crons.interval("most", { minutes: 1 }, ticks.scheduleMany, {
+            count: 1000,
+          });
+          crons.interval("over", { minutes: 1 }, ticks.scheduleMany, {
+            count: 1001,
+          });
+        });
+        yield* call(() => t.advance(0));
+        expect(yield* call(() => t.query(ticks.scheduledRows, {}))).toBe(1000);
+        expect(t.crons()).toEqual([
+          expect.objectContaining({ name: "most", last: { kind: "success" } }),
+          expect.objectContaining({
+            name: "over",
+            last: {
+              kind: "failed",
+              error: expect.stringContaining(
+                "Too many functions scheduled by this mutation (limit: 1000)",
+              ),
+            },
+          }),
+        ]);
+      }),
+  );
+
+  it.effect("a component's crons.ts runs in that component", () =>
+    Effect.gen(function* () {
+      const t = yield* cronWorld(
+        () => {},
+        (kit) => kit.registerComponent("ticker", tickerSchema, tickerModules),
+      );
+      yield* call(() => t.advance(45_000));
+      expect(yield* call(() => t.query(ticker.list, {}))).toEqual([
+        cronStart,
+        cronStart + 20_000,
+        cronStart + 40_000,
+      ]);
+      expect(t.crons()).toEqual([
+        expect.objectContaining({
+          componentPath: "ticker",
+          name: "tick",
+          udfPath: "ticker:tick",
+        }),
+      ]);
+    }),
+  );
+
+  it.effect(
+    "the backend refuses at open a cron job whose function is a query or is missing",
+    () =>
+      Effect.gen(function* () {
+        const ofQuery = cronControls((crons) =>
+          crons.interval(
+            "reads",
+            { seconds: 5 },
+            jobs.marks as unknown as typeof ticks.log,
+            { label: "reads" },
+          ),
+        );
+        expect(yield* failure(() => openIn(ofQuery))).toMatchObject({
+          _tag: "InvalidCron",
+          name: "reads",
+          message: expect.stringContaining(
+            "schedules a query function, only actions and mutations can be scheduled",
+          ),
+        });
+        const ofMissing = cronControls((crons) =>
+          crons.interval("gone", { seconds: 5 }, ticks.missing),
+        );
+        expect(yield* failure(() => openIn(ofMissing))).toMatchObject({
+          _tag: "InvalidCron",
+          message: expect.stringContaining(
+            "schedules a function that does not exist: ticks:missing",
+          ),
+        });
+      }),
+  );
+
+  it.effect(
+    "a clock schedule's delay has no stream to draw from when no world is bound at open, so the backend refuses, though an interval opens",
+    () =>
+      Effect.gen(function* () {
+        const daily = cronControls((crons) =>
+          crons.daily("report", { hourUTC: 6, minuteUTC: 0 }, ticks.log, {
+            label: "report",
+          }),
+        );
+        expect(yield* failure(() => daily.query(jobs.marks, {}))).toMatchObject(
+          {
+            _tag: "CronRandomUnavailable",
+            name: "report",
+          },
+        );
+        const interval = cronControls((crons) =>
+          crons.interval("pulse", { seconds: 5 }, ticks.log, {
+            label: "pulse",
+          }),
+        );
+        yield* call(() => interval.advance(0));
+        expect(yield* call(() => interval.query(jobs.marks, {}))).toEqual([
+          { label: "pulse", at: cronStart },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "a backend the driver gives a world opens with no invocation bound, and its cron delays draw from that world",
+    () =>
+      Effect.gen(function* () {
+        const crons = cronJobs();
+        crons.cron("minutely", "* * * * *", ticks.log, { label: "minutely" });
+        const t: KernelControls = convexTest({
+          schema: hostSchema,
+          modules: {
+            ...hostModules,
+            "ticks.ts": () => Promise.resolve(ticksModule),
+            "crons.ts": () => Promise.resolve({ default: crons }),
+          },
+          runtime: cronRuntime,
+          world: cronOwner,
+        });
+        yield* call(() => t.query(jobs.marks, {}));
+        expect(t.crons()).toEqual([
+          expect.objectContaining({ name: "minutely", nextRun: utc(0, 15) }),
+        ]);
+      }),
+  );
+
+  it("two processes replaying one cron history print the same deadlines", () => {
+    const loader = pathToFileURL(
+      createRequire(import.meta.url).resolve("tsx/esm"),
+    ).href;
+    const script = fileURLToPath(
+      new URL("fixtures/cronReplay.ts", import.meta.url),
+    );
+    const replay = () =>
+      spawnSync(process.execPath, ["--import", loader, script], {
+        encoding: "utf8",
+      });
+    const [one, two] = [replay(), replay()];
+    expect([one.status, one.stderr, two.status, two.stderr]).toEqual([
+      0,
+      "",
+      0,
+      "",
+    ]);
+    expect(one.stdout).toBe(two.stdout);
+    expect(JSON.parse(one.stdout)).toMatchObject({
+      crons: expect.arrayContaining([
+        expect.objectContaining({ name: "hourly" }),
+      ]),
+    });
+  }, 60_000);
+});
+
 class Mail extends Context.Service<Mail, { readonly answer: string }>()(
   "@confect/test/test/Scheduling.test/Mail",
 ) {}
@@ -926,6 +1417,41 @@ describe("registered handlers", () => {
           ),
         );
         expect(seenByJobs).toEqual([
+          { mail: null, scheduledFunctionId: undefined },
+        ]);
+      }),
+  );
+
+  it.effect(
+    "a cron run starts as a fresh invocation of the world bound when the backend opened, whatever world advance runs under",
+    () =>
+      Effect.gen(function* () {
+        seenByJobs.length = 0;
+        const crons = cronJobs();
+        crons.interval("record", { seconds: 10 }, bridged.job);
+        const modules = {
+          ...bridgeModules,
+          "crons.ts": () => Promise.resolve({ default: crons }),
+        };
+        const bound = convexTest({ modules, runtime });
+        yield* call(() =>
+          Invocation.bind(invocationIn(worldNamed("owner")), () =>
+            bound.run(() => Promise.resolve(null)),
+          ),
+        );
+        yield* call(() =>
+          Invocation.bind(invocationIn(worldNamed("other")), () =>
+            bound.advance(0),
+          ),
+        );
+        const unbound = convexTest({ modules, runtime });
+        yield* call(() =>
+          Invocation.bind(invocationIn(worldNamed("other")), () =>
+            unbound.advance(0),
+          ),
+        );
+        expect(seenByJobs).toEqual([
+          { mail: "owner mail", scheduledFunctionId: null },
           { mail: null, scheduledFunctionId: undefined },
         ]);
       }),
