@@ -5,7 +5,7 @@ export default mergeConfig(
   shared,
   defineConfig({
     test: {
-      globalSetup: ["../server/test/local-backend/setup.ts"],
+      globalSetup: ["../../tools/local-backend/src/setup.ts"],
     },
   }),
 );

@@ -2,6 +2,7 @@ import { App, type Mount, Ref } from "@confect/core";
 import type { DatabaseSchema, DataModel } from "@confect/server";
 import { RegisteredConvexFunction } from "@confect/server";
 import type {
+  DeploymentJwks,
   TestConvexForDataModel,
   TestConvexForDataModelAndIdentity,
 } from "convex-test";
@@ -21,6 +22,10 @@ import * as Clock from "./internal/Clock.js";
 import { convexTest as kernelTest } from "./internal/ConvexTest.js";
 import type * as Invocation from "./internal/Invocation.js";
 import * as MountedHttp from "./internal/MountedHttp.js";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Array from "effect/Array";
+import * as Rec from "effect/Record";
 import * as Redaction from "./internal/Redaction.js";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -123,9 +128,12 @@ export type LayerOptions = TargetOptions & {
   readonly secrets?: SecretPolicy;
 };
 
+export type { DeploymentJwk, DeploymentJwks } from "convex-test";
+
 export type TestConfectWithoutIdentity<
   ConfectSchema extends DatabaseSchema.AnyWithProps,
 > = {
+  jwks: () => Effect.Effect<DeploymentJwks>;
   query: <QueryRef extends Ref.AnyQuery>(
     queryRef: QueryRef,
     ...args: Ref.OptionalArgs<QueryRef>
@@ -200,6 +208,10 @@ class TestConfectImplWithoutIdentity<
     >,
     private mountedHttp: ReturnType<typeof MountedHttp.make>,
   ) {}
+
+  readonly jwks = Effect.fn("TestConfect.jwks")(() =>
+    Effect.promise(() => this.testConvex.jwks()),
+  );
 
   readonly query = <QueryRef extends Ref.AnyQuery>(
     queryRef: QueryRef,
@@ -341,6 +353,8 @@ class TestConfectImpl<
         ),
     );
 
+  readonly jwks = () => this.testConfectImplWithoutIdentity.jwks();
+
   readonly query = <QueryRef extends Ref.AnyQuery>(
     queryRef: QueryRef,
     ...args: Ref.OptionalArgs<QueryRef>
@@ -396,10 +410,13 @@ export type ComponentKit =
       ): unknown;
     };
 
-class InvalidComponentKit extends Schema.TaggedError<InvalidComponentKit>()(
-  "InvalidComponentKit",
-  { componentPath: Schema.String, message: Schema.String },
-) {}
+class InvalidComponentKit extends Schema.TaggedError<
+  InvalidComponentKit,
+  { readonly brand: unique symbol }
+>()("InvalidComponentKit", {
+  componentPath: Schema.String,
+  message: Schema.String,
+}) {}
 
 const registerKit = (
   registerComponent: RegisterComponent,
@@ -412,8 +429,9 @@ const registerKit = (
     registerComponent(name, kit.schema, kit.modules);
   } else {
     // Codegen accepts a kit whose exports it cannot list, such as CommonJS.
-    throw new InvalidComponentKit({
+    throw InvalidComponentKit.make({
       componentPath: name,
+      // oxlint-disable-next-line effecttsgo/global-json -- Quotes the mount name in an error this sync registration throws; a string always serializes.
       message: `The test kit for ${JSON.stringify(name)} must export register(t, name), or schema and modules.`,
     });
   }
@@ -492,15 +510,23 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       {
         ...targetOf(third as TargetOptions | undefined),
         ...secretsOf(registry),
-        httpMounts: mounts.flatMap(({ name, httpPrefix }) =>
-          httpPrefix === undefined ? [] : [{ componentPath: name, httpPrefix }],
+        // reduce skips a sparse list's holes, which effect/Array's flatMap visits.
+        httpMounts: Array.reduce(
+          mounts,
+          Array.empty<{ componentPath: string; httpPrefix: string }>(),
+          (httpMounts, { name, httpPrefix }) =>
+            httpPrefix === undefined
+              ? httpMounts
+              : Array.append(httpMounts, { componentPath: name, httpPrefix }),
         ),
         register: (registerComponent) => {
-          for (const [name, component] of Object.entries(registry.components)) {
+          for (const [name, component] of Rec.toEntries(registry.components)) {
             if (
-              mounts.some(
+              Array.some(
+                mounts,
                 (mount) =>
-                  name === mount.name || name.startsWith(`${mount.name}/`),
+                  name === mount.name ||
+                  pipe(name, String.startsWith(`${mount.name}/`)),
               )
             ) {
               registerKit(registerComponent, name, component);
@@ -517,7 +543,7 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       ...secretsOf(app),
       httpMounts: app.httpMounts,
       register: (registerComponent) => {
-        for (const [name, component] of Object.entries(app.components)) {
+        for (const [name, component] of Rec.toEntries(app.components)) {
           registerKit(registerComponent, name, component);
         }
       },

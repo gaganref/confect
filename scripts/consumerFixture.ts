@@ -1,8 +1,8 @@
 export const consumerFiles = (
   profile: "react" | "foldkit",
 ): Readonly<Record<string, string>> => ({
-  "tsconfig.json": `${JSON.stringify(
-    {
+  "tsconfig.json": `${Result.getOrThrow(
+    Schema.encodeResult(Schema.fromJsonString(Schema.Unknown, { space: 2 }))({
       compilerOptions: {
         target: "ESNext",
         module: "ESNext",
@@ -18,9 +18,7 @@ export const consumerFiles = (
       },
       include: ["**/*.ts", "**/*.tsx"],
       exclude: ["node_modules"],
-    },
-    null,
-    2,
+    }),
   )}\n`,
   "convex.json": '{ "functions": "convex/" }\n',
   "convex/convex.config.ts": `import { defineApp } from "convex/server";
@@ -77,12 +75,14 @@ export default GroupImpl.make(databaseSchema, notes).pipe(
 );
 `,
   "consumer.ts": `import type { Ref } from "@confect/core";
+import type { Handler } from "@confect/server";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import refs from "./confect/_generated/refs";
 import type { NotesDoc } from "./confect/_generated/docs";
 import { Id } from "./confect/_generated/id";
-import { DatabaseReader } from "./confect/_generated/services";
+import type databaseSchema from "./confect/_generated/schema";
+import { DatabaseReader, MutationAuth, Storage, TransactionMetadata } from "./confect/_generated/services";
 
 export const args: Ref.Args<typeof refs.public.notes.count> = { count: 41 };
 export const result: Ref.Returns<typeof refs.public.notes.count> = 42;
@@ -92,6 +92,19 @@ export const readNotes: () => Effect.Effect<ReadonlyArray<NotesDoc>, never, Data
     const reader = yield* DatabaseReader;
     return yield* reader.table("notes").index("by_creation_time").collect().pipe(Effect.orDie);
   });
+
+export const copyBlob: (id: Id<"_storage">) => Effect.Effect<Id<"_storage">, never, Handler.MutationServices<typeof databaseSchema>> =
+  Effect.fn("consumer.copyBlob")(function* (id) {
+    const storage = yield* Storage;
+    const blob = yield* storage.get(id).pipe(Effect.orDie);
+    return yield* storage.store(blob);
+  });
+
+export const snapshotTimestamp: Effect.Effect<bigint, never, Handler.QueryServices<typeof databaseSchema>> =
+  Effect.flatMap(TransactionMetadata, (transaction) => transaction.getSnapshotTs());
+
+export const signedToken: Effect.Effect<string, never, Handler.MutationServices<typeof databaseSchema>> =
+  Effect.flatMap(MutationAuth, (auth) => auth.signJwt({ claims: { aud: "consumer" }, expiresInSeconds: 60 }));
 
 // @ts-expect-error The consumer passes decoded numbers, not encoded strings.
 export const encodedArgsAreNotDecodedArgs: Ref.Args<typeof refs.public.notes.count> = { count: "41" };
@@ -149,6 +162,24 @@ assert.equal(await Effect.runPromise(Ref.runWithCodec(refs.public.notes.count, {
   assert.deepEqual(args, { count: "41" });
   return Promise.resolve("42");
 })), 42);
+${
+  profile === "foldkit"
+    ? `
+const { Client } = await import("@confect/foldkit");
+const { command, Message } = await import("./client");
+const message = await Effect.runPromise(command.pipe(
+  Effect.provide(Layer.mock(Client.Client, {
+    url: "https://consumer.invalid",
+    query: (ref, ...args) => {
+      assert.deepEqual(args, [{ count: 41 }]);
+      return Ref.decodeReturns(ref, "42");
+    },
+  })),
+));
+assert.deepEqual(message, Message.SucceededCount({ count: 42 }));
+`
+    : ""
+}
 console.log("Installed consumer smoke passed");
 `,
   ...(profile === "react"
@@ -190,3 +221,5 @@ export const command: Effect.Effect<Message, never, Client.Client> = FetchCount(
 `,
       }),
 });
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";

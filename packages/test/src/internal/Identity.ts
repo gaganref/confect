@@ -38,7 +38,7 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
 const invalidConfig = (index: number, reason: string) =>
-  new KernelRefusal.InvalidAuthConfig({
+  KernelRefusal.InvalidAuthConfig.make({
     index,
     message: `auth.config providers[${index}] ${reason}`,
   });
@@ -62,7 +62,7 @@ export const readProviders = (config: unknown): ReadonlyArray<Provider> => {
   if (config === undefined) return [];
   const providers = isRecord(config) ? config["providers"] : undefined;
   if (!Array.isArray(providers)) {
-    throw new KernelRefusal.InvalidAuthConfig({
+    throw KernelRefusal.InvalidAuthConfig.make({
       index: -1,
       message: "auth.config's default export has no providers array.",
     });
@@ -114,7 +114,7 @@ const refuse = (
   code: KernelRefusal.InvalidToken["code"],
   message: string,
 ): KernelRefusal.InvalidToken =>
-  new KernelRefusal.InvalidToken({ code, message });
+  KernelRefusal.InvalidToken.make({ code, message });
 
 const invalid = (message: string) => refuse("InvalidAuthHeader", message);
 

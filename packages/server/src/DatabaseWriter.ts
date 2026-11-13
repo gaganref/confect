@@ -239,13 +239,11 @@ export const make = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
         ),
         Effect.andThen((value) =>
           Effect.fromResult(
-            Result.fromNullishOr(
-              value,
-              () =>
-                new QueryInitializer.GetByIdFailure({
-                  tableName,
-                  id,
-                }),
+            Result.fromNullishOr(value, () =>
+              QueryInitializer.GetByIdFailure.make({
+                tableName,
+                id,
+              }),
             ),
           ),
         ),
@@ -268,7 +266,7 @@ export const make = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
             Document.decode(storedDoc, tableDef),
             Effect.andThen(
               Effect.fail(
-                new Document.DocumentEncodeError({
+                Document.DocumentEncodeError.make({
                   tableName,
                   id,
                   parseError,
@@ -343,14 +341,16 @@ export const make = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
         Effect.gen(function* () {
           const oldDoc = yield* before(id);
           yield* write(id, ...args);
-          yield* notify("update", oldDoc, yield* read(id).pipe(Effect.orDie));
+          const readResult = yield* read(id).pipe(Effect.orDie);
+          yield* notify("update", oldDoc, readResult);
         });
 
     return {
       insert: (document: Parameters<typeof insert>[0]) =>
         Effect.gen(function* () {
           const id = yield* insert(document);
-          yield* notify("insert", null, yield* read(id).pipe(Effect.orDie));
+          const readResult = yield* read(id).pipe(Effect.orDie);
+          yield* notify("insert", null, readResult);
           return id;
         }),
       patch: update(read, patch),

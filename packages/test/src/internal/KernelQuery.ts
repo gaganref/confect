@@ -36,6 +36,12 @@ import {
   validateIndexRangeExpression,
   validateValidator,
 } from "./KernelValues.js";
+import * as Arr from "effect/Array";
+import * as Option from "effect/Option";
+import * as Rec from "effect/Record";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Json from "./Json.js";
 
 /**
  * A component's tables as its schema declares them.
@@ -59,7 +65,7 @@ export const exportSchema = (
     schemaValidation: (schema as unknown as { schemaValidation: boolean })
       .schemaValidation,
     tables: new Map(
-      Object.entries(schema.tables).map(([name, table]) => [
+      Arr.map(Rec.toEntries(schema.tables), ([name, table]) => [
         name,
         (table as unknown as { export: () => any }).export(),
       ]),
@@ -72,7 +78,7 @@ export const exportSchema = (
       );
     }
     validateFieldNames(table.documentType);
-    table.indexes.forEach(({ indexDescriptor }) => {
+    Arr.forEach(table.indexes, ({ indexDescriptor }) => {
       if (!isValidIdentifier(indexDescriptor)) {
         throw new Error(
           `Index names must be valid identifiers, got "${indexDescriptor}"`,
@@ -153,10 +159,10 @@ const resolveSource = (
       break;
     }
     case "IndexRange": {
-      const [tableName, indexName] = source.indexName.split(".") as [
-        string,
-        string,
-      ];
+      const [tableName, indexName] = pipe(
+        source.indexName,
+        String.split("."),
+      ) as [string, string];
       table = tableName;
       index = indexName;
       range = source.range;
@@ -167,11 +173,16 @@ const resolveSource = (
       } else if (indexName === "by_id") {
         fields = ["_id"];
       } else {
-        const declared = view.schema?.tables
-          .get(tableName)
-          ?.indexes.find(
-            ({ indexDescriptor }) => indexDescriptor === indexName,
-          );
+        const indexes = view.schema?.tables.get(tableName)?.indexes;
+        const declared =
+          indexes === undefined
+            ? undefined
+            : Option.getOrUndefined(
+                Arr.findFirst(
+                  indexes,
+                  ({ indexDescriptor }) => indexDescriptor === indexName,
+                ),
+              );
         if (declared === undefined) {
           throw new Error(
             `Cannot use index "${indexName}" for table "${tableName}" because ` +
@@ -182,11 +193,9 @@ const resolveSource = (
       }
       fieldPathsToSortBy = fields;
       validateIndexRangeExpression(source, fields);
-      docs = view
-        .scan(tableName)
-        .filter((doc) =>
-          source.range.every((filter) => evaluateRangeFilter(doc, filter)),
-        );
+      docs = Arr.filter(view.scan(tableName), (doc) =>
+        Arr.every(source.range, (filter) => evaluateRangeFilter(doc, filter)),
+      );
       break;
     }
     case "Search": {
@@ -194,14 +203,19 @@ const resolveSource = (
     }
   }
 
-  const filters = query.operators
-    .filter(
+  const filters = pipe(
+    query.operators,
+    Arr.filter(
       (operator): operator is { filter: FilterJson } => "filter" in operator,
-    )
-    .map((operator) => operator.filter);
+    ),
+    Arr.map((operator) => operator.filter),
+  );
   const limit =
-    query.operators.find(
-      (operator): operator is { limit: number } => "limit" in operator,
+    Option.getOrUndefined(
+      Arr.findFirst(
+        query.operators,
+        (operator): operator is { limit: number } => "limit" in operator,
+      ),
     ) ?? null;
 
   const orderMultiplier = order === "asc" ? 1 : -1;
@@ -218,7 +232,8 @@ const resolveSource = (
 
   return {
     sortedDocs: docs,
-    filterFn: (doc) => filters.every((f) => evaluateFilter(doc, f)),
+    filterFn: (doc) =>
+      Arr.every(filters, (f) => Boolean(evaluateFilter(doc, f))),
     limit: limit?.limit ?? null,
     order,
     interval: {
@@ -264,17 +279,20 @@ const encodeCursor = (
   doc: GenericDocument,
   fieldPaths: ReadonlyArray<string>,
 ): string =>
-  JSON.stringify(
-    fieldPaths.map((fp) => {
+  Json.stringify(
+    Arr.map(fieldPaths, (fp) => {
       const k = evaluateFieldPath(fp, doc);
-      return k === undefined ? null : JSON.stringify(convexToJson(k));
+      return k === undefined ? null : Json.stringify(convexToJson(k));
     }),
   );
 
+const nonEmpty = (text: string | null | undefined): text is string =>
+  typeof text === "string" && text !== "";
+
 const parseCursor = (c: string | null | undefined) =>
-  c
-    ? (JSON.parse(c) as Array<string | null>).map((k) =>
-        k === null ? undefined : jsonToConvex(JSON.parse(k)),
+  nonEmpty(c)
+    ? Arr.map(Json.parse(c) as Array<string | null>, (k) =>
+        k === null ? undefined : jsonToConvex(Json.parse(k)),
       )
     : null;
 
@@ -329,7 +347,7 @@ export const paginate = (
   }
   const cursorFields = interval.fields;
   const cursorKeys = parseCursor(cursor);
-  const hasEndBoundary = !!endCursor && endCursor !== "_end_cursor";
+  const hasEndBoundary = nonEmpty(endCursor) && endCursor !== "_end_cursor";
   const endCursorKeys = hasEndBoundary ? parseCursor(endCursor) : null;
   const examined = view.read(interval, cursorKeys);
   let reachedEnd = true;
@@ -347,7 +365,7 @@ export const paginate = (
     const doc = sortedDocs[i]!;
     const isLastDoc = i === sortedDocs.length - 1;
     if (!isInPage) {
-      if (cursorKeys) {
+      if (cursorKeys !== null) {
         if (compareToCursor(doc, cursorKeys, cursorFields, order) > 0) {
           isInPage = true;
         } else {
@@ -355,7 +373,7 @@ export const paginate = (
         }
       }
     }
-    if (hasEndBoundary && endCursorKeys) {
+    if (hasEndBoundary && endCursorKeys !== null) {
       const cmp = compareToCursor(doc, endCursorKeys, cursorFields, order);
       if (cmp >= 0) {
         reachedEnd = false;
@@ -377,8 +395,12 @@ export const paginate = (
     readDocCursors.push(encodeCursor(doc, cursorFields));
     examined(ReadSet.keyOf(cursorFields, doc as StoredDocument));
     const hitLimit =
-      (!!maximumRowsRead && rowsRead >= maximumRowsRead) ||
-      (!!maximumBytesRead && bytesRead >= maximumBytesRead);
+      (typeof maximumRowsRead === "number" &&
+        maximumRowsRead !== 0 &&
+        rowsRead >= maximumRowsRead) ||
+      (typeof maximumBytesRead === "number" &&
+        maximumBytesRead !== 0 &&
+        bytesRead >= maximumBytesRead);
     if (filterFn(doc)) page.push(doc);
     if (hitLimit) {
       reachedEnd = false;
@@ -386,7 +408,7 @@ export const paginate = (
       continueCursor = encodeCursor(doc, cursorFields);
       break;
     }
-    if (!endCursor && page.length >= pageSize) {
+    if (!nonEmpty(endCursor) && page.length >= pageSize) {
       reachedEnd = isLastDoc;
       if (!isLastDoc) continueCursor = encodeCursor(doc, cursorFields);
       break;

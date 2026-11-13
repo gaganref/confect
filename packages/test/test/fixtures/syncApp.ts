@@ -1,9 +1,9 @@
 /**
- * The sync probe's app (`packages/server/test/local-backend/fixtures/sync`) on
- * the test kernel, and the kernel as a probe target.
+ * The sync probe's app (`tools/local-backend/fixtures/sync`) on the test
+ * kernel, and the kernel as a probe target.
  */
 import * as Schema from "effect/Schema";
-import schema from "../../../server/test/local-backend/fixtures/sync/convex/schema";
+import schema from "../../../../tools/local-backend/fixtures/sync/convex/schema";
 import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
 import type * as Kernel from "../../src/internal/Kernel";
 import * as Redaction from "../../src/internal/Redaction";
@@ -51,7 +51,7 @@ export const kernelApp = (
       "sync.ts": () =>
         (options.loaded ?? Promise.resolve()).then(
           () =>
-            import("../../../server/test/local-backend/fixtures/sync/convex/sync"),
+            import("../../../../tools/local-backend/fixtures/sync/convex/sync"),
         ),
       "auth.config.ts": () =>
         Promise.resolve({ default: { providers: [{ ...provider, jwks }] } }),

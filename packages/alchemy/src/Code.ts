@@ -59,13 +59,24 @@ const make = (mode: ProviderMode) =>
     } satisfies Provider.ProviderServiceInput<Code>;
   });
 
+/**
+ * @stability unstable
+ */
 export const provider = make("live");
 /**
  * Under `alchemy dev`, pushes go to the local backend's self-hosted target.
+ *
+ * @stability unstable
  */
 export const localProvider = make("local");
 
+/**
+ * @stability unstable
+ */
 export const layer = Provider.effect(Code, provider);
+/**
+ * @stability unstable
+ */
 export const localLayer = Provider.effect(Code, localProvider).pipe(
   Layer.provide(
     ConvexClientLayer({ mode: "local" }).pipe(

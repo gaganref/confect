@@ -3,6 +3,7 @@ import * as Globals from "./Globals.js";
 import type { DocumentId, StoredDocument } from "./KernelValues.js";
 import { resolveCommittedValues, tableNameFromId } from "./KernelValues.js";
 import * as ReadSet from "./ReadSet.js";
+import * as Arr from "effect/Array";
 
 /**
  * The number of commits the kernel has published. The empty world is 0.
@@ -109,7 +110,7 @@ export const apply = (
   const tables = new Map(
     Array.from(state.tables, ([path, byTable]) => [path, new Map(byTable)]),
   );
-  const changes = writes.map(({ componentPath, id, doc }): Change => ({
+  const changes = Arr.map(writes, ({ componentPath, id, doc }): Change => ({
     componentPath,
     id,
     before: get(state, componentPath, id)?.doc ?? null,
@@ -148,7 +149,8 @@ export const conflict = (
 ): Change | undefined => {
   for (const commit of state.log.slice(snapshot)) {
     for (const change of commit.changes) {
-      if (reads.some((read) => ReadSet.covers(read, change))) return change;
+      if (Arr.some(reads, (read) => ReadSet.covers(read, change)))
+        return change;
     }
   }
   return undefined;

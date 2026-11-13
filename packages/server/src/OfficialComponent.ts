@@ -21,10 +21,14 @@ import * as ReservedArgument from "./internal/reservedArgument.js";
 /**
  * An official component's method rejected. `cause` is the rejection as thrown.
  */
-export class ComponentCallFailed extends Schema.TaggedError<ComponentCallFailed>()(
-  "ComponentCallFailed",
-  { component: Schema.String, method: Schema.String, cause: Schema.Defect() },
-) {}
+export class ComponentCallFailed extends Schema.TaggedError<
+  ComponentCallFailed,
+  { readonly brand: unique symbol }
+>()("ComponentCallFailed", {
+  component: Schema.String,
+  method: Schema.String,
+  cause: Schema.Defect(),
+}) {}
 
 declare const unsupported: unique symbol;
 type Unsupported = typeof unsupported;

@@ -312,6 +312,25 @@ records each leg bound to the binary's process, checksum and ports. This is row
 7 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-sync.md`. Upstream: fork only, as the kernel is fork-specific.
 
+## Test kernel on Effect 4.1 and upstream 10.6.0
+
+The test kernel moved onto the fork's Effect 4.1.4 and upstream 10.6.0
+stack, and its code lints clean under the stack's Effect rules with no
+baseline. Convex's syscalls carry JSON strings and the kernel answers them
+synchronously, so the kernel's JSON goes through one internal helper. Six
+refusals rename their `name` payload field, which hid the refusal's own
+name. Four cron refusals take `cronName`, `UnknownStandingSource` takes
+`functionName` and `SnapshotWorldUnresolved` takes `worldName`. Each kernel
+function now wraps the realm's `Date` again as it enters, so a test that
+fakes `Date` after its layer opened the backend still reads the pinned
+time. The kernel lane places upstream's new mock-backend cases. JWT signing
+and a deployment-wide `transactionLimits` wait for row 6, and text search
+and a file with no content type stay on the binary. The local-backend
+harness lives in `tools/local-backend` with main's configurable ports, and
+its fixture's system-table share measures 21. Changeset:
+`kernel-refusal-field-names.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
@@ -337,10 +356,14 @@ Frame's audit rows declare their commit-order column with it. Changeset:
 
 ## Counted HTTP bodies
 
-Add `HttpRouter.withBodyLimit` for endpoint middleware. Count bytes while reading,
-return 413 at the cap and 415 for non-identity content encoding. Verification and
-payload decoding share one buffer. Effect 4.0.4's Web readers do not provide these
-guarantees. Changeset: `counted-http-body.md`. Upstream: planned; no proposal submitted.
+Add `HttpRouter.withBodyLimit` for endpoint middleware. It returns 415 for
+non-identity content encoding and 413 past the cap, and verification and
+payload decoding share one buffer. Effect 4.1.4 now counts buffered reads
+against `MaxBodySize` and derives `text` from `arrayBuffer`, so the limiter reads
+through Effect under the endpoint's cap and keeps only the 413/415 mapping and
+the shared buffer. A declared `Content-Length` over the cap is refused before
+any byte is read. Changeset: `counted-http-body.md`. Upstream: planned; no
+proposal submitted.
 
 ## OPTIONS middleware dispatch
 
@@ -471,7 +494,7 @@ Upstream: unrecorded; submission goes through the maintainer.
 
 ### Refuse domain collisions in codegen
 
-Full and incremental codegen reject a domain argument reserved by its profile before loading its implementation. The diagnostic names the spec file, function and argument. Registration retains its load-time backstop. Changeset: `reserved-argument-fence.md`. Upstream: planned; no proposal submitted.
+Full and incremental codegen reject a domain argument reserved by its profile before loading its implementation. The diagnostic names the spec file, function and argument. Registration retains a backstop when its validator compiles, which Convex forces when it analyzes a push. Changeset: `reserved-argument-fence.md`. Upstream: planned; no proposal submitted.
 
 ### Forward context through callback handles
 
@@ -490,12 +513,37 @@ HTTP accepts the same layer explicitly on hand-built routers and receives `runti
 
 ## Base
 
-`main` tracks upstream 10.3.1
-([`eaa5da76`](https://github.com/rjdellecese/confect/commit/eaa5da76881455fe38d8d633eedbf79ebc5af01a)).
-The move from 10.2.0 (`1f75cb80`) landed by merge, and each later release lands
-the same way. Fork builds on this base use `10.3.1-fork.N`. The 10.3.1
+`main` tracks upstream 10.6.0
+([`278d68f8`](https://github.com/rjdellecese/confect/commit/278d68f877cd923bcea1fd53a215446eaf4db086)).
+The move from 10.3.1 (`eaa5da76`) landed by merge, and each later release lands
+the same way. Fork builds on this base use `10.6.0-fork.N`. The 10.6.0
 generator changes generated output, so consumers run `confect codegen` after
 upgrading.
+
+### Move to upstream 10.6.0
+
+Merge upstream 10.6.0, which runs on Effect 4.1, and carry the fork's patches
+onto it. Move Effect and every `@effect/*` package to 4.1.4 and Alchemy to
+2.0.0-beta.86. Combine upstream's lazy validators, `DocumentIds`, blob storage
+in mutations and `MutationAuth` with the fork's component targets, reserved
+arguments and invocation metadata in the function runner. The fork's
+`Auth.MutationAuth` gives way to upstream's service.
+Fold upstream's watch groups into the fork's lock-free `refreshCurrent`. Move
+the fork's local-backend fixtures, component codegen and auth seeding into
+upstream's `tools/local-backend` harness. Native `take()` and `first()` stay
+outside the stream read budget, as the fork's `OrderedQuery` always was.
+
+Upstream's "Enable every Effect lint rule" turns on rules the fork's code was
+never checked against. The fork fixes every finding rather than exempting
+files. A lint-disable comment remains only where the rule is wrong for that
+line or upstream disables it there too, and each names its reason. Some fixes
+change public types: errors move to `Schema.TaggedError`, published Schema
+classes carry a brand, two alchemy error fields lose the name `name`, and
+exports that expose unstable Effect APIs say so.
+
+Changesets: `effect-4-1.md`, `schema-tagged-errors.md`, `error-field-names.md`,
+`schema-class-brands.md` and `unstable-exports.md`.
+Upstream: fork only.
 
 ### Move to upstream 10.3.1
 
@@ -524,18 +572,13 @@ Raise the Convex peer floor to 1.49.0. Workspace and baseline consumer pins use 
 
 ### Bound the supported crypto API
 
-Cap the package set's Effect peers below 4.1, and cap the Node platform
-companions to the same minor. Effect 4.1 removes `effect/Crypto`, which the CLI,
-Alchemy providers and Alchemy's stack types still use. Remove the caps when
-Alchemy ships a release without `effect/Crypto` and the fork's CLI and Alchemy
-call sites move. An application that installs the CLI lists
-`@effect/platform-node-shared` directly, or pnpm resolves a 4.1 copy for
-`@effect/platform-node`.
-Fresh consumer checks request the CLI's published ranges and resolve their
-newest compatible releases without a lockfile or version override.
+Retired by the move to upstream 10.6.0. Upstream migrated the CLI off
+`effect/Crypto`, the fork's Alchemy package now uses
+`effect/crypto/SecureRandom`, and Alchemy 2.0.0-beta.86 runs on Effect 4.1. The
+`<4.1.0` caps and the `@effect/platform-node-shared` CLI peer are gone.
 
-Changeset: `effect-crypto-compatibility.md`.
-Upstream: planned; no proposal submitted.
+Changeset: `effect-4-1.md`.
+Upstream: superseded by upstream 10.5.0.
 
 ### Resolve declarations under NodeNext
 
@@ -890,6 +933,19 @@ Changesets: `backend-declaration.md`, `app-mounts-list.md`,
 `remove-app-mount.md`, `unique-definition-names.md`, `first-codegen-refs.md`,
 `first-codegen-registry.md`.
 Upstream: planned; no linked proposal verified.
+
+### Take the schema first in HttpRouter.make
+
+Adopt upstream `main`'s router shape (c3ee2b3, 6a145ab): `HttpRouter.make(schema,
+routes, options?)` is the only constructor. The schema types the routes'
+services, including `VectorSearch`, and `schema.target.kind` selects application
+or component routing, as `forSchema` did. The fork keeps `{ api, observability }`
+as the third argument. `forSchema` and the schema-less `make` are gone. Codegen
+emits the new call and still owns a generated `convex/http.ts` in the old
+`forSchema` shape, so `confect codegen` rewrites it.
+
+Changeset: `http-router-schema-first.md`.
+Upstream: converges with upstream `main`, unreleased at 10.6.0.
 
 ### Label reflected HTTP routes
 
@@ -1400,14 +1456,12 @@ Upstream: planned; no linked proposal verified.
 
 ### Sign deployment JWTs from mutations
 
-Add mutation-only `Auth.MutationAuth.signJwt` in applications and components,
-with a generated service alias. Keep application identity out of components and
-signing out of query/action handlers. Verify generated component mutations and
-app mutations against convex-test 0.0.65 deployment JWKS in the component suite.
-Require convex-test 0.0.65 or later in `@confect/test` so signing support is available.
-Keep Confect's component registration callbacks void across the test-peer update.
-Generated provider descriptors match minted token issuers and audiences under
-test defaults and explicit deployment URL overrides.
+Upstream 10.6.0 ships `MutationAuth.signJwt` under `@confect/server/MutationAuth`,
+so the fork's `Auth.MutationAuth` (`@confect/server/Auth/MutationAuth`) is gone.
+What stays is the fork's component wiring: component mutations get upstream's
+service through the shared mutation layer, and generated component services
+export the same `MutationAuth` alias as applications. Application identity stays
+out of components and signing out of query and action handlers.
 
-Changeset: `mutation-auth-sign-jwt.md`.
-Upstream: planned; no linked proposal verified.
+Changesets: `mutation-auth-sign-jwt.md`, `mutation-auth-upstream.md`.
+Upstream: superseded by upstream 10.6.0 for applications; the component wiring is fork only.

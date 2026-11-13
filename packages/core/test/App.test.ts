@@ -2,6 +2,7 @@ import { describe, expect, it } from "@effect/vitest";
 import { App, Component, Env, MiddlewareSpec, Mount } from "@confect/core";
 import { defineComponent } from "convex/server";
 import * as Schema from "effect/Schema";
+import * as Array from "effect/Array";
 
 const env = Env.make("tenant", {
   EMAIL_FROM: Env.string(),
@@ -42,10 +43,11 @@ describe("App", () => {
       },
     ) {}
     expect([
-      App.make({ env, requiresMiddleware: [Required] }).requiresMiddleware.map(
+      Array.map(
+        App.make({ env, requiresMiddleware: [Required] }).requiresMiddleware,
         ({ key }) => key,
       ),
-      App.make({ env }).requiresMiddleware.map(({ key }) => key),
+      Array.map(App.make({ env }).requiresMiddleware, ({ key }) => key),
     ]).toEqual([["Required"], []]);
   });
 

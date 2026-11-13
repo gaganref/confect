@@ -150,8 +150,8 @@ export const bind = (ports: Binding["ports"]): Binding => {
 export const sources = (worktree: string): Record<string, string> =>
   Object.fromEntries(
     [
-      "packages/server/test/local-backend/fixtures/sync/convex/schema.ts",
-      "packages/server/test/local-backend/fixtures/sync/convex/sync.ts",
+      "tools/local-backend/fixtures/sync/convex/schema.ts",
+      "tools/local-backend/fixtures/sync/convex/sync.ts",
       "packages/test/test/fixtures/syncLegs.ts",
       "packages/test/src/internal/Sync.ts",
       "packages/test/src/internal/Subscriptions.ts",

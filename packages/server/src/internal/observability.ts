@@ -13,6 +13,7 @@ export const memoized = (layer: Layer.Layer<never>): Layer.Layer<never> => {
   const cached = layers.get(layer);
   if (cached !== undefined) return cached;
   const built = Layer.buildWithMemoMap(layer, memoMap, scope).pipe(
+    // oxlint-disable-next-line effecttsgo/strict-effect-provide -- Each Convex invocation builds this layer once per isolate, reading its configuration from Convex's environment.
     Effect.provide(ConvexConfigProvider.layer),
     // A failed first build is retried on the next invocation instead of failing every later one.
     Effect.cachedWithTTL((exit) =>

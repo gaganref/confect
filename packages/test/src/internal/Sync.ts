@@ -184,14 +184,14 @@ export const nextQuerySet = (
 ): Result.Result<number, KernelRefusal.SyncProtocolViolation> =>
   baseVersion !== received
     ? Result.fail(
-        new KernelRefusal.SyncProtocolViolation({
+        KernelRefusal.SyncProtocolViolation.make({
           reason: "BaseVersionMismatch",
           message: `Base version ${baseVersion} passed up doesn't match the current version ${received}`,
         }),
       )
     : newVersion <= baseVersion
       ? Result.fail(
-          new KernelRefusal.SyncProtocolViolation({
+          KernelRefusal.SyncProtocolViolation.make({
             reason: "QuerySetVersionNotIncreasing",
             message: `Query set version ${newVersion} is not after ${baseVersion}`,
           }),
@@ -209,7 +209,7 @@ export const nextIdentity = (
   baseVersion === received
     ? Result.succeed(received + 1)
     : Result.fail(
-        new KernelRefusal.SyncProtocolViolation({
+        KernelRefusal.SyncProtocolViolation.make({
           reason: "IdentityVersionMismatch",
           message: `Identity base version ${baseVersion} passed up doesn't match the current version ${received}`,
         }),
@@ -622,7 +622,7 @@ export class Connection {
           const observed = decodeTs(message.maxObservedTimestamp);
           const latest = this.server.world.state.commitTs;
           if (observed > latest) {
-            throw new KernelRefusal.SyncProtocolViolation({
+            throw KernelRefusal.SyncProtocolViolation.make({
               reason: "TimestampAhead",
               message: `Client has observed a timestamp ${observed} ahead of the backend latest known timestamp ${latest}`,
             });
@@ -661,7 +661,7 @@ export class Connection {
 
   private checkRoot(componentPath: string | undefined) {
     if (!isRoot(componentPath)) {
-      throw new KernelRefusal.SyncProtocolViolation({
+      throw KernelRefusal.SyncProtocolViolation.make({
         reason: "ComponentPathNotAllowed",
         message:
           "Only admin or system users can call functions on non-root components directly",
@@ -759,7 +759,7 @@ export class Connection {
         const running = session.running.get(message.requestId);
         const known = recorded ?? running;
         if (known !== undefined && known.argsDigest !== argsDigest) {
-          throw new KernelRefusal.SyncRequestReused({
+          throw KernelRefusal.SyncRequestReused.make({
             requestId: message.requestId,
             recorded: known.argsDigest,
             sent: argsDigest,
@@ -931,7 +931,7 @@ export class Connection {
           if (change.type === "Remove") {
             const query = this.queries.get(change.queryId);
             if (query === undefined) {
-              throw new KernelRefusal.SyncProtocolViolation({
+              throw KernelRefusal.SyncProtocolViolation.make({
                 reason: "NonexistentQueryId",
                 message: `Nonexistent query id: ${change.queryId}`,
               });
@@ -948,7 +948,7 @@ export class Connection {
             return;
           }
           if (this.queries.has(change.queryId)) {
-            throw new KernelRefusal.SyncProtocolViolation({
+            throw KernelRefusal.SyncProtocolViolation.make({
               reason: "DuplicateQueryId",
               message: `Duplicate query ID: ${change.queryId}`,
             });

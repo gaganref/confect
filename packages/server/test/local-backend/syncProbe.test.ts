@@ -16,10 +16,13 @@ import * as Effect from "effect/Effect";
 import { mint } from "../../../test/test/fixtures/minted";
 import { kernelApp, kernelTarget } from "../../../test/test/fixtures/syncApp";
 import * as Legs from "../../../test/test/fixtures/syncLegs";
-import * as LocalBackend from "./LocalBackend";
+import * as LocalBackend from "confect-local-backend/LocalBackend";
 import * as SyncProbe from "./SyncProbe";
 
-const fixture = Path.join(import.meta.dirname, "fixtures/sync");
+const fixture = Path.join(
+  import.meta.dirname,
+  "../../../../tools/local-backend/fixtures/sync",
+);
 
 const secret = "probe-canary-5d81e2";
 

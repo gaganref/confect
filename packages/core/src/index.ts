@@ -4,10 +4,16 @@ export * as CommitTs from "./CommitTs.js";
 export * as FunctionProvenance from "./FunctionProvenance.js";
 export * as FunctionSpec from "./FunctionSpec.js";
 export * as GenericId from "./GenericId.js";
+/**
+ * @stability unstable
+ */
 export * as App from "./App.js";
 export * as Auth from "./Auth.js";
 export * as Component from "./Component.js";
 export * as Env from "./Env.js";
+/**
+ * @stability unstable
+ */
 export * as Http from "./Http.js";
 export * as IdScope from "./IdScope.js";
 export * as GroupPath from "./GroupPath.js";

@@ -1,4 +1,5 @@
 // oxlint-disable effecttsgo/async-function, effecttsgo/global-date -- The fixtures are plain Convex functions, which are async and read the pinned `Date` as product code does.
+import * as Option from "effect/Option";
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- A forged snapshot needs the SHA-256 its header names.
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "@effect/vitest";
@@ -22,6 +23,14 @@ import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Execution from "../src/internal/Execution";
 import * as Invocation from "../src/internal/Invocation";
 import * as Snapshot from "../src/internal/Snapshot";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
+import * as Schema from "effect/Schema";
+import * as Json from "../src/internal/Json";
+
+const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 
 const start = 1_767_225_600_000;
 
@@ -277,7 +286,7 @@ const storeModules = {
           ctx.db
             .query("items")
             .collect()
-            .then((items) => items.map((item) => item.text)),
+            .then((items) => Arr.map(items, (item) => item.text)),
       }),
     }),
 };
@@ -433,7 +442,7 @@ const after = (t: KernelControls, d: Driver, kept: Note) =>
       steps: [applied.kind, conflict.kind, retried.kind],
       pending,
       dump,
-      identity: transitions.map(({ because, from, to }) => ({
+      identity: Arr.map(transitions, ({ because, from, to }) => ({
         because,
         from,
         to,
@@ -462,9 +471,9 @@ describe("snapshot export", () => {
           restored.restoreSnapshot(exported, { worlds: [mail] }),
         );
         expect(text(restored.exportSnapshot())).toBe(text(exported));
-        expect(yield* call(() => restored.query(app.dump, {}))).toEqual(
-          yield* call(() => t.query(app.dump, {})),
-        );
+        const callResult = yield* call(() => restored.query(app.dump, {}));
+        const callResult2 = yield* call(() => t.query(app.dump, {}));
+        expect(callResult).toEqual(callResult2);
       }),
   );
 
@@ -522,9 +531,10 @@ describe("snapshot restore", () => {
         yield* call(() =>
           restored.mutation(app.callStored, { text: "after restore" }),
         );
-        expect(yield* call(() => restored.query(store.rows.list, {}))).toEqual([
-          "after restore",
-        ]);
+        const callResult = yield* call(() =>
+          restored.query(store.rows.list, {}),
+        );
+        expect(callResult).toEqual(["after restore"]);
       }),
   );
 
@@ -543,7 +553,8 @@ describe("snapshot restore", () => {
         const dump = yield* call(() => restored.query(app.dump, {}));
         expect(dump["store"]).toEqual(["tick", "through handle"]);
         expect(
-          (dump["marks"] as Array<{ label: string; world: string | null }>).map(
+          Arr.map(
+            dump["marks"] as Array<{ label: string; world: string | null }>,
             ({ label, world }) => ({ label, world }),
           ),
         ).toEqual([
@@ -567,18 +578,22 @@ describe("snapshot restore", () => {
     {
       name: "a changed value",
       tamper: (snapshot) =>
-        snapshot.replace('"text":"renamed"', '"text":"Renamed"'),
+        pipe(snapshot, String.replace('"text":"renamed"', '"text":"Renamed"')),
     },
     {
       name: "a changed digest",
       tamper: (snapshot) =>
+        // oxlint-disable-next-line effecttsgo/prefer-effect-string -- This replace takes a callback, which effect/String.replace does not accept.
         snapshot.replace(/sha256:[0-9a-f]/, (match) =>
-          match.endsWith("0")
-            ? `${match.slice(0, -1)}1`
-            : `${match.slice(0, -1)}0`,
+          pipe(match, String.endsWith("0"))
+            ? `${pipe(match, String.slice(0, -1))}1`
+            : `${pipe(match, String.slice(0, -1))}0`,
         ),
     },
-    { name: "a cut body", tamper: (snapshot) => snapshot.slice(0, -1) },
+    {
+      name: "a cut body",
+      tamper: (snapshot) => pipe(snapshot, String.slice(0, -1)),
+    },
   ])(
     "a snapshot with $name refuses with SnapshotDigestMismatch and leaves the backend as it was",
     ({ tamper }) =>
@@ -590,10 +605,12 @@ describe("snapshot restore", () => {
         const tampered = tamper(original);
         expect(tampered).not.toBe(original);
         const restored = backend(driver());
-        expect(
-          yield* failure(() => restored.restoreSnapshot(bytesOf(tampered))),
-        ).toMatchObject({ _tag: "SnapshotDigestMismatch" });
-        expect(yield* call(() => restored.query(app.dump, {}))).toEqual({
+        const failureResult = yield* failure(() =>
+          restored.restoreSnapshot(bytesOf(tampered)),
+        );
+        expect(failureResult).toMatchObject({ _tag: "SnapshotDigestMismatch" });
+        const callResult = yield* call(() => restored.query(app.dump, {}));
+        expect(callResult).toEqual({
           notes: [],
           stamps: [],
           marks: [],
@@ -609,17 +626,27 @@ describe("snapshot restore", () => {
     () =>
       Effect.gen(function* () {
         const restored = backend(driver());
-        expect(
-          yield* failure(() => restored.restoreSnapshot(bytesOf("{}"))),
-        ).toMatchObject({ _tag: "SnapshotMalformed", reason: "header" });
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The forged body is raw bytes, as a tampering writer would make them.
-        const body = JSON.stringify({ components: [""], version: "one" });
+        const failureResult = yield* failure(() =>
+          restored.restoreSnapshot(bytesOf("{}")),
+        );
+        expect(failureResult).toMatchObject({
+          _tag: "SnapshotMalformed",
+          reason: "header",
+        });
+        const body = yield* Schema.encodeEffect(UnknownJson)({
+          components: [""],
+          version: "one",
+        });
         const forged = `confect-kernel-snapshot 3 sha256:${createHash("sha256")
           .update(body)
           .digest("hex")}\n${body}`;
-        expect(
-          yield* failure(() => restored.restoreSnapshot(bytesOf(forged))),
-        ).toMatchObject({ _tag: "SnapshotMalformed", reason: "shape" });
+        const failureResult2 = yield* failure(() =>
+          restored.restoreSnapshot(bytesOf(forged)),
+        );
+        expect(failureResult2).toMatchObject({
+          _tag: "SnapshotMalformed",
+          reason: "shape",
+        });
       }),
   );
 
@@ -634,29 +661,31 @@ describe("snapshot restore", () => {
 
         const used = backend(driver());
         yield* call(() => used.mutation(app.insert, { text: "own" }));
-        expect(
-          yield* failure(() =>
-            used.restoreSnapshot(snapshot, { worlds: [mail] }),
-          ),
-        ).toMatchObject({ _tag: "SnapshotWorldBusy", version: 1 });
+        const failureResult = yield* failure(() =>
+          used.restoreSnapshot(snapshot, { worlds: [mail] }),
+        );
+        expect(failureResult).toMatchObject({
+          _tag: "SnapshotWorldBusy",
+          version: 1,
+        });
 
         const other = backend(driver(), ["store", "extra"]);
-        expect(
-          yield* failure(() =>
-            other.restoreSnapshot(snapshot, { worlds: [mail] }),
-          ),
-        ).toMatchObject({
+        const failureResult2 = yield* failure(() =>
+          other.restoreSnapshot(snapshot, { worlds: [mail] }),
+        );
+        expect(failureResult2).toMatchObject({
           _tag: "SnapshotComponentMismatch",
           snapshot: ["", "store"],
           registered: ["", "extra", "store"],
         });
 
         const worldless = backend(driver());
-        expect(
-          yield* failure(() => worldless.restoreSnapshot(snapshot)),
-        ).toMatchObject({
+        const failureResult3 = yield* failure(() =>
+          worldless.restoreSnapshot(snapshot),
+        );
+        expect(failureResult3).toMatchObject({
           _tag: "SnapshotWorldUnresolved",
-          name: "mail",
+          worldName: "mail",
           reason: "missing",
         });
         expect(worldless.jobs()).toEqual([]);
@@ -670,9 +699,15 @@ describe("snapshot restore", () => {
  */
 const rehash = (bytes: Uint8Array, edit: (body: any) => void): Uint8Array => {
   const snapshot = text(bytes);
-  const body = JSON.parse(snapshot.slice(snapshot.indexOf("\n") + 1));
+  const bodyStart =
+    pipe(
+      snapshot,
+      String.indexOf("\n"),
+      Option.getOrElse(() => -1),
+    ) + 1;
+  const body = Json.parse(pipe(snapshot, String.slice(bodyStart)));
   edit(body);
-  const edited = JSON.stringify(body);
+  const edited = Json.stringify(body);
   return bytesOf(
     `confect-kernel-snapshot 3 sha256:${createHash("sha256")
       .update(edited)
@@ -926,13 +961,12 @@ describe("snapshot consistency", () => {
           ),
         );
         const restored = backend(driver());
-        expect(
-          yield* failure(() =>
-            restored.restoreSnapshot(rehash(snapshot, edit), {
-              worlds: [mail],
-            }),
-          ),
-        ).toMatchObject(refusal);
+        const failureResult = yield* failure(() =>
+          restored.restoreSnapshot(rehash(snapshot, edit), {
+            worlds: [mail],
+          }),
+        );
+        expect(failureResult).toMatchObject(refusal);
         expect(restored.jobs()).toEqual([]);
         expect(text(restored.exportSnapshot())).toBe(
           text(backend(driver()).exportSnapshot()),
@@ -957,9 +991,8 @@ describe("snapshot while running", () => {
           count: 1,
         });
         const snapshot = backend(driver()).exportSnapshot();
-        expect(yield* failure(() => t.restoreSnapshot(snapshot))).toMatchObject(
-          { _tag: "SnapshotWorldRunning" },
-        );
+        const failureResult = yield* failure(() => t.restoreSnapshot(snapshot));
+        expect(failureResult).toMatchObject({ _tag: "SnapshotWorldRunning" });
         gate.release();
         yield* call(() => running);
 
@@ -978,11 +1011,14 @@ describe("snapshot while running", () => {
         const restored = backend(driver());
         yield* call(() => restored.restoreSnapshot(t.exportSnapshot()));
         expect(
-          (
-            (yield* call(() => restored.query(app.dump, {}))) as {
-              notes: Array<{ text: string }>;
-            }
-          ).notes.map((note) => note.text),
+          Arr.map(
+            (
+              (yield* call(() => restored.query(app.dump, {}))) as {
+                notes: Array<{ text: string }>;
+              }
+            ).notes,
+            (note) => note.text,
+          ),
         ).toEqual(["gated", "gated"]);
         expect(restored.jobs()).toEqual([]);
       }),
@@ -1009,11 +1045,10 @@ describe("snapshot live state", () => {
         reached = latch();
         yield* call(() => fresh.action(app.detach, {}));
         yield* call(() => reached.promise);
-        expect(
-          yield* failure(() =>
-            fresh.restoreSnapshot(backend(driver()).exportSnapshot()),
-          ),
-        ).toMatchObject({
+        const failureResult = yield* failure(() =>
+          fresh.restoreSnapshot(backend(driver()).exportSnapshot()),
+        );
+        expect(failureResult).toMatchObject({
           _tag: "SnapshotWorldRunning",
           registry: "functions",
         });
@@ -1024,11 +1059,14 @@ describe("snapshot live state", () => {
         const restored = backend(driver());
         yield* call(() => restored.restoreSnapshot(exported));
         expect(
-          (
-            (yield* call(() => restored.query(app.dump, {}))) as {
-              notes: Array<{ text: string }>;
-            }
-          ).notes.map((note) => note.text),
+          Arr.map(
+            (
+              (yield* call(() => restored.query(app.dump, {}))) as {
+                notes: Array<{ text: string }>;
+              }
+            ).notes,
+            (note) => note.text,
+          ),
         ).toEqual(["detached"]);
       }),
   );
@@ -1043,11 +1081,13 @@ describe("snapshot live state", () => {
         const snapshot = t.exportSnapshot();
         const restored = backend(driver());
         restored.subscriber().authenticate({ subject: "live" });
-        expect(
-          yield* failure(() =>
-            restored.restoreSnapshot(snapshot, { worlds: [mail] }),
-          ),
-        ).toMatchObject({ _tag: "SnapshotSubscribed", subscribers: 1 });
+        const failureResult = yield* failure(() =>
+          restored.restoreSnapshot(snapshot, { worlds: [mail] }),
+        );
+        expect(failureResult).toMatchObject({
+          _tag: "SnapshotSubscribed",
+          subscribers: 1,
+        });
         expect(restored.jobs()).toEqual([]);
       }),
   );
@@ -1106,8 +1146,8 @@ describe("snapshot live state", () => {
         subscribed.subscriber();
         refusals["subscribers"] = yield* refusal(subscribed);
 
-        expect(Object.keys(refusals).sort()).toEqual(
-          Object.keys(Snapshot.contract.live).sort(),
+        expect(Rec.keys(refusals).sort()).toEqual(
+          Rec.keys(Snapshot.contract.live).sort(),
         );
         expect(refusals).toMatchObject({
           running: { _tag: "SnapshotWorldRunning", registry: "running" },
@@ -1165,7 +1205,7 @@ describe("snapshot file storage", () => {
           exportedFiles = body.files.map((file: any) => file.id);
         });
         expect(exportedFiles).toEqual(
-          [ids.typed, ids.untyped].toSorted((a, b) => (a < b ? -1 : 1)),
+          Arr.sort([ids.typed, ids.untyped], String.Order),
         );
 
         const restored = backend(driver());
@@ -1173,7 +1213,8 @@ describe("snapshot file storage", () => {
         expect(text(restored.exportSnapshot())).toBe(text(exported));
         for (const id of [ids.typed, ids.untyped]) {
           const source = yield* describeFile(t, id);
-          expect(yield* describeFile(restored, id)).toEqual(source);
+          const describeFileResult = yield* describeFile(restored, id);
+          expect(describeFileResult).toEqual(source);
           // A file's storage UUID still names it after a restore.
           const byUuid = yield* describeFile(
             restored,
@@ -1187,7 +1228,8 @@ describe("snapshot file storage", () => {
         const read = yield* contents(restored, ids.typed);
         expect(read?.type).toBe("application/octet-stream");
         expect(new Uint8Array(read!.bytes)).toStrictEqual(binary);
-        expect(yield* contents(restored, ids.gone)).toBeNull();
+        const contentsResult = yield* contents(restored, ids.gone);
+        expect(contentsResult).toBeNull();
       }),
   );
 
@@ -1208,7 +1250,7 @@ describe("snapshot file storage", () => {
         const uuids = yield* call(() =>
           restored.query((ctx: any) =>
             Promise.all(
-              [ids.typed, ids.untyped, ids.gone, next].map((id) =>
+              Arr.map([ids.typed, ids.untyped, ids.gone, next], (id) =>
                 ctx.storage
                   .getMetadata(id)
                   .then((m: any) => m?.storageId ?? null),
@@ -1218,11 +1260,10 @@ describe("snapshot file storage", () => {
         );
         expect(new Set(uuids).size).toBe(4);
         expect(uuids[3]).toBe("00000000-0000-4000-8000-000000000004");
-        expect(
-          yield* call(() =>
-            restored.mutation((ctx: any) => ctx.storage.generateUploadUrl()),
-          ),
-        ).toMatch(/token=kernel-unsigned-2$/);
+        const callResult = yield* call(() =>
+          restored.mutation((ctx: any) => ctx.storage.generateUploadUrl()),
+        );
+        expect(callResult).toMatch(/token=kernel-unsigned-2$/);
       }),
   );
 
@@ -1284,9 +1325,10 @@ describe("snapshot file storage", () => {
       const ids = yield* storeFiles(t);
       const forged = rehash(t.exportSnapshot(), (body) => edit(body, ids));
       const restored = backend(driver());
-      expect(
-        yield* failure(() => restored.restoreSnapshot(forged)),
-      ).toMatchObject(refusal);
+      const failureResult = yield* failure(() =>
+        restored.restoreSnapshot(forged),
+      );
+      expect(failureResult).toMatchObject(refusal);
       expect(restored.exportSnapshot()).toStrictEqual(
         backend(driver()).exportSnapshot(),
       );
@@ -1300,12 +1342,18 @@ describe("snapshot file storage", () => {
         const t = backend(driver());
         yield* storeFiles(t);
         const exported = t.exportSnapshot();
-        const at = text(exported).indexOf('"bytes":"') + '"bytes":"'.length;
+        const at =
+          pipe(
+            text(exported),
+            String.indexOf('"bytes":"'),
+            Option.getOrElse(() => -1),
+          ) + '"bytes":"'.length;
         const flipped = Uint8Array.from(exported);
         flipped[at] = flipped[at] === 0x41 ? 0x42 : 0x41;
-        expect(
-          yield* failure(() => backend(driver()).restoreSnapshot(flipped)),
-        ).toMatchObject({ _tag: "SnapshotDigestMismatch" });
+        const failureResult = yield* failure(() =>
+          backend(driver()).restoreSnapshot(flipped),
+        );
+        expect(failureResult).toMatchObject({ _tag: "SnapshotDigestMismatch" });
       }),
   );
 });
@@ -1351,7 +1399,7 @@ const cronModules = (declare: Declare) => {
             ctx.db
               .query("ticks")
               .collect()
-              .then((rows) => rows.map(({ name, at }) => ({ name, at }))),
+              .then((rows) => Arr.map(rows, ({ name, at }) => ({ name, at }))),
         }),
       }),
     "crons.ts": () => Promise.resolve({ default: crons }),
@@ -1395,10 +1443,11 @@ describe("snapshot cron state", () => {
         const snapshot = t.exportSnapshot();
         const atSnapshot = t.crons();
         yield* call(() => t.advance(hours(40)));
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The run's state is compared as the bytes it prints.
-        const straight = JSON.stringify({
-          crons: t.crons(),
-          ticks: yield* call(() => t.query(cronTicks.list, {})),
+        const straightCrons = t.crons();
+        const straightTicks = yield* call(() => t.query(cronTicks.list, {}));
+        const straight = yield* Schema.encodeEffect(UnknownJson)({
+          crons: straightCrons,
+          ticks: straightTicks,
         });
 
         const restoring = counted();
@@ -1407,10 +1456,13 @@ describe("snapshot cron state", () => {
         expect(restoring.draws()).toBe(0);
         expect(restored.crons()).toEqual(atSnapshot);
         yield* call(() => restored.advance(hours(40)));
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The run's state is compared as the bytes it prints.
-        const replayed = JSON.stringify({
-          crons: restored.crons(),
-          ticks: yield* call(() => restored.query(cronTicks.list, {})),
+        const replayedCrons = restored.crons();
+        const replayedTicks = yield* call(() =>
+          restored.query(cronTicks.list, {}),
+        );
+        const replayed = yield* Schema.encodeEffect(UnknownJson)({
+          crons: replayedCrons,
+          ticks: replayedTicks,
         });
 
         expect(replayed).toBe(straight);
@@ -1434,69 +1486,66 @@ describe("snapshot cron state", () => {
             Effect.map((error) => ({ error, draws: restoring.draws() })),
           );
         };
-        expect(
-          yield* into((crons) => {
-            declareAll(crons);
-            delete (crons as unknown as { crons: Record<string, unknown> })
-              .crons["expression"];
-          }),
-        ).toMatchObject({
+        const intoResult = yield* into((crons) => {
+          declareAll(crons);
+          delete (crons as unknown as { crons: Record<string, unknown> }).crons[
+            "expression"
+          ];
+        });
+        expect(intoResult).toMatchObject({
           error: {
             _tag: "SnapshotCronMismatch",
-            name: "expression",
+            cronName: "expression",
             reason: "undeclared",
           },
           draws: 0,
         });
-        expect(
-          yield* into((crons) => {
-            declareAll(crons);
-            crons.interval("extra", { seconds: 5 }, cronTicks.tick, {
-              name: "extra",
-            });
-          }),
-        ).toMatchObject({
+        const intoResult2 = yield* into((crons) => {
+          declareAll(crons);
+          crons.interval("extra", { seconds: 5 }, cronTicks.tick, {
+            name: "extra",
+          });
+        });
+        expect(intoResult2).toMatchObject({
           error: {
             _tag: "SnapshotCronMismatch",
-            name: "extra",
+            cronName: "extra",
             reason: "missing",
           },
           draws: 0,
         });
-        expect(
-          yield* into((crons) => {
-            crons.interval("interval", { seconds: 60 }, cronTicks.tick, {
-              name: "interval",
-            });
-            crons.hourly("hourly", {}, cronTicks.tick, { name: "hourly" });
-            crons.cron("expression", "*/7 * * * *", cronTicks.tick, {
-              name: "expression",
-            });
-            crons.cron("weekday", "0 6 15W * *", cronTicks.tick, {
-              name: "weekday",
-            });
-          }),
-        ).toMatchObject({
+        const intoResult3 = yield* into((crons) => {
+          crons.interval("interval", { seconds: 60 }, cronTicks.tick, {
+            name: "interval",
+          });
+          crons.hourly("hourly", {}, cronTicks.tick, { name: "hourly" });
+          crons.cron("expression", "*/7 * * * *", cronTicks.tick, {
+            name: "expression",
+          });
+          crons.cron("weekday", "0 6 15W * *", cronTicks.tick, {
+            name: "weekday",
+          });
+        });
+        expect(intoResult3).toMatchObject({
           error: {
             _tag: "SnapshotCronMismatch",
-            name: "interval",
+            cronName: "interval",
             reason: "changed",
           },
           draws: 0,
         });
-        expect(
-          yield* into((crons) => {
-            declareAll(crons);
-            (
-              crons as unknown as {
-                crons: Record<string, { args: Array<unknown> }>;
-              }
-            ).crons["hourly"]!.args = [{ name: "renamed" }];
-          }),
-        ).toMatchObject({
+        const intoResult4 = yield* into((crons) => {
+          declareAll(crons);
+          (
+            crons as unknown as {
+              crons: Record<string, { args: Array<unknown> }>;
+            }
+          ).crons["hourly"]!.args = [{ name: "renamed" }];
+        });
+        expect(intoResult4).toMatchObject({
           error: {
             _tag: "SnapshotCronMismatch",
-            name: "hourly",
+            cronName: "hourly",
             reason: "changed",
           },
           draws: 0,
@@ -1516,11 +1565,12 @@ describe("snapshot cron state", () => {
           modules: cronModules(declareAll),
           runtime: driver().runtime,
         });
-        expect(
-          yield* failure(() => elsewhere.restoreSnapshot(snapshot)),
-        ).toMatchObject({
+        const failureResult = yield* failure(() =>
+          elsewhere.restoreSnapshot(snapshot),
+        );
+        expect(failureResult).toMatchObject({
           _tag: "SnapshotWorldUnresolved",
-          name: "crons",
+          worldName: "crons",
           reason: "missing",
         });
         const named = convexTest({
@@ -1546,11 +1596,11 @@ describe("snapshot contract", () => {
         const world = new Execution.World(null, {
           "_generated/server.ts": () => Promise.resolve({}),
         });
-        expect(Object.keys(world).sort()).toEqual(
-          Object.keys(Snapshot.contract.world).sort(),
+        expect(Rec.keys(world).sort()).toEqual(
+          Rec.keys(Snapshot.contract.world).sort(),
         );
-        expect(Object.keys(world.liveCounts()).sort()).toEqual(
-          Object.keys(Snapshot.contract.live).sort(),
+        expect(Rec.keys(world.liveCounts()).sort()).toEqual(
+          Rec.keys(Snapshot.contract.live).sort(),
         );
       }),
   );

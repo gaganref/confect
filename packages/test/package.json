@@ -1,21 +1,21 @@
 {
   "name": "@confect/test",
   "description": "Utilities for testing Confect apps without a live Convex backend",
-  "version": "10.3.1",
+  "version": "10.6.0",
   "author": "RJ Dellecese",
   "bugs": {
     "url": "https://github.com/rjdellecese/confect/issues"
   },
   "devDependencies": {
     "@convex-dev/workflow": "0.4.10",
-    "@effect/vitest": "4.0.4",
-    "@types/node": "26.6.5",
-    "effect": "4.0.4",
-    "tsdown": "0.23.1",
+    "@effect/vitest": "4.1.4",
+    "@types/node": "26.6.6",
+    "effect": "4.1.4",
+    "tsdown": "0.23.7",
+    "tsrs": "0.23.0-ts7.1.0-beta",
     "tsx": "4.23.15",
-    "typescript": "7.0.2",
     "unrun": "0.3.1",
-    "vitest": "5.0.3"
+    "vitest": "5.1.0"
   },
   "engines": {
     "node": ">=24"
@@ -54,8 +54,8 @@
     "@confect/core": "workspace:^",
     "@confect/server": "workspace:^",
     "convex": "^1.32.0",
-    "convex-test": ">=0.0.65 <0.1.0",
-    "effect": ">=4.0.0 <4.1.0"
+    "convex-test": ">=0.0.67 <0.1.0",
+    "effect": "^4.1.4"
   },
   "repository": {
     "type": "git",
@@ -67,8 +67,8 @@
     "postpack": "shx rm -f ./README.md && shx mv ./.README.md.bak ./README.md",
     "prepack": "shx mv ./README.md ./.README.md.bak && shx cp ../../README.md ./README.md",
     "test": "vitest run",
-    "typecheck": "tsc -b tsconfig.src.json",
-    "typecheck:inexact": "tsc --noEmit --project tsconfig.json --exactOptionalPropertyTypes false"
+    "typecheck": "tsrs -b tsconfig.src.json",
+    "typecheck:inexact": "tsrs --noEmit --project tsconfig.json --exactOptionalPropertyTypes false"
   },
   "sideEffects": false,
   "type": "module",
