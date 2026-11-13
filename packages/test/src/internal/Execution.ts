@@ -36,6 +36,7 @@ import * as Scheduling from "./Scheduling.js";
 import * as Storage from "./Storage.js";
 import * as Snapshot from "./Snapshot.js";
 import type {
+  ConvexErrorDataEncoding,
   DocumentId,
   FunctionPath,
   StoredDocument,
@@ -44,12 +45,12 @@ import type {
 import {
   createFunctionHandle,
   createTestJwt,
-  deserializeConvexErrorData,
   evaluateValue,
   hasPendingValues,
   isSimpleObject,
   parseArgs,
   parseFunctionHandle,
+  receiveConvexErrorData,
   resolveCommittedValues,
   simpleHash,
   tableNameFromId,
@@ -2166,7 +2167,7 @@ export class World {
           return result;
         })
         .catch((error: unknown) => {
-          throw deserializeConvexErrorData(error);
+          throw receiveConvexErrorData(error, convexErrorDataFor(from));
         });
     });
   }
@@ -2227,7 +2228,7 @@ export class World {
             }),
           (error: unknown) => {
             frame.close();
-            throw deserializeConvexErrorData(error);
+            throw receiveConvexErrorData(error, convexErrorDataFor(from));
           },
         );
       }
@@ -2279,7 +2280,7 @@ export class World {
               .then((): Outcome => ({ _tag: "returned", value })),
           (error: unknown): Outcome => ({
             _tag: "failed",
-            error: deserializeConvexErrorData(error),
+            error: receiveConvexErrorData(error, convexErrorDataFor(from)),
           }),
         )
         .then((outcome) => {
@@ -2461,7 +2462,7 @@ export class World {
           return result;
         })
         .catch((error: unknown) => {
-          throw deserializeConvexErrorData(error);
+          throw receiveConvexErrorData(error, convexErrorDataFor(from));
         });
     });
   }
@@ -2966,7 +2967,11 @@ export class World {
       case "1.0/actions/query":
       case "1.0/actions/mutation":
       case "1.0/actions/action": {
-        const from: From = { request: execution.request, parent: execution };
+        const from: From = {
+          request: execution.request,
+          parent: execution,
+          syscall: true,
+        };
         const functionPath = functionPathOf(args, execution.componentPath);
         const run =
           op === "1.0/actions/query"
@@ -2982,6 +2987,7 @@ export class World {
           request: execution.request,
           parent: execution,
           budget: budgetOf(transactionLimits),
+          syscall: true,
         };
         const functionPath = functionPathOf(args, execution.componentPath);
         const value = jsonToConvex(udfArgs);
@@ -3439,6 +3445,10 @@ export class World {
 /**
  * Where a call comes from. A call from the test carries its accessor's caller.
  * A nested call carries its parent execution and takes its identity from it.
+ * `syscall` marks a nested call its parent made through `Convex.asyncSyscall`,
+ * whose answer the parent's syscall wrapper decodes. An action's own
+ * `ctx.runQuery`, `ctx.runMutation` and `ctx.runAction` call the kernel
+ * directly instead.
  */
 type From =
   | {
@@ -3446,12 +3456,21 @@ type From =
       readonly request: Request;
       readonly parent?: undefined;
       readonly budget?: undefined;
+      readonly syscall?: undefined;
     }
   | {
       readonly parent: Execution;
       readonly request: Request;
       readonly budget?: Metering.Budget | undefined;
+      readonly syscall?: true;
     };
+
+/**
+ * How a `ConvexError`'s data leaves a call from `from`: as Convex JSON across a
+ * syscall, whose wrapper decodes it once, and as a Convex value anywhere else.
+ */
+const convexErrorDataFor = (from: From): ConvexErrorDataEncoding =>
+  from.syscall === true ? "json" : "value";
 
 const refuse = (error: Metering.TransactionLimitExceeded | undefined) => {
   if (error !== undefined) throw error;

@@ -321,6 +321,22 @@ its fixture's system-table share measures 21. Changeset:
 `kernel-refusal-field-names.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel nested ConvexError data
+
+A function calling another through `ctx.runQuery`, `ctx.runMutation` or
+`ctx.runAction` makes a syscall, and Convex's syscall wrapper decodes a rejected
+call's `ConvexError` data from Convex JSON (`convex`
+`src/server/impl/syscall.ts:46-51`). The binary hands it Convex JSON
+(convex-backend `cccbade4`, `crates/isolate/src/environment/helpers/promise.rs:77-88`).
+The kernel decoded the data to Convex values first, so the wrapper decoded it
+again: an int64 reached the caller as `Error: Unexpected type of 42`, and bytes
+as `{}`. A call made through a syscall now leaves its `ConvexError` data as
+Convex JSON, and the caller's one decode is the only one. A call from the test,
+or an action's own `ctx.run*`, which the kernel answers directly, still decodes
+to Convex values. A plain local-backend fixture runs every caller and payload on
+the binary and on the kernel. Changeset: `test-kernel-nested-convex-error.md`.
+Upstream: fork only, as the kernel is fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
