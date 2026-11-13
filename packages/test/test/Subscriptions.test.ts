@@ -417,7 +417,8 @@ describe("failures", () => {
             because: { kind: "commit" },
           },
         ]);
-        expect(yield* call(() => t.reference())).toEqual([]);
+        const callResult = yield* call(() => t.reference());
+        expect(callResult).toEqual([]);
       }),
   );
 
@@ -550,7 +551,8 @@ describe("read sets", () => {
         expect(subscription.current().outcome).toEqual(
           returned(["a", "b", "c"]),
         );
-        expect(yield* call(() => t.reference())).toEqual([]);
+        const callResult = yield* call(() => t.reference());
+        expect(callResult).toEqual([]);
       }),
   );
 
@@ -645,7 +647,8 @@ describe("time", () => {
         expect(moved).toEqual([]);
         expect(subscription.current().outcome).toEqual(returned(["a"]));
         expect(subscription.current().time).toBe(100);
-        expect(yield* call(() => t.reference())).toEqual([]);
+        const callResult = yield* call(() => t.reference());
+        expect(callResult).toEqual([]);
       }),
   );
 

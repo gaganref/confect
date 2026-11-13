@@ -543,7 +543,8 @@ describe("redaction", () => {
           ),
         ).toEqual([openedCanary, rowCanary, providerCanary]);
         yield* call(() => restored.advance(1000));
-        expect(yield* call(() => restored.query(app.notes, {}))).toEqual([
+        const callResult = yield* call(() => restored.query(app.notes, {}));
+        expect(callResult).toEqual([
           `copied ${openedCanary}`,
           "rotated raw",
           "rotated raw",
@@ -557,14 +558,14 @@ describe("redaction", () => {
       Effect.gen(function* () {
         const { snapshot } = yield* plant(backend());
         const restored = backend();
-        expect(
-          yield* failure(() =>
-            restored.restoreSnapshot(new TextEncoder().encode(snapshot), {
-              worlds: [provider],
-            }),
-          ),
-        ).toMatchObject({ _tag: "SnapshotSecretMissing" });
-        expect(yield* call(() => restored.query(app.accounts, {}))).toEqual([]);
+        const failureResult = yield* failure(() =>
+          restored.restoreSnapshot(new TextEncoder().encode(snapshot), {
+            worlds: [provider],
+          }),
+        );
+        expect(failureResult).toMatchObject({ _tag: "SnapshotSecretMissing" });
+        const callResult = yield* call(() => restored.query(app.accounts, {}));
+        expect(callResult).toEqual([]);
       }),
   );
 
@@ -673,7 +674,8 @@ describe("redaction routes", () => {
         const cached = subscription.current().outcome;
         if (cached._tag !== "failed") throw new Error("expected a failure");
         expect((cached.error as Error).message).toContain(failingCanary);
-        expect(yield* call(() => t.reference())).toEqual([]);
+        const callResult = yield* call(() => t.reference());
+        expect(callResult).toEqual([]);
       }),
   );
 
@@ -725,11 +727,10 @@ describe("redaction routes", () => {
         yield* call(() =>
           restored.restoreSnapshot(snapshot, { secrets: t.secrets() }),
         );
-        expect(
-          yield* call(() =>
-            restored.run((ctx) => ctx.db.query("vault").first()),
-          ),
-        ).toMatchObject({
+        const callResult = yield* call(() =>
+          restored.run((ctx) => ctx.db.query("vault").first()),
+        );
+        expect(callResult).toMatchObject({
           credential: { key: compoundCanary },
           either: { token: unionCanary },
         });
@@ -876,11 +877,13 @@ describe("redaction routes", () => {
         expect(Arr.map(t.held(), ({ outcome }) => outcome)).toEqual([
           prepared.outcome,
         ]);
-        expect(yield* call(() => t.apply(prepared.id))).toMatchObject({
+        const callResult = yield* call(() => t.apply(prepared.id));
+        expect(callResult).toMatchObject({
           kind: "applied",
           result: { token: Redaction.marker },
         });
-        expect(yield* call(() => t.mutation(app.issue, {}))).toEqual({
+        const callResult2 = yield* call(() => t.mutation(app.issue, {}));
+        expect(callResult2).toEqual({
           token: "ab",
         });
       }),
@@ -905,15 +908,14 @@ describe("redaction routes", () => {
         yield* call(() =>
           restored.restoreSnapshot(snapshot, { secrets: t.secrets() }),
         );
-        expect(
-          yield* call(() =>
-            restored.run(async (ctx) => {
-              const link = await ctx.db.query("links").first();
-              const note = await ctx.db.get(link!.target);
-              return { target: link!.target, note: note?.text };
-            }),
-          ),
-        ).toEqual({ target: id, note: "target" });
+        const callResult = yield* call(() =>
+          restored.run(async (ctx) => {
+            const link = await ctx.db.query("links").first();
+            const note = await ctx.db.get(link!.target);
+            return { target: link!.target, note: note?.text };
+          }),
+        );
+        expect(callResult).toEqual({ target: id, note: "target" });
       }),
   );
 
@@ -952,9 +954,10 @@ describe("redaction routes", () => {
         );
         const restored = backend();
         yield* call(() => restored.restoreSnapshot(marked, { secrets }));
-        expect(
-          yield* call(() => restored.run((ctx) => ctx.db.get(id))),
-        ).toMatchObject({ _id: id, text: "marked" });
+        const callResult = yield* call(() =>
+          restored.run((ctx) => ctx.db.get(id)),
+        );
+        expect(callResult).toMatchObject({ _id: id, text: "marked" });
       }),
   );
 

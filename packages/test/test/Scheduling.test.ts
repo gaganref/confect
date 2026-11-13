@@ -440,7 +440,8 @@ describe("the controlled clock", () => {
           }),
         );
         yield* call(() => t.advance(50));
-        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([
+        const callResult = yield* call(() => t.query(jobs.marks, {}));
+        expect(callResult).toEqual([
           { label: "a", at: start + 10 },
           { label: "chain", at: start + 20 },
           { label: "b", at: start + 30 },
@@ -453,7 +454,8 @@ describe("the controlled clock", () => {
             standing: false,
           }),
         ]);
-        expect(yield* call(() => t.mutation(jobs.now, {}))).toBe(start + 50);
+        const callResult2 = yield* call(() => t.mutation(jobs.now, {}));
+        expect(callResult2).toBe(start + 50);
       }),
   );
 
@@ -471,9 +473,8 @@ describe("the controlled clock", () => {
           }),
         );
         yield* call(() => t.finishInProgressScheduledFunctions());
-        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([
-          { label: "now", at: start },
-        ]);
+        const callResult = yield* call(() => t.query(jobs.marks, {}));
+        expect(callResult).toEqual([{ label: "now", at: start }]);
         expect(Arr.map(t.jobs(), (job) => job.scheduledTime)).toEqual([
           start + 10,
         ]);
@@ -499,16 +500,16 @@ describe("jobs", () => {
         yield* call(() => t.mutation(jobs.cancel, { id: later! }));
         yield* call(() => t.action(jobs.cancelFromAction, { id: fromAction! }));
         yield* call(() => t.finishAllScheduledFunctions());
-        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([]);
-        expect(
-          yield* call(() =>
-            Promise.all(
-              Arr.map([same, later!, fromAction!], (id) =>
-                t.query(jobs.state, { id }),
-              ),
+        const callResult = yield* call(() => t.query(jobs.marks, {}));
+        expect(callResult).toEqual([]);
+        const callResult2 = yield* call(() =>
+          Promise.all(
+            Arr.map([same, later!, fromAction!], (id) =>
+              t.query(jobs.state, { id }),
             ),
           ),
-        ).toEqual(["canceled", "canceled", "canceled"]);
+        );
+        expect(callResult2).toEqual(["canceled", "canceled", "canceled"]);
       }),
   );
 
@@ -521,9 +522,8 @@ describe("jobs", () => {
         expect(t.jobs()).toEqual([]);
         yield* failure(() => t.action(jobs.scheduleFromAction, {}));
         yield* call(() => t.finishAllScheduledFunctions());
-        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([
-          { label: "from action", at: start },
-        ]);
+        const callResult = yield* call(() => t.query(jobs.marks, {}));
+        expect(callResult).toEqual([{ label: "from action", at: start }]);
       }),
   );
 
@@ -571,9 +571,11 @@ describe("jobs", () => {
           kit.registerComponent("mailer", mailerSchema, mailerModules),
         );
         yield* call(() => t.mutation(jobs.sendMail, { text: "hello" }));
-        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([]);
+        const callResult = yield* call(() => t.query(jobs.marks, {}));
+        expect(callResult).toEqual([]);
         yield* call(() => t.finishAllScheduledFunctions());
-        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([
+        const callResult2 = yield* call(() => t.query(jobs.marks, {}));
+        expect(callResult2).toEqual([
           { label: "delivered hello", at: start + 10 },
         ]);
       }),
@@ -590,9 +592,10 @@ describe("jobs", () => {
           t.mutation(components.flow.flow.start, {}),
         );
         yield* call(() => t.finishAllScheduledFunctions());
-        expect(
-          yield* call(() => t.query(components.flow.flow.get, { id })),
-        ).toEqual({
+        const callResult = yield* call(() =>
+          t.query(components.flow.flow.get, { id }),
+        );
+        expect(callResult).toEqual({
           state: "waiting",
         });
         expect(t.jobs()).toEqual([]);
@@ -600,9 +603,10 @@ describe("jobs", () => {
           t.mutation(components.flow.flow.send, { id, value: "approved" }),
         );
         yield* call(() => t.finishAllScheduledFunctions());
-        expect(
-          yield* call(() => t.query(components.flow.flow.get, { id })),
-        ).toEqual({
+        const callResult2 = yield* call(() =>
+          t.query(components.flow.flow.get, { id }),
+        );
+        expect(callResult2).toEqual({
           state: "done",
           value: "approved",
         });
@@ -639,9 +643,10 @@ describe("standing sources", () => {
         );
         yield* call(() => t.mutation(components.beat.public.start, {}));
         yield* call(() => t.finishAllScheduledFunctions());
-        expect(
-          yield* call(() => t.query(components.beat.public.count, {})),
-        ).toBe(0);
+        const callResult = yield* call(() =>
+          t.query(components.beat.public.count, {}),
+        );
+        expect(callResult).toBe(0);
         expect(t.jobs()).toEqual([
           expect.objectContaining({
             componentPath: "beat",
@@ -651,9 +656,10 @@ describe("standing sources", () => {
           }),
         ]);
         yield* call(() => t.advance(2500));
-        expect(
-          yield* call(() => t.query(components.beat.public.count, {})),
-        ).toBe(2);
+        const callResult2 = yield* call(() =>
+          t.query(components.beat.public.count, {}),
+        );
+        expect(callResult2).toBe(2);
         expect(Arr.map(t.jobs(), (job) => job.scheduledTime)).toEqual([
           start + 3000,
         ]);
@@ -669,7 +675,8 @@ describe("standing sources", () => {
             standing: ["public:rescheduler"],
           }),
         );
-        expect(yield* failure(() => t.query(jobs.marks, {}))).toMatchObject({
+        const failureResult = yield* failure(() => t.query(jobs.marks, {}));
+        expect(failureResult).toMatchObject({
           _tag: "UnknownStandingSource",
           componentPath: "beat",
           name: "public:rescheduler",
@@ -872,7 +879,8 @@ describe("declared cron jobs", () => {
           expect.objectContaining({ name: "minutely", nextRun: utc(0, 15) }),
         ]);
         yield* call(() => t.advance(130_000));
-        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([
+        const callResult = yield* call(() => t.query(jobs.marks, {}));
+        expect(callResult).toEqual([
           { label: "pulse", at: utc(0, 10) },
           { label: "minutely", at: utc(0, 15) },
           { label: "pulse", at: utc(0, 55) },
@@ -916,7 +924,8 @@ describe("declared cron jobs", () => {
         );
         yield* call(() => t.mutation(components.beat.public.start, {}));
         yield* call(() => t.finishAllScheduledFunctions());
-        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([]);
+        const callResult = yield* call(() => t.query(jobs.marks, {}));
+        expect(callResult).toEqual([]);
         expect(t.crons()).toEqual([
           expect.objectContaining({ name: "pulse", nextRun: cronStart }),
         ]);
@@ -931,10 +940,12 @@ describe("declared cron jobs", () => {
           crons.interval("failing", { minutes: 1 }, ticks.failAfterScheduling),
         );
         yield* call(() => t.advance(0));
-        expect(yield* call(() => t.query(ticks.scheduledRows, {}))).toBe(0);
+        const callResult = yield* call(() => t.query(ticks.scheduledRows, {}));
+        expect(callResult).toBe(0);
         expect(t.jobs()).toEqual([]);
         yield* call(() => t.finishAllScheduledFunctions());
-        expect(yield* call(() => t.query(jobs.marks, {}))).toEqual([]);
+        const callResult2 = yield* call(() => t.query(jobs.marks, {}));
+        expect(callResult2).toEqual([]);
         expect(t.crons()).toEqual([
           expect.objectContaining({
             name: "failing",
@@ -996,12 +1007,14 @@ describe("declared cron jobs", () => {
           t.subscriber().subscribe(jobs.marks, {}),
         );
         yield* call(() => t.advance(0));
-        expect(yield* call(() => t.refresh())).toHaveLength(1);
+        const callResult = yield* call(() => t.refresh());
+        expect(callResult).toHaveLength(1);
         expect(subscription.current().outcome).toEqual({
           _tag: "returned",
           value: [{ label: "pulse", at: cronStart }],
         });
-        expect(yield* call(() => t.reference())).toEqual([]);
+        const callResult2 = yield* call(() => t.reference());
+        expect(callResult2).toEqual([]);
       }),
   );
 
@@ -1018,7 +1031,8 @@ describe("declared cron jobs", () => {
           });
         });
         yield* call(() => t.advance(0));
-        expect(yield* call(() => t.query(ticks.scheduledRows, {}))).toBe(1000);
+        const callResult = yield* call(() => t.query(ticks.scheduledRows, {}));
+        expect(callResult).toBe(1000);
         expect(t.crons()).toEqual([
           expect.objectContaining({ name: "most", last: { kind: "success" } }),
           expect.objectContaining({
@@ -1041,7 +1055,8 @@ describe("declared cron jobs", () => {
         (kit) => kit.registerComponent("ticker", tickerSchema, tickerModules),
       );
       yield* call(() => t.advance(45_000));
-      expect(yield* call(() => t.query(ticker.list, {}))).toEqual([
+      const callResult = yield* call(() => t.query(ticker.list, {}));
+      expect(callResult).toEqual([
         cronStart,
         cronStart + 20_000,
         cronStart + 40_000,
@@ -1068,7 +1083,8 @@ describe("declared cron jobs", () => {
             { label: "reads" },
           ),
         );
-        expect(yield* failure(() => openIn(ofQuery))).toMatchObject({
+        const failureResult = yield* failure(() => openIn(ofQuery));
+        expect(failureResult).toMatchObject({
           _tag: "InvalidCron",
           name: "reads",
           message: expect.stringContaining(
@@ -1078,7 +1094,8 @@ describe("declared cron jobs", () => {
         const ofMissing = cronControls((crons) =>
           crons.interval("gone", { seconds: 5 }, ticks.missing),
         );
-        expect(yield* failure(() => openIn(ofMissing))).toMatchObject({
+        const failureResult2 = yield* failure(() => openIn(ofMissing));
+        expect(failureResult2).toMatchObject({
           _tag: "InvalidCron",
           message: expect.stringContaining(
             "schedules a function that does not exist: ticks:missing",
@@ -1096,21 +1113,19 @@ describe("declared cron jobs", () => {
             label: "report",
           }),
         );
-        expect(yield* failure(() => daily.query(jobs.marks, {}))).toMatchObject(
-          {
-            _tag: "CronRandomUnavailable",
-            name: "report",
-          },
-        );
+        const failureResult = yield* failure(() => daily.query(jobs.marks, {}));
+        expect(failureResult).toMatchObject({
+          _tag: "CronRandomUnavailable",
+          name: "report",
+        });
         const interval = cronControls((crons) =>
           crons.interval("pulse", { seconds: 5 }, ticks.log, {
             label: "pulse",
           }),
         );
         yield* call(() => interval.advance(0));
-        expect(yield* call(() => interval.query(jobs.marks, {}))).toEqual([
-          { label: "pulse", at: cronStart },
-        ]);
+        const callResult = yield* call(() => interval.query(jobs.marks, {}));
+        expect(callResult).toEqual([{ label: "pulse", at: cronStart }]);
       }),
   );
 

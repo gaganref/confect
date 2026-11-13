@@ -20,9 +20,9 @@ const onKernel = <A, E>(
   ) => Effect.Effect<A, E>,
 ) =>
   Effect.gen(function* () {
-    return yield* program(
-      yield* TestConfect.TestConfect<typeof registry.schema>(),
-    );
+    const testConfect =
+      yield* TestConfect.TestConfect<typeof registry.schema>();
+    return yield* program(testConfect);
   }).pipe(Effect.provide(TestConfect.layer(registry, { target: "kernel" })));
 
 layer(LocalBackend.layer, { timeout: "120 seconds" })(

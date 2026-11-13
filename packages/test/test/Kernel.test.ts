@@ -290,7 +290,8 @@ describe("rollback", () => {
         ),
       );
       expect(failed).toContain("The host mutation failed.");
-      expect(yield* contents(t)).toEqual([[], []]);
+      const contentsResult = yield* contents(t);
+      expect(contentsResult).toEqual([[], []]);
     }),
   );
 
@@ -302,7 +303,8 @@ describe("rollback", () => {
         yield* Effect.promise(() =>
           t.mutation(notes.keepAfterNestedFailure, {}),
         );
-        expect(yield* contents(t)).toEqual([["kept"], []]);
+        const contentsResult = yield* contents(t);
+        expect(contentsResult).toEqual([["kept"], []]);
       }),
   );
 
@@ -314,7 +316,8 @@ describe("rollback", () => {
         yield* Effect.promise(() =>
           t.mutation(notes.writeBesideNestedFailure, {}),
         );
-        expect(yield* contents(t)).toEqual([["beside"], []]);
+        const contentsResult = yield* contents(t);
+        expect(contentsResult).toEqual([["beside"], []]);
       }),
   );
 });
@@ -341,7 +344,8 @@ describe("syscall order", () => {
         yield* Effect.promise(() =>
           t.mutation(notes.renameAfterNested, { id }),
         );
-        expect(yield* textOf(t, id)).toBe("parent");
+        const textOfResult = yield* textOf(t, id);
+        expect(textOfResult).toBe("parent");
       }),
   );
 
@@ -364,9 +368,10 @@ describe("syscall order", () => {
   it.effect("a query issued after a write reads that write", () =>
     Effect.gen(function* () {
       const t = world();
-      expect(
-        yield* Effect.promise(() => t.mutation(notes.insertThenList, {})),
-      ).toEqual(["queued"]);
+      const resolved = yield* Effect.promise(() =>
+        t.mutation(notes.insertThenList, {}),
+      );
+      expect(resolved).toEqual(["queued"]);
     }),
   );
 });
@@ -378,12 +383,12 @@ describe("identity", () => {
   it.effect("a host function and its nested host calls see the caller", () =>
     Effect.gen(function* () {
       const t = signedIn(world());
-      expect(yield* Effect.promise(() => t.query(notes.whoami, {}))).toBe(
-        "host-user",
+      const resolved = yield* Effect.promise(() => t.query(notes.whoami, {}));
+      expect(resolved).toBe("host-user");
+      const resolved2 = yield* Effect.promise(() =>
+        t.action(notes.whoamiThroughQuery, {}),
       );
-      expect(
-        yield* Effect.promise(() => t.action(notes.whoamiThroughQuery, {})),
-      ).toBe("host-user");
+      expect(resolved2).toBe("host-user");
     }),
   );
 
@@ -392,9 +397,10 @@ describe("identity", () => {
     () =>
       Effect.gen(function* () {
         const t = signedIn(world());
-        expect(
-          yield* Effect.promise(() => t.action(notes.componentWhoami, {})),
-        ).toBeNull();
+        const resolved = yield* Effect.promise(() =>
+          t.action(notes.componentWhoami, {}),
+        );
+        expect(resolved).toBeNull();
       }),
   );
 
@@ -403,9 +409,10 @@ describe("identity", () => {
     () =>
       Effect.gen(function* () {
         const t = signedIn(world());
-        expect(
-          yield* Effect.promise(() => t.query(store.rows.whoami, {})),
-        ).toBeNull();
+        const resolved = yield* Effect.promise(() =>
+          t.query(store.rows.whoami, {}),
+        );
+        expect(resolved).toBeNull();
       }),
   );
 });
@@ -448,14 +455,14 @@ describe("function validators", () => {
       Effect.gen(function* () {
         const t = callbackWorld();
         const handle = yield* call(() => t.mutation(callbacks.mint, {}));
-        expect(
-          yield* outcome(() => t.mutation(callbacks.store, { handle })),
-        ).toBe("accepted");
-        expect(
-          yield* outcome(() =>
-            t.mutation(callbacks.store, { handle: "callbacks:target" }),
-          ),
-        ).toContain("Expected a function handle");
+        const outcomeResult = yield* outcome(() =>
+          t.mutation(callbacks.store, { handle }),
+        );
+        expect(outcomeResult).toBe("accepted");
+        const outcomeResult2 = yield* outcome(() =>
+          t.mutation(callbacks.store, { handle: "callbacks:target" }),
+        );
+        expect(outcomeResult2).toContain("Expected a function handle");
       }),
   );
 
@@ -467,9 +474,10 @@ describe("function validators", () => {
   ])("a function validator refuses %s", ([, handle]) =>
     Effect.gen(function* () {
       const t = callbackWorld();
-      expect(
-        yield* outcome(() => t.mutation(callbacks.store, { handle })),
-      ).toContain("Expected a function handle");
+      const outcomeResult = yield* outcome(() =>
+        t.mutation(callbacks.store, { handle }),
+      );
+      expect(outcomeResult).toContain("Expected a function handle");
     }),
   );
 });
@@ -533,13 +541,15 @@ describe("record validators", () => {
   it.effect("arguments are checked against a record's values", () =>
     Effect.gen(function* () {
       const t = recordWorld();
-      expect(
-        yield* outcome(() => t.mutation(boards.take, { scores: { a: 1 } })),
-      ).toBe("accepted");
+      const outcomeResult = yield* outcome(() =>
+        t.mutation(boards.take, { scores: { a: 1 } }),
+      );
+      expect(outcomeResult).toBe("accepted");
       for (const wrong of [{ a: "wrong" }, 42, null]) {
-        expect(
-          yield* outcome(() => t.mutation(boards.take, { scores: wrong })),
-        ).toContain("Validator error");
+        const outcomeResult2 = yield* outcome(() =>
+          t.mutation(boards.take, { scores: wrong }),
+        );
+        expect(outcomeResult2).toContain("Validator error");
       }
     }),
   );
@@ -547,51 +557,54 @@ describe("record validators", () => {
   it.effect("arguments are checked against a record's keys", () =>
     Effect.gen(function* () {
       const t = recordWorld();
-      expect(
-        yield* outcome(() => t.mutation(boards.keyed, { scores: { home: 1 } })),
-      ).toBe("accepted");
-      expect(
-        yield* outcome(() =>
-          t.mutation(boards.keyed, { scores: { elsewhere: 1 } }),
-        ),
-      ).toContain("Validator error");
+      const outcomeResult = yield* outcome(() =>
+        t.mutation(boards.keyed, { scores: { home: 1 } }),
+      );
+      expect(outcomeResult).toBe("accepted");
+      const outcomeResult2 = yield* outcome(() =>
+        t.mutation(boards.keyed, { scores: { elsewhere: 1 } }),
+      );
+      expect(outcomeResult2).toContain("Validator error");
     }),
   );
 
   it.effect("a return value is checked against a record", () =>
     Effect.gen(function* () {
       const t = recordWorld();
-      expect(
-        yield* outcome(() => t.query(boards.give, { scores: { a: 1 } })),
-      ).toBe("accepted");
-      expect(
-        yield* outcome(() => t.query(boards.give, { scores: { a: "wrong" } })),
-      ).toContain("Return value validation failed");
+      const outcomeResult = yield* outcome(() =>
+        t.query(boards.give, { scores: { a: 1 } }),
+      );
+      expect(outcomeResult).toBe("accepted");
+      const outcomeResult2 = yield* outcome(() =>
+        t.query(boards.give, { scores: { a: "wrong" } }),
+      );
+      expect(outcomeResult2).toContain("Return value validation failed");
     }),
   );
 
   it.effect("a written row is checked against a record field", () =>
     Effect.gen(function* () {
       const t = recordWorld();
-      expect(
-        yield* outcome(() =>
-          t.run((ctx: any) => ctx.db.insert("boards", { scores: { a: 1 } })),
+      const outcomeResult = yield* outcome(() =>
+        t.run((ctx: any) => ctx.db.insert("boards", { scores: { a: 1 } })),
+      );
+      expect(outcomeResult).toBe("accepted");
+      const outcomeResult2 = yield* outcome(() =>
+        t.run((ctx: any) =>
+          ctx.db.insert("boards", { scores: { a: "wrong" } }),
         ),
-      ).toBe("accepted");
-      expect(
-        yield* outcome(() =>
-          t.run((ctx: any) =>
-            ctx.db.insert("boards", { scores: { a: "wrong" } }),
-          ),
-        ),
-      ).toContain("Validator error");
+      );
+      expect(outcomeResult2).toContain("Validator error");
     }),
   );
 
   it.effect("a validator kind the kernel does not know is refused", () =>
     Effect.gen(function* () {
       const t = recordWorld();
-      expect(yield* outcome(() => t.query(boards.future, { x: 1 }))).toContain(
+      const outcomeResult = yield* outcome(() =>
+        t.query(boards.future, { x: 1 }),
+      );
+      expect(outcomeResult).toContain(
         "cannot check a validator of type `future`",
       );
     }),
@@ -610,10 +623,12 @@ describe("cross-component atomicity", () => {
         hold = gate.promise;
         const pending = t.mutation(notes.writeBoth, { fail: false });
         yield* Effect.promise(() => inside.promise);
-        expect(yield* contents(t)).toEqual([[], []]);
+        const contentsResult = yield* contents(t);
+        expect(contentsResult).toEqual([[], []]);
         gate.release();
         yield* Effect.promise(() => pending);
-        expect(yield* contents(t)).toEqual([["host"], ["component"]]);
+        const contentsResult2 = yield* contents(t);
+        expect(contentsResult2).toEqual([["host"], ["component"]]);
       }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
@@ -636,7 +651,8 @@ describe("cross-component atomicity", () => {
           ),
         );
         expect(failed).toContain("The host failed after its component.");
-        expect(yield* contents(t)).toEqual([[], []]);
+        const contentsResult = yield* contents(t);
+        expect(contentsResult).toEqual([[], []]);
       }),
   );
 });
@@ -742,11 +758,10 @@ describe("module loading", () => {
               }),
             }),
         });
-        expect(
-          yield* Effect.promise(() =>
-            t.mutation(makeFunctionReference<"mutation">("runner:run"), {}),
-          ),
-        ).toBe("loaded");
+        const resolved = yield* Effect.promise(() =>
+          t.mutation(makeFunctionReference<"mutation">("runner:run"), {}),
+        );
+        expect(resolved).toBe("loaded");
       }).pipe(
         Effect.ensuring(
           Effect.sync(() => {
@@ -1084,14 +1099,16 @@ describe("read sets", () => {
         const first = yield* call(() => t.prepare(occ.bump, { id }));
         const second = yield* call(() => t.prepare(occ.bump, { id }));
         const applied = yield* call(() => t.apply(first.id));
-        const next = conflicted(yield* call(() => t.apply(second.id)));
+        const callResult = yield* call(() => t.apply(second.id));
+        const next = conflicted(callResult);
         const retried = yield* call(() => t.apply(next.id));
         expect([applied.kind, next.number, retried.kind]).toEqual([
           "applied",
           2,
           "applied",
         ]);
-        expect(yield* call(() => t.query(occ.counter, { id }))).toBe(2);
+        const callResult2 = yield* call(() => t.query(occ.counter, { id }));
+        expect(callResult2).toBe(2);
       }),
   );
 
@@ -1108,11 +1125,13 @@ describe("read sets", () => {
         );
         expect(applied).toMatchObject({ kind: "applied", version: 2 });
         const next = conflicted(conflict);
-        expect(yield* call(() => t.apply(next.id))).toMatchObject({
+        const callResult = yield* call(() => t.apply(next.id));
+        expect(callResult).toMatchObject({
           kind: "applied",
           version: 3,
         });
-        expect(yield* call(() => t.query(occ.counter, { id }))).toBe(2);
+        const callResult2 = yield* call(() => t.query(occ.counter, { id }));
+        expect(callResult2).toBe(2);
       }),
   );
 
@@ -1125,7 +1144,8 @@ describe("read sets", () => {
         yield* call(() =>
           Promise.all(Arr.map([1, 2, 3], () => t.mutation(occ.bump, { id }))),
         );
-        expect(yield* call(() => t.query(occ.counter, { id }))).toBe(3);
+        const callResult = yield* call(() => t.query(occ.counter, { id }));
+        expect(callResult).toBe(3);
       }),
   );
 
@@ -1141,9 +1161,11 @@ describe("read sets", () => {
           t.prepare(occ.lookup, { id: outcome.value }),
         );
         yield* call(() => t.apply(added.id));
-        const next = conflicted(yield* call(() => t.apply(lookup.id)));
+        const callResult = yield* call(() => t.apply(lookup.id));
+        const next = conflicted(callResult);
         yield* call(() => t.apply(next.id));
-        expect(yield* call(() => t.query(occ.seen, {}))).toEqual(["present"]);
+        const callResult2 = yield* call(() => t.query(occ.seen, {}));
+        expect(callResult2).toEqual(["present"]);
       }),
   );
 
@@ -1159,10 +1181,12 @@ describe("read sets", () => {
         const valid = yield* call(() => t.apply(past.id));
         const inside = yield* call(() => t.prepare(occ.head, {}));
         yield* call(() => t.mutation(occ.add, { key: "0" }));
-        const next = conflicted(yield* call(() => t.apply(inside.id)));
+        const callResult = yield* call(() => t.apply(inside.id));
+        const next = conflicted(callResult);
         yield* call(() => t.apply(next.id));
         expect(valid.kind).toBe("applied");
-        expect(yield* call(() => t.query(occ.seen, {}))).toEqual(["1", "0"]);
+        const callResult2 = yield* call(() => t.query(occ.seen, {}));
+        expect(callResult2).toEqual(["1", "0"]);
       }),
   );
 
@@ -1176,13 +1200,12 @@ describe("read sets", () => {
         const valid = yield* call(() => t.apply(beside.id));
         const phantom = yield* call(() => t.prepare(occ.claim, { key: "x" }));
         yield* call(() => t.mutation(occ.add, { key: "x" }));
-        const next = conflicted(yield* call(() => t.apply(phantom.id)));
+        const callResult = yield* call(() => t.apply(phantom.id));
+        const next = conflicted(callResult);
         yield* call(() => t.apply(next.id));
         expect(valid.kind).toBe("applied");
-        expect(yield* call(() => t.query(occ.seen, {}))).toEqual([
-          "free x",
-          "taken x",
-        ]);
+        const callResult2 = yield* call(() => t.query(occ.seen, {}));
+        expect(callResult2).toEqual(["free x", "taken x"]);
       }),
   );
 
@@ -1201,13 +1224,12 @@ describe("read sets", () => {
         );
         yield* call(() => t.mutation(occ.add, { key: "2" }));
         const valid = yield* call(() => t.apply(terminal.id));
-        const next = conflicted(yield* call(() => t.apply(first.id)));
+        const callResult = yield* call(() => t.apply(first.id));
+        const next = conflicted(callResult);
         yield* call(() => t.apply(next.id));
         expect([cursor, valid.kind]).toEqual(["_end_cursor", "applied"]);
-        expect(yield* call(() => t.query(occ.seen, {}))).toEqual([
-          "page ",
-          "page 1,2",
-        ]);
+        const callResult2 = yield* call(() => t.query(occ.seen, {}));
+        expect(callResult2).toEqual(["page ", "page 1,2"]);
       }),
   );
 
@@ -1233,13 +1255,12 @@ describe("read sets", () => {
           t.prepare(occ.notePage, { cursor: null, endCursor }),
         );
         yield* call(() => t.mutation(occ.add, { key: "2" }));
-        const next = conflicted(yield* call(() => t.apply(inside.id)));
+        const callResult = yield* call(() => t.apply(inside.id));
+        const next = conflicted(callResult);
         yield* call(() => t.apply(next.id));
         expect(valid.kind).toBe("applied");
-        expect(yield* call(() => t.query(occ.seen, {}))).toEqual([
-          "page 1",
-          "page 1,2",
-        ]);
+        const callResult2 = yield* call(() => t.query(occ.seen, {}));
+        expect(callResult2).toEqual(["page 1", "page 1,2"]);
       }),
   );
 
@@ -1253,7 +1274,8 @@ describe("read sets", () => {
         const numbers: Array<number> = [];
         for (const _ of [2, 3, 4, 5]) {
           yield* call(() => t.mutation(occ.bump, { id }));
-          attempt = conflicted(yield* call(() => t.apply(attempt.id)));
+          const callResult = yield* call(() => t.apply(attempt.id));
+          attempt = conflicted(callResult);
           numbers.push(attempt.number);
         }
         yield* call(() => t.mutation(occ.bump, { id }));
@@ -1263,7 +1285,8 @@ describe("read sets", () => {
           kind: "exhausted",
           error: { _tag: "OptimisticConcurrencyControlFailure" },
         });
-        expect(yield* call(() => t.query(occ.counter, { id }))).toBe(5);
+        const callResult2 = yield* call(() => t.query(occ.counter, { id }));
+        expect(callResult2).toBe(5);
         expect(t.held()).toEqual([]);
       }),
   );
@@ -1278,9 +1301,11 @@ describe("nested reads", () => {
         const id = yield* call(() => t.mutation(occ.create, {}));
         const held = yield* call(() => t.prepare(occ.throughQuery, { id }));
         yield* call(() => t.mutation(occ.bump, { id }));
-        const next = conflicted(yield* call(() => t.apply(held.id)));
+        const callResult = yield* call(() => t.apply(held.id));
+        const next = conflicted(callResult);
         yield* call(() => t.apply(next.id));
-        expect(yield* call(() => t.query(occ.seen, {}))).toEqual(["read 1"]);
+        const callResult2 = yield* call(() => t.query(occ.seen, {}));
+        expect(callResult2).toEqual(["read 1"]);
       }),
   );
 
@@ -1292,11 +1317,11 @@ describe("nested reads", () => {
         const id = yield* call(() => t.mutation(occ.create, {}));
         const held = yield* call(() => t.prepare(occ.throughFailure, { id }));
         yield* call(() => t.mutation(occ.bump, { id }));
-        const next = conflicted(yield* call(() => t.apply(held.id)));
+        const callResult = yield* call(() => t.apply(held.id));
+        const next = conflicted(callResult);
         yield* call(() => t.apply(next.id));
-        expect(yield* call(() => t.query(occ.seen, {}))).toEqual([
-          "after failure",
-        ]);
+        const callResult2 = yield* call(() => t.query(occ.seen, {}));
+        expect(callResult2).toEqual(["after failure"]);
       }),
   );
 });
@@ -1324,7 +1349,8 @@ describe("commit timestamps", () => {
           { version: 2, commitTs: 5_002n },
           { version: 3, commitTs: 5_003n },
         ]);
-        expect(yield* call(() => t.query(occ.stamps, {}))).toEqual([
+        const callResult = yield* call(() => t.query(occ.stamps, {}));
+        expect(callResult).toEqual([
           { label: "a", at: 5_002n },
           { label: "b", at: 5_003n },
           { label: "c", at: 5_001n },
@@ -1362,7 +1388,8 @@ describe("commit timestamps", () => {
         const nothing = yield* call(() => t.mutation(occ.writeNothing, {}));
         vi.setSystemTime(2_000);
         yield* call(() => t.mutation(occ.stamp, { label: "later" }));
-        expect(yield* call(() => t.query(occ.stamps, {}))).toEqual([
+        const callResult = yield* call(() => t.query(occ.stamps, {}));
+        expect(callResult).toEqual([
           { label: "first", at: 1_000_000_000n },
           { label: "later", at: 2_000_000_000n },
         ]);
@@ -1407,9 +1434,8 @@ describe("commit timestamps", () => {
         ),
       );
       expect(refused).toMatchObject({ _tag: "CommitTsNotIncreasing" });
-      expect(yield* call(() => t.query(occ.stamps, {}))).toEqual([
-        { label: "first", at: 7n },
-      ]);
+      const callResult = yield* call(() => t.query(occ.stamps, {}));
+      expect(callResult).toEqual([{ label: "first", at: 7n }]);
     }),
   );
 
@@ -1888,7 +1914,8 @@ describe("invocations", () => {
           Invocation.bind(caller, () => t.prepare(life.numbered, { id })),
         );
         yield* call(() => t.mutation(life.bump, { id }));
-        const next = conflicted(yield* call(() => t.apply(held.id)));
+        const callResult = yield* call(() => t.apply(held.id));
+        const next = conflicted(callResult);
         yield* call(() => t.apply(next.id));
         expect(attempts).toEqual([1, 2]);
       }),
@@ -1982,9 +2009,10 @@ describe("invocations", () => {
           time: 5_000,
         });
         now = 6_000;
-        expect(
-          yield* call(() => Invocation.bind(caller, () => t.reference())),
-        ).toEqual([]);
+        const callResult = yield* call(() =>
+          Invocation.bind(caller, () => t.reference()),
+        );
+        expect(callResult).toEqual([]);
       }),
   );
 });

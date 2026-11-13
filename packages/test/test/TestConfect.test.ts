@@ -324,7 +324,8 @@ it.effect.each([{ target: "convex-test" }, { target: "kernel" }] as const)(
   ({ target }) =>
     Effect.gen(function* () {
       vi.useFakeTimers();
-      expect(yield* program).toEqual({
+      const programValue = yield* program;
+      expect(programValue).toEqual({
         notes: ["direct", "scheduled"],
         rows: ["component"],
       });
@@ -410,10 +411,14 @@ it.effect.each([
   },
 ])("the $form form runs on the target it names", ({ layer }) =>
   Effect.gen(function* () {
-    expect(yield* advancesTimers.pipe(Effect.provide(layer({})))).toBe(true);
-    expect(
-      yield* advancesTimers.pipe(Effect.provide(layer({ target: "kernel" }))),
-    ).toBe(false);
+    const advancesTimersResult = yield* advancesTimers.pipe(
+      Effect.provide(layer({})),
+    );
+    expect(advancesTimersResult).toBe(true);
+    const advancesTimersResult2 = yield* advancesTimers.pipe(
+      Effect.provide(layer({ target: "kernel" })),
+    );
+    expect(advancesTimersResult2).toBe(false);
   }),
 );
 

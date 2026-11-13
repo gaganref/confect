@@ -244,11 +244,10 @@ const insertedIntervals = FunctionImpl.make(
           .pipe(Effect.map((current) => current.databaseQueries.used));
       const ids = [];
       for (let i = 0; i < count; i++) {
-        ids.push(
-          yield* writer
-            .table("transactionNotes")
-            .insert({ caseId, value: `inserted-${i}` }),
-        );
+        const id = yield* writer
+          .table("transactionNotes")
+          .insert({ caseId, value: `inserted-${i}` });
+        ids.push(id);
       }
       const afterInserts = yield* queries();
       yield* reader.table("transactionNotes").get(ids[0]!);

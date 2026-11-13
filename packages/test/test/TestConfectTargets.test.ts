@@ -77,10 +77,12 @@ it.effect(
       yield* Effect.gen(function* () {
         const other = yield* Test;
         yield* insert(other, "other");
-        expect(yield* read(other)).toEqual(["other"]);
+        const readResult = yield* read(other);
+        expect(readResult).toEqual(["other"]);
       }).pipe(Effect.provide(layer("convex-test")));
       gate.resolve();
-      expect(yield* Fiber.join(held)).toEqual(["held"]);
+      const joined = yield* Fiber.join(held);
+      expect(joined).toEqual(["held"]);
     }).pipe(Effect.provide(layer("kernel"))),
 );
 
@@ -95,12 +97,16 @@ it.effect.each([
       yield* insert(first, "outer");
       yield* Effect.gen(function* () {
         const second = yield* Test;
-        expect(yield* read(second)).toEqual([]);
+        const readResult = yield* read(second);
+        expect(readResult).toEqual([]);
         yield* insert(second, "inner");
-        expect(yield* read(second)).toEqual(["inner"]);
-        expect(yield* read(first)).toEqual(["outer"]);
+        const readResult2 = yield* read(second);
+        expect(readResult2).toEqual(["inner"]);
+        const readResult3 = yield* read(first);
+        expect(readResult3).toEqual(["outer"]);
       }).pipe(Effect.provide(layer(inner)));
-      expect(yield* read(first)).toEqual(["outer"]);
+      const readResult = yield* read(first);
+      expect(readResult).toEqual(["outer"]);
     }).pipe(Effect.provide(layer(outer))),
 );
 
@@ -181,9 +187,11 @@ it.effect(
             (name) => Object.getOwnPropertyDescriptor(globalThis, name)?.get,
           );
         const settled = tops();
-        expect(yield* Effect.promise(() => t.refresh())).toEqual([]);
+        const resolved = yield* Effect.promise(() => t.refresh());
+        expect(resolved).toEqual([]);
         yield* insert(other, "other again");
-        expect(yield* Effect.promise(() => t.refresh())).toEqual([]);
+        const resolved2 = yield* Effect.promise(() => t.refresh());
+        expect(resolved2).toEqual([]);
         yield* Effect.promise(() => t.mutation(notes.add, { text: "b" }));
         const reran = yield* Effect.promise(() => t.refresh());
         expect(reran).toMatchObject([
@@ -192,8 +200,10 @@ it.effect(
             to: { _tag: "returned", value: ["a", "b"] },
           },
         ]);
-        expect(yield* Effect.promise(() => t.reference())).toEqual([]);
-        expect(yield* read(other)).toEqual(["other", "other again"]);
+        const resolved3 = yield* Effect.promise(() => t.reference());
+        expect(resolved3).toEqual([]);
+        const readResult = yield* read(other);
+        expect(readResult).toEqual(["other", "other again"]);
         expect(tops()).toEqual(settled);
       }).pipe(Effect.provide(layer("convex-test")));
     }),

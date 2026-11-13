@@ -467,9 +467,9 @@ describe("snapshot export", () => {
           restored.restoreSnapshot(exported, { worlds: [mail] }),
         );
         expect(text(restored.exportSnapshot())).toBe(text(exported));
-        expect(yield* call(() => restored.query(app.dump, {}))).toEqual(
-          yield* call(() => t.query(app.dump, {})),
-        );
+        const callResult = yield* call(() => restored.query(app.dump, {}));
+        const callResult2 = yield* call(() => t.query(app.dump, {}));
+        expect(callResult).toEqual(callResult2);
       }),
   );
 
@@ -527,9 +527,10 @@ describe("snapshot restore", () => {
         yield* call(() =>
           restored.mutation(app.callStored, { text: "after restore" }),
         );
-        expect(yield* call(() => restored.query(store.rows.list, {}))).toEqual([
-          "after restore",
-        ]);
+        const callResult = yield* call(() =>
+          restored.query(store.rows.list, {}),
+        );
+        expect(callResult).toEqual(["after restore"]);
       }),
   );
 
@@ -600,10 +601,12 @@ describe("snapshot restore", () => {
         const tampered = tamper(original);
         expect(tampered).not.toBe(original);
         const restored = backend(driver());
-        expect(
-          yield* failure(() => restored.restoreSnapshot(bytesOf(tampered))),
-        ).toMatchObject({ _tag: "SnapshotDigestMismatch" });
-        expect(yield* call(() => restored.query(app.dump, {}))).toEqual({
+        const failureResult = yield* failure(() =>
+          restored.restoreSnapshot(bytesOf(tampered)),
+        );
+        expect(failureResult).toMatchObject({ _tag: "SnapshotDigestMismatch" });
+        const callResult = yield* call(() => restored.query(app.dump, {}));
+        expect(callResult).toEqual({
           notes: [],
           stamps: [],
           marks: [],
@@ -619,17 +622,25 @@ describe("snapshot restore", () => {
     () =>
       Effect.gen(function* () {
         const restored = backend(driver());
-        expect(
-          yield* failure(() => restored.restoreSnapshot(bytesOf("{}"))),
-        ).toMatchObject({ _tag: "SnapshotMalformed", reason: "header" });
+        const failureResult = yield* failure(() =>
+          restored.restoreSnapshot(bytesOf("{}")),
+        );
+        expect(failureResult).toMatchObject({
+          _tag: "SnapshotMalformed",
+          reason: "header",
+        });
         // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The forged body is raw bytes, as a tampering writer would make them.
         const body = JSON.stringify({ components: [""], version: "one" });
         const forged = `confect-kernel-snapshot 2 sha256:${createHash("sha256")
           .update(body)
           .digest("hex")}\n${body}`;
-        expect(
-          yield* failure(() => restored.restoreSnapshot(bytesOf(forged))),
-        ).toMatchObject({ _tag: "SnapshotMalformed", reason: "shape" });
+        const failureResult2 = yield* failure(() =>
+          restored.restoreSnapshot(bytesOf(forged)),
+        );
+        expect(failureResult2).toMatchObject({
+          _tag: "SnapshotMalformed",
+          reason: "shape",
+        });
       }),
   );
 
@@ -644,27 +655,29 @@ describe("snapshot restore", () => {
 
         const used = backend(driver());
         yield* call(() => used.mutation(app.insert, { text: "own" }));
-        expect(
-          yield* failure(() =>
-            used.restoreSnapshot(snapshot, { worlds: [mail] }),
-          ),
-        ).toMatchObject({ _tag: "SnapshotWorldBusy", version: 1 });
+        const failureResult = yield* failure(() =>
+          used.restoreSnapshot(snapshot, { worlds: [mail] }),
+        );
+        expect(failureResult).toMatchObject({
+          _tag: "SnapshotWorldBusy",
+          version: 1,
+        });
 
         const other = backend(driver(), ["store", "extra"]);
-        expect(
-          yield* failure(() =>
-            other.restoreSnapshot(snapshot, { worlds: [mail] }),
-          ),
-        ).toMatchObject({
+        const failureResult2 = yield* failure(() =>
+          other.restoreSnapshot(snapshot, { worlds: [mail] }),
+        );
+        expect(failureResult2).toMatchObject({
           _tag: "SnapshotComponentMismatch",
           snapshot: ["", "store"],
           registered: ["", "extra", "store"],
         });
 
         const worldless = backend(driver());
-        expect(
-          yield* failure(() => worldless.restoreSnapshot(snapshot)),
-        ).toMatchObject({
+        const failureResult3 = yield* failure(() =>
+          worldless.restoreSnapshot(snapshot),
+        );
+        expect(failureResult3).toMatchObject({
           _tag: "SnapshotWorldUnresolved",
           name: "mail",
           reason: "missing",
@@ -942,13 +955,12 @@ describe("snapshot consistency", () => {
           ),
         );
         const restored = backend(driver());
-        expect(
-          yield* failure(() =>
-            restored.restoreSnapshot(rehash(snapshot, edit), {
-              worlds: [mail],
-            }),
-          ),
-        ).toMatchObject(refusal);
+        const failureResult = yield* failure(() =>
+          restored.restoreSnapshot(rehash(snapshot, edit), {
+            worlds: [mail],
+          }),
+        );
+        expect(failureResult).toMatchObject(refusal);
         expect(restored.jobs()).toEqual([]);
         expect(text(restored.exportSnapshot())).toBe(
           text(backend(driver()).exportSnapshot()),
@@ -973,9 +985,8 @@ describe("snapshot while running", () => {
           count: 1,
         });
         const snapshot = backend(driver()).exportSnapshot();
-        expect(yield* failure(() => t.restoreSnapshot(snapshot))).toMatchObject(
-          { _tag: "SnapshotWorldRunning" },
-        );
+        const failureResult = yield* failure(() => t.restoreSnapshot(snapshot));
+        expect(failureResult).toMatchObject({ _tag: "SnapshotWorldRunning" });
         gate.release();
         yield* call(() => running);
 
@@ -1028,11 +1039,10 @@ describe("snapshot live state", () => {
         reached = latch();
         yield* call(() => fresh.action(app.detach, {}));
         yield* call(() => reached.promise);
-        expect(
-          yield* failure(() =>
-            fresh.restoreSnapshot(backend(driver()).exportSnapshot()),
-          ),
-        ).toMatchObject({
+        const failureResult = yield* failure(() =>
+          fresh.restoreSnapshot(backend(driver()).exportSnapshot()),
+        );
+        expect(failureResult).toMatchObject({
           _tag: "SnapshotWorldRunning",
           registry: "functions",
         });
@@ -1065,11 +1075,13 @@ describe("snapshot live state", () => {
         const snapshot = t.exportSnapshot();
         const restored = backend(driver());
         restored.subscriber().authenticate({ subject: "live" });
-        expect(
-          yield* failure(() =>
-            restored.restoreSnapshot(snapshot, { worlds: [mail] }),
-          ),
-        ).toMatchObject({ _tag: "SnapshotSubscribed", subscribers: 1 });
+        const failureResult = yield* failure(() =>
+          restored.restoreSnapshot(snapshot, { worlds: [mail] }),
+        );
+        expect(failureResult).toMatchObject({
+          _tag: "SnapshotSubscribed",
+          subscribers: 1,
+        });
         expect(restored.jobs()).toEqual([]);
       }),
   );
@@ -1257,13 +1269,13 @@ describe("snapshot cron state", () => {
             Effect.map((error) => ({ error, draws: restoring.draws() })),
           );
         };
-        expect(
-          yield* into((crons) => {
-            declareAll(crons);
-            delete (crons as unknown as { crons: Record<string, unknown> })
-              .crons["expression"];
-          }),
-        ).toMatchObject({
+        const intoResult = yield* into((crons) => {
+          declareAll(crons);
+          delete (crons as unknown as { crons: Record<string, unknown> }).crons[
+            "expression"
+          ];
+        });
+        expect(intoResult).toMatchObject({
           error: {
             _tag: "SnapshotCronMismatch",
             name: "expression",
@@ -1271,14 +1283,13 @@ describe("snapshot cron state", () => {
           },
           draws: 0,
         });
-        expect(
-          yield* into((crons) => {
-            declareAll(crons);
-            crons.interval("extra", { seconds: 5 }, cronTicks.tick, {
-              name: "extra",
-            });
-          }),
-        ).toMatchObject({
+        const intoResult2 = yield* into((crons) => {
+          declareAll(crons);
+          crons.interval("extra", { seconds: 5 }, cronTicks.tick, {
+            name: "extra",
+          });
+        });
+        expect(intoResult2).toMatchObject({
           error: {
             _tag: "SnapshotCronMismatch",
             name: "extra",
@@ -1286,20 +1297,19 @@ describe("snapshot cron state", () => {
           },
           draws: 0,
         });
-        expect(
-          yield* into((crons) => {
-            crons.interval("interval", { seconds: 60 }, cronTicks.tick, {
-              name: "interval",
-            });
-            crons.hourly("hourly", {}, cronTicks.tick, { name: "hourly" });
-            crons.cron("expression", "*/7 * * * *", cronTicks.tick, {
-              name: "expression",
-            });
-            crons.cron("weekday", "0 6 15W * *", cronTicks.tick, {
-              name: "weekday",
-            });
-          }),
-        ).toMatchObject({
+        const intoResult3 = yield* into((crons) => {
+          crons.interval("interval", { seconds: 60 }, cronTicks.tick, {
+            name: "interval",
+          });
+          crons.hourly("hourly", {}, cronTicks.tick, { name: "hourly" });
+          crons.cron("expression", "*/7 * * * *", cronTicks.tick, {
+            name: "expression",
+          });
+          crons.cron("weekday", "0 6 15W * *", cronTicks.tick, {
+            name: "weekday",
+          });
+        });
+        expect(intoResult3).toMatchObject({
           error: {
             _tag: "SnapshotCronMismatch",
             name: "interval",
@@ -1307,16 +1317,15 @@ describe("snapshot cron state", () => {
           },
           draws: 0,
         });
-        expect(
-          yield* into((crons) => {
-            declareAll(crons);
-            (
-              crons as unknown as {
-                crons: Record<string, { args: Array<unknown> }>;
-              }
-            ).crons["hourly"]!.args = [{ name: "renamed" }];
-          }),
-        ).toMatchObject({
+        const intoResult4 = yield* into((crons) => {
+          declareAll(crons);
+          (
+            crons as unknown as {
+              crons: Record<string, { args: Array<unknown> }>;
+            }
+          ).crons["hourly"]!.args = [{ name: "renamed" }];
+        });
+        expect(intoResult4).toMatchObject({
           error: {
             _tag: "SnapshotCronMismatch",
             name: "hourly",
@@ -1339,9 +1348,10 @@ describe("snapshot cron state", () => {
           modules: cronModules(declareAll),
           runtime: driver().runtime,
         });
-        expect(
-          yield* failure(() => elsewhere.restoreSnapshot(snapshot)),
-        ).toMatchObject({
+        const failureResult = yield* failure(() =>
+          elsewhere.restoreSnapshot(snapshot),
+        );
+        expect(failureResult).toMatchObject({
           _tag: "SnapshotWorldUnresolved",
           name: "crons",
           reason: "missing",

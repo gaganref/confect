@@ -497,11 +497,8 @@ describe("bind", () => {
         };
         check(adaSeen, "ada", 1_000_000, 0);
         check(graceSeen, "grace", 2_000_000, 0.75);
-        expect(yield* Effect.promise(overlap)).toEqual([
-          adaSeen,
-          graceSeen,
-          kept,
-        ]);
+        const resolved = yield* Effect.promise(overlap);
+        expect(resolved).toEqual([adaSeen, graceSeen, kept]);
         expect(hostKept()).toEqual(kept);
       }),
   );
