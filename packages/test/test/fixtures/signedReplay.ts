@@ -9,6 +9,7 @@ import {
   type GenericDataModel,
 } from "convex/server";
 import { v } from "convex/values";
+import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as TestConfect from "../../src/TestConfect";
@@ -27,6 +28,8 @@ class PinnedDate extends RealDate {
   }
 }
 globalThis.Date = PinnedDate as DateConstructor;
+
+const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 
 const schema = DatabaseSchema.make({});
 const seed = process.argv[2];
@@ -60,13 +63,17 @@ const history = Effect.gen(function* () {
       ctx.db
         .query("tokens")
         .collect()
-        .then((stored) => stored.map(({ token }) => token as string)),
+        .then((stored) => Arr.map(stored, ({ token }) => token as string)),
     ),
-    Schema.mutable(Schema.Array(Schema.String)),
+    Schema.String.pipe(Schema.Array, Schema.mutable),
   );
-  // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The bytes compared are the returned and committed tokens as plain JSON.
-  process.stdout.write(JSON.stringify({ returned: [first, second], rows }));
+  const output = yield* Schema.encodeEffect(UnknownJson)({
+    returned: [first, second],
+    rows,
+  });
+  process.stdout.write(output);
 }).pipe(
+  // oxlint-disable-next-line effecttsgo/strict-effect-provide -- This replay script is an entry point: it opens one kernel backend for its process and closes it.
   Effect.provide(
     TestConfect.layer(
       schema,

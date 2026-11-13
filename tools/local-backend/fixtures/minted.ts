@@ -1,7 +1,7 @@
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 
-const encodeJson = Schema.encodeSync(Schema.fromJsonString(Schema.Unknown));
+const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 
 /**
  * The provider the local-backend fixture's `auth.config.ts` declares. The
@@ -40,7 +40,9 @@ export interface VerifierCase {
 }
 
 const encode = (value: unknown) =>
-  Buffer.from(encodeJson(value)).toString("base64url");
+  Effect.map(Schema.encodeEffect(UnknownJson)(value), (json) =>
+    Buffer.from(json).toString("base64url"),
+  );
 
 export const rsaKeys = (modulusLength = 2048) =>
   Effect.promise(() =>
@@ -69,21 +71,29 @@ export const sign = (
   claims: Record<string, unknown>,
   alg: keyof typeof signatureAlgorithms = "RS256",
 ) =>
-  Effect.promise(() => {
-    const unsigned = `${encode({ alg, typ: "JWT", kid: "test" })}.${encode(claims)}`;
-    return crypto.subtle
-      .sign(signatureAlgorithms[alg], key, new TextEncoder().encode(unsigned))
-      .then(
-        (signature) =>
-          `${unsigned}.${Buffer.from(signature).toString("base64url")}`,
-      );
+  Effect.gen(function* () {
+    const header = yield* encode({ alg, typ: "JWT", kid: "test" });
+    const payload = yield* encode(claims);
+    const unsigned = `${header}.${payload}`;
+    const signature = yield* Effect.promise(() =>
+      crypto.subtle.sign(
+        signatureAlgorithms[alg],
+        key,
+        new TextEncoder().encode(unsigned),
+      ),
+    );
+    return `${unsigned}.${Buffer.from(signature).toString("base64url")}`;
   });
 
 /**
  * A JWKS of `keys` as a base64 `data:` URL.
  */
 export const jwksUrl = (keys: ReadonlyArray<object>) =>
-  `data:application/json;base64,${Buffer.from(encodeJson({ keys })).toString("base64")}`;
+  Effect.map(
+    Schema.encodeEffect(UnknownJson)({ keys }),
+    (json) =>
+      `data:application/json;base64,${Buffer.from(json).toString("base64")}`,
+  );
 
 /**
  * Keys made in the test, the JWKS that declares one of them as a `data:` URL,
@@ -98,7 +108,7 @@ export const mint = (nowSeconds: number) =>
     const publicJwk = yield* Effect.promise(() =>
       crypto.subtle.exportKey("jwk", declared.publicKey),
     );
-    const jwks = jwksUrl([
+    const jwks = yield* jwksUrl([
       { ...publicJwk, kid: "test", alg: "RS256", use: "sig" },
     ]);
     const claims = {

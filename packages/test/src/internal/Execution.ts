@@ -516,8 +516,8 @@ const makeComponent = (
     ),
     loaded: new Map(),
     standing: new Set(standing),
-    authConfig: relative.find(([file]) =>
-      /^auth\.config\.[jt]s$/.test(file),
+    authConfig: Option.getOrUndefined(
+      Arr.findFirst(relative, ([file]) => /^auth\.config\.[jt]s$/.test(file)),
     )?.[1],
   };
 };
@@ -795,16 +795,20 @@ export class World {
   private drawSigningSeed(): Identity.Seed {
     const world = Invocation.current()?.world ?? this.own;
     if (world === undefined) {
-      throw new KernelRefusal.SigningKeyRandomUnavailable({
+      throw KernelRefusal.SigningKeyRandomUnavailable.make({
         message:
           "The deployment's signing key is drawn from a test world's random stream, and no invocation is bound and this backend was given no world to draw it from. The kernel holds no generator. Pass `world` to `convexTest`, or use `TestConfect.layer`'s kernel target, whose world is seeded.",
       });
     }
-    const seed = Array.from({ length: 32 }, () =>
-      Math.floor(world.random() * 256)
-        .toString(16)
-        .padStart(2, "0"),
-    ).join("");
+    const seed = pipe(
+      Arr.makeBy(32, () =>
+        pipe(
+          Math.floor(world.random() * 256).toString(16),
+          Str.padStart(2, "0"),
+        ),
+      ),
+      Arr.join(""),
+    );
     this.secrets.keep(seed);
     return seed;
   }

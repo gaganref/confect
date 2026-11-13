@@ -135,32 +135,32 @@ export class InvalidCron extends Schema.TaggedError<
  * when no provider's issuer and audience match the token, and
  * `InvalidAuthHeader` for every other failure.
  */
-export class InvalidToken extends Schema.TaggedError<InvalidToken>()(
-  "InvalidToken",
-  {
-    code: Schema.Literals(["NoAuthProvider", "InvalidAuthHeader"]),
-    message: Schema.String,
-  },
-) {}
+export class InvalidToken extends Schema.TaggedError<
+  InvalidToken,
+  { readonly brand: unique symbol }
+>()("InvalidToken", {
+  code: Schema.Literals(["NoAuthProvider", "InvalidAuthHeader"]),
+  message: Schema.String,
+}) {}
 
 /**
  * The app's `auth.config` declares a provider the binary would refuse at push.
  * `index` is the provider's position, or -1 for the config itself.
  */
-export class InvalidAuthConfig extends Schema.TaggedError<InvalidAuthConfig>()(
-  "InvalidAuthConfig",
-  { index: Schema.Int, message: Schema.String },
-) {}
+export class InvalidAuthConfig extends Schema.TaggedError<
+  InvalidAuthConfig,
+  { readonly brand: unique symbol }
+>()("InvalidAuthConfig", { index: Schema.Int, message: Schema.String }) {}
 
 /**
  * The deployment's signing key is drawn on first use from a test world's random
  * stream, and neither an invocation was bound nor the backend was given a world
  * to draw it from. The kernel holds no generator of its own.
  */
-export class SigningKeyRandomUnavailable extends Schema.TaggedError<SigningKeyRandomUnavailable>()(
-  "SigningKeyRandomUnavailable",
-  { message: Schema.String },
-) {}
+export class SigningKeyRandomUnavailable extends Schema.TaggedError<
+  SigningKeyRandomUnavailable,
+  { readonly brand: unique symbol }
+>()("SigningKeyRandomUnavailable", { message: Schema.String }) {}
 
 /**
  * A cron job runs on a clock schedule, which Convex delays by a random draw,

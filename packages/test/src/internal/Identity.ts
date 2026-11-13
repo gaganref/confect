@@ -8,6 +8,12 @@ import { p256 } from "@noble/curves/nist.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
 import type { UserIdentity } from "convex/server";
+import * as Arr from "effect/Array";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
+import * as Rec from "effect/Record";
+import * as Str from "effect/String";
+import * as Json from "./Json.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import { base64UrlEncode, base64UrlEncodeBytes } from "./KernelValues.js";
 
@@ -35,10 +41,10 @@ export type Provider =
     };
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
+  typeof value === "object" && value !== null && !Arr.isArray(value);
 
 const invalidConfig = (index: number, reason: string) =>
-  new KernelRefusal.InvalidAuthConfig({
+  KernelRefusal.InvalidAuthConfig.make({
     index,
     message: `auth.config providers[${index}] ${reason}`,
   });
@@ -61,8 +67,8 @@ const configuredIssuer = (url: string) =>
 export const readProviders = (config: unknown): ReadonlyArray<Provider> => {
   if (config === undefined) return [];
   const providers = isRecord(config) ? config["providers"] : undefined;
-  if (!Array.isArray(providers)) {
-    throw new KernelRefusal.InvalidAuthConfig({
+  if (!Arr.isArray(providers)) {
+    throw KernelRefusal.InvalidAuthConfig.make({
       index: -1,
       message: "auth.config's default export has no providers array.",
     });
@@ -114,7 +120,7 @@ const refuse = (
   code: KernelRefusal.InvalidToken["code"],
   message: string,
 ): KernelRefusal.InvalidToken =>
-  new KernelRefusal.InvalidToken({ code, message });
+  KernelRefusal.InvalidToken.make({ code, message });
 
 const invalid = (message: string) => refuse("InvalidAuthHeader", message);
 
@@ -134,11 +140,20 @@ interface Claims {
 
 const registered = new Set(["iss", "sub", "aud", "exp", "nbf", "iat", "jti"]);
 
+/**
+ * The bytes of a binary string, one per character code.
+ */
+const bytesOf = (binary: string): Uint8Array =>
+  Uint8Array.from({ length: binary.length }, (_, index) =>
+    Option.getOrThrow(Str.codePointAt(binary, index)),
+  );
+
 const decodeBytes = (part: string | undefined): Uint8Array | undefined => {
   if (part === undefined || !/^[\w-]*$/.test(part)) return undefined;
   try {
-    const binary = atob(part.replace(/-/g, "+").replace(/_/g, "/"));
-    return Uint8Array.from(binary, (char) => char.charCodeAt(0));
+    return bytesOf(
+      atob(pipe(part, Str.replace(/-/g, "+"), Str.replace(/_/g, "/"))),
+    );
   } catch {
     return undefined;
   }
@@ -148,7 +163,7 @@ const decodePart = (part: string | undefined): unknown => {
   const bytes = decodeBytes(part);
   if (bytes === undefined) return undefined;
   try {
-    return JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+    return Json.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
   } catch {
     return undefined;
   }
@@ -169,7 +184,7 @@ const time = (value: unknown) =>
 const audienceList = (value: unknown) =>
   typeof value === "string"
     ? [value]
-    : Array.isArray(value) && value.every((a) => typeof a === "string")
+    : Arr.isArray(value) && Arr.every(value, Str.isString)
       ? (value as ReadonlyArray<string>)
       : undefined;
 
@@ -200,14 +215,14 @@ const readClaims = (part: string | undefined): Claims | undefined => {
     iat: claim(payload, "iat", time),
   };
   const jti = claim(payload, "jti", text);
-  if (jti === null || Object.values(claims).includes(null)) return undefined;
+  if (jti === null || Arr.some(Rec.values(claims), (value) => value === null)) {
+    return undefined;
+  }
   return {
     ...(claims as {
       [K in keyof typeof claims]: Exclude<(typeof claims)[K], null>;
     }),
-    private: Object.fromEntries(
-      Object.entries(payload).filter(([name]) => !registered.has(name)),
-    ),
+    private: Rec.filter(payload, (_value, name) => !registered.has(name)),
   };
 };
 
@@ -216,11 +231,12 @@ const readClaims = (part: string | undefined): Claims | undefined => {
  * issuer without a scheme and trailing slashes are ignored on both sides
  * (`matches_token`, `common/src/auth.rs:66-81`).
  */
+const withoutTrailingSlashes = Str.replace(/\/+$/, "");
+
 const sameIssuer = (tokenIssuer: string, issuer: string) =>
-  (/^https?:\/\//.test(tokenIssuer)
-    ? tokenIssuer
-    : `https://${tokenIssuer}`
-  ).replace(/\/+$/, "") === issuer.replace(/\/+$/, "");
+  withoutTrailingSlashes(
+    /^https?:\/\//.test(tokenIssuer) ? tokenIssuer : `https://${tokenIssuer}`,
+  ) === withoutTrailingSlashes(issuer);
 
 const providerIssuer = (provider: Provider) =>
   provider.type === "customJwt" ? provider.issuer : provider.domain;
@@ -241,13 +257,14 @@ const matches = (
 const noProviderMessage = (providers: ReadonlyArray<Provider>) =>
   providers.length === 0
     ? "No auth provider found matching the given token (no providers configured). Check convex/auth.config.ts."
-    : `No auth provider found matching the given token. Check that your JWT's issuer and audience match one of your configured providers: [${providers
-        .map((provider) =>
+    : `No auth provider found matching the given token. Check that your JWT's issuer and audience match one of your configured providers: [${pipe(
+        Arr.map(providers, (provider) =>
           provider.type === "customJwt"
             ? `CustomJWT(issuer=${provider.issuer}, app_id=${provider.applicationID ?? "none"})`
             : `OIDC(domain=${provider.domain}, app_id=${provider.applicationID})`,
-        )
-        .join(", ")}]`;
+        ),
+        Arr.join(", "),
+      )}]`;
 
 /**
  * The text of a `data:` URL, decoded as the binary's `data-url` crate 0.3.1
@@ -259,25 +276,45 @@ const noProviderMessage = (providers: ReadonlyArray<Provider>) =>
  * of another scheme. A data URL that does not decode throws.
  */
 const dataUrlBody = (url: string): string | undefined => {
-  const input = url.replace(/^[\0-\x20]+/, "").replace(/[\t\n\r]/g, "");
+  const input = pipe(
+    url,
+    Str.replace(/^[\0-\x20]+/, ""),
+    Str.replace(/[\t\n\r]/g, ""),
+  );
   if (!/^data:/i.test(input)) return undefined;
-  const afterColon = input.slice("data:".length).replace(/[\0-\x20]+$/, "");
-  const comma = afterColon.search(/[,#]/);
-  if (comma === -1 || afterColon[comma] !== ",") {
+  const afterColon = pipe(
+    input,
+    Str.slice("data:".length),
+    Str.replace(/[\0-\x20]+$/, ""),
+  );
+  const comma = Option.getOrUndefined(pipe(afterColon, Str.search(/[,#]/)));
+  if (comma === undefined || afterColon[comma] !== ",") {
     throw new Error("A data URL needs a comma before its body.");
   }
-  const mediaType = afterColon.slice(0, comma).trim();
-  const binary = afterColon
-    .slice(comma + 1)
-    .split("#", 1)[0]!
-    .replace(/%([0-9a-f]{2})/gi, (_match, hex: string) =>
-      String.fromCharCode(Number.parseInt(hex, 16)),
-    );
+  const mediaType = pipe(afterColon, Str.slice(0, comma), Str.trim);
+  const [body] = pipe(afterColon, Str.slice(comma + 1), Str.split("#"));
+  const binary = percentDecoded(body);
   // `atob` is the forgiving-base64 decode the crate implements.
   const decoded = /; *base64$/i.test(mediaType) ? atob(binary) : binary;
-  return new TextDecoder("utf-8", { fatal: true }).decode(
-    Uint8Array.from(decoded, (char) => char.charCodeAt(0)),
-  );
+  return new TextDecoder("utf-8", { fatal: true }).decode(bytesOf(decoded));
+};
+
+/**
+ * `encoded` with each `%` and two hex digits replaced by the byte they name, as
+ * a binary string. A `%` without two hex digits stays as it is.
+ */
+const percentDecoded = (encoded: string): string => {
+  let decoded = "";
+  for (let index = 0; index < encoded.length; index++) {
+    const hex = pipe(encoded, Str.slice(index + 1, index + 3));
+    if (encoded[index] === "%" && /^[0-9a-f]{2}$/i.test(hex)) {
+      decoded += String.fromCodePoint(Number.parseInt(hex, 16));
+      index += 2;
+    } else {
+      decoded += encoded[index];
+    }
+  }
+  return decoded;
 };
 
 const importParameters = {
@@ -374,7 +411,9 @@ const signatureHolds = (
   }
   const kid = header["kid"];
   if (typeof kid !== "string") return Promise.resolve(false);
-  const jwk = keys.find((key) => key["kid"] === kid);
+  const jwk = Option.getOrUndefined(
+    Arr.findFirst(keys, (key) => key["kid"] === kid),
+  );
   if (jwk === undefined) return Promise.resolve(false);
   const algorithm = jwk["alg"] ?? expected;
   if (header["alg"] !== algorithm || algorithm !== expected) {
@@ -399,7 +438,8 @@ const signatureHolds = (
 };
 
 const decodeFailure = (token: string) => {
-  const header = decodePart(token.split(".")[0]);
+  const [part] = pipe(token, Str.split("."));
+  const header = decodePart(part);
   const kid = isRecord(header) ? header["kid"] : undefined;
   return invalid(
     typeof kid === "string"
@@ -437,7 +477,7 @@ const flatten = (
   claims: Record<string, unknown>,
   prefix = "",
 ): Array<readonly [string, unknown]> =>
-  Object.entries(claims).flatMap(([name, value]) =>
+  Arr.flatMap(Rec.toEntries(claims), ([name, value]) =>
     isRecord(value)
       ? flatten(value, `${prefix}${name}.`)
       : [[`${prefix}${name}`, value] as const],
@@ -454,8 +494,8 @@ const identityOf = (
   claims: Claims & { readonly iss: string; readonly sub: string },
 ): UserIdentity =>
   ({
-    ...Object.fromEntries(
-      flatten(claims.private).filter(([name]) => name !== "fva"),
+    ...Rec.fromEntries(
+      Arr.filter(flatten(claims.private), ([name]) => name !== "fva"),
     ),
     tokenIdentifier: `${claims.iss}|${claims.sub}`,
     issuer: claims.iss,
@@ -478,7 +518,7 @@ export const verify = (
   nowMs: number,
 ): Promise<UserIdentity> => {
   const now = Math.floor(nowMs / 1000);
-  const parts = token.split(".");
+  const parts = pipe(token, Str.split("."));
   const unverified = readClaims(parts[1]);
   if (unverified === undefined) {
     return Promise.reject(
@@ -495,8 +535,10 @@ export const verify = (
     );
   }
   const issuer = unverified.iss;
-  const provider = providers.find((candidate) =>
-    matches(candidate, unverified.aud ?? [], issuer),
+  const provider = Option.getOrUndefined(
+    Arr.findFirst(providers, (candidate) =>
+      matches(candidate, unverified.aud ?? [], issuer),
+    ),
   );
   if (provider === undefined) {
     return Promise.reject(
@@ -521,9 +563,9 @@ export const verify = (
   }
   let keys: ReadonlyArray<Record<string, unknown>>;
   try {
-    const jwks: unknown = JSON.parse(body);
+    const jwks: unknown = Json.parse(body);
     const listed = isRecord(jwks) ? jwks["keys"] : undefined;
-    if (!Array.isArray(listed) || !listed.every(isRecord)) throw listed;
+    if (!Arr.isArray(listed) || !Arr.every(listed, isRecord)) throw listed;
     keys = listed;
   } catch {
     return Promise.reject(
@@ -546,7 +588,7 @@ export const verify = (
       }
       if (!claims.aud.includes(provider.applicationID)) {
         throw invalid(
-          `Invalid audience: ${provider.applicationID} not in ${JSON.stringify(claims.aud)}`,
+          `Invalid audience: ${provider.applicationID} not in ${Json.stringify(claims.aud)}`,
         );
       }
     }
@@ -627,7 +669,7 @@ export type Seed = string;
 
 const seedBytes = (seed: Seed) =>
   Uint8Array.from({ length: 32 }, (_, index) =>
-    Number.parseInt(seed.slice(index * 2, index * 2 + 2), 16),
+    Number.parseInt(pipe(seed, Str.slice(index * 2, index * 2 + 2)), 16),
   );
 
 /**
@@ -693,14 +735,10 @@ export class DeploymentKey {
     nowMs: number,
   ): Promise<string> {
     // On the backend the options cross the syscall boundary as JSON.
-    const { claims = {}, expiresInSeconds } = JSON.parse(
-      JSON.stringify(options ?? {}),
+    const { claims = {}, expiresInSeconds } = Json.parse(
+      Json.stringify(options ?? {}),
     );
-    if (
-      typeof claims !== "object" ||
-      claims === null ||
-      Array.isArray(claims)
-    ) {
+    if (!isRecord(claims)) {
       return Promise.reject(
         new Error(
           "Invalid arguments for auth.signJwt: claims must be an object",
@@ -715,7 +753,7 @@ export class DeploymentKey {
       );
     }
     for (const reserved of ["iss", "iat", "exp"]) {
-      if (Object.hasOwn(claims, reserved)) {
+      if (Rec.has(claims, reserved)) {
         return Promise.reject(
           new Error(
             `The '${reserved}' claim is set by Convex and can't be provided`,
@@ -723,10 +761,14 @@ export class DeploymentKey {
         );
       }
     }
-    const reservedPrefixClaim = Object.keys(claims).find((name) =>
-      RESERVED_JWT_CLAIM_PREFIXES.some(
-        (prefix) =>
-          name.slice(0, prefix.length).toLowerCase() === prefix.toLowerCase(),
+    const reservedPrefixClaim = Option.getOrUndefined(
+      Arr.findFirst(Rec.keys(claims), (name) =>
+        Arr.some(
+          RESERVED_JWT_CLAIM_PREFIXES,
+          (prefix) =>
+            pipe(name, Str.slice(0, prefix.length), Str.toLowerCase) ===
+            Str.toLowerCase(prefix),
+        ),
       ),
     );
     if (reservedPrefixClaim !== undefined) {
@@ -738,14 +780,14 @@ export class DeploymentKey {
       );
     }
     if (
-      Object.hasOwn(claims, "sub") &&
-      (typeof claims.sub !== "string" || claims.sub === "")
+      Rec.has(claims, "sub") &&
+      (typeof claims["sub"] !== "string" || claims["sub"] === "")
     ) {
       return Promise.reject(
         new Error("The 'sub' claim must be a non-empty string"),
       );
     }
-    if (Object.hasOwn(claims, "nbf")) {
+    if (Rec.has(claims, "nbf")) {
       return Promise.reject(
         new Error(
           "The 'nbf' claim is reserved by Convex and can't be provided",
@@ -761,7 +803,9 @@ export class DeploymentKey {
         ),
       );
     }
-    const origin = (cloudUrl() || DEFAULT_CONVEX_CLOUD_URL).replace(/\/+$/, "");
+    const origin = withoutTrailingSlashes(
+      cloudUrl() || DEFAULT_CONVEX_CLOUD_URL,
+    );
     const issuedAt = Math.floor(nowMs / 1000);
     const payload = {
       ...claims,
@@ -779,10 +823,10 @@ export class DeploymentKey {
     const { secretKey, jwk } = derived;
     const signingInput =
       base64UrlEncode(
-        JSON.stringify({ alg: "ES256", typ: "JWT", kid: jwk.kid }),
+        Json.stringify({ alg: "ES256", typ: "JWT", kid: jwk.kid }),
       ) +
       "." +
-      base64UrlEncode(JSON.stringify(payload));
+      base64UrlEncode(Json.stringify(payload));
     // `p256.sign` hashes with SHA-256 and takes its nonce by RFC 6979.
     const signature = p256.sign(
       new TextEncoder().encode(signingInput),

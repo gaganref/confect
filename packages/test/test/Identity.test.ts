@@ -11,10 +11,15 @@ import {
   queryGeneric,
 } from "convex/server";
 import { v } from "convex/values";
+import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
+import { pipe } from "effect/Function";
+import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as Str from "effect/String";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
+import * as Json from "../src/internal/Json";
 import * as KernelRefusal from "../src/internal/KernelRefusal";
 import * as Redaction from "../src/internal/Redaction";
 import {
@@ -31,6 +36,8 @@ import { oversizedRsa } from "./fixtures/oversized";
 const whoami = makeFunctionReference<"query", {}, object | null>(
   "identity:whoami",
 );
+
+const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 
 const start = 1_800_000_000_000;
 
@@ -100,8 +107,11 @@ describe("minted tokens on the kernel's verifier", () => {
     Effect.gen(function* () {
       const { jwks, cases } = yield* mint(start / 1000);
       const { t, runs } = world([{ ...provider, jwks }]);
-      const minted = cases.find((c) => c.name === name)!;
-      expect(yield* outcome(t, minted.token)).toEqual(minted.expected);
+      const minted = Option.getOrThrow(
+        Arr.findFirst(cases, (c) => c.name === name),
+      );
+      const outcome1 = yield* outcome(t, minted.token);
+      expect(outcome1).toEqual(minted.expected);
       expect(runs.count).toBe(minted.expected._tag === "accepted" ? 1 : 0);
     }),
   );
@@ -114,11 +124,15 @@ describe("token verification", () => {
       Effect.gen(function* () {
         const { jwks, cases } = yield* mint(start / 1000 - 3590);
         const { t } = world([{ ...provider, jwks }]);
-        const valid = cases.find((c) => c.name === "valid control")!;
+        const valid = Option.getOrThrow(
+          Arr.findFirst(cases, (c) => c.name === "valid control"),
+        );
         yield* Effect.promise(() => t.advance(15_000));
-        expect(yield* outcome(t, valid.token)).toEqual(valid.expected);
+        const outcome2 = yield* outcome(t, valid.token);
+        expect(outcome2).toEqual(valid.expected);
         yield* Effect.promise(() => t.advance(1_000));
-        expect(yield* outcome(t, valid.token)).toEqual({
+        const outcome3 = yield* outcome(t, valid.token);
+        expect(outcome3).toEqual({
           _tag: "refused",
           refusal: "InvalidToken",
           code: "InvalidAuthHeader",
@@ -130,7 +144,8 @@ describe("token verification", () => {
     Effect.gen(function* () {
       const { cases } = yield* mint(start / 1000);
       const { t } = world(undefined);
-      expect(yield* outcome(t, cases[0]!.token)).toEqual({
+      const outcome4 = yield* outcome(t, cases[0]!.token);
+      expect(outcome4).toEqual({
         _tag: "refused",
         refusal: "InvalidToken",
         code: "NoAuthProvider",
@@ -147,14 +162,16 @@ describe("token verification", () => {
         const oidc = world([
           { domain: provider.issuer, applicationID: provider.applicationID },
         ]);
-        expect(yield* outcome(oidc.t, token)).toMatchObject({
+        const outcome5 = yield* outcome(oidc.t, token);
+        expect(outcome5).toMatchObject({
           _tag: "RequiresBinary",
           operation: "oidcDiscovery",
         });
         const remote = world([
           { ...provider, jwks: "https://confect-auth.invalid/jwks.json" },
         ]);
-        expect(yield* outcome(remote.t, token)).toMatchObject({
+        const outcome6 = yield* outcome(remote.t, token);
+        expect(outcome6).toMatchObject({
           _tag: "RequiresBinary",
           operation: "remoteJwks",
         });
@@ -173,14 +190,13 @@ describe("token verification", () => {
         expect(() => presenting.subscriber()).toThrow(
           expect.objectContaining({ _tag: "KernelRowPending", row: 7 }),
         );
-        expect(
-          yield* Effect.promise(() =>
-            presenting.fetch("/identity").then(
-              () => undefined,
-              (error: unknown) => error,
-            ),
+        const answer1 = yield* Effect.promise(() =>
+          presenting.fetch("/identity").then(
+            () => undefined,
+            (error: unknown) => error,
           ),
-        ).toMatchObject({ _tag: "KernelRowPending", row: 6 });
+        );
+        expect(answer1).toMatchObject({ _tag: "KernelRowPending", row: 6 });
       }),
   );
 
@@ -188,7 +204,8 @@ describe("token verification", () => {
     Effect.gen(function* () {
       const { jwks, cases } = yield* mint(start / 1000);
       const { t } = world([{ ...provider, jwks, algorithm: "HS256" }]);
-      expect(yield* outcome(t, cases[0]!.token)).toMatchObject({
+      const outcome7 = yield* outcome(t, cases[0]!.token);
+      expect(outcome7).toMatchObject({
         _tag: "InvalidAuthConfig",
         index: 0,
       });
@@ -204,15 +221,14 @@ describe("token verification", () => {
         const { t } = world([{ ...provider, jwks }]);
         // Rounds to now - 5, inside the skew. Truncating gives now - 6.
         const inside = yield* signDeclared({ exp: now - 5.4 });
-        expect(yield* outcome(t, inside)).toMatchObject({ _tag: "accepted" });
+        const outcome8 = yield* outcome(t, inside);
+        expect(outcome8).toMatchObject({ _tag: "accepted" });
         const outside = yield* signDeclared({ exp: now - 5.6 });
-        expect(yield* outcome(t, outside)).toEqual(
-          refused("InvalidAuthHeader"),
-        );
+        const outcome9 = yield* outcome(t, outside);
+        expect(outcome9).toEqual(refused("InvalidAuthHeader"));
         const negative = yield* signDeclared({ nbf: -1 });
-        expect(yield* outcome(t, negative)).toEqual(
-          refused("InvalidAuthHeader"),
-        );
+        const outcome10 = yield* outcome(t, negative);
+        expect(outcome10).toEqual(refused("InvalidAuthHeader"));
       }),
   );
 
@@ -220,7 +236,8 @@ describe("token verification", () => {
     Effect.gen(function* () {
       const { jwks, cases } = yield* mint(start / 1000);
       const { t } = world([{ ...provider, jwks: `${jwks}#review` }]);
-      expect(yield* outcome(t, cases[0]!.token)).toEqual(cases[0]!.expected);
+      const outcome11 = yield* outcome(t, cases[0]!.token);
+      expect(outcome11).toEqual(cases[0]!.expected);
     }),
   );
 });
@@ -230,8 +247,10 @@ describe("token verification", () => {
  * over the valid claims signed with `alg`.
  */
 const declaring = (jwk: object, algorithm: "RS256" | "ES256" = "RS256") =>
-  world([{ ...provider, algorithm, jwks: jwksUrl([{ ...jwk, kid: "test" }]) }])
-    .t;
+  Effect.map(
+    jwksUrl([{ ...jwk, kid: "test" }]),
+    (jwks) => world([{ ...provider, algorithm, jwks }]).t,
+  );
 
 const validClaims = {
   iss: provider.issuer,
@@ -258,7 +277,9 @@ describe("key constraints", () => {
         crypto.subtle.exportKey("jwk", keys.publicKey),
       );
       const token = yield* sign(keys.privateKey, validClaims);
-      expect(yield* outcome(declaring(jwk), token)).toMatchObject(expected);
+      const backend = yield* declaring(jwk);
+      const outcome12 = yield* outcome(backend, token);
+      expect(outcome12).toMatchObject(expected);
     }),
   );
 
@@ -269,8 +290,12 @@ describe("key constraints", () => {
         const key = oversizedRsa(16_384);
         expect(key.bits).toBe(16_384);
         const encode = (value: object) =>
-          Buffer.from(JSON.stringify(value)).toString("base64url");
-        const unsigned = `${encode({ alg: "RS256", kid: "test" })}.${encode(validClaims)}`;
+          Effect.map(Schema.encodeEffect(UnknownJson)(value), (json) =>
+            Buffer.from(json).toString("base64url"),
+          );
+        const header = yield* encode({ alg: "RS256", kid: "test" });
+        const payload = yield* encode(validClaims);
+        const unsigned = `${header}.${payload}`;
         const message = new TextEncoder().encode(unsigned);
         const signature = yield* Effect.promise(() => key.sign(message));
         const verifies = yield* Effect.promise(() =>
@@ -293,9 +318,9 @@ describe("key constraints", () => {
         );
         expect(verifies).toBe(true);
         const token = `${unsigned}.${Buffer.from(signature).toString("base64url")}`;
-        expect(yield* outcome(declaring(key.jwk), token)).toEqual(
-          refused("InvalidAuthHeader"),
-        );
+        const backend = yield* declaring(key.jwk);
+        const outcome13 = yield* outcome(backend, token);
+        expect(outcome13).toEqual(refused("InvalidAuthHeader"));
       }),
     120_000,
   );
@@ -315,15 +340,15 @@ describe("key constraints", () => {
           crypto.subtle.exportKey("jwk", keys.publicKey),
         );
         const token = yield* sign(keys.privateKey, validClaims, "ES256");
-        expect(
-          yield* outcome(declaring({ ...jwk, crv: "P-384" }, "ES256"), token),
-        ).toMatchObject({ _tag: "accepted" });
-        expect(
-          yield* outcome(
-            declaring({ ...jwk, x: `${jwk.x}AA` }, "ES256"),
-            token,
-          ),
-        ).toEqual(refused("InvalidAuthHeader"));
+        const labelled = yield* declaring({ ...jwk, crv: "P-384" }, "ES256");
+        const outcome14 = yield* outcome(labelled, token);
+        expect(outcome14).toMatchObject({ _tag: "accepted" });
+        const malformed = yield* declaring(
+          { ...jwk, x: `${jwk.x}AA` },
+          "ES256",
+        );
+        const outcome15 = yield* outcome(malformed, token);
+        expect(outcome15).toEqual(refused("InvalidAuthHeader"));
       }),
   );
 });
@@ -383,7 +408,7 @@ const signer = (own?: ReturnType<typeof worldOf>) =>
               ctx.db
                 .query("tokens")
                 .collect()
-                .then((rows) => rows.map((row) => row.token)),
+                .then((rows) => Arr.map(rows, (row) => row.token)),
           }),
         }),
     },
@@ -392,7 +417,7 @@ const signer = (own?: ReturnType<typeof worldOf>) =>
   }) as KernelControls;
 
 const verifies = (key: JsonWebKey, token: string) => {
-  const [header, payload, signature] = token.split(".");
+  const [header, payload, signature] = pipe(token, Str.split("."));
   return Effect.promise(() =>
     crypto.subtle
       .importKey("jwk", key, { name: "ECDSA", namedCurve: "P-256" }, false, [
@@ -409,8 +434,10 @@ const verifies = (key: JsonWebKey, token: string) => {
   );
 };
 
-const kidOf = (token: string): string =>
-  JSON.parse(Buffer.from(token.split(".")[0]!, "base64url").toString()).kid;
+const kidOf = (token: string): string => {
+  const [header] = pipe(token, Str.split("."));
+  return Json.parse(Buffer.from(header, "base64url").toString()).kid;
+};
 
 const failure = (run: () => Promise<unknown>) =>
   Effect.promise(() =>
@@ -434,11 +461,11 @@ describe("deployment signing", () => {
       });
     const [one, two, other] = [replay(), replay(), replay("7")];
     expect(
-      [one, two, other].flatMap(({ status, stderr }) => [status, stderr]),
+      Arr.flatMap([one, two, other], ({ status, stderr }) => [status, stderr]),
     ).toEqual([0, "", 0, "", 0, ""]);
     expect(one.stdout).toBe(two.stdout);
     const read = (stdout: string) =>
-      JSON.parse(stdout) as {
+      Json.parse(stdout) as {
         returned: ReadonlyArray<string>;
         rows: ReadonlyArray<string>;
       };
@@ -458,11 +485,14 @@ describe("deployment signing", () => {
             Effect.map((jwks) => jwks.keys[0]!),
           );
         const first = yield* keyOf(signer(worldOf(1)));
-        expect(yield* keyOf(signer(worldOf(1)))).toEqual(first);
-        expect((yield* keyOf(signer(worldOf(2)))).kid).not.toBe(first.kid);
+        const key1 = yield* keyOf(signer(worldOf(1)));
+        expect(key1).toEqual(first);
+        const other = yield* keyOf(signer(worldOf(2)));
+        expect(other.kid).not.toBe(first.kid);
         const t = signer(worldOf(1));
         const token = yield* Effect.promise(() => t.mutation(tokens.store, {}));
-        expect(yield* verifies(first, token)).toBe(true);
+        const verified1 = yield* verifies(first, token);
+        expect(verified1).toBe(true);
       }),
   );
 
@@ -471,12 +501,12 @@ describe("deployment signing", () => {
     () =>
       Effect.gen(function* () {
         const t = signer();
-        expect(yield* failure(() => t.jwks())).toMatchObject({
+        const refusal1 = yield* failure(() => t.jwks());
+        expect(refusal1).toMatchObject({
           _tag: "SigningKeyRandomUnavailable",
         });
-        expect(
-          yield* failure(() => t.mutation(tokens.store, {})),
-        ).toMatchObject({ _tag: "SigningKeyRandomUnavailable" });
+        const refusal2 = yield* failure(() => t.mutation(tokens.store, {}));
+        expect(refusal2).toMatchObject({ _tag: "SigningKeyRandomUnavailable" });
       }),
   );
 
@@ -488,19 +518,26 @@ describe("deployment signing", () => {
         const token = yield* Effect.promise(() =>
           source.mutation(tokens.store, {}),
         );
-        const [key] = (yield* Effect.promise(() => source.jwks())).keys;
+        const sourceJwks = yield* Effect.promise(() => source.jwks());
+        const [key] = sourceJwks.keys;
         const bytes = source.exportSnapshot();
         const text = new TextDecoder().decode(bytes);
         // The seed is the stream's first 32 draws as bytes, in hex.
         const replica = worldOf(3);
-        const seed = Array.from({ length: 32 }, () =>
-          Math.floor(replica.random() * 256)
-            .toString(16)
-            .padStart(2, "0"),
-        ).join("");
+        const seed = pipe(
+          Arr.makeBy(32, () =>
+            pipe(
+              Math.floor(replica.random() * 256).toString(16),
+              Str.padStart(2, "0"),
+            ),
+          ),
+          Arr.join(""),
+        );
         expect(text).not.toContain(seed);
-        // oxlint-disable-next-line effecttsgo/prefer-schema-over-json -- The check reads the body's raw JSON, as a reader of the artifact would.
-        const body = JSON.parse(text.slice(text.indexOf("\n") + 1));
+        const [, bodyText] = pipe(text, Str.split("\n"));
+        const body = yield* Schema.decodeEffect(
+          Schema.fromJsonString(Schema.Struct({ signingKey: Schema.Unknown })),
+        )(bodyText);
         expect(body.signingKey).toEqual({
           [Redaction.markerKey]: expect.any(Number),
         });
@@ -509,22 +546,22 @@ describe("deployment signing", () => {
         yield* Effect.promise(() =>
           restored.restoreSnapshot(bytes, { secrets: source.secrets() }),
         );
-        expect((yield* Effect.promise(() => restored.jwks())).keys).toEqual([
-          key,
-        ]);
+        const restoredJwks = yield* Effect.promise(() => restored.jwks());
+        expect(restoredJwks.keys).toEqual([key]);
         const [stored] = yield* Effect.promise(() =>
           restored.query(tokens.list, {}),
         );
         expect(stored).toBe(token);
-        expect(yield* verifies(key!, stored!)).toBe(true);
+        const verified2 = yield* verifies(key!, stored!);
+        expect(verified2).toBe(true);
         const next = yield* Effect.promise(() =>
           restored.mutation(tokens.store, {}),
         );
-        expect(yield* verifies(key!, next)).toBe(true);
+        const verified3 = yield* verifies(key!, next);
+        expect(verified3).toBe(true);
 
-        expect(
-          yield* failure(() => signer().restoreSnapshot(bytes)),
-        ).toMatchObject({ _tag: "SnapshotSecretMissing" });
+        const refusal3 = yield* failure(() => signer().restoreSnapshot(bytes));
+        expect(refusal3).toMatchObject({ _tag: "SnapshotSecretMissing" });
       }),
   );
 });
