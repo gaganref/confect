@@ -300,3 +300,22 @@ export class SnapshotJobInconsistent extends Schema.TaggedError<SnapshotJobIncon
     message: Schema.String,
   },
 ) {}
+
+/**
+ * Whether `error` is the kernel refusing what it does not simulate or a misuse
+ * of its own API, rather than a failure the binary would raise too. A refusal
+ * reaching a function never becomes that function's own failure, such as an
+ * HTTP route's 500.
+ */
+const refusals = [
+  RequiresBinary,
+  KernelRowPending,
+  RegisteredAfterOpen,
+  ClosedAttempt,
+  StaleAttempt,
+  CommitTsNotIncreasing,
+  UnknownStandingSource,
+].map((refusal) => Schema.is(refusal));
+
+export const isKernelRefusal = (error: unknown): boolean =>
+  refusals.some((is) => is(error));

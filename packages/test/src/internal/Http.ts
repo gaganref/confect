@@ -45,8 +45,21 @@ export const noRoute = (): Response =>
   });
 
 /**
+ * Whether the binary hands a route no body for this method: GET, OPTIONS and
+ * HEAD requests reach their handler without one, whatever the client sent
+ * (`ExtractHttpRequestMetadata`,
+ * `crates/local_backend/src/http_actions.rs:131-140`).
+ */
+export const discardsBody = (method: string): boolean => {
+  const upper = method.toUpperCase();
+  return upper === "GET" || upper === "OPTIONS" || upper === "HEAD";
+};
+
+/**
  * A HEAD response carries the handler's status and headers and no body, as an
- * HTTP server sends it.
+ * HTTP server sends it. The binary routes HEAD as GET
+ * (`RoutableMethod::try_from`, `crates/common/src/types/actions.rs:127`), and
+ * its 404 and 500 answers end the same way.
  */
 export const forMethod = (method: string, response: Response): Response =>
   method === "HEAD"

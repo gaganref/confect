@@ -11,6 +11,7 @@ import { actionGeneric } from "convex/server";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type { HttpMount, RegisterComponent } from "../TestConfect.js";
+import * as Execution from "./Execution.js";
 import * as Http from "./Http.js";
 
 declare const process: { env: Record<string, string | undefined> };
@@ -161,10 +162,8 @@ export const make = (
           );
           let response: Response;
           if (route === null) {
-            response = new Response(
-              `No HttpAction routed for ${args.pathname}`,
-              { status: 404 },
-            );
+            // The binary answers a mounted router's miss as a root one's.
+            response = Http.noRoute();
           } else {
             const action = route[0];
             if (!isInvokable(action)) {
@@ -184,12 +183,15 @@ export const make = (
                   ...(args.body === null ? {} : { body: args.body }),
                 }),
               )
-              .catch((thrown: unknown) =>
-                Http.serverError(
+              .catch((thrown: unknown) => {
+                // A kernel refusal is no handler error: it surfaces as itself.
+                const refusal = Execution.currentRefusal(thrown);
+                if (refusal !== undefined) throw refusal;
+                return Http.serverError(
                   thrown,
                   Http.errorRequestId(nextErrorRequest++),
-                ),
-              );
+                );
+              });
           }
           return {
             status: response.status,
@@ -264,10 +266,9 @@ export const make = (
         pathname: pathname.slice(mount.prefix.length) || "/",
         method: request.method,
         headers: [...request.headers],
-        body:
-          request.method === "GET" || request.method === "HEAD"
-            ? null
-            : await request.arrayBuffer(),
+        body: Http.discardsBody(request.method)
+          ? null
+          : await request.arrayBuffer(),
       });
       return new Response(
         request.method === "HEAD" || [204, 205, 304].includes(response.status)

@@ -242,6 +242,13 @@ interface Execution {
    * level, its caller's inside a nested call, tightened by the call's budget.
    */
   readonly limits: Metering.Limits;
+  /**
+   * The first kernel refusal a syscall of this call, or of a call nested in it,
+   * threw. Convex's `performAsyncSyscall` rethrows a syscall's error as a plain
+   * `Error`, so the refusal is kept here for whatever must surface it, such as
+   * an HTTP route that would otherwise answer 500.
+   */
+  readonly refused: { first?: unknown };
 }
 
 /**
@@ -745,50 +752,70 @@ export class World {
    * route, the binary's 404, and for a handler that throws, its 500.
    */
   fetch(caller: Caller, path: unknown, init?: RequestInit): Promise<Response> {
-    return this.open().then(() => {
-      const url = orThrow(Http.requestUrl(path));
-      const request = new Request(url, init);
-      const router = this.component(ROOT).loaded.get("http")?.["default"] as
-        | {
-            readonly lookup: (
-              path: string,
-              method: string,
-            ) => readonly [any, string, string] | null;
-          }
-        | undefined;
-      const route = router?.lookup(url.pathname, request.method) ?? null;
-      if (route === null) return Http.noRoute();
-      const [endpoint] = route;
-      const handler: (
-        ctx: any,
-        request: globalThis.Request,
-      ) => Promise<Response> =
-        "_handler" in endpoint ? endpoint._handler : endpoint;
-      const execution = this.execution(
-        { componentPath: ROOT, udfPath: "http" },
-        "action",
-        undefined,
-        { caller, request: newRequest(caller) },
-        undefined,
-      );
-      const action = httpActionGeneric((ctx, received) =>
-        handler({ ...ctx, auth: queryAuth(execution) }, received),
-      ) as unknown as {
-        invokeHttpAction: (request: globalThis.Request) => Promise<Response>;
-      };
-      // A handler that throws gets the binary's 500, not a rejected fetch.
-      return enter(execution, () => action.invokeHttpAction(request)).then(
-        (response) => Http.forMethod(request.method, response),
-        (thrown: unknown) =>
-          Http.forMethod(
-            request.method,
-            Http.serverError(
-              thrown,
-              Http.errorRequestId(this.nextErrorRequest++),
-            ),
+    return this.during(() =>
+      this.open().then(() => this.route(caller, path, init)),
+    );
+  }
+
+  private route(
+    caller: Caller,
+    path: unknown,
+    init: RequestInit | undefined,
+  ): Promise<Response> {
+    const url = orThrow(Http.requestUrl(path));
+    const method = init?.method ?? "GET";
+    const request = new Request(
+      url,
+      Http.discardsBody(method) ? { ...init, body: null } : init,
+    );
+    const router = this.component(ROOT).loaded.get("http")?.["default"] as
+      | {
+          readonly lookup: (
+            path: string,
+            method: string,
+          ) => readonly [any, string, string] | null;
+        }
+      | undefined;
+    const route = router?.lookup(url.pathname, request.method) ?? null;
+    if (route === null) {
+      return Promise.resolve(Http.forMethod(request.method, Http.noRoute()));
+    }
+    const [endpoint] = route;
+    const handler: (
+      ctx: any,
+      request: globalThis.Request,
+    ) => Promise<Response> =
+      "_handler" in endpoint ? endpoint._handler : endpoint;
+    const execution = this.execution(
+      { componentPath: ROOT, udfPath: "http" },
+      "action",
+      undefined,
+      { caller, request: newRequest(caller) },
+      undefined,
+    );
+    const action = httpActionGeneric((ctx, received) =>
+      handler({ ...ctx, auth: queryAuth(execution) }, received),
+    ) as unknown as {
+      invokeHttpAction: (request: globalThis.Request) => Promise<Response>;
+    };
+    // A handler that throws gets the binary's 500, not a rejected fetch. A
+    // kernel refusal is no handler error: it surfaces as itself.
+    return this.track("functions", () =>
+      enter(execution, () => action.invokeHttpAction(request)),
+    ).then(
+      (response) => Http.forMethod(request.method, response),
+      (thrown: unknown) => {
+        const refusal = refusalOf(thrown, execution);
+        if (refusal !== undefined) throw refusal;
+        return Http.forMethod(
+          request.method,
+          Http.serverError(
+            thrown,
+            Http.errorRequestId(this.nextErrorRequest++),
           ),
-      );
-    });
+        );
+      },
+    );
   }
 
   // Held attempts.
@@ -1512,6 +1539,7 @@ export class World {
       pagination,
       turn: new Turn(),
       limits,
+      refused: from.parent?.refused ?? {},
     };
   }
 
@@ -2181,8 +2209,20 @@ export class World {
   }
 
   syscall(op: string, jsonArgs: string): string {
-    const args = JSON.parse(jsonArgs);
     const execution = current();
+    try {
+      return this.syncSyscall(op, jsonArgs, execution);
+    } catch (error) {
+      throw keepRefusal(error, execution);
+    }
+  }
+
+  private syncSyscall(
+    op: string,
+    jsonArgs: string,
+    execution: Execution,
+  ): string {
+    const args = JSON.parse(jsonArgs);
     if (execution.attempt?.closed === true) throw closed(execution, op);
     switch (op) {
       case "1.0/getSnapshotTs":
@@ -2228,6 +2268,18 @@ export class World {
    */
   asyncSyscall(op: string, jsonArgs: string): Promise<string> {
     const execution = current();
+    return this.queueSyscall(op, jsonArgs, execution).catch(
+      (error: unknown) => {
+        throw keepRefusal(error, execution);
+      },
+    );
+  }
+
+  private queueSyscall(
+    op: string,
+    jsonArgs: string,
+    execution: Execution,
+  ): Promise<string> {
     const attempt = execution.attempt;
     if (attempt === undefined) {
       return Promise.resolve().then(() =>
@@ -2923,6 +2975,31 @@ const closed = (execution: Execution, operation: string) =>
 const orThrow = <A, E>(result: Result.Result<A, E>): A => {
   if (Result.isFailure(result)) throw result.failure;
   return result.success;
+};
+
+/**
+ * Keep `error` as `execution`'s refusal if it is one, and hand it back.
+ */
+const keepRefusal = (error: unknown, execution: Execution): unknown => {
+  if (KernelRefusal.isKernelRefusal(error)) execution.refused.first ??= error;
+  return error;
+};
+
+/**
+ * The kernel refusal behind a function's failure, if any: the thrown value
+ * itself, or the first refusal one of its syscalls threw.
+ */
+const refusalOf = (thrown: unknown, execution: Execution): unknown =>
+  KernelRefusal.isKernelRefusal(thrown) ? thrown : execution.refused.first;
+
+/**
+ * The kernel refusal behind a failure inside the running kernel function, if
+ * any. Outside one, as on convex-test, only a refusal thrown as itself.
+ */
+export const currentRefusal = (thrown: unknown): unknown => {
+  const execution = executions.getStore();
+  if (execution !== undefined) return refusalOf(thrown, execution);
+  return KernelRefusal.isKernelRefusal(thrown) ? thrown : undefined;
 };
 
 const transaction = (execution: Execution): KernelAttempt => {

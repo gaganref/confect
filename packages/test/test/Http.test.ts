@@ -13,6 +13,7 @@ import {
 import { ConvexError, v } from "convex/values";
 import * as Effect from "effect/Effect";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
+import * as MountedHttp from "../src/internal/MountedHttp";
 
 const schema = defineSchema({ hits: defineTable({ path: v.string() }) });
 
@@ -20,6 +21,9 @@ const hits = {
   add: makeFunctionReference<"mutation", { path: string }>("hits:add"),
   list: makeFunctionReference<"query", {}, Array<string>>("hits:list"),
 };
+
+let reachedGate = () => {};
+let gate: Promise<void> = Promise.resolve();
 
 const router = httpRouter();
 router.route({
@@ -73,6 +77,31 @@ router.route({
   }),
 });
 router.route({
+  path: "/echo",
+  method: "OPTIONS",
+  handler: httpActionGeneric(
+    async (_ctx, request) =>
+      new Response(`received ${(await request.arrayBuffer()).byteLength}`),
+  ),
+});
+router.route({
+  path: "/refused",
+  method: "GET",
+  handler: httpActionGeneric(async (ctx) => {
+    await ctx.vectorSearch("hits", "by_embedding", { vector: [0] });
+    return new Response("searched");
+  }),
+});
+router.route({
+  path: "/gated",
+  method: "GET",
+  handler: httpActionGeneric(async () => {
+    reachedGate();
+    await gate;
+    return new Response("through");
+  }),
+});
+router.route({
   path: "/fail-convex-error",
   method: "GET",
   handler: httpActionGeneric(async () => {
@@ -109,6 +138,15 @@ interface HttpWorld extends KernelControls {
 const httpWorld = (): HttpWorld => convexTest(schema, modules);
 
 const call = <A>(thunk: () => Promise<A>) => Effect.promise(thunk);
+
+const thrown = (run: () => unknown): unknown => {
+  try {
+    run();
+    return null;
+  } catch (error) {
+    return error;
+  }
+};
 
 describe("HTTP routes", () => {
   it.effect(
@@ -267,5 +305,163 @@ describe("HTTP routes", () => {
         path: "echo",
       });
     }),
+  );
+});
+
+describe("HTTP request and response edges", () => {
+  it.effect.each([
+    {
+      name: "a path no route has",
+      path: "/missing",
+      status: 404,
+      type: "text/plain; charset=utf-8",
+    },
+    {
+      name: "a route that throws",
+      path: "/fail",
+      status: 500,
+      type: "application/json",
+    },
+  ])(
+    "a HEAD request to $name gets its status and headers and no body",
+    ({ path, status, type }) =>
+      Effect.gen(function* () {
+        const t = httpWorld();
+        const response = yield* call(() => t.fetch(path, { method: "HEAD" }));
+        expect(response.status).toBe(status);
+        expect(response.headers.get("content-type")).toBe(type);
+        expect(yield* call(() => response.text())).toBe("");
+      }),
+  );
+
+  it.effect.each(["OPTIONS", "GET"])(
+    "a %s request's body never reaches its route, as the binary discards it",
+    (method) =>
+      Effect.gen(function* () {
+        const t = httpWorld();
+        const response = yield* call(() =>
+          t.fetch("/echo", { method, body: "discarded" }),
+        );
+        expect(response.status).toBe(200);
+        expect(yield* call(() => response.text())).toBe(
+          method === "OPTIONS" ? "received 0" : "get ",
+        );
+      }),
+  );
+
+  it.effect(
+    "a kernel refusal inside a route surfaces as that refusal, not as a 500",
+    () =>
+      Effect.gen(function* () {
+        const t = httpWorld();
+        const refused = yield* call(() =>
+          t.fetch("/refused").then(
+            () => undefined,
+            (error: unknown) => error,
+          ),
+        );
+        expect(refused).toMatchObject({
+          _tag: "RequiresBinary",
+          operation: "vectorSearch",
+        });
+      }),
+  );
+
+  it.effect(
+    "a backend serving a request refuses a snapshot until it answers",
+    () =>
+      Effect.gen(function* () {
+        const t = httpWorld();
+        const reached = Promise.withResolvers<void>();
+        const released = Promise.withResolvers<void>();
+        reachedGate = () => reached.resolve();
+        gate = released.promise;
+        const pending = t.fetch("/gated");
+        yield* call(() => reached.promise);
+        expect(thrown(() => t.exportSnapshot())).toMatchObject({
+          _tag: "SnapshotWorldRunning",
+        });
+        released.resolve();
+        expect(yield* call(() => pending.then((r) => r.text()))).toBe(
+          "through",
+        );
+        expect(t.exportSnapshot()).toBeInstanceOf(Uint8Array);
+      }),
+  );
+});
+
+describe("mounted HTTP routes", () => {
+  const mountedRouter = httpRouter();
+  mountedRouter.route({
+    path: "/ping",
+    method: "OPTIONS",
+    handler: httpActionGeneric(
+      async (_ctx, request) =>
+        new Response(`received ${(await request.arrayBuffer()).byteLength}`),
+    ),
+  });
+  mountedRouter.route({
+    path: "/refused",
+    method: "GET",
+    handler: httpActionGeneric(async (ctx) => {
+      await ctx.vectorSearch("hits", "by_embedding", { vector: [0] });
+      return new Response("searched");
+    }),
+  });
+  const mounted = () => {
+    const t = convexTest(schema, modules);
+    const http = MountedHttp.make(
+      [{ componentPath: "mail", httpPrefix: "/mail" }],
+      t.registerComponent,
+    );
+    http.register("mail", defineSchema({}), {
+      "_generated/server.ts": () => Promise.resolve({}),
+      "http.ts": () => Promise.resolve({ default: mountedRouter }),
+    });
+    return (path: string, init?: RequestInit) => http.fetch(t, path, init);
+  };
+
+  it.effect(
+    "a mounted miss gets the binary's 404, and a HEAD one no body",
+    () =>
+      Effect.gen(function* () {
+        const fetch = mounted();
+        const miss = yield* call(() => fetch("/mail/missing"));
+        expect(miss.status).toBe(404);
+        expect(yield* call(() => miss.text())).toBe("No matching routes found");
+        const head = yield* call(() =>
+          fetch("/mail/missing", { method: "HEAD" }),
+        );
+        expect(head.status).toBe(404);
+        expect(yield* call(() => head.text())).toBe("");
+      }),
+  );
+
+  it.effect("a mounted OPTIONS request's body never reaches its route", () =>
+    Effect.gen(function* () {
+      const fetch = mounted();
+      const response = yield* call(() =>
+        fetch("/mail/ping", { method: "OPTIONS", body: "discarded" }),
+      );
+      expect(yield* call(() => response.text())).toBe("received 0");
+    }),
+  );
+
+  it.effect(
+    "a kernel refusal inside a mounted route surfaces as that refusal, not as a 500",
+    () =>
+      Effect.gen(function* () {
+        const fetch = mounted();
+        const refused = yield* call(() =>
+          fetch("/mail/refused").then(
+            () => undefined,
+            (error: unknown) => error,
+          ),
+        );
+        expect(refused).toMatchObject({
+          _tag: "RequiresBinary",
+          operation: "vectorSearch",
+        });
+      }),
   );
 });
