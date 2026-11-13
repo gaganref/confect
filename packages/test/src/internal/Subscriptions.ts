@@ -235,8 +235,10 @@ export class Registry {
   private nextId = 1;
   /**
    * The binary's query cache, for the runs of the subscribers `Sync` pushes:
-   * each result under its function, arguments, journal and, when it read the
-   * identity, that identity (`crates/application/src/cache/mod.rs:151-230`).
+   * each successful result under its function, arguments, journal and, when it
+   * read the identity, that identity
+   * (`crates/application/src/cache/mod.rs:151-230`, `:500-510`). A failed run
+   * is never stored, under either journal.
    */
   private readonly cache = new Map<string, Execution.QueryRun>();
 
@@ -258,7 +260,7 @@ export class Registry {
    * The caller `token` makes from `caller`, verified by the world.
    */
   verify(caller: Execution.Caller, token: string): Promise<Execution.Caller> {
-    return this.world.authenticate(caller, token);
+    return this.world.verify(caller, token);
   }
 
   /**
@@ -442,7 +444,10 @@ export class Registry {
     return this.world
       .subscribed(caller, reference, args, pinned)
       .then((run) => {
-        if (caching) {
+        // The binary caches a successful result only: a failure, a thrown
+        // `ConvexError` included, runs again on its next request
+        // (`crates/application/src/cache/mod.rs:500-510`).
+        if (caching && run.outcome._tag === "returned") {
           const identity = run.observedIdentity ? caller.identity : undefined;
           this.cache.set(key(identity), run);
           if (run.journal !== pinned.journal) {

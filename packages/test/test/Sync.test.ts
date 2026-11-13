@@ -89,7 +89,7 @@ const notesSecret = Redaction.policy({
 
 describe("the unmodified client on the kernel", () => {
   it.live(
-    "leg 1: two clients see each step's values, outcomes and identities, and an identity change reruns a time query only once its cached value has expired",
+    "leg 1: two clients see each step's values, outcomes and identities, an identity change reruns a time query only once its cached value has expired, and reruns a failing one every time",
     () =>
       Effect.gen(function* () {
         const { jwks, tokens: minted } = yield* tokens;
@@ -121,6 +121,12 @@ describe("the unmodified client on the kernel", () => {
         // The sign-in within the cache age is answered from the cache; the
         // identity change after it has expired answers a new time.
         expect(observed.sockets.c.clock).toEqual([0, 1]);
+        // A failure is never cached, so the sign-in within the cache age
+        // reruns it too, and its error changes both times.
+        expect(observed.sockets.c.failing).toEqual({
+          withinWindow: true,
+          afterExpiry: true,
+        });
         const disagreements = yield* Effect.promise(() => t.reference());
         expect(disagreements).toEqual([]);
       }),

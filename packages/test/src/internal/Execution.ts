@@ -794,6 +794,16 @@ export class World {
   }
 
   /**
+   * The caller `token` makes from `caller`, as a sync session's Authenticate
+   * presents it: verified against the app's `auth.config` providers at the
+   * kernel's time, as one live call, so a snapshot refuses while it is
+   * pending.
+   */
+  verify(caller: Caller, token: string): Promise<Caller> {
+    return this.during(() => this.authenticate(caller, token));
+  }
+
+  /**
    * The caller a presented token makes, verified against the app's
    * `auth.config` providers at the kernel's time, before anything runs. The
    * binary verifies a client's token on every request, so a token that expires

@@ -348,10 +348,12 @@ export interface Tokens {
  * socket's sequence of values is the same whatever the batching.
  *
  * A third client then watches a query that answers the time and reads no
- * identity. It signs in at once, within the cache age: the binary reruns every
- * query on an identity change, and its cache answers this one with the value it
- * already sent. It waits out the cache age and changes identity again: the
- * cached value has expired, so the rerun answers a new time.
+ * identity, and one that fails with the time as its error data. It signs in at
+ * once, within the cache age: the binary reruns every query on an identity
+ * change, and its cache answers the first with the value it already sent, while
+ * the failure, never cached, runs again and fails anew. It waits out the cache
+ * age and changes identity again: the cached value has expired, so both answer
+ * a new time.
  */
 export const observable = (
   target: Target,
@@ -366,11 +368,15 @@ export const observable = (
     const b = yield* connect(target);
     const c = yield* connect(target);
     const outcomes: Array<JSONValue> = [];
+    // Whether the failing clock's error changed on the sign-in within the
+    // cache age and on the one after it. A rerun's count per sign-in follows
+    // batching, so only whether each one changed the error is compared.
+    const failing = { withinWindow: false, afterExpiry: false };
     const observed = () => ({
       sockets: {
         a: a.sequences(),
         b: b.sequences(),
-        c: { clock: ordinals(c.sequences()["clock"] ?? []) },
+        c: { clock: ordinals(c.sequences()["clock"] ?? []), failing },
       },
       outcomes,
       terminal: { a: a.terminal(), b: b.terminal() },
@@ -448,14 +454,25 @@ export const observable = (
       yield* barrier;
 
       c.watch("clock", "sync:clock", { name: name.counter });
-      yield* c.until(() => c.value("clock") !== undefined);
+      c.watch("failing", "sync:failingClock", { name: name.counter });
+      yield* c.until(
+        () =>
+          c.value("clock") !== undefined && c.value("failing") !== undefined,
+      );
+      const errors = () => (c.sequences()["failing"] ?? []).length;
+      const first = errors();
       yield* signIn(c, tokens.person);
+      // Let the reruns this sign-in owes arrive, well within the cache age.
+      yield* Effect.sleep(Duration.millis(300));
+      const within = errors();
+      failing.withinWindow = within > first;
       yield* record;
       yield* Effect.sleep(Duration.millis(options.cacheAge + 1_500));
       yield* signIn(c, tokens.other);
       yield* c.until(() => (c.sequences()["clock"] ?? []).length > 1);
       // Let a late extra value show, should one come.
       yield* Effect.sleep(Duration.millis(500));
+      failing.afterExpiry = errors() > within;
       return observed();
     }).pipe(Effect.ensuring(record));
   }).pipe(Effect.scoped);

@@ -147,3 +147,15 @@ export const clock = queryGeneric({
     // oxlint-disable-next-line effecttsgo/global-date -- A Convex query reads the time through the `Date` its runtime pins, which is what this fixture observes.
     Promise.resolve(Date.now()),
 });
+
+/**
+ * Fail with the time the query ran at as its error data. A failure is never
+ * cached, so every identity change reruns it and the client sees a new error,
+ * within the cache age or after it.
+ */
+export const failingClock = queryGeneric({
+  args: { name: v.string() },
+  handler: () =>
+    // oxlint-disable-next-line effecttsgo/global-date -- A Convex query reads the time through the `Date` its runtime pins, which is what this fixture observes.
+    Promise.reject(new ConvexError({ time: Date.now() })),
+});

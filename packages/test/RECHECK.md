@@ -1366,6 +1366,9 @@ tokens, is excluded: a ledger names commits of the world it answered.
 
 ### The binary probe
 
+The probe compares the kernel with the binary, across its three legs. The
+convex-test lane runs separately and is not part of it.
+
 `packages/server/test/local-backend/syncProbe.test.ts` runs three legs of the
 unmodified client (`test/fixtures/syncLegs.ts`) against a binary the run starts
 through `LocalBackend.syncLayer` (port `CONFECT_LOCAL_BACKEND_PORT` + 30, the
@@ -1457,3 +1460,22 @@ without it:
   their rule and reason: the `on*` handlers of the kernel's socket, a Convex
   query's `Date.now()`, and Node imports for `/proc`, hashing and temporary
   directories.
+
+### Row 7 fix round 3
+
+- A failed query is never cached. The binary stores a result only when its
+  execution succeeded ("We do not cache JSErrors",
+  `crates/application/src/cache/mod.rs:500-510`), and a client keeps a
+  failure's `errorData` visible (`convex` 1.49
+  `src/browser/sync/remote_query_set.ts:58-71`). So the kernel's cache stores
+  successful runs only, under both the run's journal and its alias. Leg 1's
+  third client also watches `sync:failingClock`, which fails with
+  `ConvexError({ time: Date.now() })`: its error changes on the sign-in within
+  the cache age and on the one after it, on both targets. The binary pins it
+  in the probe, and the kernel's leg 1 test fails when a failure is cached.
+- #134's round 3 (`f5fdcad3`) and `main` (`38ca5de4`, #151 and #152) are
+  merged in, never rebased. #134 now runs an HTTP handler under an invalid
+  token and lets `getUserIdentity` throw, so this row's case expecting an HTTP
+  token to refuse is gone; its subscriber case stays. #134 made
+  `World.authenticate` private, so a presented token reaches the verifier
+  through `World.verify`, one live call as #134's own calls are.
