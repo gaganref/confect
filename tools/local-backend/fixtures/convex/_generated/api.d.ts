@@ -451,6 +451,85 @@ export declare const api: {
         null
       >;
     };
+    requests: {
+      action: FunctionReference<
+        "action",
+        "public",
+        {},
+        {
+          action: {
+            authToken: string | null;
+            ip: string | null;
+            requestId: string;
+            scheduledFunctionId: string | null;
+            subject: string | null;
+            userAgent: string | null;
+          };
+          mutation: {
+            authToken: string | null;
+            ip: string | null;
+            requestId: string;
+            scheduledFunctionId: string | null;
+            subject: string | null;
+            userAgent: string | null;
+          };
+          own: {
+            authToken: string | null;
+            ip: string | null;
+            requestId: string;
+            scheduledFunctionId: string | null;
+            subject: string | null;
+            userAgent: string | null;
+          };
+        }
+      >;
+      mutation: FunctionReference<
+        "mutation",
+        "public",
+        {},
+        {
+          nested: {
+            authToken: string | null;
+            ip: string | null;
+            requestId: string;
+            scheduledFunctionId: string | null;
+            subject: string | null;
+            userAgent: string | null;
+          };
+          own: {
+            authToken: string | null;
+            ip: string | null;
+            requestId: string;
+            scheduledFunctionId: string | null;
+            subject: string | null;
+            userAgent: string | null;
+          };
+        }
+      >;
+      recorded: FunctionReference<
+        "query",
+        "public",
+        { caseId: string },
+        Array<string>
+      >;
+      schedule: FunctionReference<
+        "mutation",
+        "public",
+        { caseId: string },
+        {
+          actionJob: string;
+          mutationJob: string;
+          own: {
+            authToken: string | null;
+            ip: string | null;
+            requestId: string;
+            scheduledFunctionId: string | null;
+            subject: string | null;
+            userAgent: string | null;
+          };
+        }
+      >;
+    };
     reserved: {
       chain: FunctionReference<
         "action",
@@ -802,6 +881,52 @@ export declare const internal: {
         "internal",
         {},
         { after: bigint; before: bigint }
+      >;
+    };
+    requests: {
+      read: FunctionReference<
+        "mutation",
+        "internal",
+        {},
+        {
+          authToken: string | null;
+          ip: string | null;
+          requestId: string;
+          scheduledFunctionId: string | null;
+          subject: string | null;
+          userAgent: string | null;
+        }
+      >;
+      readAction: FunctionReference<
+        "action",
+        "internal",
+        {},
+        {
+          authToken: string | null;
+          ip: string | null;
+          requestId: string;
+          scheduledFunctionId: string | null;
+          subject: string | null;
+          userAgent: string | null;
+        }
+      >;
+      record: FunctionReference<
+        "mutation",
+        "internal",
+        { caseId: string; value: string },
+        null
+      >;
+      scheduledAction: FunctionReference<
+        "action",
+        "internal",
+        { caseId: string },
+        null
+      >;
+      scheduledMutation: FunctionReference<
+        "mutation",
+        "internal",
+        { caseId: string },
+        null
       >;
     };
     storage: {

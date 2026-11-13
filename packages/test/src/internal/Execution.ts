@@ -440,11 +440,18 @@ const current = (): Execution => {
   return execution;
 };
 
+/**
+ * A request ID in the binary's format, 16 lowercase hex digits
+ * (`RequestId::new` in `crates/common/src/execution_context.rs:204-208`,
+ * convex-backend `cccbade4`). The binary draws 8 random bytes. The kernel
+ * counts instead, so every request in the process gets its own ID and a replay
+ * draws nothing from the supplied random stream.
+ */
 let nextRequestId = 0;
 const newRequest = (caller: Caller): Request => ({
   ip: caller.ip,
   userAgent: caller.userAgent,
-  requestId: `kernel-request-${nextRequestId++}`,
+  requestId: Str.padStart(16, "0")((nextRequestId++).toString(16)),
   scheduledFunctionId: null,
   authToken: caller.token,
 });

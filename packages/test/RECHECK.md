@@ -1134,3 +1134,46 @@ action. `packages/server/test/local-backend/componentIdentity.test.ts` gets it
 from the binary with a token the fixture's `auth.config` accepts, measured on
 `precompiled-2026-10-28-cccbade`, and `test/ComponentIdentity.test.ts` from the
 kernel under `withIdentity`.
+
+## Request metadata (row 6)
+
+`ctx.meta.getRequestMetadata()` answers `ip`, `userAgent`, `requestId`,
+`scheduledFunctionId` and `authToken` in a mutation or an action; a query's
+`ctx.meta` has no such method (`convex/src/server/impl/meta_impl.ts`, 1.49). The
+binary's rules (convex-backend `cccbade4`):
+
+- A client's HTTP call is a request of its own. Its ID is 8 random bytes in
+  lowercase hex (`crates/common/src/execution_context.rs:204-208`), unless the
+  client sends `convex-request-id` (`common/src/http/mod.rs:1022-1041`). Its
+  address is `x-forwarded-for`'s first entry, or else the peer's, and its agent
+  is `user-agent` (`:1062-1092`).
+- A nested call keeps its caller's request: a mutation's nested call clones the
+  caller's context (`isolate/src/environment/udf/async_syscall.rs:715-735`), and
+  an action's calls pass its request ID and metadata on
+  (`application/src/application_function_runner/mod.rs:2206-2289`).
+- A scheduled job starts a fresh request with no address or agent
+  (`application/src/scheduled_jobs/mod.rs:743-758`), runs with no identity
+  (`:1072-1080`), and reports its own ID as `scheduledFunctionId`, which every call
+  under it inherits (`udf/async_syscall.rs:1053-1058`,
+  `action/async_syscall.rs:425-447`).
+- `authToken` is the token the request was authenticated with, or `null`.
+
+The kernel already followed every rule but the ID's format. Its request IDs
+were `kernel-request-N`; they are now a counter in the binary's format, 16
+lowercase hex digits, so each request in the process has its own and a replay
+draws nothing from the random stream. The real address and headers stay on the
+binary; a test sets them with `withRequestMetadata`.
+
+### Boundary check
+
+`groups/requests` in the local-backend fixture reads the request from a client
+mutation and its nested mutation, from a client action and its nested mutation
+and action, and from a mutation that schedules a mutation and an action, which
+record what they and the action's nested mutation read.
+`test/fixtures/requestProbe.ts` replaces each value a target chooses by its
+role, a request ID by `request N` in first-seen order or `malformed`, and holds
+the one literal both targets must answer.
+`packages/server/test/local-backend/requestMetadata.test.ts` calls the binary
+with a token its `auth.config` accepts, `x-forwarded-for` and `user-agent`, and
+`test/RequestMetadata.test.ts` calls the kernel with the same identity, address
+and agent.

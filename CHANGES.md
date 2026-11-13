@@ -351,6 +351,21 @@ through plain Convex queries chained across three nested mounts, on the kernel
 and on the binary. With them the fixture's system-table share measures 22.
 This is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-component-identity.md`. Upstream: fork only, as the kernel is
+
+## Test kernel request metadata
+
+Each client call the kernel serves is a request of its own, and its ID now
+takes the binary's format, 16 lowercase hex digits, where it was
+`kernel-request-N`. The kernel counts IDs per process rather than drawing
+them, so a replay draws nothing from the random stream. A nested query or
+mutation keeps its caller's request, and an action passes its request ID and
+metadata on to its calls. A scheduled job starts a fresh request with no
+address, agent or identity, and every call under it reports the job's ID as
+`scheduledFunctionId`. A probe runs one registered fixture group on the kernel
+and on the binary, and both answer one literal once each target's chosen IDs
+are replaced by role. The real address and headers stay on the binary. This
+is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-request-metadata.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
 ## Table info through Table's extractors
