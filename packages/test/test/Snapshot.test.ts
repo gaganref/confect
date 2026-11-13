@@ -1192,7 +1192,7 @@ describe("snapshot file storage", () => {
           exportedFiles = body.files.map((file: any) => file.id);
         });
         expect(exportedFiles).toEqual(
-          [ids.typed, ids.untyped].toSorted((a, b) => (a < b ? -1 : 1)),
+          Arr.sort([ids.typed, ids.untyped], String.Order),
         );
 
         const restored = backend(driver());
@@ -1235,7 +1235,7 @@ describe("snapshot file storage", () => {
         const uuids = yield* call(() =>
           restored.query((ctx: any) =>
             Promise.all(
-              [ids.typed, ids.untyped, ids.gone, next].map((id) =>
+              Arr.map([ids.typed, ids.untyped, ids.gone, next], (id) =>
                 ctx.storage
                   .getMetadata(id)
                   .then((m: any) => m?.storageId ?? null),
@@ -1327,7 +1327,12 @@ describe("snapshot file storage", () => {
         const t = backend(driver());
         yield* storeFiles(t);
         const exported = t.exportSnapshot();
-        const at = text(exported).indexOf('"bytes":"') + '"bytes":"'.length;
+        const at =
+          pipe(
+            text(exported),
+            String.indexOf('"bytes":"'),
+            Option.getOrElse(() => -1),
+          ) + '"bytes":"'.length;
         const flipped = Uint8Array.from(exported);
         flipped[at] = flipped[at] === 0x41 ? 0x42 : 0x41;
         expect(

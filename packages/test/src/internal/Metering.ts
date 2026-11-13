@@ -379,9 +379,10 @@ export class Meter {
       functionsScheduled: shared.functionsScheduled,
       scheduledFunctionArgsBytes: shared.scheduledFunctionArgsBytes,
       filesWritten: this.files.size,
-      fileWriteBytes: [...this.files.values()].reduce(
-        (total, size) => total + size,
+      fileWriteBytes: Arr.reduce(
+        [...this.files.values()],
         0,
+        (total, size) => total + size,
       ),
       filesRead: shared.filesRead,
       fileReadBytes: shared.fileReadBytes,

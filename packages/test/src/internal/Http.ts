@@ -1,6 +1,9 @@
 import { convexToJson, type Value } from "convex/values";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Array from "effect/Array";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 
 /**
  * The origin of a request the test sends to the kernel's HTTP routes, as
@@ -23,7 +26,7 @@ export class InvalidFetchPath extends Schema.TaggedError<InvalidFetchPath>()(
 export const requestUrl = (
   path: unknown,
 ): Result.Result<URL, InvalidFetchPath> =>
-  typeof path === "string" && path.startsWith("/")
+  typeof path === "string" && pipe(path, Str.startsWith("/"))
     ? Result.succeed(new URL(`${origin}${path}`))
     : Result.fail(
         new InvalidFetchPath({
@@ -51,7 +54,7 @@ export const noRoute = (): Response =>
  * `crates/local_backend/src/http_actions.rs:131-140`).
  */
 export const discardsBody = (method: string): boolean => {
-  const upper = method.toUpperCase();
+  const upper = pipe(method, Str.toUpperCase);
   return upper === "GET" || upper === "OPTIONS" || upper === "HEAD";
 };
 
@@ -104,13 +107,15 @@ export const serverError = (thrown: unknown, requestId: string): Response => {
   const message = uncaught(thrown);
   const frames =
     thrown instanceof Error
-      ? (thrown.stack ?? "")
-          .split("\n")
-          .filter((line) => line.startsWith("    at "))
+      ? pipe(
+          thrown.stack ?? "",
+          Str.split("\n"),
+          Array.filter((line) => pipe(line, Str.startsWith("    at "))),
+        )
       : [];
   const body: Record<string, unknown> = {
     code: `[Request ID: ${requestId}] Server Error: ${message}`,
-    trace: `${[message, ...frames].join("\n")}\n`,
+    trace: `${Array.join([message, ...frames], "\n")}\n`,
   };
   if (isConvexError(thrown)) body["data"] = errorData(thrown.data);
   return new Response(JSON.stringify(body), {
@@ -124,4 +129,4 @@ export const serverError = (thrown: unknown, requestId: string): Response => {
  * binary's `RequestId` prints.
  */
 export const errorRequestId = (n: number): string =>
-  n.toString(16).padStart(16, "0");
+  pipe(n.toString(16), Str.padStart(16, "0"));

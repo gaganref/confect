@@ -4,6 +4,8 @@ import path from "node:path";
 import tsconfigPaths from "vite-tsconfig-paths";
 import { defineConfig, mergeConfig } from "vitest/config";
 import sharedConfig from "../../vitest.shared";
+import * as Array from "effect/Array";
+import { pipe } from "effect/Function";
 
 /**
  * Conformance exceptions: mock-backend cases that hold the Convex binary's
@@ -48,12 +50,17 @@ const convexTestVersion = (
     readonly version: string;
   }
 ).version;
-const stale = exceptions.filter(
+const stale = Array.filter(
+  exceptions,
   ({ convexTest }) => convexTest !== convexTestVersion,
 );
 if (stale.length > 0) {
   throw new Error(
-    `The convex-test lane's exceptions were checked against another convex-test than ${convexTestVersion}: ${stale.map(({ file }) => file).join(", ")}. Re-check each and update its version.`,
+    `The convex-test lane's exceptions were checked against another convex-test than ${convexTestVersion}: ${pipe(
+      stale,
+      Array.map(({ file }) => file),
+      Array.join(", "),
+    )}. Re-check each and update its version.`,
   );
 }
 
@@ -81,7 +88,7 @@ export default mergeConfig(
       // exceptions above.
       exclude: [
         "test/mock-backend/kernelLane.test.ts",
-        ...exceptions.map(({ file }) => file),
+        ...Array.map(exceptions, ({ file }) => file),
       ],
       globalSetup: ["./test/mock-backend/setup.ts"],
     },

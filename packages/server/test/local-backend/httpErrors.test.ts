@@ -17,6 +17,9 @@ import * as HttpClient from "effect/http/HttpClient";
 import { convexTest } from "../../../test/src/internal/ConvexTest";
 import { expectServerError } from "../mock-backend/serverError";
 import * as LocalBackend from "confect-local-backend/LocalBackend";
+import * as Arr from "effect/Array";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 /**
  * One raw request to the plain probe: its status, raw header lines and body.
@@ -65,8 +68,10 @@ const raw = (
  * The values a raw response sent under `name`, one per header line.
  */
 const lines = (rawHeaders: ReadonlyArray<string>, name: string) =>
-  rawHeaders.flatMap((value, i) =>
-    i % 2 === 0 && value.toLowerCase() === name ? [rawHeaders[i + 1]!] : [],
+  Arr.flatMap(rawHeaders, (value, i) =>
+    i % 2 === 0 && pipe(value, String.toLowerCase) === name
+      ? [rawHeaders[i + 1]!]
+      : [],
   );
 
 /**
@@ -191,7 +196,7 @@ layer(
           "b=2; Path=/",
         ]);
         const multi = lines(binary.rawHeaders, "x-multi");
-        expect(multi.join(", ")).toBe("first, second");
+        expect(Arr.join(multi, ", ")).toBe("first, second");
 
         const response = yield* Effect.promise(() =>
           kernel().fetch("/headers", {
@@ -205,7 +210,7 @@ layer(
         expect(response.headers.getSetCookie()).toEqual(
           lines(binary.rawHeaders, "set-cookie"),
         );
-        expect(response.headers.get("x-multi")).toBe(multi.join(", "));
+        expect(response.headers.get("x-multi")).toBe(Arr.join(multi, ", "));
       }),
   );
 });

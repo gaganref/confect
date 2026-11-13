@@ -229,9 +229,11 @@ export const make = (
     // a deployment builds a mounted component's router at its mount. So the
     // backend never loads the HTTP module on its own: the test kernel would
     // otherwise construct it at open, under no mount's site URL.
-    const backendModules = Object.fromEntries(
-      Object.entries(modules).filter(
-        ([path]) => path.replace(/\.[^.]+$/, "") !== `${root}http`,
+    const backendModules = Rec.fromEntries(
+      Arr.filter(
+        Rec.toEntries(modules),
+        ([path]) =>
+          pipe(path, String.replace(/\.[^.]+$/, "")) !== `${root}http`,
       ),
     );
     registerComponent(

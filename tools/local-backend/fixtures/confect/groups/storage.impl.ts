@@ -24,6 +24,7 @@ import {
   TransactionMetadata,
 } from "../_generated/services";
 import storage, { StorageRollback } from "./storage.spec";
+import * as Arr from "effect/Array";
 
 const readBlob = Effect.fn("storage.readBlob")(function* (
   storageId: GenericId<"_storage">,
@@ -382,20 +383,18 @@ const storeAndRead = FunctionImpl.make(
     Effect.gen(function* () {
       const ctx = yield* MutationCtx;
       yield* Effect.promise(() =>
-        Array.from({ length: count })
-          .reduce<Promise<unknown>>(
-            (previous) =>
-              previous.then(() =>
-                ctx.storage.store(new Blob([new Uint8Array(size)])),
-              ),
-            Promise.resolve(),
-          )
-          .then(() =>
-            ids.reduce<Promise<unknown>>(
-              (previous, id) => previous.then(() => ctx.storage.get(id)),
-              Promise.resolve(),
+        Arr.reduce(
+          Array.from({ length: count }),
+          Promise.resolve<unknown>(undefined),
+          (previous) =>
+            previous.then(() =>
+              ctx.storage.store(new Blob([new Uint8Array(size)])),
             ),
+        ).then(() =>
+          Arr.reduce(ids, Promise.resolve<unknown>(undefined), (previous, id) =>
+            previous.then(() => ctx.storage.get(id)),
           ),
+        ),
       );
       return null;
     }),

@@ -1,4 +1,5 @@
 import * as Schema from "effect/Schema";
+import * as Array from "effect/Array";
 
 /**
  * The kernel never answers this operation in process. Only the binary does.
@@ -356,15 +357,18 @@ export class SnapshotJobInconsistent extends Schema.TaggedError<SnapshotJobIncon
  * reaching a function never becomes that function's own failure, such as an
  * HTTP route's 500.
  */
-const refusals = [
-  RequiresBinary,
-  KernelRowPending,
-  RegisteredAfterOpen,
-  ClosedAttempt,
-  StaleAttempt,
-  CommitTsNotIncreasing,
-  UnknownStandingSource,
-].map((refusal) => Schema.is(refusal));
+const refusals = Array.map(
+  [
+    RequiresBinary,
+    KernelRowPending,
+    RegisteredAfterOpen,
+    ClosedAttempt,
+    StaleAttempt,
+    CommitTsNotIncreasing,
+    UnknownStandingSource,
+  ],
+  (refusal) => Schema.is(refusal),
+);
 
 export const isKernelRefusal = (error: unknown): boolean =>
-  refusals.some((is) => is(error));
+  Array.some(refusals, (is) => is(error));

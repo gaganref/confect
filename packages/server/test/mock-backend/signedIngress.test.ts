@@ -3,6 +3,9 @@ import * as Effect from "effect/Effect";
 import * as SignedEnvelope from "../signedEnvelope";
 import refs from "./fixtures/confect/_generated/refs";
 import * as TestConfect from "./TestConfect";
+import * as Array from "effect/Array";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 
 const encoder = new TextEncoder();
 const json = (value: unknown) => encoder.encode(JSON.stringify(value));
@@ -106,9 +109,10 @@ const shapes: ReadonlyArray<{
         ...envelope,
         headers: {
           ...envelope.headers,
-          [SignedEnvelope.signatureHeader]: envelope.headers[
-            SignedEnvelope.signatureHeader
-          ]!.slice("sha256=".length),
+          [SignedEnvelope.signatureHeader]: pipe(
+            envelope.headers[SignedEnvelope.signatureHeader]!,
+            String.slice("sha256=".length),
+          ),
         },
       })),
     refusal: SignedEnvelope.refusals.malformedSignature,
@@ -120,9 +124,10 @@ const shapes: ReadonlyArray<{
         ...envelope,
         headers: {
           ...envelope.headers,
-          [SignedEnvelope.signatureHeader]: envelope.headers[
-            SignedEnvelope.signatureHeader
-          ]!.slice(0, -2),
+          [SignedEnvelope.signatureHeader]: pipe(
+            envelope.headers[SignedEnvelope.signatureHeader]!,
+            String.slice(0, -2),
+          ),
         },
       })),
     refusal: SignedEnvelope.refusals.malformedSignature,
@@ -199,7 +204,10 @@ describe("signed ingress", () => {
       ).toStrictEqual({ status: 200, body: "accepted paid evt_1" });
       const c = yield* TestConfect.TestConfect;
       expect(
-        (yield* c.query(refs.public.groups.notes.list)).map((row) => row.text),
+        Array.map(
+          yield* c.query(refs.public.groups.notes.list),
+          (row) => row.text,
+        ),
       ).toStrictEqual(["paid:evt_1"]);
     }).pipe(Effect.provide(TestConfect.layer)),
   );

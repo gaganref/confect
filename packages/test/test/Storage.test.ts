@@ -18,6 +18,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Redaction from "../src/internal/Redaction";
+import * as Array from "effect/Array";
 
 // The binary answers these for one stored blob. The local-backend case
 // "keeps one stored blob's _storage row, metadata, URL and delete as the test
@@ -310,7 +311,7 @@ describe("storage metadata", () => {
               ctx.db
                 .query("notes")
                 .collect()
-                .then((notes) => notes.map((note) => note.text)),
+                .then((notes) => Array.map(notes, (note) => note.text)),
             ),
           ),
         ).toStrictEqual(["gone"]);
@@ -584,7 +585,9 @@ describe("storage redaction", () => {
               ctx.db
                 .query("attachments")
                 .collect()
-                .then((rows) => rows.map((row) => [row["file"], row["token"]])),
+                .then((rows) =>
+                  Array.map(rows, (row) => [row["file"], row["token"]]),
+                ),
             ),
           ),
         ).toStrictEqual([[file, canary]]);

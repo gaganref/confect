@@ -611,9 +611,9 @@ const holds = (bytes: Uint8Array, needle: Uint8Array): boolean => {
  */
 export const markBytes = (bytes: Uint8Array, secrets: Secrets): JSONValue => {
   const base64 = Base64.fromByteArray(bytes);
-  return secrets
-    .searchable()
-    .some((secret) => holds(bytes, utf8.encode(secret)))
+  return Arr.some(secrets.searchable(), (secret) =>
+    holds(bytes, utf8.encode(secret)),
+  )
     ? { [markerKey]: secrets.keep(base64) }
     : base64;
 };

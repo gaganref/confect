@@ -478,12 +478,15 @@ export const encode = (
         world: target.world,
       }),
     ),
-    files: sorted(image.files, ([id]) => id).map(([id, file]) => ({
-      id,
-      componentPath: file.componentPath,
-      uuid: file.uuid,
-      bytes: redactBytes(file.bytes),
-    })),
+    files: Arr.map(
+      sorted(image.files, ([id]) => id),
+      ([id, file]) => ({
+        id,
+        componentPath: file.componentPath,
+        uuid: file.uuid,
+        bytes: redactBytes(file.bytes),
+      }),
+    ),
     crons: sorted(
       image.crons,
       ({ componentPath, name }) => `${componentPath}\u0000${name}`,
@@ -712,7 +715,7 @@ const unredactBody = (
         after: document(change.after),
       })),
     })),
-    files: body.files.map((file) => {
+    files: Arr.map(body.files, (file) => {
       if (refusal !== undefined) return file;
       const bytes = unredact(file.bytes as JSONValue);
       if (Result.isFailure(bytes)) {
@@ -789,7 +792,7 @@ const imageOf = (body: Body, unredact: Unredact): Image => {
       ]),
     ),
     files: new Map(
-      body.files.map((file) => [
+      Arr.map(body.files, (file) => [
         file.id as DocumentId,
         {
           componentPath: file.componentPath,

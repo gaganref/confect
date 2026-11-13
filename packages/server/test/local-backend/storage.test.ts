@@ -19,6 +19,9 @@ import refs from "confect-local-backend/refs";
 import * as LocalBackend from "confect-local-backend/LocalBackend";
 import registry from "../../../../tools/local-backend/fixtures/confect/_generated/testing";
 import { TestConfect } from "../../../test/src/index";
+import * as Record from "effect/Record";
+import * as Arr from "effect/Array";
+import * as Str from "effect/String";
 
 const UploadResponse = Schema.fromJsonString(
   Schema.Struct({ storageId: Schema.String }),
@@ -398,8 +401,8 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
         expect(new URL(described.url).search).toBe("");
 
         const untyped = yield* describe(yield* store("", ""));
-        expect(Object.keys(untyped.doc).toSorted()).toStrictEqual(
-          Object.keys(described.doc).toSorted(),
+        expect(Arr.sort(Record.keys(untyped.doc), Str.Order)).toStrictEqual(
+          Arr.sort(Record.keys(described.doc), Str.Order),
         );
         expect(untyped.doc.contentType).toBeNull();
         expect(untyped.metadata.contentType).toBeNull();

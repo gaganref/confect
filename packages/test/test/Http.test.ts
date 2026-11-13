@@ -18,6 +18,8 @@ import * as Schema from "effect/Schema";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as MountedHttp from "../src/internal/MountedHttp";
 import * as Redaction from "../src/internal/Redaction";
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
 
 const schema = defineSchema({
   hits: defineTable({ path: v.string() }),
@@ -154,7 +156,7 @@ const modules = {
           ctx.db
             .query("hits")
             .collect()
-            .then((rows) => rows.map((row) => row.path)),
+            .then((rows) => Arr.map(rows, (row) => row.path)),
       }),
     }),
 };
@@ -192,7 +194,7 @@ describe("HTTP routes", () => {
           }),
         );
         expect(response.status).toBe(201);
-        expect(Object.fromEntries(response.headers)).toMatchObject({
+        expect(Rec.fromEntries(response.headers)).toMatchObject({
           "x-method": "POST",
           "x-url": "https://some.convex.site/echo?x=1&y=two",
           "x-signature": "sha256=abc",
@@ -305,7 +307,7 @@ describe("HTTP routes", () => {
           string,
           unknown
         >;
-        expect(Object.keys(body)).toStrictEqual(
+        expect(Rec.keys(body)).toStrictEqual(
           data === undefined ? ["code", "trace"] : ["code", "trace", "data"],
         );
         expect(body["code"]).toMatch(
