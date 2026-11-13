@@ -1042,24 +1042,14 @@ layer(NodeServices.layer, { excludeTestServices: true })(
         yield* fs.makeDirectory(`${project.root}/confect/billing`);
         yield* project.write(
           "confect/app.ts",
-          'import { App, Env } from "@confect/core";\nexport default App.make({ env: Env.make("host", {}) });\n',
+          'import { App, Env } from "@confect/core";\nimport { observe } from "./observe";\nexport default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "observe", section: observe }] });\n',
         );
         yield* project.write(
-          "confect/profile.ts",
-          `import { FunctionSpec } from "@confect/core";
-const render = ({ modules }) => ({ contents: "export {};\\n", errors: modules[0].exports.valid ? [] : ["refused"] });
-const observe = { owner: "test/observe", format: 1, describe: () => null, generate: { file: "observe.ts", match: (path) => path.endsWith("/log.ts"), render } };
-export const profile = FunctionSpec.extend()({ middleware: [], manifest: { observe } });`,
+          "confect/observe.ts",
+          `const render = ({ modules }) => ({ contents: "export {};\\n", errors: modules[0].exports.valid ? [] : ["refused"] });
+export const observe = { owner: "test/observe", format: 1, describe: () => null, generate: { file: "observe.ts", match: (path) => path.endsWith("/log.ts"), render } };`,
         );
-        yield* project.write(
-          "confect/notes.spec.ts",
-          Project.spec
-            .replace(
-              "export default",
-              'import { profile } from "./profile";\nexport default',
-            )
-            .replace("FunctionSpec.publicQuery", "profile.publicQuery"),
-        );
+        yield* project.write("confect/notes.spec.ts", Project.spec);
         yield* project.write("confect/billing/log.ts", log);
         yield* project.write("confect/billing/helper.ts", helper);
         return project;
@@ -1105,6 +1095,35 @@ export const profile = FunctionSpec.extend()({ middleware: [], manifest: { obser
             "confect/billing/helper.ts",
             "export const valid = true;\n",
           );
+          yield* watching.waitFor(success);
+        }).pipe(Effect.scoped),
+      { timeout: 45000 },
+    );
+
+    it.effect(
+      "verifies again when a matched implementation changes",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* Project.make;
+          yield* project.write(
+            "confect/app.ts",
+            'import { App, Env } from "@confect/core";\nimport { doors } from "./doors";\nexport default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "doors", section: doors }] });\n',
+          );
+          yield* project.write(
+            "confect/doors.ts",
+            `export const doors = { owner: "test/doors", format: 1, describe: () => null, generate: { file: "doors.ts", match: () => false, render: () => ({ contents: "export {};\\n", errors: [] }), verify: { match: (path) => path === "notes.impl.ts", check: ({ modules }) => modules[0].exports.allowed ? [] : ["impl denied"] } } };`,
+          );
+          const impl = (allowed: boolean) =>
+            project.write(
+              "confect/notes.impl.ts",
+              `${Project.impl}export const allowed = ${allowed};\n`,
+            );
+          yield* impl(true);
+          const watching = yield* project.start("dev");
+          yield* watching.waitFor(success);
+          yield* impl(false);
+          yield* watching.waitFor("impl denied");
+          yield* impl(true);
           yield* watching.waitFor(success);
         }).pipe(Effect.scoped),
       { timeout: 45000 },

@@ -7,9 +7,13 @@ import * as Schema from "effect/Schema";
 import {
   defineSchema,
   defineTable,
+  makeFunctionReference,
+  mutationGeneric,
+  queryGeneric,
   type GenericDataModel,
 } from "convex/server";
 import { v } from "convex/values";
+import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 
 const schema = DatabaseSchema.make({});
 const Test = TestConfect.TestConfect<typeof schema>();
@@ -125,4 +129,71 @@ it.effect(
         expect(tops()).toEqual(settled);
       }).pipe(Effect.provide(layer("convex-test")));
     }).pipe(Effect.provide(layer("kernel"))),
+);
+
+const notes = {
+  add: makeFunctionReference<"mutation", { text: string }>("notes:add"),
+  list: makeFunctionReference<"query", {}, Array<string>>("notes:list"),
+};
+
+const kernelNotes = (): KernelControls =>
+  convexTest({
+    schema: defineSchema({ notes: defineTable({ text: v.string() }) }),
+    modules: {
+      "_generated/server.ts": () => Promise.resolve({}),
+      "notes.ts": () =>
+        Promise.resolve({
+          add: mutationGeneric({
+            args: { text: v.string() },
+            handler: (ctx, { text }) => ctx.db.insert("notes", { text }),
+          }),
+          list: queryGeneric({
+            args: {},
+            handler: (ctx) =>
+              ctx.db
+                .query("notes")
+                .collect()
+                .then((rows) => rows.map((row) => row.text)),
+          }),
+        }),
+    },
+  });
+
+// A kernel subscription's reruns reach Convex's server library through the same
+// `globalThis.Convex` and pinned globals that a live convex-test layer uses.
+it.effect(
+  "a kernel subscription beside a live convex-test layer reruns on a conflicting kernel commit only, and keeps each pinned global's accessor",
+  () =>
+    Effect.gen(function* () {
+      const t = kernelNotes();
+      yield* Effect.promise(() => t.mutation(notes.add, { text: "a" }));
+      const subscription = yield* Effect.promise(() =>
+        t.subscriber().subscribe(notes.list, {}),
+      );
+      yield* Effect.gen(function* () {
+        const other = yield* Test;
+        yield* insert(other, "other");
+        yield* Effect.promise(() => t.refresh());
+        const tops = () =>
+          (["Date", "Math", "crypto"] as const).map(
+            // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
+            (name) => Object.getOwnPropertyDescriptor(globalThis, name)?.get,
+          );
+        const settled = tops();
+        expect(yield* Effect.promise(() => t.refresh())).toEqual([]);
+        yield* insert(other, "other again");
+        expect(yield* Effect.promise(() => t.refresh())).toEqual([]);
+        yield* Effect.promise(() => t.mutation(notes.add, { text: "b" }));
+        const reran = yield* Effect.promise(() => t.refresh());
+        expect(reran).toMatchObject([
+          {
+            subscription: subscription.id,
+            to: { _tag: "returned", value: ["a", "b"] },
+          },
+        ]);
+        expect(yield* Effect.promise(() => t.reference())).toEqual([]);
+        expect(yield* read(other)).toEqual(["other", "other again"]);
+        expect(tops()).toEqual(settled);
+      }).pipe(Effect.provide(layer("convex-test")));
+    }),
 );

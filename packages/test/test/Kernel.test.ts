@@ -1504,6 +1504,7 @@ const life = {
     {},
     { before: number; after: number; called: number }
   >("life:movingAction"),
+  pinnedQuery: makeFunctionReference<"query", {}, Pinned>("life:pinnedQuery"),
   stamped: makeFunctionReference<
     "mutation",
     {},
@@ -1687,6 +1688,14 @@ const lifeModule = {
   pinnedInner: register(
     FunctionSpec.internalAction({
       name: "pinnedInner",
+      args: () => ({}),
+      returns: () => PinnedSchema,
+    }),
+    () => pinned,
+  ),
+  pinnedQuery: register(
+    FunctionSpec.publicQuery({
+      name: "pinnedQuery",
       args: () => ({}),
       returns: () => PinnedSchema,
     }),
@@ -1935,6 +1944,31 @@ describe("invocations", () => {
           Invocation.bind(caller, () => t.mutation(life.stamped, {})),
         );
         expect(seen).toEqual({ now: 5_000, created: 5_000 });
+      }),
+  );
+
+  it.effect(
+    "a bound subscription's query reads the kernel's clock and records the read, so the clock moving alone changes nothing",
+    () =>
+      Effect.gen(function* () {
+        let now = 5_000;
+        const t = lifeWorld({
+          now: () => now,
+          commitTs: (version) => BigInt(version),
+        });
+        const subscription = yield* call(() =>
+          Invocation.bind(caller, () =>
+            t.subscriber().subscribe(life.pinnedQuery, {}),
+          ),
+        );
+        expect(subscription.current()).toMatchObject({
+          outcome: { _tag: "returned", value: { now: 5_000, random: 0.25 } },
+          time: 5_000,
+        });
+        now = 6_000;
+        expect(
+          yield* call(() => Invocation.bind(caller, () => t.reference())),
+        ).toEqual([]);
       }),
   );
 });
