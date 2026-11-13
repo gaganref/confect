@@ -543,10 +543,25 @@ have reached before it installs any of it, each rule with its own refusal:
   component and a function that component exports, every job row has its job,
   and no job is running.
 
-A world running a call from the test, a scheduler walk included, refuses to
-export or restore with `SnapshotWorldRunning`. A scheduled action awaiting
-something would otherwise commit after the export, and a restored world would
-hold its job `inProgress` with no run to finish it.
+A world refuses to export or restore while any live registry the contract
+names is non-empty. These are calls from the test, scheduler walks, function
+executions (nested and detached ones included) and held attempts, refused with
+`SnapshotWorldRunning` or `SnapshotWorldBusy`. A restore also refuses while a
+subscriber is registered, with `SnapshotSubscribed`: subscriptions are live
+client state, and a restore would rewind an existing subscriber's identity
+version so its next `authenticate` reused one. A scheduled action awaiting
+something would otherwise commit after the export, and a nested mutation an
+action leaves running would write after it. The binary lets detached work
+finish within its function's lifetime (#122), so a snapshot waits for it
+rather than cancel it.
+
+Before any map is built, a restore checks the decoded body, so its order
+cannot change the result. Components, tables, a component's rows and jobs
+each appear once, and every stored or logged document has an `_id` string and
+a finite, non-negative `_creationTime`, logged under its own ID. A duplicate
+table listed empty first would otherwise be overwritten by its populated
+twin, and a missing creation time would make the allocator check compare
+against `NaN`.
 
 The identity epoch is #125's identity version made world-wide. A subscriber
 starts at the world's epoch, and each `authenticate` advances it, so a
@@ -554,7 +569,10 @@ restored world continues the versions its source handed out and replays the
 same identity transitions.
 
 `Snapshot.contract` lists every piece of kernel state as exported or excluded
-with its reason. A field added to `Kernel.State` or `Scheduling.Target`
+with its reason. Its comment names the limit of the fresh-world field test, which
+cannot see lazy, symbol-keyed, `#private` or closure-held state, so every live
+registry is also listed in `contract.live`, reported by a `liveCounts` typed
+against it, and refused on restore while non-empty. A field added to `Kernel.State` or `Scheduling.Target`
 without an entry fails to compile. A `World`'s fields are private, so a test
 compares a fresh world's own fields with the contract. Subscriptions and their
 callers are live client state, so a restore starts with none. Owed when they

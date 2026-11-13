@@ -165,11 +165,13 @@ Components, tables, rows and jobs are sorted and each document keeps its field
 order, so two exports of one state are the same bytes. The header names the
 SHA-256 digest of the body, and restore refuses bytes whose body does not hash
 to it with `SnapshotDigestMismatch`, before it reads any of them. Restore also
-refuses a malformed body, a backend that committed, holds attempts or is
-running a call, other components and a job world it is not given, and state
+refuses a malformed body, a backend that committed, holds attempts, has a
+subscriber or is running a call, a scheduler walk or a function (detached ones
+included), other components and a job world it is not given, and state
 the kernel could not have reached: rows the write log does not publish,
-identity counters behind the state, commit timestamps out of order and jobs
-without their rows or targets. Each has a tagged refusal. The snapshot also
+identity counters behind the state, commit timestamps out of order, jobs
+without their rows or targets, documents without their system fields, and
+duplicate components, tables, rows or jobs. Each has a tagged refusal. The snapshot also
 carries the identity epoch that subscribers' identity versions come from, and
 `Snapshot.contract` names every piece of kernel state as exported or excluded,
 checked by type and by a test.

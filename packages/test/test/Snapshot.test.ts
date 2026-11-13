@@ -74,6 +74,8 @@ const app = {
   startTicking: makeFunctionReference<"mutation">("app:startTicking"),
   dump: makeFunctionReference<"query", {}, Record<string, unknown>>("app:dump"),
   waitGate: makeFunctionReference<"action">("app:waitGate"),
+  detach: makeFunctionReference<"action">("app:detach"),
+  gatedInsert: makeFunctionReference<"mutation">("app:gatedInsert"),
   scheduleGate: makeFunctionReference<"mutation">("app:scheduleGate"),
   whoami: makeFunctionReference<"query", {}, string | null>("app:whoami"),
 };
@@ -202,6 +204,28 @@ const hostModules = {
           return null;
         },
       }),
+      detach: actionGeneric({
+        args: {},
+        handler: async (ctx) => {
+          // The child is left running: the action returns without it.
+          void ctx.runMutation(app.gatedInsert, {});
+          return null;
+        },
+      }),
+      gatedInsert: mutationGeneric({
+        args: {},
+        handler: async (ctx) => {
+          reached.release();
+          await gate.promise;
+          await ctx.db.insert("notes", {
+            text: "detached",
+            count: 0n,
+            raw: new ArrayBuffer(0),
+            extra: {},
+          });
+          return null;
+        },
+      }),
       scheduleGate: mutationGeneric({
         args: {},
         handler: (ctx) => ctx.scheduler.runAfter(0, app.waitGate, {}),
@@ -306,6 +330,24 @@ let gate = latch();
 let reached = latch();
 
 const call = <A>(thunk: () => Promise<A>) => Effect.promise(thunk);
+
+/**
+ * The backend's snapshot once its detached work has settled: a detached call
+ * refuses the export until then.
+ */
+const settled = (t: KernelControls, turns = 1000): Promise<Uint8Array> =>
+  Promise.resolve()
+    .then(() => t.exportSnapshot())
+    .catch((error: unknown) => {
+      if (
+        (error as { _tag?: string })._tag !== "SnapshotWorldRunning" ||
+        turns === 0
+      )
+        throw error;
+      const { promise, resolve } = Promise.withResolvers<void>();
+      setImmediate(resolve);
+      return promise.then(() => settled(t, turns - 1));
+    });
 const failure = (thunk: () => Promise<unknown>) =>
   call(() =>
     thunk().then(
@@ -731,6 +773,89 @@ describe("snapshot consistency", () => {
       refusal: { _tag: "SnapshotRowInconsistent", reason: "log" },
     },
     {
+      name: "a row with no creation time",
+      edit: (body) => {
+        delete table(body, "notes").rows[0].doc._creationTime;
+      },
+      refusal: { _tag: "SnapshotRowInconsistent", reason: "systemFields" },
+    },
+    {
+      name: "a row whose creation time is a string",
+      edit: (body) => {
+        table(body, "notes").rows[0].doc._creationTime = "1";
+      },
+      refusal: { _tag: "SnapshotRowInconsistent", reason: "systemFields" },
+    },
+    {
+      name: "a row with a negative creation time",
+      edit: (body) => {
+        table(body, "notes").rows[0].doc._creationTime = -1;
+      },
+      refusal: { _tag: "SnapshotRowInconsistent", reason: "systemFields" },
+    },
+    {
+      name: "a row whose ID is not a string",
+      edit: (body) => {
+        table(body, "notes").rows[0].doc._id = 7;
+      },
+      refusal: { _tag: "SnapshotRowInconsistent", reason: "systemFields" },
+    },
+    {
+      name: "a logged document with no creation time",
+      edit: (body) => {
+        const logged = body.log
+          .flatMap((commit: any) => commit.changes)
+          .find((c: any) => c.after !== null);
+        delete logged.after._creationTime;
+      },
+      refusal: { _tag: "SnapshotRowInconsistent", reason: "systemFields" },
+    },
+    {
+      name: "a logged document under another ID",
+      edit: (body) => {
+        const logged = body.log
+          .flatMap((commit: any) => commit.changes)
+          .find((c: any) => c.after !== null);
+        logged.id = table(body, "handles").rows[0].doc._id;
+      },
+      refusal: { _tag: "SnapshotRowInconsistent", reason: "systemFields" },
+    },
+    {
+      name: "a table listed empty and then populated",
+      edit: (body) => {
+        body.tables.unshift({ componentPath: "", table: "notes", rows: [] });
+      },
+      refusal: { _tag: "SnapshotRowInconsistent", reason: "duplicate" },
+    },
+    {
+      name: "a table listed populated and then empty",
+      edit: (body) => {
+        body.tables.push({ componentPath: "", table: "notes", rows: [] });
+      },
+      refusal: { _tag: "SnapshotRowInconsistent", reason: "duplicate" },
+    },
+    {
+      name: "one ID stored in two tables",
+      edit: (body) => {
+        table(body, "stamps").rows.push(table(body, "notes").rows[0]);
+      },
+      refusal: { _tag: "SnapshotRowInconsistent", reason: "duplicate" },
+    },
+    {
+      name: "a job listed twice",
+      edit: (body) => {
+        body.jobs.push(body.jobs[0]);
+      },
+      refusal: { _tag: "SnapshotJobInconsistent", reason: "duplicate" },
+    },
+    {
+      name: "a component listed twice",
+      edit: (body) => {
+        body.components.push(body.components[0]);
+      },
+      refusal: { _tag: "SnapshotMalformed", reason: "duplicate" },
+    },
+    {
       name: "commit timestamps that do not increase",
       edit: (body) => {
         body.log[1].commitTs = body.log[0].commitTs;
@@ -827,7 +952,8 @@ describe("snapshot while running", () => {
         yield* call(() => reached.promise);
         expect(thrown(() => t.exportSnapshot())).toMatchObject({
           _tag: "SnapshotWorldRunning",
-          running: 1,
+          registry: "running",
+          count: 1,
         });
         const snapshot = backend(driver()).exportSnapshot();
         expect(yield* failure(() => t.restoreSnapshot(snapshot))).toMatchObject(
@@ -843,6 +969,7 @@ describe("snapshot while running", () => {
         yield* call(() => reached.promise);
         expect(thrown(() => t.exportSnapshot())).toMatchObject({
           _tag: "SnapshotWorldRunning",
+          registry: "walks",
         });
         gate.release();
         yield* call(() => walking);
@@ -861,6 +988,128 @@ describe("snapshot while running", () => {
   );
 });
 
+describe("snapshot live state", () => {
+  it.effect(
+    "a nested mutation an action leaves running keeps export and restore refused until it settles, and its row is then in the snapshot",
+    () =>
+      Effect.gen(function* () {
+        gate = latch();
+        reached = latch();
+        const t = backend(driver());
+        yield* call(() => t.action(app.detach, {}));
+        yield* call(() => reached.promise);
+        expect(thrown(() => t.exportSnapshot())).toMatchObject({
+          _tag: "SnapshotWorldRunning",
+          registry: "functions",
+        });
+        const first = gate;
+        const fresh = backend(driver());
+        gate = latch();
+        reached = latch();
+        yield* call(() => fresh.action(app.detach, {}));
+        yield* call(() => reached.promise);
+        expect(
+          yield* failure(() =>
+            fresh.restoreSnapshot(backend(driver()).exportSnapshot()),
+          ),
+        ).toMatchObject({
+          _tag: "SnapshotWorldRunning",
+          registry: "functions",
+        });
+        first.release();
+        gate.release();
+        const exported = yield* call(() => settled(t));
+        yield* call(() => settled(fresh));
+        const restored = backend(driver());
+        yield* call(() => restored.restoreSnapshot(exported));
+        expect(
+          (
+            (yield* call(() => restored.query(app.dump, {}))) as {
+              notes: Array<{ text: string }>;
+            }
+          ).notes.map((note) => note.text),
+        ).toEqual(["detached"]);
+      }),
+  );
+
+  it.effect(
+    "a backend with a subscriber refuses a restore, which would rewind the identity version that subscriber holds",
+    () =>
+      Effect.gen(function* () {
+        const d = driver();
+        const t = backend(d);
+        yield* before(t, d);
+        const snapshot = t.exportSnapshot();
+        const restored = backend(driver());
+        restored.subscriber().authenticate({ subject: "live" });
+        expect(
+          yield* failure(() =>
+            restored.restoreSnapshot(snapshot, { worlds: [mail] }),
+          ),
+        ).toMatchObject({ _tag: "SnapshotSubscribed", subscribers: 1 });
+        expect(restored.jobs()).toEqual([]);
+      }),
+  );
+
+  it.effect(
+    "a restore refuses while any live registry the contract names is non-empty",
+    () =>
+      Effect.gen(function* () {
+        const snapshot = backend(driver()).exportSnapshot();
+        const refusal = (t: KernelControls) =>
+          failure(() => t.restoreSnapshot(snapshot));
+        const refusals: Record<string, unknown> = {};
+
+        gate = latch();
+        reached = latch();
+        const running = backend(driver());
+        const action = running.action(app.waitGate, {});
+        yield* call(() => reached.promise);
+        refusals["running"] = yield* refusal(running);
+        gate.release();
+        yield* call(() => action);
+
+        gate = latch();
+        reached = latch();
+        const walking = backend(driver());
+        yield* call(() => walking.mutation(app.scheduleGate, {}));
+        const walk = walking.finishAllScheduledFunctions();
+        yield* call(() => reached.promise);
+        refusals["walks"] = yield* refusal(walking);
+        gate.release();
+        yield* call(() => walk);
+
+        gate = latch();
+        reached = latch();
+        const detached = backend(driver());
+        yield* call(() => detached.action(app.detach, {}));
+        yield* call(() => reached.promise);
+        refusals["functions"] = yield* refusal(detached);
+        gate.release();
+        yield* call(() => settled(detached));
+
+        const holding = backend(driver());
+        yield* call(() => holding.prepare(app.insert, { text: "held" }));
+        refusals["held"] = yield* refusal(holding);
+
+        const subscribed = backend(driver());
+        subscribed.subscriber();
+        refusals["subscribers"] = yield* refusal(subscribed);
+
+        expect(Object.keys(refusals).sort()).toEqual(
+          Object.keys(Snapshot.contract.live).sort(),
+        );
+        expect(refusals).toMatchObject({
+          running: { _tag: "SnapshotWorldRunning", registry: "running" },
+          walks: { _tag: "SnapshotWorldRunning", registry: "walks" },
+          functions: { _tag: "SnapshotWorldRunning", registry: "functions" },
+          held: { _tag: "SnapshotWorldBusy" },
+          subscribers: { _tag: "SnapshotSubscribed" },
+        });
+      }),
+  );
+});
+
 describe("snapshot contract", () => {
   it.effect(
     "every field of a world is exported or excluded with a reason, so new state cannot be left out of a snapshot by accident",
@@ -871,6 +1120,9 @@ describe("snapshot contract", () => {
         });
         expect(Object.keys(world).sort()).toEqual(
           Object.keys(Snapshot.contract.world).sort(),
+        );
+        expect(Object.keys(world.liveCounts()).sort()).toEqual(
+          Object.keys(Snapshot.contract.live).sort(),
         );
       }),
   );
