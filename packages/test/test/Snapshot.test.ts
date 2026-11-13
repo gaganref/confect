@@ -3,6 +3,7 @@ import * as Option from "effect/Option";
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- A forged snapshot needs the SHA-256 its header names.
 import { createHash } from "node:crypto";
 import { describe, expect, it } from "@effect/vitest";
+import { vi } from "vitest";
 import {
   actionGeneric,
   componentsGeneric,
@@ -22,6 +23,7 @@ import * as Effect from "effect/Effect";
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Execution from "../src/internal/Execution";
 import * as Invocation from "../src/internal/Invocation";
+import * as Egress from "../src/internal/Egress";
 import * as Snapshot from "../src/internal/Snapshot";
 import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
@@ -640,7 +642,7 @@ describe("snapshot restore", () => {
           components: [""],
           version: "one",
         });
-        const forged = `confect-kernel-snapshot 3 sha256:${createHash("sha256")
+        const forged = `confect-kernel-snapshot 4 sha256:${createHash("sha256")
           .update(body)
           .digest("hex")}\n${body}`;
         const failureResult2 = yield* failure(() =>
@@ -712,7 +714,7 @@ const rehash = (bytes: Uint8Array, edit: (body: any) => void): Uint8Array => {
   edit(body);
   const edited = Json.stringify(body);
   return bytesOf(
-    `confect-kernel-snapshot 3 sha256:${createHash("sha256")
+    `confect-kernel-snapshot 4 sha256:${createHash("sha256")
       .update(edited)
       .digest("hex")}\n${edited}`,
   );
@@ -765,6 +767,32 @@ describe("snapshot consistency", () => {
         body.identity.identityEpoch = -1;
       },
       refusal: { _tag: "SnapshotAllocatorBehind", allocator: "identityEpoch" },
+    },
+    {
+      name: "a next command ID of zero",
+      edit: (body) => {
+        body.identity.nextCommandId = 0;
+      },
+      refusal: { _tag: "SnapshotAllocatorBehind", allocator: "nextCommandId" },
+    },
+    {
+      name: "a next command ID behind a cancelled command",
+      edit: (body) => {
+        body.cancelledCommands = ["command-5"];
+        body.identity.nextCommandId = 2;
+      },
+      refusal: {
+        _tag: "SnapshotAllocatorBehind",
+        allocator: "nextCommandId",
+        required: 6,
+      },
+    },
+    {
+      name: "a cancelled command the kernel never mints",
+      edit: (body) => {
+        body.cancelledCommands = ["charge-1"];
+      },
+      refusal: { _tag: "SnapshotMalformed", reason: "cancelledCommand" },
     },
     {
       name: "a row changed outside the write log",
@@ -1595,6 +1623,82 @@ describe("snapshot contract", () => {
         expect(Rec.keys(world.liveCounts()).sort()).toEqual(
           Rec.keys(Snapshot.contract.live).sort(),
         );
+      }),
+  );
+});
+
+describe("provider commands", () => {
+  // A port whose calls the kernel holds as commands.
+  const charges = Egress.port("snapshotCharges", (_input: { url: string }) =>
+    Promise.resolve("live"),
+  );
+  const pay = {
+    leaveHeld: makeFunctionReference<"action">("pay:leaveHeld"),
+    charge: makeFunctionReference<"action", {}, string>("pay:charge"),
+  };
+  const modules = {
+    "_generated/server.ts": () => Promise.resolve({}),
+    "pay.ts": () =>
+      Promise.resolve({
+        // Returns with its command still held, so the command is cancelled.
+        leaveHeld: actionGeneric({
+          args: {},
+          handler: () => {
+            void charges.call({ url: "https://example.com/" });
+            return Promise.resolve(null);
+          },
+        }),
+        charge: actionGeneric({
+          args: {},
+          handler: () => charges.call({ url: "https://example.com/" }),
+        }),
+      }),
+  };
+  const sources = inlineSources(modules);
+  const kernel = (): KernelControls => convexTest({ modules, sources });
+
+  // Why an answer to command `id` is refused, if it is.
+  const staleReason = (t: KernelControls, id: string) => {
+    try {
+      t.answer(id, "late");
+      return undefined;
+    } catch (error) {
+      return (error as { readonly reason?: string }).reason;
+    }
+  };
+
+  // The next command's ID, and how an answer to the cancelled one is refused.
+  const nextCommand = (t: KernelControls) =>
+    Effect.gen(function* () {
+      const charged = t.action(pay.charge, {});
+      const held = yield* Effect.promise(() =>
+        vi.waitFor(() => {
+          const commands = t.commands();
+          expect(commands).toHaveLength(1);
+          return commands;
+        }),
+      );
+      t.answer(held[0]!.id, "answered");
+      yield* Effect.promise(() => charged);
+      return { next: held[0]!.id, stale: staleReason(t, "command-1") };
+    });
+
+  it.effect(
+    "a restore continues the command allocator and the cancelled commands, as the uninterrupted run does",
+    () =>
+      Effect.gen(function* () {
+        const source = kernel();
+        yield* Effect.promise(() => source.action(pay.leaveHeld, {}));
+        const snapshot = source.exportSnapshot();
+        const restored = kernel();
+        yield* Effect.promise(() => restored.restoreSnapshot(snapshot));
+        const uninterrupted = yield* nextCommand(source);
+        const afterRestore = yield* nextCommand(restored);
+        expect(uninterrupted).toEqual({
+          next: "command-2",
+          stale: "cancelled",
+        });
+        expect(afterRestore).toEqual(uninterrupted);
       }),
   );
 });
