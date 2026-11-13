@@ -473,8 +473,12 @@ fresh delay as already in effect, so it can land in the current minute or hour.
 Later runs carry the delay through the previous run's timestamp, and draw again
 only when it was 0. The kernel holds no generator: the delay draws from the
 random stream of the world bound by the call that opened the backend, the stream
-that world's handlers draw from (row 1). A clock schedule with no world bound at
-open has nothing to draw from, so the backend refuses with
+that world's handlers draw from (row 1). With no invocation bound, it draws from
+the world the driver gave the backend (`convexTest`'s `world` option). `advance`
+and `drain` open with the driver's world. `TestConfect.layer`'s kernel target is
+such a driver: its world's stream is mulberry32 seeded by the layer's `seed`,
+`0` by default, so two runs with one seed replay the same delays. A backend with
+neither world has nothing to draw from, so it refuses a clock schedule with
 `CronRandomUnavailable`. An interval never draws. When `now` is no later than the
 previous delay, the binary's checked subtraction fails and the search starts at
 `now` itself (`next_ts.rs:180`, `Timestamp::sub` at

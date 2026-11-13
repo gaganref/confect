@@ -131,8 +131,10 @@ sources on its own clock. It reads them when the backend opens and refuses with
 interval first at once, then an interval after the previous run's time; a clock
 schedule at its next UTC occurrence plus Convex's random delay within the
 minute, or within the hour when `minuteUTC` is left out. The delay draws from
-the random stream of the world bound when the backend opened, and a clock
-schedule with no such world is refused with `CronRandomUnavailable`. A run that finishes after later runs came
+the random stream of the world bound when the backend opened, or else the
+world its driver gave it. `TestConfect.layer`'s kernel target gives it a world
+whose stream is seeded by the new `seed` option, `0` by default. A direct kernel
+open with neither world refuses a clock schedule with `CronRandomUnavailable`. A run that finishes after later runs came
 due skips them. A run is a system request with no identity and fresh request
 metadata, and a mutation's writes and jobs exist only if it commits. `advance`
 runs cron runs and jobs in time order, and a drain never runs a cron run.
