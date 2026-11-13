@@ -79,6 +79,15 @@ export type Participation =
  * `Snapshot.test.ts` compares a fresh world's own fields with `world` below,
  * and a field added without an entry fails that test.
  *
+ * That test sees only the own fields a fresh world has. It cannot see state
+ * created lazily after construction, held under a symbol or a `#private` name,
+ * or kept in a closure or another object, as subscribers are. So every live
+ * registry, state that exists only while something runs or a client is
+ * attached, is also listed in `live`. `World.liveCounts` reports each one,
+ * typed against `live`, and a restore refuses while any of them is non-empty,
+ * so a piece of live state the snapshot does not carry fails loudly rather than
+ * surviving a restore silently. A new live registry adds itself there.
+ *
  * Owed by later rows, which add their state here when they land on `main`: cron
  * state (#133), stored file bytes, storage ID mappings, `nextFile` and
  * upload-token counters (#138), and component init markers. A restore never
@@ -124,9 +133,9 @@ export const contract = {
     nextAttemptId: { exported: "identity.nextAttemptId" },
     floor: { exported: "floor" },
     targets: { exported: "jobs" },
-    running: {
+    live: {
       excluded:
-        "Calls in flight. A world running one refuses to export or restore.",
+        "Live registries, listed under `live` below. A world refuses to restore while any is non-empty.",
     },
     identityEpoch: { exported: "identity.identityEpoch" },
     runtime: {
@@ -143,12 +152,48 @@ export const contract = {
     },
   } satisfies Readonly<Record<string, Participation>>,
   /**
+   * Live registries: what blocks a snapshot while it is non-empty, and why.
+   */
+  live: {
+    running: {
+      blocks: "export and restore",
+      reason:
+        "Calls from the test in flight, whose effects a snapshot would split.",
+    },
+    walks: {
+      blocks: "export and restore",
+      reason: "Scheduler walks in flight, which would leave a job running.",
+    },
+    functions: {
+      blocks: "export and restore",
+      reason:
+        "Function executions, nested and detached ones included, which may still write. The binary lets detached work finish within its function's lifetime, so a snapshot waits for it rather than cancel it.",
+    },
+    held: {
+      blocks: "export and restore",
+      reason: "Held attempts are running closures a snapshot does not carry.",
+    },
+    subscribers: {
+      blocks: "restore",
+      reason:
+        "Live client state. A restore would rewind the identity versions an existing subscriber holds, so it needs a world with none.",
+    },
+  } satisfies Readonly<
+    Record<
+      string,
+      {
+        readonly blocks: "export and restore" | "restore";
+        readonly reason: string;
+      }
+    >
+  >,
+  /**
    * State outside the kernel's world, live per client or per process.
    */
   outside: {
     subscriptions: {
       excluded:
-        "Live client state: subscribers, their callers and runs. A restore starts with no subscriptions. Identity versions continue through `identityEpoch`.",
+        "Live client state: subscribers, their callers and runs. A restore requires a world with no subscribers (`live.subscribers`) and starts with none. Identity versions continue through `identityEpoch`.",
     },
     requestIds: {
       excluded:
@@ -337,6 +382,122 @@ const decodeDocument = (
     throw new Error("a document is not an object with an `_id`");
   }
   return doc as StoredDocument;
+};
+
+const idOf = (doc: unknown): string => {
+  const id = (doc as { readonly _id?: unknown } | null)?._id;
+  return typeof id === "string" ? id : "";
+};
+
+/**
+ * Why a document's system fields are not ones the kernel writes, or nothing: an
+ * `_id` string and a finite, non-negative `_creationTime`.
+ */
+const systemFieldsProblem = (doc: unknown): string | undefined => {
+  if (typeof doc !== "object" || doc === null || Array.isArray(doc))
+    return "is not an object";
+  const { _id, _creationTime } = doc as {
+    readonly _id?: unknown;
+    readonly _creationTime?: unknown;
+  };
+  if (typeof _id !== "string") return "has no string `_id`";
+  if (
+    typeof _creationTime !== "number" ||
+    !Number.isFinite(_creationTime) ||
+    _creationTime < 0
+  )
+    return "has no finite, non-negative `_creationTime`";
+  return undefined;
+};
+
+/**
+ * Check the decoded body before any map is built from it, so its order cannot
+ * change the result: components, tables, rows and jobs each appear once, and
+ * every document carries the system fields the kernel writes.
+ */
+export const checkBody = (
+  body: Body,
+): Result.Result<
+  void,
+  | KernelRefusal.SnapshotMalformed
+  | KernelRefusal.SnapshotRowInconsistent
+  | KernelRefusal.SnapshotJobInconsistent
+> => {
+  const once = <A>(items: ReadonlyArray<A>, key: (item: A) => string) => {
+    const seen = new Set<string>();
+    for (const item of items) {
+      const k = key(item);
+      if (seen.has(k)) return item;
+      seen.add(k);
+    }
+    return undefined;
+  };
+  const component = once(body.components, (path) => path);
+  if (component !== undefined)
+    return Result.fail(
+      malformed("duplicate", `component "${component}" appears twice`),
+    );
+  const twice = once(
+    body.tables,
+    (entry) => `${entry.componentPath}\u0000${entry.table}`,
+  );
+  if (twice !== undefined)
+    return Result.fail(
+      rowRefusal(
+        twice.componentPath,
+        twice.table,
+        "duplicate",
+        `names table "${twice.table}" twice`,
+      ),
+    );
+  for (const { componentPath, rows } of body.tables) {
+    for (const { doc } of rows) {
+      const problem = systemFieldsProblem(doc);
+      if (problem !== undefined)
+        return Result.fail(
+          rowRefusal(componentPath, idOf(doc), "systemFields", problem),
+        );
+    }
+  }
+  const byComponent = new Map<string, Array<string>>();
+  for (const { componentPath, rows } of body.tables)
+    byComponent.set(componentPath, [
+      ...(byComponent.get(componentPath) ?? []),
+      ...rows.map(({ doc }) => (doc as { _id: string })._id),
+    ]);
+  for (const [componentPath, ids] of byComponent) {
+    const id = once(ids, (i) => i);
+    if (id !== undefined)
+      return Result.fail(
+        rowRefusal(componentPath, id, "duplicate", "is stored twice"),
+      );
+  }
+  for (const { changes } of body.log) {
+    for (const { componentPath, id, before, after } of changes) {
+      for (const doc of [before, after]) {
+        if (doc === null) continue;
+        const problem =
+          systemFieldsProblem(doc) ??
+          ((doc as { _id: unknown })._id === id
+            ? undefined
+            : "is logged under another ID");
+        if (problem !== undefined)
+          return Result.fail(
+            rowRefusal(componentPath, id, "systemFields", problem),
+          );
+      }
+    }
+  }
+  const job = once(body.jobs, ({ id }) => id);
+  if (job !== undefined)
+    return Result.fail(
+      new KernelRefusal.SnapshotJobInconsistent({
+        id: job.id,
+        reason: "duplicate",
+        message: `The snapshot's job ${job.id} appears twice.`,
+      }),
+    );
+  return Result.succeed(undefined);
 };
 
 const imageOf = (body: Body, unredact: Unredact): Image => {
@@ -670,6 +831,8 @@ export const decode = (
   | KernelRefusal.SnapshotMalformed
   | KernelRefusal.SnapshotDigestMismatch
   | KernelRefusal.SnapshotSecretMissing
+  | KernelRefusal.SnapshotRowInconsistent
+  | KernelRefusal.SnapshotJobInconsistent
 > => {
   const newline = bytes.indexOf(0x0a);
   const head =
@@ -707,6 +870,8 @@ export const decode = (
   if (Result.isFailure(body)) {
     return Result.fail(malformed("shape", body.failure.message));
   }
+  const checkedBody = checkBody(body.success);
+  if (Result.isFailure(checkedBody)) return Result.fail(checkedBody.failure);
   try {
     return Result.succeed(imageOf(body.success, unredact));
   } catch (error) {

@@ -179,12 +179,26 @@ export class SnapshotSecretMissing extends Schema.TaggedError<SnapshotSecretMiss
 ) {}
 
 /**
- * A world is running functions or a scheduler walk, whose effects a snapshot
- * taken or restored now would split.
+ * A world is running work a snapshot taken or restored now would split: calls
+ * from the test, scheduler walks, or function executions, nested and detached
+ * ones included.
  */
 export class SnapshotWorldRunning extends Schema.TaggedError<SnapshotWorldRunning>()(
   "SnapshotWorldRunning",
-  { running: Schema.Int, message: Schema.String },
+  {
+    registry: Schema.Literals(["running", "walks", "functions"]),
+    count: Schema.Int,
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * A world has subscribers, whose identity versions a restore would rewind.
+ * Subscriptions are live client state, so a restore needs a world with none.
+ */
+export class SnapshotSubscribed extends Schema.TaggedError<SnapshotSubscribed>()(
+  "SnapshotSubscribed",
+  { subscribers: Schema.Int, message: Schema.String },
 ) {}
 
 /**
@@ -216,7 +230,14 @@ export class SnapshotRowInconsistent extends Schema.TaggedError<SnapshotRowIncon
   {
     componentPath: Schema.String,
     id: Schema.String,
-    reason: Schema.Literals(["id", "component", "log", "row"]),
+    reason: Schema.Literals([
+      "id",
+      "component",
+      "log",
+      "row",
+      "systemFields",
+      "duplicate",
+    ]),
     message: Schema.String,
   },
 ) {}
@@ -244,6 +265,7 @@ export class SnapshotJobInconsistent extends Schema.TaggedError<SnapshotJobIncon
       "inProgress",
       "component",
       "function",
+      "duplicate",
     ]),
     message: Schema.String,
   },

@@ -182,6 +182,7 @@ export class Registry {
   constructor(private readonly world: Execution.World) {}
 
   subscriber(caller: Execution.Caller): Subscriber {
+    this.world.registerSubscriber();
     return new Subscriber(this, caller);
   }
 
