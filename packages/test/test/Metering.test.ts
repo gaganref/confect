@@ -232,7 +232,7 @@ describe("limits", () => {
     ).rejects.toThrow(
       "Too many writes in a single function execution (limit: 16000)",
     );
-  });
+  }, 10_000); // 16,000 then 16,001 metered inserts: up to 3.49 s on Windows CI and 2.17 s on Ubuntu CI, so 10 s leaves about 3x headroom.
 
   it("bytesWritten: 16 MiB of writes commit, one byte more is refused", async () => {
     const t = world();
@@ -265,7 +265,7 @@ describe("limits", () => {
     ).rejects.toThrow(
       `Too many documents read in a single function execution (limit: 32000). ${help}`,
     );
-  });
+  }, 15_000); // 32,001 metered inserts and 64,001 metered reads: up to 6.1 s on Windows CI, where it timed out at 5 s, and 3.64 s on Ubuntu CI, so 15 s leaves about 2.5x headroom.
 
   it("bytesRead: 16 MiB read, one byte more is refused", async () => {
     const t = world();
