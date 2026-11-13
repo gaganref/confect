@@ -2212,15 +2212,7 @@ export class World {
     pagination: Pagination | undefined,
     startTime?: number,
   ): Execution {
-    // A function in a component runs with no identity, whoever called it, as
-    // Convex gives a component no `ctx.auth` of the caller's. A nested call in
-    // the host takes its parent's identity, even when that is none.
-    const identity =
-      functionPath.componentPath !== ROOT
-        ? null
-        : from.parent !== undefined
-          ? from.parent.identity
-          : from.caller.identity;
+    const identity = callIdentity(from, functionPath.componentPath);
     // A nested call runs under its caller's limits, which its budget can only
     // tighten, and gives them back when it ends (`run_udf`,
     // `crates/isolate/src/environment/udf/async_syscall.rs:700-706`, and
@@ -3602,6 +3594,37 @@ type From =
       readonly budget?: Metering.Budget | undefined;
       readonly syscall?: true;
     };
+
+/**
+ * The identity a call runs with, by the binary's rules (convex-backend
+ * `cccbade4`).
+ *
+ * - A query's or mutation's nested call runs on its caller's transaction, and
+ *   `getUserIdentity` reads that transaction's identity in a component as in
+ *   the app (`crates/isolate/src/environment/udf/async_syscall.rs:629-724`,
+ *   `:1111-1141`). So a component a query or a mutation calls sees the caller,
+ *   at every depth.
+ * - An action's call passes its identity through `propagate_component_auth`,
+ *   which keeps it only from the app to the app
+ *   (`crates/isolate/src/environment/action/async_syscall.rs:166`,
+ *   `crates/model/src/components/auth.rs:6-19`).
+ * - A client reaches only the app's functions. A test that calls a component
+ *   directly gets no identity, as a component's HTTP action does
+ *   (`crates/function_runner/src/server.rs:450-455`).
+ */
+const callIdentity = (
+  from: From,
+  componentPath: string,
+): UserIdentity | null => {
+  if (from.parent === undefined) {
+    return componentPath === ROOT ? from.caller.identity : null;
+  }
+  const { parent } = from;
+  if (parent.udfType !== "action") return parent.identity;
+  return parent.componentPath === ROOT && componentPath === ROOT
+    ? parent.identity
+    : null;
+};
 
 /**
  * How a `ConvexError`'s data leaves a call from `from`: as Convex JSON across a

@@ -41,6 +41,7 @@ export const api: {
       Array<number>
     >;
     deepLocation: FunctionReference<"query", "public", {}, string>;
+    identityChain: FunctionReference<"query", "public", {}, any>;
     list: FunctionReference<
       "query",
       "public",

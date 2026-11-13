@@ -337,6 +337,21 @@ to Convex values. A plain local-backend fixture runs every caller and payload on
 the binary and on the kernel. Changeset: `test-kernel-nested-convex-error.md`.
 Upstream: fork only, as the kernel is fork-specific.
 
+## Test kernel component identity
+
+A component the kernel calls from a query or a mutation sees the caller's
+identity at every depth, because the binary reads identity from the caller's
+transaction. One an action calls sees none, as the binary's
+`propagate_component_auth` keeps identity only from the app to the app, and
+neither does any call below it. A test that calls a component directly gets
+none, as a client reaches only the app's functions. This replaces row 2's rule
+that a component never sees an identity. Confect's own component context still
+drops `ctx.auth`, which is its API rather than parity. A probe reads `ctx.auth`
+through plain Convex queries chained across three nested mounts, on the kernel
+and on the binary. With them the fixture's system-table share measures 22.
+This is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-component-identity.md`. Upstream: fork only, as the kernel is
+
 ## Test kernel randomness
 
 Every random source a kernel function or module reaches draws from the
@@ -360,8 +375,8 @@ unbound `TestConfect.layer` call is seeded and replays, and with no world it
 refuses with `FunctionRandomUnavailable` rather than read the host's. Only a
 reference kept before the kernel ran any code keeps the host's. The bridge
 that pins a bound handler on the convex-test target refuses the same `subtle`
-operations by function type. The fixture's system-table share measures 22
-with the probe.
+operations by function type. The fixture's system-table share measures 23
+with the probe beside component identity's chain.
 This is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-randomness.md`. Upstream: fork only, as the kernel is
 fork-specific.
@@ -376,6 +391,21 @@ widened name, and disagreed with `DataModel.Id`. Frame's aggregate engine binds
 its tables as `Table<...> & Aggregated<...>`. `Indexes` stays inferred, because
 a generic table's index names resolve only that way. Changeset:
 `tableinfo-extended-table-scope.md`. Upstream: unrecorded.
+
+## Exact JSON Schema for IDs
+
+A `GenericId` ends in an always-true refinement that narrows only the
+TypeScript type. On Effect 4.1 a filter without a `toJsonSchema` annotation
+makes the JSON Schema approximate, so a reader that admits only checks their
+JSON Schema states refused every ID. Frame's dev admission is one such reader,
+and it cannot compare the refinement's predicate, because Effect wraps it in a
+fresh closure. The refinement now states `toJsonSchema: () => ({})`, an exact
+schema that adds nothing to the string. A plain ID still exports as
+`{ "type": "string" }`. A `oneOf` union that holds an ID, in JSON Schema or an
+OpenAPI document, now stays `oneOf` instead of falling back to `anyOf`. This
+replaces Frame's patch of `@gaganref/confect-core@10.6.0-fork.1`. Changeset:
+`generic-id-exact-json-schema.md`. Upstream: unrecorded; upstream's `GenericId`
+has the same refinement.
 
 ## Commit timestamps
 
