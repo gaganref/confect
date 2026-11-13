@@ -11,6 +11,8 @@ export class RequiresBinary extends Schema.TaggedError<RequiresBinary>()(
       "vectorSearch",
       "storageUpload",
       "storageDownload",
+      "oidcDiscovery",
+      "remoteJwks",
     ]),
     message: Schema.String,
   },
@@ -152,6 +154,29 @@ export class SnapshotCronMismatch extends Schema.TaggedError<SnapshotCronMismatc
   },
 ) {}
 
+/**
+ * The token a test presented was refused before any function ran, as the binary
+ * answers a client's request with 401. `code` is the binary's: `NoAuthProvider`
+ * when no provider's issuer and audience match the token, and
+ * `InvalidAuthHeader` for every other failure.
+ */
+export class InvalidToken extends Schema.TaggedError<InvalidToken>()(
+  "InvalidToken",
+  {
+    code: Schema.Literals(["NoAuthProvider", "InvalidAuthHeader"]),
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * The app's `auth.config` declares a provider the binary would refuse at push.
+ * `index` is the provider's position, or -1 for the config itself.
+ */
+export class InvalidAuthConfig extends Schema.TaggedError<InvalidAuthConfig>()(
+  "InvalidAuthConfig",
+  { index: Schema.Int, message: Schema.String },
+) {}
+
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
   new RequiresBinary({
     operation,
@@ -219,6 +244,19 @@ export class SnapshotWorldBusy extends Schema.TaggedError<SnapshotWorldBusy>()(
   {
     version: Schema.Int,
     held: Schema.Array(Schema.String),
+    message: Schema.String,
+  },
+) {}
+
+/**
+ * A world drew its deployment signing key, which a snapshot does not carry yet.
+ * Exporting would lose the key that verifies the tokens in its tables, and
+ * restoring would keep a key the source never had.
+ */
+export class SnapshotSigningKey extends Schema.TaggedError<SnapshotSigningKey>()(
+  "SnapshotSigningKey",
+  {
+    operation: Schema.Literals(["export", "restore"]),
     message: Schema.String,
   },
 ) {}

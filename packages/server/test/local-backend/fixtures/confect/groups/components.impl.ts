@@ -1,4 +1,5 @@
 import { FunctionImpl, GroupImpl } from "@confect/server";
+import * as Auth from "@confect/server/Auth";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
@@ -96,6 +97,13 @@ const hasAuth = FunctionImpl.make(schema, spec, "hasAuth", () =>
     const runQuery = yield* QueryRunner;
     return yield* runQuery.runQuery(first.counter.hasAuth, {});
   }).pipe(Effect.orDie),
+);
+
+const identity = FunctionImpl.make(
+  schema,
+  spec,
+  "identity",
+  () => Auth.getUserIdentity,
 );
 
 const deepCreate = FunctionImpl.make(
@@ -205,6 +213,7 @@ export default GroupImpl.make(schema, spec).pipe(
     uploadUrl,
     storageUrl,
     hasAuth,
+    identity,
     deepCreate,
     deepRead,
     declaredError,

@@ -48,6 +48,20 @@ export interface KernelControls {
    */
   readonly reference: () => Promise<ReadonlyArray<Subscriptions.Disagreement>>;
   /**
+   * The same backend as a client that presents `token`. Each call verifies it
+   * against the app's `auth.config` providers at the kernel's time before
+   * anything runs, and refuses with `InvalidToken` as the binary does. A
+   * `customJwt` provider's JWKS must be a `data:` URL, so the test owns its
+   * keys.
+   */
+  readonly withToken: (token: string) => KernelControls;
+  /**
+   * The deployment's public keys, which verify what `ctx.auth.signJwt` signs.
+   */
+  readonly jwks: () => Promise<{
+    readonly keys: ReadonlyArray<JsonWebKey & { readonly kid: string }>;
+  }>;
+  /**
    * Move the kernel's clock forward, running each job due on the way at its
    * deadline.
    */
@@ -119,11 +133,21 @@ const isSchemaDefinition = (
   "tables" in value &&
   typeof (value as { tables: unknown }).tables === "object";
 
+/**
+ * A test's view of the backend as one caller. With a presented `token`, every
+ * call first verifies it, as the binary verifies a client's token on each
+ * request.
+ */
 const accessor = (
   world: Execution.World,
   subscriptions: Subscriptions.Registry,
   caller: Execution.Caller,
+  token?: string,
 ): any => {
+  const as = <A>(call: (caller: Execution.Caller) => Promise<A>) =>
+    token === undefined
+      ? call(caller)
+      : world.authenticate(caller, token).then(call);
   // Every failure the kernel hands back is a report a test runner prints, so
   // each leaves through the world's redaction.
   const reported = <A>(run: () => Promise<A>): Promise<A> =>
@@ -136,14 +160,14 @@ const accessor = (
     world.functionPathOf(subscriptions.referenceOf(subscription));
   return {
     query: (reference: any, args?: any) =>
-      reported(() => world.query(caller, reference, args)),
+      reported(() => as((who) => world.query(who, reference, args))),
     mutation: (reference: any, args?: any) =>
-      reported(() => world.mutation(caller, reference, args)),
+      reported(() => as((who) => world.mutation(who, reference, args))),
     action: (reference: any, args?: any) =>
-      reported(() => world.action(caller, reference, args)),
+      reported(() => as((who) => world.action(who, reference, args))),
     prepare: (reference: any, args?: any) =>
-      reported(() => world.prepare(caller, reference, args)).then((view) =>
-        world.projectHeld(view),
+      reported(() => as((who) => world.prepare(who, reference, args))).then(
+        (view) => world.projectHeld(view),
       ),
     apply: (id: string) => {
       // The attempt leaves `held` once applied, so its function is read first.
@@ -155,7 +179,13 @@ const accessor = (
       );
     },
     held: () => world.held().map((view) => world.projectHeld(view)),
-    subscriber: () => subscriptions.subscriber(caller),
+    // A client that presents a token over the sync protocol is `Sync`'s.
+    subscriber: () => {
+      if (token !== undefined) {
+        throw KernelRefusal.rowPending("a subscriber that presents a token", 7);
+      }
+      return subscriptions.subscriber(caller);
+    },
     refresh: () =>
       reported(() => subscriptions.refresh()).then((transitions) =>
         transitions.map((transition): Subscriptions.Transition => ({
@@ -192,20 +222,27 @@ const accessor = (
         })),
       ),
     run: (handler: (ctx: any) => any) =>
-      reported(() => world.run(caller, "", handler)),
+      reported(() => as((who) => world.run(who, "", handler))),
     runInComponent: (componentPath: string, handler: (ctx: any) => any) =>
-      reported(() => world.run(caller, componentPath, handler)),
+      reported(() => as((who) => world.run(who, componentPath, handler))),
     withIdentity: (identity: Partial<UserIdentity>) =>
       accessor(world, subscriptions, Execution.withIdentity(caller, identity)),
+    withToken: (presented: string) =>
+      accessor(world, subscriptions, caller, presented),
     withRequestMetadata: (metadata: {
       readonly ip?: string | null;
       readonly userAgent?: string | null;
     }) =>
-      accessor(world, subscriptions, {
-        ...caller,
-        ip: metadata.ip ?? null,
-        userAgent: metadata.userAgent ?? null,
-      }),
+      accessor(
+        world,
+        subscriptions,
+        {
+          ...caller,
+          ip: metadata.ip ?? null,
+          userAgent: metadata.userAgent ?? null,
+        },
+        token,
+      ),
     // An upload to a URL from `generateUploadUrl`, or a download from one
     // `getUrl` answered, streams through the binary's storage endpoints, which
     // the kernel does not simulate.
@@ -216,7 +253,7 @@ const accessor = (
         ? reported(() => world.fetch(caller, path, init))
         : Promise.reject(KernelRefusal.requiresBinary(endpoint));
     },
-    jwks: () => Promise.reject(KernelRefusal.rowPending("JWT verification", 6)),
+    jwks: () => world.deploymentKey.jwks(),
     advance: (ms: number) => reported(() => world.advance(ms)),
     jobs: () => world.jobs(),
     crons: () => world.crons(),

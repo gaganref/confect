@@ -136,8 +136,9 @@ export type Participation =
  * the restoring app declares the same jobs.
  *
  * Owed by later rows, which add their state here when they land on `main`:
- * component init markers. A row whose state comes from a declaration or a
- * random draw exports what was declared or drawn.
+ * component init markers, and the deployment signing key's drawn seed as a
+ * secret marker (#134). A row whose state comes from a declaration or a random
+ * draw exports what was declared or drawn.
  */
 export const contract = {
   state: {
@@ -232,6 +233,18 @@ export const contract = {
     secrets: {
       excluded:
         "Raw secrets are replay state and never reach an artifact. A snapshot writes markers, and a restore takes the raw values from the source's `secrets()`.",
+    },
+    authConfig: {
+      excluded:
+        "The app's `auth.config`, which is code: the restoring world loads its own at open.",
+    },
+    providers: {
+      excluded:
+        "Read from `authConfig` on the first presented token, so the restoring world reads its own.",
+    },
+    deploymentKey: {
+      excluded:
+        "Drawn from the runtime's random stream on first use and not carried yet. A world that drew it refuses to export or restore (`SnapshotSigningKey`), so a signed token never outlives its key.",
     },
   } satisfies Readonly<Record<string, Participation>>,
   /**

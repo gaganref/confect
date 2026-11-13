@@ -188,6 +188,7 @@ export declare const api: {
         }
       >;
       hasAuth: FunctionReference<"query", "public", {}, boolean>;
+      identity: FunctionReference<"query", "public", {}, any>;
       list: FunctionReference<
         "query",
         "public",

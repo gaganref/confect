@@ -25,6 +25,7 @@ import * as Clock from "./Clock.js";
 import * as Crons from "./Crons.js";
 import * as Globals from "./Globals.js";
 import * as Http from "./Http.js";
+import * as Identity from "./Identity.js";
 import * as Invocation from "./Invocation.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
@@ -80,6 +81,11 @@ const cronKey = (componentPath: string, name: string) =>
   `${componentPath}\u0000${name}`;
 
 const compare = (a: string, b: string) => (a < b ? -1 : a > b ? 1 : 0);
+
+/**
+ * The stream a runtime without one draws from, so its draws replay.
+ */
+const fixedSeed = () => 0;
 const TYPICAL_CONVEX_ID_LENGTH = 32;
 
 type Modules = Record<string, () => Promise<any>>;
@@ -98,6 +104,11 @@ interface Component {
    * that runs one, or that one schedules, is never drain work.
    */
   readonly standing: ReadonlySet<string>;
+  /**
+   * The `auth.config` module beside the functions, which only the app's
+   * providers come from.
+   */
+  readonly authConfig: (() => Promise<any>) | undefined;
 }
 
 /**
@@ -485,6 +496,9 @@ const makeComponent = (
     ),
     loaded: new Map(),
     standing: new Set(standing),
+    authConfig: relative.find(([file]) =>
+      /^auth\.config\.[jt]s$/.test(file),
+    )?.[1],
   };
 };
 
@@ -615,6 +629,12 @@ export class World {
    */
   private cronsScheduled = false;
   /**
+   * The default export of the app's `auth.config`, loaded at open.
+   */
+  private authConfig: Promise<unknown> = Promise.resolve(undefined);
+  private providers: ReadonlyArray<Identity.Provider> | undefined;
+  readonly deploymentKey: Identity.DeploymentKey;
+  /**
    * The raw secrets this world has seen under a secret schema node. Replay
    * state, kept in memory and never written to an artifact.
    */
@@ -651,6 +671,9 @@ export class World {
     installConvexGlobal();
     Clock.install(pinnedTime, () => executions.getStore() !== undefined);
     this.components.set(ROOT, makeComponent(ROOT, schema, modules));
+    this.deploymentKey = new Identity.DeploymentKey(
+      runtime.random ?? fixedSeed,
+    );
   }
 
   register(
@@ -687,23 +710,32 @@ export class World {
   }
 
   /**
-   * Load every registered module of every component, once, before any function
-   * runs, check that each standing source names an exported function, and read
-   * each component's cron declarations. Nothing here draws a random value, so a
-   * restore can load without one.
+   * Load every registered module of every component and the app's
+   * `auth.config`, once, before any function runs, check that each standing
+   * source names an exported function, and read each component's cron
+   * declarations. Nothing here draws a random value, so a restore can load
+   * without one.
    */
   private load(): Promise<void> {
-    this.opened ??= Promise.all(
-      Array.from(this.components.values(), (component) =>
-        Promise.all(
-          Array.from(component.loaders, ([path, load]) =>
-            load().then((module) => component.loaded.set(path, module)),
+    if (this.opened === undefined) {
+      const loadAuthConfig = this.component(ROOT).authConfig;
+      this.authConfig =
+        loadAuthConfig === undefined
+          ? Promise.resolve(undefined)
+          : loadAuthConfig().then((module) => module.default);
+      this.opened = Promise.all([
+        ...Array.from(this.components.values(), (component) =>
+          Promise.all(
+            Array.from(component.loaders, ([path, load]) =>
+              load().then((module) => component.loaded.set(path, module)),
+            ),
           ),
         ),
-      ),
-    )
-      .then(() => this.checkStanding())
-      .then(() => this.readDeclarations());
+        this.authConfig,
+      ])
+        .then(() => this.checkStanding())
+        .then(() => this.readDeclarations());
+    }
     return this.opened;
   }
 
@@ -851,6 +883,22 @@ export class World {
       : new Error(
           `Cron job "${name}" has no next run, though its schedule passed saffron's \`any\` when it was read.`,
         );
+  }
+
+  /**
+   * The caller a presented token makes, verified against the app's
+   * `auth.config` providers at the kernel's time, before anything runs. The
+   * binary verifies a client's token on every request, so a token that expires
+   * fails the next call after it does.
+   */
+  authenticate(caller: Caller, token: string): Promise<Caller> {
+    return this.open()
+      .then(() => this.authConfig)
+      .then((config) => {
+        this.providers ??= Identity.readProviders(config);
+        return Identity.verify(token, this.providers, this.now());
+      })
+      .then((identity) => ({ ...caller, identity, token }));
   }
 
   /**
@@ -1236,6 +1284,7 @@ export class World {
    */
   exportSnapshot(): Uint8Array {
     this.refuseBusy(0, "export");
+    this.refuseSigningKey("export");
     const names = new Map<string, Invocation.World>();
     const jobs = new Map<DocumentId, Snapshot.JobTarget>();
     for (const byTable of this.state.tables.values()) {
@@ -1358,6 +1407,7 @@ export class World {
     secrets: Redaction.Secrets,
   ) {
     this.refuseBusy(this.state.version, "restore");
+    this.refuseSigningKey("restore");
     const decoded = Snapshot.decode(bytes, (json) =>
       Redaction.unmark(json, secrets),
     );
@@ -1530,6 +1580,21 @@ export class World {
       }
     }
     return restored;
+  }
+
+  /**
+   * Refuse a snapshot once the deployment key was drawn, since the snapshot
+   * does not carry it.
+   */
+  private refuseSigningKey(operation: "export" | "restore") {
+    if (!this.deploymentKey.drawn) return;
+    throw new KernelRefusal.SnapshotSigningKey({
+      operation,
+      message:
+        operation === "export"
+          ? "This test backend drew its deployment signing key, which a snapshot does not carry yet, so the tokens it signed could not be verified after a restore. Export before the first `ctx.auth.signJwt` or `jwks()`."
+          : "This test backend drew its deployment signing key, which the snapshot would not replace. Restore into a backend that has not signed or served its JWKS.",
+    });
   }
 
   /**
@@ -3540,7 +3605,12 @@ const queryAuth = (execution: Execution) => ({
 
 const mutationAuth = (execution: Execution) => ({
   ...queryAuth(execution),
-  signJwt: () => Promise.reject(KernelRefusal.rowPending("JWT signing", 6)),
+  signJwt: (options: unknown) =>
+    execution.world.deploymentKey.sign(
+      execution.componentPath,
+      options,
+      execution.startTime,
+    ),
 });
 
 function validateId(
