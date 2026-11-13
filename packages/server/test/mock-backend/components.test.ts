@@ -817,10 +817,14 @@ it.effect(
     }).pipe(Effect.scoped),
 );
 
+// `groups/randomness` draws while it loads. On the kernel lane this layer's
+// backend has no world to draw from, so the kernel would refuse the open with
+// `LoadRandomUnavailable`; the case needs only `groups/callbacks`.
 const localHostModules = import.meta.glob([
   "../../../../tools/local-backend/fixtures/convex/**/*.ts",
   "../../../../tools/local-backend/fixtures/convex/**/*.js",
   "!../../../../tools/local-backend/fixtures/convex/**/*.*.*",
+  "!../../../../tools/local-backend/fixtures/convex/groups/randomness.ts",
 ]);
 const LocalHost = TestConfect.TestConfect<typeof localSchema>();
 const callbacks = localRefs.public.groups.callbacks;
