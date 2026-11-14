@@ -463,7 +463,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({ plugins: [plugin()] });
 ```
 
-Packages under `node_modules` stay one copy for the whole test, because the kernel itself runs on Effect, `convex` and `@confect/test`. That is a limit: a deployment evaluates each mount's packages apart, so a package's module-level state is per mount there and shared across mounts in a test. A packaged component's kit is a package too. A workspace that aliases its packages to their source passes those source directories as `plugin({ packages })`, so they stay one copy as well. Without the plugin, the second mount of one component fails to load, naming both mounts and the module.
+Packages under `node_modules` stay one copy for the whole test, because the kernel itself runs on Effect, `convex` and `@confect/test`. That is a limit: a deployment evaluates each mount's packages apart, so a package's module-level state is per mount there and shared across mounts in a test. A packaged component's kit is a package too. A workspace that aliases its packages to their source passes those source directories as `plugin({ packages })`, so they stay one copy as well. Each entry must be a directory: a missing one stops the plugin, naming it. Only scripts and JSON get a copy per mount, so each mount mutates its own JSON object. An asset, WASM and a `?raw` or `?url` import stay one copy, since each exports a string, a URL or a loader. Without the plugin, the second mount of one component fails to load, naming both mounts and the module.
 
 ### Packaged components keep their secrets
 
