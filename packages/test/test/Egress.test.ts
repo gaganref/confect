@@ -37,6 +37,9 @@ const egress = {
   hangAfterRefusal: makeFunctionReference<"action", { url: string }>(
     "egress:hangAfterRefusal",
   ),
+  replaceThenHang: makeFunctionReference<"action", { url: string }>(
+    "egress:replaceThenHang",
+  ),
   logAroundRefusal: makeFunctionReference<"action", { url: string }>(
     "egress:logAroundRefusal",
   ),
@@ -71,6 +74,9 @@ const logLater = (label: string) => {
 // Set by a test before it starts `chargeThenFetch`, so the test can read the
 // held command before the action makes its raw fetch.
 let gate: Promise<void> = Promise.resolve();
+
+// What an action replaces `fetch` with while it runs, which no guard sees.
+const replacement = vi.fn(() => Promise.resolve(new Response("replaced")));
 
 // Port calls an action made after it ended, and how each settled.
 const late: Array<Promise<unknown>> = [];
@@ -110,6 +116,24 @@ const modules = {
           await gate;
           // oxlint-disable-next-line effecttsgo/global-fetch -- The action makes the raw fetch the test kernel refuses and the binary performs.
           return fetch(url).then((response) => response.text());
+        },
+      }),
+      replaceThenHang: actionGeneric({
+        args: { url: v.string() },
+        // Replaces fetch, ends itself through the guard it kept, catches the
+        // refusal and never settles.
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
+        handler: async (_ctx, { url }) => {
+          const guard = globalThis.fetch;
+          Object.defineProperty(globalThis, "fetch", {
+            value: replacement,
+            writable: true,
+            configurable: true,
+          });
+          // oxlint-disable-next-line effecttsgo/global-fetch -- The action makes the raw fetch the test kernel refuses, through the guard it kept.
+          await guard(url).catch(() => null);
+          // oxlint-disable-next-line effecttsgo/new-promise -- A promise that never settles, as the case's handler never does.
+          return new Promise<never>(() => {});
         },
       }),
       hangAfterRefusal: actionGeneric({
@@ -268,6 +292,40 @@ describe("provider ports", () => {
       );
 
     const undeclared = { failed: "BackendRefusal", reason: "UndeclaredFetch" };
+
+    it.effect(
+      "a terminated action that replaced fetch and never settles still has its globals checked: it ends refused for the replacement and fetch is guarded again",
+      () =>
+        Effect.gen(function* () {
+          const t = convexTest({ schema, modules, sources });
+          const before = Object.getOwnPropertyDescriptor(globalThis, "fetch")!;
+          replacement.mockClear();
+          const { outcome, reguarded } = yield* Effect.gen(function* () {
+            const ended = yield* refusalOf(
+              t.action(egress.replaceThenHang, { url: "https://example.com/" }),
+            );
+            // Read before the test restores anything: the action's ending put
+            // the guard's own accessor back.
+            const after = Object.getOwnPropertyDescriptor(globalThis, "fetch");
+            return {
+              outcome: ended,
+              reguarded: after !== undefined && "get" in after,
+            };
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() =>
+                Object.defineProperty(globalThis, "fetch", before),
+              ),
+            ),
+          );
+          expect(outcome).toEqual({
+            failed: "UnguardableGlobal",
+            reason: "replacedWhileRunning",
+          });
+          expect(reguarded).toBe(true);
+          expect(replacement).not.toHaveBeenCalled();
+        }),
+    );
 
     it.effect(
       "a port call it makes after catching UndeclaredFetch is refused and holds nothing",
