@@ -581,15 +581,21 @@ const consoleMethods = [
  * object itself is never written, so a console a test assigns keeps its own
  * methods, spies included, and assigning a view back stores the console it
  * shows. A console a test froze keeps its own methods, which no view can
- * replace, so an ended function's calls to it are not dropped.
+ * replace, so an ended function's calls to it are not dropped. Like the other
+ * guards, a replacement the kernel cannot redefine is `notConfigurable`, a
+ * redefinition that throws is `installFailed`, and once the own property is
+ * gone the console the prototype chain answers is the one beneath.
  */
-const guardConsole = (state: State) => {
+const guardConsole = (state: State): GuardResult => {
   const global = globalThis as unknown as Global;
   const own = Object.getOwnPropertyDescriptor(global, "console");
-  if (own === undefined || own.configurable === false) return;
   // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
-  if (own.get !== undefined && state.made.has(own.get)) return;
-  let beneath: unknown = "value" in own ? own.value : own.get?.call(global);
+  if (own?.get !== undefined && state.made.has(own.get)) return "guarded";
+  if (own?.configurable === false) return "notConfigurable";
+  const found = own ?? inherited(global, "console");
+  if (found === undefined) return "guarded";
+  let beneath: unknown =
+    "value" in found ? found.value : found.get?.call(global);
   const views = new WeakMap<object, object>();
   const shown = new WeakMap<object, object>();
   const viewOf = (target: unknown): unknown => {
@@ -634,6 +640,7 @@ const guardConsole = (state: State) => {
       });
       views.set(target, view);
       shown.set(view, target);
+      state.made.add(view);
     }
     return view;
   };
@@ -650,11 +657,12 @@ const guardConsole = (state: State) => {
       get,
       set,
       configurable: true,
-      enumerable: own.enumerable ?? false,
+      enumerable: found.enumerable ?? false,
     });
   } catch {
-    // A realm that refuses to redefine `console` keeps its own.
+    return "installFailed";
   }
+  return "guarded";
 };
 
 const stateOf = (): State =>
@@ -688,34 +696,53 @@ export interface Unguarded {
  */
 export const install = (): ReadonlyArray<Unguarded> => {
   const state = stateOf();
-  const failed = Arr.filterMap(guarded, (entry) => {
-    const result = guardGlobal(state, entry);
-    return result === "guarded"
-      ? Result.failVoid
-      : Result.succeed({
-          name: entry.name,
-          fixed: result === "notConfigurable",
-        });
-  });
+  const results = Arr.map(guarded, (entry) => ({
+    name: entry.name,
+    result: guardGlobal(state, entry),
+  }));
   guardFormData(state, HostGlobals.request.prototype);
   guardFormData(state, HostGlobals.response.prototype);
-  guardConsole(state);
-  return failed;
+  const all = [...results, { name: "console", result: guardConsole(state) }];
+  return Arr.filterMap(all, ({ name, result }) =>
+    result === "guarded"
+      ? Result.failVoid
+      : Result.succeed({ name, fixed: result === "notConfigurable" }),
+  );
 };
+
+/**
+ * Every guarded global the final read-back and the settlement check read, and
+ * what a read of it must answer to need a guard: a function for the I/O guards,
+ * an object for `console`, whose guard is a view.
+ */
+const watched: ReadonlyArray<{
+  readonly name: string;
+  readonly guardable: (read: unknown) => boolean;
+}> = [
+  ...Arr.map(guarded, ({ name }) => ({
+    name,
+    guardable: (read: unknown) => typeof read === "function",
+  })),
+  {
+    name: "console",
+    guardable: (read: unknown) => typeof read === "object" && read !== null,
+  },
+];
 
 /**
  * The I/O guards' part of the one final read-back of every guarded global: each
  * guarded global, read through the prototype chain, must answer a guard. A
  * later install that undid one, as a test's setter on `Math` that replaces
  * `fetch` when the entropy install assigns it does, is answered here, before
- * any user code runs. A read that answers no function, as a test that stubbed
- * the global to `undefined` leaves it, has nothing to guard.
+ * any user code runs, `console` included: it must answer one of the guard's
+ * views. A read that answers nothing to guard, as a test that stubbed the
+ * global to `undefined` leaves it, passes.
  */
 export const readBack = (): ReadonlyArray<Unguarded> => {
   const state = stateOf();
-  return Arr.filterMap(guarded, ({ name }) => {
+  return Arr.filterMap(watched, ({ name, guardable }) => {
     const read = readThroughChain(state, name);
-    return typeof read !== "function" || state.made.has(read)
+    return !guardable(read) || state.made.has(read as object)
       ? Result.failVoid
       : Result.succeed({ name, fixed: false });
   });
@@ -740,29 +767,36 @@ const readThroughChain = (state: State, name: string): unknown => {
  * Note how the guarded globals read once a function's entry has guarded them.
  * The answer names, when called, each global that no longer reads through to a
  * guard, which a guard could not see: a call made through the replacement
- * reached it unchecked. The global is read as a function would read it, through
- * the prototype chain, so a replacement still in place when the function
- * settles fails, own or inherited, a data property or an accessor: one moved
- * onto a prototype with the own property deleted included. An assignment stores
- * beneath the guard and still reads as one, as does an accessor another library
- * lays over the guard that reads through it, as convex-test's does. Out of
- * scope, as hostile test code: an accessor that runs code to fake the guard at
- * settlement, answering the replacement while the handler runs and the guard by
- * the time it settles, and a replacement removed again before the function
- * settles. A call made through either is neither blocked nor reported.
+ * reached it unchecked. `console` must still read as one of its guard's views.
+ * The global is read as a function would read it, through the prototype chain,
+ * so a replacement still in place when the function settles fails, own or
+ * inherited, a data property or an accessor: one moved onto a prototype with
+ * the own property deleted included. An assignment stores beneath the guard and
+ * still reads as one, as does an accessor another library lays over the guard
+ * that reads through it, as convex-test's does. Out of scope, as hostile test
+ * code: an accessor that runs code to fake the guard at settlement, answering
+ * the replacement while the handler runs and the guard by the time it settles,
+ * and a replacement removed again before the function settles. A call made
+ * through either is neither blocked nor reported.
  */
 export const watch = (): (() => ReadonlyArray<string>) => {
   const state = stateOf();
   const global = globalThis as unknown as Global;
-  const taken = Arr.map(guarded, ({ name }) => ({
+  const taken = Arr.map(watched, ({ name, guardable }) => ({
     name,
+    guardable,
     present: name in global,
     read: readThroughChain(state, name),
   }));
-  const intact = ({ name, present, read }: (typeof taken)[number]) => {
+  const intact = ({
+    name,
+    guardable,
+    present,
+    read,
+  }: (typeof taken)[number]) => {
     if (!present) return !(name in global);
     const now = readThroughChain(state, name);
-    return typeof now === "function" ? state.made.has(now) : now === read;
+    return guardable(now) ? state.made.has(now as object) : now === read;
   };
   return () =>
     pipe(

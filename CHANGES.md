@@ -203,7 +203,10 @@ On the kernel, a raw `fetch` in an action or a Node action dies with
 `module:export` and the URL's host, with `failed`, `because`, `instead` and a
 `docs` anchor. The action settles with it at once, whatever its handler catches
 and whether or not the handler settles, runs no later call, and logs nothing
-more, as the binary stops an ended function's JavaScript. The binary performs
+more, as the binary stops an ended function's JavaScript. `console` is a
+guarded global: the final read-back and the settlement check read it, so a test
+that replaces it under the kernel refuses the function with `UnguardableGlobal`
+rather than logging through the replacement. The binary performs
 this fetch, so this is the kernel's one deliberate departure, recorded as a
 convex-test lane conformance exception in `conformance.ts`, now the lane's one
 exception mechanism: `main`'s two route-error exceptions moved into it from

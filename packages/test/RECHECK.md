@@ -1043,6 +1043,21 @@ non-configurable, non-writable property as its target holds it, so the view
 returns the frozen method itself, and an ended function's calls to it are not
 dropped.
 
+`console` is a guarded global like the others. Its install reports
+`notConfigurable` for a console the kernel cannot redefine and `installFailed`
+for a redefinition that throws, and its views are the kernel's own. So the one
+final read-back of every guarded global reads it too, and a console that does
+not read as one of the views refuses the module load or the function before
+any of its code runs. Before fix round 6 it was left out: a non-configurable
+`Math` setter that took the kernel's `Math` and replaced `console` with a
+configurable, unfrozen object went undetected, and an action logged through the
+replacement before and after it returned. `Randomness.test.ts` pins that
+setter, refused with `installFailed` naming `console` before the action logs,
+and a non-configurable console, refused with `notConfigurable`. The settlement
+check reads `console` too, so a handler that redefines it fails with
+`replacedWhileRunning` naming `console`, and the view comes back over the
+replacement (`IoBans.test.ts`).
+
 Egress goes through a provider port (`src/internal/Egress.ts`). Inside a kernel
 action a port's call is held as a `{ kind: "provider", port, input }` command,
 listed by the shim's `commands()` and settled by `answer(id, output)`. Each

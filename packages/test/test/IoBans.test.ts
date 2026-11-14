@@ -1179,6 +1179,52 @@ describe("replaced globals", () => {
   );
 
   it.effect(
+    "an action that redefines console and logs through it is not blocked, but ends refused naming console, and the guard's view is back",
+    () =>
+      Effect.gen(function* () {
+        const replacement = { log: vi.fn() };
+        const consoleModules = {
+          "_generated/server.ts": () => Promise.resolve({}),
+          "logs.ts": () =>
+            Promise.resolve({
+              redefined: actionGeneric({
+                args: {},
+                handler: () => {
+                  Object.defineProperty(globalThis, "console", {
+                    value: replacement,
+                    writable: true,
+                    configurable: true,
+                  });
+                  // oxlint-disable-next-line effecttsgo/global-console -- The handler logs through the console it put in place of the guard's view.
+                  console.log("through the replacement");
+                  return Promise.resolve(null);
+                },
+              }),
+            }),
+        };
+        const t = convexTest({
+          schema: defineSchema({}),
+          modules: consoleModules,
+          sources: inlineSources(consoleModules),
+        });
+        const before = original("console");
+        const outcome = yield* replacedOutcome(
+          t.action(makeFunctionReference<"action">("logs:redefined"), {}),
+        );
+        // The refusal installed the guard again over the replacement.
+        const reguarded = "get" in original("console");
+        // A view of the replacement, never the replacement itself.
+        const read: unknown = Reflect.get(globalThis, "console");
+        const shown = read !== replacement;
+        Object.defineProperty(globalThis, "console", before);
+        expect(outcome).toEqual({ ...replacedRefusal, globals: ["console"] });
+        expect(replacement.log).toHaveBeenCalledOnce();
+        expect(reguarded).toBe(true);
+        expect(shown).toBe(true);
+      }),
+  );
+
+  it.effect(
     "a mutation that redefines fetch and calls it ends refused and publishes nothing",
     () =>
       Effect.gen(function* () {
