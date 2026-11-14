@@ -625,11 +625,16 @@ beneath a fresh guard, so a stub keeps working outside a function and stays
 refused inside one. A replacement the kernel cannot redefine, a non-configurable
 one, refuses the function before it runs with `UnguardableGlobal`
 (`reason: "notConfigurable"`) naming the global. A redefinition that throws, or
-an install a later step undid, refuses it with `reason: "installFailed"`: as
-the entropy install does for `Math` and `crypto` (#150), one final pass reads
-every guarded global back once all are installed, so a getter a test left on
-one global that replaces another when read refuses the function before any of
-its code runs. `UnguardableGlobal` is one refusal for both installs, with the
+an install a later step undid, refuses it with `reason: "installFailed"`. The
+I/O guards and the entropy install for `Math` and `crypto` (#150) install
+first, all of them, inside the one boundary, the copy of the globals the code
+then runs in, and then one final read-back of every guarded global runs: `Math`,
+`crypto`, `fetch`, the timers and the rest. So a getter a test left on one
+global that replaces another when read, or a `Math` setter that takes the
+kernel's `Math` and replaces `fetch` when the entropy install assigns it,
+refuses the module load or the function before any of its code runs. Before fix
+round 5 the I/O guards read themselves back before the entropy install, so that
+setter let the handler call the replacement once before settlement refused. `UnguardableGlobal` is one refusal for both installs, with the
 reasons `notConfigurable`, `installFailed` and `replacedWhileRunning`, built
 through Effect's trusted constructor so that building it never reads the
 ambient `Math`. What the guards read for themselves, the `Request` they build a
@@ -1973,14 +1978,15 @@ that could not be described". The refusal is built without
 when it compiles and when it parses, and that is the global the install just
 failed to own.
 
-Once every global is installed, one final pass reads all of them back, inside
-the same guard, before any user code runs, at every module load and every
-function start. So a later step that undid an earlier global, such as a
-`crypto` getter that puts the host's `Math` back, refuses too.
+Once every global is installed, the I/O guards' with them (#136), one final
+read-back of every guarded global runs, inside the same boundary, before any
+user code runs, at every module load and every function start. So a later step
+that undid an earlier global, such as a `crypto` getter that puts the host's
+`Math` back, or a `Math` setter that replaces `fetch`, refuses too.
 
 Test code that installs accessors which run arbitrary code to rewrite other
 globals during the kernel's install is hostile. It is out of scope beyond the
-final read-back pass, the same threat model as #1593.
+one final read-back of every guarded global, the same threat model as #1593.
 
 The kernel's own work uses the host's `Math` and `crypto`, captured once when
 its modules load and before any install (`HostGlobals.ts`). That covers

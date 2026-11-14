@@ -639,37 +639,54 @@ const heldAs = (name: "Math" | "crypto", threw: unknown): string => {
  * functions and code a function imports lazily all draw through it. A reference
  * to the host's `Math.random` or `crypto` taken outside every kernel copy,
  * before the kernel ran any code, stays the host's: the lazy-loading contract,
- * as for the kernel's other globals. Every own-descriptor shape of `Math` and
- * `crypto` ends one of two ways: the kernel's objects are installed and a
- * read-back confirms it, or the install refuses with `UnguardableGlobal`,
- * naming each global and what it holds, before the load's or the function's
- * code runs.
+ * as for the kernel's other globals. It answers the globals it could not
+ * install. It reads nothing back: {@link installGuardedGlobals} does, once for
+ * every guarded global.
  */
-const installEntropy = () => {
+const installEntropy = (): ReadonlyArray<EntropyFailure> => {
   kernelMath ??= Entropy.kernelMath(HostGlobals.math, entropySource);
   kernelCrypto ??= Entropy.kernelCrypto(HostGlobals.crypto, entropySource);
-  const globals = [
-    ["Math", kernelMath],
-    ["crypto", kernelCrypto],
-  ] as const;
-  const failed = Arr.filterMap(globals, ([name, value]) => {
+  return Arr.filterMap(entropyGlobals(), ([name, value]) => {
     const failure = installGuarded(name, value);
     return failure === undefined ? Result.failVoid : Result.succeed(failure);
   });
-  // One final pass reads every global back, once all are installed, so a later
-  // step that undid an earlier one, as a test's getter that restores another
-  // global does, refuses before any user code runs.
-  const undone =
-    failed.length > 0
-      ? []
-      : Arr.filterMap(globals, ([name, value]) => {
-          const failure = confirmInstalled(name, value);
-          return failure === undefined
-            ? Result.failVoid
-            : Result.succeed(failure);
-        });
-  if (failed.length > 0 || undone.length > 0) {
-    throw KernelRefusal.uninstallableEntropy([...failed, ...undone]);
+};
+
+type EntropyFailure = {
+  readonly global: string;
+  readonly holds: string;
+  readonly fixed: boolean;
+};
+
+const entropyGlobals = () =>
+  [
+    ["Math", kernelMath!],
+    ["crypto", kernelCrypto!],
+  ] as const;
+
+/**
+ * Install every guarded global, the I/O guards and the kernel's `Math` and
+ * `crypto`, then run one final read-back of every guarded global, inside the
+ * one boundary: the copy of the globals the function's or module load's code
+ * then runs in, before any of that code runs. Every install comes first, so a
+ * later step that undid an earlier one, as a test's setter that stores the
+ * kernel's `Math` and replaces `fetch` does, or a getter that puts the host's
+ * `Math` back, is caught by the read-back. Any failure, of an install or of the
+ * read-back, refuses with `UnguardableGlobal`, naming each global.
+ */
+const installGuardedGlobals = () => {
+  const io = installIoBans();
+  const entropy = installEntropy();
+  if (io.length > 0 || entropy.length > 0) {
+    throw KernelRefusal.unguardableGlobals(io, entropy);
+  }
+  const ioUndone = IoBans.readBack();
+  const entropyUndone = Arr.filterMap(entropyGlobals(), ([name, value]) => {
+    const failure = confirmInstalled(name, value);
+    return failure === undefined ? Result.failVoid : Result.succeed(failure);
+  });
+  if (ioUndone.length > 0 || entropyUndone.length > 0) {
+    throw KernelRefusal.unguardableGlobals(ioUndone, entropyUndone);
   }
 };
 
@@ -741,12 +758,10 @@ const installGuarded = (
 const enter = <A>(execution: Execution, run: () => A): A => {
   installConvexGlobal();
   installDate();
-  // A function runs only with every banned global guarded.
-  const unguarded = installIoBans();
-  if (unguarded.length > 0) throw KernelRefusal.unguardableGlobal(unguarded);
-  watches.set(execution, IoBans.watch());
   return Globals.own(() => {
-    installEntropy();
+    // A function runs only with every guarded global installed and read back.
+    installGuardedGlobals();
+    watches.set(execution, IoBans.watch());
     return executions.run(execution, run);
   });
 };
@@ -1546,7 +1561,7 @@ export class World {
       return moduleLoads
         .run({ phase: "load", random }, () =>
           Globals.own(() => {
-            installEntropy();
+            installGuardedGlobals();
             return load();
           }),
         )

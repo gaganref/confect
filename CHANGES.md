@@ -243,8 +243,9 @@ promisified timer is guarded too. A global left replaced when a function
 settles, read through the prototype chain, fails that function with
 `UnguardableGlobal` (`replacedWhileRunning`), so a mutation publishes none of
 its writes, and the guard comes back as an own property. An install that throws
-or is undone refuses with `installFailed`, after a final read-back pass, as
-#150's entropy install does, and both installs share one `UnguardableGlobal`.
+or is undone refuses with `installFailed`: the I/O guards and #150's entropy
+install all install first, then one final read-back of every guarded global
+runs before any user code, and both installs share one `UnguardableGlobal`.
 Accessors that run code to fake the guard at settlement are hostile and out of
 scope. A module's runtime
 comes from its `"use node"` directive when the test passes its sources
