@@ -248,12 +248,18 @@ export class SnapshotCronMismatch extends Schema.TaggedError<
  * descriptor was replaced while the function ran, so a call made through the
  * replacement reached it unchecked. The function fails at settlement, a
  * mutation publishes none of its writes, and the guard is installed again.
+ * `installFailed`: installing the kernel's own on a global it could redefine
+ * threw, as a getter a test left throwing does, so nothing started.
  */
 export class UnguardableGlobal extends Schema.TaggedError<
   UnguardableGlobal,
   { readonly brand: unique symbol }
 >()("UnguardableGlobal", {
-  reason: Schema.Literals(["notConfigurable", "replacedWhileRunning"]),
+  reason: Schema.Literals([
+    "notConfigurable",
+    "replacedWhileRunning",
+    "installFailed",
+  ]),
   globals: Schema.Array(Schema.String),
   message: Schema.String,
 }) {}
@@ -266,10 +272,16 @@ export class UnguardableGlobal extends Schema.TaggedError<
  * from the host's randomness in the kernel's place.
  */
 export const uninstallableEntropy = (
-  failures: ReadonlyArray<{ readonly global: string; readonly holds: string }>,
+  failures: ReadonlyArray<{
+    readonly global: string;
+    readonly holds: string;
+    readonly fixed: boolean;
+  }>,
 ) =>
   UnguardableGlobal.make({
-    reason: "notConfigurable",
+    reason: Array.every(failures, ({ fixed }) => fixed)
+      ? "notConfigurable"
+      : "installFailed",
     globals: Array.map(failures, ({ global }) => global),
     message: `The test kernel cannot install its own random sources: ${Array.join(
       Array.map(

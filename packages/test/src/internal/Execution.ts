@@ -423,29 +423,67 @@ let kernelMath: Math | undefined;
 let kernelCrypto: Crypto | undefined;
 
 /**
+ * A thrown value's description, for a refusal. It never throws: it reads a
+ * value that could run code only inside its own try, and what it cannot
+ * describe gets fixed text.
+ */
+const describeThrown = (thrown: unknown): string => {
+  try {
+    if (typeof thrown === "string") return thrown;
+    if (thrown instanceof Error) {
+      const name: unknown = thrown.name;
+      const message: unknown = thrown.message;
+      return typeof name === "string" && typeof message === "string"
+        ? `${name}: ${message}`
+        : "an Error whose name or message is not a string";
+    }
+    return `a non-Error ${typeof thrown}`;
+  } catch {
+    return "a thrown value that could not be described";
+  }
+};
+
+/**
+ * Whether `globalThis[name]` is a property the kernel cannot redefine. It never
+ * throws: what it cannot read counts as one.
+ */
+const isFixed = (name: "Math" | "crypto"): boolean => {
+  try {
+    return (
+      Object.getOwnPropertyDescriptor(globalThis, name)?.configurable !== true
+    );
+  } catch {
+    return true;
+  }
+};
+
+/**
  * What `globalThis[name]` holds, for a refusal: a property the kernel cannot
- * redefine, as a test that freezes or redefines the global leaves it. `threw`
- * names the error the assignment or the read-back raised, if one did.
+ * redefine, as a test that freezes or redefines the global leaves it, and what
+ * the install threw, if it threw. It never throws: what it cannot read gets
+ * fixed text.
  */
 const heldAs = (name: "Math" | "crypto", threw: unknown): string => {
-  const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
-  if (descriptor === undefined) return "missing";
-  if (threw !== undefined) {
-    const kind = "value" in descriptor ? "a value" : "an accessor";
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+    if (descriptor === undefined) return "missing";
     const fixed =
       descriptor.configurable === true ? "" : " that cannot be redefined";
-    return `${kind}${fixed} whose assignment or read-back threw ${threw instanceof Error ? `${threw.name}: ${threw.message}` : typeof threw === "string" ? threw : `a non-Error ${typeof threw}`}`;
+    if (threw !== undefined) {
+      const kind = "value" in descriptor ? "a value" : "an accessor";
+      return `${kind}${fixed} whose install threw ${describeThrown(threw)}`;
+    }
+    if ("value" in descriptor) {
+      return descriptor.writable === true
+        ? `a value that did not take the assignment${fixed}`
+        : `a non-writable value${fixed}`;
+    }
+    return descriptor.set === undefined
+      ? `a getter with no setter${fixed}`
+      : `an accessor whose setter did not take the assignment${fixed}`;
+  } catch {
+    return "a property the kernel could not describe";
   }
-  const fixed =
-    descriptor.configurable === true ? "" : " that cannot be redefined";
-  if ("value" in descriptor) {
-    return descriptor.writable === true
-      ? `a value that did not take the assignment${fixed}`
-      : `a non-writable value${fixed}`;
-  }
-  return descriptor.set === undefined
-    ? `a getter with no setter${fixed}`
-    : `an accessor whose setter did not take the assignment${fixed}`;
 };
 
 /**
@@ -470,13 +508,8 @@ const installEntropy = () => {
       ["crypto", kernelCrypto],
     ] as const,
     ([name, value]) => {
-      const installed = installOne(name, value);
-      return installed === true
-        ? Result.failVoid
-        : Result.succeed({
-            global: name,
-            holds: heldAs(name, installed.threw),
-          });
+      const failure = installGuarded(name, value);
+      return failure === undefined ? Result.failVoid : Result.succeed(failure);
     },
   );
   if (failed.length > 0) {
@@ -485,22 +518,34 @@ const installEntropy = () => {
 };
 
 /**
- * Assign `value` to `globalThis[name]` and read it back. `true` when the global
- * now holds `value`. Anything else, an assignment that returns false, one that
- * throws, a read-back that throws or that answers another object, is a failure
- * the caller refuses with, never one it carries on past.
+ * Install `value` as `globalThis[name]`, the one boundary every step of it runs
+ * in: from the first read of the global's descriptor, as `Globals.prepare`
+ * gives it this copy's accessor, through the assignment to the read-back that
+ * confirms the global holds `value`. A step that throws, an assignment that
+ * returns false, or a read-back that answers another object is a failure, and
+ * the caller refuses with `UnguardableGlobal`. Nothing it raises escapes.
  */
-const installOne = (
+const installGuarded = (
   name: "Math" | "crypto",
   value: object,
-): true | { readonly threw: unknown } => {
+):
+  | { readonly global: string; readonly holds: string; readonly fixed: boolean }
+  | undefined => {
   try {
-    return Reflect.set(globalThis, name, value) &&
+    Globals.prepare(name);
+    if (
+      Reflect.set(globalThis, name, value) &&
       Reflect.get(globalThis, name) === value
-      ? true
-      : { threw: undefined };
+    ) {
+      return undefined;
+    }
+    return {
+      global: name,
+      holds: heldAs(name, undefined),
+      fixed: isFixed(name),
+    };
   } catch (error) {
-    return { threw: error };
+    return { global: name, holds: heldAs(name, error), fixed: isFixed(name) };
   }
 };
 

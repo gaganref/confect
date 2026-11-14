@@ -1649,14 +1649,28 @@ refuse before its handler runs.
 For every own-descriptor shape of `Math` and `crypto`, the kernel does one of
 two things. It installs its own objects and confirms that by reading the
 global back. Or it refuses with `UnguardableGlobal` (`reason`, `globals`)
-before any module or function code runs. An install that throws, returns
-false, or reads back another object is a refusal, never a raw error and never a
-carry-on. The kernel's own work uses the host's `Math` and `crypto`, captured
-once when its modules load and before any install (`HostGlobals.ts`):
-building its wrappers, its `subtle`, and the blinding bytes its P-256 signing
-draws (`Identity.ts`, a curve built with `randomBytes` from that capture). It
-never re-reads `globalThis`, which in a function's copy, or in place, can hold
-the kernel's own wrappers.
+before any module or function code runs.
+
+Every failure is a tagged refusal. Each global's install runs in one boundary,
+`installGuarded` in `Execution.ts`, from the first read of its descriptor
+(`Globals.prepare`, whose `readsThrough` calls a test's getter) through the
+assignment to the read-back. A step that throws, an assignment that returns
+false, or a read-back of another object becomes `UnguardableGlobal`, never a
+raw error and never a carry-on. Its `reason` is `notConfigurable` when every
+failing global is non-configurable, and `installFailed` otherwise, as for a
+configurable getter that throws. Its message describes each global and what
+was thrown through helpers that never throw (`heldAs`, `describeThrown`): each
+reads behind its own try and falls back to fixed text, such as "a thrown value
+that could not be described".
+
+The kernel's own work uses the host's `Math` and `crypto`, captured once when
+its modules load and before any install (`HostGlobals.ts`). That covers
+building its wrappers, its `subtle`, the blinding bytes its P-256 signing draws
+(`Identity.ts`, a curve built with `randomBytes` from that capture), and the
+invocation bridge's `pin`. It never re-reads `globalThis`, which in a
+function's copy, or in place, can hold the kernel's own wrappers. A
+replacement a test installs before `@confect/test`'s first import is what the
+kernel captures as the host, and that is within the contract.
 
 Fix round 4 closed the two shapes that broke this. A `crypto` left
 non-configurable but writable installs by assignment, in place, so the old
@@ -1664,8 +1678,14 @@ non-configurable but writable installs by assignment, in place, so the old
 stream values instead of the seed's 32, and a worldless restore refused
 signing with `FunctionRandomUnavailable`. A non-configurable accessor whose
 setter throws let that raw error escape the open. Both are tested in a process
-of their own, and each has a plant. A further descriptor shape that keeps this
-contract is not a finding.
+of their own, and each has a plant. Fix round 5 closed the reads that still
+sat outside the guard, a getter that throws, called by `readsThrough`, and an
+error whose `message` getter throws, read while describing it, and made
+`pin` build over the captured references. A bound Confect handler had failed
+with its generic "cannot pin" error under a non-configurable but writable
+`crypto`, because `pin` saw the kernel's object in place and took it for one it
+had assigned. A further descriptor shape that keeps this contract is not a
+finding.
 
 Row 7's Sync serving runs every query, mutation and action through the same
 `enter`, so each gets the kernel's `Math` and `crypto`. Its runs had leaked

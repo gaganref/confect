@@ -72,6 +72,37 @@ const freezes: Record<string, () => void> = {
       set: () => {},
       configurable: false,
     }),
+  "throwing-getter-crypto": () =>
+    Object.defineProperty(globalThis, "crypto", {
+      get: () => {
+        throw new TypeError("crypto getter fails");
+      },
+      configurable: false,
+    }),
+  "throwing-getter-crypto-configurable": () =>
+    Object.defineProperty(globalThis, "crypto", {
+      get: () => {
+        throw new TypeError("crypto getter fails");
+      },
+      configurable: true,
+    }),
+  "undescribable-throw-crypto": () => {
+    // An Error whose message getter throws too.
+    const thrown: unknown = Object.create(Error.prototype, {
+      message: {
+        get: () => {
+          throw new Error("message getter fails");
+        },
+      },
+    });
+    Object.defineProperty(globalThis, "crypto", {
+      get: () => host.crypto,
+      set: () => {
+        throw thrown;
+      },
+      configurable: false,
+    });
+  },
   "throwing-setter-crypto": () =>
     Object.defineProperty(globalThis, "crypto", {
       get: () => host.crypto,

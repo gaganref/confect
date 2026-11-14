@@ -3,6 +3,7 @@ import type { FunctionMetadata, RequestMetadata } from "convex/server";
 import type * as Context from "effect/Context";
 import * as Clock from "./Clock.js";
 import * as Entropy from "./Entropy.js";
+import * as HostGlobals from "./HostGlobals.js";
 
 /**
  * Four re-executions after the first try. A conflict on attempt 5 exhausts.
@@ -196,23 +197,28 @@ const pin = (
       : pinnedDate(previous.Date, clockOf(invocation, functionType)),
     Math: kernelEntropy
       ? previous.Math
-      : Entropy.kernelMath(previous.Math, source),
+      : Entropy.kernelMath(HostGlobals.math, source),
     crypto: kernelEntropy
       ? previous.crypto
-      : Entropy.kernelCrypto(previous.crypto, source),
+      : Entropy.kernelCrypto(HostGlobals.crypto, source),
   };
   try {
     if (!kernelDate) host.Date = pinned.Date;
-    host.Math = pinned.Math;
-    host.crypto = pinned.crypto;
+    if (!kernelEntropy) {
+      host.Math = pinned.Math;
+      host.crypto = pinned.crypto;
+    }
   } catch {
     // A global without a per-handler copy can be read-only. The check below
     // refuses the handler.
   }
   const reached = outside(() => ({
     Date: !kernelDate && host.Date === pinned.Date,
-    Math: host.Math === pinned.Math,
-    crypto: host.crypto === pinned.crypto,
+    // Only a global the bridge assigned can have reached test code. On the
+    // kernel it assigns neither `Math` nor `crypto`, which may be the kernel's
+    // own in place, as when a test left `crypto` non-configurable but writable.
+    Math: !kernelEntropy && host.Math === pinned.Math,
+    crypto: !kernelEntropy && host.crypto === pinned.crypto,
   }));
   if (
     host.Date === pinned.Date &&

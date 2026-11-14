@@ -481,6 +481,63 @@ describe("randomness on the kernel", () => {
         ),
       );
     }, 60_000);
+    it("a crypto accessor whose getter throws refuses the open with UnguardableGlobal, non-configurable or configurable, never the raw error", () => {
+      const thrownBy = (reason: string, holds: string) => ({
+        outcome: "refused",
+        _tag: "UnguardableGlobal",
+        reason,
+        globals: ["crypto"],
+        message: expect.stringContaining(`globalThis.crypto is ${holds}`),
+        loaded: false,
+        ran: false,
+      });
+      expect({
+        fixed: outcome("throwing-getter-crypto"),
+        configurable: outcome("throwing-getter-crypto-configurable"),
+      }).toEqual({
+        fixed: thrownBy(
+          "notConfigurable",
+          "an accessor that cannot be redefined whose install threw TypeError: crypto getter fails",
+        ),
+        configurable: thrownBy(
+          "installFailed",
+          "an accessor whose install threw TypeError: crypto getter fails",
+        ),
+      });
+    }, 60_000);
+    it("a crypto setter that throws an Error whose message getter throws refuses with UnguardableGlobal, describing the value by fixed text", () => {
+      expect(outcome("undescribable-throw-crypto")).toEqual({
+        outcome: "refused",
+        _tag: "UnguardableGlobal",
+        reason: "notConfigurable",
+        globals: ["crypto"],
+        message: expect.stringContaining(
+          "globalThis.crypto is an accessor that cannot be redefined whose install threw a thrown value that could not be described",
+        ),
+        loaded: false,
+        ran: false,
+      });
+    }, 60_000);
+    it("a crypto left non-configurable but writable runs a bound Confect handler, a Confect component's handler and a component's scheduled function, each drawing from the stream", () => {
+      const run = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          loader,
+          fileURLToPath(
+            new URL("fixtures/writableCryptoBound.ts", import.meta.url),
+          ),
+        ],
+        { encoding: "utf8" },
+      );
+      expect([run.status, run.stderr]).toEqual([0, ""]);
+      expect(Json.parse(run.stdout)).toEqual({
+        confect: { outcome: "ran", value: expectedOnKernel.query },
+        component: { outcome: "ran", value: { first: [], second: [] } },
+        // The drain ran the component's scheduled create.
+        scheduled: { outcome: "ran", value: { first: [17], second: [] } },
+      });
+    }, 60_000);
     it("a crypto accessor whose setter throws refuses the open with UnguardableGlobal, never the raw error", () => {
       expect(outcome("throwing-setter-crypto")).toEqual({
         outcome: "refused",
@@ -488,7 +545,7 @@ describe("randomness on the kernel", () => {
         reason: "notConfigurable",
         globals: ["crypto"],
         message: expect.stringContaining(
-          "globalThis.crypto is an accessor that cannot be redefined whose assignment or read-back threw TypeError: crypto is read-only here",
+          "globalThis.crypto is an accessor that cannot be redefined whose install threw TypeError: crypto is read-only here",
         ),
         loaded: false,
         ran: false,
