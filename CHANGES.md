@@ -227,8 +227,14 @@ mark, which `@confect/server` now sets on its isolate actions too, as a
 cross-check. Without sources, a plain Convex action is refused with
 `ActionRuntimeUnknown` when the kernel opens, unless the test declares its
 component's runtime with `componentRuntimes`, as for a package's test kit. The
-clears stay allowed and actions keep the host's `fetch` and timers. The
-local-backend suite pins each behaviour on the binary. This is the I/O bans row
+clears stay allowed and actions keep the host's `fetch` and timers. A module's
+top level loads under the same rules unless it has a `"use node"` directive:
+its `fetch` rejects with the binary's `TypeError`, and a timer fails the load
+with the binary's error. The one place the kernel is stricter, a top-level
+`fetch` in an isolate action's module, which the binary answers, is the
+`ActionModuleLoadFetch` kernel boundary. A `"use node"` module keeps the host's
+`fetch` and timers while it loads. The local-backend suite pins each behaviour
+on the binary. This is the I/O bans row
 of Frame's backend testing kernel (Frame ADR 0012, row 6). Changeset:
 `test-kernel-io-bans.md`. Upstream: fork only, as the kernel is fork-specific.
 
