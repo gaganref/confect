@@ -1835,16 +1835,26 @@ the deterministic operations in every phase.
   spreads, keys and `in` (`internal/Environment.ts`). Elsewhere it answers the
   host's. Each mount of a local component loads its own copy of the
   component's modules: generated `testing.ts` tags each mount's imports with
-  its path, and `@confect/test/Vite` carries the tag to the files inside the
-  component they import. A deployment does the same: each mount is its own
+  its path, and `@confect/test/Vite` carries the tag down the import graph to
+  every file they import, wherever it sits. A deployment does the same: it
+  bundles everything a component imports into each mount, each mount is its own
   `ComponentId`, `PreloadedEnvVars::load` reads that id's bindings
   (`crates/udf/src/environment.rs:141-171`), and a saved context and its
   module map are reused only for the same component and module path
   (`crates/isolate/src/context_cache.rs:116-150`, convex-backend `cccbade4`).
   The local-backend probe in `components.test.ts` reads each mount's value from
-  a helper's module-level read. Packages under `node_modules`, the app's files
-  and a packaged component's kit stay one copy per test. Without the plugin,
-  a second mount of one component refuses to load.
+  module-level reads in a helper inside the component, one outside it, one in
+  the app's folder and one three imports deep, and `MountModules.test.ts`
+  checks the same on the kernel, with a helper two components share. Without
+  the plugin, a second mount of one component refuses to load.
+- **Limit.** A package under `node_modules`, a packaged component's kit
+  included, stays one copy across mounts, because the kernel runs on Effect,
+  `convex` and `@confect/test` and needs them as one instance. A deployment
+  evaluates each mount's packages apart, so a package's module-level state is
+  per mount there and shared here. `MountModules.test.ts` pins it: two mounts'
+  copies of a helper hold the test's own `Schema.String`. The repo's tests
+  alias each package to its source, so `vitest.shared.ts` names those source
+  directories in `plugin({ packages })`.
   Each mount's copy loads under row 6's load-phase draws too, as the binary
   seeds each component's import phase from that component's own config
   (`crates/isolate/src/environment/udf/phase.rs:186-193`).

@@ -48,6 +48,7 @@ export const api: {
       { run: string },
       Array<{ _creationTime: number; _id: string; count: string; run: string }>
     >;
+    shared: FunctionReference<"query", "public", {}, number>;
   };
 } = anyApi as any;
 
