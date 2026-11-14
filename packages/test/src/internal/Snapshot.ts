@@ -242,6 +242,10 @@ export const contract = {
       excluded:
         "The secret policy is configuration: the restoring world is built with its own.",
     },
+    componentRuntimes: {
+      excluded:
+        "The runtimes a test declared for components registered without sources are configuration, as `components` is: the restoring world is built with its own.",
+    },
     secrets: {
       excluded:
         "Raw secrets are replay state and never reach an artifact. A snapshot writes markers, and a restore takes the raw values from the source's `secrets()`.",

@@ -18,6 +18,7 @@ import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
 import * as DriverWorld from "../../src/internal/DriverWorld";
 import * as Entropy from "../../src/internal/Entropy";
 import type * as Invocation from "../../src/internal/Invocation";
+import { withSources } from "./inlineSources";
 
 const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 
@@ -32,7 +33,7 @@ const store = makeFunctionReference<"mutation", {}, string>("tokens:store");
 const signer = (world?: Invocation.World): KernelControls =>
   convexTest({
     schema: defineSchema({ tokens: defineTable({ token: v.string() }) }),
-    modules: {
+    ...withSources({
       "_generated/server.ts": () => Promise.resolve({}),
       "tokens.ts": () =>
         Promise.resolve({
@@ -50,7 +51,7 @@ const signer = (world?: Invocation.World): KernelControls =>
                 ),
           }),
         }),
-    },
+    }),
     ...(world === undefined ? {} : { world }),
   }) as KernelControls;
 

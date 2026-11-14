@@ -349,6 +349,82 @@ export declare const api: {
         string | null
       >;
     };
+    ioBans: {
+      awaitedTimerInMutation: FunctionReference<
+        "mutation",
+        "public",
+        { name: "setTimeout" | "setInterval" },
+        string
+      >;
+      awaitedTimerInQuery: FunctionReference<
+        "query",
+        "public",
+        { name: "setTimeout" | "setInterval" },
+        string
+      >;
+      clearInQuery: FunctionReference<"query", "public", {}, string>;
+      fetchInAction: FunctionReference<
+        "action",
+        "public",
+        { url: string },
+        string
+      >;
+      fetchInMutation: FunctionReference<
+        "mutation",
+        "public",
+        { url: string },
+        { message: string; name: string }
+      >;
+      fetchInQuery: FunctionReference<
+        "query",
+        "public",
+        { url: string },
+        { message: string; name: string }
+      >;
+      formDataInAction: FunctionReference<
+        "action",
+        "public",
+        { body: "multipart" | "urlencoded" | "multipartWithoutBoundary" },
+        { returned: string | null } | { message: string; name: string }
+      >;
+      formDataInMutation: FunctionReference<
+        "mutation",
+        "public",
+        { body: "multipart" | "urlencoded" | "multipartWithoutBoundary" },
+        { returned: string | null } | { message: string; name: string }
+      >;
+      formDataInQuery: FunctionReference<
+        "query",
+        "public",
+        { body: "multipart" | "urlencoded" | "multipartWithoutBoundary" },
+        { returned: string | null } | { message: string; name: string }
+      >;
+      surfaceInAction: FunctionReference<
+        "action",
+        "public",
+        {},
+        { queueMicrotask: string; setImmediate: string }
+      >;
+      surfaceInQuery: FunctionReference<
+        "query",
+        "public",
+        {},
+        { queueMicrotask: string; setImmediate: string }
+      >;
+      timerInMutation: FunctionReference<
+        "mutation",
+        "public",
+        { name: "setTimeout" | "setInterval" },
+        string
+      >;
+      timerInQuery: FunctionReference<
+        "query",
+        "public",
+        { name: "setTimeout" | "setInterval" },
+        string
+      >;
+      timersInAction: FunctionReference<"action", "public", {}, Array<string>>;
+    };
     metadata: {
       actionMetadata: FunctionReference<
         "action",
@@ -1096,7 +1172,21 @@ export declare const api: {
         { caseId: string; stale: boolean },
         Array<string>
       >;
+      systemShare: FunctionReference<
+        "mutation",
+        "public",
+        {},
+        { nested: number; root: number; stale: number }
+      >;
     };
+  };
+  ioBansNode: {
+    surfaceNode: FunctionReference<
+      "action",
+      "public",
+      {},
+      { queueMicrotask: string; setImmediate: string }
+    >;
   };
   metadataNode: {
     metadata: FunctionReference<

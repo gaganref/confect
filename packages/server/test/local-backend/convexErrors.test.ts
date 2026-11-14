@@ -94,16 +94,40 @@ const caughtIn = (
   }
 };
 
+const plainSources = import.meta.glob<string>(
+  "../../../../tools/local-backend/fixtures/plain/convex/*.ts",
+  { query: "?raw", import: "default" },
+);
+
+const plainSource = (file: string): (() => Promise<string>) => {
+  const source =
+    plainSources[
+      `../../../../tools/local-backend/fixtures/plain/convex/${file}`
+    ];
+  if (source === undefined)
+    throw new Error(`The plain fixture has no ${file}.`);
+  return source;
+};
+
 /**
  * The same plain fixture on the test kernel.
  */
 const kernel = (): Calls => {
-  const t = convexTest(undefined, {
-    "_generated/server.ts": () => Promise.resolve({}),
-    "convexErrors.ts": () =>
-      import("../../../../tools/local-backend/fixtures/plain/convex/convexErrors"),
-    "http.ts": () =>
-      import("../../../../tools/local-backend/fixtures/plain/convex/http"),
+  const t = convexTest({
+    modules: {
+      "_generated/server.ts": () => Promise.resolve({}),
+      "convexErrors.ts": () =>
+        import("../../../../tools/local-backend/fixtures/plain/convex/convexErrors"),
+      "http.ts": () =>
+        import("../../../../tools/local-backend/fixtures/plain/convex/http"),
+    },
+    // The plain fixture's files as their own sources, so the kernel reads
+    // their `"use node"` directive: its actions are plain Convex actions.
+    sources: {
+      "_generated/server.ts": () => Promise.resolve(""),
+      "convexErrors.ts": plainSource("convexErrors.ts"),
+      "http.ts": plainSource("http.ts"),
+    },
   });
   return {
     query: (reference, args) => Effect.promise(() => t.query(reference, args)),

@@ -139,6 +139,13 @@ export interface RegisterOptions {
    * one, or that one schedules, is never drain work.
    */
   readonly standing?: ReadonlyArray<string>;
+  /**
+   * Each module's source, such as `import.meta.glob(pattern, { query: "?raw",
+   * import: "default" })` of the same files gives, matched to its module by its
+   * path below the directory that holds `_generated`. The kernel reads each
+   * module's `"use node"` directive from it.
+   */
+  readonly sources?: Record<string, () => Promise<string>>;
 }
 
 const isSchemaDefinition = (
@@ -323,6 +330,17 @@ export function convexTest(
         readonly modules?: Modules;
         readonly transactionLimits?: unknown;
         readonly runtime?: Kernel.KernelRuntime;
+        /**
+         * Each module's source, matched to its module by its path below the
+         * directory that holds `_generated`, so the kernel reads each module's
+         * `"use node"` directive as Convex's bundler does.
+         */
+        readonly sources?: Record<string, () => Promise<string>>;
+        /**
+         * The runtime of each listed component's plain Convex actions, for a
+         * component registered without sources.
+         */
+        readonly componentRuntimes?: Execution.ComponentRuntimes;
         readonly redaction?: Redaction.Policy;
         /**
          * The backend's own world. A backend opened with no invocation bound
@@ -342,7 +360,9 @@ export function convexTest(
 ): any {
   let schema: SchemaDefinition<GenericSchema, boolean> | undefined;
   let runtime: Kernel.KernelRuntime | undefined;
+  let sources: Record<string, () => Promise<string>> | undefined;
   let redaction: Redaction.Policy | undefined;
+  let componentRuntimes: Execution.ComponentRuntimes | undefined;
   let own: Invocation.World | undefined;
   let queryCacheAge: number | undefined;
   if (isSchemaDefinition(schemaOrOptions)) {
@@ -354,7 +374,9 @@ export function convexTest(
     schema = schemaOrOptions.schema;
     modules = schemaOrOptions.modules;
     runtime = schemaOrOptions.runtime;
+    sources = schemaOrOptions.sources;
     redaction = schemaOrOptions.redaction;
+    componentRuntimes = schemaOrOptions.componentRuntimes;
     own = schemaOrOptions.world;
     queryCacheAge = schemaOrOptions.queryCacheAge;
   }
@@ -363,7 +385,15 @@ export function convexTest(
       "The test kernel needs the modules map: pass `import.meta.glob(...)` as the second argument.",
     );
   }
-  const world = new Execution.World(schema, modules, runtime, redaction, own);
+  const world = new Execution.World(
+    schema,
+    modules,
+    runtime,
+    redaction,
+    own,
+    sources,
+    componentRuntimes,
+  );
   const subscriptions = new Subscriptions.Registry(world, queryCacheAge);
   return {
     ...accessor(
@@ -383,6 +413,7 @@ export function convexTest(
         componentSchema,
         componentModules,
         options?.standing,
+        options?.sources,
       );
       return (componentsGeneric() as any)[componentPath];
     },

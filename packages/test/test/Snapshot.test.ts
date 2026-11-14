@@ -31,6 +31,7 @@ import * as Schema from "effect/Schema";
 import * as Json from "../src/internal/Json";
 
 const UnknownJson = Schema.fromJsonString(Schema.Unknown);
+import { inlineSources } from "./fixtures/inlineSources";
 
 const start = 1_767_225_600_000;
 
@@ -299,11 +300,13 @@ const backend = (
   const t = convexTest({
     schema: hostSchema,
     modules: hostModules,
+    sources: inlineSources(hostModules),
     runtime: d.runtime,
   });
   for (const path of components) {
     t.registerComponent(path, storeSchema, storeModules, {
       standing: ["rows:tick"],
+      sources: inlineSources(storeModules),
     });
   }
   return t;

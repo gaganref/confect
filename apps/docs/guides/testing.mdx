@@ -376,6 +376,42 @@ TestConfect.layer(schema, convexSchema, modules, {
 
 On the kernel, scheduled functions run on the kernel's own clock and never on a host timer, so `finishAllScheduledFunctions` does not call its `advanceTimers` callback. The default kernel clock follows the test's `Date`, fake timers included, so advancing fake timers and then calling `finishInProgressScheduledFunctions` runs the jobs that came due. A layer on one target can be provided inside a layer on the other, and each keeps its own backend while both are live. The option goes away once the kernel replaces convex-test.
 
+As on Convex, a query or mutation on the kernel cannot use `fetch` or host timers: `fetch` and a multipart `formData()` reject with the errors Convex gives, and `setTimeout` or `setInterval` fails the function at once, even while it awaits the timer. Move that work to an action. Queries, mutations and actions other than Node actions also find no `setImmediate`, `queueMicrotask` or `MessageChannel`, as in Convex's runtime, and neither does a module's top level while it loads, unless the module has a `"use node"` directive. List `@confect/test/setup` first in your Vitest `setupFiles`, so a module that keeps `fetch` or a timer when it is imported is checked too:
+
+```ts
+export default defineConfig({
+  test: { setupFiles: ["@confect/test/setup"] },
+});
+```
+
+The guards check each call, so a stub you install with `vi.stubGlobal` or by assignment still works outside a function and stays refused inside one. A function that redefines one of these globals while it runs, with `Object.defineProperty`, `delete` or a replacement on the global's prototype, steps outside the guards: a call it makes through the replacement is not blocked. If the replacement is still in place when the function settles, read as the function reads it, the function fails with `UnguardableGlobal`, a mutation keeps none of its writes, and the guard comes back as an own property. A replacement removed again before the function settles is not caught, and accessors that run code to fake the guard at settlement are hostile and out of scope. Replace globals between functions instead.
+
+The same rules hold for a module's top level while the kernel loads it, unless the module has a `"use node"` directive: a top-level `fetch` rejects with the same `TypeError`, and a timer the module starts fails its load, so the backend refuses to open with Convex's error. Convex loads an isolate action's module in the action's environment, where a top-level `fetch` completes. The kernel loads every module before it knows what the module exports, so it refuses that `fetch` too. A `"use node"` module keeps Node's `fetch` and timers while it loads. The kernel knows a module runs in Node from its source or from `componentRuntimes`, so pass sources for a Node module that does I/O at its top level.
+
+A Node action runs with Node's globals, and every other function with Convex's isolate's. On the kernel a Confect action's runtime comes from its registration. A plain Convex action's comes from its module's `"use node"` directive, so pass the modules' sources, a `?raw` glob of the same files, and the kernel reads the directive as Convex's bundler does. The glob can live in any test file: the kernel matches each source to its module by its path below the directory that holds `_generated`. Each form takes them beside `target`:
+
+```ts
+const sources = import.meta.glob("../convex/**/*.ts", {
+  query: "?raw",
+  import: "default",
+});
+TestConfect.layer(registry, { target: "kernel", sources });
+TestConfect.layer(app, registry, { target: "kernel", sources });
+TestConfect.layer(schema, convexSchema, modules, { target: "kernel", sources });
+```
+
+Without sources, a module that exports a plain Convex action fails the first call with `ActionRuntimeUnknown`, naming the module. A component's plain actions need its sources too: a kit that can, registers with `registerComponent(name, schema, modules, { sources })`. A package's test kit registers without them, so declare the runtime its plain actions run in:
+
+```ts
+TestConfect.layer(app, registry, {
+  target: "kernel",
+  sources,
+  componentRuntimes: { "workflow/workpool": "isolate" },
+});
+```
+
+The generated test subject will supply the sources and these declarations for package mounts from each kit's metadata.
+
 File storage on the kernel keeps the deployment's metadata: a stored file's `_storage` row carries a base64 SHA-256 `sha256`, its `size` and a `contentType` that is `null` when the file has none, and a `sha256` you declare to `store` must match. Uploading to a `generateUploadUrl` URL, or downloading from a `getUrl` URL, needs a real deployment, so the kernel's `fetch` refuses either with `RequiresBinary`.
 
 The kernel's `fetch` routes a request as a deployment does: the router's own `lookup` picks the route by path and method, the handler gets the exact headers and body bytes you sent, so a route that checks a signature over the raw body behaves as it would deployed, and a request no route matches gets `404 No matching routes found`. A route that throws answers `500` with the deployment's JSON error body, `{ code, trace }` plus `data` for a `ConvexError`, instead of rejecting `fetch`; a mounted component's route answers the same on either target. Identity still comes from `withIdentity`.
@@ -392,7 +428,7 @@ A cron run counts as no work for `finishAllScheduledFunctions`, so a drain never
 
 On the kernel, every random source a function or a module reaches draws from a seeded stream: `Math.random`, `crypto.getRandomValues` and `crypto.randomUUID`, in Confect and plain Convex functions, in component functions, and in modules while they load. The stream is the bound invocation's, or else the layer's own, which `seed` starts, so two runs with the same seed draw the same values. `crypto.subtle` operations that need cryptographic randomness, such as `generateKey`, are refused as a deployment refuses them in queries and mutations. In actions, where only a real deployment can supply them, they are refused with `RequiresBinary`.
 
-The kernel installs its own `Math` and `crypto` in each function's globals. If a test leaves either global as a property the kernel cannot replace, for example by freezing it with `Object.defineProperty`, the backend refuses with `UnguardableGlobal` before any of your code runs, rather than letting it draw from the host. Replace globals with `vi.stubGlobal` or by assignment instead. A reference to `Math.random` or `crypto` that your code takes before the kernel runs anything, such as at the top of a test file, stays the host's. Likewise, a `Math` or `crypto` that a test or setup file installs before `@confect/test` is first imported is what the kernel takes as the host's, and the kernel installs its own over it as usual. After installing both, the kernel reads them back once more before your code runs, so a step that undid one refuses too. Test code that installs accessors which run arbitrary code to rewrite other globals during the kernel's install is hostile and out of scope beyond that final read-back.
+The kernel installs its own `Math` and `crypto` in each function's globals. If a test leaves either global as a property the kernel cannot replace, for example by freezing it with `Object.defineProperty`, the backend refuses with `UnguardableGlobal` before any of your code runs, rather than letting it draw from the host. Replace globals with `vi.stubGlobal` or by assignment instead. A reference to `Math.random` or `crypto` that your code takes before the kernel runs anything, such as at the top of a test file, stays the host's. Likewise, a `Math` or `crypto` that a test or setup file installs before `@confect/test` is first imported is what the kernel takes as the host's, and the kernel installs its own over it as usual. After installing both, and the guards on `fetch`, the timers and the other host APIs, the kernel runs one final read-back of every guarded global before your code runs, so a step that undid one refuses too. Test code that installs accessors which run arbitrary code to rewrite other globals during the kernel's install is hostile and out of scope beyond that one final read-back of every guarded global.
 
 ### Keep secrets out of kernel artifacts
 
