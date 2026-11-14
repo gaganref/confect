@@ -4,6 +4,7 @@
 // Its key and signatures come from @noble/curves. The verifier follows the
 // binary's `validate_id_token`, cited at each rule.
 
+import { ecdsa, weierstrass } from "@noble/curves/abstract/weierstrass.js";
 import { p256 } from "@noble/curves/nist.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -13,13 +14,33 @@ import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Rec from "effect/Record";
 import * as Str from "effect/String";
-import * as Globals from "./Globals.js";
+import * as HostGlobals from "./HostGlobals.js";
 import * as Json from "./Json.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import { base64UrlEncode, base64UrlEncodeBytes } from "./KernelValues.js";
 
-// Read once at load, outside any invocation's pinned copy of `crypto`.
-const subtle = globalThis.crypto.subtle;
+// The host's, captured at load, never an invocation's copy of `crypto`.
+const subtle = HostGlobals.crypto.subtle;
+
+/**
+ * The random bytes @noble/curves blinds each scalar multiplication with, from
+ * the host's `crypto` captured at load, never `globalThis`. They change no
+ * result: the key derives from the seed, and the signature's nonce comes by RFC 6979.
+ * So they never reach a function, and they draw nothing from a function's
+ * stream, which a replay depends on.
+ */
+const blinding = (length = 32): Uint8Array<ArrayBuffer> =>
+  HostGlobals.crypto.getRandomValues(new Uint8Array(length));
+
+/**
+ * P-256 as @noble/curves builds `p256`, with its blinding drawn from `blinding`
+ * rather than the `globalThis.crypto` noble reads by default.
+ */
+const curve = ecdsa(
+  weierstrass(p256.Point.CURVE(), { randomBytes: blinding }),
+  sha256,
+  { randomBytes: blinding },
+);
 
 type Algorithm = "RS256" | "ES256";
 
@@ -653,26 +674,14 @@ const KEY_LABEL = new TextEncoder().encode("deployment jwt signing key");
  * (`keybroker/src/deployment_jwt.rs:162-176`). The `kid` is the key's RFC 7638
  * thumbprint (`:337-346`).
  */
-const derive = (seed: Uint8Array): Derived => ownCrypto(() => deriveKey(seed));
-
-/**
- * Run the kernel's own P-256 work against the host's `crypto`, never the copy a
- * running function holds. @noble/curves blinds each scalar multiplication with
- * random bytes, which change no result: the key derives from the seed, and the
- * signature's nonce comes by RFC 6979. So the blinding never reaches a
- * function, and it draws nothing from the function's stream, which a replay
- * depends on.
- */
-const ownCrypto = <A>(run: () => A): A => Globals.host(run);
-
-const deriveKey = (seed: Uint8Array): Derived => {
+const derive = (seed: Uint8Array): Derived => {
   for (let attempt = 0; attempt <= 255; attempt++) {
     const label = new Uint8Array(KEY_LABEL.length + 5);
     label.set(KEY_LABEL);
     label[label.length - 1] = attempt;
     const secretKey = hmac(sha256, seed, label);
-    if (!p256.utils.isValidSecretKey(secretKey)) continue;
-    const point = p256.getPublicKey(secretKey, false);
+    if (!curve.utils.isValidSecretKey(secretKey)) continue;
+    const point = curve.getPublicKey(secretKey, false);
     const x = base64UrlEncodeBytes(point.subarray(1, 33));
     const y = base64UrlEncodeBytes(point.subarray(33, 65));
     const kid = base64UrlEncodeBytes(
@@ -855,9 +864,10 @@ export class DeploymentKey {
       ) +
       "." +
       base64UrlEncode(Json.stringify(payload));
-    // `p256.sign` hashes with SHA-256 and takes its nonce by RFC 6979.
-    const signature = ownCrypto(() =>
-      p256.sign(new TextEncoder().encode(signingInput), secretKey),
+    // `curve.sign` hashes with SHA-256 and takes its nonce by RFC 6979.
+    const signature = curve.sign(
+      new TextEncoder().encode(signingInput),
+      secretKey,
     );
     const token = `${signingInput}.${base64UrlEncodeBytes(signature)}`;
     if (token.length > DEPLOYMENT_JWT_MAX_SIZE) {

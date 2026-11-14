@@ -25,6 +25,7 @@ import * as Clock from "./Clock.js";
 import * as Crons from "./Crons.js";
 import * as Entropy from "./Entropy.js";
 import * as Globals from "./Globals.js";
+import * as HostGlobals from "./HostGlobals.js";
 import * as Identity from "./Identity.js";
 import * as Http from "./Http.js";
 import * as Invocation from "./Invocation.js";
@@ -414,16 +415,27 @@ const entropySource: Entropy.Resolve = () => {
   };
 };
 
-const kernelMaths = new WeakMap<Math, Math>();
-const kernelCryptos = new WeakMap<Crypto, Crypto>();
+/**
+ * The kernel's `Math` and `crypto`, built once over the host's captured at load
+ * (`HostGlobals`), never over what `globalThis` holds when they are built.
+ */
+let kernelMath: Math | undefined;
+let kernelCrypto: Crypto | undefined;
 
 /**
  * What `globalThis[name]` holds, for a refusal: a property the kernel cannot
- * redefine, as a test that freezes or redefines the global leaves it.
+ * redefine, as a test that freezes or redefines the global leaves it. `threw`
+ * names the error the assignment or the read-back raised, if one did.
  */
-const heldAs = (name: "Math" | "crypto"): string => {
+const heldAs = (name: "Math" | "crypto", threw: unknown): string => {
   const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
   if (descriptor === undefined) return "missing";
+  if (threw !== undefined) {
+    const kind = "value" in descriptor ? "a value" : "an accessor";
+    const fixed =
+      descriptor.configurable === true ? "" : " that cannot be redefined";
+    return `${kind}${fixed} whose assignment or read-back threw ${threw instanceof Error ? `${threw.name}: ${threw.message}` : typeof threw === "string" ? threw : `a non-Error ${typeof threw}`}`;
+  }
   const fixed =
     descriptor.configurable === true ? "" : " that cannot be redefined";
   if ("value" in descriptor) {
@@ -438,44 +450,57 @@ const heldAs = (name: "Math" | "crypto"): string => {
 
 /**
  * Point this copy of the globals' `Math` and `crypto` at the kernel's, built
- * once over the host's. The kernel calls it in each function's and each module
- * load's own copy, so plain Convex functions, component functions and code a
- * function imports lazily all draw through it. A reference to the host's
- * `Math.random` or `crypto` taken outside every kernel copy, before the kernel
- * ran any code, stays the host's: the lazy-loading contract, as for the
- * kernel's other globals. When either global does not take the kernel's, a test
- * left it as a property `Globals` cannot redefine: it refuses with
- * `UnguardableGlobal`, before the load's or the function's code runs, and never
- * carries on with the host's.
+ * once over the host's captured at load. The kernel calls it in each function's
+ * and each module load's own copy, so plain Convex functions, component
+ * functions and code a function imports lazily all draw through it. A reference
+ * to the host's `Math.random` or `crypto` taken outside every kernel copy,
+ * before the kernel ran any code, stays the host's: the lazy-loading contract,
+ * as for the kernel's other globals. Every own-descriptor shape of `Math` and
+ * `crypto` ends one of two ways: the kernel's objects are installed and a
+ * read-back confirms it, or the install refuses with `UnguardableGlobal`,
+ * naming each global and what it holds, before the load's or the function's
+ * code runs.
  */
 const installEntropy = () => {
-  const host = Globals.host(() => ({
-    Math: globalThis.Math,
-    crypto: globalThis.crypto,
-  }));
-  let math = kernelMaths.get(host.Math);
-  if (math === undefined) {
-    math = Entropy.kernelMath(host.Math, entropySource);
-    kernelMaths.set(host.Math, math);
-  }
-  let crypto = kernelCryptos.get(host.crypto);
-  if (crypto === undefined) {
-    crypto = Entropy.kernelCrypto(host.crypto, entropySource);
-    kernelCryptos.set(host.crypto, crypto);
-  }
-  const failed = Arr.filter(
+  kernelMath ??= Entropy.kernelMath(HostGlobals.math, entropySource);
+  kernelCrypto ??= Entropy.kernelCrypto(HostGlobals.crypto, entropySource);
+  const failed = Arr.filterMap(
     [
-      ["Math", math],
-      ["crypto", crypto],
+      ["Math", kernelMath],
+      ["crypto", kernelCrypto],
     ] as const,
-    ([name, value]) =>
-      !Reflect.set(globalThis, name, value) ||
-      Reflect.get(globalThis, name) !== value,
+    ([name, value]) => {
+      const installed = installOne(name, value);
+      return installed === true
+        ? Result.failVoid
+        : Result.succeed({
+            global: name,
+            holds: heldAs(name, installed.threw),
+          });
+    },
   );
   if (failed.length > 0) {
-    throw KernelRefusal.uninstallableEntropy(
-      Arr.map(failed, ([name]) => ({ global: name, holds: heldAs(name) })),
-    );
+    throw KernelRefusal.uninstallableEntropy(failed);
+  }
+};
+
+/**
+ * Assign `value` to `globalThis[name]` and read it back. `true` when the global
+ * now holds `value`. Anything else, an assignment that returns false, one that
+ * throws, a read-back that throws or that answers another object, is a failure
+ * the caller refuses with, never one it carries on past.
+ */
+const installOne = (
+  name: "Math" | "crypto",
+  value: object,
+): true | { readonly threw: unknown } => {
+  try {
+    return Reflect.set(globalThis, name, value) &&
+      Reflect.get(globalThis, name) === value
+      ? true
+      : { threw: undefined };
+  } catch (error) {
+    return { threw: error };
   }
 };
 

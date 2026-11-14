@@ -388,6 +388,12 @@ TestConfect.layer(registry, { target: "kernel", seed: 7 });
 
 A cron run counts as no work for `finishAllScheduledFunctions`, so a drain never runs one. Advancing fake timers and then calling `finishInProgressScheduledFunctions` runs every cron run that came due, in time order with scheduled jobs. Cron expressions with `L`, `W` and `#` run as Convex runs them.
 
+### Randomness on the kernel
+
+On the kernel, every random source a function or a module reaches draws from a seeded stream: `Math.random`, `crypto.getRandomValues` and `crypto.randomUUID`, in Confect and plain Convex functions, in component functions, and in modules while they load. The stream is the bound invocation's, or else the layer's own, which `seed` starts, so two runs with the same seed draw the same values. `crypto.subtle` operations that need cryptographic randomness, such as `generateKey`, are refused as a deployment refuses them in queries and mutations. In actions, where only a real deployment can supply them, they are refused with `RequiresBinary`.
+
+The kernel installs its own `Math` and `crypto` in each function's globals. If a test leaves either global as a property the kernel cannot replace, for example by freezing it with `Object.defineProperty`, the backend refuses with `UnguardableGlobal` before any of your code runs, rather than letting it draw from the host. Replace globals with `vi.stubGlobal` or by assignment instead. A reference to `Math.random` or `crypto` that your code takes before the kernel runs anything, such as at the top of a test file, stays the host's.
+
 ### Keep secrets out of kernel artifacts
 
 On the kernel, a value under a `Schema.Redacted` node, which a `Schema.RedactedFromValue` field decodes to, reaches the kernel's failure reports and diffs only as `[redacted]`. The raw value stays in memory as the backend's own state, so handlers and subscriptions still read it. The layer reads the secret nodes of the app's tables from its database schema. Pass `secrets` for function arguments and return values and for component tables:

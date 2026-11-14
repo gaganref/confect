@@ -421,7 +421,10 @@ unbound `TestConfect.layer` call is seeded and replays, and with no world it
 refuses with `FunctionRandomUnavailable` rather than read the host's. Only a
 reference kept before the kernel ran any code keeps the host's. When a test
 leaves `Math` or `crypto` as a property the kernel cannot redefine, the open or
-the function refuses with `UnguardableGlobal` before its code runs. A sync socket runs every frame and
+the function refuses with `UnguardableGlobal` before its code runs, as
+does an install that throws or reads back another object. The kernel's own
+work, its signing included, reads the host's `Math` and `crypto` captured
+when its modules load, never `globalThis`. A sync socket runs every frame and
 update in the context of the code that opened it, so a rerun a commit
 invalidated draws from the socket's stream, never the committer's. The bridge
 that pins a bound handler on the convex-test target refuses the same `subtle`

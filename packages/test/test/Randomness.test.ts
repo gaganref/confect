@@ -472,6 +472,50 @@ describe("randomness on the kernel", () => {
         refused("crypto", "a getter with no setter", false),
       );
     }, 60_000);
+    it("a crypto accessor whose setter ignores the assignment refuses the open, because the read-back answers the host's", () => {
+      expect(outcome("ignoring-setter-crypto")).toEqual(
+        refused(
+          "crypto",
+          "an accessor whose setter did not take the assignment",
+          false,
+        ),
+      );
+    }, 60_000);
+    it("a crypto accessor whose setter throws refuses the open with UnguardableGlobal, never the raw error", () => {
+      expect(outcome("throwing-setter-crypto")).toEqual({
+        outcome: "refused",
+        _tag: "UnguardableGlobal",
+        reason: "notConfigurable",
+        globals: ["crypto"],
+        message: expect.stringContaining(
+          "globalThis.crypto is an accessor that cannot be redefined whose assignment or read-back threw TypeError: crypto is read-only here",
+        ),
+        loaded: false,
+        ran: false,
+      });
+    }, 60_000);
+    it("a crypto left non-configurable but writable installs the kernel's in place, signing draws exactly the 32 seed values, and a worldless restore signs with the same key", () => {
+      const run = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          loader,
+          fileURLToPath(
+            new URL("fixtures/writableCryptoSigning.ts", import.meta.url),
+          ),
+        ],
+        { encoding: "utf8" },
+      );
+      expect([run.status, run.stderr]).toEqual([0, ""]);
+      expect(Json.parse(run.stdout)).toEqual({
+        installedInPlace: true,
+        signed: "ran",
+        signingDraws: 32,
+        restoredSigned: "ran",
+        restoredRefusal: null,
+        sameKey: true,
+      });
+    }, 60_000);
     it("a Math frozen after the open refuses the next function before its handler runs", () => {
       expect(outcome("frozen-math-after-open")).toEqual(
         refused("Math", "a non-writable value", true),

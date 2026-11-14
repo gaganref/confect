@@ -66,6 +66,20 @@ const freezes: Record<string, () => void> = {
       get: () => host.crypto,
       configurable: false,
     }),
+  "ignoring-setter-crypto": () =>
+    Object.defineProperty(globalThis, "crypto", {
+      get: () => host.crypto,
+      set: () => {},
+      configurable: false,
+    }),
+  "throwing-setter-crypto": () =>
+    Object.defineProperty(globalThis, "crypto", {
+      get: () => host.crypto,
+      set: () => {
+        throw new TypeError("crypto is read-only here");
+      },
+      configurable: false,
+    }),
 };
 
 const settle = (call: () => Promise<unknown>) =>

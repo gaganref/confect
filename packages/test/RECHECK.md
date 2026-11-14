@@ -1644,6 +1644,29 @@ own because a frozen global cannot be undone. In each case the open refuses
 before the module loads. A `Math` frozen after the open makes the next function
 refuse before its handler runs.
 
+### The globals contract
+
+For every own-descriptor shape of `Math` and `crypto`, the kernel does one of
+two things. It installs its own objects and confirms that by reading the
+global back. Or it refuses with `UnguardableGlobal` (`reason`, `globals`)
+before any module or function code runs. An install that throws, returns
+false, or reads back another object is a refusal, never a raw error and never a
+carry-on. The kernel's own work uses the host's `Math` and `crypto`, captured
+once when its modules load and before any install (`HostGlobals.ts`):
+building its wrappers, its `subtle`, and the blinding bytes its P-256 signing
+draws (`Identity.ts`, a curve built with `randomBytes` from that capture). It
+never re-reads `globalThis`, which in a function's copy, or in place, can hold
+the kernel's own wrappers.
+
+Fix round 4 closed the two shapes that broke this. A `crypto` left
+non-configurable but writable installs by assignment, in place, so the old
+`Globals.host` read of it answered the kernel's wrapper. Signing then drew 112
+stream values instead of the seed's 32, and a worldless restore refused
+signing with `FunctionRandomUnavailable`. A non-configurable accessor whose
+setter throws let that raw error escape the open. Both are tested in a process
+of their own, and each has a plant. A further descriptor shape that keeps this
+contract is not a finding.
+
 Row 7's Sync serving runs every query, mutation and action through the same
 `enter`, so each gets the kernel's `Math` and `crypto`. Its runs had leaked
 context, though. A commit wakes a socket's update from inside the committing
