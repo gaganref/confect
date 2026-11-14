@@ -16,6 +16,9 @@
  * a nested call, a handler or a test that assigned the global. An assignment
  * stores the new implementation beneath, still guarded, and outside a kernel
  * function that is refused, a guard calls the implementation it was read with.
+ * While a module loads outside any function, `fetch` and the timers follow the
+ * query and mutation rules unless the kernel knows the module has a `"use
+ * node"` directive.
  */
 
 import * as Util from "node:util";
@@ -48,9 +51,16 @@ export interface Hooks {
    */
   readonly running: () => Running | undefined;
   /**
+   * The runtime of the module loading in the caller's async context, if any:
+   * `"node"` for a module the kernel knows has a `"use node"` directive, else
+   * `"isolate"`.
+   */
+  readonly loading: () => Runtime | undefined;
+  /**
    * End the running function with `error`: it fails with `error` at once,
    * whether or not its handler ever settles, as the binary terminates a
-   * function at its next microtask checkpoint.
+   * function at its next microtask checkpoint. Outside a function, end the
+   * loading module's load with it the same way.
    */
   readonly end: (error: unknown) => void;
 }
@@ -135,6 +145,32 @@ type Global = { [key]?: State } & Record<string, unknown>;
 type Fn = (...args: Array<unknown>) => unknown;
 
 const runningOf = (state: State) => state.hooks?.running();
+
+/**
+ * What a guard checks a call against while a module the isolate runs loads,
+ * outside any function: the binary's query and mutation rules. The binary runs
+ * a query's or mutation's module top level in that function's environment, so
+ * `fetch` rejects and a timer fails it (`start_async_op` in
+ * `crates/isolate/src/environment/udf/mod.rs:369`, at the local backend's
+ * `cccbade4`). An isolate action's module fails its import on a timer
+ * (`require_executing`, `crates/isolate/src/environment/action/phase.rs:470`).
+ * Its `fetch` starts its op only after an `await`, once the import is over
+ * (`npm-packages/udf-runtime/src/26_fetch.ts:81`), so it succeeds there; the
+ * kernel, which loads a module before it knows what it exports, refuses it as
+ * for a query, the one place it is stricter. A `"use node"` module imports in
+ * Node (`npm-packages/node-executor/src/executor.ts:410`), with Node's I/O.
+ */
+const isolateLoad: Running = { udfType: "query", runtime: "isolate" };
+
+/**
+ * What a guard checks a call against: the function running, else, for a global
+ * that `atLoad` refuses while a module loads, the load of an isolate module.
+ */
+const callerOf = (state: State, atLoad: boolean): Running | undefined => {
+  const running = runningOf(state);
+  if (running !== undefined || !atLoad) return running;
+  return state.hooks?.loading() === "isolate" ? isolateLoad : undefined;
+};
 
 const inTransaction = (running: Running | undefined): boolean =>
   running !== undefined && running.udfType !== "action";
@@ -239,7 +275,7 @@ const promisedTimerRule =
     return { answer: new Promise(() => {}) };
   };
 
-const guarded: ReadonlyArray<{
+interface Guarded {
   readonly name: string;
   readonly rule: Rule;
   /**
@@ -250,33 +286,50 @@ const guarded: ReadonlyArray<{
    * Whether the global reads `undefined` inside an isolate function.
    */
   readonly absent: boolean;
-}> = [
-  { name: "fetch", rule: fetchRule, absent: false },
+  /**
+   * Whether `rule` also holds while a module the isolate runs loads.
+   */
+  readonly atLoad: boolean;
+}
+
+const guarded: ReadonlyArray<Guarded> = [
+  { name: "fetch", rule: fetchRule, absent: false, atLoad: true },
   {
     name: "setTimeout",
     rule: timerRule("setTimeout"),
     promised: promisedTimerRule("setTimeout"),
     absent: false,
+    atLoad: true,
   },
   {
     name: "setInterval",
     rule: timerRule("setInterval"),
     promised: promisedTimerRule("setInterval"),
     absent: false,
+    atLoad: true,
   },
-  { name: "setImmediate", rule: absentRule("setImmediate"), absent: true },
-  { name: "queueMicrotask", rule: absentRule("queueMicrotask"), absent: true },
+  {
+    name: "setImmediate",
+    rule: absentRule("setImmediate"),
+    absent: true,
+    atLoad: false,
+  },
+  {
+    name: "queueMicrotask",
+    rule: absentRule("queueMicrotask"),
+    absent: true,
+    atLoad: false,
+  },
 ];
 
 const makeGuard = (
   state: State,
-  name: string,
-  rule: Rule,
+  entry: Guarded,
   implementation: () => unknown,
-  promised?: Rule,
 ): Fn => {
+  const { name, rule, promised, atLoad } = entry;
   function guard(this: unknown, ...args: Array<unknown>): unknown {
-    const running = runningOf(state);
+    const running = callerOf(state, atLoad);
     const refused =
       running === undefined
         ? undefined
@@ -296,7 +349,11 @@ const makeGuard = (
       if (typeof form !== "function") return form;
       let guardedForm = promisified.get(form);
       if (guardedForm === undefined) {
-        guardedForm = makeGuard(state, name, promised ?? rule, () => form);
+        guardedForm = makeGuard(
+          state,
+          { ...entry, rule: promised ?? rule },
+          () => form,
+        );
         promisified.set(form, guardedForm);
       }
       return guardedForm;
@@ -367,10 +424,8 @@ const inherited = (
  */
 type GuardResult = "guarded" | "notConfigurable" | "installFailed";
 
-const guardGlobal = (
-  state: State,
-  { name, rule, promised, absent }: (typeof guarded)[number],
-): GuardResult => {
+const guardGlobal = (state: State, entry: Guarded): GuardResult => {
+  const { name, absent } = entry;
   const global = globalThis as unknown as Global;
   const own = Object.getOwnPropertyDescriptor(global, name);
   // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
@@ -385,19 +440,15 @@ const guardGlobal = (
   let beneath: PropertyDescriptor = found;
   // Another library's accessor beneath answers per read, so one guard reads
   // through it at each call.
-  const throughAccessor = makeGuard(
-    state,
-    name,
-    rule,
-    () => beneath.get?.call(global),
-    promised,
+  const throughAccessor = makeGuard(state, entry, () =>
+    beneath.get?.call(global),
   );
   const guards = new WeakMap<object, Fn>();
   const guardOf = (implementation: unknown): unknown => {
     if (typeof implementation !== "function") return implementation;
     let guard = guards.get(implementation);
     if (guard === undefined) {
-      guard = makeGuard(state, name, rule, () => implementation, promised);
+      guard = makeGuard(state, entry, () => implementation);
       guards.set(implementation, guard);
       state.guarding.set(guard, implementation);
     }
