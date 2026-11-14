@@ -657,8 +657,13 @@ it, whatever the module catches or awaits. The binary runs a query's or
 mutation's module top level in that function's environment (`start_async_op`,
 `crates/isolate/src/environment/udf/mod.rs:369`, at `cccbade4`), so there the
 kernel matches it. An isolate action's module fails its import on a timer
-(`require_executing`, `crates/isolate/src/environment/action/phase.rs:470`), but
-its `fetch` starts its op only after an `await`, once the import is over
+(`require_executing`, `crates/isolate/src/environment/action/phase.rs:470`),
+with a message of its own, `NoSleepDuringImport` "setTimeout unsupported at
+import time" (`:473`, `:475`). The kernel does not match that message: it ends
+every isolate module's load on a timer with the queries-and-mutations error,
+since one module can export both a query and an action. The message is read
+from source only, because a module whose top level starts a timer fails the
+push, so no probe can hold it. Such a module's `fetch` starts its op only after an `await`, once the import is over
 (`npm-packages/udf-runtime/src/26_fetch.ts:81`), and is answered. The kernel
 loads each module once, before it knows what the module exports, so it refuses
 that `fetch` too. That is the one place it is stricter, recorded as kernel
