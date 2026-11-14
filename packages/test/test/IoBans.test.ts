@@ -7,6 +7,7 @@ import * as RegisteredConvexFunction from "@confect/server/RegisteredConvexFunct
 import { RegisteredNodeFunction } from "@confect/server/node";
 import * as Util from "node:util";
 import * as Vm from "node:vm";
+import { createRequire } from "node:module";
 import { assert, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import {
@@ -1651,6 +1652,89 @@ describe("module loads", () => {
         expect(received).toBe("ping");
       }),
   );
+
+  /**
+   * A kernel over one real file under `fixtures/timerSwap`, which the open
+   * loads in the isolate through Vitest, and a Node action that schedules
+   * `setImmediate`.
+   */
+  const swapKernel = (load: () => Promise<unknown>) => {
+    const swapModules = {
+      "_generated/server.ts": () => Promise.resolve({}),
+      "swap.ts": load,
+      "node.ts": () =>
+        Promise.resolve({
+          action: actionGeneric({
+            args: {},
+            handler: () =>
+              // oxlint-disable-next-line effecttsgo/new-promise -- The action waits on the runtime's own setImmediate.
+              new Promise<string>((resolve) => {
+                setImmediate(() => resolve("fired"));
+              }),
+          }),
+        }),
+    };
+    return convexTest({
+      schema: defineSchema({}),
+      modules: swapModules,
+      sources: inlineSources(swapModules, ["node.ts"]),
+    });
+  };
+  const swapQuery = makeFunctionReference<"query">("swap:query");
+
+  it.effect(
+    "a fake setImmediate a test installed survives Vitest's timer swap around an isolate module's load",
+    () =>
+      Effect.gen(function* () {
+        vi.useFakeTimers({ toFake: ["setImmediate", "clearImmediate"] });
+        const counted = yield* Effect.promise(() =>
+          swapKernel(() => import("./fixtures/timerSwap/fakeTimers"))
+            .query(swapQuery, {})
+            .then(() => {
+              setImmediate(() => {});
+              return vi.getTimerCount();
+            }),
+        ).pipe(Effect.ensuring(Effect.sync(() => vi.useRealTimers())));
+        expect(counted).toBe(1);
+      }),
+  );
+
+  it.effect(
+    "without fake timers, the host's setImmediate survives Vitest's timer swap around an isolate module's load",
+    () =>
+      Effect.gen(function* () {
+        const before = Reflect.get(globalThis, "setImmediate") as unknown;
+        const observed = yield* Effect.promise(() =>
+          swapKernel(() => import("./fixtures/timerSwap/realTimers")).query(
+            swapQuery,
+            {},
+          ),
+        );
+        expect(observed).toBe("loaded");
+        expect(Reflect.get(globalThis, "setImmediate")).toBe(before);
+        const fired = yield* Effect.promise(
+          () =>
+            // oxlint-disable-next-line effecttsgo/new-promise -- The case waits on the host's own setImmediate.
+            new Promise<string>((resolve) => {
+              setImmediate(() => resolve("fired"));
+            }),
+        );
+        expect(fired).toBe("fired");
+      }),
+  );
+
+  it.effect(
+    "a Node action after an isolate module's load through Vitest still has setImmediate",
+    () =>
+      Effect.gen(function* () {
+        const t = swapKernel(() => import("./fixtures/timerSwap/beforeNode"));
+        const loaded = yield* Effect.promise(() => t.query(swapQuery, {}));
+        const fired = yield* Effect.promise(() =>
+          t.action(makeFunctionReference<"action">("node:action"), {}),
+        );
+        expect({ loaded, fired }).toEqual({ loaded: "loaded", fired: "fired" });
+      }),
+  );
 });
 
 describe("module runtimes", () => {
@@ -1868,6 +1952,27 @@ describe("module runtimes", () => {
     }),
   );
 
+  it("parses with the @babel/parser version the installed convex bundles", () => {
+    // `convex` bundles its parser into its CLI (`npm-packages/convex/scripts/
+    // build.cjs:138-161`), where it is a devDependency, so no copy of its own
+    // resolves at run time. Each version is read from that release's
+    // `npm-packages/pnpm-lock.yaml` (`convex` 1.49.0: `:690-692`). A `convex`
+    // this table does not list fails here until its parser is read and
+    // `@confect/test` pins the same.
+    const bundled: Record<string, string> = { "1.49.0": "7.28.5" };
+    const require = createRequire(import.meta.url);
+    const convexVersion = (
+      require("convex/package.json") as { version: string }
+    ).version;
+    const parserVersion = (
+      require("@babel/parser/package.json") as { version: string }
+    ).version;
+    expect({ convex: convexVersion, parser: parserVersion }).toEqual({
+      convex: convexVersion,
+      parser: bundled[convexVersion],
+    });
+  });
+
   it("reads the directive prologue as the bundler does, through the same parser", () => {
     expect(hasUseNodeDirective('"use node";\nexport {};')).toBe(true);
     expect(hasUseNodeDirective("'use node'\nexport {};")).toBe(true);
@@ -1878,6 +1983,24 @@ describe("module runtimes", () => {
     ).toBe(true);
     expect(hasUseNodeDirective('import x from "y";\n"use node";')).toBe(false);
     expect(hasUseNodeDirective('"use node".length;')).toBe(false);
+    // Valid TypeScript that `convex` 1.49.0's bundled parser, @babel/parser
+    // 7.28.5, rejects. Its line regex then rejects the commented directive, so
+    // Convex runs the module in its isolate; @babel/parser 7.29.7 would parse
+    // it and answer Node.
+    expect(
+      hasUseNodeDirective(
+        Arr.join(
+          [
+            '"use node"; // Run this module in Node',
+            "class Base<T> {}",
+            "type Constructor = new () => Base<string>;",
+            "class Service extends (Base<string> as Constructor) {}",
+            "export {};",
+          ],
+          "\n",
+        ),
+      ),
+    ).toBe(false);
     // A literal the next line continues is an expression, not a directive.
     expect(hasUseNodeDirective('"use node"\n.length;\nexport {};')).toBe(false);
     expect(hasUseNodeDirective('const note = "use node";')).toBe(false);

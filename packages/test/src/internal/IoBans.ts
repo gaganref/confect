@@ -493,15 +493,16 @@ const guardGlobal = (state: State, entry: Guarded): GuardResult => {
     if (absent && inIsolate(state) && !readByNode()) return undefined;
     return "value" in beneath ? guardOf(beneath.value) : throughAccessor;
   };
-  const set = (value: unknown) => {
-    // Where the isolate lacks the global it reads `undefined`, so code that
-    // saves the global and restores it afterwards, as Vitest's
-    // `withSafeTimers` does around each module fetch, even one a load makes,
-    // assigns `undefined` back. That restores the absence it read, and leaves
-    // the implementation beneath in place.
-    if (absent && value === undefined && inIsolate(state) && !readByNode()) {
-      return;
-    }
+  /**
+   * How to undo each assignment made where the global reads absent, latest
+   * last. Vitest's `withSafeTimers` reads the global around each module fetch,
+   * a load's included, puts its own real timer in place for the fetch and then
+   * assigns back what it read. In the isolate it read `undefined`, so that
+   * assignment undoes its own instead: the implementation in place before the
+   * swap comes back, real or a test's fake.
+   */
+  const swaps: Array<() => void> = [];
+  const store = (value: unknown) => {
     if (!("value" in beneath) && beneath.set !== undefined) {
       // Another library's accessor keeps its own store.
       beneath.set.call(global, value);
@@ -511,6 +512,28 @@ const guardGlobal = (state: State, entry: Guarded): GuardResult => {
       ? state.guarding.get(value as object)
       : value;
     beneath = { value: implementation, writable: true };
+  };
+  const set = (value: unknown) => {
+    if (absent && inIsolate(state) && !readByNode()) {
+      if (value === undefined) {
+        // An assignment of the absence it read undoes the latest swap. With
+        // none to undo, the implementation beneath stays, so a Node function
+        // never finds the global gone.
+        swaps.pop()?.();
+        return;
+      }
+      if (!("value" in beneath) && beneath.set !== undefined) {
+        const accessor = beneath;
+        const previous: unknown = accessor.get?.call(global);
+        swaps.push(() => accessor.set?.call(global, previous));
+      } else {
+        const previous = beneath;
+        swaps.push(() => {
+          beneath = previous;
+        });
+      }
+    }
+    store(value);
   };
   state.made.add(get);
   try {

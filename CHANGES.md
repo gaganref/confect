@@ -209,7 +209,8 @@ as the binary's isolate defines none of them, and neither does a module
 without `"use node"` while it loads, while a Node action has Node's. The kernel
 reads each module's `"use node"` directive with `@babel/parser`, the parser
 and options `convex` 1.49's bundler uses, now a runtime dependency of
-`@confect/test`. `RegisteredNodeFunction`
+`@confect/test`, pinned to the version `convex` bundles, 7.28.5, with a test
+that fails when the installed `convex` bundles another. `RegisteredNodeFunction`
 in `@confect/server` marks a Node action so the kernel can tell. Each of these
 globals is an accessor that returns a guard, installed by the new
 `@confect/test/setup` before any test module loads, so a reference a module

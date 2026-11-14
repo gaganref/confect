@@ -727,14 +727,31 @@ when the world opens, as the bundler's `determineEnvironment` decides
 (`npm-packages/convex/src/bundler/index.ts:558-588`). The directive is read
 exactly as `convex` 1.49.0's `hasUseNodeDirective` reads it (`:508-548`):
 `convex` exports no such check, so `Execution.hasUseNodeDirective` calls the
-same parser, `@babel/parser`, now a runtime dependency of `@confect/test`
-(7.29.7, the copy already in the workspace's tree), with the same options,
+same parser, `@babel/parser`, now a runtime dependency of `@confect/test`,
+with the same options,
 `sourceType: "module"` and the `jsx` and `typescript` plugins (`:519-526`),
 and reads `program.directives` (`:527-529`). A source without the text
 `use node` has none (`:512`), and one Babel cannot parse falls back to the
 bundler's line regex (`:506`, `:530-545`). Before fix round 7 a hand-rolled
 scanner read the prologue and took `"use node"\n.length;` as a directive,
-where Babel reads an expression. The test supplies the sources as a
+where Babel reads an expression.
+
+The parser's version decides too: Babel 7.29 parses TypeScript that 7.28
+rejects, such as `class Service extends (Base<string> as Constructor) {}`, and
+a source Babel rejects falls back to the line regex, which rejects a
+`"use node";` line with a trailing comment. `convex` bundles its parser into
+its CLI, every dependency but `esbuild`, `fsevents`, `prettier` and `ws`
+(`npm-packages/convex/scripts/build.cjs:138-161`), where `@babel/parser` is a
+devDependency, so no copy of its own resolves at run time: resolving
+`@babel/parser` from `convex`'s installed location answers pnpm's hoisted copy
+(7.29.7 in this workspace), which `convex` never runs. So the kernel cannot load
+`convex`'s own parser, and `@confect/test` pins the version `convex` bundles:
+7.28.5 for `convex` 1.49.0, read from that release's lockfile
+(`npm-packages/pnpm-lock.yaml:690-692`). Round 7 pinned 7.29.7, which read the
+module above as Node where Convex reads the isolate. `IoBans.test.ts` holds a
+table of the parser each `convex` release bundles, and fails when the installed
+`convex` is not in it or `@confect/test`'s parser differs from its entry, so a
+`convex` upgrade cannot drift the two apart unnoticed. The test supplies the sources as a
 `?raw` glob of the same files from any test file, matched to its module by
 its path below the directory that holds `_generated`, through the kernel
 shim's `sources`,
@@ -780,9 +797,17 @@ layer fail there.
   `MessageChannel` was not guarded at all. Outside a function the guard is the
   host's constructor: `new MessageChannel()` builds through it, and an instance
   is an instance of it. Vitest's `withSafeTimers` saves and restores
-  `setImmediate` around each module fetch, a load's included, so it assigns
-  back the `undefined` it read there; that assignment restores the absence it
-  read and leaves the implementation beneath in place. Node's own modules still find
+  `setImmediate` around each module fetch, a load's included
+  (`packages/vitest/src/runtime/rpc.ts:13-51`): it reads the global, puts its
+  own real timer in place for the fetch and assigns back what it read, which in
+  the isolate is `undefined`. Each assignment made where the global reads
+  absent records how to undo itself, and an assignment of `undefined` there
+  undoes the latest one, so the implementation in place before the swap comes
+  back exactly, the host's or a test's fake. With nothing to undo it changes
+  nothing, so a Node function never finds the global gone. Round 7 kept the
+  swap's real timer instead, which lost a fake `setImmediate` a test had
+  installed: `vi.getTimerCount()` answered 0 after the load where it should
+  answer 1. Node's own modules still find
   them: its `fetch` and web streams read and call `queueMicrotask` while doing a
   function's work, where the binary's built-ins need neither, so the guard
   checks whether the calling frame is a `node:` module.

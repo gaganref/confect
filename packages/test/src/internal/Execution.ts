@@ -980,8 +980,9 @@ const useNodeDirectiveRegex = /^\s*("|')use node("|');?\s*$/;
  * and `typescript` plugins, the bundler's options, and its `program.directives`
  * decide (`:519-529`); a source Babel cannot parse has one when any line
  * matches the bundler's fallback regex (`:530-545`). `convex` exports no such
- * check, so this calls the same parser, `@babel/parser`, with the same
- * options.
+ * check, so this calls the same parser, `@babel/parser`, with the same options,
+ * at the version `convex` bundles into its CLI, which `@confect/test` pins: the
+ * version decides which TypeScript parses.
  */
 export const hasUseNodeDirective = (source: string): boolean => {
   if (!pipe(source, Str.includes("use node"))) return false;
