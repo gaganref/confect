@@ -1,6 +1,11 @@
 import { describe, expect, it } from "@effect/vitest";
 import * as Arr from "effect/Array";
-import { exceptions, refusals, type ConformanceException } from "./conformance";
+import {
+  exceptions,
+  refusals,
+  unrunExceptions,
+  type ConformanceException,
+} from "./conformance";
 
 const entry: ConformanceException = {
   file: "egress.test.ts",
@@ -74,6 +79,48 @@ describe("conformance exceptions", () => {
     ).toEqual([
       'egress.test.ts "action egress > gone" names no case the file has.',
     ]);
+  });
+
+  // What a run collects for the entry's case when it runs it.
+  const ran = (state: string = "failed") => ({
+    file: entry.file,
+    name: entry.name,
+    state,
+  });
+
+  it("an excepted case the run collected and ran is accounted for", () => {
+    expect(unrunExceptions([entry], [ran("failed")])).toEqual([]);
+    expect(unrunExceptions([entry], [ran("passed")])).toEqual([]);
+  });
+
+  it.each([
+    {
+      reason:
+        "a glob exclusion, such as **/egress*.test.ts, keeps its file out",
+      collected: [],
+    },
+    {
+      reason: "a literal exclusion keeps its file out",
+      collected: [{ file: "other.test.ts", name: entry.name, state: "failed" }],
+    },
+    {
+      reason: "the case was renamed",
+      collected: [
+        { file: entry.file, name: `${entry.name}, renamed`, state: "failed" },
+      ],
+    },
+    {
+      reason: "the case was skipped",
+      collected: [ran("skipped")],
+    },
+    {
+      reason: "a file in another directory has the same name",
+      collected: [
+        { file: `nested/${entry.file}`, name: entry.name, state: "failed" },
+      ],
+    },
+  ])("an excepted case is reported unrun when $reason", ({ collected }) => {
+    expect(unrunExceptions([entry], collected)).toEqual([entry]);
   });
 
   it("the lane holds three exceptions: the action egress departure and the two route errors convex-test rejects", () => {
