@@ -123,11 +123,15 @@ describe("conformance exceptions", () => {
     expect(unrunExceptions([entry], collected)).toEqual([entry]);
   });
 
-  it("the lane holds three exceptions: the action egress departure and the two route errors convex-test rejects", () => {
+  it('the lane holds four exceptions: the action egress departure, in an action and while a "use node" module loads, and the two route errors convex-test rejects', () => {
     expect(Arr.map(exceptions, ({ file, name }) => ({ file, name }))).toEqual([
       {
         file: "egress.test.ts",
         name: "action egress > a raw fetch in an action or a Node action dies with UndeclaredFetch naming the action and host",
+      },
+      {
+        file: "egressModuleLoad.test.ts",
+        name: 'action egress while a module loads > a "use node" module\'s top-level fetch dies with UndeclaredFetch naming the module and host',
       },
       {
         file: "httpRouteError.test.ts",

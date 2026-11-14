@@ -1540,24 +1540,47 @@ describe("module loads", () => {
       }).pipe(Effect.scoped),
   );
 
+  // What a load's undeclared fetch refuses the open with.
+  const loadRefusalOf = (call: Promise<unknown>) =>
+    Effect.promise(() =>
+      call.then(
+        (value) => ({ returned: value }),
+        (error: Record<string, unknown>) => ({
+          failed: error["_tag"],
+          reason: error["reason"],
+          componentPath: error["componentPath"],
+          module: error["module"],
+          functionName: error["functionName"],
+          host: error["host"],
+        }),
+      ),
+    );
+
   it.effect(
-    'a "use node" module keeps the host\'s fetch and timers while it loads',
+    'a "use node" module\'s top-level fetch dies with UndeclaredFetch naming the module and its host, and never reaches it, while its timers run',
     () =>
       Effect.gen(function* () {
         const server = yield* loopback;
+        const host = new URL(server.url).host;
+        const fetching = kernelOver({ "load.ts": fetchingModule(server.url) }, [
+          "load.ts",
+        ]);
+        const observed = yield* loadRefusalOf(fetching.action(action, {}));
+        expect(observed).toEqual({
+          failed: "BackendRefusal",
+          reason: "UndeclaredFetch",
+          componentPath: "",
+          module: "load",
+          functionName: undefined,
+          host,
+        });
+        expect(server.hits()).toBe(0);
         const fired = vi.fn();
-        const t = kernelOver(
-          {
-            "load.ts": fetchingModule(server.url),
-            "timing.ts": timingModule(fired),
-          },
-          ["load.ts", "timing.ts"],
-        );
-        const observed = yield* refusalOf(t.action(action, {}));
-        expect(observed).toEqual({ returned: "reached /ping" });
-        expect(server.hits()).toBe(1);
+        const timing = kernelOver({ "timing.ts": timingModule(fired) }, [
+          "timing.ts",
+        ]);
         const observed2 = yield* refusalOf(
-          t.action(makeFunctionReference<"action">("timing:action"), {}),
+          timing.action(makeFunctionReference<"action">("timing:action"), {}),
         );
         expect(observed2).toEqual({ returned: "fired" });
         expect(fired).toHaveBeenCalledOnce();
@@ -1565,14 +1588,13 @@ describe("module loads", () => {
   );
 
   it.effect(
-    "a component registered without sources loads with the host's fetch when the test declares it runs in Node, and under the isolate's rules when it declares the isolate",
+    "a component registered without sources loads under a Node action's rules when the test declares it runs in Node, and under the isolate's when it declares the isolate",
     () =>
       Effect.gen(function* () {
         const server = yield* loopback;
-        const seen: Array<Promise<unknown>> = [];
         const kitModules = {
           "_generated/server.ts": () => Promise.resolve({}),
-          "load.ts": fetchingModule(server.url, seen),
+          "load.ts": fetchingModule(server.url),
         };
         const open = (
           componentRuntimes: Record<string, "node" | "isolate">,
@@ -1586,19 +1608,21 @@ describe("module loads", () => {
             componentRuntimes,
           });
           t.registerComponent("kit", defineSchema({}), kitModules);
-          return Effect.promise(() => t.run(() => Promise.resolve(null)));
+          return loadRefusalOf(t.run(() => Promise.resolve(null)));
         };
-        yield* open({ kit: "node" });
-        yield* open({ kit: "isolate" });
-        const outcomes = yield* Effect.promise(() => Promise.all(seen));
-        expect(outcomes).toEqual([
-          { returned: "reached /ping" },
-          {
-            name: "TypeError",
-            message: `fetch to ${server.url} failed: Can't use fetch() in queries and mutations. Please consider using an action. See https://docs.convex.dev/functions/actions for more details.`,
-          },
-        ]);
-        expect(server.hits()).toBe(1);
+        const node = yield* open({ kit: "node" });
+        const isolate = yield* open({ kit: "isolate" });
+        expect(node).toEqual({
+          failed: "BackendRefusal",
+          reason: "UndeclaredFetch",
+          componentPath: "kit",
+          module: "load",
+          functionName: undefined,
+          host: new URL(server.url).host,
+        });
+        // The isolate's fetch rejects without ending the load.
+        expect(isolate).toEqual({ returned: null });
+        expect(server.hits()).toBe(0);
       }).pipe(Effect.scoped),
   );
 });

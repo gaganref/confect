@@ -20,11 +20,12 @@ import * as KernelRefusal from "./KernelRefusal.js";
  * function that is refused, a guard calls the implementation it was read with.
  * While a module loads outside any function, `fetch` and the timers follow the
  * query and mutation rules unless the kernel knows the module has a `"use
- * node"` directive.
+ * node"` directive, and a Node action's rules if it does.
  *
  * One rule is the kernel's own: a raw `fetch` in an action, a Node action
- * included, dies with `BackendRefusal` `UndeclaredFetch`, where the binary
- * performs it. Egress goes through a provider port (`Egress.ts`) instead.
+ * included, or at a `"use node"` module's top level, dies with `BackendRefusal`
+ * `UndeclaredFetch`, where the binary performs it. Egress goes through a
+ * provider port (`Egress.ts`) instead.
  */
 
 import * as Util from "node:util";
@@ -51,6 +52,11 @@ export interface Running {
   readonly runtime: Runtime;
   readonly componentPath: string;
   readonly udfPath: string;
+  /**
+   * Set while a module loads, outside any function. `udfPath` is then the
+   * module's path.
+   */
+  readonly loading?: true;
 }
 
 /**
@@ -182,13 +188,30 @@ const runningOf = (state: State) => state.hooks?.running();
  * (`npm-packages/udf-runtime/src/26_fetch.ts:81`), so it succeeds there; the
  * kernel, which loads a module before it knows what it exports, refuses it as
  * for a query, the one place it is stricter. A `"use node"` module imports in
- * Node (`npm-packages/node-executor/src/executor.ts:410`), with Node's I/O.
+ * Node (`npm-packages/node-executor/src/executor.ts:410`), with Node's I/O,
+ * which the kernel gives it apart from `fetch` ({@link nodeLoad}).
  */
 const isolateLoad = ({ componentPath, modulePath }: Loading): Running => ({
   udfType: "query",
   runtime: "isolate",
   componentPath,
   udfPath: modulePath,
+  loading: true,
+});
+
+/**
+ * What a guard checks a call against while a `"use node"` module loads: a Node
+ * action's rules. Its timers run, as Node's do, and its `fetch` dies with
+ * `UndeclaredFetch` naming the module, as the kernel's egress rule refuses
+ * every raw fetch kernel-run code makes, where the binary's Node executor
+ * performs it.
+ */
+const nodeLoad = ({ componentPath, modulePath }: Loading): Running => ({
+  udfType: "action",
+  runtime: "node",
+  componentPath,
+  udfPath: modulePath,
+  loading: true,
 });
 
 /**
@@ -199,7 +222,10 @@ const callerOf = (state: State, atLoad: boolean): Running | undefined => {
   const running = runningOf(state);
   if (running !== undefined || !atLoad) return running;
   const loading = state.hooks?.loading();
-  return loading?.runtime === "isolate" ? isolateLoad(loading) : undefined;
+  if (loading === undefined) return undefined;
+  return loading.runtime === "isolate"
+    ? isolateLoad(loading)
+    : nodeLoad(loading);
 };
 
 const inTransaction = (running: Running | undefined): boolean =>
@@ -269,12 +295,20 @@ const fetchRule: Rule = (state, running, args) => {
   if (inTransaction(running)) {
     return { answer: Promise.reject(fetchInTransaction(request.url)) };
   }
-  const refusal = KernelRefusal.undeclaredFetch(
-    running.componentPath,
-    running.udfPath,
-    new URL(request.url).host,
-  );
-  // The action dies whatever its handler catches.
+  const host = new URL(request.url).host;
+  const refusal =
+    running.loading === true
+      ? KernelRefusal.undeclaredLoadFetch(
+          running.componentPath,
+          running.udfPath,
+          host,
+        )
+      : KernelRefusal.undeclaredFetch(
+          running.componentPath,
+          running.udfPath,
+          host,
+        );
+  // The action, or the module's load, dies whatever its code catches.
   state.hooks?.end(refusal);
   return { answer: Promise.reject(refusal) };
 };

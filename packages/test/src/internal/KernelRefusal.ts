@@ -447,7 +447,12 @@ export class BackendRefusal extends Schema.TaggedError<
 >()("BackendRefusal", {
   reason: Schema.Literal("UndeclaredFetch"),
   componentPath: Schema.String,
-  functionName: Schema.String,
+  /**
+   * The action that fetched, or, for a fetch a module made while it loaded,
+   * `module` instead.
+   */
+  functionName: Schema.optionalKey(Schema.String),
+  module: Schema.optionalKey(Schema.String),
   host: Schema.String,
   failed: Schema.String,
   because: Schema.String,
@@ -479,6 +484,36 @@ export const undeclaredFetch = (
     reason: "UndeclaredFetch",
     componentPath,
     functionName,
+    host,
+    failed,
+    because,
+    instead,
+    docs: egressDocs,
+    message: `${failed} ${because} ${instead} See ${egressDocs}.`,
+  });
+};
+
+/**
+ * The `"use node"` module at `componentPath` and `module` fetched `host`
+ * directly while it loaded, before any action ran.
+ */
+export const undeclaredLoadFetch = (
+  componentPath: string,
+  module: string,
+  host: string,
+) => {
+  const loaded =
+    componentPath === ""
+      ? `The module ${module}`
+      : `The module ${module} in component "${componentPath}"`;
+  const failed = `${loaded} fetched ${host} directly while it loaded.`;
+  const because =
+    "The test kernel performs no raw fetch, a module's top level included, so a test never reaches the network and a run replays.";
+  const instead = `Reach ${host} through a provider port from an action. The kernel holds each port call as a command the test answers.`;
+  return BackendRefusal.make({
+    reason: "UndeclaredFetch",
+    componentPath,
+    module,
     host,
     failed,
     because,

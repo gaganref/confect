@@ -144,6 +144,21 @@ export const exceptions: ReadonlyArray<ConformanceException> = [
       "packages/server/test/local-backend/egress.test.ts > action egress > an action and a Node action perform a raw fetch, on precompiled-2026-10-28-cccbade: each reaches a loopback server and returns its response. convex-backend cccbade4: an action's start_async_op starts the fetch as a task (crates/isolate/src/environment/action/mod.rs:1639-1645), which task_executor.rs:151 hands to run_fetch (action/fetch.rs:34); only a cloud proxy's 407 refuses a host (crates/http_client/src/lib.rs:131-134). Positive control: packages/test/test/Egress.test.ts > provider ports > a port call in an action is held as a command until the test answers it.",
   },
   {
+    file: "egressModuleLoad.test.ts",
+    name: 'action egress while a module loads > a "use node" module\'s top-level fetch dies with UndeclaredFetch naming the module and host',
+    convexTest: "0.0.67",
+    binary:
+      "The binary's Node executor imports a \"use node\" module with Node's own fetch, so a fetch its top level starts while it loads reaches the host, and the action then runs. The test kernel refuses it with BackendRefusal UndeclaredFetch naming the module and the host, and the load, so the open, fails with it. Part of the action egress departure: kernel-run code reaches the network only through a provider port (Frame ADR 0012, action egress row).",
+    outcomes: [
+      { function: "egressNode:rawFetchNode", returned: "reached /ping" },
+    ],
+    departure:
+      "expected { outcome: { …(2) }, hits: 2 } to deeply equal { outcome: { …(2) }, hits: +0 }",
+    owner: "@confect/test kernel, build-order row 6 (action egress)",
+    evidence:
+      'packages/server/test/local-backend/ioBans.test.ts > I/O bans while a module loads > a "use node" module\'s top-level fetch is answered, where the kernel refuses it with UndeclaredFetch, on precompiled-2026-10-28-cccbade: the plain fixture\'s moduleLoadFetchNode module fetches the deployment\'s own /ok route and its action returns { status: 200, body: "ok" }. convex-backend: the Node executor sets up its globals and imports the module (npm-packages/node-executor/src/executor.ts:410), and setupGlobals sets require, exports, module, __dirname and __filename only (:70-81), so the module keeps Node\'s fetch. Kernel side: packages/test/test/IoBans.test.ts > module loads > a "use node" module\'s top-level fetch dies with UndeclaredFetch naming the module and its host, and never reaches it, while its timers run.',
+  },
+  {
     file: "httpRouteError.test.ts",
     name: "HTTP route errors > a root route that throws an Error answers the binary's 500 JSON error body",
     convexTest: "0.0.67",

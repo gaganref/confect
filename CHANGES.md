@@ -263,7 +263,8 @@ its `fetch` rejects with the binary's `TypeError`, and a timer fails the load
 with the binary's error. The one place the kernel is stricter, a top-level
 `fetch` in an isolate action's module, which the binary answers, is the
 `ActionModuleLoadFetch` kernel boundary. A `"use node"` module keeps the host's
-`fetch` and timers while it loads. The local-backend suite pins each behaviour
+timers while it loads, and its top-level `fetch` dies with `UndeclaredFetch`, as
+the action egress rule below has it. The local-backend suite pins each behaviour
 on the binary. This is the I/O bans row
 of Frame's backend testing kernel (Frame ADR 0012, row 6). Changeset:
 `test-kernel-io-bans.md`. Upstream: fork only, as the kernel is fork-specific.

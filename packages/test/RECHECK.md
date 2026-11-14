@@ -672,8 +672,9 @@ boundary `ActionModuleLoadFetch` in
 probe measures both halves on the binary: the plain fixture's
 `moduleLoadFetch` module answers its query with the `TypeError` and its action
 with the fetched body. A `"use node"` module imports in Node
-(`npm-packages/node-executor/src/executor.ts:410`) and keeps the host's `fetch`
-and timers while it loads. Without sources, a Confect Node action's mark is
+(`npm-packages/node-executor/src/executor.ts:410`) and keeps the host's timers
+while it loads. Its `fetch` falls under the action egress rule below: it dies
+with `UndeclaredFetch`, naming the module. Without sources, a Confect Node action's mark is
 read only once its module has loaded, so such a module loads under the
 isolate's rules unless its component's runtime is declared. Before fix round 6
 the guards saw no function at load and passed every call to the host.
@@ -1030,6 +1031,22 @@ action ends through the same ending signal as a timer in a query: it settles
 with the refusal at once, whatever its handler catches and whether or not the
 handler ever settles, and runs no later syscall, `ctx.runQuery`,
 `ctx.runMutation` or `ctx.runAction`. The fetch never leaves the process.
+
+The rule covers a `"use node"` module's top level too, since a module load is
+kernel-run code. The binary's Node executor imports the module with Node's own
+`fetch` (`npm-packages/node-executor/src/executor.ts:410`, whose `setupGlobals`
+at `:70-81` leaves `fetch` alone), so a fetch its top level starts reaches the
+host. On the kernel the load's guard answers as a Node action's does: its timers
+run, and its `fetch` dies with `UndeclaredFetch` naming the module
+(`module`, with no `functionName`, as no action runs yet) and the host, which
+ends the load, so the open refuses with it. It is part of the action egress
+departure: the convex-test lane's conformance entry for
+`egressModuleLoad.test.ts`, a file of its own so the module loads afresh,
+expects convex-test to answer the load's fetch and the action's. The plain
+fixture's `moduleLoadFetchNode` module shows the binary answering it
+(`packages/server/test/local-backend/ioBans.test.ts`). `IoBans.test.ts` pins
+the kernel side, a component declared to run in Node included. #136 has no
+egress rule and keeps the host's `fetch` there.
 
 A function's later `console` calls are dropped once it has settled, whether
 it returned, failed or was ended. On the binary none of its JavaScript runs
