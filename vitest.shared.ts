@@ -64,7 +64,7 @@ const packageAliases = await discoverPackageAliases.pipe(
 // installed packages do.
 const packageSources = Array.dedupe(
   Array.map(packageAliases, ({ replacement }) =>
-    pipe(replacement, String.replace(/\/(index\.ts|\$1)$/, "")),
+    pipe(replacement, String.replace(/[\\/](index\.ts|\$1)$/, "")),
   ),
 );
 
