@@ -476,8 +476,9 @@ only the modules a push registers, and a package mount with no test kit fails
 `MissingTestKitError`; a nested component's own declaration names its mounts'
 kits whether or not the app can import `@confect/test`. Each mount of a local
 component loads its own copy of the component's modules, as a deployment
-evaluates each mount apart, and the new `@confect/test/Vite` plugin gives the
-component's files they import a copy per mount too; without it, a second mount
+evaluates each mount apart, and the new `@confect/test/Vite` plugin gives
+every file they import a copy per mount too, wherever it sits; packages under
+`node_modules` stay one copy; without it, a second mount
 of one component refuses to load. This is row 8 of Frame's backend testing kernel (Frame
 ADR 0012). Changeset: `generated-test-backend.md`. Upstream: fork only, as the
 kernel is fork-specific.

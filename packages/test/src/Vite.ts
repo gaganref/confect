@@ -1,7 +1,3 @@
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Vite calls the resolver synchronously per import, outside any Effect runtime.
-import { existsSync } from "node:fs";
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- Vite calls the resolver synchronously per import, outside any Effect runtime.
-import * as path from "node:path";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
@@ -20,13 +16,6 @@ const tag = "confect-mount";
  */
 const installed = 'globalThis[Symbol.for("@confect/test/Vite")] = true;';
 
-const configFiles = [
-  "convex.config.ts",
-  "convex.config.js",
-  "convex.config.mts",
-  "convex.config.mjs",
-];
-
 const split = (id: string) =>
   Option.match(pipe(id, Str.indexOf("?")), {
     onNone: () => ({ file: id, mount: undefined }),
@@ -38,34 +27,19 @@ const split = (id: string) =>
   });
 
 /**
- * The directory a component's `convex.config` sits in has the component's own
- * files beside it, as Confect lays a component out: its parent holds them all.
- */
-const componentRoot = (directory: string): string | undefined => {
-  if (Arr.some(configFiles, (name) => existsSync(path.join(directory, name))))
-    return path.dirname(directory);
-  const parent = path.dirname(directory);
-  return parent === directory ? undefined : componentRoot(parent);
-};
-
-const inside = (file: string, root: string) => {
-  const relative = path.relative(root, file);
-  return (
-    relative !== "" &&
-    !pipe(relative, Str.startsWith("..")) &&
-    !path.isAbsolute(relative) &&
-    !Arr.contains(pipe(relative, Str.split(path.sep)), "node_modules")
-  );
-};
-
-/**
- * Give each mount of a component its own copy of every file inside the
- * component that its modules import, as a deployment evaluates each mount's
- * modules apart. Generated `testing.ts` loads a mount's modules with the
- * mount's name in their query; the plugin carries that query to the component's
- * own files they import, so a helper's module code runs once per mount, under
- * that mount's settings. Packages under `node_modules` stay one copy for the
- * whole test.
+ * Give each mount of a component its own copy of every file its modules import,
+ * wherever the file sits, as a deployment bundles everything a component
+ * imports into each mount. Generated `testing.ts` loads a mount's modules with
+ * the mount's path in their query, and the plugin carries that query down the
+ * import graph, so a helper's module code runs once per mount, under that
+ * mount's settings.
+ *
+ * A package under `node_modules` stays one copy for the whole test, as the
+ * kernel itself runs on Effect, `convex` and this package. A deployment
+ * evaluates a mount's packages apart too, so a package's module-level state is
+ * per mount there and shared here. A workspace that aliases its packages to
+ * their source names those source directories in `packages`, and their files
+ * stay one copy too.
  *
  * ```ts
  * import { plugin } from "@confect/test/Vite";
@@ -74,9 +48,22 @@ const inside = (file: string, root: string) => {
  * export default defineConfig({ plugins: [plugin()] });
  * ```
  */
-export const plugin = (): Plugin => {
-  // The component each tagged module belongs to, by its id.
-  const roots = new Map<string, string>();
+export const plugin = (
+  settings: {
+    /**
+     * Absolute directories of packages' own source, which stay one copy as a
+     * package under `node_modules` does.
+     */
+    readonly packages?: ReadonlyArray<string>;
+  } = {},
+): Plugin => {
+  const packages = Arr.map(
+    settings.packages ?? [],
+    (directory) => `${pipe(directory, Str.replaceAll("\\", "/"))}/`,
+  );
+  const shared = (id: string) =>
+    pipe(id, Str.includes("/node_modules/")) ||
+    Arr.some(packages, (directory) => pipe(id, Str.startsWith(directory)));
   return {
     name: "@confect/test",
     enforce: "pre",
@@ -85,8 +72,6 @@ export const plugin = (): Plugin => {
       if (importer === undefined) return null;
       const { file, mount } = split(importer);
       if (mount === undefined) return null;
-      const root = roots.get(importer) ?? componentRoot(path.dirname(file));
-      if (root === undefined) return null;
       const resolved = await this.resolve(source, file, {
         ...options,
         skipSelf: true,
@@ -96,12 +81,13 @@ export const plugin = (): Plugin => {
         Boolean(resolved.external) ||
         pipe(resolved.id, Str.includes("?")) ||
         pipe(resolved.id, Str.startsWith("\0")) ||
-        !inside(resolved.id, root)
+        shared(resolved.id)
       )
         return resolved;
-      const id = `${resolved.id}?${tag}=${encodeURIComponent(mount)}`;
-      roots.set(id, root);
-      return { ...resolved, id };
+      return {
+        ...resolved,
+        id: `${resolved.id}?${tag}=${encodeURIComponent(mount)}`,
+      };
     },
     transform(code, id) {
       // Appended, so the module's existing source map still holds.

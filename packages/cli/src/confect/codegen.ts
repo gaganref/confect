@@ -1190,11 +1190,11 @@ const checkTestKit = Effect.fnUntraced(function* (
 /**
  * The loader generated `testing.ts` gives each module of a local component's
  * mount. Under Vite it loads the module for that mount alone, and
- * `@confect/test/Vite`'s plugin carries the mount to the component's own files
- * it imports, as a deployment evaluates each mount's modules apart. A second
- * mount of one component refuses to load without the plugin, since its helpers'
- * module code would run under the first mount's settings. Elsewhere, as in a
- * bundle, every mount shares one copy.
+ * `@confect/test/Vite`'s plugin carries the mount to every file it imports,
+ * wherever it sits, as a deployment bundles each mount's modules apart. A
+ * second mount of one component refuses to load without the plugin, since its
+ * helpers' module code would run under the first mount's settings. Elsewhere,
+ * as in a bundle, every mount shares one copy.
  */
 const mountModule = `// Each mount loads its own copy of its component's modules, as a deployment does.
 const mountModules = new Map<string, string>();

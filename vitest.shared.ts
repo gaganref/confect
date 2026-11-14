@@ -4,6 +4,8 @@ import * as Path from "effect/Path";
 import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 import { configDefaults, defineConfig } from "vitest/config";
 import { plugin as mountModules } from "./packages/test/src/Vite";
 import { coverage } from "./vitest.coverage";
@@ -58,9 +60,17 @@ const packageAliases = await discoverPackageAliases.pipe(
   Effect.runPromise,
 );
 
+// The packages tests alias to their source stay one copy across mounts, as
+// installed packages do.
+const packageSources = Array.dedupe(
+  Array.map(packageAliases, ({ replacement }) =>
+    pipe(replacement, String.replace(/\/(index\.ts|\$1)$/, "")),
+  ),
+);
+
 export default defineConfig({
   // Each mount of a test's components loads its own copy of their modules.
-  plugins: [mountModules()],
+  plugins: [mountModules({ packages: packageSources })],
   resolve: {
     alias: packageAliases,
   },

@@ -27,6 +27,9 @@ import {
 import counter, { Rejected, ScheduledId } from "./counter.spec";
 import env from "./env";
 import loaded, { drawn } from "./loaded";
+import app from "../../../confect/appLoaded";
+import chain from "../../chain/one";
+import outside, { drawn as outsideDrawn } from "../../sharedLoaded";
 
 const create = FunctionImpl.make(schema, counter, "create", (args) =>
   Effect.gen(function* () {
@@ -178,6 +181,10 @@ const environment = FunctionImpl.make(schema, counter, "environment", () =>
       directRequired: process.env.COMPONENT_REQUIRED ?? "unset",
       loaded,
       drawn,
+      outside,
+      outsideDrawn,
+      app,
+      chain,
     };
   }).pipe(Effect.orDie),
 );

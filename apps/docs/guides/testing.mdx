@@ -454,7 +454,7 @@ Each mount gets the settings it binds, as on Convex: a literal, or a setting of 
 
 ### Each mount loads its own modules
 
-A deployment evaluates each mount's modules apart, so a module-level read in a component mounted twice sees each mount's own settings. The generated registry loads each mount's copy of a local component's modules. Under Vitest, the plugin from `@confect/test/Vite` gives the component's own files those modules import a copy per mount too:
+A deployment evaluates each mount's modules apart, so a module-level read in a component mounted twice sees each mount's own settings. The generated registry loads each mount's copy of a local component's modules. Under Vitest, the plugin from `@confect/test/Vite` gives each mount its own copy of every file those modules import, wherever it sits: inside the component, elsewhere in the repo or in the app's own folder, as a deployment bundles them into each mount:
 
 ```ts
 import { plugin } from "@confect/test/Vite";
@@ -463,7 +463,7 @@ import { defineConfig } from "vitest/config";
 export default defineConfig({ plugins: [plugin()] });
 ```
 
-A file belongs to a component when it sits under the parent of the directory that holds the component's `convex.config.ts`, as its `confect/` directory does. Packages under `node_modules`, the app's own files and a packaged component's kit stay one copy for the whole test. Without the plugin, the second mount of one component fails to load, naming both mounts and the module.
+Packages under `node_modules` stay one copy for the whole test, because the kernel itself runs on Effect, `convex` and `@confect/test`. That is a limit: a deployment evaluates each mount's packages apart, so a package's module-level state is per mount there and shared across mounts in a test. A packaged component's kit is a package too. A workspace that aliases its packages to their source passes those source directories as `plugin({ packages })`, so they stay one copy as well. Without the plugin, the second mount of one component fails to load, naming both mounts and the module.
 
 ### Packaged components keep their secrets
 

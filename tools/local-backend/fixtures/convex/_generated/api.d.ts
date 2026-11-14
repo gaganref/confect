@@ -212,23 +212,31 @@ export declare const api: {
         {},
         {
           first: {
+            app: string;
+            chain: string;
             directRequired: string;
             drawn: number;
             hostOnly: string;
             loaded: string;
             marker: string;
             optional: string;
+            outside: string;
+            outsideDrawn: number;
             required: string;
             unbound: string;
           };
           host: { hostOnly: string; marker: string };
           second: {
+            app: string;
+            chain: string;
             directRequired: string;
             drawn: number;
             hostOnly: string;
             loaded: string;
             marker: string;
             optional: string;
+            outside: string;
+            outsideDrawn: number;
             required: string;
             unbound: string;
           };

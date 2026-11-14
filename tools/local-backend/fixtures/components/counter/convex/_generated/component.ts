@@ -73,12 +73,16 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         "internal",
         {},
         {
+          app: string;
+          chain: string;
           directRequired: string;
           drawn: number;
           hostOnly: string;
           loaded: string;
           marker: string;
           optional: string;
+          outside: string;
+          outsideDrawn: number;
           required: string;
           unbound: string;
         },

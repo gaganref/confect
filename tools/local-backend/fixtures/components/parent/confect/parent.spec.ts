@@ -41,4 +41,10 @@ export default GroupSpec.make()
   )
   .addFunction(
     FunctionSpec.convexPublicQuery<typeof identityChain>()("identityChain"),
+  )
+  .addFunction(
+    FunctionSpec.publicQuery({
+      name: "shared",
+      returns: () => Schema.Finite,
+    }),
   );
