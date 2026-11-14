@@ -4,8 +4,10 @@ import { Ref } from "@confect/core";
 import { expect, layer } from "@effect/vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
+import { makeFunctionReference } from "convex/server";
 import refs from "confect-local-backend/refs";
 import * as LocalBackend from "confect-local-backend/LocalBackend";
+import { refusalBoundary } from "../mock-backend/kernelBoundaries";
 
 // The same calls as `packages/test/test/IoBans.test.ts`, answered by the
 // binary. The test kernel's I/O bans follow what these cases record.
@@ -250,3 +252,40 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })("I/O bans", (it) => {
     }).pipe(Effect.scoped),
   );
 });
+
+layer(LocalBackend.plainLayer, { timeout: "120 seconds" })(
+  "I/O bans while a module loads",
+  (it) => {
+    it.effect(
+      "an isolate module's top-level fetch is refused for a query and answered for an action, where the kernel refuses both",
+      () =>
+        Effect.gen(function* () {
+          // The binary answers the module's fetch, where the kernel refuses
+          // it; this entry records why.
+          const entry = refusalBoundary("ActionModuleLoadFetch");
+          expect(entry.probe).toBe(
+            "ioBans.test.ts > I/O bans while a module loads > an isolate module's top-level fetch is refused for a query and answered for an action, where the kernel refuses both",
+          );
+          const { client } = yield* LocalBackend.LocalBackend;
+          const observed = yield* Effect.promise(() =>
+            client.action(
+              makeFunctionReference<"action">("moduleLoadFetch:loaded"),
+              {},
+            ),
+          );
+          expect(observed).toEqual({ status: 200, body: "ok" });
+          // A query's load is refused, as the kernel refuses every load.
+          const observed2 = yield* Effect.promise(() =>
+            client.query(
+              makeFunctionReference<"query">("moduleLoadFetch:loadedQuery"),
+              {},
+            ),
+          );
+          expect(observed2).toMatchObject({ name: "TypeError" });
+          expect((observed2 as { message: string }).message).toMatch(
+            /^fetch to http:\/\/127\.0\.0\.1:\d+\/ok failed: Can't use fetch\(\) in queries and mutations\./,
+          );
+        }),
+    );
+  },
+);

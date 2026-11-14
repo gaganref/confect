@@ -646,6 +646,33 @@ timer's promisified form (`util.promisify(setTimeout)`, which reads
 `util.promisify.custom`) is guarded too, and ends a query or mutation as the
 timer does.
 
+While a module loads, outside any function (`loadModules`), the guards read the
+load's context (`IoBans.Hooks.loading`): the runtime the module runs in, read
+before it loads from its source, else from the component's `componentRuntimes`
+entry, else the isolate. A module that does not run in Node loads under the
+query and mutation rules. A top-level `fetch` rejects with the binary's
+`TypeError` and never reaches the host. A top-level `setTimeout` or
+`setInterval` ends the load with the binary's error, so the open refuses with
+it, whatever the module catches or awaits. The binary runs a query's or
+mutation's module top level in that function's environment (`start_async_op`,
+`crates/isolate/src/environment/udf/mod.rs:369`, at `cccbade4`), so there the
+kernel matches it. An isolate action's module fails its import on a timer
+(`require_executing`, `crates/isolate/src/environment/action/phase.rs:470`), but
+its `fetch` starts its op only after an `await`, once the import is over
+(`npm-packages/udf-runtime/src/26_fetch.ts:81`), and is answered. The kernel
+loads each module once, before it knows what the module exports, so it refuses
+that `fetch` too. That is the one place it is stricter, recorded as kernel
+boundary `ActionModuleLoadFetch` in
+`packages/server/test/mock-backend/kernelBoundaries.ts`, whose local-backend
+probe measures both halves on the binary: the plain fixture's
+`moduleLoadFetch` module answers its query with the `TypeError` and its action
+with the fetched body. A `"use node"` module imports in Node
+(`npm-packages/node-executor/src/executor.ts:410`) and keeps the host's `fetch`
+and timers while it loads. Without sources, a Confect Node action's mark is
+read only once its module has loaded, so such a module loads under the
+isolate's rules unless its component's runtime is declared. Before fix round 6
+the guards saw no function at load and passed every call to the host.
+
 A descriptor replaced while a function runs, such as a handler's
 `Object.defineProperty(globalThis, "fetch", …)`, takes the global out from under
 its guard until the next entry, so a call made through the replacement is not

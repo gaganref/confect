@@ -470,9 +470,11 @@ const endExecution = (execution: Execution, error: unknown) => {
 
 const ioHooks: IoBans.Hooks = {
   running: () => executions.getStore(),
+  loading: () => moduleLoads.getStore(),
   end: (error) => {
     const execution = executions.getStore();
     if (execution !== undefined) endExecution(execution, error);
+    else moduleLoads.getStore()?.end(error);
   },
   ended: () => {
     const execution = executions.getStore();
@@ -525,9 +527,17 @@ const installIoBans = (): ReadonlyArray<IoBans.Unguarded> => {
 };
 
 /**
- * The module load running now, and the stream it draws from.
+ * A module load: the stream it draws from, the module and the runtime it runs
+ * in, which the I/O guards read, and how a host API ends it.
  */
-const moduleLoads = new AsyncLocalStorage<Entropy.Source>();
+interface ModuleLoad extends Entropy.Source, IoBans.Loading {
+  readonly end: (error: unknown) => void;
+}
+
+/**
+ * The module load running now.
+ */
+const moduleLoads = new AsyncLocalStorage<ModuleLoad>();
 
 /**
  * The refusal a draw raises in `execution` when no stream reaches it.
@@ -1509,6 +1519,13 @@ export class World {
    * randomness rejects with the binary's queries-and-mutations error, as a load
    * for one of those does. A module the host runtime already evaluated is not
    * evaluated again, so it draws nothing.
+   *
+   * Each module's runtime is read before it loads: from its source when the
+   * test gave sources, else from the component's declared runtime, else the
+   * isolate. A module that does not run in Node loads under the query and
+   * mutation rules for I/O, as `IoBans` describes: its `fetch` rejects with the
+   * binary's `TypeError`, and a timer ends the load with the binary's error, so
+   * the open refuses with it, whatever the module catches or awaits.
    */
   private loadModules(
     world: Invocation.World | undefined,
@@ -1526,26 +1543,35 @@ export class World {
           component,
           modulePath,
           load,
-          // Each module's runtime is read from its source beside its load,
+          // Each module's runtime is read from its source before it loads,
           // when the test supplied sources.
-          keep: (module: any): unknown =>
+          runtime: (): Promise<IoBans.Runtime> =>
             runtimeFromSource(component, modulePath).then((runtime) => {
-              component.loaded.set(modulePath, module);
-              if (runtime !== undefined)
-                component.runtimes.set(modulePath, runtime);
-              return undefined;
+              if (runtime === undefined) {
+                return this.componentRuntimeOf(component.path) ?? "isolate";
+              }
+              component.runtimes.set(modulePath, runtime);
+              return runtime;
             }),
+          keep: (module: any): unknown => {
+            component.loaded.set(modulePath, module);
+            return undefined;
+          },
         })),
     ).concat(
       Arr.map(extra, (entry) => ({
         ...entry,
         component: this.component(ROOT),
+        // Modules beside the registered ones, as `auth.config`, run in the
+        // isolate (`mustBeIsolate`).
+        runtime: (): Promise<IoBans.Runtime> => Promise.resolve("isolate"),
       })),
     );
     const loadOne = ({
       component,
       modulePath,
       load,
+      runtime,
       keep,
     }: (typeof entries)[number]): Promise<unknown> => {
       const random =
@@ -1558,13 +1584,31 @@ export class World {
           });
           throw refused;
         });
-      return moduleLoads
-        .run({ phase: "load", random }, () =>
-          Globals.own(() => {
-            installGuardedGlobals();
-            return load();
-          }),
-        )
+      return runtime()
+        .then((loadsIn) => {
+          const { promise: ended, reject: end } =
+            Promise.withResolvers<never>();
+          // Read only through the race, so an ending nothing awaits is no
+          // unhandled rejection.
+          ended.catch(() => undefined);
+          return moduleLoads.run(
+            {
+              phase: "load",
+              random,
+              runtime: loadsIn,
+              componentPath: component.path,
+              modulePath,
+              end,
+            },
+            () =>
+              Globals.own(() => {
+                installGuardedGlobals();
+                // The ending comes first, so a load that a timer ended while
+                // it ran fails even when its own promise has settled too.
+                return Promise.race([ended, load()]);
+              }),
+          );
+        })
         .then(keep);
     };
     return Arr.reduce(

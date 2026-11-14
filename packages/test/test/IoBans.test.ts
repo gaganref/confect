@@ -1385,6 +1385,178 @@ describe("Node callers", () => {
   );
 });
 
+describe("module loads", () => {
+  /**
+   * A module that starts `fetch` at its top level, as a client that warms up
+   * when it is imported does, and exports functions that return the call's
+   * promise. `seen` receives its outcome.
+   */
+  const fetchingModule =
+    (target: string, seen: Array<Promise<unknown>> = []) =>
+    () => {
+      // oxlint-disable-next-line effecttsgo/global-fetch -- The module's top level calls the runtime's own fetch, which the I/O bans refuse or allow.
+      const started = fetch(target).then((response) => response.text());
+      // The functions return it later; until then nothing else handles it.
+      seen.push(outcomeOf(started));
+      return Promise.resolve({
+        query: queryGeneric({ args: {}, handler: () => started }),
+        action: actionGeneric({ args: {}, handler: () => started }),
+      });
+    };
+
+  /**
+   * A module that starts a timer at its top level and exports functions that
+   * return a promise of its callback.
+   */
+  const timingModule = (fired: () => void) => () => {
+    // oxlint-disable-next-line effecttsgo/new-promise -- The module waits on the runtime's own timer callback, which is what the I/O bans refuse or allow.
+    const started = new Promise<string>((resolve) => {
+      // oxlint-disable-next-line effecttsgo/global-timers -- The module's top level starts the runtime's own timer, which the I/O bans refuse or allow.
+      setTimeout(() => {
+        fired();
+        resolve("fired");
+      }, 1);
+    });
+    return Promise.resolve({
+      query: queryGeneric({ args: {}, handler: () => started }),
+      action: actionGeneric({ args: {}, handler: () => started }),
+    });
+  };
+
+  const kernelOver = (
+    loaded: Record<string, () => Promise<unknown>>,
+    node: ReadonlyArray<string> = [],
+  ) => {
+    const all = {
+      "_generated/server.ts": () => Promise.resolve({}),
+      ...loaded,
+    };
+    return convexTest({
+      schema: defineSchema({}),
+      modules: all,
+      sources: inlineSources(all, node),
+    });
+  };
+
+  const refusalOf = (call: Promise<unknown>) =>
+    Effect.promise(() =>
+      call.then(
+        (value) => ({ returned: value }),
+        (error: Error) => ({ name: error.name, message: error.message }),
+      ),
+    );
+
+  const query = makeFunctionReference<"query">("load:query");
+  const action = makeFunctionReference<"action">("load:action");
+
+  it.effect(
+    "a query's module that starts fetch at its top level is refused with the binary's TypeError, and the host is never reached",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* loopback;
+        const t = kernelOver({ "load.ts": fetchingModule(server.url) });
+        const observed = yield* refusalOf(t.query(query, {}));
+        expect(observed).toEqual({
+          name: "TypeError",
+          message: `fetch to ${server.url} failed: Can't use fetch() in queries and mutations. Please consider using an action. See https://docs.convex.dev/functions/actions for more details.`,
+        });
+        expect(server.hits()).toBe(0);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect.each(["query", "action"] as const)(
+    'a module without "use node" whose top level starts a timer fails to load with the binary\'s error, so the %s fails and the timer never fires',
+    (kind) =>
+      Effect.gen(function* () {
+        const fired = vi.fn();
+        const t = kernelOver({ "load.ts": timingModule(fired) });
+        const observed = yield* refusalOf(
+          kind === "query" ? t.query(query, {}) : t.action(action, {}),
+        );
+        expect(observed).toEqual({
+          name: "Error",
+          message: timerRefusal("setTimeout"),
+        });
+        yield* Effect.promise(() => awaitTimer("setTimeout"));
+        expect(fired).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect(
+    "an isolate action's module that starts fetch at its top level is refused too, where the binary would fetch: kernel boundary ActionModuleLoadFetch",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* loopback;
+        const t = kernelOver({ "load.ts": fetchingModule(server.url) });
+        const observed = yield* refusalOf(t.action(action, {}));
+        expect(observed).toMatchObject({ name: "TypeError" });
+        expect(server.hits()).toBe(0);
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    'a "use node" module keeps the host\'s fetch and timers while it loads',
+    () =>
+      Effect.gen(function* () {
+        const server = yield* loopback;
+        const fired = vi.fn();
+        const t = kernelOver(
+          {
+            "load.ts": fetchingModule(server.url),
+            "timing.ts": timingModule(fired),
+          },
+          ["load.ts", "timing.ts"],
+        );
+        const observed = yield* refusalOf(t.action(action, {}));
+        expect(observed).toEqual({ returned: "reached /ping" });
+        expect(server.hits()).toBe(1);
+        const observed2 = yield* refusalOf(
+          t.action(makeFunctionReference<"action">("timing:action"), {}),
+        );
+        expect(observed2).toEqual({ returned: "fired" });
+        expect(fired).toHaveBeenCalledOnce();
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "a component registered without sources loads with the host's fetch when the test declares it runs in Node, and under the isolate's rules when it declares the isolate",
+    () =>
+      Effect.gen(function* () {
+        const server = yield* loopback;
+        const seen: Array<Promise<unknown>> = [];
+        const kitModules = {
+          "_generated/server.ts": () => Promise.resolve({}),
+          "load.ts": fetchingModule(server.url, seen),
+        };
+        const open = (
+          componentRuntimes: Record<string, "node" | "isolate">,
+        ) => {
+          const t = convexTest({
+            schema: defineSchema({}),
+            modules: { "_generated/server.ts": () => Promise.resolve({}) },
+            sources: {
+              "_generated/server.ts": () => Promise.resolve(""),
+            },
+            componentRuntimes,
+          });
+          t.registerComponent("kit", defineSchema({}), kitModules);
+          return Effect.promise(() => t.run(() => Promise.resolve(null)));
+        };
+        yield* open({ kit: "node" });
+        yield* open({ kit: "isolate" });
+        const outcomes = yield* Effect.promise(() => Promise.all(seen));
+        expect(outcomes).toEqual([
+          { returned: "reached /ping" },
+          {
+            name: "TypeError",
+            message: `fetch to ${server.url} failed: Can't use fetch() in queries and mutations. Please consider using an action. See https://docs.convex.dev/functions/actions for more details.`,
+          },
+        ]);
+        expect(server.hits()).toBe(1);
+      }).pipe(Effect.scoped),
+  );
+});
+
 describe("module runtimes", () => {
   const runtimeModules = import.meta.glob("./fixtures/runtime/**/*.ts");
   const runtimeSources = import.meta.glob<string>(

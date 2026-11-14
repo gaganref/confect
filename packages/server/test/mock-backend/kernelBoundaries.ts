@@ -165,6 +165,23 @@ export const refusalBoundaries: ReadonlyArray<KernelRefusalBoundary> = [
       "convex-backend cccbade4: the UDF environment refuses cryptographic randomness in every phase (crates/isolate/src/environment/udf/mod.rs:264-272, :290-292), and the action environment allows it in every phase (crates/isolate/src/environment/action/mod.rs:1576-1578). Measured on the pinned binary: a module-scope generateKey answers the refusal to a query and a mutation and generates the key for an action.",
     probe: randomnessProbe,
   },
+  {
+    name: "ActionModuleLoadFetch",
+    operation:
+      'fetch at the top level of a module without a "use node" directive, while it loads for an action',
+    binary:
+      "The binary imports an isolate action's module in the action's environment. A fetch its top level starts sends its op only after an await, once the import is over and the action runs, so the fetch is answered, as the action's own would be.",
+    kernel:
+      "The kernel loads each module once for every function type, before any function runs, so it cannot tell an action's load from a query's. It refuses a top-level fetch in any module without a \"use node\" directive with the binary's queries-and-mutations TypeError, the answer a load for a query or a mutation gets, and never reaches the host. A \"use node\" module loads with the host's fetch and timers, as Node imports it.",
+    refusal:
+      "TypeError: fetch to <url> failed: Can't use fetch() in queries and mutations. Please consider using an action. See https://docs.convex.dev/functions/actions for more details.",
+    backend: "precompiled-2026-10-28-cccbade",
+    owner: "@confect/test kernel, build-order row 6 (I/O bans)",
+    evidence:
+      "convex-backend cccbade4: the UDF environment refuses every async op, a query's or mutation's module top level included (start_async_op, crates/isolate/src/environment/udf/mod.rs:369); the action environment refuses a task only while importing (require_executing, crates/isolate/src/environment/action/phase.rs:470); fetch awaits the request's conversion before it performs its op (fetchWithoutRedirect, npm-packages/udf-runtime/src/26_fetch.ts:81), so the op starts after the import; a \"use node\" module is imported by Node (npm-packages/node-executor/src/executor.ts:410).",
+    probe:
+      "ioBans.test.ts > I/O bans while a module loads > an isolate module's top-level fetch is refused for a query and answered for an action, where the kernel refuses both",
+  },
 ];
 
 /**
