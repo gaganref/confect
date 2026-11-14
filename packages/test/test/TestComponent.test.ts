@@ -21,6 +21,7 @@ import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import { inlineSources } from "./fixtures/inlineSources";
 
 /**
  * A bounce code, an int64 as Convex stores it.
@@ -374,6 +375,7 @@ const subject = TestComponent.make(
     }) as never,
     httpMounts: [],
     modules: mailer,
+    sources: inlineSources(mailer),
     components: {
       audit: {
         schema: defineSchema({ log: defineTable({ entry: v.string() }) }),

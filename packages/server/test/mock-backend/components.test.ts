@@ -841,10 +841,21 @@ const localHostModules = import.meta.glob([
 ]);
 const LocalHost = TestConfect.TestConfect<typeof localSchema>();
 const callbacks = localRefs.public.groups.callbacks;
+// The same files as text: the fixture has a plain Convex action, whose runtime
+// the test kernel reads from its module's `"use node"` directive.
+const localHostSources = import.meta.glob<string>(
+  [
+    "../../../../tools/local-backend/fixtures/convex/**/*.ts",
+    "../../../../tools/local-backend/fixtures/convex/**/*.js",
+    "!../../../../tools/local-backend/fixtures/convex/**/*.*.*",
+  ],
+  { query: "?raw", import: "default" },
+);
 const localHostLayer = TestConfect.layer(
   localSchema,
   localConvexSchema,
   localHostModules,
+  { sources: localHostSources },
 );
 
 it.effect(

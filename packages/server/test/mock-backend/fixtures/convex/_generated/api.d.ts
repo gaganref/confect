@@ -139,6 +139,14 @@ export declare const api: {
       }
     >;
   };
+  egressNode: {
+    rawFetchNode: FunctionReference<
+      "action",
+      "public",
+      { url: string },
+      string
+    >;
+  };
   groups: {
     actionCall: {
       execute: FunctionReference<
@@ -165,6 +173,9 @@ export declare const api: {
     };
     cjsImporter: {
       now: FunctionReference<"query", "public", {}, string>;
+    };
+    egress: {
+      rawFetch: FunctionReference<"action", "public", { url: string }, string>;
     };
     middleware: {
       firstNoteForViewer: FunctionReference<"query", "public", {}, string>;

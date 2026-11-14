@@ -23,6 +23,13 @@ import * as Record from "effect/Record";
 import * as Arr from "effect/Array";
 import * as Str from "effect/String";
 
+// The fixture's module sources, which its plain Convex actions need on the
+// test kernel. Row 8's generated registry supplies them.
+const sources = import.meta.glob<string>(
+  "../../../../tools/local-backend/fixtures/convex/**/*.ts",
+  { query: "?raw", import: "default" },
+);
+
 const UploadResponse = Schema.fromJsonString(
   Schema.Struct({ storageId: Schema.String }),
 );
@@ -485,7 +492,7 @@ const onKernel = <A, E>(
 ) =>
   Effect.gen(function* () {
     const services2 = yield* Layer.build(
-      TestConfect.layer(registry, { target: "kernel" }),
+      TestConfect.layer(registry, { target: "kernel", sources }),
     );
     return yield* Effect.gen(function* () {
       const testConfect =

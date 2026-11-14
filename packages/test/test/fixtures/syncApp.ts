@@ -12,6 +12,7 @@ import type * as Kernel from "../../src/internal/Kernel";
 import * as Redaction from "../../src/internal/Redaction";
 import { provider } from "../../../../tools/local-backend/fixtures/minted";
 import type { Target } from "./syncLegs";
+import { withSources } from "./inlineSources";
 
 const secretArgs = (fields: Record<string, Schema.Top>) => () =>
   Schema.Struct({ ...fields, secret: Schema.Redacted(Schema.String) });
@@ -71,7 +72,7 @@ export const kernelApp = (
 ): KernelControls =>
   convexTest({
     schema,
-    modules: {
+    ...withSources({
       "_generated/server.ts": () => Promise.resolve({}),
       "sync.ts": () =>
         (options.loaded ?? Promise.resolve()).then(
@@ -80,7 +81,7 @@ export const kernelApp = (
         ),
       "auth.config.ts": () =>
         Promise.resolve({ default: { providers: [{ ...provider, jwks }] } }),
-    },
+    }),
     redaction: options.redaction ?? policy,
     runtime: options.runtime ?? distinctMillis(),
     ...(options.queryCacheAge === undefined

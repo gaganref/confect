@@ -174,6 +174,10 @@ export const openSession = <S extends DatabaseSchema.AnyWithProps>(
         target: "kernel",
         httpMounts: app.httpMounts,
         ...(app.secrets === undefined ? {} : { secrets: app.secrets }),
+        ...(app.sources === undefined ? {} : { sources: app.sources }),
+        ...(app.componentRuntimes === undefined
+          ? {}
+          : { componentRuntimes: app.componentRuntimes }),
         register: (registerComponent) => {
           const recording = record(registerComponent);
           for (const [name, kit] of Rec.toEntries(app.components)) {

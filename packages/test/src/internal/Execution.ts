@@ -1,3 +1,4 @@
+import { parse as parseAST } from "@babel/parser";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   actionGeneric,
@@ -23,6 +24,7 @@ import * as Result from "effect/Result";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
 import * as Crons from "./Crons.js";
+import * as Egress from "./Egress.js";
 import * as Entropy from "./Entropy.js";
 import * as Environment from "./Environment.js";
 import * as Globals from "./Globals.js";
@@ -32,6 +34,7 @@ import * as Http from "./Http.js";
 import * as Invocation from "./Invocation.js";
 import * as ArgumentValidation from "./ArgumentValidation.js";
 import { SINK, type Sink } from "./Sink.js";
+import * as IoBans from "./IoBans.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
 import * as KernelRefusal from "./KernelRefusal.js";
@@ -100,6 +103,20 @@ const TYPICAL_CONVEX_ID_LENGTH = 32;
 type Modules = Record<string, () => Promise<any>>;
 
 /**
+ * Each module's source as text, such as `import.meta.glob(pattern, { query:
+ * "?raw", import: "default" })` of the same files gives, matched to its module
+ * by its path below the directory that holds `_generated`.
+ */
+type Sources = Record<string, () => Promise<string>>;
+
+/**
+ * The runtime a test declares for a component's plain Convex actions, by
+ * component path, when it cannot give the component's sources: a package's test
+ * kit registers its modules without them.
+ */
+export type ComponentRuntimes = Readonly<Record<string, IoBans.Runtime>>;
+
+/**
  * One registered component: its schema, its function modules, each loaded once
  * when the world opens, and its standing sources.
  */
@@ -113,6 +130,15 @@ interface Component {
    * that runs one, or that one schedules, is never drain work.
    */
   readonly standing: ReadonlySet<string>;
+  /**
+   * Each function module's source, when the test supplied them, so its `"use
+   * node"` directive decides its runtime as the bundler's does.
+   */
+  readonly sources: ReadonlyMap<string, () => Promise<string>> | undefined;
+  /**
+   * Each loaded module's runtime, read from its source when the world opens.
+   */
+  readonly runtimes: Map<string, IoBans.Runtime>;
   /**
    * The `auth.config` module beside the functions, which only the app's
    * providers come from.
@@ -207,6 +233,22 @@ type UdfType = "query" | "mutation" | "action";
 export type Outcome =
   | { readonly _tag: "returned"; readonly value: Value }
   | { readonly _tag: "failed"; readonly error: unknown };
+
+/**
+ * A provider port's call from an action, held until the test answers it.
+ */
+export interface HeldCommand {
+  readonly id: string;
+  readonly kind: "provider";
+  readonly port: string;
+  readonly input: unknown;
+  readonly componentPath: string;
+  /**
+   * The action that called the port, as `module:export`.
+   */
+  readonly functionName: string;
+  readonly request: string;
+}
 
 /**
  * A mutation attempt run to its commit point and held until `apply`.
@@ -314,6 +356,7 @@ interface Execution {
   readonly componentPath: string;
   readonly udfPath: string;
   readonly udfType: UdfType;
+  readonly runtime: IoBans.Runtime;
   readonly attempt: KernelAttempt | undefined;
   readonly identity: UserIdentity | null;
   /**
@@ -384,9 +427,123 @@ const settled = <A>(execution: Execution, result: A): Promise<A> =>
 const executions = new AsyncLocalStorage<Execution>();
 
 /**
- * The module load running now, and the stream it draws from.
+ * The error a host API ended each function with, such as a timer a query
+ * started or a raw fetch an action made, and the signal that ends it. On the
+ * binary that function stops at its next microtask checkpoint and fails with
+ * the error, whatever its handler caught and whether or not the handler ever
+ * settles, and none of its JavaScript runs again.
  */
-const moduleLoads = new AsyncLocalStorage<Entropy.Source>();
+interface Ending {
+  readonly ended: Promise<never>;
+  readonly reject: (error: unknown) => void;
+  error: { readonly value: unknown } | undefined;
+  /**
+   * Whether the function's invocation settled: it returned, failed or was
+   * ended. The binary runs none of its JavaScript after that, so a continuation
+   * released later logs nothing: an action's run loop
+   * (`crates/isolate/src/environment/action/mod.rs:1043`) breaks once its
+   * promise rejects (`:1125-1128`) or its result is collected (`:1151`), and a
+   * query's or mutation's `run_inner` loop (`udf/mod.rs:1113`) likewise.
+   */
+  settled: boolean;
+}
+
+const endings = new WeakMap<Execution, Ending>();
+
+const endingOf = (execution: Execution): Ending => {
+  let ending = endings.get(execution);
+  if (ending === undefined) {
+    const { promise, reject } = Promise.withResolvers<never>();
+    // Read only through `unlessEnded`, so an ending nothing awaits is no
+    // unhandled rejection.
+    promise.catch(() => undefined);
+    ending = { ended: promise, reject, error: undefined, settled: false };
+    endings.set(execution, ending);
+  }
+  return ending;
+};
+
+/**
+ * End `execution` with `error`, once. Its provider commands close with it.
+ */
+const endExecution = (execution: Execution, error: unknown) => {
+  const ending = endingOf(execution);
+  if (ending.error !== undefined) return;
+  ending.error = { value: error };
+  ending.reject(error);
+  execution.world.closeCommands(execution, error);
+};
+
+const ioHooks: IoBans.Hooks = {
+  running: () => executions.getStore(),
+  loading: () => moduleLoads.getStore(),
+  end: (error) => {
+    const execution = executions.getStore();
+    if (execution !== undefined) endExecution(execution, error);
+    else moduleLoads.getStore()?.end(error);
+  },
+  ended: () => {
+    const execution = executions.getStore();
+    if (execution === undefined) return false;
+    const ending = endings.get(execution);
+    return (
+      ending !== undefined && (ending.settled || ending.error !== undefined)
+    );
+  },
+};
+
+/**
+ * A provider port's call inside a kernel action is held. Anywhere else the port
+ * calls its live provider, whose own `fetch` the I/O bans then answer.
+ */
+const egressHolder: Egress.Holder = {
+  hold: (port, input) => {
+    const execution = executions.getStore();
+    return execution?.udfType === "action"
+      ? execution.world.hold(execution, port, input)
+      : undefined;
+  },
+};
+
+/**
+ * Make the call `start` makes for `execution`, unless a host API ended it, as
+ * the binary runs no syscall of a function it terminated.
+ */
+const whileRunning = <A>(execution: Execution, start: () => Promise<A>) => {
+  const error = endings.get(execution)?.error;
+  return error === undefined ? start() : Promise.reject(error.value);
+};
+
+/**
+ * `outcome`, unless a host API ended `execution` first, in which case its
+ * ending, without waiting for the handler to settle. Either way the function
+ * counts as settled from then on.
+ */
+const unlessEnded = <A>(execution: Execution, outcome: Promise<A>) => {
+  const ending = endingOf(execution);
+  return Promise.race([outcome, ending.ended]).finally(() => {
+    ending.settled = true;
+  });
+};
+
+const installIoBans = (): ReadonlyArray<IoBans.Unguarded> => {
+  const unguarded = IoBans.install();
+  IoBans.bind(ioHooks);
+  return unguarded;
+};
+
+/**
+ * A module load: the stream it draws from, the module and the runtime it runs
+ * in, which the I/O guards read, and how a host API ends it.
+ */
+interface ModuleLoad extends Entropy.Source, IoBans.Loading {
+  readonly end: (error: unknown) => void;
+}
+
+/**
+ * The module load running now.
+ */
+const moduleLoads = new AsyncLocalStorage<ModuleLoad>();
 
 /**
  * The refusal a draw raises in `execution` when no stream reaches it.
@@ -498,37 +655,54 @@ const heldAs = (name: "Math" | "crypto", threw: unknown): string => {
  * functions and code a function imports lazily all draw through it. A reference
  * to the host's `Math.random` or `crypto` taken outside every kernel copy,
  * before the kernel ran any code, stays the host's: the lazy-loading contract,
- * as for the kernel's other globals. Every own-descriptor shape of `Math` and
- * `crypto` ends one of two ways: the kernel's objects are installed and a
- * read-back confirms it, or the install refuses with `UnguardableGlobal`,
- * naming each global and what it holds, before the load's or the function's
- * code runs.
+ * as for the kernel's other globals. It answers the globals it could not
+ * install. It reads nothing back: {@link installGuardedGlobals} does, once for
+ * every guarded global.
  */
-const installEntropy = () => {
+const installEntropy = (): ReadonlyArray<EntropyFailure> => {
   kernelMath ??= Entropy.kernelMath(HostGlobals.math, entropySource);
   kernelCrypto ??= Entropy.kernelCrypto(HostGlobals.crypto, entropySource);
-  const globals = [
-    ["Math", kernelMath],
-    ["crypto", kernelCrypto],
-  ] as const;
-  const failed = Arr.filterMap(globals, ([name, value]) => {
+  return Arr.filterMap(entropyGlobals(), ([name, value]) => {
     const failure = installGuarded(name, value);
     return failure === undefined ? Result.failVoid : Result.succeed(failure);
   });
-  // One final pass reads every global back, once all are installed, so a later
-  // step that undid an earlier one, as a test's getter that restores another
-  // global does, refuses before any user code runs.
-  const undone =
-    failed.length > 0
-      ? []
-      : Arr.filterMap(globals, ([name, value]) => {
-          const failure = confirmInstalled(name, value);
-          return failure === undefined
-            ? Result.failVoid
-            : Result.succeed(failure);
-        });
-  if (failed.length > 0 || undone.length > 0) {
-    throw KernelRefusal.uninstallableEntropy([...failed, ...undone]);
+};
+
+type EntropyFailure = {
+  readonly global: string;
+  readonly holds: string;
+  readonly fixed: boolean;
+};
+
+const entropyGlobals = () =>
+  [
+    ["Math", kernelMath!],
+    ["crypto", kernelCrypto!],
+  ] as const;
+
+/**
+ * Install every guarded global, the I/O guards and the kernel's `Math` and
+ * `crypto`, then run one final read-back of every guarded global, inside the
+ * one boundary: the copy of the globals the function's or module load's code
+ * then runs in, before any of that code runs. Every install comes first, so a
+ * later step that undid an earlier one, as a test's setter that stores the
+ * kernel's `Math` and replaces `fetch` does, or a getter that puts the host's
+ * `Math` back, is caught by the read-back. Any failure, of an install or of the
+ * read-back, refuses with `UnguardableGlobal`, naming each global.
+ */
+const installGuardedGlobals = () => {
+  const io = installIoBans();
+  const entropy = installEntropy();
+  if (io.length > 0 || entropy.length > 0) {
+    throw KernelRefusal.unguardableGlobals(io, entropy);
+  }
+  const ioUndone = IoBans.readBack();
+  const entropyUndone = Arr.filterMap(entropyGlobals(), ([name, value]) => {
+    const failure = confirmInstalled(name, value);
+    return failure === undefined ? Result.failVoid : Result.succeed(failure);
+  });
+  if (ioUndone.length > 0 || entropyUndone.length > 0) {
+    throw KernelRefusal.unguardableGlobals(ioUndone, entropyUndone);
   }
 };
 
@@ -590,18 +764,61 @@ const installGuarded = (
 
 /**
  * Run a function's code as `execution`, with its own copy of the globals a test
- * invocation pins, whose `Math` and `crypto` are the kernel's. A test that
- * fakes `Date` after the backend opened replaced the kernel's wrapper, so each
- * function wraps the realm's `Date` again, as it installs `globalThis.Convex`
- * again.
+ * invocation pins, whose `Math` and `crypto` are the kernel's, and the host
+ * APIs Convex refuses refused. A test that fakes `Date` after the backend
+ * opened replaced the kernel's wrapper, so each function wraps the realm's
+ * `Date` again, as it installs `globalThis.Convex` again. A guarded global a
+ * test replaced is adopted beneath a fresh guard first, and one that cannot be
+ * guarded refuses the function before it runs.
  */
 const enter = <A>(execution: Execution, run: () => A): A => {
   installConvexGlobal();
   installDate();
   return Globals.own(() => {
-    installEntropy();
+    // A function runs only with every guarded global installed and read back.
+    installGuardedGlobals();
+    watches.set(execution, IoBans.watch());
     return executions.run(execution, run);
   });
+};
+
+/**
+ * What tells, at each function's settlement, which guarded globals were
+ * redefined since its entry.
+ */
+const watches = new WeakMap<Execution, () => ReadonlyArray<string>>();
+
+/**
+ * `outcome`, unless a guarded global was redefined while `execution` ran. A
+ * guard cannot stop a call made through a replacement, which a descriptor
+ * change such as `Object.defineProperty` makes, so the change is caught when
+ * the function settles: it fails with `UnguardableGlobal`, whatever it
+ * returned, and the guard is installed again. It is each function's one
+ * finalizer, applied to the outermost promise of its run, outside the race with
+ * its ending, so it runs however the function ends: returned, failed, refused
+ * or terminated. Applied before a mutation's commit point, so it publishes none
+ * of its writes.
+ */
+const unlessReplaced = <A>(
+  execution: Execution,
+  outcome: Promise<A>,
+): Promise<A> => {
+  const refusal = () => {
+    const names = watches.get(execution)?.() ?? [];
+    if (names.length === 0) return undefined;
+    installIoBans();
+    return KernelRefusal.replacedWhileRunning(execution.udfPath, names);
+  };
+  return outcome.then(
+    (value) => {
+      const refused = refusal();
+      if (refused !== undefined) throw refused;
+      return value;
+    },
+    (error: unknown) => {
+      throw refusal() ?? error;
+    },
+  );
 };
 const kernelBrand = Symbol.for("@confect/test/Kernel");
 
@@ -714,6 +931,7 @@ const makeComponent = (
   schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
   modules: Modules,
   standing: ReadonlyArray<string> = [],
+  sources?: Sources,
 ): Component => {
   const root = findModulesRoot(Rec.keys(modules));
   const relative = pipe(
@@ -723,6 +941,41 @@ const makeComponent = (
       ([key, load]) => [pipe(key, Str.slice(root.length)), load] as const,
     ),
   );
+  // Sources are matched to modules by their path below their own modules
+  // root, so a `?raw` glob of the same files from another file, whose keys
+  // carry another prefix, matches too.
+  const sourcesRoot =
+    sources === undefined
+      ? root
+      : pipe(
+          Arr.findFirst(Rec.keys(sources), (key) =>
+            pipe(key, Str.includes("_generated")),
+          ),
+          Option.match({
+            onNone: () => root,
+            onSome: (key) => pipe(key, Str.split("_generated"))[0],
+          }),
+        );
+  const relativeSources =
+    sources === undefined
+      ? undefined
+      : new Map(
+          pipe(
+            Rec.toEntries(sources),
+            Arr.filter(([key]) => pipe(key, Str.startsWith(sourcesRoot))),
+            Arr.map(
+              ([key, read]) =>
+                [
+                  pipe(
+                    key,
+                    Str.slice(sourcesRoot.length),
+                    Str.replace(/\.[^.]+$/, ""),
+                  ),
+                  read,
+                ] as const,
+            ),
+          ),
+        );
   const nested = pipe(
     relative,
     Arr.map(([file]) => file),
@@ -748,6 +1001,8 @@ const makeComponent = (
     ),
     loaded: new Map(),
     standing: new Set(standing),
+    sources: relativeSources,
+    runtimes: new Map(),
     authConfig: Option.getOrUndefined(
       Arr.findFirst(relative, ([file]) => /^auth\.config\.[jt]s$/.test(file)),
     )?.[1],
@@ -789,6 +1044,168 @@ const isFunctionModule = (file: string): boolean => {
     ) <= 1 &&
     !pipe(file, Str.includes(" "))
   );
+};
+
+/**
+ * The bundler's fallback for a source Babel cannot parse
+ * (`useNodeDirectiveRegex`, `npm-packages/convex/src/bundler/index.ts:506` in
+ * `convex` 1.49.0).
+ */
+const useNodeDirectiveRegex = /^\s*("|')use node("|');?\s*$/;
+
+/**
+ * Whether `source` has a `"use node"` directive, decided as `convex` 1.49.0's
+ * bundler decides it (`hasUseNodeDirective`,
+ * `npm-packages/convex/src/bundler/index.ts:508-548`): a source without the
+ * text has none (`:512`); otherwise Babel parses it as a module with the `jsx`
+ * and `typescript` plugins, the bundler's options, and its `program.directives`
+ * decide (`:519-529`); a source Babel cannot parse has one when any line
+ * matches the bundler's fallback regex (`:530-545`). `convex` exports no such
+ * check, so this calls the same parser, `@babel/parser`, with the same options,
+ * at the version `convex` bundles into its CLI, which `@confect/test` pins: the
+ * version decides which TypeScript parses.
+ */
+export const hasUseNodeDirective = (source: string): boolean => {
+  if (!pipe(source, Str.includes("use node"))) return false;
+  try {
+    const ast = parseAST(source, {
+      sourceType: "module",
+      plugins: ["jsx", "typescript"],
+    });
+    return Arr.some(
+      ast.program.directives,
+      (directive) => directive.value.value === "use node",
+    );
+  } catch {
+    return Arr.some(Str.split(source, "\n"), (line) =>
+      useNodeDirectiveRegex.test(line),
+    );
+  }
+};
+
+/**
+ * Modules the bundler refuses to run in Node (`mustBeIsolate`,
+ * `bundler/index.ts:551-556`).
+ */
+const mustBeIsolate = (path: string) =>
+  ["http", "crons", "schema", "auth.config"].includes(path);
+
+/**
+ * The runtime of the module at `path`, read from the source the test supplied:
+ * `"node"` for a `"use node"` directive, else `"isolate"`, as the bundler's
+ * `determineEnvironment` decides (`bundler/index.ts:558-588`). `undefined` when
+ * the test supplied no sources for the component.
+ */
+const runtimeFromSource = (
+  component: Component,
+  path: string,
+): Promise<IoBans.Runtime | undefined> => {
+  if (component.sources === undefined) return Promise.resolve(undefined);
+  const read = component.sources.get(path);
+  if (read === undefined) {
+    return Promise.reject(
+      KernelRefusal.ModuleRuntime.make({
+        reason: "missingSource",
+        componentPath: component.path,
+        module: path,
+        message: `Module "${path}" has no source among the sources the test gave${component.path === ROOT ? "" : ` component "${component.path}"`}, so its "use node" directive cannot be read. Give a source for every module, as a ?raw glob of the same files does.`,
+      }),
+    );
+  }
+  return read().then((source) => {
+    if (!hasUseNodeDirective(source)) return "isolate";
+    if (mustBeIsolate(path)) {
+      throw KernelRefusal.ModuleRuntime.make({
+        reason: "nodeNotAllowed",
+        componentPath: component.path,
+        module: path,
+        message: `"use node" directive is not allowed for ${path}.`,
+      });
+    }
+    return "node";
+  });
+};
+
+/**
+ * The runtime Confect registered an action for: `true` for a Node action
+ * (`RegisteredNodeFunction.make` in `@confect/server`), `false` for an isolate
+ * one (`RegisteredConvexFunction`). A plain Convex function has no mark.
+ */
+const nodeAction = Symbol.for("@confect/server/NodeAction");
+
+const markOf = (func: unknown): boolean | undefined =>
+  (func as { [nodeAction]?: boolean } | undefined)?.[nodeAction];
+
+/**
+ * The runtime a function runs in: its module's, read from the directive. With
+ * no source, Confect's mark decides, then the runtime the test declared for the
+ * component, and an action with none of these was refused when the world
+ * opened. A mark that disagrees with the directive is refused.
+ */
+const runtimeOfFunction = (
+  component: Component,
+  modulePath: string,
+  exportName: string,
+  func: unknown,
+  componentRuntime: IoBans.Runtime | undefined,
+): IoBans.Runtime => {
+  const marked = markOf(func);
+  const declared = component.runtimes.get(modulePath);
+  if (declared === undefined) {
+    if (marked !== undefined) return marked ? "node" : "isolate";
+    return componentRuntime ?? "isolate";
+  }
+  if (marked !== undefined && marked !== (declared === "node")) {
+    throw KernelRefusal.ModuleRuntime.make({
+      reason: "markerDisagrees",
+      componentPath: component.path,
+      module: modulePath,
+      message: marked
+        ? `${modulePath}:${exportName} is a Confect Node action, but module "${modulePath}" has no "use node" directive, so Convex would run it in its isolate.`
+        : `${modulePath}:${exportName} is a Confect action for Convex's isolate, but module "${modulePath}" has a "use node" directive, so Convex would run it in Node. Register it as a Node action.`,
+    });
+  }
+  return declared;
+};
+
+/**
+ * Refuse a component the test gave no sources, and declared no runtime for,
+ * whose modules export an action with no Confect mark: Convex runs it in Node
+ * or in its isolate by its module's `"use node"` directive, which only a source
+ * shows.
+ */
+const checkActionRuntimes = (
+  component: Component,
+  componentRuntime: IoBans.Runtime | undefined,
+) => {
+  if (component.sources !== undefined || componentRuntime !== undefined) return;
+  for (const [path, module] of component.loaded) {
+    const unknown = pipe(
+      Rec.toEntries((module ?? {}) as Record<string, unknown>),
+      Arr.filter(
+        ([, func]) =>
+          (func as { isAction?: unknown } | undefined)?.isAction === true &&
+          markOf(func) === undefined,
+      ),
+      Arr.map(([name]) => name),
+    );
+    const named = Arr.join(
+      Arr.map(unknown, (name) => `${path}:${name}`),
+      ", ",
+    );
+    if (unknown.length > 0) {
+      throw KernelRefusal.ActionRuntimeUnknown.make({
+        componentPath: component.path,
+        module: path,
+        exports: unknown,
+        message:
+          `Module "${path}"${component.path === ROOT ? "" : ` of component "${component.path}"`} exports ${named}, a plain Convex action, and the test gave no sources, so the test kernel cannot read the module's "use node" directive to tell whether Convex runs it in Node or in its isolate. ` +
+          (component.path === ROOT
+            ? `Pass the modules' sources, such as import.meta.glob(pattern, { query: "?raw", import: "default" }) of the same files.`
+            : `Pass the component's sources, as registerComponent(name, schema, modules, { sources }), or, for a package's test kit that registers without them, declare the runtime its plain actions run in with componentRuntimes: { "${component.path}": "isolate" }.`),
+      });
+    }
+  }
 };
 
 const unregistered = (world: World, componentPath: string) => {
@@ -851,6 +1268,7 @@ interface Resolved {
   readonly handler: (ctx: any, args: any) => any;
   readonly args: ValidatorJSON;
   readonly returns: ValidatorJSON | null;
+  readonly runtime: IoBans.Runtime;
 }
 
 const kindCheck = {
@@ -872,6 +1290,26 @@ export class World {
   private readonly queries = new Map<number, Iterator<any>>();
   private readonly holding = new Map<string, Held>();
   private nextAttemptId = 1;
+  private readonly pending = new Map<
+    string,
+    {
+      readonly view: HeldCommand;
+      readonly action: Execution;
+      readonly answer: (output: unknown) => void;
+    }
+  >();
+  private nextCommandId = 1;
+  /**
+   * The commands cancelled when their action ended, which no answer reaches.
+   */
+  private readonly cancelled = new Set<string>();
+  /**
+   * The actions that ended, and why a port call they make now is refused.
+   */
+  private readonly closedActions = new WeakMap<
+    Execution,
+    { readonly refusal: unknown }
+  >();
   /**
    * The latest deadline time has been advanced to. The clock never reads
    * earlier.
@@ -946,6 +1384,8 @@ export class World {
      * refuses it as an unregistered component.
      */
     private readonly sink?: Sink,
+    sources?: Sources,
+    private readonly componentRuntimes: ComponentRuntimes = {},
   ) {
     installConvexGlobal();
     installDate();
@@ -953,7 +1393,12 @@ export class World {
       const execution = executions.getStore();
       return execution?.world.environments.get(execution.componentPath);
     });
-    this.components.set(ROOT, makeComponent(ROOT, schema, modules));
+    installIoBans();
+    Egress.install(egressHolder);
+    this.components.set(
+      ROOT,
+      makeComponent(ROOT, schema, modules, [], sources),
+    );
   }
 
   /**
@@ -968,6 +1413,7 @@ export class World {
     modules: Modules,
     standing: ReadonlyArray<string> = [],
     secrets?: Redaction.Declared,
+    sources?: Sources,
   ) {
     if (this.opened !== undefined) {
       throw KernelRefusal.RegisteredAfterOpen.make({
@@ -977,7 +1423,7 @@ export class World {
     }
     this.components.set(
       componentPath,
-      makeComponent(componentPath, schema, modules, standing),
+      makeComponent(componentPath, schema, modules, standing, sources),
     );
     if (secrets !== undefined)
       this.redaction = Redaction.extend(
@@ -1008,11 +1454,13 @@ export class World {
   }
 
   /**
-   * Load every registered module, read each component's cron declarations, and
-   * schedule their first runs, once. The first runs start in the world of the
-   * invocation bound by the call that opened the backend, or else the world the
-   * driver gave the backend. `advance` and `drain` open with the driver's,
-   * since their binding never reaches a job.
+   * Load every registered module, with its runtime read from its source when
+   * the test supplied them, refuse a plain Convex action whose runtime no
+   * source shows, read each component's cron declarations, and schedule their
+   * first runs, once. The first runs start in the world of the invocation bound
+   * by the call that opened the backend, or else the world the driver gave the
+   * backend. `advance` and `drain` open with the driver's, since their binding
+   * never reaches a job.
    */
   open(): Promise<void> {
     return this.openIn(Invocation.current()?.world ?? this.own);
@@ -1055,7 +1503,15 @@ export class World {
       );
       this.authConfig = loaded.then(() => authConfig?.default);
       this.opened = Promise.all([loaded, this.authConfig])
-        .then(() => this.checkStanding())
+        .then(() => {
+          for (const component of this.components.values()) {
+            checkActionRuntimes(
+              component,
+              this.componentRuntimeOf(component.path),
+            );
+          }
+          return this.checkStanding();
+        })
         .then(() => this.readDeclarations());
     }
     return this.opened;
@@ -1080,13 +1536,20 @@ export class World {
    * randomness rejects with the binary's queries-and-mutations error, as a load
    * for one of those does. A module the host runtime already evaluated is not
    * evaluated again, so it draws nothing.
+   *
+   * Each module's runtime is read before it loads: from its source when the
+   * test gave sources, else from the component's declared runtime, else the
+   * isolate. A module that does not run in Node loads under the query and
+   * mutation rules for I/O, as `IoBans` describes: its `fetch` rejects with the
+   * binary's `TypeError`, and a timer ends the load with the binary's error, so
+   * the open refuses with it, whatever the module catches or awaits.
    */
   private loadModules(
     world: Invocation.World | undefined,
     extra: ReadonlyArray<{
       readonly modulePath: string;
       readonly load: () => Promise<any>;
-      readonly keep: (module: any) => void;
+      readonly keep: (module: any) => unknown;
     }> = [],
   ): Promise<void> {
     let refused: KernelRefusal.LoadRandomUnavailable | undefined;
@@ -1097,20 +1560,35 @@ export class World {
           component,
           modulePath,
           load,
-          keep: (module: any) => {
+          // Each module's runtime is read from its source before it loads,
+          // when the test supplied sources.
+          runtime: (): Promise<IoBans.Runtime> =>
+            runtimeFromSource(component, modulePath).then((runtime) => {
+              if (runtime === undefined) {
+                return this.componentRuntimeOf(component.path) ?? "isolate";
+              }
+              component.runtimes.set(modulePath, runtime);
+              return runtime;
+            }),
+          keep: (module: any): unknown => {
             component.loaded.set(modulePath, module);
+            return undefined;
           },
         })),
     ).concat(
       Arr.map(extra, (entry) => ({
         ...entry,
         component: this.component(ROOT),
+        // Modules beside the registered ones, as `auth.config`, run in the
+        // isolate (`mustBeIsolate`).
+        runtime: (): Promise<IoBans.Runtime> => Promise.resolve("isolate"),
       })),
     );
     const loadOne = ({
       component,
       modulePath,
       load,
+      runtime,
       keep,
     }: (typeof entries)[number]): Promise<unknown> => {
       const random =
@@ -1126,12 +1604,30 @@ export class World {
       // A component's module code reads that component's environment, as it
       // does on a deployment.
       return Environment.loading(this.environments.get(component.path), () =>
-        moduleLoads.run({ phase: "load", random }, () =>
-          Globals.own(() => {
-            installEntropy();
-            return load();
-          }),
-        ),
+        runtime().then((loadsIn) => {
+          const { promise: ended, reject: end } =
+            Promise.withResolvers<never>();
+          // Read only through the race, so an ending nothing awaits is no
+          // unhandled rejection.
+          ended.catch(() => undefined);
+          return moduleLoads.run(
+            {
+              phase: "load",
+              random,
+              runtime: loadsIn,
+              componentPath: component.path,
+              modulePath,
+              end,
+            },
+            () =>
+              Globals.own(() => {
+                installGuardedGlobals();
+                // The ending comes first, so a load that a timer ended while
+                // it ran fails even when its own promise has settled too.
+                return Promise.race([ended, load()]);
+              }),
+          );
+        }),
       ).then(keep);
     };
     return Arr.reduce(
@@ -1385,6 +1881,20 @@ export class World {
     return Math.max(this.runtime.now(), this.floor);
   }
 
+  /**
+   * The runtime the test declared for the component at `componentPath`, read
+   * from the declaration's own entries only, so a component named like an
+   * `Object.prototype` member, such as `constructor`, declares nothing unless
+   * the test lists it.
+   */
+  private componentRuntimeOf(
+    componentPath: string,
+  ): IoBans.Runtime | undefined {
+    return Option.getOrUndefined(
+      Rec.get(this.componentRuntimes, componentPath),
+    );
+  }
+
   private component(componentPath: string): Component {
     const component = this.components.get(componentPath);
     if (component === undefined) throw unregistered(this, componentPath);
@@ -1426,7 +1936,19 @@ export class World {
           `Args validator must be an object or any`,
       );
     }
-    return { func, handler, args, returns: Json.parse(func.exportReturns()) };
+    return {
+      func,
+      handler,
+      args,
+      returns: Json.parse(func.exportReturns()),
+      runtime: runtimeOfFunction(
+        component,
+        modulePath,
+        exportName,
+        func,
+        this.componentRuntimeOf(component.path),
+      ),
+    };
   }
 
   // Calls from the test.
@@ -1664,6 +2186,83 @@ export class World {
     return Array.from(this.holding.values(), (held) => held.view);
   }
 
+  // Held commands.
+
+  /**
+   * Hold a provider port's call from the action `execution` until the test
+   * answers it. Once the action has ended, the call is refused instead.
+   */
+  hold(execution: Execution, port: string, input: unknown): Promise<unknown> {
+    const closed = this.closedActions.get(execution);
+    if (closed !== undefined) return Promise.reject(closed.refusal);
+    const { promise, resolve } = Promise.withResolvers<unknown>();
+    const view: HeldCommand = {
+      id: `command-${this.nextCommandId++}`,
+      kind: "provider",
+      port,
+      input,
+      componentPath: execution.componentPath,
+      functionName: execution.udfPath,
+      request: execution.request.requestId,
+    };
+    this.pending.set(view.id, { view, action: execution, answer: resolve });
+    return promise;
+  }
+
+  /**
+   * End the action `execution`'s commands: a port call it makes now is refused
+   * with `refusal`, and its held commands are cancelled. A cancelled call never
+   * settles, as an ended function runs no more JavaScript. Without a `refusal`
+   * the action settled on its own, and a later call is refused with
+   * `ActionEnded`.
+   */
+  closeCommands(execution: Execution, refusal?: unknown): void {
+    if (this.closedActions.has(execution)) return;
+    this.closedActions.set(execution, {
+      refusal:
+        refusal ??
+        KernelRefusal.ActionEnded.make({
+          componentPath: execution.componentPath,
+          functionName: execution.udfPath,
+          message: `The action ${execution.udfPath} already ended, so the test kernel refused its provider port call.`,
+        }),
+    });
+    for (const [id, command] of this.pending) {
+      if (command.action === execution) {
+        this.pending.delete(id);
+        this.cancelled.add(id);
+      }
+    }
+  }
+
+  /**
+   * The held commands, oldest first.
+   */
+  commands(): ReadonlyArray<HeldCommand> {
+    return Array.from(this.pending.values(), ({ view }) => view);
+  }
+
+  /**
+   * Answer a held command: its port call returns `output`. A command already
+   * answered, never held, or cancelled when its action ended is refused with
+   * `StaleCommand`.
+   */
+  answer(id: string, output: unknown): void {
+    const command = this.pending.get(id);
+    if (command === undefined) {
+      const cancelled = this.cancelled.has(id);
+      throw KernelRefusal.StaleCommand.make({
+        id,
+        reason: cancelled ? "cancelled" : "notHeld",
+        message: cancelled
+          ? `The test kernel cancelled command "${id}" when its action ended, so no answer reaches it.`
+          : `The test kernel holds no command "${id}". It was already answered, or never held.`,
+      });
+    }
+    this.pending.delete(id);
+    command.answer(output);
+  }
+
   // Subscribed queries.
 
   /**
@@ -1888,10 +2487,12 @@ export class World {
           identityEpoch: this.identityEpoch,
           nextFile: this.nextFile,
           nextUploadToken: this.nextUploadToken,
+          nextCommandId: this.nextCommandId,
         },
         jobs,
         files,
         crons,
+        cancelledCommands: [...this.cancelled],
         signingKey:
           this.deploymentKey.seed === undefined
             ? null
@@ -2008,6 +2609,9 @@ export class World {
     this.identityEpoch = image.identity.identityEpoch;
     this.nextFile = image.identity.nextFile;
     this.nextUploadToken = image.identity.nextUploadToken;
+    this.nextCommandId = image.identity.nextCommandId;
+    this.cancelled.clear();
+    for (const id of image.cancelledCommands) this.cancelled.add(id);
     this.files.clear();
     this.legacyIds.clear();
     for (const [id, file] of image.files) {
@@ -2688,6 +3292,7 @@ export class World {
     from: From,
     pagination: Pagination | undefined,
     startTime?: number,
+    runtime: IoBans.Runtime = "isolate",
   ): Execution {
     const { identity, unverified } = callIdentity(
       from,
@@ -2710,6 +3315,7 @@ export class World {
       componentPath: functionPath.componentPath,
       udfPath: functionPath.udfPath,
       udfType,
+      runtime,
       attempt,
       identity,
       unverified,
@@ -2761,10 +3367,15 @@ export class World {
         handler: (ctx: any, a: any) =>
           resolved.handler({ ...ctx, auth: queryAuth(execution) }, a),
       }) as unknown as { invokeQuery: (args: string) => Promise<string> };
-      return enter(execution, () =>
-        q.invokeQuery(Json.stringify(convexToJson([parseArgs(args)]))),
+      return unlessReplaced(
+        execution,
+        unlessEnded(
+          execution,
+          enter(execution, () =>
+            q.invokeQuery(Json.stringify(convexToJson([parseArgs(args)]))),
+          ).then((raw) => settled(execution, raw)),
+        ),
       )
-        .then((raw) => settled(execution, raw))
         .then((raw) => {
           const result = jsonToConvex(Json.parse(raw));
           if (!isNested && hasPendingValues(result)) {
@@ -2792,20 +3403,24 @@ export class World {
       handler: (ctx: any, a: any) =>
         resolved.handler({ ...ctx, auth: mutationAuth(execution) }, a),
     }) as unknown as { invokeMutation: (args: string) => Promise<string> };
-    return enter(execution, () =>
-      m.invokeMutation(Json.stringify(convexToJson([parseArgs(args)]))),
-    )
-      .then((raw) => settled(execution, raw))
-      .then((raw) => {
-        const result = jsonToConvex(Json.parse(raw));
-        const functionPath = {
-          componentPath: execution.componentPath,
-          udfPath: execution.udfPath,
-        };
-        this.keepReturns(functionPath, result);
-        validateReturnValue(resolved.returns, result, "mutation", functionPath);
-        return result;
-      });
+    return unlessReplaced(
+      execution,
+      unlessEnded(
+        execution,
+        enter(execution, () =>
+          m.invokeMutation(Json.stringify(convexToJson([parseArgs(args)]))),
+        ).then((raw) => settled(execution, raw)),
+      ),
+    ).then((raw) => {
+      const result = jsonToConvex(Json.parse(raw));
+      const functionPath = {
+        componentPath: execution.componentPath,
+        udfPath: execution.udfPath,
+      };
+      this.keepReturns(functionPath, result);
+      validateReturnValue(resolved.returns, result, "mutation", functionPath);
+      return result;
+    });
   }
 
   private runMutation(
@@ -2999,7 +3614,8 @@ export class World {
 
   private runAction(
     functionPath: FunctionPath,
-    resolved: Pick<Resolved, "handler" | "args" | "returns">,
+    resolved: Pick<Resolved, "handler" | "args" | "returns"> &
+      Partial<Pick<Resolved, "runtime">>,
     args: any,
     from: From,
   ): Promise<any> {
@@ -3010,6 +3626,8 @@ export class World {
         undefined,
         from,
         undefined,
+        undefined,
+        resolved.runtime ?? "isolate",
       );
       const inner: From = { request: from.request, parent: execution };
       const a = actionGeneric({
@@ -3018,22 +3636,28 @@ export class World {
             {
               ...ctx,
               runQuery: (reference: any, queryArgs: any) =>
-                this.queryAt(
-                  pathOfReference(reference, functionPath.componentPath),
-                  queryArgs,
-                  inner,
+                whileRunning(execution, () =>
+                  this.queryAt(
+                    pathOfReference(reference, functionPath.componentPath),
+                    queryArgs,
+                    inner,
+                  ),
                 ),
               runMutation: (reference: any, mutationArgs: any) =>
-                this.mutationAt(
-                  pathOfReference(reference, functionPath.componentPath),
-                  mutationArgs,
-                  inner,
+                whileRunning(execution, () =>
+                  this.mutationAt(
+                    pathOfReference(reference, functionPath.componentPath),
+                    mutationArgs,
+                    inner,
+                  ),
                 ),
               runAction: (reference: any, actionArgs: any) =>
-                this.actionAt(
-                  pathOfReference(reference, functionPath.componentPath),
-                  actionArgs,
-                  inner,
+                whileRunning(execution, () =>
+                  this.actionAt(
+                    pathOfReference(reference, functionPath.componentPath),
+                    actionArgs,
+                    inner,
+                  ),
                 ),
               auth: queryAuth(execution),
             },
@@ -3065,7 +3689,15 @@ export class World {
               ),
               run,
             );
-      return started
+      // One finalizer for every way the action ends, its ending included: a
+      // terminated action whose handler never settles still has its globals
+      // checked and its guards installed again.
+      return unlessReplaced(
+        execution,
+        unlessEnded(execution, started).finally(() =>
+          this.closeCommands(execution),
+        ),
+      )
         .then((raw) => {
           const result = jsonToConvex(Json.parse(raw));
           this.keepReturns(functionPath, result);
@@ -3473,18 +4105,18 @@ export class World {
     execution: Execution,
   ): Promise<string> {
     const attempt = execution.attempt;
-    if (attempt === undefined) {
-      return Promise.resolve().then(() =>
-        this.dispatchAsync(op, Json.parse(jsonArgs), execution),
+    const dispatch = () =>
+      whileRunning(execution, () =>
+        Promise.resolve(
+          this.dispatchAsync(op, Json.parse(jsonArgs), execution),
+        ),
       );
-    }
+    if (attempt === undefined) return Promise.resolve().then(dispatch);
     if (attempt.closed) return Promise.reject(closed(execution, op));
     // A syscall counts toward its frame's lifetime from the moment it is
     // queued, so a frame never closes with a write still waiting its turn.
     const end = attempt.begin();
-    return execution.turn
-      .take(() => this.dispatchAsync(op, Json.parse(jsonArgs), execution))
-      .finally(end);
+    return execution.turn.take(dispatch).finally(end);
   }
 
   private dispatchAsync(

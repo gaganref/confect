@@ -242,7 +242,12 @@ export const registerKit = (
   if ("register" in kit) {
     kit.register({ registerComponent }, name);
   } else if ("schema" in kit && "modules" in kit) {
-    registerComponent(name, kit.schema, kit.modules);
+    registerComponent(
+      name,
+      kit.schema,
+      kit.modules,
+      kit.sources === undefined ? undefined : { sources: kit.sources },
+    );
   } else {
     // Codegen accepts a kit whose exports it cannot list, such as CommonJS.
     throw InvalidComponentKit.make({
@@ -254,10 +259,12 @@ export const registerKit = (
 };
 
 /**
- * The `"convex-test"` target's options. convex-test ignores `world`, but the
- * fork's kernel lane aliases `convex-test` to the kernel, which draws a signing
- * key or a cron delay from the backend's own world. Giving it the layer's
- * seeded world keeps one source of randomness on both lanes.
+ * The `"convex-test"` target's options. convex-test ignores `world`, the module
+ * sources and the component runtimes, but the fork's kernel lane aliases
+ * `convex-test` to the kernel, which draws a signing key or a cron delay from
+ * the backend's own world and reads each module's runtime from its source.
+ * Giving it the layer's seeded world and sources keeps one backend setup on
+ * both lanes.
  */
 const convexTestOptions = (
   schema: SchemaDefinition<GenericSchema, true>,
@@ -268,6 +275,10 @@ const convexTestOptions = (
     schema,
     modules,
     world: DriverWorld.make("TestConfect.layer", options.seed ?? 0),
+    ...(options.sources === undefined ? {} : { sources: options.sources }),
+    ...(options.componentRuntimes === undefined
+      ? {}
+      : { componentRuntimes: options.componentRuntimes }),
   };
   return withWorld;
 };
@@ -302,6 +313,10 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
               options.secrets ?? {},
             ),
           ),
+          ...(options.sources === undefined ? {} : { sources: options.sources }),
+          ...(options.componentRuntimes === undefined
+            ? {}
+            : { componentRuntimes: options.componentRuntimes }),
         })
       : convexTest(convexTestOptions(convexSchemaDefinition, modules, options));
   // convex-test takes three arguments and ignores the options. The kernel

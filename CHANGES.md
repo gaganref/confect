@@ -196,6 +196,84 @@ The option is removed at promotion, when the kernel replaces convex-test.
 Changeset: `testconfect-kernel-target.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel action egress
+
+On the kernel, a raw `fetch` in an action or a Node action dies with
+`BackendRefusal` `UndeclaredFetch`, naming the action's component path and
+`module:export` and the URL's host, with `failed`, `because`, `instead` and a
+`docs` anchor. The action settles with it at once, whatever its handler catches
+and whether or not the handler settles, runs no later call, and logs nothing
+more, as the binary stops an ended function's JavaScript. `console` is a
+guarded global: the final read-back and the settlement check read it, so a test
+that replaces it under the kernel refuses the function with `UnguardableGlobal`
+rather than logging through the replacement. The binary performs
+this fetch, so this is the kernel's one deliberate departure, recorded as a
+convex-test lane conformance exception in `conformance.ts`, now the lane's one
+exception mechanism: `main`'s two route-error exceptions moved into it from
+`vitest.mock-backend.config.ts`, and every entry names convex-test 0.0.67. An
+entry names one exact case,
+the binary behaviour, each function's expected outcome there, an owner, the
+convex-test version and its local-backend evidence, and the lane refuses broad,
+stale or versionless entries, a skipped case, an unrelated failure and an
+excepted case that passes. Egress goes through an internal provider port: inside
+a kernel action its call is held as a `{ kind: "provider" }` command that the
+shim's `commands()` lists and `answer(id, output)` settles, until the action
+ends, when its commands are cancelled and a later call is refused. A snapshot
+carries the command allocator and the cancelled commands, so a restored world
+numbers its next command and refuses a stale answer as its source would
+(snapshot format 5, which carries #134's signing key beside them). This is the
+action egress row of Frame's backend testing kernel (Frame ADR 0012, row 6).
+Changeset: `test-kernel-action-egress.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
+## Test kernel I/O bans
+
+On the kernel, a query or mutation that calls `fetch` gets the `TypeError` the
+Convex binary rejects with, naming the target without its query string. One
+that starts `setTimeout` or `setInterval` fails with the binary's "Can't use
+setTimeout in queries and mutations" at once, whatever the handler caught and
+even while it awaits the timer, and a mutation publishes none of its writes. A
+multipart `formData()` rejects with the binary's error. Queries, mutations and
+isolate actions find no `setImmediate`, `queueMicrotask` or `MessageChannel`,
+as the binary's isolate defines none of them, and neither does a module
+without `"use node"` while it loads, while a Node action has Node's. The kernel
+reads each module's `"use node"` directive with `@babel/parser`, the parser
+and options `convex` 1.49's bundler uses, now a runtime dependency of
+`@confect/test`, pinned to the version `convex` bundles, 7.28.5, with a test
+that fails when the installed `convex` bundles another. `RegisteredNodeFunction`
+in `@confect/server` marks a Node action so the kernel can tell. Each of these
+globals is an accessor that returns a guard, installed by the new
+`@confect/test/setup` before any test module loads, so a reference a module
+kept, a nested call, a stub and a handler's own assignment are all checked. A
+replaced global is guarded again when the next function starts, a
+non-configurable one refuses the function with `UnguardableGlobal`, and a
+promisified timer is guarded too. A global left replaced when a function
+settles, read through the prototype chain, fails that function with
+`UnguardableGlobal` (`replacedWhileRunning`), so a mutation publishes none of
+its writes, and the guard comes back as an own property. An install that throws
+or is undone refuses with `installFailed`: the I/O guards and #150's entropy
+install all install first, then one final read-back of every guarded global
+runs before any user code, and both installs share one `UnguardableGlobal`.
+Accessors that run code to fake the guard at settlement are hostile and out of
+scope. A module's runtime
+comes from its `"use node"` directive when the test passes its sources
+(`sources`, a `?raw` glob, in each `TestConfect.layer` form), with Confect's
+mark, which `@confect/server` now sets on its isolate actions too, as a
+cross-check. Without sources, a plain Convex action is refused with
+`ActionRuntimeUnknown` when the kernel opens, unless the test declares its
+component's runtime with `componentRuntimes`, as for a package's test kit. The
+clears stay allowed and actions keep the host's `fetch` and timers. A module's
+top level loads under the same rules unless it has a `"use node"` directive:
+its `fetch` rejects with the binary's `TypeError`, and a timer fails the load
+with the binary's error. The one place the kernel is stricter, a top-level
+`fetch` in an isolate action's module, which the binary answers, is the
+`ActionModuleLoadFetch` kernel boundary. A `"use node"` module keeps the host's
+timers while it loads, and its top-level `fetch` dies with `UndeclaredFetch`, as
+the action egress rule below has it. The local-backend suite pins each behaviour
+on the binary. This is the I/O bans row
+of Frame's backend testing kernel (Frame ADR 0012, row 6). Changeset:
+`test-kernel-io-bans.md`. Upstream: fork only, as the kernel is fork-specific.
+
 ## Test kernel file storage
 
 The kernel simulates file storage. A stored file is a row in its component's
