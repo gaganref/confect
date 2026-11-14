@@ -1,5 +1,5 @@
+import { pathToFileURL } from "node:url";
 import { codegenHandler } from "@confect/cli/confect/codegen";
-import * as Bundler from "@confect/cli/Bundler";
 import {
   InvalidDeclarationError,
   InvalidManifestSectionError,
@@ -77,25 +77,88 @@ const componentProject = Effect.gen(function* () {
   yield* project.write("confect/app.ts", app());
   yield* project.write("confect/callbacks.ts", callbacks);
   yield* project.write("confect/tables/hooks.ts", hooks);
-  const run = Effect.scoped(
+  const fs = yield* FileSystem.FileSystem;
+  const read = (file: string) => fs.readFileString(`${project.root}/${file}`);
+  const remove = (file: string) => fs.remove(`${project.root}/${file}`);
+  return { ...project, run: generateAt(project.root), read, remove };
+});
+
+/**
+ * Run codegen for the component whose root is `root`.
+ */
+const generateAt = (root: string) =>
+  Effect.scoped(
     Effect.gen(function* () {
       const services = yield* Layer.build(
         DirectoryOptions.layer({
-          componentDir: Option.some(`${project.root}/convex`),
+          componentDir: Option.some(`${root}/convex`),
         }),
       );
       return yield* codegenHandler.pipe(Effect.provideContext(services));
     }),
   );
-  const fs = yield* FileSystem.FileSystem;
-  const read = (file: string) => fs.readFileString(`${project.root}/${file}`);
-  return { ...project, run, read };
-});
 
+/**
+ * The generated subject, imported as a consumer's test imports it, through
+ * Vite, so `@confect/test` and its own dependencies resolve from its package.
+ */
 const subjectOf = (project: { readonly root: string }) =>
-  Bundler.bundle(`${project.root}/confect/_generated/testing.ts`).pipe(
-    Effect.map(({ module }) => module["TestBackend"]),
-  );
+  Effect.promise(
+    (): Promise<{ readonly TestBackend: any }> =>
+      import(
+        /* @vite-ignore */ pathToFileURL(
+          `${project.root}/confect/_generated/testing.ts`,
+        ).href
+      ),
+  ).pipe(Effect.map(({ TestBackend }) => TestBackend));
+
+/**
+ * A local component at `directory` under `project`, named `name`, whose
+ * descriptor beside its `confect/` names `<group>:init` its init.
+ */
+const localComponent = (
+  project: { readonly root: string },
+  directory: string,
+  name: string,
+  group: string,
+) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = `${project.root}/${directory}`;
+    yield* fs.makeDirectory(`${root}/confect/tables`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/convex`, { recursive: true });
+    const write = (file: string, contents: string) =>
+      fs.writeFileString(`${root}/${file}`, contents);
+    yield* write(
+      "confect/app.ts",
+      `import { App, Env } from "@confect/core";\nexport default App.make({ kind: "component", env: Env.make("${name}", {}) });\n`,
+    );
+    yield* write(
+      `confect/${group}.spec.ts`,
+      pipe(
+        installSpec,
+        Str.replace(/^import \{ OnEvent \}.*\n/m, ""),
+        Str.replace("({ onEvent: Callback.handle(OnEvent) })", "({})"),
+      ),
+    );
+    yield* write(
+      `confect/${group}.impl.ts`,
+      pipe(
+        installImpl,
+        Str.replaceAll("install.spec", `${group}.spec`),
+        Str.replace("import install from", `import ${group} from`),
+        Str.replaceAll("(databaseSchema, install", `(databaseSchema, ${group}`),
+      ),
+    );
+    yield* write(
+      "client.ts",
+      pipe(
+        client(`refs.internal.${group}.init`),
+        Str.replace('"mailer"', `"${name}"`),
+      ),
+    );
+    return root;
+  });
 
 layer(NodeServices.layer)("codegen's generated component subject", (it) => {
   it.effect(
@@ -224,5 +287,127 @@ layer(NodeServices.layer)("codegen's generated component subject", (it) => {
         );
       }).pipe(Effect.scoped),
     { timeout: 60000 },
+  );
+
+  it.effect(
+    "resolves a ./client export through nested conditions, as Node does",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* componentProject;
+        yield* project.write(
+          "package.json",
+          '{"name":"@confect-fixtures/mailer","type":"module","exports":{"./client":{"import":{"default":"./src/descriptor.ts"}}}}',
+        );
+        yield* project.remove("client.ts");
+        const fs = yield* FileSystem.FileSystem;
+        yield* fs.makeDirectory(`${project.root}/src`);
+        yield* project.write(
+          "src/descriptor.ts",
+          pipe(
+            client("refs.internal.install.init"),
+            Str.replace(
+              "./confect/_generated/refs",
+              "../confect/_generated/refs",
+            ),
+          ),
+        );
+        yield* project.run;
+        const testing = yield* project.read("confect/_generated/testing.ts");
+        expect(testing).toContain(
+          'import $descriptor from "../../src/descriptor.js";',
+        );
+        const subject = yield* subjectOf(project);
+        expect(subject.init.convexFunctionName).toBe("install:init");
+      }).pipe(Effect.scoped),
+    { timeout: 60000 },
+  );
+
+  it.effect(
+    "resolves a ./client export given as an array, taking its first target that resolves",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* componentProject;
+        yield* project.write(
+          "package.json",
+          '{"name":"@confect-fixtures/mailer","type":"module","exports":{"./client":[{"worker":"./worker.ts"},"./client.ts"]}}',
+        );
+        yield* project.run;
+        const subject = yield* subjectOf(project);
+        expect(subject.init.convexFunctionName).toBe("install:init");
+      }).pipe(Effect.scoped),
+    { timeout: 60000 },
+  );
+
+  it.effect(
+    "stops codegen for a component with no descriptor",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* componentProject;
+        yield* project.write(
+          "package.json",
+          '{"name":"@confect-fixtures/mailer","type":"module"}',
+        );
+        yield* project.remove("client.ts");
+        const refused = yield* Effect.flip(project.run);
+        expect(refused).toEqual(
+          InvalidDeclarationError.make({
+            declarationPath: "client.ts",
+            reason:
+              'the component has no descriptor. Export its `Component.make` descriptor from the package\'s "./client" entry, or default-export it from client.ts beside confect/.',
+          }),
+        );
+      }).pipe(Effect.scoped),
+    { timeout: 60000 },
+  );
+
+  it.effect(
+    "stops codegen for a ./client export that does not resolve",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* componentProject;
+        yield* project.write(
+          "package.json",
+          '{"name":"@confect-fixtures/mailer","type":"module","exports":{"./client":{"import":"./missing.ts"}}}',
+        );
+        const refused = yield* Effect.flip(project.run);
+        expect(refused).toEqual(
+          InvalidDeclarationError.make({
+            declarationPath: "package.json",
+            reason:
+              'its "./client" export names the component\'s descriptor, but @confect-fixtures/mailer/client does not resolve from it.',
+          }),
+        );
+      }).pipe(Effect.scoped),
+    { timeout: 60000 },
+  );
+
+  it.effect(
+    "reads each nested component's own descriptor, never its parent's, at every depth",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* componentProject;
+        const child = yield* localComponent(
+          project,
+          "components/child",
+          "child",
+          "setup",
+        );
+        const grandchild = yield* localComponent(
+          project,
+          "components/child/components/grandchild",
+          "grandchild",
+          "prepare",
+        );
+        yield* project.run;
+        yield* generateAt(child);
+        yield* generateAt(grandchild);
+        const parent = yield* subjectOf(project);
+        expect(parent.init.convexFunctionName).toBe("install:init");
+        const own = yield* subjectOf({ root: child });
+        expect(own.init.convexFunctionName).toBe("setup:init");
+        const deepest = yield* subjectOf({ root: grandchild });
+        expect(deepest.init.convexFunctionName).toBe("prepare:init");
+      }).pipe(Effect.scoped),
+    { timeout: 120000 },
   );
 });

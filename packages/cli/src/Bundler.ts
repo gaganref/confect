@@ -128,6 +128,17 @@ const resolveExternalEsm = Option.liftThrowable(
 export const canImport = (specifier: string, importer: string): boolean =>
   Option.isSome(resolveEsm(specifier, importer));
 
+/**
+ * The file `importer` imports for `specifier` as Node's ESM resolution finds
+ * it: a package's `exports` with nested conditions, arrays and the `node` and
+ * `import` conditions, including a package importing itself by name. Unlike
+ * {@link resolveModule}, it never falls back to CommonJS resolution.
+ */
+export const resolveEsmImport = (
+  specifier: string,
+  importer: string,
+): Option.Option<string> => resolveEsm(specifier, importer);
+
 export const resolveModule = (
   specifier: string,
   importer: string,

@@ -13,7 +13,7 @@ import * as Predicate from "effect/Predicate";
 import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import type * as SchemaAST from "effect/SchemaAST";
-import * as Execution from "./internal/Execution.js";
+import * as Sink from "./internal/Sink.js";
 import { stringify } from "./internal/Json.js";
 import type { ValidatorJSON } from "./internal/KernelValues.js";
 import {
@@ -313,7 +313,7 @@ export const slot = <C extends Callback.Any>(contract: C): Slot<C> => ({
   // handle decodes from any string, so the decode cannot fail.
   handle: Option.getOrThrowWith(
     Schema.decodeOption(Callback.handle(contract))(
-      `function://${Execution.SINK};${contract.id}`,
+      `function://${Sink.SINK};${contract.id}`,
     ),
     () => new Error(`The sink handle for ${contract.id} did not decode.`),
   ) as Callback.Handle<C>,
@@ -402,7 +402,7 @@ const makeEngine = (
     }
     return validator;
   };
-  const call: Execution.Sink["call"] = ({ slot: id, args, caller }) => {
+  const call: Sink.Sink["call"] = ({ slot: id, args, caller }) => {
     const found = slots[id];
     if (found === undefined)
       return Promise.reject(
@@ -463,7 +463,7 @@ const makeEngine = (
       return Effect.sync(() => waiting.delete(check));
     });
   return {
-    sink: { args: argsOf, call } satisfies Execution.Sink,
+    sink: { args: argsOf, call } satisfies Sink.Sink,
     open: () => {
       open = true;
     },

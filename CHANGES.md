@@ -430,7 +430,8 @@ kernel is fork-specific.
 
 For a component that can import `@confect/test`, codegen writes `TestBackend`
 built by `TestComponent.make`: its public functions by `group:name`, its
-callback slots by contract id, its own `init` from its descriptor, its laws,
+callback slots by contract id, its own `init` from the descriptor at its own
+root, its laws,
 ports, mounts and settings, and three kinds of obligation, `export` per
 function, `laws` and `callback` per slot. It has no groups and owes no access
 or realm proof. A slot is a callback contract a handle in the component's
@@ -448,7 +449,8 @@ value is drawn from the contract's codec, and a declared error crosses as
 Convex JSON. `TestComponent.exports` and `TestComponent.callbacks` are total by
 type, run each case on a fresh session, and count only the slot calls each
 case's own call makes. `TestComponent.laws` is a typed slot Frame's testing
-door fills. This is row 9 of Frame's backend testing kernel (Frame ADR 0012).
+door fills. A slot call whose arguments break its contract is
+refused before it is held, with the binary's `ArgumentValidationError` message. This is row 9 of Frame's backend testing kernel (Frame ADR 0012).
 Changeset: `generated-test-component.md`. Upstream: fork only, as the kernel is
 fork-specific.
 

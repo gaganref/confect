@@ -88,6 +88,18 @@ const relay = Ref.make(
   }),
 );
 
+/**
+ * A send that calls the stored handle without `message`, which the slot's
+ * contract requires.
+ */
+const broken = Ref.make(
+  "mail",
+  FunctionSpec.publicMutation({
+    name: "broken",
+    returns: () => Schema.String,
+  }),
+);
+
 const functions = {
   "mail:count": Ref.make("mail", count),
   "mail:later": Ref.make("mail", later),
@@ -204,6 +216,22 @@ const mailer = {
                 { fromName: settings.fromName, message } as never,
               )
               .then(() => null),
+          ),
+      }),
+      broken: mutationGeneric({
+        args: {},
+        handler: (ctx) =>
+          configuredBy(ctx).then((settings) =>
+            ctx
+              .runMutation(
+                settings.onEvent as never,
+                { fromName: settings.fromName } as never,
+              )
+              .then(
+                () => "returned",
+                (error: unknown) =>
+                  error instanceof Error ? error.message : String(error),
+              ),
           ),
       }),
       relay: actionGeneric({
@@ -526,6 +554,61 @@ class Third extends Schema.TaggedError<
   Third,
   { readonly brand: unique symbol }
 >()("Third", {}) {}
+
+/**
+ * The same component, exporting only the send that breaks its slot's contract.
+ */
+const breaking = TestComponent.make(subject.app, {
+  ...subject,
+  refs: { public: { mail: { broken } } },
+  functions: { "mail:broken": broken },
+  obligations: [
+    { kind: "export", ref: "mail:broken" },
+    { kind: "laws" },
+    { kind: "callback", slot: "mailer/onEvent" },
+  ],
+});
+
+describe("TestComponent's slot arguments", () => {
+  it.effect(
+    "refuses a slot call whose arguments break the slot's contract before it is held, with the binary's ArgumentValidationError",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* runtime;
+        const refused = yield* test.mutation(broken);
+        expect(refused).toBe(
+          'ArgumentValidationError: Object is missing the required field `message`. Consider wrapping the field validator in `v.optional(...)` if this is expected.\n\nObject: {fromName: "Ada"}\nValidator: v.object({fromName: v.string(), message: v.string()})\n',
+        );
+        const pending = yield* TestComponent.commands(subject);
+        expect(pending).toEqual([]);
+      }).pipe(opened({ config, install })),
+  );
+
+  it.effect(
+    "fails a callback case whose call breaks the slot's contract, where an answer would have let it pass",
+    () =>
+      Effect.gen(function* () {
+        const [wrong] = TestComponent.callbacks(breaking, {
+          "mailer/onEvent": {
+            returned: {
+              name: "sends nothing valid",
+              call: "mail:broken",
+              postimage: { settings: [stored] },
+            },
+            Bounced: {
+              name: "unused",
+              call: "mail:broken",
+              postimage: { settings: [stored] },
+            },
+          },
+        });
+        const failed = yield* Effect.flip(wrong!.run({ config, install }));
+        expect(failed).toMatchObject({
+          reason: "mail:broken never called the slot mailer/onEvent",
+        });
+      }),
+  );
+});
 
 describe("TestComponent.slot", () => {
   it("keeps every tag of a nested union of errors", () => {

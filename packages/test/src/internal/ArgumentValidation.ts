@@ -1,7 +1,10 @@
+import { jsonToConvex, type JSONValue } from "convex/values";
 import * as Arr from "effect/Array";
+import { pipe } from "effect/Function";
 import * as Order from "effect/Order";
 import * as Predicate from "effect/Predicate";
 import * as Rec from "effect/Record";
+import * as Str from "effect/String";
 import { stringify } from "./Json.js";
 import type { ObjectFieldType, ValidatorJSON } from "./KernelValues.js";
 
@@ -161,21 +164,13 @@ const checkObject = (
 };
 
 const literalMatches = (literal: unknown, value: unknown) =>
-  Predicate.isObject(literal) && "$integer" in literal
-    ? typeof value === "bigint" &&
-      printValue(value) === printValue(bigintOf(literal))
-    : literal === value;
+  literalOf(literal) === value;
 
 /**
- * A literal int64 arrives in validator JSON as Convex JSON, `{ $integer }`.
+ * A literal from validator JSON, which carries an int64 as Convex JSON.
  */
-const bigintOf = (literal: object): bigint => {
-  const bytes = Uint8Array.from(
-    atob((literal as { $integer: string }).$integer),
-    (char) => char.charCodeAt(0),
-  );
-  return new DataView(bytes.buffer).getBigInt64(0, true);
-};
+const literalOf = (literal: unknown): unknown =>
+  jsonToConvex(literal as JSONValue);
 
 /**
  * A float64 as the binary prints it, Rust's `{:?}`: the shortest round-trip
@@ -187,11 +182,14 @@ const printFloat = (value: number): string => {
   if (value === 0) return Object.is(value, -0) ? "-0.0" : "0.0";
   const magnitude = Math.abs(value);
   if (magnitude < 1e-4 || magnitude >= 1e16) {
-    const [mantissa = "", exponent = "0"] = value.toExponential().split("e");
+    const [mantissa, exponent = "0"] = pipe(
+      value.toExponential(),
+      Str.split("e"),
+    );
     return `${mantissa}e${Number(exponent)}`;
   }
   const fixed = String(value);
-  return fixed.includes(".") || fixed.includes("e") ? fixed : `${fixed}.0`;
+  return pipe(fixed, Str.includes(".")) ? fixed : `${fixed}.0`;
 };
 
 const base64 = (buffer: ArrayBuffer): string =>
@@ -205,7 +203,8 @@ const printValue = (value: unknown): string => {
   if (typeof value === "boolean") return String(value);
   if (typeof value === "string") return stringify(value);
   if (value instanceof ArrayBuffer) return `b${stringify(base64(value))}`;
-  if (Arr.isArray(value)) return `[${Arr.join(Arr.map(value, printValue), ", ")}]`;
+  if (Arr.isArray(value))
+    return `[${Arr.join(Arr.map(value, printValue), ", ")}]`;
   if (isPlainObject(value))
     return `{${Arr.join(
       Arr.map(
@@ -214,7 +213,7 @@ const printValue = (value: unknown): string => {
       ),
       ", ",
     )}}`;
-  return String(value);
+  return typeof value;
 };
 
 const printField = ({ fieldType, optional }: ObjectFieldType): string =>
@@ -231,11 +230,7 @@ const printValidator = (validator: ValidatorJSON): string => {
     case "id":
       return `v.id(${stringify(validator.tableName)})`;
     case "literal":
-      return `v.literal(${printValue(
-        Predicate.isObject(validator.value) && "$integer" in validator.value
-          ? bigintOf(validator.value)
-          : validator.value,
-      )})`;
+      return `v.literal(${printValue(literalOf(validator.value))})`;
     case "array":
       return `v.array(${printValidator(validator.value)})`;
     case "union":

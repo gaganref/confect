@@ -12,7 +12,8 @@ import { v, type Value } from "convex/values";
 
 /**
  * The arguments the host function a handle names takes, one of each kind of
- * validator, so a refusal shows how the binary prints each value and validator.
+ * validator, so a refusal shows how the binary prints each value and
+ * validator.
  */
 export const shape = {
   token: v.string(),
@@ -53,7 +54,11 @@ export const handle = mutationGeneric({
  */
 export type Refusal =
   | { readonly returned: true }
-  | { readonly returned: false; readonly name: string; readonly message: string };
+  | {
+      readonly returned: false;
+      readonly name: string;
+      readonly message: string;
+    };
 
 const refusal = (call: () => Promise<unknown>): Promise<Refusal> =>
   call().then(

@@ -1397,7 +1397,7 @@ const generateTesting = Effect.fnUntraced(function* (
           });
       }
       // A push runs a parent's `init` before the components it mounts.
-      const local = path.join(path.dirname(resolved), "confect");
+      const local = path.join(componentRoot(path, resolved), "confect");
       mounts.push({
         path: name,
         kit: fromPackage ? kitKey : "local",
@@ -1691,62 +1691,117 @@ const testComponent = Effect.fnUntraced(function* (
   };
 });
 
-const PackageExports = Schema.fromJsonString(
-  Schema.Struct({ exports: Schema.optional(Schema.Unknown) }),
+const PackageManifest = Schema.fromJsonString(
+  Schema.Struct({
+    name: Schema.optional(Schema.String),
+    exports: Schema.optional(Schema.Unknown),
+  }),
 );
 
 /**
- * The file a component's descriptor lives in: its package's `./client` export,
- * as `Component.make` asks, or else `client.ts` beside `confect/`, as an
- * in-repo component keeps it.
+ * A component's root: the directory that holds its `convex/` and, beside it,
+ * its `confect/` and its descriptor. The subject's and every nested mount's
+ * come from the same rule.
  */
-const descriptorFile = Effect.gen(function* () {
+const componentRoot = (path: Path.Path, convexDirectory: string) =>
+  path.dirname(convexDirectory);
+
+const SIBLING_DESCRIPTORS = [
+  "client.ts",
+  "client.mts",
+  "client.js",
+  "client.mjs",
+];
+
+/**
+ * The file the component at `root` keeps its descriptor in. A package with
+ * `exports` names it by `<package>/client`, resolved as Node resolves a package
+ * importing itself, through nested conditions and arrays. Otherwise, as an
+ * in-repo component keeps it, it is `client.ts` beside `confect/`. A component
+ * with neither stops codegen, as does a `./client` export that does not
+ * resolve.
+ */
+const descriptorFile = Effect.fnUntraced(function* (root: string) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const root = yield* ProjectRoot.get;
+  const display = yield* displayFrom(root);
   const manifest = path.join(root, "package.json");
   if (yield* fs.exists(manifest)) {
     const text = yield* fs.readFileString(manifest);
-    const exports = Option.getOrUndefined(
-      Schema.decodeOption(PackageExports)(text),
-    )?.exports;
-    const entry = Predicate.isObject(exports) ? exports["./client"] : undefined;
-    const target = Predicate.isString(entry)
-      ? Option.some(entry)
-      : Predicate.isObject(entry)
-        ? Array.findFirst(
-            [entry["import"], entry["default"]],
-            Predicate.isString,
-          )
-        : Option.none<string>();
-    if (Option.isSome(target)) return path.join(root, target.value);
+    const declared = Option.getOrUndefined(
+      Schema.decodeOption(PackageManifest)(text),
+    );
+    if (declared?.name !== undefined && declared.exports !== undefined) {
+      const resolved = Bundler.resolveEsmImport(
+        `${declared.name}/client`,
+        manifest,
+      );
+      if (Option.isSome(resolved)) return resolved.value;
+      if (
+        Predicate.isObject(declared.exports) &&
+        Predicate.hasProperty(declared.exports, "./client")
+      )
+        return yield* CodegenError.InvalidDeclarationError.make({
+          declarationPath: display("package.json"),
+          reason: `its "./client" export names the component's descriptor, but ${declared.name}/client does not resolve from it.`,
+        });
+    }
   }
-  const confectDirectory = yield* ConfectDirectory.get;
-  return path.join(path.dirname(confectDirectory), "client.ts");
+  for (const sibling of SIBLING_DESCRIPTORS) {
+    const file = path.join(root, sibling);
+    if (yield* fs.exists(file)) return file;
+  }
+  return yield* CodegenError.InvalidDeclarationError.make({
+    declarationPath: display("client.ts"),
+    reason:
+      'the component has no descriptor. Export its `Component.make` descriptor from the package\'s "./client" entry, or default-export it from client.ts beside confect/.',
+  });
 });
 
 /**
- * The component's own `init`, from its descriptor, with the specifier
- * `_generated/testing.ts` imports the descriptor by. None when the component
- * has no descriptor or its descriptor declares no `init`. An `init` that is no
- * internal mutation of the component stops codegen.
+ * A file under `root`, as a refusal names it: relative to the project root.
+ */
+const displayFrom = Effect.fnUntraced(function* (root: string) {
+  const path = yield* Path.Path;
+  const projectRoot = yield* ProjectRoot.get;
+  return (file: string) =>
+    pipe(
+      path.relative(projectRoot, path.join(root, file)),
+      String.split(path.sep),
+      Array.join("/"),
+    );
+});
+
+/**
+ * The component's own `init`, from the descriptor at its own root, with the
+ * specifier `_generated/testing.ts` imports the descriptor by. None when the
+ * descriptor declares no `init`. A file that default-exports no descriptor, or
+ * an `init` that is no internal mutation of the component, stops codegen.
  */
 const descriptorInit = Effect.fnUntraced(function* (
   groups: ReadonlyArray<TestingManifest.FoundGroup>,
 ) {
+  const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const root = yield* ProjectRoot.get;
+  const convexDirectory = yield* ConvexDirectory.get;
+  const root = componentRoot(path, convexDirectory);
   const confectDirectory = yield* ConfectDirectory.get;
-  const file = yield* descriptorFile;
+  const file = yield* descriptorFile(root);
+  const display = yield* displayFrom(path.dirname(file));
+  const declarationPath = display(path.basename(file));
   const module = yield* bundledModule(file);
   const descriptor = module?.["default"];
   if (
     !Predicate.isObject(descriptor) ||
     !Predicate.isString(descriptor["name"]) ||
-    !Predicate.isFunction(descriptor["client"]) ||
-    descriptor["init"] === undefined
+    !Predicate.isFunction(descriptor["client"])
   )
-    return undefined;
+    return yield* CodegenError.InvalidDeclarationError.make({
+      declarationPath,
+      reason:
+        "it holds the component's descriptor, so it default-exports what `Component.make` returns.",
+    });
+  if (descriptor["init"] === undefined) return undefined;
   const init = descriptor["init"];
   const functionName =
     Predicate.hasProperty(init, "convexFunctionName") &&
@@ -1778,16 +1833,17 @@ const descriptorInit = Effect.fnUntraced(function* (
     found.value.visibility !== "internal"
   )
     return yield* CodegenError.InvalidDeclarationError.make({
-      declarationPath: pipe(
-        path.relative(root, file),
-        String.split(path.sep),
-        Array.join("/"),
-      ),
+      declarationPath,
       reason: `the component's descriptor names ${functionName === "" ? "a value" : functionName} its init, which is no internal mutation of the component.`,
     });
-  const generated = path.join(confectDirectory, GENERATED_DIRNAME);
+  // Node resolves to the real path, so the specifier is taken between real
+  // paths on both sides.
+  const generated = yield* fs.realPath(
+    path.join(confectDirectory, GENERATED_DIRNAME),
+  );
+  const target = yield* fs.realPath(file);
   const relative = pipe(
-    path.relative(generated, file),
+    path.relative(generated, target),
     String.split(path.sep),
     Array.join("/"),
     String.replace(/\.([cm]?)[jt]s$/, ".$1js"),

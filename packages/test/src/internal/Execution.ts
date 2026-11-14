@@ -29,6 +29,7 @@ import * as Identity from "./Identity.js";
 import * as Http from "./Http.js";
 import * as Invocation from "./Invocation.js";
 import * as ArgumentValidation from "./ArgumentValidation.js";
+import { SINK, type Sink } from "./Sink.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
 import * as KernelRefusal from "./KernelRefusal.js";
@@ -69,32 +70,7 @@ import * as Json from "./Json.js";
 
 const ROOT = "";
 
-/**
- * The component path a callback sink's handles name. No registered component
- * can take it, since a component name is an identifier.
- */
-export const SINK = "~sink";
-
-/**
- * Answers a call to a handle under {@link SINK}, in place of a registered
- * function. `args` is the declared argument validator of the slot a handle
- * names, its udf path, which the kernel checks a call against before `call`
- * sees it, as the binary checks a handle's target. `call` gets the slot, the
- * arguments, and the function that called it, or `undefined` for a scheduled
- * job. Its answer is the call's encoded return, or a rejection shaped as a
- * function's thrown error leaves it, a `ConvexError`'s data serialized to JSON
- * text, which the caller receives as a nested call's error.
- */
-export interface Sink {
-  readonly args: (slot: string) => ValidatorJSON | undefined;
-  readonly call: (command: {
-    readonly slot: string;
-    readonly args: unknown;
-    readonly caller:
-      | { readonly componentPath: string; readonly functionName: string }
-      | undefined;
-  }) => Promise<unknown>;
-}
+export { SINK, type Sink } from "./Sink.js";
 
 /**
  * A cron job's declaration as a snapshot writes it and a restore compares it:
@@ -2343,19 +2319,15 @@ export class World {
     // than a mutation's.
     if (refused !== undefined)
       return Promise.reject(
-        new Error(
-          from.parent?.udfType === "action" ? `${refused}\n` : refused,
-        ),
+        new Error(from.parent?.udfType === "action" ? `${refused}\n` : refused),
       );
     // The sink rejects as a function's thrown error leaves it, with its data
     // serialized, and the caller receives it as a nested call's error.
     return this.sink
       .call({ slot: functionPath.udfPath, args, caller })
-      .catch(
-      (error: unknown) => {
+      .catch((error: unknown) => {
         throw receiveConvexErrorData(error, convexErrorDataFor(from));
-      },
-    );
+      });
   }
 
   private queryAt(

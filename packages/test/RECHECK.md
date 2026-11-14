@@ -1611,3 +1611,13 @@ without it:
   or of the declared error's alternative. It is seeded by the session's
   `draws` and the command's ID, so the same session draws the same values. A
   contract's codecs must bound what Convex cannot store, such as an int64.
+- A slot call's arguments are checked against the slot's declared validator
+  before the sink holds it, and refused as the binary refuses a handle call
+  whose target's validator fails: an `Error` whose message is the binary's
+  `ArgumentValidationError` text. Present fields are checked first in key
+  order, then missing required fields, then extra ones, and values print as
+  the binary prints them, a float64 in Rust's `{:?}` form. An action's caller
+  gets one more trailing newline. `callbackArgs.test.ts` on the local-backend
+  lane compares 24 argument shapes from a mutation and an action, byte for
+  byte. The kernel's own argument check for registered functions keeps
+  convex-test's wording; only the sink's matches the binary.
