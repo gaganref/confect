@@ -1450,10 +1450,9 @@ const generateTesting = Effect.fnUntraced(function* (
       });
       if (!fromPackage) {
         sources.push({ path: name, identifier, confect: local });
-        // The subject alone needs a nested mount's bindings, so a registry
-        // never loads a component's own declaration.
-        const own = path.join(local, "app.ts");
-        const nested = subjected ? yield* bundledDefault(own) : undefined;
+        // A component's own declaration names its mounts' kits, which the
+        // registry needs, and their bindings, which the subject needs.
+        const nested = yield* bundledDefault(path.join(local, "app.ts"));
         yield* visit(
           resolved,
           `${name}/`,
