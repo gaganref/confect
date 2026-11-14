@@ -58,13 +58,14 @@ const readsThrough = (
  * `vi.stubGlobal` does, removes the accessor, so every call installs it again
  * over what the test left.
  */
-const install = ({ copies, getters }: State) => {
+const install = (current: State, name: Name) => {
+  const { copies, getters } = current;
   const global = globalThis as unknown as Record<Name, unknown>;
-  for (const name of names) {
+  {
     const own = Object.getOwnPropertyDescriptor(global, name);
     // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
-    if (own?.get !== undefined && getters.has(own.get)) continue;
-    if (own?.get !== undefined && readsThrough(copies, own, name)) continue;
+    if (own?.get !== undefined && getters.has(own.get)) return;
+    if (own?.get !== undefined && readsThrough(copies, own, name)) return;
     const base: PropertyDescriptor = own ?? {
       value: undefined,
       writable: true,
@@ -98,12 +99,24 @@ const install = ({ copies, getters }: State) => {
 
 /**
  * Run `call` with a fresh copy of the globals. It starts from the test
- * environment's, whatever the caller assigned in its own copy.
+ * environment's, whatever the caller assigned in its own copy. `Date` gets its
+ * accessor here. `Math` and `crypto` get theirs from {@link prepare}, which the
+ * kernel's entropy install calls inside the boundary that turns any failure
+ * into its refusal.
  */
 export const own = <A>(call: () => A): A => {
   const current = state();
-  install(current);
+  install(current, "Date");
   return current.copies.run({}, call);
+};
+
+/**
+ * Give `name` this module's accessor, as {@link own} does for `Date`. It may
+ * throw, from a test's getter that `readsThrough` calls, so its caller runs it
+ * inside its own refusal boundary.
+ */
+export const prepare = (name: "Math" | "crypto"): void => {
+  install(state(), name);
 };
 
 /**

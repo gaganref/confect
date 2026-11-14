@@ -61,6 +61,7 @@ export const api: {
       {},
       {
         directRequired: string;
+        drawn: number;
         hostOnly: string;
         loaded: string;
         marker: string;

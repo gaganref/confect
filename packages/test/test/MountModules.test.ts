@@ -46,6 +46,8 @@ describe("a component mounted twice", () => {
           "first-required",
           "second-required",
         ]);
+        // Each copy draws from the backend's stream as it loads.
+        expect(environment.first.drawn).not.toBe(environment.second.drawn);
       }),
     { timeout: 30000 },
   );

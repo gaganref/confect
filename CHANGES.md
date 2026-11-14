@@ -413,6 +413,41 @@ and on the binary, and both answer one literal once each target's chosen IDs
 are replaced by role. The real address and headers stay on the binary. This
 is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-request-metadata.md`. Upstream: fork only, as the kernel is
+
+## Test kernel randomness
+
+Every random source a kernel function or module reaches draws from the
+driver's stream, or is refused. The kernel's own `Math` and `crypto` sit in
+each function's and each module load's copy of the globals and resolve their
+source on every call. While modules load, they draw from the stream of the
+world the backend opens in, which `TestConfect.layer`'s `seed` starts. Inside
+a function they draw from the bound invocation's stream, for plain Convex and
+component functions and lazily imported modules too, so a function a module
+kept while it loaded draws from whichever function later calls it.
+`getRandomValues` answers as the binary's: a `TypeError` past 65,536 bytes, a
+`TypeMismatchError` for a non-integer array, and a draw for a detached call.
+`randomUUID` builds a version 4 UUID from the stream. Modules load one at a
+time, so their draws replay, and a draw while loading with no world refuses
+with `LoadRandomUnavailable`, and so does the open. `crypto.subtle`'s drawing
+operations, `generateKey`, RSA-OAEP `encrypt` and ECDSA or RSA-PSS `sign`,
+reject with the binary's error in a query, a mutation and a module load, and
+with `RequiresBinary` in an action. `kernelBoundaries.ts` records the action
+cases as `ActionCryptoRandomness` and `ActionLoadCryptoRandomness`. A function with no invocation bound draws from the backend's own world, so an
+unbound `TestConfect.layer` call is seeded and replays, and with no world it
+refuses with `FunctionRandomUnavailable` rather than read the host's. Only a
+reference kept before the kernel ran any code keeps the host's. When a test
+leaves `Math` or `crypto` as a property the kernel cannot redefine, the open or
+the function refuses with `UnguardableGlobal` before its code runs, as
+does an install that throws or reads back another object. The kernel's own
+work, its signing included, reads the host's `Math` and `crypto` captured
+when its modules load, never `globalThis`. A sync socket runs every frame and
+update in the context of the code that opened it, so a rerun a commit
+invalidated draws from the socket's stream, never the committer's. The bridge
+that pins a bound handler on the convex-test target refuses the same `subtle`
+operations by function type. The fixture's system-table share measures 23
+with the probe beside component identity's chain.
+This is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-randomness.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
 ## Generated test backend
