@@ -635,18 +635,27 @@ deliberate redefinition of a global mid-invocation, and the guards never hand
 out the host's raw function. Locking the descriptors while a function runs would
 need them non-configurable, which cannot be undone and would break stubbing
 between tests, and running handlers in their own VM realm is out of scope. So
-the escape is always reported instead: each function's entry records the
-guarded descriptors (`IoBans.watch`), and when the function settles, returned,
-failed or ended, the kernel compares them. A changed descriptor fails the
-function with `UnguardableGlobal` (`reason: "replacedWhileRunning"`) naming the
-global, whatever it returned, before a mutation's commit point, so a mutation
-publishes none of its writes, and the guard is installed again. An accessor
-another library lays over a guard, as convex-test lays its own before each of
-its handlers (`index.ts:3054-3060` at 0.0.65), still reads through the guard
-and is no replacement. An assignment stores beneath the guard and replaces
-nothing. Remaining window: a call made between a mid-invocation replacement and
-the function's settlement reaches the replacement unchecked, and the function is
-always reported for it.
+the escape is reported instead. When a function settles, returned, failed or
+ended, the kernel reads each guarded global as a function would, through the
+prototype chain (`IoBans.watch`), and the read must answer one of the guards.
+A replacement still in place at settlement fails the function with
+`UnguardableGlobal` (`reason: "replacedWhileRunning"`) naming the global,
+whatever it returned, before a mutation's commit point, so a mutation publishes
+none of its writes. That covers a data property, an accessor that answers the
+replacement, and a replacement moved onto the global's prototype with the own
+property deleted. The guard is then installed again as an own property, which
+shadows anything inherited, so a later function never reaches an inherited
+replacement. An assignment stores beneath the guard and still reads as one. An
+accessor another library lays over a guard that reads through it is no
+replacement: convex-test lays its own over `fetch`, `setTimeout`,
+`setInterval` and `queueMicrotask` when it builds a world and before each of
+its handlers (`index.ts:3077-3110` at 0.0.67), and a kernel function in flight
+then, or settling under it, keeps going. Out of scope, and so neither blocked
+nor reported: accessors that run code to fake the guard at settlement are
+hostile and out of scope, such as a getter that answers the replacement while
+the handler runs and the guard by the time it settles, and so is a replacement
+removed again before the function settles. A call made through either reaches
+the replacement unchecked. `IoBans.test.ts` pins both limits.
 
 The exemption for Node's own modules reads the caller with `util.getCallSites`
 (Node 22.9 and later), kept when `IoBans.ts` loads, which does not go through
@@ -680,7 +689,9 @@ any function runs. A package's test kit registers its modules without sources
 (`@convex-dev/workflow`'s registers Workpool, whose `worker:runActionWrapper` is
 a plain action), and a test cannot add them, so the layer and the kernel shim
 take `componentRuntimes`, the runtime each listed component's plain actions run
-in, such as `{ "workflow/workpool": "isolate" }`. The refusal's message names
+in, such as `{ "workflow/workpool": "isolate" }`, read from the declaration's
+own entries only, so a component named `constructor` or `toString` declares
+nothing it does not list. The refusal's message names
 the option. Build-order row 8's generated test subject supplies the modules'
 sources and emits these declarations for package mounts from each kit's
 metadata. The fork's mock-backend layer passes sources. A layer on the default
