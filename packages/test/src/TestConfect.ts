@@ -18,9 +18,8 @@ import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
-import * as Clock from "./internal/Clock.js";
 import { convexTest as kernelTest } from "./internal/ConvexTest.js";
-import type * as Invocation from "./internal/Invocation.js";
+import * as DriverWorld from "./internal/DriverWorld.js";
 import * as MountedHttp from "./internal/MountedHttp.js";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
@@ -86,7 +85,8 @@ export type TargetOptions = {
    * The seed of the random stream the `"kernel"` target's backend draws from on
    * its own, such as the random delay Convex gives each run of an hourly,
    * daily, weekly, monthly or cron-expression job. Two layers with the same
-   * seed draw the same stream. Defaults to `0`. convex-test ignores it.
+   * seed draw the same stream, and on the kernel the same deployment signing
+   * key. Defaults to `0`. convex-test ignores it.
    */
   readonly seed?: number;
 };
@@ -619,33 +619,6 @@ const targetOf = (options: TargetOptions | undefined): TargetOptions => ({
   ...(options?.seed === undefined ? {} : { seed: options.seed }),
 });
 
-/**
- * Mulberry32: a stream uniform on [0, 1) from a 32-bit seed. The kernel holds
- * no generator, so this driver supplies the stream, of the type a test world
- * gives its handlers.
- */
-const seeded = (seed: number): (() => number) => {
-  let state = Math.trunc(seed) >>> 0;
-  return () => {
-    state = (state + 0x6d2b79f5) >>> 0;
-    let t = state;
-    t = Math.imul(t ^ (t >>> 15), t | 1);
-    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
-    return ((t ^ (t >>> 14)) >>> 0) / 4_294_967_296;
-  };
-};
-
-/**
- * The world a kernel-target layer gives its backend: no services of its own,
- * the host's clock, which the kernel's clock follows, and a seeded stream.
- */
-const layerWorld = (seed: number): Invocation.World => ({
-  name: "TestConfect.layer",
-  services: Context.empty(),
-  clock: Clock.hostNow,
-  random: seeded(seed),
-});
-
 const secretsOf = (registry: {
   readonly secrets?: SecretPolicy;
 }): Pick<LayerOptions, "secrets"> =>
@@ -662,6 +635,31 @@ const sourcesOf = (
     ...(sources === undefined ? {} : { sources }),
     ...(componentRuntimes === undefined ? {} : { componentRuntimes }),
   };
+};
+
+/**
+ * The `"convex-test"` target's options. convex-test ignores `world`, the module
+ * sources and the component runtimes, but the fork's kernel lane aliases
+ * `convex-test` to the kernel, which draws a signing key or a cron delay from
+ * the backend's own world and reads each module's runtime from its source.
+ * Giving it the layer's seeded world and sources keeps one backend setup on
+ * both lanes.
+ */
+const convexTestOptions = (
+  schema: SchemaDefinition<GenericSchema, true>,
+  modules: Record<string, () => Promise<any>>,
+  options: LayerOptions,
+): Parameters<typeof convexTest>[0] => {
+  const withWorld = {
+    schema,
+    modules,
+    world: DriverWorld.make("TestConfect.layer", options.seed ?? 0),
+    ...(options.sources === undefined ? {} : { sources: options.sources }),
+    ...(options.componentRuntimes === undefined
+      ? {}
+      : { componentRuntimes: options.componentRuntimes }),
+  };
+  return withWorld;
 };
 
 const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
@@ -682,7 +680,7 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
         ? kernelTest({
             schema: convexSchemaDefinition,
             modules,
-            world: layerWorld(options.seed ?? 0),
+            world: DriverWorld.make("TestConfect.layer", options.seed ?? 0),
             redaction: Redaction.policy(
               Redaction.merge(
                 { tables: { "": Redaction.tablesOf(databaseSchema) } },
@@ -696,26 +694,9 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
               ? {}
               : { componentRuntimes: options.componentRuntimes }),
           })
-        : // convex-test takes two arguments and ignores a third. The kernel
-          // lane's shim, which stands in for convex-test, reads the module
-          // sources and component runtimes from it.
-          (
-            convexTest as unknown as (
-              schema: SchemaDefinition<GenericSchema, true>,
-              modules: Record<string, () => Promise<any>>,
-              kernelOptions: Pick<
-                LayerOptions,
-                "sources" | "componentRuntimes"
-              >,
-            ) => ReturnType<typeof convexTest>
-          )(convexSchemaDefinition, modules, {
-            ...(options.sources === undefined
-              ? {}
-              : { sources: options.sources }),
-            ...(options.componentRuntimes === undefined
-              ? {}
-              : { componentRuntimes: options.componentRuntimes }),
-          });
+        : convexTest(
+            convexTestOptions(convexSchemaDefinition, modules, options),
+          );
     // convex-test takes three arguments and ignores the options. The kernel
     // reads `standing`.
     const registerComponent =

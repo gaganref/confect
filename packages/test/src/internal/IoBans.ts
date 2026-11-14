@@ -28,7 +28,9 @@ import * as Util from "node:util";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Str from "effect/String";
+import * as HostGlobals from "./HostGlobals.js";
 
 type UdfType = "query" | "mutation" | "action";
 
@@ -205,7 +207,9 @@ const fetchRule: Rule = (state, running, args) => {
   // with the host's own error.
   let request: Request;
   try {
-    request = new Request(...(args as ConstructorParameters<typeof Request>));
+    request = new HostGlobals.request(
+      ...(args as ConstructorParameters<typeof Request>),
+    );
   } catch (error) {
     return { answer: Promise.reject(error) };
   }
@@ -327,10 +331,10 @@ const makeGuard = (
 
 /**
  * Whether `accessor`, another library's, already reads through one of this
- * module's guards, as convex-test's does once it wraps the kernel's.
- * convex-test installs its accessor again whenever another is on top (its
- * `dist/index.js:1854-1866`), so guarding it again would add a layer at every
- * call while both kinds of world are live.
+ * module's guards, as convex-test's does once it lays its own over the
+ * kernel's. convex-test lays its accessor again whenever another is on top (its
+ * `index.ts:3077-3110` at 0.0.67), so guarding it again would add a layer at
+ * every function entry while both kinds of world are live.
  */
 const readsThrough = (state: State, accessor: PropertyDescriptor): boolean => {
   state.probing = true;
@@ -344,30 +348,63 @@ const readsThrough = (state: State, accessor: PropertyDescriptor): boolean => {
 };
 
 /**
- * Make `name` an accessor that reads as a guard of the implementation beneath
- * it, unless it already reads through one. The value or accessor it replaces is
- * the first implementation. Each implementation has one guard, so a read
- * answers the same function until an assignment, and a reference keeps the
- * implementation it was read with, as a kept reference to the host's function
- * would: convex-test keeps the real `setTimeout` at load to run beside fake
- * timers (its `dist/index.js:2205`). An assignment stores a new implementation
- * beneath, still guarded, and assigning a guard back, as fake timers do when
- * they uninstall, stores the implementation it guards.
+ * The descriptor `name` has on the global's prototype chain, below the global
+ * itself, if any: where a replacement moved onto a prototype lives.
  */
+const inherited = (
+  global: object,
+  name: string,
+): PropertyDescriptor | undefined => {
+  for (
+    let prototype: object | null = Object.getPrototypeOf(global) as
+      | object
+      | null;
+    prototype !== null;
+    prototype = Object.getPrototypeOf(prototype) as object | null
+  ) {
+    const found = Object.getOwnPropertyDescriptor(prototype, name);
+    if (found !== undefined) return found;
+  }
+  return undefined;
+};
+
+/**
+ * Make `name` an own accessor that reads as a guard of the implementation
+ * beneath it, unless the own property already reads through a guard: the
+ * guard's own accessor, or another library's laid over it, as convex-test lays
+ * its own before each of its handlers. The value or accessor it replaces is the
+ * first implementation, an own one or, once the own property is gone, the one
+ * the prototype chain answers. The own accessor shadows the chain, so no
+ * function reaches an inherited replacement. Each implementation has one guard,
+ * so a read answers the same function until an assignment, and a reference
+ * keeps the implementation it was read with, as a kept reference to the host's
+ * function would: convex-test keeps the real `setTimeout` at load to run beside
+ * fake timers (its `dist/index.js:2205`). An assignment stores a new
+ * implementation beneath, still guarded, and assigning a guard back, as fake
+ * timers do when they uninstall, stores the implementation it guards.
+ */
+/**
+ * How installing a guard ended: guarded, a property the kernel cannot redefine,
+ * or a redefinition that threw.
+ */
+type GuardResult = "guarded" | "notConfigurable" | "installFailed";
+
 const guardGlobal = (
   state: State,
   { name, rule, promised, absent }: (typeof guarded)[number],
-): boolean => {
+): GuardResult => {
   const global = globalThis as unknown as Global;
   const own = Object.getOwnPropertyDescriptor(global, name);
-  // A global that is gone leaves a function nothing of the host's to reach.
-  if (own === undefined) return true;
   // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
-  if (own.get !== undefined && state.made.has(own.get)) return true;
-  if (own.get !== undefined && readsThrough(state, own)) return true;
+  if (own?.get !== undefined && state.made.has(own.get)) return "guarded";
+  if (own?.get !== undefined && readsThrough(state, own)) return "guarded";
   // A replacement the kernel cannot redefine stays the host's.
-  if (own.configurable === false) return false;
-  let beneath: PropertyDescriptor = own;
+  if (own?.configurable === false) return "notConfigurable";
+  const found = own ?? inherited(global, name);
+  // A global that is gone, own and inherited, leaves a function nothing of the
+  // host's to reach.
+  if (found === undefined) return "guarded";
+  let beneath: PropertyDescriptor = found;
   // Another library's accessor beneath answers per read, so one guard reads
   // through it at each call.
   const throughAccessor = makeGuard(
@@ -409,12 +446,12 @@ const guardGlobal = (
       get,
       set,
       configurable: true,
-      enumerable: own.enumerable ?? false,
+      enumerable: found.enumerable ?? false,
     });
   } catch {
-    return false;
+    return "installFailed";
   }
-  return true;
+  return "guarded";
 };
 
 /**
@@ -550,69 +587,98 @@ const stateOf = (): State =>
   });
 
 /**
+ * A guarded global the install could not leave guarded, and whether it is a
+ * property the kernel cannot redefine.
+ */
+export interface Unguarded {
+  readonly name: string;
+  readonly fixed: boolean;
+}
+
+/**
  * Guard `fetch`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`,
  * multipart `formData()` and `console`, unless they are already guarded.
  * `@confect/test/setup` calls this before any test module loads, and the kernel
  * again whenever a world opens or a function starts, which adopts a global a
  * test redefined, as `vi.stubGlobal` does, as the implementation beneath a
- * fresh guard. It answers the names it could not guard: a replacement made
- * non-configurable, or one the realm refused to redefine.
+ * fresh guard. It answers the globals it could not leave guarded: a replacement
+ * made non-configurable, one whose redefinition threw, or, in one final pass
+ * that reads every guarded global back once all are installed, one a later step
+ * undid, as a test's getter that replaces another global when it is read does.
+ * A read that answers no function, as a test that stubbed the global to
+ * `undefined` leaves it, has nothing to guard.
  */
-export const install = (): ReadonlyArray<string> => {
+export const install = (): ReadonlyArray<Unguarded> => {
   const state = stateOf();
-  const unguarded = pipe(
-    guarded,
-    Arr.filter((entry) => !guardGlobal(state, entry)),
-    Arr.map(({ name }) => name),
-  );
-  guardFormData(state, Request.prototype);
-  guardFormData(state, Response.prototype);
+  const failed = Arr.filterMap(guarded, (entry) => {
+    const result = guardGlobal(state, entry);
+    return result === "guarded"
+      ? Result.failVoid
+      : Result.succeed({
+          name: entry.name,
+          fixed: result === "notConfigurable",
+        });
+  });
+  guardFormData(state, HostGlobals.request.prototype);
+  guardFormData(state, HostGlobals.response.prototype);
   guardConsole(state);
-  return unguarded;
+  if (failed.length > 0) return failed;
+  return Arr.filterMap(guarded, ({ name }) => {
+    const read = readThroughChain(state, name);
+    return typeof read !== "function" || state.made.has(read)
+      ? Result.failVoid
+      : Result.succeed({ name, fixed: false });
+  });
 };
 
-const sameDescriptor = (
-  before: PropertyDescriptor | undefined,
-  now: PropertyDescriptor | undefined,
-): boolean =>
-  before === undefined || now === undefined
-    ? before === now
-    : before.get === now.get &&
-      before.set === now.set &&
-      "value" in before === "value" in now &&
-      before.value === now.value;
+/**
+ * What a read of `name` through the prototype chain answers, whatever function
+ * is running.
+ */
+const readThroughChain = (state: State, name: string): unknown => {
+  state.probing = true;
+  try {
+    return Reflect.get(globalThis, name);
+  } catch {
+    return undefined;
+  } finally {
+    state.probing = false;
+  }
+};
 
 /**
- * Take the guarded globals' descriptors as they are now, once a function's
- * entry has guarded them. The answer names, when called, each global whose
- * descriptor was replaced since, which a guard could not see: a call made
- * through the replacement reached it unchecked. An accessor another library
- * laid over a guard, as convex-test lays its own before each of its handlers
- * (its `index.ts:3054-3060`), still reads through the guard, so it is no
- * replacement. An assignment stores beneath the guard and replaces nothing.
+ * Note how the guarded globals read once a function's entry has guarded them.
+ * The answer names, when called, each global that no longer reads through to a
+ * guard, which a guard could not see: a call made through the replacement
+ * reached it unchecked. The global is read as a function would read it, through
+ * the prototype chain, so a replacement still in place when the function
+ * settles fails, own or inherited, a data property or an accessor: one moved
+ * onto a prototype with the own property deleted included. An assignment stores
+ * beneath the guard and still reads as one, as does an accessor another library
+ * lays over the guard that reads through it, as convex-test's does. Out of
+ * scope, as hostile test code: an accessor that runs code to fake the guard at
+ * settlement, answering the replacement while the handler runs and the guard by
+ * the time it settles, and a replacement removed again before the function
+ * settles. A call made through either is neither blocked nor reported.
  */
 export const watch = (): (() => ReadonlyArray<string>) => {
   const state = stateOf();
   const global = globalThis as unknown as Global;
-  const taken = Arr.map(
-    guarded,
-    ({ name }) =>
-      [name, Object.getOwnPropertyDescriptor(global, name)] as const,
-  );
+  const taken = Arr.map(guarded, ({ name }) => ({
+    name,
+    present: name in global,
+    read: readThroughChain(state, name),
+  }));
+  const intact = ({ name, present, read }: (typeof taken)[number]) => {
+    if (!present) return !(name in global);
+    const now = readThroughChain(state, name);
+    return typeof now === "function" ? state.made.has(now) : now === read;
+  };
   return () =>
     pipe(
       taken,
-      Arr.filter(([name, before]) => {
-        const now = Object.getOwnPropertyDescriptor(global, name);
-        if (sameDescriptor(before, now)) return false;
-        return !(
-          now?.get !== undefined &&
-          // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
-          !state.made.has(now.get) &&
-          readsThrough(state, now)
-        );
-      }),
-      Arr.map(([name]) => name),
+      Arr.filter((entry) => !intact(entry)),
+      Arr.map(({ name }) => name),
     );
 };
 

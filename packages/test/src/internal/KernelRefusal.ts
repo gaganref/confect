@@ -13,6 +13,12 @@ export class RequiresBinary extends Schema.TaggedError<
     "vectorSearch",
     "storageUpload",
     "storageDownload",
+    "subtleGenerateKey",
+    "subtleEncrypt",
+    "subtleSign",
+    "oidcDiscovery",
+    "remoteJwks",
+    "adminAuthentication",
   ]),
   message: Schema.String,
 }) {}
@@ -128,6 +134,41 @@ export class InvalidCron extends Schema.TaggedError<
 }) {}
 
 /**
+ * The token a test presented was refused before any function ran, as the binary
+ * answers a client's request with 401. `code` is the binary's: `NoAuthProvider`
+ * when no provider's issuer and audience match the token, and
+ * `InvalidAuthHeader` for every other failure.
+ */
+export class InvalidToken extends Schema.TaggedError<
+  InvalidToken,
+  { readonly brand: unique symbol }
+>()("InvalidToken", {
+  code: Schema.Literals(["NoAuthProvider", "InvalidAuthHeader"]),
+  message: Schema.String,
+}) {}
+
+export const isInvalidToken = Schema.is(InvalidToken);
+
+/**
+ * The app's `auth.config` declares a provider the binary would refuse at push.
+ * `index` is the provider's position, or -1 for the config itself.
+ */
+export class InvalidAuthConfig extends Schema.TaggedError<
+  InvalidAuthConfig,
+  { readonly brand: unique symbol }
+>()("InvalidAuthConfig", { index: Schema.Int, message: Schema.String }) {}
+
+/**
+ * The deployment's signing key is drawn on first use from a test world's random
+ * stream, and neither an invocation was bound nor the backend was given a world
+ * to draw it from. The kernel holds no generator of its own.
+ */
+export class SigningKeyRandomUnavailable extends Schema.TaggedError<
+  SigningKeyRandomUnavailable,
+  { readonly brand: unique symbol }
+>()("SigningKeyRandomUnavailable", { message: Schema.String }) {}
+
+/**
  * A cron job runs on a clock schedule, which Convex delays by a random draw,
  * and no test world was bound when the backend opened to draw it from. The
  * kernel holds no generator of its own.
@@ -138,6 +179,35 @@ export class CronRandomUnavailable extends Schema.TaggedError<
 >()("CronRandomUnavailable", {
   componentPath: Schema.String,
   cronName: Schema.String,
+  message: Schema.String,
+}) {}
+
+/**
+ * A module drew a random value while it loaded, and no test world was bound
+ * when the backend opened, nor given to the backend, to draw it from. The
+ * binary seeds a module's load once per push; the kernel holds no generator of
+ * its own.
+ */
+export class LoadRandomUnavailable extends Schema.TaggedError<
+  LoadRandomUnavailable,
+  { readonly brand: unique symbol }
+>()("LoadRandomUnavailable", {
+  componentPath: Schema.String,
+  modulePath: Schema.String,
+  message: Schema.String,
+}) {}
+
+/**
+ * A function drew a random value, and neither an invocation bound to it nor the
+ * backend's own world supplied a stream to draw from. The binary seeds every
+ * function; the kernel holds no generator of its own.
+ */
+export class FunctionRandomUnavailable extends Schema.TaggedError<
+  FunctionRandomUnavailable,
+  { readonly brand: unique symbol }
+>()("FunctionRandomUnavailable", {
+  componentPath: Schema.String,
+  udfPath: Schema.String,
   message: Schema.String,
 }) {}
 
@@ -178,15 +248,83 @@ export class SnapshotCronMismatch extends Schema.TaggedError<
  * descriptor was replaced while the function ran, so a call made through the
  * replacement reached it unchecked. The function fails at settlement, a
  * mutation publishes none of its writes, and the guard is installed again.
+ * `installFailed`: installing the kernel's own on a global it could redefine
+ * threw, as a getter a test left throwing does, so nothing started.
  */
 export class UnguardableGlobal extends Schema.TaggedError<
   UnguardableGlobal,
   { readonly brand: unique symbol }
 >()("UnguardableGlobal", {
-  reason: Schema.Literals(["notConfigurable", "replacedWhileRunning"]),
+  reason: Schema.Literals([
+    "notConfigurable",
+    "replacedWhileRunning",
+    "installFailed",
+  ]),
   globals: Schema.Array(Schema.String),
   message: Schema.String,
 }) {}
+
+/**
+ * Effect's own construction of a class instance from fields its caller vouches
+ * for, without the class's parser (`Schema.makeClassTrusted`, which `make`
+ * itself ends in). Effect exports it at run time and marks it internal in its
+ * declarations. The entropy install's refusal is built with it because Effect's
+ * parser reads the ambient `Math`, compiling and parsing alike, and that is the
+ * global the install just failed to own, which a test may have left throwing.
+ * Its fields here are kernel-built strings and literals. `Randomness.test.ts`
+ * checks that it builds what `make` builds, so an Effect release that changes
+ * it fails there. My refusals for a global replaced while a function ran, or
+ * that a test left non-configurable, are built the same way, since the kernel
+ * builds them while a function's copy of the globals may be in place.
+ *
+ * WORKAROUND: Effect 4.1.4 has no public parser-free constructor for a class
+ * instance. This helper goes once Effect exposes one, and these refusals are
+ * built with it.
+ */
+const makeTrusted = (
+  Schema as unknown as {
+    readonly makeClassTrusted?: <Self>(
+      self: new (input: never) => Self,
+      fields: object,
+    ) => Self;
+  }
+).makeClassTrusted;
+if (typeof makeTrusted !== "function") {
+  throw new TypeError(
+    "effect/Schema no longer exports makeClassTrusted, which the test kernel's UnguardableGlobal refusal is built with.",
+  );
+}
+
+/**
+ * The kernel could not place its own `Math` or `crypto` in a function's or a
+ * module load's copy of the globals, because a test left the global as a
+ * property it cannot redefine. Each entry names the global and what it holds.
+ * The load or function refuses before any of its code runs, so nothing draws
+ * from the host's randomness in the kernel's place.
+ */
+export const uninstallableEntropy = (
+  failures: ReadonlyArray<{
+    readonly global: string;
+    readonly holds: string;
+    readonly fixed: boolean;
+  }>,
+): UnguardableGlobal => {
+  let fixed = true;
+  const globals: Array<string> = [];
+  const held: Array<string> = [];
+  for (const failure of failures) {
+    fixed &&= failure.fixed;
+    globals.push(failure.global);
+    held.push(`globalThis.${failure.global} is ${failure.holds}`);
+  }
+  // No parser runs, so building the refusal never reads the ambient `Math`.
+  return makeTrusted(UnguardableGlobal, {
+    _tag: "UnguardableGlobal",
+    reason: fixed ? "notConfigurable" : "installFailed",
+    globals,
+    message: `The test kernel cannot install its own random sources: ${Array.join(held, "; ")}. Code that read it would draw from the host's randomness, so the kernel refuses before any module or function code runs. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`,
+  });
+};
 
 const qualified = (globals: ReadonlyArray<string>) =>
   Array.join(
@@ -194,18 +332,37 @@ const qualified = (globals: ReadonlyArray<string>) =>
     ", ",
   );
 
-export const unguardableGlobal = (globals: ReadonlyArray<string>) =>
-  UnguardableGlobal.make({
-    reason: "notConfigurable",
+/**
+ * Why the I/O guards could not stand before a function ran: each global with
+ * whether a test left it as a property the kernel cannot redefine
+ * (`notConfigurable`), or whether its redefinition threw or a later step of the
+ * install undid it (`installFailed`, when any did).
+ */
+export const unguardableGlobal = (
+  failures: ReadonlyArray<{ readonly name: string; readonly fixed: boolean }>,
+) => {
+  let fixed = true;
+  const globals: Array<string> = [];
+  for (const failure of failures) {
+    fixed &&= failure.fixed;
+    globals.push(failure.name);
+  }
+  return makeTrusted(UnguardableGlobal, {
+    _tag: "UnguardableGlobal",
+    reason: fixed ? "notConfigurable" : "installFailed",
     globals,
-    message: `The test kernel cannot guard ${qualified(globals)}: a test replaced it with a property that cannot be redefined, so a function could reach the host's implementation unchecked. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`,
+    message: fixed
+      ? `The test kernel cannot guard ${qualified(globals)}: a test replaced it with a property that cannot be redefined, so a function could reach the host's implementation unchecked. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`
+      : `The test kernel could not install its guard on ${qualified(globals)}: redefining it threw, or a later step of the install undid it, as a getter a test left on another global that replaces this one when read does, so a function could reach the host's implementation unchecked. The function does not start. Replace the global with a plain configurable property, as vi.stubGlobal does, or assign it.`,
   });
+};
 
 export const replacedWhileRunning = (
   udfPath: string,
   globals: ReadonlyArray<string>,
 ) =>
-  UnguardableGlobal.make({
+  makeTrusted(UnguardableGlobal, {
+    _tag: "UnguardableGlobal",
     reason: "replacedWhileRunning",
     globals,
     message: `${qualified(globals)} was redefined while ${udfPath} ran, so a call made through the replacement reached it without the test kernel's check. The function fails, a mutation's writes are rolled back, and the guard is installed again. Replace a global between functions, or assign it, which keeps it guarded.`,
@@ -430,6 +587,15 @@ export class SnapshotWorldRunning extends Schema.TaggedError<
 }) {}
 
 /**
+ * A world has open sync sockets, whose clients hold state versions and query
+ * values a restore would rewind.
+ */
+export class SnapshotSocketsOpen extends Schema.TaggedError<
+  SnapshotSocketsOpen,
+  { readonly brand: unique symbol }
+>()("SnapshotSocketsOpen", { sockets: Schema.Int, message: Schema.String }) {}
+
+/**
  * A world has subscribers, whose identity versions a restore would rewind.
  * Subscriptions are live client state, so a restore needs a world with none.
  */
@@ -551,6 +717,8 @@ const refusals = Array.map(
   [
     RequiresBinary,
     KernelRowPending,
+    FunctionRandomUnavailable,
+    UnguardableGlobal,
     RegisteredAfterOpen,
     ClosedAttempt,
     StaleAttempt,
@@ -562,3 +730,52 @@ const refusals = Array.map(
 
 export const isKernelRefusal = (error: unknown): boolean =>
   Array.some(refusals, (is) => is(error));
+
+/**
+ * A sync session's token expired, so the binary answers its next request or
+ * update with `AuthError` and closes the socket
+ * (`crates/sync/src/state.rs:282-305`). `code` and `message` are the binary's.
+ */
+export class TokenExpired extends Schema.TaggedError<
+  TokenExpired,
+  { readonly brand: unique symbol }
+>()("TokenExpired", {
+  code: Schema.Literal("TokenExpired"),
+  message: Schema.String,
+}) {}
+
+/**
+ * A sync client sent a message the binary's sync worker refuses, so `Sync`
+ * answers it with a `FatalError` and closes the socket. `reason` names the
+ * binary's check.
+ */
+export class SyncProtocolViolation extends Schema.TaggedError<
+  SyncProtocolViolation,
+  { readonly brand: unique symbol }
+>()("SyncProtocolViolation", {
+  reason: Schema.Literals([
+    "BaseVersionMismatch",
+    "QuerySetVersionNotIncreasing",
+    "IdentityVersionMismatch",
+    "DuplicateQueryId",
+    "NonexistentQueryId",
+    "TimestampAhead",
+    "ComponentPathNotAllowed",
+  ]),
+  message: Schema.String,
+}) {}
+
+/**
+ * A sync session sent a mutation under a request ID its ledger already holds,
+ * with other arguments. The binary would answer the recorded outcome of a
+ * different call, so the kernel refuses.
+ */
+export class SyncRequestReused extends Schema.TaggedError<
+  SyncRequestReused,
+  { readonly brand: unique symbol }
+>()("SyncRequestReused", {
+  requestId: Schema.Int,
+  recorded: Schema.String,
+  sent: Schema.String,
+  message: Schema.String,
+}) {}

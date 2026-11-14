@@ -24,7 +24,10 @@ import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
 import * as Crons from "./Crons.js";
 import * as Egress from "./Egress.js";
+import * as Entropy from "./Entropy.js";
 import * as Globals from "./Globals.js";
+import * as HostGlobals from "./HostGlobals.js";
+import * as Identity from "./Identity.js";
 import * as Http from "./Http.js";
 import * as Invocation from "./Invocation.js";
 import * as IoBans from "./IoBans.js";
@@ -38,6 +41,7 @@ import * as Scheduling from "./Scheduling.js";
 import * as Storage from "./Storage.js";
 import * as Snapshot from "./Snapshot.js";
 import type {
+  ConvexErrorDataEncoding,
   DocumentId,
   FunctionPath,
   StoredDocument,
@@ -46,12 +50,12 @@ import type {
 import {
   createFunctionHandle,
   createTestJwt,
-  deserializeConvexErrorData,
   evaluateValue,
   hasPendingValues,
   isSimpleObject,
   parseArgs,
   parseFunctionHandle,
+  receiveConvexErrorData,
   resolveCommittedValues,
   simpleHash,
   tableNameFromId,
@@ -129,6 +133,11 @@ interface Component {
    * Each loaded module's runtime, read from its source when the world opens.
    */
   readonly runtimes: Map<string, IoBans.Runtime>;
+  /**
+   * The `auth.config` module beside the functions, which only the app's
+   * providers come from.
+   */
+  readonly authConfig: (() => Promise<any>) | undefined;
 }
 
 /**
@@ -344,6 +353,14 @@ interface Execution {
   readonly runtime: IoBans.Runtime;
   readonly attempt: KernelAttempt | undefined;
   readonly identity: UserIdentity | null;
+  /**
+   * The verifier's refusal of the token its request presented, when an HTTP
+   * request's token was refused. The binary runs the request with an unknown
+   * identity that holds the error
+   * (`local_backend/src/http_actions.rs:165-169`), and a nested call in the
+   * host gets that identity unchanged (`model/src/components/auth.rs:6-19`).
+   */
+  readonly unverified: KernelRefusal.InvalidToken | undefined;
   readonly request: Request;
   /**
    * The kernel's time when the outermost query or mutation began. Its nested
@@ -501,19 +518,225 @@ const unlessEnded = <A>(execution: Execution, outcome: Promise<A>) => {
   });
 };
 
-const installIoBans = (): ReadonlyArray<string> => {
+const installIoBans = (): ReadonlyArray<IoBans.Unguarded> => {
   const unguarded = IoBans.install();
   IoBans.bind(ioHooks);
   return unguarded;
 };
 
 /**
+ * The module load running now, and the stream it draws from.
+ */
+const moduleLoads = new AsyncLocalStorage<Entropy.Source>();
+
+/**
+ * The refusal a draw raises in `execution` when no stream reaches it.
+ */
+const randomUnavailable = (execution: Execution) => (): number => {
+  throw KernelRefusal.FunctionRandomUnavailable.make({
+    componentPath: execution.componentPath,
+    udfPath: execution.udfPath,
+    message: `Function "${execution.udfPath}"${execution.componentPath === ROOT ? "" : ` of component "${execution.componentPath}"`} draws a random value, which Convex draws from the function's seeded generator, and neither a test invocation bound to the call nor the backend's own world supplies a stream to draw from. The kernel holds no generator. Bind an invocation, or give the backend a world, as TestConfect.layer does.`,
+  });
+};
+
+/**
+ * What a draw reads where it happens: the load running, or else the running
+ * kernel function's type and a stream, the bound invocation's first and then
+ * the backend's own world's, as a deployment JWT's signing seed resolves
+ * (#134). With neither, the draw refuses with `FunctionRandomUnavailable`; it
+ * never reads the host's. Outside both, test code's own.
+ */
+const entropySource: Entropy.Resolve = () => {
+  const loading = moduleLoads.getStore();
+  if (loading !== undefined) return loading;
+  const execution = executions.getStore();
+  if (execution === undefined) return undefined;
+  return {
+    phase: execution.udfType,
+    random:
+      Invocation.current()?.random ??
+      execution.world.ownRandom() ??
+      randomUnavailable(execution),
+  };
+};
+
+/**
+ * The kernel's `Math` and `crypto`, built once over the host's captured at load
+ * (`HostGlobals`), never over what `globalThis` holds when they are built.
+ */
+let kernelMath: Math | undefined;
+let kernelCrypto: Crypto | undefined;
+
+/**
+ * A thrown value's description, for a refusal. It never throws: it reads a
+ * value that could run code only inside its own try, and what it cannot
+ * describe gets fixed text.
+ */
+const describeThrown = (thrown: unknown): string => {
+  try {
+    if (typeof thrown === "string") return thrown;
+    if (thrown instanceof Error) {
+      const name: unknown = thrown.name;
+      const message: unknown = thrown.message;
+      return typeof name === "string" && typeof message === "string"
+        ? `${name}: ${message}`
+        : "an Error whose name or message is not a string";
+    }
+    return `a non-Error ${typeof thrown}`;
+  } catch {
+    return "a thrown value that could not be described";
+  }
+};
+
+/**
+ * Whether `globalThis[name]` is a property the kernel cannot redefine. It never
+ * throws: what it cannot read counts as one.
+ */
+const isFixed = (name: "Math" | "crypto"): boolean => {
+  try {
+    return (
+      Object.getOwnPropertyDescriptor(globalThis, name)?.configurable !== true
+    );
+  } catch {
+    return true;
+  }
+};
+
+/**
+ * What `globalThis[name]` holds, for a refusal: a property the kernel cannot
+ * redefine, as a test that freezes or redefines the global leaves it, and what
+ * the install threw, if it threw. It never throws: what it cannot read gets
+ * fixed text.
+ */
+const heldAs = (name: "Math" | "crypto", threw: unknown): string => {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+    if (descriptor === undefined) return "missing";
+    const fixed =
+      descriptor.configurable === true ? "" : " that cannot be redefined";
+    if (threw !== undefined) {
+      const kind = "value" in descriptor ? "a value" : "an accessor";
+      return `${kind}${fixed} whose install threw ${describeThrown(threw)}`;
+    }
+    if ("value" in descriptor) {
+      return descriptor.writable === true
+        ? `a value that did not take the assignment${fixed}`
+        : `a non-writable value${fixed}`;
+    }
+    return descriptor.set === undefined
+      ? `a getter with no setter${fixed}`
+      : `an accessor whose setter did not take the assignment${fixed}`;
+  } catch {
+    return "a property the kernel could not describe";
+  }
+};
+
+/**
+ * Point this copy of the globals' `Math` and `crypto` at the kernel's, built
+ * once over the host's captured at load. The kernel calls it in each function's
+ * and each module load's own copy, so plain Convex functions, component
+ * functions and code a function imports lazily all draw through it. A reference
+ * to the host's `Math.random` or `crypto` taken outside every kernel copy,
+ * before the kernel ran any code, stays the host's: the lazy-loading contract,
+ * as for the kernel's other globals. Every own-descriptor shape of `Math` and
+ * `crypto` ends one of two ways: the kernel's objects are installed and a
+ * read-back confirms it, or the install refuses with `UnguardableGlobal`,
+ * naming each global and what it holds, before the load's or the function's
+ * code runs.
+ */
+const installEntropy = () => {
+  kernelMath ??= Entropy.kernelMath(HostGlobals.math, entropySource);
+  kernelCrypto ??= Entropy.kernelCrypto(HostGlobals.crypto, entropySource);
+  const globals = [
+    ["Math", kernelMath],
+    ["crypto", kernelCrypto],
+  ] as const;
+  const failed = Arr.filterMap(globals, ([name, value]) => {
+    const failure = installGuarded(name, value);
+    return failure === undefined ? Result.failVoid : Result.succeed(failure);
+  });
+  // One final pass reads every global back, once all are installed, so a later
+  // step that undid an earlier one, as a test's getter that restores another
+  // global does, refuses before any user code runs.
+  const undone =
+    failed.length > 0
+      ? []
+      : Arr.filterMap(globals, ([name, value]) => {
+          const failure = confirmInstalled(name, value);
+          return failure === undefined
+            ? Result.failVoid
+            : Result.succeed(failure);
+        });
+  if (failed.length > 0 || undone.length > 0) {
+    throw KernelRefusal.uninstallableEntropy([...failed, ...undone]);
+  }
+};
+
+/**
+ * The final pass's read of `globalThis[name]`, inside its own guard:
+ * `undefined` when it still holds `value`, or the failure to refuse with.
+ */
+const confirmInstalled = (
+  name: "Math" | "crypto",
+  value: object,
+):
+  | { readonly global: string; readonly holds: string; readonly fixed: boolean }
+  | undefined => {
+  try {
+    return Reflect.get(globalThis, name) === value
+      ? undefined
+      : {
+          global: name,
+          holds:
+            "no longer the kernel's after a later step of the install replaced it",
+          fixed: isFixed(name),
+        };
+  } catch (error) {
+    return { global: name, holds: heldAs(name, error), fixed: isFixed(name) };
+  }
+};
+
+/**
+ * Install `value` as `globalThis[name]`, the one boundary every step of it runs
+ * in: from the first read of the global's descriptor, as `Globals.prepare`
+ * gives it this copy's accessor, through the assignment to the read-back that
+ * confirms the global holds `value`. A step that throws, an assignment that
+ * returns false, or a read-back that answers another object is a failure, and
+ * the caller refuses with `UnguardableGlobal`. Nothing it raises escapes.
+ */
+const installGuarded = (
+  name: "Math" | "crypto",
+  value: object,
+):
+  | { readonly global: string; readonly holds: string; readonly fixed: boolean }
+  | undefined => {
+  try {
+    Globals.prepare(name);
+    if (
+      Reflect.set(globalThis, name, value) &&
+      Reflect.get(globalThis, name) === value
+    ) {
+      return undefined;
+    }
+    return {
+      global: name,
+      holds: heldAs(name, undefined),
+      fixed: isFixed(name),
+    };
+  } catch (error) {
+    return { global: name, holds: heldAs(name, error), fixed: isFixed(name) };
+  }
+};
+
+/**
  * Run a function's code as `execution`, with its own copy of the globals a test
- * invocation pins, and the host APIs Convex refuses refused. A test that fakes
- * `Date` after the backend opened replaced the kernel's wrapper, so each
- * function wraps the realm's `Date` again, as it installs `globalThis.Convex`
- * again. A guarded global a test replaced is adopted beneath a fresh guard
- * first, and one that cannot be guarded refuses the function before it runs.
+ * invocation pins, whose `Math` and `crypto` are the kernel's, and the host
+ * APIs Convex refuses refused. A test that fakes `Date` after the backend
+ * opened replaced the kernel's wrapper, so each function wraps the realm's
+ * `Date` again, as it installs `globalThis.Convex` again. A guarded global a
+ * test replaced is adopted beneath a fresh guard first, and one that cannot be
+ * guarded refuses the function before it runs.
  */
 const enter = <A>(execution: Execution, run: () => A): A => {
   installConvexGlobal();
@@ -522,7 +745,10 @@ const enter = <A>(execution: Execution, run: () => A): A => {
   const unguarded = installIoBans();
   if (unguarded.length > 0) throw KernelRefusal.unguardableGlobal(unguarded);
   watches.set(execution, IoBans.watch());
-  return Globals.own(() => executions.run(execution, run));
+  return Globals.own(() => {
+    installEntropy();
+    return executions.run(execution, run);
+  });
 };
 
 /**
@@ -627,11 +853,18 @@ const current = (): Execution => {
   return execution;
 };
 
+/**
+ * A request ID in the binary's format, 16 lowercase hex digits
+ * (`RequestId::new` in `crates/common/src/execution_context.rs:204-208`,
+ * convex-backend `cccbade4`). The binary draws 8 random bytes. The kernel
+ * counts instead, so every request in the process gets its own ID and a replay
+ * draws nothing from the supplied random stream.
+ */
 let nextRequestId = 0;
 const newRequest = (caller: Caller): Request => ({
   ip: caller.ip,
   userAgent: caller.userAgent,
-  requestId: `kernel-request-${nextRequestId++}`,
+  requestId: Str.padStart(16, "0")((nextRequestId++).toString(16)),
   scheduledFunctionId: null,
   authToken: caller.token,
 });
@@ -736,6 +969,9 @@ const makeComponent = (
     standing: new Set(standing),
     sources: relativeSources,
     runtimes: new Map(),
+    authConfig: Option.getOrUndefined(
+      Arr.findFirst(relative, ([file]) => /^auth\.config\.[jt]s$/.test(file)),
+    )?.[1],
   };
 };
 
@@ -1100,20 +1336,35 @@ export class World {
   /**
    * The live registries `Snapshot.contract.live` names, each a count: calls
    * from the test, scheduler walks, function executions (nested and detached
-   * ones included) and registered subscribers. Held attempts are `holding`.
+   * ones included), open sync sockets and registered subscribers. Held attempts
+   * are `holding`.
    */
   private readonly live = {
     running: 0,
     walks: 0,
     functions: 0,
+    sockets: 0,
     subscribers: 0,
   };
+  /**
+   * Listeners `Sync` registers, told after each commit publishes, so a socket
+   * whose queries the commit invalidated sends its client a transition.
+   */
+  private readonly watchers = new Set<() => void>();
   /**
    * The latest identity version a subscriber's `authenticate` reached. Each
    * subscriber starts at the epoch, and each identity change advances it, so a
    * restored world never hands out a version its source already used.
    */
   private identityEpoch = 0;
+  /**
+   * The default export of the app's `auth.config`, loaded at open.
+   */
+  private authConfig: Promise<unknown> = Promise.resolve(undefined);
+  private providers: ReadonlyArray<Identity.Provider> | undefined;
+  readonly deploymentKey = new Identity.DeploymentKey(() =>
+    this.drawSigningSeed(),
+  );
 
   constructor(
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
@@ -1170,44 +1421,207 @@ export class World {
     return this.openIn(Invocation.current()?.world ?? this.own);
   }
 
+  /**
+   * The random stream of the world the driver gave the backend itself, which a
+   * function with no invocation bound draws from.
+   */
+  ownRandom(): (() => number) | undefined {
+    return this.own?.random;
+  }
+
   private openIn(world: Invocation.World | undefined): Promise<void> {
-    return this.load().then(() => this.scheduleFirstRuns(world));
+    return this.load(world).then(() => this.scheduleFirstRuns(world));
   }
 
   /**
    * Load every registered module of every component, once, before any function
    * runs, check that each standing source names an exported function, and read
-   * each component's cron declarations. Nothing here draws a random value, so a
-   * restore can load without one.
+   * each component's cron declarations. Reading declarations draws nothing.
    */
-  private load(): Promise<void> {
-    this.opened ??= Promise.all(
-      Array.from(this.components.values(), (component) =>
-        Promise.all(
-          Array.from(component.loaders, ([path, load]) =>
-            Promise.all([load(), runtimeFromSource(component, path)]).then(
-              ([module, runtime]) => {
-                component.loaded.set(path, module);
-                if (runtime !== undefined)
-                  component.runtimes.set(path, runtime);
-                return undefined;
+  private load(world: Invocation.World | undefined): Promise<void> {
+    if (this.opened === undefined) {
+      const loadAuthConfig = this.component(ROOT).authConfig;
+      let authConfig: { readonly default?: unknown } | undefined;
+      const loaded = this.loadModules(
+        world,
+        loadAuthConfig === undefined
+          ? []
+          : [
+              {
+                modulePath: "auth.config",
+                load: loadAuthConfig,
+                keep: (module) => {
+                  authConfig = module;
+                },
               },
-            ),
-          ),
+            ],
+      );
+      this.authConfig = loaded.then(() => authConfig?.default);
+      this.opened = Promise.all([loaded, this.authConfig])
+        .then(() => {
+          for (const component of this.components.values()) {
+            checkActionRuntimes(
+              component,
+              this.componentRuntimeOf(component.path),
+            );
+          }
+          return this.checkStanding();
+        })
+        .then(() => this.readDeclarations());
+    }
+    return this.opened;
+  }
+
+  /**
+   * Load each module under its own copy of the globals, whose `Math.random`,
+   * `crypto.getRandomValues` and `crypto.randomUUID` draw, while the load runs,
+   * from `world`'s random stream. The binary lets a module draw while it loads,
+   * from a generator seeded once per push
+   * (`crates/isolate/src/environment/udf/phase.rs:186-193`,
+   * `crates/isolate/src/environment/analyze.rs:284`, convex-backend
+   * `cccbade4`); the kernel holds no generator, so the driver's stream stands
+   * in for the seed. The globals resolve their stream on every call, so a
+   * function a module keeps while it loads draws, when a handler later calls
+   * it, from that handler's stream. Modules load one at a time, components in
+   * registration order and each component's modules in the order its map lists
+   * them, so the draws land in one order and a replay with the same stream
+   * draws them again. With no world, a draw refuses with
+   * `LoadRandomUnavailable`, and the load refuses with it too, even when the
+   * module caught it. A `crypto.subtle` operation that draws cryptographic
+   * randomness rejects with the binary's queries-and-mutations error, as a load
+   * for one of those does. A module the host runtime already evaluated is not
+   * evaluated again, so it draws nothing.
+   */
+  private loadModules(
+    world: Invocation.World | undefined,
+    extra: ReadonlyArray<{
+      readonly modulePath: string;
+      readonly load: () => Promise<any>;
+      readonly keep: (module: any) => unknown;
+    }> = [],
+  ): Promise<void> {
+    let refused: KernelRefusal.LoadRandomUnavailable | undefined;
+    const entries = Arr.flatMap(
+      Array.from(this.components.values()),
+      (component) =>
+        Arr.map(Array.from(component.loaders), ([modulePath, load]) => ({
+          component,
+          modulePath,
+          load,
+          // Each module's runtime is read from its source beside its load,
+          // when the test supplied sources.
+          keep: (module: any): unknown =>
+            runtimeFromSource(component, modulePath).then((runtime) => {
+              component.loaded.set(modulePath, module);
+              if (runtime !== undefined)
+                component.runtimes.set(modulePath, runtime);
+              return undefined;
+            }),
+        })),
+    ).concat(
+      Arr.map(extra, (entry) => ({
+        ...entry,
+        component: this.component(ROOT),
+      })),
+    );
+    const loadOne = ({
+      component,
+      modulePath,
+      load,
+      keep,
+    }: (typeof entries)[number]): Promise<unknown> => {
+      const random =
+        world?.random ??
+        (() => {
+          refused ??= KernelRefusal.LoadRandomUnavailable.make({
+            componentPath: component.path,
+            modulePath,
+            message: `Module "${modulePath}"${component.path === ROOT ? "" : ` of component "${component.path}"`} draws a random value while it loads, which Convex draws from a generator seeded once per push, and no test world was bound when the backend opened, nor given to it, to draw it from. The kernel holds no generator. Open the backend under a bound invocation, or give it a world, whose random stream the load draws from.`,
+          });
+          throw refused;
+        });
+      return moduleLoads
+        .run({ phase: "load", random }, () =>
+          Globals.own(() => {
+            installEntropy();
+            return load();
+          }),
+        )
+        .then(keep);
+    };
+    return Arr.reduce(
+      entries,
+      Promise.resolve<unknown>(undefined),
+      (previous, entry) => previous.then(() => loadOne(entry)),
+    ).then(() => (refused === undefined ? undefined : Promise.reject(refused)));
+  }
+
+  /**
+   * Open the backend, and the caller a call from the test runs as: `caller`, or
+   * the one a presented `token` makes. Each call from the test reaches its
+   * caller inside its own `during`, so verifying a token and running the call
+   * are one live call, and a snapshot refuses while either is pending.
+   */
+  private presenting(
+    caller: Caller,
+    token: string | undefined,
+  ): Promise<Caller> {
+    return token === undefined
+      ? this.open().then(() => caller)
+      : this.authenticate(caller, token);
+  }
+
+  /**
+   * The caller `token` makes from `caller`, as a sync session's Authenticate
+   * presents it: verified against the app's `auth.config` providers at the
+   * kernel's time, as one live call, so a snapshot refuses while it is
+   * pending.
+   */
+  verify(caller: Caller, token: string): Promise<Caller> {
+    return this.during(() => this.authenticate(caller, token));
+  }
+
+  /**
+   * The caller a presented token makes, verified against the app's
+   * `auth.config` providers at the kernel's time, before anything runs. The
+   * binary verifies a client's token on every request, so a token that expires
+   * fails the next call after it does.
+   */
+  private authenticate(caller: Caller, token: string): Promise<Caller> {
+    return this.open()
+      .then(() => this.authConfig)
+      .then((config) => {
+        this.providers ??= Identity.readProviders(config);
+        return Identity.verify(token, this.providers, this.now());
+      })
+      .then((identity) => ({ ...caller, identity, token }));
+  }
+
+  /**
+   * The deployment signing key's seed: 32 values from the random stream of the
+   * invocation's world bound now, or else the backend's own, as a cron delay
+   * draws. The seed is kept as a secret, so a snapshot writes it as a marker
+   * and no artifact shows it raw.
+   */
+  private drawSigningSeed(): Identity.Seed {
+    const world = Invocation.current()?.world ?? this.own;
+    if (world === undefined) {
+      throw KernelRefusal.SigningKeyRandomUnavailable.make({
+        message:
+          "The deployment's signing key is drawn from a test world's random stream, and no invocation is bound and this backend was given no world to draw it from. The kernel holds no generator. Pass `world` to `convexTest`, or use `TestConfect.layer`'s kernel target, whose world is seeded.",
+      });
+    }
+    const seed = pipe(
+      Arr.makeBy(32, () =>
+        pipe(
+          Math.floor(world.random() * 256).toString(16),
+          Str.padStart(2, "0"),
         ),
       ),
-    )
-      .then(() => {
-        for (const component of this.components.values()) {
-          checkActionRuntimes(
-            component,
-            this.componentRuntimes[component.path],
-          );
-        }
-        return this.checkStanding();
-      })
-      .then(() => this.readDeclarations());
-    return this.opened;
+      Arr.join(""),
+    );
+    this.secrets.keep(seed);
+    return seed;
   }
 
   private readDeclarations() {
@@ -1386,6 +1800,20 @@ export class World {
     return Math.max(this.runtime.now(), this.floor);
   }
 
+  /**
+   * The runtime the test declared for the component at `componentPath`, read
+   * from the declaration's own entries only, so a component named like an
+   * `Object.prototype` member, such as `constructor`, declares nothing unless
+   * the test lists it.
+   */
+  private componentRuntimeOf(
+    componentPath: string,
+  ): IoBans.Runtime | undefined {
+    return Option.getOrUndefined(
+      Rec.get(this.componentRuntimes, componentPath),
+    );
+  }
+
   private component(componentPath: string): Component {
     const component = this.components.get(componentPath);
     if (component === undefined) throw unregistered(this, componentPath);
@@ -1437,17 +1865,22 @@ export class World {
         modulePath,
         exportName,
         func,
-        this.componentRuntimes[component.path],
+        this.componentRuntimeOf(component.path),
       ),
     };
   }
 
   // Calls from the test.
 
-  query(caller: Caller, reference: any, args: any): Promise<any> {
+  query(
+    caller: Caller,
+    reference: any,
+    args: any,
+    token?: string,
+  ): Promise<any> {
     return this.during(() =>
-      this.open().then(() => {
-        const from = { caller, request: newRequest(caller) };
+      this.presenting(caller, token).then((who) => {
+        const from = { caller: who, request: newRequest(who) };
         return typeof reference === "function"
           ? this.runQuery(
               { componentPath: ROOT, udfPath: "inline" },
@@ -1460,10 +1893,15 @@ export class World {
     );
   }
 
-  mutation(caller: Caller, reference: any, args: any): Promise<any> {
+  mutation(
+    caller: Caller,
+    reference: any,
+    args: any,
+    token?: string,
+  ): Promise<any> {
     return this.during(() =>
-      this.open().then(() => {
-        const from = { caller, request: newRequest(caller) };
+      this.presenting(caller, token).then((who) => {
+        const from = { caller: who, request: newRequest(who) };
         return typeof reference === "function"
           ? this.runMutation(
               { componentPath: ROOT, udfPath: "inline" },
@@ -1476,10 +1914,15 @@ export class World {
     );
   }
 
-  action(caller: Caller, reference: any, args: any): Promise<any> {
+  action(
+    caller: Caller,
+    reference: any,
+    args: any,
+    token?: string,
+  ): Promise<any> {
     return this.during(() =>
-      this.open().then(() => {
-        const from = { caller, request: newRequest(caller) };
+      this.presenting(caller, token).then((who) => {
+        const from = { caller: who, request: newRequest(who) };
         return typeof reference === "function"
           ? this.runAction(
               { componentPath: ROOT, udfPath: "inline" },
@@ -1496,15 +1939,16 @@ export class World {
     caller: Caller,
     componentPath: string,
     handler: (ctx: any) => any,
+    token?: string,
   ): Promise<any> {
     return this.during(() =>
-      this.open().then(() => {
+      this.presenting(caller, token).then((who) => {
         this.component(componentPath);
         return this.runMutation(
           { componentPath, udfPath: "custom" },
           { handler, args: { type: "any" }, returns: null },
           {},
-          { caller, request: newRequest(caller) },
+          { caller: who, request: newRequest(who) },
         );
       }),
     );
@@ -1515,10 +1959,35 @@ export class World {
    * request: the router's `lookup` picks the route by pathname and method, and
    * the route's handler runs as an action with the caller's identity. With no
    * route, the binary's 404, and for a handler that throws, its 500.
+   *
+   * A presented `token` is verified first, in the same live call. A token the
+   * verifier refuses does not refuse the request: the binary runs the handler
+   * with an unknown identity that holds the error
+   * (`local_backend/src/http_actions.rs:165-169`), and the handler's
+   * `getUserIdentity` throws it.
    */
-  fetch(caller: Caller, path: unknown, init?: RequestInit): Promise<Response> {
+  fetch(
+    caller: Caller,
+    path: unknown,
+    init?: RequestInit,
+    token?: string,
+  ): Promise<Response> {
     return this.during(() =>
-      this.open().then(() => this.route(caller, path, init)),
+      this.presenting(caller, token).then(
+        (verified) => this.route(verified, path, init),
+        (error: unknown) => {
+          if (!KernelRefusal.isInvalidToken(error)) throw error;
+          // The request runs as the binary's unknown identity: no user, no
+          // token to forward (`keybroker/src/broker.rs:165-175`), and the
+          // refusal for an action's `getUserIdentity` to throw.
+          return this.route(
+            { ...caller, identity: null, token: null },
+            path,
+            init,
+            error,
+          );
+        },
+      ),
     );
   }
 
@@ -1526,6 +1995,7 @@ export class World {
     caller: Caller,
     path: unknown,
     init: RequestInit | undefined,
+    refused?: KernelRefusal.InvalidToken,
   ): Promise<Response> {
     const url = orThrow(Http.requestUrl(path));
     const method = init?.method ?? "GET";
@@ -1555,7 +2025,7 @@ export class World {
       { componentPath: ROOT, udfPath: "http" },
       "action",
       undefined,
-      { caller, request: newRequest(caller) },
+      { caller, request: newRequest(caller), unverified: refused },
       undefined,
     );
     const action = httpActionGeneric((ctx, received) =>
@@ -1590,9 +2060,14 @@ export class World {
   /**
    * Run a mutation to its commit point and hold it as attempt 1.
    */
-  prepare(caller: Caller, reference: any, args: any): Promise<HeldAttempt> {
+  prepare(
+    caller: Caller,
+    reference: any,
+    args: any,
+    token?: string,
+  ): Promise<HeldAttempt> {
     return this.during(() =>
-      this.open().then(() => {
+      this.presenting(caller, token).then((who) => {
         const functionPath = pathOfReference(reference, ROOT);
         const resolved = this.resolve(functionPath, "mutation");
         this.keepArgs(functionPath, args);
@@ -1601,7 +2076,7 @@ export class World {
           functionPath,
           resolved,
           args,
-          { caller, request: newRequest(caller) },
+          { caller: who, request: newRequest(who) },
           1,
           Invocation.current(),
         ).then((held) => held.view);
@@ -1792,7 +2267,33 @@ export class World {
       walks: this.live.walks,
       functions: this.live.functions,
       held: this.holding.size,
+      sockets: this.live.sockets,
       subscribers: this.live.subscribers,
+    };
+  }
+
+  /**
+   * Count a sync socket open until `close` is called.
+   */
+  openSocket(): { readonly close: () => void } {
+    this.live.sockets++;
+    let open = true;
+    return {
+      close: () => {
+        if (open) this.live.sockets--;
+        open = false;
+      },
+    };
+  }
+
+  /**
+   * Call `listener` after each commit publishes, until the returned function is
+   * called. It runs in the commit's turn, so it must only schedule work.
+   */
+  watch(listener: () => void): () => void {
+    this.watchers.add(listener);
+    return () => {
+      this.watchers.delete(listener);
     };
   }
 
@@ -1911,6 +2412,14 @@ export class World {
         files,
         crons,
         cancelledCommands: [...this.cancelled],
+        signingKey:
+          this.deploymentKey.seed === undefined
+            ? null
+            : {
+                [Redaction.markerKey]: this.secrets.keep(
+                  this.deploymentKey.seed,
+                ),
+              },
       },
       (componentPath, table, json) =>
         Redaction.mark(
@@ -1940,7 +2449,7 @@ export class World {
       readonly secrets?: Redaction.Secrets;
     } = {},
   ): Promise<void> {
-    return this.load().then(() =>
+    return this.load(Invocation.current()?.world ?? this.own).then(() =>
       this.restore(
         bytes,
         options.worlds ?? [],
@@ -2034,6 +2543,13 @@ export class World {
     for (const [key, cron] of cronJobs) this.cronJobs.set(key, cron);
     this.cronsScheduled = true;
     this.secrets = secrets.copy();
+    // The snapshot's key, put back from the secrets, never a fresh draw.
+    // `Snapshot.decode` checked that it is a seed.
+    this.deploymentKey.install(
+      image.signingKey === null
+        ? undefined
+        : (image.signingKey as Identity.Seed),
+    );
   }
 
   /**
@@ -2181,6 +2697,11 @@ export class World {
           message: `The test backend holds attempts ${Arr.join(held, ", ")}, which a snapshot does not carry. Apply them first.`,
         });
       },
+      sockets: (count) =>
+        KernelRefusal.SnapshotSocketsOpen.make({
+          sockets: count,
+          message: `The test backend has ${count} open sync sockets, whose clients hold versions and query values a restore would rewind. Close every client first.`,
+        }),
       subscribers: (count) =>
         KernelRefusal.SnapshotSubscribed.make({
           subscribers: count,
@@ -2499,6 +3020,7 @@ export class World {
       });
     }
     this.state = Kernel.apply(this.state, writes, commitTs);
+    for (const watcher of this.watchers) watcher();
     return commitTs;
   }
 
@@ -2633,15 +3155,10 @@ export class World {
     startTime?: number,
     runtime: IoBans.Runtime = "isolate",
   ): Execution {
-    // A function in a component runs with no identity, whoever called it, as
-    // Convex gives a component no `ctx.auth` of the caller's. A nested call in
-    // the host takes its parent's identity, even when that is none.
-    const identity =
-      functionPath.componentPath !== ROOT
-        ? null
-        : from.parent !== undefined
-          ? from.parent.identity
-          : from.caller.identity;
+    const { identity, unverified } = callIdentity(
+      from,
+      functionPath.componentPath,
+    );
     // A nested call runs under its caller's limits, which its budget can only
     // tighten, and gives them back when it ends (`run_udf`,
     // `crates/isolate/src/environment/udf/async_syscall.rs:700-706`, and
@@ -2662,6 +3179,7 @@ export class World {
       runtime,
       attempt,
       identity,
+      unverified,
       request: from.request,
       startTime:
         startTime ??
@@ -2732,7 +3250,7 @@ export class World {
           return result;
         })
         .catch((error: unknown) => {
-          throw deserializeConvexErrorData(error);
+          throw receiveConvexErrorData(error, convexErrorDataFor(from));
         });
     });
   }
@@ -2797,7 +3315,7 @@ export class World {
             }),
           (error: unknown) => {
             frame.close();
-            throw deserializeConvexErrorData(error);
+            throw receiveConvexErrorData(error, convexErrorDataFor(from));
           },
         );
       }
@@ -2849,7 +3367,7 @@ export class World {
               .then((): Outcome => ({ _tag: "returned", value })),
           (error: unknown): Outcome => ({
             _tag: "failed",
-            error: deserializeConvexErrorData(error),
+            error: receiveConvexErrorData(error, convexErrorDataFor(from)),
           }),
         )
         .then((outcome) => {
@@ -3044,7 +3562,7 @@ export class World {
           return result;
         })
         .catch((error: unknown) => {
-          throw deserializeConvexErrorData(error);
+          throw receiveConvexErrorData(error, convexErrorDataFor(from));
         });
     });
   }
@@ -3151,6 +3669,15 @@ export class World {
       before: document(change.before),
       after: document(change.after),
     };
+  }
+
+  /**
+   * `json` as an artifact writes it: every string holding a kept secret
+   * replaced by the marker text. For protocol messages and probe records, whose
+   * values have no declared shape of their own.
+   */
+  redactJson(json: JSONValue): JSONValue {
+    return Redaction.scrubJson(json, this.secrets);
   }
 
   /**
@@ -3549,7 +4076,11 @@ export class World {
       case "1.0/actions/query":
       case "1.0/actions/mutation":
       case "1.0/actions/action": {
-        const from: From = { request: execution.request, parent: execution };
+        const from: From = {
+          request: execution.request,
+          parent: execution,
+          syscall: true,
+        };
         const functionPath = functionPathOf(args, execution.componentPath);
         const run =
           op === "1.0/actions/query"
@@ -3565,6 +4096,7 @@ export class World {
           request: execution.request,
           parent: execution,
           budget: budgetOf(transactionLimits),
+          syscall: true,
         };
         const functionPath = functionPathOf(args, execution.componentPath);
         const value = jsonToConvex(udfArgs);
@@ -4022,19 +4554,74 @@ export class World {
 /**
  * Where a call comes from. A call from the test carries its accessor's caller.
  * A nested call carries its parent execution and takes its identity from it.
+ * `syscall` marks a nested call its parent made through `Convex.asyncSyscall`,
+ * whose answer the parent's syscall wrapper decodes. An action's own
+ * `ctx.runQuery`, `ctx.runMutation` and `ctx.runAction` call the kernel
+ * directly instead.
  */
 type From =
   | {
       readonly caller: Caller;
       readonly request: Request;
+      readonly unverified?: KernelRefusal.InvalidToken | undefined;
       readonly parent?: undefined;
       readonly budget?: undefined;
+      readonly syscall?: undefined;
     }
   | {
       readonly parent: Execution;
       readonly request: Request;
       readonly budget?: Metering.Budget | undefined;
+      readonly syscall?: true;
     };
+
+/**
+ * The identity a call runs with, by the binary's rules (convex-backend
+ * `cccbade4`).
+ *
+ * - A query's or mutation's nested call runs on its caller's transaction, and
+ *   `getUserIdentity` reads that transaction's identity in a component as in
+ *   the app (`crates/isolate/src/environment/udf/async_syscall.rs:629-724`,
+ *   `:1111-1141`). So a component a query or a mutation calls sees the caller,
+ *   at every depth.
+ * - An action's call passes its identity through `propagate_component_auth`,
+ *   which keeps it only from the app to the app
+ *   (`crates/isolate/src/environment/action/async_syscall.rs:166`,
+ *   `crates/model/src/components/auth.rs:6-19`).
+ * - A client reaches only the app's functions. A test that calls a component
+ *   directly gets no identity, as a component's HTTP action does
+ *   (`crates/function_runner/src/server.rs:450-455`).
+ *
+ * A refused HTTP token is part of the identity, the binary's unknown identity
+ * that holds the verifier's error, so `unverified` travels by the same rules.
+ */
+const callIdentity = (
+  from: From,
+  componentPath: string,
+): Pick<Execution, "identity" | "unverified"> => {
+  if (from.parent === undefined) {
+    return componentPath === ROOT
+      ? { identity: from.caller.identity, unverified: from.unverified }
+      : none;
+  }
+  const { parent } = from;
+  if (parent.udfType !== "action") return parent;
+  return parent.componentPath === ROOT && componentPath === ROOT
+    ? parent
+    : none;
+};
+
+const none: Pick<Execution, "identity" | "unverified"> = {
+  identity: null,
+  unverified: undefined,
+};
+
+/**
+ * How a `ConvexError`'s data leaves a call from `from`: as Convex JSON across a
+ * syscall, whose wrapper decodes it once, and as a Convex value anywhere else.
+ */
+const convexErrorDataFor = (from: From): ConvexErrorDataEncoding =>
+  from.syscall === true ? "json" : "value";
 
 const refuse = (error: Metering.TransactionLimitExceeded | undefined) => {
   if (error !== undefined) throw error;
@@ -4176,8 +4763,23 @@ const transaction = (execution: Execution): KernelAttempt => {
   return execution.attempt;
 };
 
+/**
+ * `ctx.auth` as each kind of function reads it. Under a refused token, an
+ * action, the HTTP action itself or one it ran, throws the verifier's error
+ * (`isolate/src/environment/action/task_executor.rs:205-216`). It reaches the
+ * handler as a plain `Error` whose message is the error's own
+ * (`isolate/src/environment/helpers/promise.rs:74-76`,
+ * `errors/src/lib.rs:25-26`, `:989-994`), rethrown by `performAsyncSyscall`
+ * without `data` (`convex/src/server/impl/syscall.ts:47-52`). A query or a
+ * mutation reads its transaction's identity, and an unknown identity is none
+ * (`isolate/src/environment/udf/async_syscall.rs:1111-1142`,
+ * `database/src/transaction.rs:390-396`).
+ */
 const queryAuth = (execution: Execution) => ({
   getUserIdentity: () => {
+    if (execution.udfType === "action" && execution.unverified !== undefined) {
+      return Promise.reject(new Error(execution.unverified.message));
+    }
     execution.attempt?.observeIdentity();
     return Promise.resolve(execution.identity);
   },
@@ -4185,7 +4787,12 @@ const queryAuth = (execution: Execution) => ({
 
 const mutationAuth = (execution: Execution) => ({
   ...queryAuth(execution),
-  signJwt: () => Promise.reject(KernelRefusal.rowPending("JWT signing", 6)),
+  signJwt: (options: unknown) =>
+    execution.world.deploymentKey.sign(
+      execution.componentPath,
+      options,
+      execution.startTime,
+    ),
 });
 
 function validateId(

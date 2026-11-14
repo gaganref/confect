@@ -384,7 +384,7 @@ export default defineConfig({
 });
 ```
 
-The guards check each call, so a stub you install with `vi.stubGlobal` or by assignment still works outside a function and stays refused inside one. A function that redefines one of these globals while it runs, with `Object.defineProperty` or `delete`, steps outside the guards: a call it makes through the replacement is not blocked, but the function then fails with `UnguardableGlobal` when it settles, a mutation keeps none of its writes, and the guard comes back. Replace globals between functions instead.
+The guards check each call, so a stub you install with `vi.stubGlobal` or by assignment still works outside a function and stays refused inside one. A function that redefines one of these globals while it runs, with `Object.defineProperty`, `delete` or a replacement on the global's prototype, steps outside the guards: a call it makes through the replacement is not blocked. If the replacement is still in place when the function settles, read as the function reads it, the function fails with `UnguardableGlobal`, a mutation keeps none of its writes, and the guard comes back as an own property. A replacement removed again before the function settles is not caught, and accessors that run code to fake the guard at settlement are hostile and out of scope. Replace globals between functions instead.
 
 A Node action runs with Node's globals, and every other function with Convex's isolate's. On the kernel a Confect action's runtime comes from its registration. A plain Convex action's comes from its module's `"use node"` directive, so pass the modules' sources, a `?raw` glob of the same files, and the kernel reads the directive as Convex's bundler does. The glob can live in any test file: the kernel matches each source to its module by its path below the directory that holds `_generated`. Each form takes them beside `target`:
 
@@ -425,6 +425,12 @@ A cron run counts as no work for `finishAllScheduledFunctions`, so a drain never
 #### Reach the network from an action
 
 Convex lets an action call `fetch`, but the kernel does not: a raw `fetch` in an action, a Node action included, fails the action with `BackendRefusal` `UndeclaredFetch`, which names the action and the host. The request never leaves the test, so the test cannot depend on the network and a run replays. Reach a provider through a provider port instead. On the kernel each port call waits as a held command until the test answers it with the provider's outcome. Provider ports are internal to `@confect/test` until the kernel is promoted.
+
+### Randomness on the kernel
+
+On the kernel, every random source a function or a module reaches draws from a seeded stream: `Math.random`, `crypto.getRandomValues` and `crypto.randomUUID`, in Confect and plain Convex functions, in component functions, and in modules while they load. The stream is the bound invocation's, or else the layer's own, which `seed` starts, so two runs with the same seed draw the same values. `crypto.subtle` operations that need cryptographic randomness, such as `generateKey`, are refused as a deployment refuses them in queries and mutations. In actions, where only a real deployment can supply them, they are refused with `RequiresBinary`.
+
+The kernel installs its own `Math` and `crypto` in each function's globals. If a test leaves either global as a property the kernel cannot replace, for example by freezing it with `Object.defineProperty`, the backend refuses with `UnguardableGlobal` before any of your code runs, rather than letting it draw from the host. Replace globals with `vi.stubGlobal` or by assignment instead. A reference to `Math.random` or `crypto` that your code takes before the kernel runs anything, such as at the top of a test file, stays the host's. Likewise, a `Math` or `crypto` that a test or setup file installs before `@confect/test` is first imported is what the kernel takes as the host's, and the kernel installs its own over it as usual. After installing both, the kernel reads them back once more before your code runs, so a step that undid one refuses too. Test code that installs accessors which run arbitrary code to rewrite other globals during the kernel's install is hostile and out of scope beyond that final read-back.
 
 ### Keep secrets out of kernel artifacts
 

@@ -7,6 +7,7 @@ export const deepRead = registeredFunctions.deepRead;
 export const environment = registeredFunctions.environment;
 export const exercise = registeredFunctions.exercise;
 export const hasAuth = registeredFunctions.hasAuth;
+export const identity = registeredFunctions.identity;
 export const list = registeredFunctions.list;
 export const page = registeredFunctions.page;
 export const schedule = registeredFunctions.schedule;

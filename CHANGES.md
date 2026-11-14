@@ -168,6 +168,19 @@ binary as the named `SystemTableReadIntervals` boundary. File storage counters s
 limits row of Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-limits.md`. Upstream: fork only, as the kernel is fork-specific.
 
+## Metering limit test timeouts
+
+The kernel's `documentsRead` limit test seeds 32,001 notes and reads 64,001
+documents, each metered as the binary meters it. It took up to 6.1 s on Windows
+CI, where it timed out at Vitest's 5 s default on `main`, and 2.8 to 3.6 s on
+Ubuntu CI. The `documentsWritten` test reached 3.49 s on Windows and 2.17 s on
+Ubuntu. A profile spreads the cost over per-document work: the read-interval
+set's comparisons of each inserted ID, syscall JSON and document sizing. No
+bulk seeding path exists, so the two tests take explicit 15 s and 10 s
+timeouts, with the reason on the line. The assertions are unchanged. Changeset:
+none, as only a test changes. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## TestConfect kernel target
 
 `TestConfect.layer` takes `{ target: "kernel" }` in each of its three forms. It
@@ -205,7 +218,7 @@ shim's `commands()` lists and `answer(id, output)` settles, until the action
 ends, when its commands are cancelled and a later call is refused. A snapshot
 carries the command allocator and the cancelled commands, so a restored world
 numbers its next command and refuses a stale answer as its source would
-(snapshot format 4). This is the
+(snapshot format 5, which carries #134's signing key beside them). This is the
 action egress row of Frame's backend testing kernel (Frame ADR 0012, row 6).
 Changeset: `test-kernel-action-egress.md`. Upstream: fork only, as the kernel is
 fork-specific.
@@ -226,9 +239,14 @@ globals is an accessor that returns a guard, installed by the new
 kept, a nested call, a stub and a handler's own assignment are all checked. A
 replaced global is guarded again when the next function starts, a
 non-configurable one refuses the function with `UnguardableGlobal`, and a
-promisified timer is guarded too. A global redefined while a function runs
-fails that function with `UnguardableGlobal` when it settles, so a mutation
-publishes none of its writes, and the guard comes back. A module's runtime
+promisified timer is guarded too. A global left replaced when a function
+settles, read through the prototype chain, fails that function with
+`UnguardableGlobal` (`replacedWhileRunning`), so a mutation publishes none of
+its writes, and the guard comes back as an own property. An install that throws
+or is undone refuses with `installFailed`, after a final read-back pass, as
+#150's entropy install does, and both installs share one `UnguardableGlobal`.
+Accessors that run code to fake the guard at settlement are hostile and out of
+scope. A module's runtime
 comes from its `"use node"` directive when the test passes its sources
 (`sources`, a `?raw` glob, in each `TestConfect.layer` form), with Confect's
 mark, which `@confect/server` now sets on its isolate actions too, as a
@@ -346,6 +364,53 @@ row 6's HTTP parity row of Frame's backend testing kernel (Frame ADR 0012).
 Changeset: `test-kernel-http.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel sync protocol
+
+The kernel serves the Convex client sync protocol in process. `sync()` on the
+kernel's `convexTest` shim gives a `WebSocket` constructor that the unmodified
+`BaseConvexClient` from `convex` 1.49.0 takes as its `webSocketConstructor`, so
+a client subscribes, mutates, signs in and reconnects against the kernel as it
+would against a deployment. Each socket runs as the binary's sync worker does:
+messages in order, mutations in order, actions at once, and a transition after
+each query-set change, identity change, answered request or commit that
+changed what one of its queries read. Each session keeps a request ledger,
+keyed by request ID with the digest of the arguments' artifact form, so a
+mutation the client resends after a lost response is answered once; a resend
+is told from a reuse by its raw arguments' digest, which stays in memory. A
+token the client presents is verified with the JWT row's verifier, its expiry
+is checked before each request and update as the binary checks it, and a new
+token reruns every query of the socket through a model of the binary's query
+cache, so a time query keeps its value until the cache age passes; a
+subscriber on the shim under `withToken` now presents its token the same way
+instead of refusing. A reused request ID with other arguments is refused,
+where the binary answers the recorded result: the one recorded conformance
+exception. The
+ledger, the transcript of every message and the failure reports leave marked
+by the redaction policy. Open sockets join the snapshot's live registries, so a
+restore refuses while any is open. A local-backend probe runs three legs of the
+unmodified client against a binary the run starts and against the kernel, and
+records each leg bound to the binary's process, checksum and ports; a leg's
+record is `incomplete` until it finishes, every step has a deadline, and the
+probe is skipped off Linux. This is row
+7 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-sync.md`. Upstream: fork only, as the kernel is fork-specific.
+
+## Sync probe failing-clock reruns
+
+Leg 1 of the sync probe signs a client in and checks that a query failing with
+the time as its error data sends a new error. The leg runs on the kernel in
+`Sync.test.ts` and against the binary in `syncProbe`. It slept 300 ms, then
+compared. On the kernel it sometimes found no new error. The kernel had rerun
+the query, but inside the first run's millisecond, so the rerun answered the
+same error and the client had nothing new to show. On the binary a network
+round trip always separates the two runs. The probe app's kernel now reads a
+clock that never answers the same millisecond twice. The leg waits for each
+sign-in's new error instead of for a window. The first must come within three
+quarters of the cache age from the first run, so a cached failure that changes
+only once it expires still fails the leg. The second may take up to the step
+deadline. Only test fixtures and tests changed, so there is no changeset.
+Upstream: fork only, as the kernel is fork-specific.
+
 ## Test kernel on Effect 4.1 and upstream 10.6.0
 
 The test kernel moved onto the fork's Effect 4.1.4 and upstream 10.6.0
@@ -365,6 +430,88 @@ its fixture's system-table share measures 21. Changeset:
 `kernel-refusal-field-names.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel nested ConvexError data
+
+A function calling another through `ctx.runQuery`, `ctx.runMutation` or
+`ctx.runAction` makes a syscall, and Convex's syscall wrapper decodes a rejected
+call's `ConvexError` data from Convex JSON (`convex`
+`src/server/impl/syscall.ts:46-51`). The binary hands it Convex JSON
+(convex-backend `cccbade4`, `crates/isolate/src/environment/helpers/promise.rs:77-88`).
+The kernel decoded the data to Convex values first, so the wrapper decoded it
+again: an int64 reached the caller as `Error: Unexpected type of 42`, and bytes
+as `{}`. A call made through a syscall now leaves its `ConvexError` data as
+Convex JSON, and the caller's one decode is the only one. A call from the test,
+or an action's own `ctx.run*`, which the kernel answers directly, still decodes
+to Convex values. A plain local-backend fixture runs every caller and payload on
+the binary and on the kernel. Changeset: `test-kernel-nested-convex-error.md`.
+Upstream: fork only, as the kernel is fork-specific.
+
+## Test kernel component identity
+
+A component the kernel calls from a query or a mutation sees the caller's
+identity at every depth, because the binary reads identity from the caller's
+transaction. One an action calls sees none, as the binary's
+`propagate_component_auth` keeps identity only from the app to the app, and
+neither does any call below it. A test that calls a component directly gets
+none, as a client reaches only the app's functions. This replaces row 2's rule
+that a component never sees an identity. Confect's own component context still
+drops `ctx.auth`, which is its API rather than parity. A probe reads `ctx.auth`
+through plain Convex queries chained across three nested mounts, on the kernel
+and on the binary. With them the fixture's system-table share measures 22.
+This is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-component-identity.md`. Upstream: fork only, as the kernel is
+
+## Test kernel request metadata
+
+Each client call the kernel serves is a request of its own, and its ID now
+takes the binary's format, 16 lowercase hex digits, where it was
+`kernel-request-N`. The kernel counts IDs per process rather than drawing
+them, so a replay draws nothing from the random stream. A nested query or
+mutation keeps its caller's request, and an action passes its request ID and
+metadata on to its calls. A scheduled job starts a fresh request with no
+address, agent or identity, and every call under it reports the job's ID as
+`scheduledFunctionId`. A probe runs one registered fixture group on the kernel
+and on the binary, and both answer one literal once each target's chosen IDs
+are replaced by role. The real address and headers stay on the binary. This
+is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-request-metadata.md`. Upstream: fork only, as the kernel is
+
+## Test kernel randomness
+
+Every random source a kernel function or module reaches draws from the
+driver's stream, or is refused. The kernel's own `Math` and `crypto` sit in
+each function's and each module load's copy of the globals and resolve their
+source on every call. While modules load, they draw from the stream of the
+world the backend opens in, which `TestConfect.layer`'s `seed` starts. Inside
+a function they draw from the bound invocation's stream, for plain Convex and
+component functions and lazily imported modules too, so a function a module
+kept while it loaded draws from whichever function later calls it.
+`getRandomValues` answers as the binary's: a `TypeError` past 65,536 bytes, a
+`TypeMismatchError` for a non-integer array, and a draw for a detached call.
+`randomUUID` builds a version 4 UUID from the stream. Modules load one at a
+time, so their draws replay, and a draw while loading with no world refuses
+with `LoadRandomUnavailable`, and so does the open. `crypto.subtle`'s drawing
+operations, `generateKey`, RSA-OAEP `encrypt` and ECDSA or RSA-PSS `sign`,
+reject with the binary's error in a query, a mutation and a module load, and
+with `RequiresBinary` in an action. `kernelBoundaries.ts` records the action
+cases as `ActionCryptoRandomness` and `ActionLoadCryptoRandomness`. A function with no invocation bound draws from the backend's own world, so an
+unbound `TestConfect.layer` call is seeded and replays, and with no world it
+refuses with `FunctionRandomUnavailable` rather than read the host's. Only a
+reference kept before the kernel ran any code keeps the host's. When a test
+leaves `Math` or `crypto` as a property the kernel cannot redefine, the open or
+the function refuses with `UnguardableGlobal` before its code runs, as
+does an install that throws or reads back another object. The kernel's own
+work, its signing included, reads the host's `Math` and `crypto` captured
+when its modules load, never `globalThis`. A sync socket runs every frame and
+update in the context of the code that opened it, so a rerun a commit
+invalidated draws from the socket's stream, never the committer's. The bridge
+that pins a bound handler on the convex-test target refuses the same `subtle`
+operations by function type. The fixture's system-table share measures 23
+with the probe beside component identity's chain.
+This is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-randomness.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector
@@ -375,6 +522,21 @@ widened name, and disagreed with `DataModel.Id`. Frame's aggregate engine binds
 its tables as `Table<...> & Aggregated<...>`. `Indexes` stays inferred, because
 a generic table's index names resolve only that way. Changeset:
 `tableinfo-extended-table-scope.md`. Upstream: unrecorded.
+
+## Exact JSON Schema for IDs
+
+A `GenericId` ends in an always-true refinement that narrows only the
+TypeScript type. On Effect 4.1 a filter without a `toJsonSchema` annotation
+makes the JSON Schema approximate, so a reader that admits only checks their
+JSON Schema states refused every ID. Frame's dev admission is one such reader,
+and it cannot compare the refinement's predicate, because Effect wraps it in a
+fresh closure. The refinement now states `toJsonSchema: () => ({})`, an exact
+schema that adds nothing to the string. A plain ID still exports as
+`{ "type": "string" }`. A `oneOf` union that holds an ID, in JSON Schema or an
+OpenAPI document, now stays `oneOf` instead of falling back to `anyOf`. This
+replaces Frame's patch of `@gaganref/confect-core@10.6.0-fork.1`. Changeset:
+`generic-id-exact-json-schema.md`. Upstream: unrecorded; upstream's `GenericId`
+has the same refinement.
 
 ## Commit timestamps
 

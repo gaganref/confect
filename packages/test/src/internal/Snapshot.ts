@@ -10,6 +10,7 @@ import {
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Execution from "./Execution.js";
+import { isSeed, type Seed } from "./Identity.js";
 import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type * as Scheduling from "./Scheduling.js";
@@ -112,6 +113,12 @@ export interface Image {
    * answer to one is refused as cancelled after a restore too.
    */
   readonly cancelledCommands: ReadonlyArray<string>;
+  /**
+   * The seed of the deployment's signing key, or `null` before it was drawn. An
+   * export writes it as a secret marker, and a decoded image holds the seed the
+   * restore's secrets put back.
+   */
+  readonly signingKey: JSONValue | null;
 }
 
 /**
@@ -142,9 +149,11 @@ export type Participation =
  * surviving a restore silently. A new live registry adds itself there.
  *
  * A cron job's fields are checked by type too, against `Execution.CronJob`. A
- * restore never redeclares a cron and never draws a fresh random value: it
- * installs each job's run state as the snapshot holds it, after checking that
- * the restoring app declares the same jobs.
+ * restore never redeclares a cron and draws nothing for the state it installs:
+ * it installs each job's run state as the snapshot holds it, after checking
+ * that the restoring app declares the same jobs. A module that draws while it
+ * loads draws from the restoring backend's world, as a push draws from its own
+ * seed; what it drew is code state, not kernel state.
  *
  * Owed by later rows, which add their state here when they land on `main`:
  * component init markers. A row whose state comes from a declaration or a
@@ -257,6 +266,22 @@ export const contract = {
       excluded:
         "Raw secrets are replay state and never reach an artifact. A snapshot writes markers, and a restore takes the raw values from the source's `secrets()`.",
     },
+    authConfig: {
+      excluded:
+        "The app's `auth.config`, which is code: the restoring world loads its own at open.",
+    },
+    providers: {
+      excluded:
+        "Read from `authConfig` on the first presented token, so the restoring world reads its own.",
+    },
+    watchers: {
+      excluded:
+        "Commit listeners of `Sync`'s open sockets, live client state counted under `live.sockets`.",
+    },
+    deploymentKey: {
+      exported:
+        "signingKey, its seed as a secret marker. A restore installs the seed from the source's `secrets()` and never draws.",
+    },
   } satisfies Readonly<Record<string, Participation>>,
   /**
    * Live registries: what blocks a snapshot while it is non-empty, and why.
@@ -280,6 +305,11 @@ export const contract = {
       blocks: "export and restore",
       reason: "Held attempts are running closures a snapshot does not carry.",
     },
+    sockets: {
+      blocks: "restore",
+      reason:
+        "Open sync sockets, live client state. A restore would rewind the state versions and query values their clients hold, so it needs a world with none open.",
+    },
     subscribers: {
       blocks: "restore",
       reason:
@@ -300,7 +330,11 @@ export const contract = {
   outside: {
     subscriptions: {
       excluded:
-        "Live client state: subscribers, their callers and runs. A restore requires a world with no subscribers (`live.subscribers`) and starts with none. Identity versions continue through `identityEpoch`.",
+        "Live client state: subscribers, their callers and runs, and the query cache of the subscribers `Sync` pushes, whose results name commits of the world that ran them. A restore requires a world with no subscribers (`live.subscribers`) and starts with none. Identity versions continue through `identityEpoch`.",
+    },
+    sync: {
+      excluded:
+        "`Sync`'s sessions: each one's request ledger, and each socket's query set, query-set and identity versions and presented token. Sessions are client state, as subscriptions are: a restore needs a world with no open socket (`live.sockets`), and a socket's subscriber blocks one too (`live.subscribers`). A ledger names commits of the world it answered, so it never travels with a snapshot.",
     },
     requestIds: {
       excluded:
@@ -309,7 +343,7 @@ export const contract = {
   } satisfies Readonly<Record<string, Participation>>,
 } as const;
 
-const header = "confect-kernel-snapshot 4 sha256:";
+const header = "confect-kernel-snapshot 5 sha256:";
 
 const FunctionPathJson = Schema.Struct({
   componentPath: Schema.String,
@@ -377,6 +411,7 @@ const Body = Schema.Struct({
     }),
   ),
   cancelledCommands: Schema.Array(Schema.String),
+  signingKey: Schema.NullOr(Schema.Unknown),
   log: Schema.Array(
     Schema.Struct({
       version: Schema.Int,
@@ -515,6 +550,7 @@ export const encode = (
       ({ componentPath, name }) => `${componentPath}\u0000${name}`,
     ) as Array<Body["crons"][number]>,
     cancelledCommands: sorted(image.cancelledCommands, (id) => id),
+    signingKey: image.signingKey,
     log: Arr.map(state.log, (commit) => ({
       version: commit.version,
       commitTs: commit.commitTs.toString(),
@@ -764,6 +800,7 @@ const unredactBody = (
         after: document(change.after),
       })),
     })),
+    signingKey: document(body.signingKey),
     files: Arr.map(body.files, (file) => {
       if (refusal !== undefined) return file;
       const bytes = unredact(file.bytes as JSONValue);
@@ -864,7 +901,16 @@ const imageOf = (body: Body, unredact: Unredact): Image => {
       };
     }),
     cancelledCommands: body.cancelledCommands,
+    signingKey: signingKeyOf(body.signingKey),
   };
+};
+
+const signingKeyOf = (json: unknown): Seed | null => {
+  if (json === null) return null;
+  if (!isSeed(json)) {
+    throw new Error("the signing key's seed is not 64 hex digits");
+  }
+  return json;
 };
 
 /**

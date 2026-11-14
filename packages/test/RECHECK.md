@@ -142,10 +142,11 @@ query, range, pagination and validator rules come from convex-test 0.0.65
 kernel adds a `record` validator check, of every key and value, and refuses a
 validator kind it does not know rather than accepting it.
 
-A function in a component runs with no identity, whoever called it, since
-Convex gives a component no `ctx.auth` of its caller's. A nested call in the
-host takes its parent's identity, even when that is none, and a test's caller
-reaches only the function the test called.
+A nested call takes its caller's identity, even when that is none, and a
+test's caller reaches only the function the test called. Row 2 also gave every
+function in a component no identity. The component identity row (below)
+replaced that with the binary's rule: a component a query or a mutation calls
+sees the caller, and one an action calls sees none.
 
 Row 2 published one top-level mutation at a time. Row 3 replaced that with
 read-set validation and held attempts. Scheduling, storage, HTTP, JWT signing
@@ -623,7 +624,20 @@ and a fresh assignment, or by `vi.stubGlobal`, becomes the implementation
 beneath a fresh guard, so a stub keeps working outside a function and stays
 refused inside one. A replacement the kernel cannot redefine, a non-configurable
 one, refuses the function before it runs with `UnguardableGlobal`
-(`reason: "notConfigurable"`) naming the global. A timer's promisified form (`util.promisify(setTimeout)`, which reads
+(`reason: "notConfigurable"`) naming the global. A redefinition that throws, or
+an install a later step undid, refuses it with `reason: "installFailed"`: as
+the entropy install does for `Math` and `crypto` (#150), one final pass reads
+every guarded global back once all are installed, so a getter a test left on
+one global that replaces another when read refuses the function before any of
+its code runs. `UnguardableGlobal` is one refusal for both installs, with the
+reasons `notConfigurable`, `installFailed` and `replacedWhileRunning`, built
+through Effect's trusted constructor so that building it never reads the
+ambient `Math`. What the guards read for themselves, the `Request` they build a
+refused request with and the `Request` and `Response` prototypes whose
+`formData` they guard, comes from `HostGlobals.ts`, captured before anything is
+installed, never from `globalThis`; the implementation beneath a guard is
+whatever a test left there, so a stub keeps working outside a function. A
+timer's promisified form (`util.promisify(setTimeout)`, which reads
 `util.promisify.custom`) is guarded too, and ends a query or mutation as the
 timer does.
 
@@ -635,18 +649,27 @@ deliberate redefinition of a global mid-invocation, and the guards never hand
 out the host's raw function. Locking the descriptors while a function runs would
 need them non-configurable, which cannot be undone and would break stubbing
 between tests, and running handlers in their own VM realm is out of scope. So
-the escape is always reported instead: each function's entry records the
-guarded descriptors (`IoBans.watch`), and when the function settles, returned,
-failed or ended, the kernel compares them. A changed descriptor fails the
-function with `UnguardableGlobal` (`reason: "replacedWhileRunning"`) naming the
-global, whatever it returned, before a mutation's commit point, so a mutation
-publishes none of its writes, and the guard is installed again. An accessor
-another library lays over a guard, as convex-test lays its own before each of
-its handlers (`index.ts:3054-3060` at 0.0.65), still reads through the guard
-and is no replacement. An assignment stores beneath the guard and replaces
-nothing. Remaining window: a call made between a mid-invocation replacement and
-the function's settlement reaches the replacement unchecked, and the function is
-always reported for it.
+the escape is reported instead. When a function settles, returned, failed or
+ended, the kernel reads each guarded global as a function would, through the
+prototype chain (`IoBans.watch`), and the read must answer one of the guards.
+A replacement still in place at settlement fails the function with
+`UnguardableGlobal` (`reason: "replacedWhileRunning"`) naming the global,
+whatever it returned, before a mutation's commit point, so a mutation publishes
+none of its writes. That covers a data property, an accessor that answers the
+replacement, and a replacement moved onto the global's prototype with the own
+property deleted. The guard is then installed again as an own property, which
+shadows anything inherited, so a later function never reaches an inherited
+replacement. An assignment stores beneath the guard and still reads as one. An
+accessor another library lays over a guard that reads through it is no
+replacement: convex-test lays its own over `fetch`, `setTimeout`,
+`setInterval` and `queueMicrotask` when it builds a world and before each of
+its handlers (`index.ts:3077-3110` at 0.0.67), and a kernel function in flight
+then, or settling under it, keeps going. Out of scope, and so neither blocked
+nor reported: accessors that run code to fake the guard at settlement are
+hostile and out of scope, such as a getter that answers the replacement while
+the handler runs and the guard by the time it settles, and so is a replacement
+removed again before the function settles. A call made through either reaches
+the replacement unchecked. `IoBans.test.ts` pins both limits.
 
 The exemption for Node's own modules reads the caller with `util.getCallSites`
 (Node 22.9 and later), kept when `IoBans.ts` loads, which does not go through
@@ -680,13 +703,16 @@ any function runs. A package's test kit registers its modules without sources
 (`@convex-dev/workflow`'s registers Workpool, whose `worker:runActionWrapper` is
 a plain action), and a test cannot add them, so the layer and the kernel shim
 take `componentRuntimes`, the runtime each listed component's plain actions run
-in, such as `{ "workflow/workpool": "isolate" }`. The refusal's message names
+in, such as `{ "workflow/workpool": "isolate" }`, read from the declaration's
+own entries only, so a component named `constructor` or `toString` declares
+nothing it does not list. The refusal's message names
 the option. Build-order row 8's generated test subject supplies the modules'
 sources and emits these declarations for package mounts from each kit's
 metadata. The fork's mock-backend layer passes sources. A layer on the default
-target passes them, with `componentRuntimes`, as a third argument to
-`convexTest`, which convex-test ignores and the kernel lane's shim reads, so
-they reach the kernel there too: before, the lane's kernel never saw them, and
+target passes them, with `componentRuntimes`, in the options object it hands
+`convexTest` beside its seeded world, which convex-test ignores and the kernel
+lane's shim reads, so they reach the kernel there too: before, the lane's
+kernel never saw them, and
 `main`'s plain `clients:echoAction` made `components.test.ts`'s local host
 layer fail there.
 
@@ -996,7 +1022,8 @@ ID and a stale answer's reason are the uninterrupted run's. It refuses an
 allocator at or behind a cancelled command's number, and a cancelled ID the
 kernel never mints. Held commands stay out: a snapshot waits for every function
 to settle, and an action's commands close with it. The format is
-`confect-kernel-snapshot 4`. In a query
+`confect-kernel-snapshot 5`, whose body carries #134's `signingKey` beside the
+command history. In a query
 or mutation, outside the kernel and in production, a port calls its live
 provider, whose own `fetch` the I/O bans then answer as the binary does. The
 kernel finds ports through `Symbol.for("@confect/test/Egress")` on `globalThis`,
@@ -1034,7 +1061,7 @@ are not intercepted. The row names `fetch`.
 ## Snapshots (row 6)
 
 `src/internal/Snapshot.ts` encodes the kernel's committed state and reads it
-back. A snapshot is a header line, `confect-kernel-snapshot 4 sha256:<digest>`,
+back. A snapshot is a header line, `confect-kernel-snapshot 5 sha256:<digest>`,
 then the body as JSON. The body holds the registered component paths, the
 version and latest commit timestamp, the clock's floor, the identity counters
 (the next document ID, the latest creation time handed out, the next held
@@ -1197,7 +1224,7 @@ difference by name. `SystemTableReadIntervals` is the one this row adds. The
 binary's `databaseQueries` also counts the system-table intervals it reads to
 run a function: the backend state, the module, the UDF config and the
 component. That share depends on the deployment's modules: a root mutation on the
-local-backend fixture has started at 19, 20 and 21 as groups were added,
+local-backend fixture has started at 19, 20, 21, 22 and 23 as groups were added,
 `groups/ioBans` among them. So the kernel does not
 simulate it, and the probes no longer pin it. `groups/transactions:systemShare`,
 a mutation that touches no user table, measures it on the binary at run time:
@@ -1367,3 +1394,723 @@ inventory above never placed, so the lane met them on the merge.
   convex-test 0.0.65. Upstream's release moves the lane to 0.0.67, which still
   rejects the fetch with the thrown error, so both exceptions hold and name
   0.0.67.
+
+## JWT verification and signing (row 6)
+
+`src/internal/Identity.ts` holds the kernel's verifier and its deployment
+signer. The rules come from the pinned binary, `precompiled-2026-10-28-cccbade`
+(convex-backend `cccbade4`), and its `biscuit` fork at `05bdaab2`.
+
+At open the kernel loads the app's `auth.config.ts` or `auth.config.js` beside
+its functions, as the CLI pushes it, and reads its default export's providers
+on the first presented token. A `customJwt` provider needs a string issuer and
+JWKS, an RS256 or ES256 algorithm and an optional string `applicationID`. Any
+other entry is an OIDC provider with a string domain and `applicationID`
+(`common/src/auth.rs:120-139`). An issuer or domain without a scheme gets
+`https://` (`:209-241`). A provider the binary would refuse at push fails with
+`InvalidAuthConfig`.
+
+`t.withToken(token)` is the backend as a client that presents `token`. Each
+call verifies it at the kernel's time before any function runs, as the binary
+verifies a client's token on every request (`application/src/lib.rs:3297-3328`):
+
+1. The unverified payload's `iss` and `aud` pick the first provider whose
+   issuer matches, ignoring trailing slashes, and whose `applicationID`, if
+   set, is among the audiences (`common/src/auth.rs:48-82`). None matching is
+   `NoAuthProvider` (`authentication/src/lib.rs:161-200`).
+2. An OIDC provider refuses with `RequiresBinary` `oidcDiscovery`. A
+   `customJwt` JWKS must be a `data:` URL, decoded as the binary's `data-url`
+   crate 0.3.1 does (`:439-456`). Tabs and newlines are ignored, the body stops
+   at the first `#`, so a fragment is dropped, and it is percent-decoded and
+   then base64-decoded when the media type ends `;base64`
+   (`data-url/src/lib.rs:73-120`, `:283-353`). Any other URL refuses with
+   `RequiresBinary` `remoteJwks`, so the test owns every key the kernel trusts.
+3. The header's `kid` names the key. The JWK's `alg`, when present, must equal
+   the header's and the provider's, and otherwise the header's must equal the
+   provider's (`biscuit/src/jws/compact.rs:142-212`). The key must be one the
+   binary's `ring` 0.17.14 takes (`biscuit/src/jwa.rs:368-445`). An RS256
+   modulus is odd, over 2,040 bits rounded up to whole bytes and at most 8,192,
+   and its exponent is odd, at most five bytes and from 3 to 2^33 - 1
+   (`ring/src/rsa/public_modulus.rs:47-71`, `public_exponent.rs:46-80`,
+   `verification.rs:205-219`). An ES256 key is its `x` and `y`, 32 bytes each,
+   whatever `crv` it names (`biscuit/src/jwk.rs:373-380`). The signature must
+   hold.
+4. The issuer and audience are checked again, then `exp`, `nbf` and `iat` with
+   five seconds of skew (`authentication/src/lib.rs:371-407`,
+   `biscuit/src/lib.rs:906-966`). A timestamp is a number from 0 up to 2^64,
+   rounded to the nearest second, and any other value fails the payload
+   (`biscuit/src/serde_custom/numeric_type.rs:52-91`). The clock is whole
+   seconds (`authentication/src/lib.rs:155-159`), and a failure's message is
+   `biscuit`'s, counting the seconds: `Token expired 60 seconds ago`, or
+   `Token will be valid in 60 seconds` for `nbf` and `iat`
+   (`biscuit/src/errors.rs:213-218`).
+5. `sub`, `iss` and `exp` must be present. The identity is `tokenIdentifier`
+   (`iss|sub`), `issuer`, `subject` and every other claim under its own name.
+   Nested objects flatten to `outer.inner` keys, and `aud`, `exp`, `iat`,
+   `nbf`, `jti` and `fva` are dropped (`keybroker/src/broker.rs:512-551`,
+   `:681-695`). A `customJwt` token's `name` or `email` is a custom claim with
+   that name, not an OIDC field.
+
+Steps 2 to 5 fail with `InvalidAuthHeader`. Both codes come as `InvalidToken`,
+the transport refusal, which the binary answers with HTTP 401. A token is
+verified on every call, so a call past its expiry plus five seconds of the
+kernel's clock is refused.
+
+Verifying the token is part of its call. A query, mutation, action, `run`,
+`prepare` or `fetch` that presents a token reaches the verifier inside its own
+live call, so while the backend loads the modules the verifier needs, an export
+or a restore refuses with `SnapshotWorldRunning`, as it does for a call that
+presents none.
+
+An HTTP request is the exception the binary makes. Its handler runs whatever
+the verifier decides: a refused token leaves the request an unknown identity
+that holds the verifier's error (`local_backend/src/http_actions.rs:165-169`).
+A verified token gives `getUserIdentity` its identity. For a refused one,
+`getUserIdentity` throws the error
+(`isolate/src/environment/action/task_executor.rs:205-216`), which reaches the
+handler as a plain `Error` with the verifier's message and no `data`
+(`isolate/src/environment/helpers/promise.rs:74-76`, `errors/src/lib.rs:25-26`,
+`convex` 1.49 `src/server/impl/syscall.ts:47-52`). A function in the host the
+handler calls through `ctx.runQuery`, `ctx.runMutation` or `ctx.runAction`
+gets the same unknown identity (`model/src/components/auth.rs:6-19`). An action
+throws the error again from `getUserIdentity`. A query or mutation reads its
+transaction's identity, which for an unknown identity is none, so it sees
+`null` (`isolate/src/environment/udf/async_syscall.rs:1111-1142`,
+`database/src/transaction.rs:390-396`). A component's function sees no
+identity either way. The local-backend suite's plain fixture checks each of the
+three calls on both targets, through `/token-review-hop`.
+
+`ctx.auth.signJwt` in a mutation now signs with an ES256 key, and `t.jwks()`
+answers its public half. The rules are convex-test 0.0.65's, which match the
+binary's `mint` (`keybroker/src/deployment_jwt.rs`,
+`udf/src/deployment_jwt.rs`). The token is issued at the mutation's start
+time, as the binary signs at the function's timestamp
+(`isolate/src/environment/udf/async_syscall.rs:1149-1179`).
+
+A token can reach committed state, so no host randomness goes into it. On first
+use the key's seed is 32 values from the random stream of the invocation's world
+bound then, or else the backend's own world, the stream a cron delay draws from
+(row 5). The key is derived from the seed as the binary derives its key from
+the deployment's root secret: an HMAC of a label and an attempt counter,
+retried while the scalar is out of range
+(`keybroker/src/deployment_jwt.rs:162-176`). A backend with neither world
+refuses with `SigningKeyRandomUnavailable`, as a clock cron refuses with
+`CronRandomUnavailable`. `TestConfect.layer`'s kernel target gives its backend a
+world seeded by its `seed` option, so one seed draws one key. The signature is
+`@noble/curves` 2.4.0's ES256, whose nonce is RFC 6979's. The binary's signer
+draws a random nonce (`:308`), which no verifier can tell from a deterministic
+one. `test/fixtures/signedReplay.ts` stores signed tokens through
+`TestConfect.layer`, two processes with the default seed print the same bytes,
+and a process with another seed signs under another key.
+`components.test.ts:84` gives its backend a world through `convexTest`'s
+options, which convex-test ignores.
+
+A snapshot carries the key. The seed is kept as a secret when it is drawn, so an
+export writes `signingKey` as a marker and no artifact shows the seed raw. A
+restore puts the seed back from the source's `secrets()` and installs it without
+drawing, so the restored backend verifies the tokens in its tables and signs
+under the same key. A restore without the secrets refuses with
+`SnapshotSecretMissing`. The field took the format to version 4. #134 keeps
+snapshot format 4, and #137 takes 5. The snapshot contract lists `deploymentKey`
+as exported, and `authConfig` and `providers` as excluded, since the restoring
+backend loads its own `auth.config`.
+
+`tools/local-backend/fixtures/minted.ts` mints five tokens with keys the test
+makes: a valid control, a wrong issuer, a wrong audience, a foreign key under
+the declared key's `kid`, and an expired token. `test/Identity.test.ts` runs
+them on the kernel, and `packages/server/test/local-backend/jwt.test.ts` runs
+them against the binary through the fixture's own `auth.config.ts` and its
+`groups/components:identity` query. Both targets give the same outcome, the
+refusal code and the valid control's identity included. Both also send each
+token to an HTTP action at `/token-review`, which answers 200 with what
+`getUserIdentity` gave or threw (`tools/local-backend/fixtures/tokenReview.ts`).
+The thrown error's class, `data` and message are the same on both targets. An
+expired token's message counts the seconds on the verifier's clock, so the
+binary test accepts the message for any second between its clock reads before
+and after the request. `components.test.ts:84`, signing and the deployment JWKS,
+now runs in the kernel lane, and its placement is gone. Upstream's "rejects
+tokens from another TestConfect instance" builds its second layer with `seed: 1`
+through the lane's `TestConfect.layerWith`, so on the kernel the second backend
+draws another key, as a second deployment has its own. convex-test ignores the
+seed. The case runs in the kernel lane, and its placement is gone.
+
+## Component identity (row 6)
+
+Row 2 gave every function in a mounted component no identity, on the premise
+that Convex gives a component no `ctx.auth` of its caller's. The binary
+disagrees, and the kernel now follows it (`callIdentity` in `Execution.ts`),
+convex-backend `cccbade4`:
+
+- A query's or mutation's nested call runs on its caller's transaction, and
+  `getUserIdentity` reads that transaction's identity in a component as in the
+  app (`crates/isolate/src/environment/udf/async_syscall.rs:629-724`,
+  `:1111-1141`). A component a query or a mutation calls sees the caller, at
+  every depth.
+- An action's call passes its identity through `propagate_component_auth`,
+  which keeps it only from the app to the app
+  (`crates/isolate/src/environment/action/async_syscall.rs:166`,
+  `crates/model/src/components/auth.rs:6-19`). A component an action calls
+  sees none, and so does every call below it.
+- A client reaches only the app's functions, so a test that calls a component
+  directly gets no identity, as a component's HTTP action does
+  (`crates/function_runner/src/server.rs:450-455`).
+
+Confect still drops `ctx.auth` from a Confect component's context. That is its
+API's rule, separate from parity, and the probe below reads `ctx.auth` through
+plain Convex functions for that reason.
+
+### Boundary check
+
+The local-backend fixture's `left` (parent), `left/deep` (middle) and
+`left/deep/child` (inner) mounts each expose a plain Convex `identityChain`
+query. It reads `ctx.auth.getUserIdentity()` and its component path, then calls
+the next mount's. `groups/componentIdentity` calls the chain from a query, a
+mutation and an action, beside the host's own reading.
+`test/fixtures/componentIdentityProbe.ts` holds the one answer both targets
+give: the caller at every depth from the query and the mutation, none from the
+action. `packages/server/test/local-backend/componentIdentity.test.ts` gets it
+from the binary with a token the fixture's `auth.config` accepts, measured on
+`precompiled-2026-10-28-cccbade`, and `test/ComponentIdentity.test.ts` from the
+kernel under `withIdentity`.
+
+## Request metadata (row 6)
+
+`ctx.meta.getRequestMetadata()` answers `ip`, `userAgent`, `requestId`,
+`scheduledFunctionId` and `authToken` in a mutation or an action; a query's
+`ctx.meta` has no such method (`convex/src/server/impl/meta_impl.ts`, 1.49). The
+binary's rules (convex-backend `cccbade4`):
+
+- A client's HTTP call is a request of its own. Its ID is 8 random bytes in
+  lowercase hex (`crates/common/src/execution_context.rs:204-208`), unless the
+  client sends `convex-request-id` (`common/src/http/mod.rs:1022-1041`). Its
+  address is `x-forwarded-for`'s first entry, or else the peer's, and its agent
+  is `user-agent` (`:1062-1092`).
+- A nested call keeps its caller's request: a mutation's nested call clones the
+  caller's context (`isolate/src/environment/udf/async_syscall.rs:715-735`), and
+  an action's calls pass its request ID and metadata on
+  (`application/src/application_function_runner/mod.rs:2206-2289`).
+- A scheduled job starts a fresh request with no address or agent
+  (`application/src/scheduled_jobs/mod.rs:743-758`), runs with no identity
+  (`:1072-1080`), and reports its own ID as `scheduledFunctionId`, which every call
+  under it inherits (`udf/async_syscall.rs:1053-1058`,
+  `action/async_syscall.rs:425-447`).
+- `authToken` is the token the request was authenticated with, or `null`.
+
+The kernel already followed every rule but the ID's format. Its request IDs
+were `kernel-request-N`; they are now a counter in the binary's format, 16
+lowercase hex digits, so each request in the process has its own and a replay
+draws nothing from the random stream. The real address and headers stay on the
+binary; a test sets them with `withRequestMetadata`.
+
+### Boundary check
+
+`groups/requests` in the local-backend fixture reads the request from a client
+mutation and its nested mutation, from a client action and its nested mutation
+and action, and from a mutation that schedules a mutation and an action, which
+record what they and the action's nested mutation read.
+`test/fixtures/requestProbe.ts` replaces each value a target chooses by its
+role, a request ID by `request N` in first-seen order or `malformed`, and holds
+the one literal both targets must answer.
+`packages/server/test/local-backend/requestMetadata.test.ts` calls the binary
+with a token its `auth.config` accepts, `x-forwarded-for` and `user-agent`, and
+`test/RequestMetadata.test.ts` calls the kernel with the same identity, address
+and agent.
+
+## Sync protocol (row 7)
+
+`src/internal/Sync.ts` is the kernel's side of the Convex client sync
+protocol, as `convex` 1.49.0 speaks it (`src/browser/sync/protocol.ts`) and the
+pinned binary's sync worker serves it (`crates/sync/src/worker.rs` at
+`cccbade4`). `sync()` on the shim gives its `WebSocket`, a constructor the
+unmodified `BaseConvexClient` takes as its `webSocketConstructor`. Every event
+reaches the client in a later turn, in order.
+
+Each socket runs as one worker does (`worker.rs:403-517`, `:598-901`):
+
+- Client messages run one at a time in arrival order. Mutations run one at a
+  time in their own order, and actions at once.
+- A `ModifyQuerySet` whose base is not the version last received, or whose new
+  version is not greater, is refused (`state.rs:223-243`). So is an
+  `Authenticate` whose base is not the identity version last received
+  (`state.rs:257-268`), a timestamp the client observed past the latest commit
+  (`worker.rs:601-644`), a call to a non-root component (`:581-596`), and a
+  duplicate or unknown query ID (`state.rs:339-360`). Each is
+  `SyncProtocolViolation` with the binary's reason, answered with `FatalError`
+  and a closed socket, which the client takes as fatal (`client.ts:504-507`).
+- A `User` token is verified with row 6's verifier before the identity version
+  moves, and a refused one answers `AuthError` with `authUpdateAttempted` and
+  closes (`worker.rs:857-864`, `:1333-1341`). Before each mutation, action and
+  update the token's expiry is checked at the kernel's time, as the binary's
+  `revalidate_identity` checks it (`:503`, `:671`, `:781`, `:903-912`): a user
+  identity is expired once the time reaches its `exp`, with no skew
+  (`state.rs:282-305`, `keybroker/src/broker.rs:676-678`). An expired one
+  answers `AuthError` without `authUpdateAttempted`, before anything runs, and
+  closes. Every `AuthError` carries the identity version the socket last sent,
+  as the binary's does (`local_backend/src/subs/mod.rs:276-292`). An `Admin`
+  token refuses with `RequiresBinary` `adminAuthentication`: the kernel holds no
+  admin key.
+- A transition is scheduled by a query-set change, an identity change, an
+  answered mutation or action, or a commit that changed what one of the
+  socket's queries read (`World.watch`, called as each commit publishes). It
+  applies the pending modifications, reruns the stale queries until none is
+  stale, then ends at the latest commit timestamp and the identity version
+  received, read in the same turn as that last check (`:933-1061`,
+  `:1253-1324`). A query whose value did not change sends nothing, as the
+  binary's result hash does (`state.rs:414-460`). After every answered request
+  a transition follows, even an empty one, so a successful mutation's client
+  sees a state at or past its commit and resolves it
+  (`request_manager.ts:169-191`).
+
+A query that cannot run at all, because its function does not exist or its
+validator refuses its arguments, answers `QueryFailed` and stays in the set
+until the client removes it, as on the binary; the socket lives. A failure with
+no `ConvexError` data leaves `errorData` out, as the binary does, so the client
+reads a plain error. A query whose first run ends after its socket closed is
+unsubscribed at once.
+
+The probe found one divergence outside this row: the kernel's argument
+validator, convex-test's, words a refusal `Validator error: Expected
+\`string\`, got \`5\``, where the binary answers `ArgumentValidationError:
+Value does not match validator.` with the path, value and validator. Both fail
+the query; only the text differs. Validation text belongs to the validator, so
+leg 1 does not compare it, and it is recorded here for that row.
+
+Each socket's queries are subscriptions of row 4's registry under one
+subscriber that `Sync` pushes. A commit makes one stale by row 4's rule. An
+identity change makes every one stale, as the binary's worker takes every
+subscription when the identity version moves (CX-737, `worker.rs:948-962`).
+A test's own subscriber keeps row 4's narrower rule. A pushed subscriber's
+reruns go through a model of the binary's query cache
+(`application/src/cache/mod.rs`): a result is stored under its function, its
+arguments, its journal and, only when it read the identity, that identity
+(`:151-230`); a lookup tries the identity first and then no identity; a commit
+since the result ran that changed what it read drops it; and a result that read
+the time is dropped once it is older or newer than `MAX_CACHE_AGE`
+(`:768-823`), 17 s by default (`:112-122`, `common/src/knobs.rs:982-994`) and
+`queryCacheAge` on the shim. So an identity change answers a time query that
+reads no identity with the value it sent until that value has expired, and a
+new time after: leg 1 checks both on the binary. `refresh` without a subscriber skips
+pushed subscribers, so a test's refresh never takes a change a socket is owed,
+and `reference` still reruns them. `Subscriber.present(token)` is the
+Authenticate step: it verifies the token and bumps the identity version. The
+shim's `withToken(token).subscriber()` presents its token the same way, so
+row 6's `KernelRowPending` naming row 7 is gone; a refused token rejects that
+subscriber's subscriptions with `InvalidToken`.
+
+Each session keeps a request ledger, which `Sync` alone writes. A successful
+mutation enters it as its commit is applied, with its request ID, function,
+attempt number, commit timestamp, result and the SHA-256 of its arguments'
+artifact form (marked by the argument shape, keys sorted). A mutation resent
+under a recorded request ID is answered from the ledger with the original
+timestamp, and one resent while it runs waits for it. This is the binary's
+`_session_requests` (`application_function_runner/mod.rs:999-1004`,
+`:1063-1066`, `:2118-2178`), which records successes only (`:2163`), so a
+failed mutation runs again when resent. A resend is told from a reuse by the
+digest of its raw canonical arguments, which stays in memory beside the
+secrets store and never reaches an artifact. The artifact digest marks secrets
+first, so it changes once a call registers a secret, and it cannot identify a
+request. A session outlives its sockets, so a client that reconnects under it
+is answered from its ledger. `ledger()` is the read side for the System driver.
+
+### Conformance exception: `SyncRequestReused`
+
+The one place `Sync` departs from the binary on purpose.
+
+- **Case.** A session sends a mutation under a request ID its ledger already
+  holds, with arguments whose raw canonical digest differs from the recorded
+  one.
+- **Binary.** It answers the recorded outcome, with the original timestamp,
+  and runs nothing. Its record has no arguments to compare: a
+  `SessionRequestRecord` is the session, the request ID, the outcome and the
+  identity (`model/src/session_requests/types.rs:35-43`), and
+  `check_mutation_status` looks the request up by session and request ID alone
+  before the mutation runs (`application_function_runner/mod.rs:999-1004`,
+  `:2121-2150`).
+- **Kernel.** It refuses with `SyncRequestReused`, answers `FatalError` and
+  closes the socket. The failure report names the recorded and sent artifact
+  digests, never the raw ones.
+- **Why.** The unmodified client never reuses a request ID with other
+  arguments: it resends the same message (`request_manager.ts:193-230`). A
+  client that does is a bespoke client with a bug, and the binary's answer, the
+  outcome of another call, would hide it.
+- **Pinned by** `test/Sync.test.ts`, "a successful mutation enters its
+  session's ledger…", which resends request 0 with other arguments. Owner: row 7.
+
+The protocol's artifacts are the ledger, `transcript()`, every message sent and
+received, and `failures()`, each refusal with the client message that caused
+it. Each leaves marked: arguments by their function's argument shape, values by
+the return shape, a token's value replaced by the marker, and every string
+holding a kept secret marked by row 6's backstop (`World.redactJson`). The wire
+to the client carries raw values, as a call's caller gets them. Messages carry
+no log lines, since the kernel captures no handler output, and no pings or
+transition chunks.
+
+The snapshot contract lists open sockets under `live.sockets`, which blocks a
+restore (`SnapshotSocketsOpen`). A socket's subscriber outlives it, as any
+subscriber does, so a backend a socket ever opened on refuses a restore with
+`SnapshotSubscribed` too. `World.watchers` is excluded as live client state, and
+`outside.sync`, the sessions, ledgers, query sets, versions and presented
+tokens, is excluded: a ledger names commits of the world it answered.
+
+### The binary probe
+
+The probe compares the kernel with the binary, across its three legs. The
+convex-test lane runs separately and is not part of it.
+
+`packages/server/test/local-backend/syncProbe.test.ts` runs three legs of the
+unmodified client (`test/fixtures/syncLegs.ts`) against a binary the run starts
+through `LocalBackend.syncLayer` (port `CONFECT_LOCAL_BACKEND_PORT` + 30, the
+`fixtures/sync` app) and against the kernel on the same app
+(`test/fixtures/syncApp.ts`):
+
+| Leg                 | Compared                                                                                                     | Required on both     |
+| ------------------- | ------------------------------------------------------------------------------------------------------------ | -------------------- |
+| Observable protocol | Each socket's query values with consecutive duplicates removed, normalised mutation outcomes, terminal views | No message thrown on |
+| OCC counter         | Whether contention showed, whether the counter ended at the increments that succeeded                        | Both true            |
+| Client acceptance   | No message thrown on, each token confirmed, each mutation settled, a reconnect, the terminal counter         | All of them          |
+
+Leg 1 waits after each step until both clients see a barrier counter reach it,
+so batching never changes a sequence. Leg 2's contention on the binary is the
+function log's `sync:increment` executions with OCC information, read with
+`convex logs --jsonl` from the fixture project, whose CLI holds its own
+credentials (`local_backend/src/logs.rs:79-280`); on the kernel it is the
+ledger's increments that committed on a later attempt. Leg 3 loses one
+mutation response with its socket, so the client reconnects under its session
+and resends.
+
+Each leg writes `.sync-probe/<leg>.json`: the binding, the digests of the app,
+the legs and the kernel's sync and subscription sources, and both sides'
+observations, through the kernel's redaction. The binding finds the process
+that owns the cloud port through `/proc`, refuses unless the runner is its
+ancestor, and records the worktree, revision, a dirty flag, the executable's
+release directory and SHA-256, the ports and the PID. It takes ports, never a
+URL. `SyncProbe.runLeg` writes the record `incomplete` before the leg runs, so
+an earlier run's verdict never stands for this one. Every step of a leg has a
+deadline, and each side has one too: a side that throws or passes it leaves
+the record `incomplete`, naming that side, with both sides' partial
+observations. A finished leg whose sides differ records both and fails as
+`disagree`. Off Linux, which has no `/proc`, the probe is skipped with that
+reason in its name before any backend starts.
+
+Plants, each a one-line source edit (script and output in the PR):
+
+| Plant                                                                  | Leg it fails |
+| ---------------------------------------------------------------------- | ------------ |
+| A subscription skips the first commit after its run                    | 1            |
+| A held attempt publishes without validating its reads                  | 2            |
+| A transition starts one query-set version past the client's            | 3            |
+| A transition never advances the identity version                       | 3            |
+| A resent mutation runs again instead of being answered from the ledger | 3            |
+| The backstop leaves a protocol artifact as it is                       | canary       |
+| A message's arguments reach the transcript unmarked                    | canary       |
+| The ledger hands out a mutation's raw result                           | canary       |
+| A probe record is written without its marks                            | canary       |
+
+The canary (`test/Sync.test.ts`) sends a secret argument through the
+unmodified client into a mutation that echoes it, one that fails with it, a
+query that answers with it, and a two-character secret only its argument shape
+can mark; it then sends one in a call the kernel refuses. Neither secret is in
+the ledger, the transcript, a failure report or a probe record, and each holds
+the marker.
+
+### Row 7 fix round 1
+
+A review of `d3a242e2` found five gaps, each now fixed with a case that fails
+without it:
+
+| Gap                                                                                                                        | Fix                                                                                             | Case, and the plant that turns it red                                                                                                                 |
+| -------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------- |
+| An identical resend failed once a call registered a secret, since resends were compared by the marked digest               | Compare by the raw canonical digest, kept in memory                                             | `Sync.test.ts`, "a mutation whose call registers a secret is answered from the ledger…"; comparing by the marked digest                               |
+| Updates skipped auth revalidation                                                                                          | Check `exp` before each update and request                                                      | "a token that expires between two updates…"; skipping the update check, and skipping the request check                                                |
+| The narrower identity invalidation was visible: a time query past the cache age changes on the binary after an auth update | Every query of a socket reruns on an identity change, through the cache model                   | leg 1 on both targets and on the kernel; the narrower rule, and no cache                                                                              |
+| The probe failed instead of skipping off Linux                                                                             | Skipped with its reason before any backend starts                                               | a run with `process.platform` set to `darwin` and `win32`                                                                                             |
+| A rejected transition could leave a leg waiting and an earlier `agree` record standing                                     | Deadlines on every step and side, an `incomplete` record first, partial observations on failure | `syncProbeRecord.test.ts`; no incomplete record first, a failure left unrecorded, no side deadline; and the probe under the wrong start-version plant |
+
+### Row 7 fix round 2
+
+- #134's round 2 (`2583a6cb`, on `main` `4fb64502`) is merged in, never
+  rebased. #134's own files take #134's version, without the temporary
+  disables row 7 had put on them. `Identity.test.ts`'s subscriber case no
+  longer expects #134's `KernelRowPending` naming row 7: a subscriber that
+  presents a token subscribes under the verified identity. Its HTTP case
+  stays #134's.
+- Sync never drew from `KernelRuntime.random`, which #134 removed: it signs
+  nothing and draws nothing, so the world stream needs no change here.
+- The snapshot body is unchanged by this row. Its contract gains the open
+  sockets, the commit watchers, Sync's sessions and the sync query cache, all
+  excluded or live, so this row takes no format version; #134's version 4
+  stands.
+- The legs, the probe and the tests are Effect programs under #140's rules.
+  Every step and side is bounded by `Effect.timeoutOrElse`, clients are
+  scoped resources, the binary's contention reads `convex logs` through
+  Effect's `ChildProcess`, records are encoded through `Schema`, and the
+  tests narrow with `assertIs`. The disables left sit on exact lines with
+  their rule and reason: the `on*` handlers of the kernel's socket, a Convex
+  query's `Date.now()`, and Node imports for `/proc`, hashing and temporary
+  directories.
+
+### Row 7 fix round 3
+
+- A failed query is never cached. The binary stores a result only when its
+  execution succeeded ("We do not cache JSErrors",
+  `crates/application/src/cache/mod.rs:500-510`), and a client keeps a
+  failure's `errorData` visible (`convex` 1.49
+  `src/browser/sync/remote_query_set.ts:58-71`). So the kernel's cache stores
+  successful runs only, under both the run's journal and its alias. Leg 1's
+  third client also watches `sync:failingClock`, which fails with
+  `ConvexError({ time: Date.now() })`: its error changes on the sign-in within
+  the cache age and on the one after it, on both targets. The binary pins it
+  in the probe, and the kernel's leg 1 test fails when a failure is cached.
+- #134's round 3 (`f5fdcad3`) and `main` (`38ca5de4`, #151 and #152) are
+  merged in, never rebased. #134 now runs an HTTP handler under an invalid
+  token and lets `getUserIdentity` throw, so this row's case expecting an HTTP
+  token to refuse is gone; its subscriber case stays. #134 made
+  `World.authenticate` private, so a presented token reaches the verifier
+  through `World.verify`, one live call as #134's own calls are.
+
+## Randomness (row 6)
+
+The binary gives every function a seeded generator, and `Math.random`,
+`crypto.getRandomValues` and `crypto.randomUUID` draw from it in a query, a
+mutation and an action alike (`crates/isolate/src/ops/random.rs:7-11`,
+`ops/crypto.rs:8-31`, convex-backend `cccbade4`). A nested query or mutation
+gets its own seed from its caller's generator
+(`isolate/src/environment/udf/phase.rs:357-385`). A module may draw while it
+loads, from a generator each push seeds once and stores in the deployment's
+`UdfConfig` (`udf/phase.rs:186-193`, `action/phase.rs:184`,
+`environment/analyze.rs:284`, `model/src/udf_config/types.rs:21`). Only a
+module deployed without that seed refuses, with `NoRandomDuringImport`
+(`udf/phase.rs:500-507`). A push of a module that calls `Math.random` or
+`getRandomValues` at module scope deploys on `precompiled-2026-10-28-cccbade`.
+
+On the kernel a bound invocation's `Math.random`, `getRandomValues` and
+`randomUUID` draw from its supplied stream. `randomUUID` builds a version 4
+UUID from 16 bytes of the stream, as the binary's `op_crypto_random_uuid`
+builds one from 16 bytes of its generator (`ops/crypto.rs:8-12`).
+`getRandomValues` answers as the binary's does rather than the host's
+(`npm-packages/udf-runtime/src/00_crypto.ts:28-53`):
+
+- a fill of more than 65,536 bytes throws `TypeError` "Byte length (N) exceeds
+  the number of bytes of entropy available via this API (65536)", where Node
+  throws `QuotaExceededError`;
+- a non-integer array throws `TypeMismatchError` "The provided ArrayBufferView
+  is not an integer array type", where Node's message differs;
+- a detached or rebound call draws, where Node throws `TypeError`, because the
+  binary's method never reads its receiver.
+
+### Every function, and every kept reference
+
+Row 1 pinned randomness through the Confect bridge, so a plain Convex query,
+mutation or action, a component's function and a module an action imported
+lazily read the host's sources under a bound invocation. The kernel now gives
+every execution its own `Math` and `crypto` (`Entropy.ts`), placed in the copy
+of the globals each function and each module load runs with (`installEntropy`
+in `Execution.ts`, called from `enter` and from `World.load`). They resolve
+their source on every call: the load running and its stream, or else the
+running function's type and its bound invocation's stream. A reference a module
+keeps while it loads therefore draws, when a handler later calls it, from that
+handler's stream rather than the load's, and one kept during an open with no
+world refuses nothing later. On the kernel the bridge leaves these in place.
+Elsewhere it pins a handler's to its invocation as before.
+
+A function with no invocation bound draws from the backend's own world, the
+one the driver gave the backend, which for `TestConfect.layer` is the stream
+its `seed` starts. A deployment JWT's signing seed resolves the same way
+(#134): the bound invocation's world first, then the backend's. An unbound
+`TestConfect.layer` call is therefore seeded and replays. With neither stream,
+a draw refuses with `FunctionRandomUnavailable` (`componentPath`, `udfPath`),
+a kernel refusal that never reads the host's. Like `RequiresBinary`, a
+function can catch it, as it can the binary's own query error. The
+mock-backend kernel lane's `convex-test` is a shim
+(`packages/server/test/mock-backend/kernelShim.ts`) that opens each backend
+under a world seeded 0, as `TestConfect.layer` does by default, so its one
+case that draws, `integration.test.ts > ActionRunner > getNumberViaRunner`,
+runs on the kernel. No other kernel-lane case changes its outcome under that
+seed.
+
+The kernel's `Math` and `crypto` go into each copy by assignment through
+`Globals`' accessors. A test can leave a global as a property `Globals` cannot
+redefine: a frozen value, or a getter with no setter, either non-configurable.
+The assignment then does not take, and the copy would keep the host's sources.
+`installEntropy` checks that both globals hold the kernel's after it assigns
+them. If either does not, it refuses with `UnguardableGlobal` (`reason:
+"notConfigurable"`, `globals`) before the load's or the function's code runs,
+and its message names each global and what it holds. It never carries on with
+the host's. The class is #136's, at #136's place, so the I/O guards and the
+entropy install refuse alike. `test/fixtures/unguardableEntropy.ts` freezes
+`Math`, freezes `crypto` or leaves `crypto` a getter, each in a process of its
+own because a frozen global cannot be undone. In each case the open refuses
+before the module loads. A `Math` frozen after the open makes the next function
+refuse before its handler runs.
+
+### The globals contract
+
+For every own-descriptor shape of `Math` and `crypto`, the kernel does one of
+two things. It installs its own objects and confirms that by reading the
+global back. Or it refuses with `UnguardableGlobal` (`reason`, `globals`)
+before any module or function code runs.
+
+Every failure is a tagged refusal. Each global's install runs in one boundary,
+`installGuarded` in `Execution.ts`, from the first read of its descriptor
+(`Globals.prepare`, whose `readsThrough` calls a test's getter) through the
+assignment to the read-back. A step that throws, an assignment that returns
+false, or a read-back of another object becomes `UnguardableGlobal`, never a
+raw error and never a carry-on. Its `reason` is `notConfigurable` when every
+failing global is non-configurable, and `installFailed` otherwise, as for a
+configurable getter that throws. Its message describes each global and what
+was thrown through helpers that never throw (`heldAs`, `describeThrown`): each
+reads behind its own try and falls back to fixed text, such as "a thrown value
+that could not be described". The refusal is built without
+`UnguardableGlobal`'s parser (`makeTrusted` in `KernelRefusal.ts`, Effect's
+`Schema.makeClassTrusted`), because Effect's parser reads the ambient `Math`
+when it compiles and when it parses, and that is the global the install just
+failed to own.
+
+Once every global is installed, one final pass reads all of them back, inside
+the same guard, before any user code runs, at every module load and every
+function start. So a later step that undid an earlier global, such as a
+`crypto` getter that puts the host's `Math` back, refuses too.
+
+Test code that installs accessors which run arbitrary code to rewrite other
+globals during the kernel's install is hostile. It is out of scope beyond the
+final read-back pass, the same threat model as #1593.
+
+The kernel's own work uses the host's `Math` and `crypto`, captured once when
+its modules load and before any install (`HostGlobals.ts`). That covers
+building its wrappers, its `subtle`, the blinding bytes its P-256 signing draws
+(`Identity.ts`, a curve built with `randomBytes` from that capture), and the
+invocation bridge's `pin`. It never re-reads `globalThis`, which in a
+function's copy, or in place, can hold the kernel's own wrappers. A
+replacement a test installs before `@confect/test`'s first import is what the
+kernel captures as the host, and that is within the contract.
+
+Fix round 4 closed the two shapes that broke this. A `crypto` left
+non-configurable but writable installs by assignment, in place, so the old
+`Globals.host` read of it answered the kernel's wrapper. Signing then drew 112
+stream values instead of the seed's 32, and a worldless restore refused
+signing with `FunctionRandomUnavailable`. A non-configurable accessor whose
+setter throws let that raw error escape the open. Both are tested in a process
+of their own, and each has a plant. Fix round 5 closed the reads that still
+sat outside the guard, a getter that throws, called by `readsThrough`, and an
+error whose `message` getter throws, read while describing it, and made
+`pin` build over the captured references. A bound Confect handler had failed
+with its generic "cannot pin" error under a non-configurable but writable
+`crypto`, because `pin` saw the kernel's object in place and took it for one it
+had assigned. Fix round 6 added the final read-back pass and built the refusal
+without the class's parser, after a configurable `Math` getter that throws made
+building the refusal throw again, untagged. A further descriptor shape that
+keeps this contract is not a finding.
+
+Row 7's Sync serving runs every query, mutation and action through the same
+`enter`, so each gets the kernel's `Math` and `crypto`. Its runs had leaked
+context, though. A commit wakes a socket's update from inside the committing
+mutation's turn, and the update ran in that turn's async context. So a rerun
+of a query the commit invalidated drew from the committer's bound invocation's
+stream, consuming the committer's draws. A frame's handling likewise ran in
+the context of whatever code sent it. Each socket now keeps the async context
+of the code that opened it, its client, and runs every frame and update in it.
+This mirrors the binary, which runs each of a socket's requests as the
+socket's own. An unbound socket's runs draw from the backend's own world, and a
+socket opened under a bound invocation draws from that invocation's stream,
+whoever committed or sent the frame. `World.verify` runs no user code of its
+own beyond the open's module loads, which already go through the install.
+
+One reference stays the host's. A reference taken outside every kernel copy,
+before the kernel ran any code, such as a module a test file imports, keeps
+what it read. That is the lazy-loading contract #136 states for `fetch` and
+timers. Its setup file is not on `main`, so there is no earlier point to
+install from yet.
+
+### Cryptographic randomness
+
+`crypto.subtle` draws from a `CryptoRng`, not the seeded generator.
+`generateKey` asks for it always, `encrypt` for RSA-OAEP and `sign` for ECDSA
+and RSA-PSS (`ops/subtle_crypto/mod.rs:326-333`, `:401`, `:472`;
+`webcrypto/src/lib.rs:349-373`, `:478-481`, `:525-531`;
+`webcrypto/src/rsa.rs:471-475`). A query's and a mutation's environment
+refuses it in every phase, with `not_allowed_in_udf("CryptoRng", ...)`
+(`environment/udf/mod.rs:264-272`, `:290-292`). A function sees a plain
+`Error`: "Can't use cryptographic randomness in queries and mutations. Please
+consider using an action. See https://docs.convex.dev/functions/actions for
+more details." An action's environment gives the system's
+(`environment/action/mod.rs:1576-1578`). Measured on the pinned binary, a
+query and a mutation get that error at run time and from a module-scope
+`generateKey`. An action generates the key in both places. A push of that
+module succeeds.
+
+The kernel rejects those operations with the binary's error in a query, a
+mutation and a module load. In an action it rejects them with `RequiresBinary`
+(`subtleGenerateKey`, `subtleEncrypt`, `subtleSign`): system entropy cannot be
+replayed, and the kernel never draws the host's in its place. The kernel loads
+each module once for every function type, so a load for an action gets the
+queries' error, where the binary generates the key. Both action cases are
+exact conformance entries in `packages/server/test/mock-backend/kernelBoundaries.ts`:
+`ActionCryptoRandomness` and `ActionLoadCryptoRandomness`. Digest, import,
+export, decrypt, verify, derivation, AES encryption with a given IV, and HMAC,
+Ed25519 or RSASSA-PKCS1-v1_5 signing run as on the host in every phase.
+
+### Load draws
+
+The kernel holds no generator, so a module's draws while it loads come from
+the driver too. `World.load` loads each module under its own copy of the
+globals, whose `Math.random`, `getRandomValues` and `randomUUID` draw from the
+random stream of the world the backend opens in: the bound invocation's world,
+or else the world given to the backend, which for `TestConfect.layer` is the
+stream its `seed` starts, the one row 5c's cron delays draw from. Modules load
+one at a time, components in registration order and each component's modules
+in its map's order, so the draws land in one order and a replay with the same
+seed draws them again. A restore that loads the modules draws from the
+restoring backend's world, as a push draws from its own seed. What a module
+drew is code state, which a snapshot does not carry.
+
+With neither world, a module that draws refuses with `LoadRandomUnavailable`
+(`componentPath`, `modulePath`), and so does the open, even when the module
+caught the draw. A module that draws nothing loads as before. The binary
+refuses only a module deployed without a seed (`udf/phase.rs:500-507`), which
+a push never is, so the refusal stands where the kernel has no seed to give,
+as `CronRandomUnavailable` does for a cron's delay.
+
+The host runtime evaluates a module once per process, so only the first
+backend to load it draws. A later backend in the same test file sees the first
+one's values, where each binary push draws its own.
+
+### Boundary check
+
+`groups/randomness` in the local-backend fixture is one Confect query, mutation
+and action that each try `Math.random`, a 4-byte and a 65,536-byte fill, a
+65,537-byte fill, a `Float64Array` fill, a detached fill, `randomUUID`, an HMAC
+`generateKey` and a SHA-256 digest, and record whether each ran, its error and
+what it produced. They also return what their module drew while it loaded:
+`Math.random`, a 4-byte fill, `randomUUID` and `generateKey`.
+`test/fixtures/randomnessProbe.ts` keeps what both targets fix: fill lengths,
+the UUID's length and version 4 layout, the digest and every refusal. It
+replaces only the values a target chooses by what they must satisfy: a draw
+in (0, 1), 4 bytes not all zero, a 65,536-byte fill that is not constant. It
+holds the binary's answer and the kernel's, which differs by the two entries
+above. A test checks that a zero-filled replacement of any chosen value fails
+it. `packages/server/test/local-backend/randomness.test.ts`
+gets it from the binary and `test/Randomness.test.ts` from the kernel, which
+also checks that `Math.random` and the 4-byte fill are the supplied stream's
+first draws in all three function types, and that the module's load draws are
+its world's stream's first draws. `test/fixtures/loadDrawReplay.ts` opens a
+module that draws from all three sources while it loads, through
+`TestConfect.layer` on the kernel target. `test/Randomness.test.ts` runs it in
+two processes with one seed and gets the same bytes, and with another seed
+gets others. `test/fixtures/handlerDrawReplay.ts` runs a plain query,
+mutation and action, a component's query the host calls, and an action that
+imports a drawing module lazily, each under its own bound stream. Two
+processes print the same bytes, each equal to its stream's draws.
+`test/Randomness.test.ts` also checks both kept-reference cases, and that a
+`Math.random` kept before the kernel ran stays the host's. `test/Entropy.test.ts`
+checks the `subtle` refusals for every drawing operation in every phase, and
+the deterministic operations in every phase.
+
+### Left on the binary
+
+- The native seeding policy, as the design says.
+- An action's cryptographic randomness, at run time and while a module loads
+  for it (`ActionCryptoRandomness`, `ActionLoadCryptoRandomness`).
+- The per-push seed itself: the kernel draws a load from the driver's stream,
+  and a module evaluated once per process draws once per process.
+- A nested query's or mutation's own seed: the kernel's nested call draws on
+  from its caller's stream.

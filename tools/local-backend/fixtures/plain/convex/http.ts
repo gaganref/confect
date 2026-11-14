@@ -1,5 +1,7 @@
 import { httpActionGeneric, httpRouter } from "convex/server";
-import { ConvexError } from "convex/values";
+import { ConvexError, convexToJson } from "convex/values";
+import { callFromAction, type Payload, type Target } from "./convexErrors";
+import * as TokenReview from "./tokenReview";
 
 // Plain Convex HTTP actions, with no Confect router in front, so the binary's
 // own answer to a route that throws shows through.
@@ -50,6 +52,33 @@ http.route({
       new Response(request.headers.get("x-dup") ?? "none", { headers }),
     );
   }),
+});
+
+// An HTTP action calls a function that throws a ConvexError and answers what
+// reached it as Convex JSON. Its calls go through Convex's own action syscalls.
+http.route({
+  path: "/nested-convex-error",
+  method: "GET",
+  handler: httpActionGeneric((ctx, request) => {
+    const params = new URL(request.url).searchParams;
+    return callFromAction(ctx, {
+      payload: params.get("payload") as Payload,
+      target: params.get("target") as Target,
+    }).then((caught) => Response.json(convexToJson(caught)));
+  }),
+});
+
+// An HTTP action calls a function that reads its identity and answers what it
+// saw of the request's token.
+http.route({
+  path: TokenReview.path,
+  method: "GET",
+  handler: httpActionGeneric((ctx, request) =>
+    TokenReview.reviewFrom(
+      ctx,
+      new URL(request.url).searchParams.get("hop") as TokenReview.Hop,
+    ).then((review) => Response.json(review)),
+  ),
 });
 
 export default http;

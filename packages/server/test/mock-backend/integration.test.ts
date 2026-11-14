@@ -178,7 +178,9 @@ it.layer(TestConfect.layer, { buildPerTest: true })(
           }),
           Schema.String,
         );
-        const otherContext = yield* TestConfect.layer.pipe(
+        // Another deployment, with its own signing key. The kernel draws a
+        // backend's key from its layer's seed, which convex-test ignores.
+        const otherContext = yield* TestConfect.layerWith({ seed: 1 }).pipe(
           Layer.fresh,
           Layer.build,
         );

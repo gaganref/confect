@@ -18,6 +18,7 @@ export default {
 ["uploadUrl"]: RegisteredConvexFunction.register({ ...definitions["uploadUrl"], handler: forward(definitions["uploadUrl"].handler) }),
 ["storageUrl"]: RegisteredConvexFunction.register({ ...definitions["storageUrl"], handler: forward(definitions["storageUrl"].handler) }),
 ["hasAuth"]: RegisteredConvexFunction.register({ ...definitions["hasAuth"], handler: forward(definitions["hasAuth"].handler) }),
+["identity"]: RegisteredConvexFunction.register({ ...definitions["identity"], handler: forward(definitions["identity"].handler) }),
 ["deepCreate"]: RegisteredConvexFunction.register({ ...definitions["deepCreate"], handler: forward(definitions["deepCreate"].handler) }),
 ["deepRead"]: RegisteredConvexFunction.register({ ...definitions["deepRead"], handler: forward(definitions["deepRead"].handler) }),
 ["declaredError"]: RegisteredConvexFunction.register({ ...definitions["declaredError"], handler: forward(definitions["declaredError"].handler) }),

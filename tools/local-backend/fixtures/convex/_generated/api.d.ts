@@ -184,6 +184,11 @@ export declare const api: {
         string
       >;
     };
+    componentIdentity: {
+      fromAction: FunctionReference<"action", "public", {}, any>;
+      fromMutation: FunctionReference<"mutation", "public", {}, any>;
+      fromQuery: FunctionReference<"query", "public", {}, any>;
+    };
     components: {
       cancel: FunctionReference<"mutation", "public", { id: string }, null>;
       declaredError: FunctionReference<
@@ -246,6 +251,7 @@ export declare const api: {
         }
       >;
       hasAuth: FunctionReference<"query", "public", {}, boolean>;
+      identity: FunctionReference<"query", "public", {}, any>;
       list: FunctionReference<
         "query",
         "public",
@@ -528,6 +534,342 @@ export declare const api: {
         "public",
         { cursor: string | null; numItems: number; run: string },
         null
+      >;
+    };
+    randomness: {
+      action: FunctionReference<
+        "action",
+        "public",
+        {},
+        {
+          detachedFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          digest: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          floatFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          generateKey: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          getRandomValues: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          largestFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadGenerateKey: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadGetRandomValues: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadMathRandom: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadRandomUUID: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          mathRandom: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          oversizedFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          randomUUID: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+        }
+      >;
+      mutation: FunctionReference<
+        "mutation",
+        "public",
+        {},
+        {
+          detachedFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          digest: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          floatFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          generateKey: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          getRandomValues: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          largestFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadGenerateKey: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadGetRandomValues: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadMathRandom: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadRandomUUID: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          mathRandom: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          oversizedFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          randomUUID: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+        }
+      >;
+      query: FunctionReference<
+        "query",
+        "public",
+        {},
+        {
+          detachedFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          digest: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          floatFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          generateKey: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          getRandomValues: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          largestFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadGenerateKey: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadGetRandomValues: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadMathRandom: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          loadRandomUUID: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          mathRandom: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          oversizedFill: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+          randomUUID: {
+            message: string | null;
+            name: string | null;
+            permitted: boolean;
+            value: Array<number>;
+          };
+        }
+      >;
+    };
+    requests: {
+      action: FunctionReference<
+        "action",
+        "public",
+        {},
+        {
+          action: {
+            authToken: string | null;
+            ip: string | null;
+            requestId: string;
+            scheduledFunctionId: string | null;
+            subject: string | null;
+            userAgent: string | null;
+          };
+          mutation: {
+            authToken: string | null;
+            ip: string | null;
+            requestId: string;
+            scheduledFunctionId: string | null;
+            subject: string | null;
+            userAgent: string | null;
+          };
+          own: {
+            authToken: string | null;
+            ip: string | null;
+            requestId: string;
+            scheduledFunctionId: string | null;
+            subject: string | null;
+            userAgent: string | null;
+          };
+        }
+      >;
+      mutation: FunctionReference<
+        "mutation",
+        "public",
+        {},
+        {
+          nested: {
+            authToken: string | null;
+            ip: string | null;
+            requestId: string;
+            scheduledFunctionId: string | null;
+            subject: string | null;
+            userAgent: string | null;
+          };
+          own: {
+            authToken: string | null;
+            ip: string | null;
+            requestId: string;
+            scheduledFunctionId: string | null;
+            subject: string | null;
+            userAgent: string | null;
+          };
+        }
+      >;
+      recorded: FunctionReference<
+        "query",
+        "public",
+        { caseId: string },
+        Array<string>
+      >;
+      schedule: FunctionReference<
+        "mutation",
+        "public",
+        { caseId: string },
+        {
+          actionJob: string;
+          mutationJob: string;
+          own: {
+            authToken: string | null;
+            ip: string | null;
+            requestId: string;
+            scheduledFunctionId: string | null;
+            subject: string | null;
+            userAgent: string | null;
+          };
+        }
       >;
     };
     reserved: {
@@ -895,6 +1237,52 @@ export declare const internal: {
         "internal",
         {},
         { after: bigint; before: bigint }
+      >;
+    };
+    requests: {
+      read: FunctionReference<
+        "mutation",
+        "internal",
+        {},
+        {
+          authToken: string | null;
+          ip: string | null;
+          requestId: string;
+          scheduledFunctionId: string | null;
+          subject: string | null;
+          userAgent: string | null;
+        }
+      >;
+      readAction: FunctionReference<
+        "action",
+        "internal",
+        {},
+        {
+          authToken: string | null;
+          ip: string | null;
+          requestId: string;
+          scheduledFunctionId: string | null;
+          subject: string | null;
+          userAgent: string | null;
+        }
+      >;
+      record: FunctionReference<
+        "mutation",
+        "internal",
+        { caseId: string; value: string },
+        null
+      >;
+      scheduledAction: FunctionReference<
+        "action",
+        "internal",
+        { caseId: string },
+        null
+      >;
+      scheduledMutation: FunctionReference<
+        "mutation",
+        "internal",
+        { caseId: string },
+        null
       >;
     };
     storage: {
