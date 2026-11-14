@@ -75,6 +75,12 @@ export default GroupSpec.make()
     }),
   )
   .addFunction(
+    FunctionSpec.publicQuery({
+      name: "identity",
+      returns: () => Schema.Unknown,
+    }),
+  )
+  .addFunction(
     FunctionSpec.publicMutation({
       name: "deepCreate",
       args: () => ({

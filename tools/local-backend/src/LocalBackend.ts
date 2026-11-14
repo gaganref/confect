@@ -70,6 +70,7 @@ export const ports = {
   app: basePort,
   consumer: basePort + 10,
   plain: basePort + 20,
+  sync: basePort + 30,
 } as const;
 
 /**
@@ -253,6 +254,8 @@ const make = Effect.fnUntraced(function* (options: {
   );
 });
 
+const emptyJwks = `data:application/json;base64,${Buffer.from('{"keys":[]}').toString("base64")}`;
+
 /**
  * @internal
  */
@@ -262,10 +265,7 @@ export const layer = Layer.effect(
     directory: "../fixtures",
     port: ports.app,
     env: [
-      [
-        "TEST_AUTH_JWKS",
-        `data:application/json;base64,${Buffer.from('{"keys":[]}').toString("base64")}`,
-      ],
+      ["TEST_AUTH_JWKS", emptyJwks],
       ["COMPONENT_MARKER", "from-app"],
       ["COMPONENT_HOST_ONLY", "host-only"],
     ],
@@ -287,8 +287,8 @@ export const consumerLayer = Layer.effect(
 ).pipe(Layer.provide(NodeServices.layer));
 
 /**
- * Plain Convex HTTP actions, with no Confect router in front, for probes of the
- * binary's own HTTP answers. It needs no codegen or seeding.
+ * Plain Convex functions and HTTP actions, with no Confect router in front, for
+ * probes of the binary's own answers. It needs no codegen or seeding.
  *
  * @internal
  */
@@ -297,7 +297,31 @@ export const plainLayer = Layer.effect(
   make({
     directory: "../fixtures/plain",
     port: ports.plain,
-    env: [],
+    // The JWT suite sets the JWKS its minted tokens need. Until then the
+    // fixture's `auth.config.ts` declares an empty one.
+    env: [["TEST_AUTH_JWKS", emptyJwks]],
     redeployFunction: "probe:ping",
+  }),
+).pipe(Layer.provide(NodeServices.layer));
+
+/**
+ * The sync probe's app (`fixtures/sync`), which the probe runs on this binary
+ * and on the test kernel. Its `auth.config` reads `TEST_AUTH_JWKS`, which the
+ * probe replaces with the JWKS of the tokens it mints.
+ *
+ * @internal
+ */
+export const syncLayer = Layer.effect(
+  LocalBackend,
+  make({
+    directory: "../fixtures/sync",
+    port: ports.sync,
+    env: [
+      [
+        "TEST_AUTH_JWKS",
+        `data:application/json;base64,${Buffer.from('{"keys":[]}').toString("base64")}`,
+      ],
+    ],
+    redeployFunction: "sync:whoami",
   }),
 ).pipe(Layer.provide(NodeServices.layer));
