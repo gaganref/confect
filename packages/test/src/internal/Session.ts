@@ -283,6 +283,25 @@ const layerWorld = (seed: number): Invocation.World => ({
 });
 
 /**
+ * The `"convex-test"` target's options. convex-test ignores `world`, but the
+ * fork's kernel lane aliases `convex-test` to the kernel, which draws a signing
+ * key or a cron delay from the backend's own world. Giving it the layer's
+ * seeded world keeps one source of randomness on both lanes.
+ */
+const convexTestOptions = (
+  schema: SchemaDefinition<GenericSchema, true>,
+  modules: Record<string, () => Promise<any>>,
+  options: LayerOptions,
+): Parameters<typeof convexTest>[0] => {
+  const withWorld = {
+    schema,
+    modules,
+    world: layerWorld(options.seed ?? 0),
+  };
+  return withWorld;
+};
+
+/**
  * Open one backend: the convex-test world or the kernel shim the target names,
  * with every kit the options register. `raw` is the backend the service runs
  * on, for a caller that must reach a component path.
@@ -313,7 +332,7 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
             ),
           ),
         })
-      : convexTest(convexSchemaDefinition, modules);
+      : convexTest(convexTestOptions(convexSchemaDefinition, modules, options));
   // convex-test takes three arguments and ignores the options. The kernel
   // reads `standing`.
   const registerComponent =

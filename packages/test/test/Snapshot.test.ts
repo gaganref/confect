@@ -637,7 +637,7 @@ describe("snapshot restore", () => {
           components: [""],
           version: "one",
         });
-        const forged = `confect-kernel-snapshot 3 sha256:${createHash("sha256")
+        const forged = `confect-kernel-snapshot 4 sha256:${createHash("sha256")
           .update(body)
           .digest("hex")}\n${body}`;
         const failureResult2 = yield* failure(() =>
@@ -709,7 +709,7 @@ const rehash = (bytes: Uint8Array, edit: (body: any) => void): Uint8Array => {
   edit(body);
   const edited = Json.stringify(body);
   return bytesOf(
-    `confect-kernel-snapshot 3 sha256:${createHash("sha256")
+    `confect-kernel-snapshot 4 sha256:${createHash("sha256")
       .update(edited)
       .digest("hex")}\n${edited}`,
   );
@@ -1133,6 +1133,14 @@ describe("snapshot live state", () => {
         yield* call(() => holding.prepare(app.insert, { text: "held" }));
         refusals["held"] = yield* refusal(holding);
 
+        const connected = backend(driver());
+        const socket = new (connected.sync().WebSocket)("ws://kernel.invalid");
+        refusals["sockets"] = yield* refusal(connected);
+        socket.close();
+        // The closed socket's subscriber outlives it, as any subscriber does.
+        const afterClose = yield* refusal(connected);
+        expect(afterClose).toMatchObject({ _tag: "SnapshotSubscribed" });
+
         const subscribed = backend(driver());
         subscribed.subscriber();
         refusals["subscribers"] = yield* refusal(subscribed);
@@ -1145,6 +1153,7 @@ describe("snapshot live state", () => {
           walks: { _tag: "SnapshotWorldRunning", registry: "walks" },
           functions: { _tag: "SnapshotWorldRunning", registry: "functions" },
           held: { _tag: "SnapshotWorldBusy" },
+          sockets: { _tag: "SnapshotSocketsOpen", sockets: 1 },
           subscribers: { _tag: "SnapshotSubscribed" },
         });
       }),

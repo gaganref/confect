@@ -73,7 +73,8 @@ export type TargetOptions = {
    * The seed of the random stream the `"kernel"` target's backend draws from on
    * its own, such as the random delay Convex gives each run of an hourly,
    * daily, weekly, monthly or cron-expression job. Two layers with the same
-   * seed draw the same stream. Defaults to `0`. convex-test ignores it.
+   * seed draw the same stream, and on the kernel the same deployment signing
+   * key. Defaults to `0`. convex-test ignores it.
    */
   readonly seed?: number;
 };

@@ -13,6 +13,9 @@ export class RequiresBinary extends Schema.TaggedError<
     "vectorSearch",
     "storageUpload",
     "storageDownload",
+    "oidcDiscovery",
+    "remoteJwks",
+    "adminAuthentication",
   ]),
   message: Schema.String,
 }) {}
@@ -126,6 +129,41 @@ export class InvalidCron extends Schema.TaggedError<
   cronName: Schema.String,
   message: Schema.String,
 }) {}
+
+/**
+ * The token a test presented was refused before any function ran, as the binary
+ * answers a client's request with 401. `code` is the binary's: `NoAuthProvider`
+ * when no provider's issuer and audience match the token, and
+ * `InvalidAuthHeader` for every other failure.
+ */
+export class InvalidToken extends Schema.TaggedError<
+  InvalidToken,
+  { readonly brand: unique symbol }
+>()("InvalidToken", {
+  code: Schema.Literals(["NoAuthProvider", "InvalidAuthHeader"]),
+  message: Schema.String,
+}) {}
+
+export const isInvalidToken = Schema.is(InvalidToken);
+
+/**
+ * The app's `auth.config` declares a provider the binary would refuse at push.
+ * `index` is the provider's position, or -1 for the config itself.
+ */
+export class InvalidAuthConfig extends Schema.TaggedError<
+  InvalidAuthConfig,
+  { readonly brand: unique symbol }
+>()("InvalidAuthConfig", { index: Schema.Int, message: Schema.String }) {}
+
+/**
+ * The deployment's signing key is drawn on first use from a test world's random
+ * stream, and neither an invocation was bound nor the backend was given a world
+ * to draw it from. The kernel holds no generator of its own.
+ */
+export class SigningKeyRandomUnavailable extends Schema.TaggedError<
+  SigningKeyRandomUnavailable,
+  { readonly brand: unique symbol }
+>()("SigningKeyRandomUnavailable", { message: Schema.String }) {}
 
 /**
  * A cron job runs on a clock schedule, which Convex delays by a random draw,
@@ -270,6 +308,15 @@ export class SnapshotWorldRunning extends Schema.TaggedError<
 }) {}
 
 /**
+ * A world has open sync sockets, whose clients hold state versions and query
+ * values a restore would rewind.
+ */
+export class SnapshotSocketsOpen extends Schema.TaggedError<
+  SnapshotSocketsOpen,
+  { readonly brand: unique symbol }
+>()("SnapshotSocketsOpen", { sockets: Schema.Int, message: Schema.String }) {}
+
+/**
  * A world has subscribers, whose identity versions a restore would rewind.
  * Subscriptions are live client state, so a restore needs a world with none.
  */
@@ -401,3 +448,52 @@ const refusals = Array.map(
 
 export const isKernelRefusal = (error: unknown): boolean =>
   Array.some(refusals, (is) => is(error));
+
+/**
+ * A sync session's token expired, so the binary answers its next request or
+ * update with `AuthError` and closes the socket
+ * (`crates/sync/src/state.rs:282-305`). `code` and `message` are the binary's.
+ */
+export class TokenExpired extends Schema.TaggedError<
+  TokenExpired,
+  { readonly brand: unique symbol }
+>()("TokenExpired", {
+  code: Schema.Literal("TokenExpired"),
+  message: Schema.String,
+}) {}
+
+/**
+ * A sync client sent a message the binary's sync worker refuses, so `Sync`
+ * answers it with a `FatalError` and closes the socket. `reason` names the
+ * binary's check.
+ */
+export class SyncProtocolViolation extends Schema.TaggedError<
+  SyncProtocolViolation,
+  { readonly brand: unique symbol }
+>()("SyncProtocolViolation", {
+  reason: Schema.Literals([
+    "BaseVersionMismatch",
+    "QuerySetVersionNotIncreasing",
+    "IdentityVersionMismatch",
+    "DuplicateQueryId",
+    "NonexistentQueryId",
+    "TimestampAhead",
+    "ComponentPathNotAllowed",
+  ]),
+  message: Schema.String,
+}) {}
+
+/**
+ * A sync session sent a mutation under a request ID its ledger already holds,
+ * with other arguments. The binary would answer the recorded outcome of a
+ * different call, so the kernel refuses.
+ */
+export class SyncRequestReused extends Schema.TaggedError<
+  SyncRequestReused,
+  { readonly brand: unique symbol }
+>()("SyncRequestReused", {
+  requestId: Schema.Int,
+  recorded: Schema.String,
+  sent: Schema.String,
+  message: Schema.String,
+}) {}

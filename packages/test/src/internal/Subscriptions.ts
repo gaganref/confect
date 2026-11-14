@@ -26,23 +26,38 @@ export type Invalidation =
 
 /**
  * Why `run` is stale, if it is: a commit since its snapshot changed something
- * it read, as an attempt's read set conflicts, or it read its subscriber's
- * identity and that identity has changed. The clock never makes a run stale.
- * The binary does not rerun a query because time passed, so a run keeps the
- * time it read until something else invalidates it.
+ * it read, as an attempt's read set conflicts, or its subscriber's identity has
+ * changed. A test's subscriber reruns only the runs that read the identity. A
+ * sync socket's reruns every run, as the binary's worker does
+ * (`crates/sync/src/worker.rs:948-962`), and its query cache decides which of
+ * those reruns answer anything new. The clock never makes a run stale. The
+ * binary does not rerun a query because time passed, so a run keeps the time it
+ * read until something else invalidates it.
  */
 export const invalidation = (
   run: Run,
   state: Kernel.State,
   identityVersion: number,
+  everyRun = false,
 ): Invalidation | undefined => {
   const change = Kernel.conflict(state, run.snapshot, run.reads);
   if (change !== undefined) return { kind: "commit", change };
-  if (run.observedIdentity && run.identityVersion !== identityVersion) {
+  if (
+    (everyRun || run.observedIdentity) &&
+    run.identityVersion !== identityVersion
+  ) {
     return { kind: "identity", from: run.identityVersion, to: identityVersion };
   }
   return undefined;
 };
+
+/**
+ * The binary's default `MAX_CACHE_AGE`: `DATABASE_UDF_USER_TIMEOUT` (1 s) plus
+ * `DATABASE_UDF_SYSTEM_TIMEOUT` (15 s) plus a second
+ * (`crates/application/src/cache/mod.rs:112-122`,
+ * `crates/common/src/knobs.rs:982-994`).
+ */
+export const defaultCacheAge = 17_000;
 
 /**
  * A thrown value as JSON: a Convex value as Convex writes it, and anything else
@@ -137,10 +152,21 @@ interface Live {
  */
 export class Subscriber {
   private version: number;
+  /**
+   * The latest presented token's verification. A subscription waits for it, so
+   * it never runs under the identity the token replaces.
+   */
+  private presented: Promise<void> = Promise.resolve();
 
   constructor(
     private readonly registry: Registry,
     private who: Execution.Caller,
+    /**
+     * Whether `Sync` pushes this subscriber's changes to a socket. Only `Sync`
+     * refreshes such a subscriber, so a test's `refresh` never takes a change
+     * the socket is owed.
+     */
+    readonly pushed = false,
   ) {
     this.version = registry.identityEpoch();
   }
@@ -153,8 +179,32 @@ export class Subscriber {
     return this.version;
   }
 
-  subscribe(reference: unknown, args?: unknown): Promise<Subscription> {
-    return this.registry.subscribe(this, reference, args ?? {});
+  subscribe(
+    reference: unknown,
+    args?: unknown,
+    journal: string | null = null,
+  ): Promise<Subscription> {
+    return this.presented.then(() =>
+      this.registry.subscribe(this, reference, args ?? {}, journal),
+    );
+  }
+
+  /**
+   * Present `token`, as the sync protocol's Authenticate does: the kernel
+   * verifies it against the app's `auth.config` at its time, then the verified
+   * identity replaces the caller's, bumping the identity version. A refused
+   * token leaves the identity as it was and rejects with `InvalidToken`.
+   */
+  present(token: string): Promise<void> {
+    // A later presentation replaces a refused one, so it starts clean. Until
+    // then, a subscription rejects with the refusal rather than run under an
+    // identity the client never had confirmed.
+    const verified = this.presented
+      .catch(() => undefined)
+      .then(() => this.registry.verify(this.who, token))
+      .then((caller) => this.become(caller));
+    this.presented = verified;
+    return verified;
   }
 
   /**
@@ -162,10 +212,15 @@ export class Subscriber {
    * subscription that read the identity is stale until the next refresh.
    */
   authenticate(identity: Partial<UserIdentity> | null) {
-    this.who =
+    this.become(
       identity === null
         ? { ...this.who, identity: null, token: null }
-        : Execution.withIdentity(this.who, identity);
+        : Execution.withIdentity(this.who, identity),
+    );
+  }
+
+  private become(caller: Execution.Caller) {
+    this.who = caller;
     this.version = this.registry.nextIdentityEpoch();
   }
 }
@@ -178,12 +233,34 @@ export class Subscriber {
 export class Registry {
   private readonly live = new Map<string, Live>();
   private nextId = 1;
+  /**
+   * The binary's query cache, for the runs of the subscribers `Sync` pushes:
+   * each successful result under its function, arguments, journal and, when it
+   * read the identity, that identity
+   * (`crates/application/src/cache/mod.rs:151-230`, `:500-510`). A failed run
+   * is never stored, under either journal.
+   */
+  private readonly cache = new Map<string, Execution.QueryRun>();
 
-  constructor(private readonly world: Execution.World) {}
+  constructor(
+    private readonly world: Execution.World,
+    /**
+     * How long a cached result that read the time stays valid, in the kernel's
+     * milliseconds: the binary's `MAX_CACHE_AGE`.
+     */
+    private readonly cacheAge: number = defaultCacheAge,
+  ) {}
 
-  subscriber(caller: Execution.Caller): Subscriber {
+  subscriber(caller: Execution.Caller, pushed = false): Subscriber {
     this.world.registerSubscriber();
-    return new Subscriber(this, caller);
+    return new Subscriber(this, caller, pushed);
+  }
+
+  /**
+   * The caller `token` makes from `caller`, verified by the world.
+   */
+  verify(caller: Execution.Caller, token: string): Promise<Execution.Caller> {
+    return this.world.verify(caller, token);
   }
 
   /**
@@ -212,47 +289,70 @@ export class Registry {
     subscriber: Subscriber,
     reference: unknown,
     args: unknown,
+    journal: string | null,
   ): Promise<Subscription> {
-    return this.run(subscriber, reference, args, { journal: null }).then(
-      (run) => {
-        const live: Live = {
-          id: `subscription-${this.nextId++}`,
-          subscriber,
-          reference,
-          args,
-          run,
-        };
-        this.live.set(live.id, live);
-        return {
-          id: live.id,
-          // The run's value is the client's own, so it stays raw. Its read
-          // records are the kernel's, so they leave projected.
-          current: () => ({
-            ...live.run,
-            reads: this.world.projectReads(live.run.reads),
-          }),
-          unsubscribe: () => {
-            this.live.delete(live.id);
-          },
-        };
-      },
-    );
+    return this.run(subscriber, reference, args, { journal }).then((run) => {
+      const live: Live = {
+        id: `subscription-${this.nextId++}`,
+        subscriber,
+        reference,
+        args,
+        run,
+      };
+      this.live.set(live.id, live);
+      return {
+        id: live.id,
+        // The run's value is the client's own, so it stays raw. Its read
+        // records are the kernel's, so they leave projected.
+        current: () => ({
+          ...live.run,
+          reads: this.world.projectReads(live.run.reads),
+        }),
+        unsubscribe: () => {
+          this.live.delete(live.id);
+        },
+      };
+    });
   }
 
   /**
-   * Rerun each stale subscription at the latest commit and the kernel's time
-   * now, oldest first, until none is stale. Lists each one whose value
-   * changed.
+   * The stale subscriptions of `subscriber`, or of every subscriber the test
+   * refreshes, and why each is stale.
    */
-  refresh(): Promise<ReadonlyArray<Transition>> {
-    const stale = Arr.flatMap(Array.from(this.live.values()), (live) => {
+  private staleOf(subscriber: Subscriber | undefined) {
+    return Arr.flatMap(Array.from(this.live.values()), (live) => {
+      if (
+        subscriber === undefined
+          ? live.subscriber.pushed
+          : live.subscriber !== subscriber
+      ) {
+        return [];
+      }
       const because = invalidation(
         live.run,
         this.world.state,
         live.subscriber.identityVersion,
+        live.subscriber.pushed,
       );
       return because === undefined ? [] : [{ live, because }];
     });
+  }
+
+  /**
+   * Whether any of `subscriber`'s subscriptions is stale now.
+   */
+  stale(subscriber: Subscriber): boolean {
+    return this.staleOf(subscriber).length > 0;
+  }
+
+  /**
+   * Rerun each stale subscription at the latest commit and the kernel's time
+   * now, oldest first, until none is stale. Lists each one whose value changed.
+   * With `subscriber`, only its subscriptions; without, every subscriber's but
+   * those `Sync` pushes.
+   */
+  refresh(subscriber?: Subscriber): Promise<ReadonlyArray<Transition>> {
+    const stale = this.staleOf(subscriber);
     if (stale.length === 0) return Promise.resolve([]);
     return inTurn(stale, ({ live, because }) =>
       this.run(live.subscriber, live.reference, live.args, {
@@ -266,7 +366,7 @@ export class Registry {
           : { subscription: live.id, from, to: run.outcome, because };
       }),
     ).then((transitions) =>
-      this.refresh().then((later) => [...transitions, ...later]),
+      this.refresh(subscriber).then((later) => [...transitions, ...later]),
     );
   }
 
@@ -325,8 +425,78 @@ export class Registry {
     pinned: { readonly time?: number; readonly journal: string | null },
   ): Promise<Run> {
     const identityVersion = subscriber.identityVersion;
+    const caching = subscriber.pushed && pinned.time === undefined;
+    const key = (identity: Execution.Caller["identity"] | undefined) =>
+      cacheKey(this.world, reference, args, identity, pinned.journal);
+    if (caching) {
+      const hit = Arr.findFirst(
+        [key(subscriber.caller.identity), key(undefined)],
+        (candidate) => this.valid(candidate),
+      );
+      if (hit._tag === "Some") {
+        return Promise.resolve({
+          ...this.cache.get(hit.value)!,
+          identityVersion,
+        });
+      }
+    }
+    const caller = subscriber.caller;
     return this.world
-      .subscribed(subscriber.caller, reference, args, pinned)
-      .then((run) => ({ ...run, identityVersion }));
+      .subscribed(caller, reference, args, pinned)
+      .then((run) => {
+        // The binary caches a successful result only: a failure, a thrown
+        // `ConvexError` included, runs again on its next request
+        // (`crates/application/src/cache/mod.rs:500-510`).
+        if (caching && run.outcome._tag === "returned") {
+          const identity = run.observedIdentity ? caller.identity : undefined;
+          this.cache.set(key(identity), run);
+          if (run.journal !== pinned.journal) {
+            this.cache.set(
+              cacheKey(this.world, reference, args, identity, run.journal),
+              run,
+            );
+          }
+        }
+        return { ...run, identityVersion };
+      });
+  }
+
+  /**
+   * Whether the cached result under `key` still answers for the latest commit
+   * and the kernel's time: no commit since it ran changed what it read, and a
+   * result that read the time is no older or newer than the cache age
+   * (`crates/application/src/cache/mod.rs:768-823`). A stale one is dropped.
+   */
+  private valid(key: string): boolean {
+    const cached = this.cache.get(key);
+    if (cached === undefined) return false;
+    const fresh =
+      Kernel.conflict(this.world.state, cached.snapshot, cached.reads) ===
+        undefined &&
+      (cached.time === null ||
+        Math.abs(this.world.now() - cached.time) <= this.cacheAge);
+    if (!fresh) this.cache.delete(key);
+    return fresh;
   }
 }
+
+/**
+ * A cache key: the function, the canonical arguments, the identity when the
+ * result read it (`undefined` when it did not), and the journal.
+ */
+const cacheKey = (
+  world: Execution.World,
+  reference: unknown,
+  args: unknown,
+  identity: Execution.Caller["identity"] | undefined,
+  journal: string | null,
+): string => {
+  const path = world.functionPathOf(reference);
+  return Json.stringify([
+    path?.componentPath ?? "",
+    path?.udfPath ?? "",
+    Json.canonical(convexToJson((args ?? {}) as Value)),
+    identity === undefined ? "any" : Json.canonical(identity ?? null),
+    journal,
+  ]);
+};

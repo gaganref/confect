@@ -10,6 +10,7 @@ import {
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Execution from "./Execution.js";
+import { isSeed, type Seed } from "./Identity.js";
 import type * as Kernel from "./Kernel.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type * as Scheduling from "./Scheduling.js";
@@ -105,6 +106,12 @@ export interface Image {
    * Every declared cron job with its run state, by component and name.
    */
   readonly crons: ReadonlyArray<CronImage>;
+  /**
+   * The seed of the deployment's signing key, or `null` before it was drawn. An
+   * export writes it as a secret marker, and a decoded image holds the seed the
+   * restore's secrets put back.
+   */
+  readonly signingKey: JSONValue | null;
 }
 
 /**
@@ -245,6 +252,22 @@ export const contract = {
       excluded:
         "Raw secrets are replay state and never reach an artifact. A snapshot writes markers, and a restore takes the raw values from the source's `secrets()`.",
     },
+    authConfig: {
+      excluded:
+        "The app's `auth.config`, which is code: the restoring world loads its own at open.",
+    },
+    providers: {
+      excluded:
+        "Read from `authConfig` on the first presented token, so the restoring world reads its own.",
+    },
+    watchers: {
+      excluded:
+        "Commit listeners of `Sync`'s open sockets, live client state counted under `live.sockets`.",
+    },
+    deploymentKey: {
+      exported:
+        "signingKey, its seed as a secret marker. A restore installs the seed from the source's `secrets()` and never draws.",
+    },
   } satisfies Readonly<Record<string, Participation>>,
   /**
    * Live registries: what blocks a snapshot while it is non-empty, and why.
@@ -268,6 +291,11 @@ export const contract = {
       blocks: "export and restore",
       reason: "Held attempts are running closures a snapshot does not carry.",
     },
+    sockets: {
+      blocks: "restore",
+      reason:
+        "Open sync sockets, live client state. A restore would rewind the state versions and query values their clients hold, so it needs a world with none open.",
+    },
     subscribers: {
       blocks: "restore",
       reason:
@@ -288,7 +316,11 @@ export const contract = {
   outside: {
     subscriptions: {
       excluded:
-        "Live client state: subscribers, their callers and runs. A restore requires a world with no subscribers (`live.subscribers`) and starts with none. Identity versions continue through `identityEpoch`.",
+        "Live client state: subscribers, their callers and runs, and the query cache of the subscribers `Sync` pushes, whose results name commits of the world that ran them. A restore requires a world with no subscribers (`live.subscribers`) and starts with none. Identity versions continue through `identityEpoch`.",
+    },
+    sync: {
+      excluded:
+        "`Sync`'s sessions: each one's request ledger, and each socket's query set, query-set and identity versions and presented token. Sessions are client state, as subscriptions are: a restore needs a world with no open socket (`live.sockets`), and a socket's subscriber blocks one too (`live.subscribers`). A ledger names commits of the world it answered, so it never travels with a snapshot.",
     },
     requestIds: {
       excluded:
@@ -297,7 +329,7 @@ export const contract = {
   } satisfies Readonly<Record<string, Participation>>,
 } as const;
 
-const header = "confect-kernel-snapshot 3 sha256:";
+const header = "confect-kernel-snapshot 4 sha256:";
 
 const FunctionPathJson = Schema.Struct({
   componentPath: Schema.String,
@@ -363,6 +395,7 @@ const Body = Schema.Struct({
       world: Schema.NullOr(Schema.String),
     }),
   ),
+  signingKey: Schema.NullOr(Schema.Unknown),
   log: Schema.Array(
     Schema.Struct({
       version: Schema.Int,
@@ -499,6 +532,7 @@ export const encode = (
       image.crons,
       ({ componentPath, name }) => `${componentPath}\u0000${name}`,
     ) as Array<Body["crons"][number]>,
+    signingKey: image.signingKey,
     log: Arr.map(state.log, (commit) => ({
       version: commit.version,
       commitTs: commit.commitTs.toString(),
@@ -723,6 +757,7 @@ const unredactBody = (
         after: document(change.after),
       })),
     })),
+    signingKey: document(body.signingKey),
     files: Arr.map(body.files, (file) => {
       if (refusal !== undefined) return file;
       const bytes = unredact(file.bytes as JSONValue);
@@ -822,7 +857,16 @@ const imageOf = (body: Body, unredact: Unredact): Image => {
         last: cron.last as CronImage["last"],
       };
     }),
+    signingKey: signingKeyOf(body.signingKey),
   };
+};
+
+const signingKeyOf = (json: unknown): Seed | null => {
+  if (json === null) return null;
+  if (!isSeed(json)) {
+    throw new Error("the signing key's seed is not 64 hex digits");
+  }
+  return json;
 };
 
 /**

@@ -302,6 +302,37 @@ row 6's HTTP parity row of Frame's backend testing kernel (Frame ADR 0012).
 Changeset: `test-kernel-http.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel sync protocol
+
+The kernel serves the Convex client sync protocol in process. `sync()` on the
+kernel's `convexTest` shim gives a `WebSocket` constructor that the unmodified
+`BaseConvexClient` from `convex` 1.49.0 takes as its `webSocketConstructor`, so
+a client subscribes, mutates, signs in and reconnects against the kernel as it
+would against a deployment. Each socket runs as the binary's sync worker does:
+messages in order, mutations in order, actions at once, and a transition after
+each query-set change, identity change, answered request or commit that
+changed what one of its queries read. Each session keeps a request ledger,
+keyed by request ID with the digest of the arguments' artifact form, so a
+mutation the client resends after a lost response is answered once; a resend
+is told from a reuse by its raw arguments' digest, which stays in memory. A
+token the client presents is verified with the JWT row's verifier, its expiry
+is checked before each request and update as the binary checks it, and a new
+token reruns every query of the socket through a model of the binary's query
+cache, so a time query keeps its value until the cache age passes; a
+subscriber on the shim under `withToken` now presents its token the same way
+instead of refusing. A reused request ID with other arguments is refused,
+where the binary answers the recorded result: the one recorded conformance
+exception. The
+ledger, the transcript of every message and the failure reports leave marked
+by the redaction policy. Open sockets join the snapshot's live registries, so a
+restore refuses while any is open. A local-backend probe runs three legs of the
+unmodified client against a binary the run starts and against the kernel, and
+records each leg bound to the binary's process, checksum and ports; a leg's
+record is `incomplete` until it finishes, every step has a deadline, and the
+probe is skipped off Linux. This is row
+7 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-sync.md`. Upstream: fork only, as the kernel is fork-specific.
+
 ## Test kernel on Effect 4.1 and upstream 10.6.0
 
 The test kernel moved onto the fork's Effect 4.1.4 and upstream 10.6.0
@@ -337,6 +368,37 @@ to Convex values. A plain local-backend fixture runs every caller and payload on
 the binary and on the kernel. Changeset: `test-kernel-nested-convex-error.md`.
 Upstream: fork only, as the kernel is fork-specific.
 
+## Test kernel component identity
+
+A component the kernel calls from a query or a mutation sees the caller's
+identity at every depth, because the binary reads identity from the caller's
+transaction. One an action calls sees none, as the binary's
+`propagate_component_auth` keeps identity only from the app to the app, and
+neither does any call below it. A test that calls a component directly gets
+none, as a client reaches only the app's functions. This replaces row 2's rule
+that a component never sees an identity. Confect's own component context still
+drops `ctx.auth`, which is its API rather than parity. A probe reads `ctx.auth`
+through plain Convex queries chained across three nested mounts, on the kernel
+and on the binary. With them the fixture's system-table share measures 22.
+This is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-component-identity.md`. Upstream: fork only, as the kernel is
+
+## Test kernel request metadata
+
+Each client call the kernel serves is a request of its own, and its ID now
+takes the binary's format, 16 lowercase hex digits, where it was
+`kernel-request-N`. The kernel counts IDs per process rather than drawing
+them, so a replay draws nothing from the random stream. A nested query or
+mutation keeps its caller's request, and an action passes its request ID and
+metadata on to its calls. A scheduled job starts a fresh request with no
+address, agent or identity, and every call under it reports the job's ID as
+`scheduledFunctionId`. A probe runs one registered fixture group on the kernel
+and on the binary, and both answer one literal once each target's chosen IDs
+are replaced by role. The real address and headers stay on the binary. This
+is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
+`test-kernel-request-metadata.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## Generated test backend
 
 For an app that can import `@confect/test`, codegen writes `TestBackend` into
@@ -357,7 +419,8 @@ traversal Alchemy's push runs, parent before child, then the seed runs in one
 mutation. Each component reads only the settings its mount binds. A missing app
 or mount setting fails `TestConfigMissing`. A kit passes its component's
 secret policy to `registerComponent`, and a packaged Confect component whose
-kit exports none fails `TestKitSecretsMissingError`. The registry now lists
+kit exports none fails `TestKitSecretsMissingError`, or `TestKitExportsUnknownError`
+when codegen cannot list the kit's exports. The registry now lists
 only the modules a push registers, and a package mount with no test kit fails
 `MissingTestKitError`. This is row 8 of Frame's backend testing kernel (Frame
 ADR 0012). Changeset: `generated-test-backend.md`. Upstream: fork only, as the

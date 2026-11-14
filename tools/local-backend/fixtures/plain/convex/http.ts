@@ -1,6 +1,7 @@
 import { httpActionGeneric, httpRouter } from "convex/server";
 import { ConvexError, convexToJson } from "convex/values";
 import { callFromAction, type Payload, type Target } from "./convexErrors";
+import * as TokenReview from "./tokenReview";
 
 // Plain Convex HTTP actions, with no Confect router in front, so the binary's
 // own answer to a route that throws shows through.
@@ -65,6 +66,19 @@ http.route({
       target: params.get("target") as Target,
     }).then((caught) => Response.json(convexToJson(caught)));
   }),
+});
+
+// An HTTP action calls a function that reads its identity and answers what it
+// saw of the request's token.
+http.route({
+  path: TokenReview.path,
+  method: "GET",
+  handler: httpActionGeneric((ctx, request) =>
+    TokenReview.reviewFrom(
+      ctx,
+      new URL(request.url).searchParams.get("hop") as TokenReview.Hop,
+    ).then((review) => Response.json(review)),
+  ),
 });
 
 export default http;

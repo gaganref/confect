@@ -1250,7 +1250,8 @@ const generateTesting = Effect.fnUntraced(function* (
     | CodegenError.InvalidConvexConfigError
     | CodegenError.InvalidDeclarationError
     | CodegenError.MissingTestKitError
-    | CodegenError.TestKitSecretsMissingError,
+    | CodegenError.TestKitSecretsMissingError
+    | CodegenError.TestKitExportsUnknownError,
     FileSystem.FileSystem | Path.Path
   > {
     const config = path.join(directory, ConvexConfig.CONVEX_CONFIG_FILENAME);
@@ -1382,7 +1383,14 @@ const generateTesting = Effect.fnUntraced(function* (
           : yield* Bundler.exportNames(kitFile.value).pipe(
               Effect.mapError((error) => fromBundlerError(kitEntry, error)),
             );
-        if (Option.isSome(exported) && !exported.value.includes("secrets"))
+        // A kit whose exports cannot be listed without running it might not
+        // pass a policy, so it fails as a missing one would.
+        if (Option.isNone(exported))
+          return yield* CodegenError.TestKitExportsUnknownError.make({
+            mount: name,
+            kit: kitEntry,
+          });
+        if (!exported.value.includes("secrets"))
           return yield* CodegenError.TestKitSecretsMissingError.make({
             mount: name,
             kit: kitEntry,
@@ -1397,10 +1405,10 @@ const generateTesting = Effect.fnUntraced(function* (
       });
       if (!fromPackage) {
         sources.push({ path: name, identifier, confect: local });
+        // The subject alone needs a nested mount's bindings, so a registry
+        // never loads a component's own declaration.
         const own = path.join(local, "app.ts");
-        const nested = (yield* fs.exists(own))
-          ? yield* bundledDefault(own)
-          : undefined;
+        const nested = subjected ? yield* bundledDefault(own) : undefined;
         yield* visit(
           resolved,
           `${name}/`,
@@ -1411,6 +1419,13 @@ const generateTesting = Effect.fnUntraced(function* (
       }
     }
   });
+  // A backend without @confect/test keeps the registry alone, so it still
+  // compiles. An app's subject and a component's both need each nested mount's
+  // bindings.
+  const subjected = Bundler.canImport(
+    "@confect/test",
+    path.join(generated, "testing.ts"),
+  );
   const mounts: Array<TestingManifest.MountEntry> = [];
   const sources: Array<SecretSource> = [];
   yield* visit(
@@ -1422,12 +1437,7 @@ const generateTesting = Effect.fnUntraced(function* (
   );
   const secrets = yield* secretsOf(input.leaves, sources, relative);
   imports.push(...secrets.imports);
-  // A backend without @confect/test keeps the registry alone, so it still
-  // compiles. A component's subject has no groups.
-  const subject = !Bundler.canImport(
-    "@confect/test",
-    path.join(generated, "testing.ts"),
-  )
+  const subject = !subjected
     ? { imports: [], declaration: "" }
     : (yield* ConvexDirectory.target).kind === "app"
       ? yield* testBackend(app, input, mounts)
@@ -1462,7 +1472,8 @@ const generateTesting = Effect.fnUntraced(function* (
 
 /**
  * Write the `TestBackend` export from the specs, the manifest and every
- * declared section's `testing` facts.
+ * declared section's `testing` facts. A fact naming something the backend lacks
+ * stops codegen before `testing.ts` is written.
  */
 const testBackend = Effect.fnUntraced(function* (
   app: App.Any,
@@ -1920,12 +1931,17 @@ const tableInfo = (schema: unknown): Array<TestingManifest.TableInfo> =>
     indexes: Record.keys(table.indexes),
   }));
 
+/**
+ * A module's exports, bundled as codegen bundles a declaration, so a
+ * `convex.config` it reaches at any depth loads outside the Convex runtime.
+ */
 const bundledModule = Effect.fnUntraced(function* (file: string) {
   const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
   if (!(yield* fs.exists(file))) return undefined;
-  const { module } = yield* Bundler.bundle(file).pipe(
-    Effect.mapError((error) => fromBundlerError(file, error)),
-  );
+  const { module } = yield* Bundler.bundle(file, {
+    plugins: [ConvexConfig.componentConfigPlugin(path)],
+  }).pipe(Effect.mapError((error) => fromBundlerError(file, error)));
   return module as Readonly<Record<string, unknown>>;
 });
 
