@@ -678,8 +678,9 @@ boundary `ActionModuleLoadFetch` in
 probe measures both halves on the binary: the plain fixture's
 `moduleLoadFetch` module answers its query with the `TypeError` and its action
 with the fetched body. A `"use node"` module imports in Node
-(`npm-packages/node-executor/src/executor.ts:410`) and keeps the host's `fetch`
-and timers while it loads. Without sources, a Confect Node action's mark is
+(`npm-packages/node-executor/src/executor.ts:410`) and keeps the host's timers
+while it loads. Its `fetch` falls under the action egress rule below: it dies
+with `UndeclaredFetch`, naming the module. Without sources, a Confect Node action's mark is
 read only once its module has loaded, so such a module loads under the
 isolate's rules unless its component's runtime is declared. Before fix round 6
 the guards saw no function at load and passed every call to the host.
@@ -983,13 +984,15 @@ where the binary writes a float as `2.0`.
 
 convex-test rejects the `fetch` instead. The two root cases
 (`test/mock-backend/httpRouteError.test.ts` and `httpRouteConvexError.test.ts`)
-are conformance exceptions in the convex-test lane. #137's `conformance.ts`
-machinery is not on `main` yet, so they are recorded the way the lane records
-an exception today: `vitest.mock-backend.config.ts` lists each one, its exact
-case, the binary behaviour, an owner, the convex-test version and the binary
-evidence, and excludes its file, which holds that one case. An entry checked
-against another convex-test version fails the lane. The mounted case runs on
-both lanes, since the bridge is the adapter's own.
+are conformance exceptions in the convex-test lane. #137 moved them from
+`vitest.mock-backend.config.ts`'s file exclusions into `conformance.ts`, the
+lane's one mechanism: each case now runs on convex-test, records the fetch's
+outcome (`fetchOutcome` in `serverError.ts`: the response's status, or the
+rejection's tag and message) and asserts the binary's 500 through `departs`, so
+the lane takes its failure only for that departure, with the recorded outcome,
+`Error` "The route failed." and `ConvexError` `{"code":"denied","attempt":2}`
+on convex-test 0.0.67. The body check runs where there is a response. The
+mounted case runs on both lanes, since the bridge is the adapter's own.
 
 Fix round 2:
 
@@ -1033,10 +1036,132 @@ bodies, and edge limits.
 `http.test.ts` and the mounted HTTP route cases, `components.test.ts:534` to
 `:736`, now run in the kernel lane.
 
+## Action egress (row 6)
+
+The binary performs a raw `fetch` in an action. An action's `start_async_op`
+starts it as a task (`crates/isolate/src/environment/action/mod.rs:1639-1645`),
+which `task_executor.rs:151` hands to `run_fetch` (`action/fetch.rs:34`). Only a
+cloud proxy's 407 refuses a host (`crates/http_client/src/lib.rs:131-134`), and
+a local backend has none. A Node action runs in Node, where `fetch` is Node's.
+`packages/server/test/local-backend/egress.test.ts` shows both on the pinned
+binary: an action and a Node action each reach a loopback server.
+
+The kernel departs from this on purpose, its one deliberate departure. A raw
+`fetch` in an action, a Node action included, dies with `BackendRefusal`
+`UndeclaredFetch` (`src/internal/KernelRefusal.ts`). It names the action's
+component path, its `module:export` and the URL's host, with `failed`,
+`because`, `instead` and a `docs` anchor. The call rejects with it, and the
+action ends through the same ending signal as a timer in a query: it settles
+with the refusal at once, whatever its handler catches and whether or not the
+handler ever settles, and runs no later syscall, `ctx.runQuery`,
+`ctx.runMutation` or `ctx.runAction`. The fetch never leaves the process.
+
+The rule covers a `"use node"` module's top level too, since a module load is
+kernel-run code. The binary's Node executor imports the module with Node's own
+`fetch` (`npm-packages/node-executor/src/executor.ts:410`, whose `setupGlobals`
+at `:70-81` leaves `fetch` alone), so a fetch its top level starts reaches the
+host. On the kernel the load's guard answers as a Node action's does: its timers
+run, and its `fetch` dies with `UndeclaredFetch` naming the module
+(`module`, with no `functionName`, as no action runs yet) and the host, which
+ends the load, so the open refuses with it. It is part of the action egress
+departure: the convex-test lane's conformance entry for
+`egressModuleLoad.test.ts`, a file of its own so the module loads afresh,
+expects convex-test to answer the load's fetch and the action's. The plain
+fixture's `moduleLoadFetchNode` module shows the binary answering it
+(`packages/server/test/local-backend/ioBans.test.ts`). `IoBans.test.ts` pins
+the kernel side, a component declared to run in Node included. #136 has no
+egress rule and keeps the host's `fetch` there.
+
+A function's later `console` calls are dropped once it has settled, whether
+it returned, failed or was ended. On the binary none of its JavaScript runs
+after that: an action's run loop (`action/mod.rs:1043`) breaks once its promise
+rejects (`:1125-1128`) or its result is collected (`:1151`), so no later call
+reaches `trace` (`:1545-1570`), the only way an action logs, and a query's or
+mutation's `run_inner` loop (`udf/mod.rs:1113`) stops the same way. The kernel
+cannot stop a handler, so `IoBans.ts` makes `console` an accessor that reads as
+a view of the console beneath it, whose logging methods drop what a settled
+function logs, a continuation released after an isolate action returned
+included. It never writes to the console object, so a console a test assigns
+keeps its own methods: an earlier version wrapped the methods in place, which
+replaced a test's `vi.fn()` spies and failed `http.test.ts`'s per-request
+console case in the kernel lane. A console a test froze keeps its own methods: a proxy must answer a
+non-configurable, non-writable property as its target holds it, so the view
+returns the frozen method itself, and an ended function's calls to it are not
+dropped.
+
+`console` is a guarded global like the others. Its install reports
+`notConfigurable` for a console the kernel cannot redefine and `installFailed`
+for a redefinition that throws, and its views are the kernel's own. So the one
+final read-back of every guarded global reads it too, and a console that does
+not read as one of the views refuses the module load or the function before
+any of its code runs. Before fix round 6 it was left out: a non-configurable
+`Math` setter that took the kernel's `Math` and replaced `console` with a
+configurable, unfrozen object went undetected, and an action logged through the
+replacement before and after it returned. `Randomness.test.ts` pins that
+setter, refused with `installFailed` naming `console` before the action logs,
+and a non-configurable console, refused with `notConfigurable`. The settlement
+check reads `console` too, so a handler that redefines it fails with
+`replacedWhileRunning` naming `console`, and the view comes back over the
+replacement (`IoBans.test.ts`).
+
+Egress goes through a provider port (`src/internal/Egress.ts`). Inside a kernel
+action a port's call is held as a `{ kind: "provider", port, input }` command,
+listed by the shim's `commands()` and settled by `answer(id, output)`. Each
+command belongs to its action. Once the action ends, by a refusal or by
+settling on its own, a port call it makes is refused (with its refusal, or
+`ActionEnded`), its held commands are cancelled and never settle, and an answer
+to a cancelled command is refused with `StaleCommand` `cancelled`. An answer to
+a command already answered or never held is `StaleCommand` `notHeld`. A
+snapshot carries the command allocator (`identity.nextCommandId`) and the
+cancelled commands (`cancelledCommands`), so after a restore the next command's
+ID and a stale answer's reason are the uninterrupted run's. It refuses an
+allocator at or behind a cancelled command's number, and a cancelled ID the
+kernel never mints. Held commands stay out: a snapshot waits for every function
+to settle, and an action's commands close with it. The format is
+`confect-kernel-snapshot 5`, whose body carries #134's `signingKey` beside the
+command history. In a query
+or mutation, outside the kernel and in production, a port calls its live
+provider, whose own `fetch` the I/O bans then answer as the binary does. The
+kernel finds ports through `Symbol.for("@confect/test/Egress")` on `globalThis`,
+as `@confect/server` finds the invocation bridge, so a port defined outside this
+package holds the same way.
+
+`test/mock-backend/egress.test.ts` asserts the refusal for a Confect action and
+a Confect Node action. It passes in the kernel lane. In the convex-test lane,
+where convex-test performs the fetch as the binary does, it is one of the
+lane's three conformance exceptions (`test/mock-backend/conformance.ts`),
+re-checked on convex-test 0.0.67, and the only one where the kernel departs
+from the binary; in the other two, the route errors above, convex-test does.
+Its entry names one exact case, the
+binary behaviour, the outcome each function it calls has there (both return
+`reached /ping`), an owner, the convex-test version and the evidence above. The
+case records each function's outcome, a return value or an error's tag and
+message, before it asserts. Its departure assertion runs through `departs`, which
+records the failure's message and the file that called it. The lane takes the
+failure for the departure only when the case failed with exactly that one
+error, from its own file, with the message the entry pins (`departure`), and
+the recorded outcomes match. It checks in `onTestFinished`, after every hook,
+since an `afterEach` that throws stops the hooks after it: a failing hook adds
+an error of its own and fails the lane. `convexTestLane.ts` refuses an entry that names a
+describe block, a pattern, no case, a missing file or another convex-test
+version, or expects no outcome. An excepted case that passes on convex-test
+fails the lane ("Expect test to fail"). One that records other outcomes, or
+fails on anything but its own assertions, keeps its own failure, so an unrelated
+throw in one action is not taken for the departure. One that did not run fails the run through `conformanceReporter.ts`, which
+reads Vitest's own results rather than the lane's config: each entry must name a
+case the run collected, by its exact file under the mock-backend suite and its
+full name, that passed or failed. A path filter, a glob or literal exclusion in
+the config, a renamed case and a skip all leave it uncollected or unrun, and
+each fails the run; Vitest runs no hook of a file whose cases are all skipped,
+so a hook could not see it.
+
+Not covered: Node's `http`, `https`, `net` and `tls` modules in a Node action
+are not intercepted. The row names `fetch`.
+
 ## Snapshots (row 6)
 
 `src/internal/Snapshot.ts` encodes the kernel's committed state and reads it
-back. A snapshot is a header line, `confect-kernel-snapshot 4 sha256:<digest>`,
+back. A snapshot is a header line, `confect-kernel-snapshot 5 sha256:<digest>`,
 then the body as JSON. The body holds the registered component paths, the
 version and latest commit timestamp, the clock's floor, the identity counters
 (the next document ID, the latest creation time handed out, the next held

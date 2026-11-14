@@ -435,6 +435,124 @@ export class ActionRuntimeUnknown extends Schema.TaggedError<
   message: Schema.String,
 }) {}
 
+/**
+ * A refusal a test can read: what failed, why the kernel refuses it, what to do
+ * instead, and where the testing guide explains it. `UndeclaredFetch` is the
+ * kernel's one deliberate departure from the binary, which performs a raw
+ * `fetch` in an action.
+ */
+export class BackendRefusal extends Schema.TaggedError<
+  BackendRefusal,
+  { readonly brand: unique symbol }
+>()("BackendRefusal", {
+  reason: Schema.Literal("UndeclaredFetch"),
+  componentPath: Schema.String,
+  /**
+   * The action that fetched, or, for a fetch a module made while it loaded,
+   * `module` instead.
+   */
+  functionName: Schema.optionalKey(Schema.String),
+  module: Schema.optionalKey(Schema.String),
+  host: Schema.String,
+  failed: Schema.String,
+  because: Schema.String,
+  instead: Schema.String,
+  docs: Schema.TemplateLiteral(["https://", Schema.String, "#", Schema.String]),
+  message: Schema.String,
+}) {}
+
+const egressDocs =
+  "https://confect.dev/guides/testing#reach-the-network-from-an-action" as const;
+
+/**
+ * The action at `componentPath` and `functionName` fetched `host` directly.
+ */
+export const undeclaredFetch = (
+  componentPath: string,
+  functionName: string,
+  host: string,
+) => {
+  const action =
+    componentPath === ""
+      ? `The action ${functionName}`
+      : `The action ${functionName} in component "${componentPath}"`;
+  const failed = `${action} fetched ${host} directly.`;
+  const because =
+    "The test kernel performs no raw fetch, so a test never reaches the network and a run replays.";
+  const instead = `Reach ${host} through a provider port. The kernel holds each port call as a command the test answers.`;
+  return BackendRefusal.make({
+    reason: "UndeclaredFetch",
+    componentPath,
+    functionName,
+    host,
+    failed,
+    because,
+    instead,
+    docs: egressDocs,
+    message: `${failed} ${because} ${instead} See ${egressDocs}.`,
+  });
+};
+
+/**
+ * The `"use node"` module at `componentPath` and `module` fetched `host`
+ * directly while it loaded, before any action ran.
+ */
+export const undeclaredLoadFetch = (
+  componentPath: string,
+  module: string,
+  host: string,
+) => {
+  const loaded =
+    componentPath === ""
+      ? `The module ${module}`
+      : `The module ${module} in component "${componentPath}"`;
+  const failed = `${loaded} fetched ${host} directly while it loaded.`;
+  const because =
+    "The test kernel performs no raw fetch, a module's top level included, so a test never reaches the network and a run replays.";
+  const instead = `Reach ${host} through a provider port from an action. The kernel holds each port call as a command the test answers.`;
+  return BackendRefusal.make({
+    reason: "UndeclaredFetch",
+    componentPath,
+    module,
+    host,
+    failed,
+    because,
+    instead,
+    docs: egressDocs,
+    message: `${failed} ${because} ${instead} See ${egressDocs}.`,
+  });
+};
+
+/**
+ * `answer` named a command the kernel does not hold: it was already answered,
+ * never held, or cancelled when its action ended.
+ */
+export class StaleCommand extends Schema.TaggedError<
+  StaleCommand,
+  { readonly brand: unique symbol }
+>()("StaleCommand", {
+  id: Schema.String,
+  /**
+   * `cancelled` when the command's action ended before an answer, `notHeld`
+   * when it was already answered or never held.
+   */
+  reason: Schema.Literals(["notHeld", "cancelled"]),
+  message: Schema.String,
+}) {}
+
+/**
+ * An action that already ended made a provider port call. An ended function
+ * runs no more JavaScript on the binary, so the kernel holds nothing for it.
+ */
+export class ActionEnded extends Schema.TaggedError<
+  ActionEnded,
+  { readonly brand: unique symbol }
+>()("ActionEnded", {
+  componentPath: Schema.String,
+  functionName: Schema.String,
+  message: Schema.String,
+}) {}
+
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
   RequiresBinary.make({
     operation,
@@ -569,6 +687,7 @@ export class SnapshotAllocatorBehind extends Schema.TaggedError<
     "identityEpoch",
     "nextFile",
     "nextUploadToken",
+    "nextCommandId",
   ]),
   value: Schema.Finite,
   required: Schema.Finite,

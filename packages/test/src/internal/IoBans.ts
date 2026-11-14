@@ -1,3 +1,5 @@
+import * as KernelRefusal from "./KernelRefusal.js";
+
 /**
  * Convex refuses I/O inside a query or mutation, and its isolate runtime lacks
  * some of Node's globals. The binary answers `fetch`, `setTimeout`,
@@ -21,7 +23,12 @@
  * function that is refused, a guard calls the implementation it was read with.
  * While a module loads outside any function, `fetch` and the timers follow the
  * query and mutation rules unless the kernel knows the module has a `"use
- * node"` directive.
+ * node"` directive, and a Node action's rules if it does.
+ *
+ * One rule is the kernel's own: a raw `fetch` in an action, a Node action
+ * included, or at a `"use node"` module's top level, dies with `BackendRefusal`
+ * `UndeclaredFetch`, where the binary performs it. Egress goes through a
+ * provider port (`Egress.ts`) instead.
  */
 
 import * as Util from "node:util";
@@ -46,6 +53,26 @@ export type Runtime = "isolate" | "node";
 export interface Running {
   readonly udfType: UdfType;
   readonly runtime: Runtime;
+  readonly componentPath: string;
+  readonly udfPath: string;
+  /**
+   * Set while a module loads, outside any function. `udfPath` is then the
+   * module's path.
+   */
+  readonly loading?: true;
+}
+
+/**
+ * A module the kernel is loading, outside any function.
+ */
+export interface Loading {
+  /**
+   * `"node"` for a module the kernel knows has a `"use node"` directive, else
+   * `"isolate"`.
+   */
+  readonly runtime: Runtime;
+  readonly componentPath: string;
+  readonly modulePath: string;
 }
 
 export interface Hooks {
@@ -54,18 +81,21 @@ export interface Hooks {
    */
   readonly running: () => Running | undefined;
   /**
-   * The runtime of the module loading in the caller's async context, if any:
-   * `"node"` for a module the kernel knows has a `"use node"` directive, else
-   * `"isolate"`.
+   * The module loading in the caller's async context, if any.
    */
-  readonly loading: () => Runtime | undefined;
+  readonly loading: () => Loading | undefined;
   /**
    * End the running function with `error`: it fails with `error` at once,
    * whether or not its handler ever settles, as the binary terminates a
-   * function at its next microtask checkpoint. Outside a function, end the
-   * loading module's load with it the same way.
+   * function at its next microtask checkpoint, and its later syscalls, calls
+   * and provider commands are refused. Outside a function, end the loading
+   * module's load with it the same way.
    */
   readonly end: (error: unknown) => void;
+  /**
+   * Whether the function running in the caller's async context has ended.
+   */
+  readonly ended: () => boolean;
 }
 
 /**
@@ -161,9 +191,31 @@ const runningOf = (state: State) => state.hooks?.running();
  * (`npm-packages/udf-runtime/src/26_fetch.ts:81`), so it succeeds there; the
  * kernel, which loads a module before it knows what it exports, refuses it as
  * for a query, the one place it is stricter. A `"use node"` module imports in
- * Node (`npm-packages/node-executor/src/executor.ts:410`), with Node's I/O.
+ * Node (`npm-packages/node-executor/src/executor.ts:410`), with Node's I/O,
+ * which the kernel gives it apart from `fetch` ({@link nodeLoad}).
  */
-const isolateLoad: Running = { udfType: "query", runtime: "isolate" };
+const isolateLoad = ({ componentPath, modulePath }: Loading): Running => ({
+  udfType: "query",
+  runtime: "isolate",
+  componentPath,
+  udfPath: modulePath,
+  loading: true,
+});
+
+/**
+ * What a guard checks a call against while a `"use node"` module loads: a Node
+ * action's rules. Its timers run, as Node's do, and its `fetch` dies with
+ * `UndeclaredFetch` naming the module, as the kernel's egress rule refuses
+ * every raw fetch kernel-run code makes, where the binary's Node executor
+ * performs it.
+ */
+const nodeLoad = ({ componentPath, modulePath }: Loading): Running => ({
+  udfType: "action",
+  runtime: "node",
+  componentPath,
+  udfPath: modulePath,
+  loading: true,
+});
 
 /**
  * What a guard checks a call against: the function running, else, for a global
@@ -172,7 +224,11 @@ const isolateLoad: Running = { udfType: "query", runtime: "isolate" };
 const callerOf = (state: State, atLoad: boolean): Running | undefined => {
   const running = runningOf(state);
   if (running !== undefined || !atLoad) return running;
-  return state.hooks?.loading() === "isolate" ? isolateLoad : undefined;
+  const loading = state.hooks?.loading();
+  if (loading === undefined) return undefined;
+  return loading.runtime === "isolate"
+    ? isolateLoad(loading)
+    : nodeLoad(loading);
 };
 
 const inTransaction = (running: Running | undefined): boolean =>
@@ -186,7 +242,7 @@ const inIsolate = (state: State): boolean => {
   if (state.probing) return false;
   const running = runningOf(state);
   return running === undefined
-    ? state.hooks?.loading() === "isolate"
+    ? state.hooks?.loading()?.runtime === "isolate"
     : running.runtime === "isolate";
 };
 
@@ -237,8 +293,7 @@ type Rule = (
   calledByNode: () => boolean,
 ) => { readonly answer: unknown } | undefined;
 
-const fetchRule: Rule = (_state, running, args) => {
-  if (!inTransaction(running)) return undefined;
+const fetchRule: Rule = (state, running, args) => {
   // As on the binary, the request is built first, so a malformed one rejects
   // with the host's own error.
   let request: Request;
@@ -249,7 +304,25 @@ const fetchRule: Rule = (_state, running, args) => {
   } catch (error) {
     return { answer: Promise.reject(error) };
   }
-  return { answer: Promise.reject(fetchInTransaction(request.url)) };
+  if (inTransaction(running)) {
+    return { answer: Promise.reject(fetchInTransaction(request.url)) };
+  }
+  const host = new URL(request.url).host;
+  const refusal =
+    running.loading === true
+      ? KernelRefusal.undeclaredLoadFetch(
+          running.componentPath,
+          running.udfPath,
+          host,
+        )
+      : KernelRefusal.undeclaredFetch(
+          running.componentPath,
+          running.udfPath,
+          host,
+        );
+  // The action, or the module's load, dies whatever its code catches.
+  state.hooks?.end(refusal);
+  return { answer: Promise.reject(refusal) };
 };
 
 const timerRule =
@@ -565,6 +638,110 @@ const guardFormData = (state: State, prototype: { formData?: unknown }) => {
   });
 };
 
+const consoleMethods = [
+  "log",
+  "info",
+  "warn",
+  "error",
+  "debug",
+  "trace",
+] as const;
+
+/**
+ * A function that has ended logs nothing more. On the binary its JavaScript
+ * stops at termination, and an action's run loop stops once its promise settles
+ * (`crates/isolate/src/environment/action/mod.rs:1043-1120`), so no later
+ * `console` call reaches `trace` (`:1545-1570`), the only way an action logs.
+ * The kernel cannot stop a handler, so it drops the calls an ended function
+ * makes. `console` becomes an accessor that reads as a view of the console
+ * beneath it, whose logging methods drop an ended function's calls. The console
+ * object itself is never written, so a console a test assigns keeps its own
+ * methods, spies included, and assigning a view back stores the console it
+ * shows. A console a test froze keeps its own methods, which no view can
+ * replace, so an ended function's calls to it are not dropped. Like the other
+ * guards, a replacement the kernel cannot redefine is `notConfigurable`, a
+ * redefinition that throws is `installFailed`, and once the own property is
+ * gone the console the prototype chain answers is the one beneath.
+ */
+const guardConsole = (state: State): GuardResult => {
+  const global = globalThis as unknown as Global;
+  const own = Object.getOwnPropertyDescriptor(global, "console");
+  // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
+  if (own?.get !== undefined && state.made.has(own.get)) return "guarded";
+  if (own?.configurable === false) return "notConfigurable";
+  const found = own ?? inherited(global, "console");
+  if (found === undefined) return "guarded";
+  let beneath: unknown =
+    "value" in found ? found.value : found.get?.call(global);
+  const views = new WeakMap<object, object>();
+  const shown = new WeakMap<object, object>();
+  const viewOf = (target: unknown): unknown => {
+    if (typeof target !== "object" || target === null) return target;
+    let view = views.get(target);
+    if (view === undefined) {
+      const methods = new WeakMap<object, Fn>();
+      view = new Proxy(target, {
+        get: (on, property) => {
+          // A proxy answers a non-configurable property as its target holds
+          // it, as a frozen console's are, so such a method is the target's
+          // own and its calls cannot be dropped.
+          const held = Reflect.getOwnPropertyDescriptor(on, property);
+          if (held !== undefined && held.configurable === false) {
+            if ("value" in held) {
+              if (held.writable === false) return held.value as unknown;
+            } else if (held.get === undefined) {
+              return undefined;
+            }
+          }
+          const value: unknown = Reflect.get(on, property, on);
+          if (
+            typeof value !== "function" ||
+            !Arr.contains(
+              consoleMethods as ReadonlyArray<PropertyKey>,
+              property,
+            )
+          ) {
+            return value;
+          }
+          let logged = methods.get(value);
+          if (logged === undefined) {
+            const host = value as Fn;
+            logged = (...args: Array<unknown>): unknown =>
+              state.hooks?.ended() === true
+                ? undefined
+                : Reflect.apply(host, on, args);
+            methods.set(value, logged);
+          }
+          return logged;
+        },
+      });
+      views.set(target, view);
+      shown.set(view, target);
+      state.made.add(view);
+    }
+    return view;
+  };
+  const get = (): unknown => viewOf(beneath);
+  const set = (value: unknown) => {
+    beneath =
+      typeof value === "object" && value !== null && shown.has(value)
+        ? shown.get(value)
+        : value;
+  };
+  state.made.add(get);
+  try {
+    Object.defineProperty(global, "console", {
+      get,
+      set,
+      configurable: true,
+      enumerable: found.enumerable ?? false,
+    });
+  } catch {
+    return "installFailed";
+  }
+  return "guarded";
+};
+
 const stateOf = (): State =>
   ((globalThis as unknown as Global)[key] ??= {
     hooks: undefined,
@@ -584,8 +761,8 @@ export interface Unguarded {
 }
 
 /**
- * Guard `fetch`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`
- * and multipart `formData()`, unless they are already guarded.
+ * Guard `fetch`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`,
+ * multipart `formData()` and `console`, unless they are already guarded.
  * `@confect/test/setup` calls this before any test module loads, and the kernel
  * again whenever a world opens, a module loads or a function starts, which
  * adopts a global a test redefined, as `vi.stubGlobal` does, as the
@@ -596,33 +773,53 @@ export interface Unguarded {
  */
 export const install = (): ReadonlyArray<Unguarded> => {
   const state = stateOf();
-  const failed = Arr.filterMap(guarded, (entry) => {
-    const result = guardGlobal(state, entry);
-    return result === "guarded"
-      ? Result.failVoid
-      : Result.succeed({
-          name: entry.name,
-          fixed: result === "notConfigurable",
-        });
-  });
+  const results = Arr.map(guarded, (entry) => ({
+    name: entry.name,
+    result: guardGlobal(state, entry),
+  }));
   guardFormData(state, HostGlobals.request.prototype);
   guardFormData(state, HostGlobals.response.prototype);
-  return failed;
+  const all = [...results, { name: "console", result: guardConsole(state) }];
+  return Arr.filterMap(all, ({ name, result }) =>
+    result === "guarded"
+      ? Result.failVoid
+      : Result.succeed({ name, fixed: result === "notConfigurable" }),
+  );
 };
+
+/**
+ * Every guarded global the final read-back and the settlement check read, and
+ * what a read of it must answer to need a guard: a function for the I/O guards,
+ * an object for `console`, whose guard is a view.
+ */
+const watched: ReadonlyArray<{
+  readonly name: string;
+  readonly guardable: (read: unknown) => boolean;
+}> = [
+  ...Arr.map(guarded, ({ name }) => ({
+    name,
+    guardable: (read: unknown) => typeof read === "function",
+  })),
+  {
+    name: "console",
+    guardable: (read: unknown) => typeof read === "object" && read !== null,
+  },
+];
 
 /**
  * The I/O guards' part of the one final read-back of every guarded global: each
  * guarded global, read through the prototype chain, must answer a guard. A
  * later install that undid one, as a test's setter on `Math` that replaces
  * `fetch` when the entropy install assigns it does, is answered here, before
- * any user code runs. A read that answers no function, as a test that stubbed
- * the global to `undefined` leaves it, has nothing to guard.
+ * any user code runs, `console` included: it must answer one of the guard's
+ * views. A read that answers nothing to guard, as a test that stubbed the
+ * global to `undefined` leaves it, passes.
  */
 export const readBack = (): ReadonlyArray<Unguarded> => {
   const state = stateOf();
-  return Arr.filterMap(guarded, ({ name }) => {
+  return Arr.filterMap(watched, ({ name, guardable }) => {
     const read = readThroughChain(state, name);
-    return typeof read !== "function" || state.made.has(read)
+    return !guardable(read) || state.made.has(read as object)
       ? Result.failVoid
       : Result.succeed({ name, fixed: false });
   });
@@ -647,29 +844,36 @@ const readThroughChain = (state: State, name: string): unknown => {
  * Note how the guarded globals read once a function's entry has guarded them.
  * The answer names, when called, each global that no longer reads through to a
  * guard, which a guard could not see: a call made through the replacement
- * reached it unchecked. The global is read as a function would read it, through
- * the prototype chain, so a replacement still in place when the function
- * settles fails, own or inherited, a data property or an accessor: one moved
- * onto a prototype with the own property deleted included. An assignment stores
- * beneath the guard and still reads as one, as does an accessor another library
- * lays over the guard that reads through it, as convex-test's does. Out of
- * scope, as hostile test code: an accessor that runs code to fake the guard at
- * settlement, answering the replacement while the handler runs and the guard by
- * the time it settles, and a replacement removed again before the function
- * settles. A call made through either is neither blocked nor reported.
+ * reached it unchecked. `console` must still read as one of its guard's views.
+ * The global is read as a function would read it, through the prototype chain,
+ * so a replacement still in place when the function settles fails, own or
+ * inherited, a data property or an accessor: one moved onto a prototype with
+ * the own property deleted included. An assignment stores beneath the guard and
+ * still reads as one, as does an accessor another library lays over the guard
+ * that reads through it, as convex-test's does. Out of scope, as hostile test
+ * code: an accessor that runs code to fake the guard at settlement, answering
+ * the replacement while the handler runs and the guard by the time it settles,
+ * and a replacement removed again before the function settles. A call made
+ * through either is neither blocked nor reported.
  */
 export const watch = (): (() => ReadonlyArray<string>) => {
   const state = stateOf();
   const global = globalThis as unknown as Global;
-  const taken = Arr.map(guarded, ({ name }) => ({
+  const taken = Arr.map(watched, ({ name, guardable }) => ({
     name,
+    guardable,
     present: name in global,
     read: readThroughChain(state, name),
   }));
-  const intact = ({ name, present, read }: (typeof taken)[number]) => {
+  const intact = ({
+    name,
+    guardable,
+    present,
+    read,
+  }: (typeof taken)[number]) => {
     if (!present) return !(name in global);
     const now = readThroughChain(state, name);
-    return typeof now === "function" ? state.made.has(now) : now === read;
+    return guardable(now) ? state.made.has(now as object) : now === read;
   };
   return () =>
     pipe(

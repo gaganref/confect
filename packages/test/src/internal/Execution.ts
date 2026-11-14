@@ -24,6 +24,7 @@ import * as Result from "effect/Result";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
 import * as Crons from "./Crons.js";
+import * as Egress from "./Egress.js";
 import * as Entropy from "./Entropy.js";
 import * as Globals from "./Globals.js";
 import * as HostGlobals from "./HostGlobals.js";
@@ -229,6 +230,22 @@ export type Outcome =
   | { readonly _tag: "failed"; readonly error: unknown };
 
 /**
+ * A provider port's call from an action, held until the test answers it.
+ */
+export interface HeldCommand {
+  readonly id: string;
+  readonly kind: "provider";
+  readonly port: string;
+  readonly input: unknown;
+  readonly componentPath: string;
+  /**
+   * The action that called the port, as `module:export`.
+   */
+  readonly functionName: string;
+  readonly request: string;
+}
+
+/**
  * A mutation attempt run to its commit point and held until `apply`.
  */
 export interface HeldAttempt {
@@ -406,13 +423,24 @@ const executions = new AsyncLocalStorage<Execution>();
 
 /**
  * The error a host API ended each function with, such as a timer a query
- * started, and the signal that ends it. On the binary that function stops at
- * its next microtask checkpoint and fails with the error, whatever its handler
- * caught, and whether or not the handler ever settles.
+ * started or a raw fetch an action made, and the signal that ends it. On the
+ * binary that function stops at its next microtask checkpoint and fails with
+ * the error, whatever its handler caught and whether or not the handler ever
+ * settles, and none of its JavaScript runs again.
  */
 interface Ending {
   readonly ended: Promise<never>;
-  readonly end: (error: unknown) => void;
+  readonly reject: (error: unknown) => void;
+  error: { readonly value: unknown } | undefined;
+  /**
+   * Whether the function's invocation settled: it returned, failed or was
+   * ended. The binary runs none of its JavaScript after that, so a continuation
+   * released later logs nothing: an action's run loop
+   * (`crates/isolate/src/environment/action/mod.rs:1043`) breaks once its
+   * promise rejects (`:1125-1128`) or its result is collected (`:1151`), and a
+   * query's or mutation's `run_inner` loop (`udf/mod.rs:1113`) likewise.
+   */
+  settled: boolean;
 }
 
 const endings = new WeakMap<Execution, Ending>();
@@ -424,28 +452,74 @@ const endingOf = (execution: Execution): Ending => {
     // Read only through `unlessEnded`, so an ending nothing awaits is no
     // unhandled rejection.
     promise.catch(() => undefined);
-    ending = { ended: promise, end: reject };
+    ending = { ended: promise, reject, error: undefined, settled: false };
     endings.set(execution, ending);
   }
   return ending;
 };
 
+/**
+ * End `execution` with `error`, once. Its provider commands close with it.
+ */
+const endExecution = (execution: Execution, error: unknown) => {
+  const ending = endingOf(execution);
+  if (ending.error !== undefined) return;
+  ending.error = { value: error };
+  ending.reject(error);
+  execution.world.closeCommands(execution, error);
+};
+
 const ioHooks: IoBans.Hooks = {
   running: () => executions.getStore(),
-  loading: () => moduleLoads.getStore()?.runtime,
+  loading: () => moduleLoads.getStore(),
   end: (error) => {
     const execution = executions.getStore();
-    if (execution !== undefined) endingOf(execution).end(error);
+    if (execution !== undefined) endExecution(execution, error);
     else moduleLoads.getStore()?.end(error);
+  },
+  ended: () => {
+    const execution = executions.getStore();
+    if (execution === undefined) return false;
+    const ending = endings.get(execution);
+    return (
+      ending !== undefined && (ending.settled || ending.error !== undefined)
+    );
   },
 };
 
 /**
- * `outcome`, unless a host API ended `execution` first, in which case its
- * ending, without waiting for the handler to settle.
+ * A provider port's call inside a kernel action is held. Anywhere else the port
+ * calls its live provider, whose own `fetch` the I/O bans then answer.
  */
-const unlessEnded = <A>(execution: Execution, outcome: Promise<A>) =>
-  Promise.race([outcome, endingOf(execution).ended]);
+const egressHolder: Egress.Holder = {
+  hold: (port, input) => {
+    const execution = executions.getStore();
+    return execution?.udfType === "action"
+      ? execution.world.hold(execution, port, input)
+      : undefined;
+  },
+};
+
+/**
+ * Make the call `start` makes for `execution`, unless a host API ended it, as
+ * the binary runs no syscall of a function it terminated.
+ */
+const whileRunning = <A>(execution: Execution, start: () => Promise<A>) => {
+  const error = endings.get(execution)?.error;
+  return error === undefined ? start() : Promise.reject(error.value);
+};
+
+/**
+ * `outcome`, unless a host API ended `execution` first, in which case its
+ * ending, without waiting for the handler to settle. Either way the function
+ * counts as settled from then on.
+ */
+const unlessEnded = <A>(execution: Execution, outcome: Promise<A>) => {
+  const ending = endingOf(execution);
+  return Promise.race([outcome, ending.ended]).finally(() => {
+    ending.settled = true;
+  });
+};
 
 const installIoBans = (): ReadonlyArray<IoBans.Unguarded> => {
   const unguarded = IoBans.install();
@@ -454,11 +528,10 @@ const installIoBans = (): ReadonlyArray<IoBans.Unguarded> => {
 };
 
 /**
- * A module load: the stream it draws from, the runtime its module runs in,
- * which the I/O guards read, and how a host API ends it.
+ * A module load: the stream it draws from, the module and the runtime it runs
+ * in, which the I/O guards read, and how a host API ends it.
  */
-interface ModuleLoad extends Entropy.Source {
-  readonly runtime: IoBans.Runtime;
+interface ModuleLoad extends Entropy.Source, IoBans.Loading {
   readonly end: (error: unknown) => void;
 }
 
@@ -715,8 +788,11 @@ const watches = new WeakMap<Execution, () => ReadonlyArray<string>>();
  * guard cannot stop a call made through a replacement, which a descriptor
  * change such as `Object.defineProperty` makes, so the change is caught when
  * the function settles: it fails with `UnguardableGlobal`, whatever it
- * returned, and the guard is installed again. Applied before a mutation's
- * commit point, so it publishes none of its writes.
+ * returned, and the guard is installed again. It is each function's one
+ * finalizer, applied to the outermost promise of its run, outside the race with
+ * its ending, so it runs however the function ends: returned, failed, refused
+ * or terminated. Applied before a mutation's commit point, so it publishes none
+ * of its writes.
  */
 const unlessReplaced = <A>(
   execution: Execution,
@@ -1208,6 +1284,26 @@ export class World {
   private readonly queries = new Map<number, Iterator<any>>();
   private readonly holding = new Map<string, Held>();
   private nextAttemptId = 1;
+  private readonly pending = new Map<
+    string,
+    {
+      readonly view: HeldCommand;
+      readonly action: Execution;
+      readonly answer: (output: unknown) => void;
+    }
+  >();
+  private nextCommandId = 1;
+  /**
+   * The commands cancelled when their action ended, which no answer reaches.
+   */
+  private readonly cancelled = new Set<string>();
+  /**
+   * The actions that ended, and why a port call they make now is refused.
+   */
+  private readonly closedActions = new WeakMap<
+    Execution,
+    { readonly refusal: unknown }
+  >();
   /**
    * The latest deadline time has been advanced to. The clock never reads
    * earlier.
@@ -1283,6 +1379,7 @@ export class World {
     installConvexGlobal();
     installDate();
     installIoBans();
+    Egress.install(egressHolder);
     this.components.set(
       ROOT,
       makeComponent(ROOT, schema, modules, [], sources),
@@ -1464,7 +1561,14 @@ export class World {
           // unhandled rejection.
           ended.catch(() => undefined);
           return moduleLoads.run(
-            { phase: "load", random, runtime: loadsIn, end },
+            {
+              phase: "load",
+              random,
+              runtime: loadsIn,
+              componentPath: component.path,
+              modulePath,
+              end,
+            },
             () =>
               Globals.own(() => {
                 installGuardedGlobals();
@@ -2032,6 +2136,83 @@ export class World {
     return Array.from(this.holding.values(), (held) => held.view);
   }
 
+  // Held commands.
+
+  /**
+   * Hold a provider port's call from the action `execution` until the test
+   * answers it. Once the action has ended, the call is refused instead.
+   */
+  hold(execution: Execution, port: string, input: unknown): Promise<unknown> {
+    const closed = this.closedActions.get(execution);
+    if (closed !== undefined) return Promise.reject(closed.refusal);
+    const { promise, resolve } = Promise.withResolvers<unknown>();
+    const view: HeldCommand = {
+      id: `command-${this.nextCommandId++}`,
+      kind: "provider",
+      port,
+      input,
+      componentPath: execution.componentPath,
+      functionName: execution.udfPath,
+      request: execution.request.requestId,
+    };
+    this.pending.set(view.id, { view, action: execution, answer: resolve });
+    return promise;
+  }
+
+  /**
+   * End the action `execution`'s commands: a port call it makes now is refused
+   * with `refusal`, and its held commands are cancelled. A cancelled call never
+   * settles, as an ended function runs no more JavaScript. Without a `refusal`
+   * the action settled on its own, and a later call is refused with
+   * `ActionEnded`.
+   */
+  closeCommands(execution: Execution, refusal?: unknown): void {
+    if (this.closedActions.has(execution)) return;
+    this.closedActions.set(execution, {
+      refusal:
+        refusal ??
+        KernelRefusal.ActionEnded.make({
+          componentPath: execution.componentPath,
+          functionName: execution.udfPath,
+          message: `The action ${execution.udfPath} already ended, so the test kernel refused its provider port call.`,
+        }),
+    });
+    for (const [id, command] of this.pending) {
+      if (command.action === execution) {
+        this.pending.delete(id);
+        this.cancelled.add(id);
+      }
+    }
+  }
+
+  /**
+   * The held commands, oldest first.
+   */
+  commands(): ReadonlyArray<HeldCommand> {
+    return Array.from(this.pending.values(), ({ view }) => view);
+  }
+
+  /**
+   * Answer a held command: its port call returns `output`. A command already
+   * answered, never held, or cancelled when its action ended is refused with
+   * `StaleCommand`.
+   */
+  answer(id: string, output: unknown): void {
+    const command = this.pending.get(id);
+    if (command === undefined) {
+      const cancelled = this.cancelled.has(id);
+      throw KernelRefusal.StaleCommand.make({
+        id,
+        reason: cancelled ? "cancelled" : "notHeld",
+        message: cancelled
+          ? `The test kernel cancelled command "${id}" when its action ended, so no answer reaches it.`
+          : `The test kernel holds no command "${id}". It was already answered, or never held.`,
+      });
+    }
+    this.pending.delete(id);
+    command.answer(output);
+  }
+
   // Subscribed queries.
 
   /**
@@ -2256,10 +2437,12 @@ export class World {
           identityEpoch: this.identityEpoch,
           nextFile: this.nextFile,
           nextUploadToken: this.nextUploadToken,
+          nextCommandId: this.nextCommandId,
         },
         jobs,
         files,
         crons,
+        cancelledCommands: [...this.cancelled],
         signingKey:
           this.deploymentKey.seed === undefined
             ? null
@@ -2376,6 +2559,9 @@ export class World {
     this.identityEpoch = image.identity.identityEpoch;
     this.nextFile = image.identity.nextFile;
     this.nextUploadToken = image.identity.nextUploadToken;
+    this.nextCommandId = image.identity.nextCommandId;
+    this.cancelled.clear();
+    for (const id of image.cancelledCommands) this.cancelled.add(id);
     this.files.clear();
     this.legacyIds.clear();
     for (const [id, file] of image.files) {
@@ -3342,22 +3528,28 @@ export class World {
             {
               ...ctx,
               runQuery: (reference: any, queryArgs: any) =>
-                this.queryAt(
-                  pathOfReference(reference, functionPath.componentPath),
-                  queryArgs,
-                  inner,
+                whileRunning(execution, () =>
+                  this.queryAt(
+                    pathOfReference(reference, functionPath.componentPath),
+                    queryArgs,
+                    inner,
+                  ),
                 ),
               runMutation: (reference: any, mutationArgs: any) =>
-                this.mutationAt(
-                  pathOfReference(reference, functionPath.componentPath),
-                  mutationArgs,
-                  inner,
+                whileRunning(execution, () =>
+                  this.mutationAt(
+                    pathOfReference(reference, functionPath.componentPath),
+                    mutationArgs,
+                    inner,
+                  ),
                 ),
               runAction: (reference: any, actionArgs: any) =>
-                this.actionAt(
-                  pathOfReference(reference, functionPath.componentPath),
-                  actionArgs,
-                  inner,
+                whileRunning(execution, () =>
+                  this.actionAt(
+                    pathOfReference(reference, functionPath.componentPath),
+                    actionArgs,
+                    inner,
+                  ),
                 ),
               auth: queryAuth(execution),
             },
@@ -3367,13 +3559,10 @@ export class World {
         invokeAction: (requestId: string, args: string) => Promise<string>;
       };
       const run = () =>
-        unlessReplaced(
-          execution,
-          enter(execution, () =>
-            a.invokeAction(
-              from.request.requestId,
-              Json.stringify(convexToJson([parseArgs(args)])),
-            ),
+        enter(execution, () =>
+          a.invokeAction(
+            from.request.requestId,
+            Json.stringify(convexToJson([parseArgs(args)])),
           ),
         );
       // An action another function calls is an invocation of its own, with its
@@ -3392,7 +3581,15 @@ export class World {
               ),
               run,
             );
-      return started
+      // One finalizer for every way the action ends, its ending included: a
+      // terminated action whose handler never settles still has its globals
+      // checked and its guards installed again.
+      return unlessReplaced(
+        execution,
+        unlessEnded(execution, started).finally(() =>
+          this.closeCommands(execution),
+        ),
+      )
         .then((raw) => {
           const result = jsonToConvex(Json.parse(raw));
           this.keepReturns(functionPath, result);
@@ -3800,18 +3997,18 @@ export class World {
     execution: Execution,
   ): Promise<string> {
     const attempt = execution.attempt;
-    if (attempt === undefined) {
-      return Promise.resolve().then(() =>
-        this.dispatchAsync(op, Json.parse(jsonArgs), execution),
+    const dispatch = () =>
+      whileRunning(execution, () =>
+        Promise.resolve(
+          this.dispatchAsync(op, Json.parse(jsonArgs), execution),
+        ),
       );
-    }
+    if (attempt === undefined) return Promise.resolve().then(dispatch);
     if (attempt.closed) return Promise.reject(closed(execution, op));
     // A syscall counts toward its frame's lifetime from the moment it is
     // queued, so a frame never closes with a write still waiting its turn.
     const end = attempt.begin();
-    return execution.turn
-      .take(() => this.dispatchAsync(op, Json.parse(jsonArgs), execution))
-      .finally(end);
+    return execution.turn.take(dispatch).finally(end);
   }
 
   private dispatchAsync(

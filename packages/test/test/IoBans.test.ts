@@ -1,5 +1,3 @@
-// oxlint-disable-next-line effecttsgo/node-builtin-import -- The positive controls fetch from a real loopback server.
-import { createServer, type Server } from "node:http";
 import * as FunctionSpec from "@confect/core/FunctionSpec";
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as FunctionRegistryItem from "@confect/server/FunctionRegistryItem";
@@ -11,6 +9,7 @@ import { assert, describe, expect, it } from "@effect/vitest";
 import { vi } from "vitest";
 import {
   actionGeneric,
+  componentsGeneric,
   defineSchema,
   defineTable,
   makeFunctionReference,
@@ -25,9 +24,11 @@ import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import * as Schema from "effect/Schema";
 import { convexTest } from "../src/internal/ConvexTest";
+import type * as KernelRefusal from "../src/internal/KernelRefusal";
 import { hasUseNodeDirective } from "../src/internal/Execution";
 import { inlineSources } from "./fixtures/inlineSources";
 import { keptFetch, keptSetImmediate } from "./fixtures/keptAtImport";
+import { loopback } from "./fixtures/loopback";
 
 type Timer = "setTimeout" | "setInterval";
 
@@ -200,6 +201,10 @@ const io = {
     "io:fetchInAction",
   ),
   timersInAction: makeFunctionReference<"action">("io:timersInAction"),
+  fetchThenWrite: makeFunctionReference<"action", { url: string }>(
+    "io:fetchThenWrite",
+  ),
+  addNote: makeFunctionReference<"mutation", { text: string }>("io:addNote"),
   promisifiedTimerInQuery: makeFunctionReference<"query">(
     "io:promisifiedTimerInQuery",
   ),
@@ -229,6 +234,9 @@ const io = {
     "io:inheritedFetchInMutation",
   ),
 };
+
+// The writes an action made after its raw fetch, so a test waits for them.
+const lateWrites: Array<Promise<unknown>> = [];
 
 /**
  * What a handler redefines `fetch` as while it runs, which no guard sees.
@@ -380,9 +388,29 @@ const modules = {
       }),
       fetchInAction: actionGeneric({
         args: { url: v.string() },
+        // The handler catches the rejection, and the action dies anyway.
         handler: (_ctx, { url }) =>
           // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
-          fetch(url).then((response) => response.text()),
+          fetch(url).then(
+            (response) => response.text(),
+            () => "caught",
+          ),
+      }),
+      fetchThenWrite: actionGeneric({
+        args: { url: v.string() },
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
+        handler: async (ctx, { url }) => {
+          // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
+          await fetch(url).catch(() => null);
+          const write = ctx.runMutation(io.addNote, { text: "after" });
+          lateWrites.push(write);
+          return write;
+        },
+      }),
+      addNote: mutationGeneric({
+        args: { text: v.string() },
+        handler: (ctx, { text }) =>
+          ctx.db.insert("notes", { text }).then(() => null),
       }),
       promisifiedTimerInQuery: queryGeneric({
         args: {},
@@ -572,40 +600,6 @@ const failureOf = (call: Promise<unknown>) =>
     ),
   );
 
-/**
- * A loopback server that answers every request with its path, and counts them.
- */
-const loopback = Effect.acquireRelease(
-  Effect.promise(
-    () =>
-      // oxlint-disable-next-line effecttsgo/new-promise -- Node's http server reports listening and closing through callbacks.
-      new Promise<{
-        readonly server: Server;
-        readonly url: string;
-        hits: number;
-      }>((resolve) => {
-        const state = {
-          server: undefined as unknown as Server,
-          url: "",
-          hits: 0,
-        };
-        state.server = createServer((request, response) => {
-          state.hits += 1;
-          response.end(`reached ${request.url}`);
-        }).listen(0, "127.0.0.1", () => {
-          const address = state.server.address() as { port: number };
-          state.url = `http://127.0.0.1:${address.port}/ping`;
-          resolve(state);
-        });
-      }),
-  ),
-  ({ server }) =>
-    Effect.promise(
-      // oxlint-disable-next-line effecttsgo/new-promise -- Node's http server reports listening and closing through callbacks.
-      () => new Promise<void>((resolve) => server.close(() => resolve())),
-    ),
-);
-
 const absent = { setImmediate: "undefined", queueMicrotask: "undefined" };
 
 describe("I/O bans", () => {
@@ -701,16 +695,92 @@ describe("I/O bans", () => {
         expect(observed3).toEqual(fetchRefusal);
       }),
     );
+  });
 
-    it.effect("an action fetches through the host", () =>
+  describe("action egress", () => {
+    const refusalOf = (call: Promise<unknown>) =>
+      Effect.promise(() =>
+        call.then(
+          (value) => ({ returned: value }),
+          (error: KernelRefusal.BackendRefusal) => error,
+        ),
+      );
+
+    it.effect(
+      "a raw fetch in an action dies with UndeclaredFetch naming the action and host, whatever the handler catches",
+      () =>
+        Effect.gen(function* () {
+          const server = yield* loopback;
+          const t = convexTest({ schema, modules, sources });
+          const refusal = yield* refusalOf(
+            t.action(io.fetchInAction, { url: server.url }),
+          );
+          expect(refusal).toMatchObject({
+            _tag: "BackendRefusal",
+            reason: "UndeclaredFetch",
+            componentPath: "",
+            functionName: "io:fetchInAction",
+            host: server.host,
+            docs: "https://confect.dev/guides/testing#reach-the-network-from-an-action",
+          });
+          expect((refusal as Error).message).toBe(
+            `The action io:fetchInAction fetched ${server.host} directly. The test kernel performs no raw fetch, so a test never reaches the network and a run replays. Reach ${server.host} through a provider port. The kernel holds each port call as a command the test answers. See https://confect.dev/guides/testing#reach-the-network-from-an-action.`,
+          );
+          expect(server.hits()).toBe(0);
+        }).pipe(Effect.scoped),
+    );
+
+    it.effect("an action that made a raw fetch runs no later syscall", () =>
+      Effect.gen(function* () {
+        lateWrites.length = 0;
+        const server = yield* loopback;
+        const t = convexTest({ schema, modules, sources });
+        const refused = yield* refusalOf(
+          t.action(io.fetchThenWrite, { url: server.url }),
+        );
+        expect(refused).toMatchObject({ reason: "UndeclaredFetch" });
+        // The action settled at once, so the write its handler went on to make
+        // is awaited before the table is read.
+        const writes = yield* Effect.promise(() =>
+          Promise.allSettled(lateWrites),
+        );
+        expect(writes).toMatchObject([
+          { status: "rejected", reason: { reason: "UndeclaredFetch" } },
+        ]);
+        const notes = yield* Effect.promise(() => t.query(io.notes, {}));
+        expect(notes).toEqual([]);
+      }).pipe(Effect.scoped),
+    );
+
+    it.effect("a component's action is named with its component path", () =>
       Effect.gen(function* () {
         const server = yield* loopback;
         const t = convexTest({ schema, modules, sources });
-        const observed = yield* Effect.promise(() =>
-          t.action(io.fetchInAction, { url: server.url }),
+        const storeModules = {
+          "_generated/server.ts": () => Promise.resolve({}),
+          "egress.ts": () =>
+            Promise.resolve({
+              fetchInAction: actionGeneric({
+                args: { url: v.string() },
+                // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
+                handler: (_ctx, args) => fetch(args.url).then(() => null),
+              }),
+            }),
+        };
+        t.registerComponent("store", schema, storeModules, {
+          sources: inlineSources(storeModules),
+        });
+        const store = (componentsGeneric() as any).store;
+        const refused = yield* refusalOf(
+          t.action(store.egress.fetchInAction, { url: server.url }),
         );
-        expect(observed).toBe("reached /ping");
-        expect(server.hits).toBe(1);
+        expect(refused).toMatchObject({
+          reason: "UndeclaredFetch",
+          componentPath: "store",
+          functionName: "egress:fetchInAction",
+          host: server.host,
+        });
+        expect(server.hits()).toBe(0);
       }).pipe(Effect.scoped),
     );
   });
@@ -1109,6 +1179,52 @@ describe("replaced globals", () => {
   );
 
   it.effect(
+    "an action that redefines console and logs through it is not blocked, but ends refused naming console, and the guard's view is back",
+    () =>
+      Effect.gen(function* () {
+        const replacement = { log: vi.fn() };
+        const consoleModules = {
+          "_generated/server.ts": () => Promise.resolve({}),
+          "logs.ts": () =>
+            Promise.resolve({
+              redefined: actionGeneric({
+                args: {},
+                handler: () => {
+                  Object.defineProperty(globalThis, "console", {
+                    value: replacement,
+                    writable: true,
+                    configurable: true,
+                  });
+                  // oxlint-disable-next-line effecttsgo/global-console -- The handler logs through the console it put in place of the guard's view.
+                  console.log("through the replacement");
+                  return Promise.resolve(null);
+                },
+              }),
+            }),
+        };
+        const t = convexTest({
+          schema: defineSchema({}),
+          modules: consoleModules,
+          sources: inlineSources(consoleModules),
+        });
+        const before = original("console");
+        const outcome = yield* replacedOutcome(
+          t.action(makeFunctionReference<"action">("logs:redefined"), {}),
+        );
+        // The refusal installed the guard again over the replacement.
+        const reguarded = "get" in original("console");
+        // A view of the replacement, never the replacement itself.
+        const read: unknown = Reflect.get(globalThis, "console");
+        const shown = read !== replacement;
+        Object.defineProperty(globalThis, "console", before);
+        expect(outcome).toEqual({ ...replacedRefusal, globals: ["console"] });
+        expect(replacement.log).toHaveBeenCalledOnce();
+        expect(reguarded).toBe(true);
+        expect(shown).toBe(true);
+      }),
+  );
+
+  it.effect(
     "a mutation that redefines fetch and calls it ends refused and publishes nothing",
     () =>
       Effect.gen(function* () {
@@ -1390,7 +1506,7 @@ describe("module loads", () => {
           name: "TypeError",
           message: `fetch to ${server.url} failed: Can't use fetch() in queries and mutations. Please consider using an action. See https://docs.convex.dev/functions/actions for more details.`,
         });
-        expect(server.hits).toBe(0);
+        expect(server.hits()).toBe(0);
       }).pipe(Effect.scoped),
   );
 
@@ -1420,28 +1536,51 @@ describe("module loads", () => {
         const t = kernelOver({ "load.ts": fetchingModule(server.url) });
         const observed = yield* refusalOf(t.action(action, {}));
         expect(observed).toMatchObject({ name: "TypeError" });
-        expect(server.hits).toBe(0);
+        expect(server.hits()).toBe(0);
       }).pipe(Effect.scoped),
   );
 
+  // What a load's undeclared fetch refuses the open with.
+  const loadRefusalOf = (call: Promise<unknown>) =>
+    Effect.promise(() =>
+      call.then(
+        (value) => ({ returned: value }),
+        (error: Record<string, unknown>) => ({
+          failed: error["_tag"],
+          reason: error["reason"],
+          componentPath: error["componentPath"],
+          module: error["module"],
+          functionName: error["functionName"],
+          host: error["host"],
+        }),
+      ),
+    );
+
   it.effect(
-    'a "use node" module keeps the host\'s fetch and timers while it loads',
+    'a "use node" module\'s top-level fetch dies with UndeclaredFetch naming the module and its host, and never reaches it, while its timers run',
     () =>
       Effect.gen(function* () {
         const server = yield* loopback;
+        const host = new URL(server.url).host;
+        const fetching = kernelOver({ "load.ts": fetchingModule(server.url) }, [
+          "load.ts",
+        ]);
+        const observed = yield* loadRefusalOf(fetching.action(action, {}));
+        expect(observed).toEqual({
+          failed: "BackendRefusal",
+          reason: "UndeclaredFetch",
+          componentPath: "",
+          module: "load",
+          functionName: undefined,
+          host,
+        });
+        expect(server.hits()).toBe(0);
         const fired = vi.fn();
-        const t = kernelOver(
-          {
-            "load.ts": fetchingModule(server.url),
-            "timing.ts": timingModule(fired),
-          },
-          ["load.ts", "timing.ts"],
-        );
-        const observed = yield* refusalOf(t.action(action, {}));
-        expect(observed).toEqual({ returned: "reached /ping" });
-        expect(server.hits).toBe(1);
+        const timing = kernelOver({ "timing.ts": timingModule(fired) }, [
+          "timing.ts",
+        ]);
         const observed2 = yield* refusalOf(
-          t.action(makeFunctionReference<"action">("timing:action"), {}),
+          timing.action(makeFunctionReference<"action">("timing:action"), {}),
         );
         expect(observed2).toEqual({ returned: "fired" });
         expect(fired).toHaveBeenCalledOnce();
@@ -1449,14 +1588,13 @@ describe("module loads", () => {
   );
 
   it.effect(
-    "a component registered without sources loads with the host's fetch when the test declares it runs in Node, and under the isolate's rules when it declares the isolate",
+    "a component registered without sources loads under a Node action's rules when the test declares it runs in Node, and under the isolate's when it declares the isolate",
     () =>
       Effect.gen(function* () {
         const server = yield* loopback;
-        const seen: Array<Promise<unknown>> = [];
         const kitModules = {
           "_generated/server.ts": () => Promise.resolve({}),
-          "load.ts": fetchingModule(server.url, seen),
+          "load.ts": fetchingModule(server.url),
         };
         const open = (
           componentRuntimes: Record<string, "node" | "isolate">,
@@ -1470,19 +1608,21 @@ describe("module loads", () => {
             componentRuntimes,
           });
           t.registerComponent("kit", defineSchema({}), kitModules);
-          return Effect.promise(() => t.run(() => Promise.resolve(null)));
+          return loadRefusalOf(t.run(() => Promise.resolve(null)));
         };
-        yield* open({ kit: "node" });
-        yield* open({ kit: "isolate" });
-        const outcomes = yield* Effect.promise(() => Promise.all(seen));
-        expect(outcomes).toEqual([
-          { returned: "reached /ping" },
-          {
-            name: "TypeError",
-            message: `fetch to ${server.url} failed: Can't use fetch() in queries and mutations. Please consider using an action. See https://docs.convex.dev/functions/actions for more details.`,
-          },
-        ]);
-        expect(server.hits).toBe(1);
+        const node = yield* open({ kit: "node" });
+        const isolate = yield* open({ kit: "isolate" });
+        expect(node).toEqual({
+          failed: "BackendRefusal",
+          reason: "UndeclaredFetch",
+          componentPath: "kit",
+          module: "load",
+          functionName: undefined,
+          host: new URL(server.url).host,
+        });
+        // The isolate's fetch rejects without ending the load.
+        expect(isolate).toEqual({ returned: null });
+        expect(server.hits()).toBe(0);
       }).pipe(Effect.scoped),
   );
 

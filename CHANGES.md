@@ -196,6 +196,36 @@ The option is removed at promotion, when the kernel replaces convex-test.
 Changeset: `testconfect-kernel-target.md`. Upstream: fork only, as the kernel is
 fork-specific.
 
+## Test kernel action egress
+
+On the kernel, a raw `fetch` in an action or a Node action dies with
+`BackendRefusal` `UndeclaredFetch`, naming the action's component path and
+`module:export` and the URL's host, with `failed`, `because`, `instead` and a
+`docs` anchor. The action settles with it at once, whatever its handler catches
+and whether or not the handler settles, runs no later call, and logs nothing
+more, as the binary stops an ended function's JavaScript. `console` is a
+guarded global: the final read-back and the settlement check read it, so a test
+that replaces it under the kernel refuses the function with `UnguardableGlobal`
+rather than logging through the replacement. The binary performs
+this fetch, so this is the kernel's one deliberate departure, recorded as a
+convex-test lane conformance exception in `conformance.ts`, now the lane's one
+exception mechanism: `main`'s two route-error exceptions moved into it from
+`vitest.mock-backend.config.ts`, and every entry names convex-test 0.0.67. An
+entry names one exact case,
+the binary behaviour, each function's expected outcome there, an owner, the
+convex-test version and its local-backend evidence, and the lane refuses broad,
+stale or versionless entries, a skipped case, an unrelated failure and an
+excepted case that passes. Egress goes through an internal provider port: inside
+a kernel action its call is held as a `{ kind: "provider" }` command that the
+shim's `commands()` lists and `answer(id, output)` settles, until the action
+ends, when its commands are cancelled and a later call is refused. A snapshot
+carries the command allocator and the cancelled commands, so a restored world
+numbers its next command and refuses a stale answer as its source would
+(snapshot format 5, which carries #134's signing key beside them). This is the
+action egress row of Frame's backend testing kernel (Frame ADR 0012, row 6).
+Changeset: `test-kernel-action-egress.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## Test kernel I/O bans
 
 On the kernel, a query or mutation that calls `fetch` gets the `TypeError` the
@@ -237,7 +267,8 @@ its `fetch` rejects with the binary's `TypeError`, and a timer fails the load
 with the binary's error. The one place the kernel is stricter, a top-level
 `fetch` in an isolate action's module, which the binary answers, is the
 `ActionModuleLoadFetch` kernel boundary. A `"use node"` module keeps the host's
-`fetch` and timers while it loads. The local-backend suite pins each behaviour
+timers while it loads, and its top-level `fetch` dies with `UndeclaredFetch`, as
+the action egress rule below has it. The local-backend suite pins each behaviour
 on the binary. This is the I/O bans row
 of Frame's backend testing kernel (Frame ADR 0012, row 6). Changeset:
 `test-kernel-io-bans.md`. Upstream: fork only, as the kernel is fork-specific.

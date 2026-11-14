@@ -32,6 +32,14 @@ export interface KernelControls {
   ) => Promise<Execution.HeldAttempt>;
   readonly apply: (id: string) => Promise<Execution.KernelApply>;
   readonly held: () => ReadonlyArray<Execution.HeldAttempt>;
+  /**
+   * The provider port calls actions made, held until answered, oldest first.
+   */
+  readonly commands: () => ReadonlyArray<Execution.HeldCommand>;
+  /**
+   * Answer a held command, so its port call returns `output`.
+   */
+  readonly answer: (id: string, output: unknown) => void;
   readonly withIdentity: (identity: Partial<UserIdentity>) => KernelControls;
   readonly withRequestMetadata: (metadata: {
     readonly ip?: string | null;
@@ -199,6 +207,8 @@ const accessor = (
       );
     },
     held: () => Array.map(world.held(), (view) => world.projectHeld(view)),
+    commands: () => world.commands(),
+    answer: (id: string, output: unknown) => world.answer(id, output),
     subscriber: () => {
       const subscriber = subscriptions.subscriber(caller);
       // A refusal reaches the subscriber's next subscription.
@@ -318,8 +328,10 @@ const accessor = (
  * timer, and a cron run's delay draws from the random stream of the world bound
  * when the backend opened, or else the backend's own `world`. A subscriber's
  * subscriptions go stale when a commit changes what they read or the identity
- * they read changes, and `refresh` reruns them. `redaction` names the secret
- * schema nodes of tables and functions: a value under one reaches a snapshot, a
+ * they read changes, and `refresh` reruns them. An action's raw `fetch` dies
+ * with `BackendRefusal` `UndeclaredFetch`, and its provider port calls wait in
+ * `commands` until `answer` settles them. `redaction` names the secret schema
+ * nodes of tables and functions: a value under one reaches a snapshot, a
  * failure report or a diff only as a marker.
  */
 export function convexTest(
