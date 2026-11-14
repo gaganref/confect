@@ -1,5 +1,6 @@
-import { Callback, type Ref } from "@confect/core";
+import { Callback, SchemaToValidator, type Ref } from "@confect/core";
 import type { DatabaseSchema, RegisteredConvexFunction } from "@confect/server";
+import { internalMutationGeneric } from "convex/server";
 import { ConvexError, convexToJson, type Value } from "convex/values";
 import * as Arbitrary from "effect/Arbitrary";
 import * as Arr from "effect/Array";
@@ -14,7 +15,8 @@ import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import type * as SchemaAST from "effect/SchemaAST";
 import * as Execution from "./internal/Execution.js";
-import { stringify } from "./internal/Json.js";
+import { parse, stringify } from "./internal/Json.js";
+import type { ValidatorJSON } from "./internal/KernelValues.js";
 import {
   openSession,
   type MountInitFailed,
@@ -379,7 +381,30 @@ const makeEngine = (
       ),
     );
   };
-  const sink: Execution.Sink = ({ slot: id, args, caller }) => {
+  const validators = new Map<string, ValidatorJSON>();
+  /**
+   * A slot's declared argument validator, compiled from its contract once.
+   */
+  const argsOf = (id: string): ValidatorJSON | undefined => {
+    const found = slots[id];
+    if (found === undefined) return undefined;
+    let validator = validators.get(id);
+    if (validator === undefined) {
+      // A registered function's `exportArgs` is how the kernel reads every
+      // function's validator, so a slot's is read the same way.
+      validator = parse(
+        internalMutationGeneric({
+          args: SchemaToValidator.compileArgsSchema(
+            found.contract.functionProvenance.args,
+          ),
+          handler: () => null,
+        }).exportArgs(),
+      ) as ValidatorJSON;
+      validators.set(id, validator);
+    }
+    return validator;
+  };
+  const call: Execution.Sink["call"] = ({ slot: id, args, caller }) => {
     const found = slots[id];
     if (found === undefined)
       return Promise.reject(
@@ -440,7 +465,7 @@ const makeEngine = (
       return Effect.sync(() => waiting.delete(check));
     });
   return {
-    sink,
+    sink: { args: argsOf, call } satisfies Execution.Sink,
     open: () => {
       open = true;
     },

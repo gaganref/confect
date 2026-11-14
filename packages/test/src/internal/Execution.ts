@@ -27,6 +27,7 @@ import * as Environment from "./Environment.js";
 import * as Globals from "./Globals.js";
 import * as Http from "./Http.js";
 import * as Invocation from "./Invocation.js";
+import * as ArgumentValidation from "./ArgumentValidation.js";
 import * as Kernel from "./Kernel.js";
 import * as KernelQuery from "./KernelQuery.js";
 import * as KernelRefusal from "./KernelRefusal.js";
@@ -75,19 +76,24 @@ export const SINK = "~sink";
 
 /**
  * Answers a call to a handle under {@link SINK}, in place of a registered
- * function: `slot` is the udf path the handle names, and `caller` the function
- * that called it, or `undefined` for a scheduled job. The answer is the call's
- * encoded return, or a rejection shaped as a function's thrown error leaves it,
- * a `ConvexError`'s data serialized to JSON text, which the caller receives as
- * a nested call's error.
+ * function. `args` is the declared argument validator of the slot a handle
+ * names, its udf path, which the kernel checks a call against before `call`
+ * sees it, as the binary checks a handle's target. `call` gets the slot, the
+ * arguments, and the function that called it, or `undefined` for a scheduled
+ * job. Its answer is the call's encoded return, or a rejection shaped as a
+ * function's thrown error leaves it, a `ConvexError`'s data serialized to JSON
+ * text, which the caller receives as a nested call's error.
  */
-export type Sink = (command: {
-  readonly slot: string;
-  readonly args: unknown;
-  readonly caller:
-    | { readonly componentPath: string; readonly functionName: string }
-    | undefined;
-}) => Promise<unknown>;
+export interface Sink {
+  readonly args: (slot: string) => ValidatorJSON | undefined;
+  readonly call: (command: {
+    readonly slot: string;
+    readonly args: unknown;
+    readonly caller:
+      | { readonly componentPath: string; readonly functionName: string }
+      | undefined;
+  }) => Promise<unknown>;
+}
 
 /**
  * A cron job's declaration as a snapshot writes it and a restore compares it:
@@ -2115,9 +2121,24 @@ export class World {
             componentPath: from.parent.componentPath,
             functionName: from.parent.udfPath,
           };
+    const validator = this.sink.args(functionPath.udfPath);
+    const refused =
+      validator === undefined
+        ? undefined
+        : ArgumentValidation.refusal(validator, args);
+    // An action's caller receives the binary's refusal with one more newline
+    // than a mutation's.
+    if (refused !== undefined)
+      return Promise.reject(
+        new Error(
+          from.parent?.udfType === "action" ? `${refused}\n` : refused,
+        ),
+      );
     // The sink rejects as a function's thrown error leaves it, with its data
     // serialized, and the caller receives it as a nested call's error.
-    return this.sink({ slot: functionPath.udfPath, args, caller }).catch(
+    return this.sink
+      .call({ slot: functionPath.udfPath, args, caller })
+      .catch(
       (error: unknown) => {
         throw receiveConvexErrorData(error, convexErrorDataFor(from));
       },
