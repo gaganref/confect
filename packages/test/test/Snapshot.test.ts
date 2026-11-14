@@ -1693,6 +1693,34 @@ describe("provider commands", () => {
     });
 
   it.effect(
+    "the snapshot is format 5, whose body carries #134's signing key beside the command history",
+    () =>
+      Effect.gen(function* () {
+        const source = kernel();
+        yield* Effect.promise(() => source.action(pay.leaveHeld, {}));
+        const snapshot = text(source.exportSnapshot());
+        const bodyStart =
+          pipe(
+            snapshot,
+            String.indexOf("\n"),
+            Option.getOrElse(() => -1),
+          ) + 1;
+        const body = Json.parse(pipe(snapshot, String.slice(bodyStart))) as {
+          readonly identity: { readonly nextCommandId: unknown };
+        } & Record<string, unknown>;
+        expect(
+          pipe(
+            snapshot,
+            String.startsWith("confect-kernel-snapshot 5 sha256:"),
+          ),
+        ).toBe(true);
+        expect(body.identity.nextCommandId).toBe(2);
+        expect(body["cancelledCommands"]).toEqual(["command-1"]);
+        expect("signingKey" in body).toBe(true);
+      }),
+  );
+
+  it.effect(
     "a restore continues the command allocator and the cancelled commands, as the uninterrupted run does",
     () =>
       Effect.gen(function* () {
