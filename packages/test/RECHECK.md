@@ -1006,7 +1006,10 @@ function logs, a continuation released after an isolate action returned
 included. It never writes to the console object, so a console a test assigns
 keeps its own methods: an earlier version wrapped the methods in place, which
 replaced a test's `vi.fn()` spies and failed `http.test.ts`'s per-request
-console case in the kernel lane.
+console case in the kernel lane. A console a test froze keeps its own methods: a proxy must answer a
+non-configurable, non-writable property as its target holds it, so the view
+returns the frozen method itself, and an ended function's calls to it are not
+dropped.
 
 Egress goes through a provider port (`src/internal/Egress.ts`). Inside a kernel
 action a port's call is held as a `{ kind: "provider", port, input }` command,
@@ -1051,9 +1054,13 @@ describe block, a pattern, no case, a missing file or another convex-test
 version, or expects no outcome. An excepted case that passes on convex-test
 fails the lane ("Expect test to fail"). One that records other outcomes, or
 fails on anything but its own assertions, keeps its own failure, so an unrelated
-throw in one action is not taken for the departure. One that did not run, skipped or filtered out of a run that includes its
-file, fails the run through `conformanceReporter.ts`, since Vitest runs no hook
-of a file whose cases are all skipped.
+throw in one action is not taken for the departure. One that did not run fails the run through `conformanceReporter.ts`, which
+reads Vitest's own results rather than the lane's config: each entry must name a
+case the run collected, by its exact file under the mock-backend suite and its
+full name, that passed or failed. A path filter, a glob or literal exclusion in
+the config, a renamed case and a skip all leave it uncollected or unrun, and
+each fails the run; Vitest runs no hook of a file whose cases are all skipped,
+so a hook could not see it.
 
 Not covered: Node's `http`, `https`, `net` and `tls` modules in a Node action
 are not intercepted. The row names `fetch`.
