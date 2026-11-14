@@ -38,6 +38,8 @@ import {
 import * as TokenReview from "../../../tools/local-backend/fixtures/tokenReview";
 import * as TokenReviewHop from "../../../tools/local-backend/fixtures/plain/convex/tokenReview";
 import { oversizedRsa } from "./fixtures/oversized";
+import { withSources } from "./fixtures/inlineSources";
+import { plainSource } from "./fixtures/fixtureSources";
 
 const whoami = makeFunctionReference<"query", {}, object | null>(
   "identity:whoami",
@@ -184,17 +186,25 @@ describe("HTTP actions under a presented token", () => {
 const plainWorld = (jwks: string): KernelControls =>
   convexTest({
     schema: defineSchema({}),
-    modules: {
-      "_generated/server.ts": () => Promise.resolve({}),
-      "auth.config.ts": () =>
-        Promise.resolve({ default: { providers: [{ ...provider, jwks }] } }),
-      "convexErrors.ts": () =>
-        import("../../../tools/local-backend/fixtures/plain/convex/convexErrors"),
-      "tokenReview.ts": () =>
-        import("../../../tools/local-backend/fixtures/plain/convex/tokenReview"),
-      "http.ts": () =>
-        import("../../../tools/local-backend/fixtures/plain/convex/http"),
-    },
+    // The plain fixture's files are their own sources.
+    ...withSources(
+      {
+        "_generated/server.ts": () => Promise.resolve({}),
+        "auth.config.ts": () =>
+          Promise.resolve({ default: { providers: [{ ...provider, jwks }] } }),
+        "convexErrors.ts": () =>
+          import("../../../tools/local-backend/fixtures/plain/convex/convexErrors"),
+        "tokenReview.ts": () =>
+          import("../../../tools/local-backend/fixtures/plain/convex/tokenReview"),
+        "http.ts": () =>
+          import("../../../tools/local-backend/fixtures/plain/convex/http"),
+      },
+      {
+        "convexErrors.ts": plainSource("convexErrors.ts"),
+        "tokenReview.ts": plainSource("tokenReview.ts"),
+        "http.ts": plainSource("http.ts"),
+      },
+    ),
     runtime: { now: () => start, commitTs: (version) => BigInt(version) },
   });
 

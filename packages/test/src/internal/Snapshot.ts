@@ -142,9 +142,11 @@ export type Participation =
  * surviving a restore silently. A new live registry adds itself there.
  *
  * A cron job's fields are checked by type too, against `Execution.CronJob`. A
- * restore never redeclares a cron and never draws a fresh random value: it
- * installs each job's run state as the snapshot holds it, after checking that
- * the restoring app declares the same jobs.
+ * restore never redeclares a cron and draws nothing for the state it installs:
+ * it installs each job's run state as the snapshot holds it, after checking
+ * that the restoring app declares the same jobs. A module that draws while it
+ * loads draws from the restoring backend's world, as a push draws from its own
+ * seed; what it drew is code state, not kernel state.
  *
  * Owed by later rows, which add their state here when they land on `main`:
  * component init markers. A row whose state comes from a declaration or a

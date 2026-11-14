@@ -23,7 +23,9 @@ import * as Result from "effect/Result";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
 import * as Crons from "./Crons.js";
+import * as Entropy from "./Entropy.js";
 import * as Globals from "./Globals.js";
+import * as HostGlobals from "./HostGlobals.js";
 import * as Identity from "./Identity.js";
 import * as Http from "./Http.js";
 import * as Invocation from "./Invocation.js";
@@ -442,19 +444,225 @@ const ioHooks: IoBans.Hooks = {
 const unlessEnded = <A>(execution: Execution, outcome: Promise<A>) =>
   Promise.race([outcome, endingOf(execution).ended]);
 
-const installIoBans = (): ReadonlyArray<string> => {
+const installIoBans = (): ReadonlyArray<IoBans.Unguarded> => {
   const unguarded = IoBans.install();
   IoBans.bind(ioHooks);
   return unguarded;
 };
 
 /**
+ * The module load running now, and the stream it draws from.
+ */
+const moduleLoads = new AsyncLocalStorage<Entropy.Source>();
+
+/**
+ * The refusal a draw raises in `execution` when no stream reaches it.
+ */
+const randomUnavailable = (execution: Execution) => (): number => {
+  throw KernelRefusal.FunctionRandomUnavailable.make({
+    componentPath: execution.componentPath,
+    udfPath: execution.udfPath,
+    message: `Function "${execution.udfPath}"${execution.componentPath === ROOT ? "" : ` of component "${execution.componentPath}"`} draws a random value, which Convex draws from the function's seeded generator, and neither a test invocation bound to the call nor the backend's own world supplies a stream to draw from. The kernel holds no generator. Bind an invocation, or give the backend a world, as TestConfect.layer does.`,
+  });
+};
+
+/**
+ * What a draw reads where it happens: the load running, or else the running
+ * kernel function's type and a stream, the bound invocation's first and then
+ * the backend's own world's, as a deployment JWT's signing seed resolves
+ * (#134). With neither, the draw refuses with `FunctionRandomUnavailable`; it
+ * never reads the host's. Outside both, test code's own.
+ */
+const entropySource: Entropy.Resolve = () => {
+  const loading = moduleLoads.getStore();
+  if (loading !== undefined) return loading;
+  const execution = executions.getStore();
+  if (execution === undefined) return undefined;
+  return {
+    phase: execution.udfType,
+    random:
+      Invocation.current()?.random ??
+      execution.world.ownRandom() ??
+      randomUnavailable(execution),
+  };
+};
+
+/**
+ * The kernel's `Math` and `crypto`, built once over the host's captured at load
+ * (`HostGlobals`), never over what `globalThis` holds when they are built.
+ */
+let kernelMath: Math | undefined;
+let kernelCrypto: Crypto | undefined;
+
+/**
+ * A thrown value's description, for a refusal. It never throws: it reads a
+ * value that could run code only inside its own try, and what it cannot
+ * describe gets fixed text.
+ */
+const describeThrown = (thrown: unknown): string => {
+  try {
+    if (typeof thrown === "string") return thrown;
+    if (thrown instanceof Error) {
+      const name: unknown = thrown.name;
+      const message: unknown = thrown.message;
+      return typeof name === "string" && typeof message === "string"
+        ? `${name}: ${message}`
+        : "an Error whose name or message is not a string";
+    }
+    return `a non-Error ${typeof thrown}`;
+  } catch {
+    return "a thrown value that could not be described";
+  }
+};
+
+/**
+ * Whether `globalThis[name]` is a property the kernel cannot redefine. It never
+ * throws: what it cannot read counts as one.
+ */
+const isFixed = (name: "Math" | "crypto"): boolean => {
+  try {
+    return (
+      Object.getOwnPropertyDescriptor(globalThis, name)?.configurable !== true
+    );
+  } catch {
+    return true;
+  }
+};
+
+/**
+ * What `globalThis[name]` holds, for a refusal: a property the kernel cannot
+ * redefine, as a test that freezes or redefines the global leaves it, and what
+ * the install threw, if it threw. It never throws: what it cannot read gets
+ * fixed text.
+ */
+const heldAs = (name: "Math" | "crypto", threw: unknown): string => {
+  try {
+    const descriptor = Object.getOwnPropertyDescriptor(globalThis, name);
+    if (descriptor === undefined) return "missing";
+    const fixed =
+      descriptor.configurable === true ? "" : " that cannot be redefined";
+    if (threw !== undefined) {
+      const kind = "value" in descriptor ? "a value" : "an accessor";
+      return `${kind}${fixed} whose install threw ${describeThrown(threw)}`;
+    }
+    if ("value" in descriptor) {
+      return descriptor.writable === true
+        ? `a value that did not take the assignment${fixed}`
+        : `a non-writable value${fixed}`;
+    }
+    return descriptor.set === undefined
+      ? `a getter with no setter${fixed}`
+      : `an accessor whose setter did not take the assignment${fixed}`;
+  } catch {
+    return "a property the kernel could not describe";
+  }
+};
+
+/**
+ * Point this copy of the globals' `Math` and `crypto` at the kernel's, built
+ * once over the host's captured at load. The kernel calls it in each function's
+ * and each module load's own copy, so plain Convex functions, component
+ * functions and code a function imports lazily all draw through it. A reference
+ * to the host's `Math.random` or `crypto` taken outside every kernel copy,
+ * before the kernel ran any code, stays the host's: the lazy-loading contract,
+ * as for the kernel's other globals. Every own-descriptor shape of `Math` and
+ * `crypto` ends one of two ways: the kernel's objects are installed and a
+ * read-back confirms it, or the install refuses with `UnguardableGlobal`,
+ * naming each global and what it holds, before the load's or the function's
+ * code runs.
+ */
+const installEntropy = () => {
+  kernelMath ??= Entropy.kernelMath(HostGlobals.math, entropySource);
+  kernelCrypto ??= Entropy.kernelCrypto(HostGlobals.crypto, entropySource);
+  const globals = [
+    ["Math", kernelMath],
+    ["crypto", kernelCrypto],
+  ] as const;
+  const failed = Arr.filterMap(globals, ([name, value]) => {
+    const failure = installGuarded(name, value);
+    return failure === undefined ? Result.failVoid : Result.succeed(failure);
+  });
+  // One final pass reads every global back, once all are installed, so a later
+  // step that undid an earlier one, as a test's getter that restores another
+  // global does, refuses before any user code runs.
+  const undone =
+    failed.length > 0
+      ? []
+      : Arr.filterMap(globals, ([name, value]) => {
+          const failure = confirmInstalled(name, value);
+          return failure === undefined
+            ? Result.failVoid
+            : Result.succeed(failure);
+        });
+  if (failed.length > 0 || undone.length > 0) {
+    throw KernelRefusal.uninstallableEntropy([...failed, ...undone]);
+  }
+};
+
+/**
+ * The final pass's read of `globalThis[name]`, inside its own guard:
+ * `undefined` when it still holds `value`, or the failure to refuse with.
+ */
+const confirmInstalled = (
+  name: "Math" | "crypto",
+  value: object,
+):
+  | { readonly global: string; readonly holds: string; readonly fixed: boolean }
+  | undefined => {
+  try {
+    return Reflect.get(globalThis, name) === value
+      ? undefined
+      : {
+          global: name,
+          holds:
+            "no longer the kernel's after a later step of the install replaced it",
+          fixed: isFixed(name),
+        };
+  } catch (error) {
+    return { global: name, holds: heldAs(name, error), fixed: isFixed(name) };
+  }
+};
+
+/**
+ * Install `value` as `globalThis[name]`, the one boundary every step of it runs
+ * in: from the first read of the global's descriptor, as `Globals.prepare`
+ * gives it this copy's accessor, through the assignment to the read-back that
+ * confirms the global holds `value`. A step that throws, an assignment that
+ * returns false, or a read-back that answers another object is a failure, and
+ * the caller refuses with `UnguardableGlobal`. Nothing it raises escapes.
+ */
+const installGuarded = (
+  name: "Math" | "crypto",
+  value: object,
+):
+  | { readonly global: string; readonly holds: string; readonly fixed: boolean }
+  | undefined => {
+  try {
+    Globals.prepare(name);
+    if (
+      Reflect.set(globalThis, name, value) &&
+      Reflect.get(globalThis, name) === value
+    ) {
+      return undefined;
+    }
+    return {
+      global: name,
+      holds: heldAs(name, undefined),
+      fixed: isFixed(name),
+    };
+  } catch (error) {
+    return { global: name, holds: heldAs(name, error), fixed: isFixed(name) };
+  }
+};
+
+/**
  * Run a function's code as `execution`, with its own copy of the globals a test
- * invocation pins, and the host APIs Convex refuses refused. A test that fakes
- * `Date` after the backend opened replaced the kernel's wrapper, so each
- * function wraps the realm's `Date` again, as it installs `globalThis.Convex`
- * again. A guarded global a test replaced is adopted beneath a fresh guard
- * first, and one that cannot be guarded refuses the function before it runs.
+ * invocation pins, whose `Math` and `crypto` are the kernel's, and the host
+ * APIs Convex refuses refused. A test that fakes `Date` after the backend
+ * opened replaced the kernel's wrapper, so each function wraps the realm's
+ * `Date` again, as it installs `globalThis.Convex` again. A guarded global a
+ * test replaced is adopted beneath a fresh guard first, and one that cannot be
+ * guarded refuses the function before it runs.
  */
 const enter = <A>(execution: Execution, run: () => A): A => {
   installConvexGlobal();
@@ -463,7 +671,10 @@ const enter = <A>(execution: Execution, run: () => A): A => {
   const unguarded = installIoBans();
   if (unguarded.length > 0) throw KernelRefusal.unguardableGlobal(unguarded);
   watches.set(execution, IoBans.watch());
-  return Globals.own(() => executions.run(execution, run));
+  return Globals.own(() => {
+    installEntropy();
+    return executions.run(execution, run);
+  });
 };
 
 /**
@@ -1115,40 +1326,43 @@ export class World {
     return this.openIn(Invocation.current()?.world ?? this.own);
   }
 
+  /**
+   * The random stream of the world the driver gave the backend itself, which a
+   * function with no invocation bound draws from.
+   */
+  ownRandom(): (() => number) | undefined {
+    return this.own?.random;
+  }
+
   private openIn(world: Invocation.World | undefined): Promise<void> {
-    return this.load().then(() => this.scheduleFirstRuns(world));
+    return this.load(world).then(() => this.scheduleFirstRuns(world));
   }
 
   /**
    * Load every registered module of every component, once, before any function
    * runs, check that each standing source names an exported function, and read
-   * each component's cron declarations. Nothing here draws a random value, so a
-   * restore can load without one.
+   * each component's cron declarations. Reading declarations draws nothing.
    */
-  private load(): Promise<void> {
+  private load(world: Invocation.World | undefined): Promise<void> {
     if (this.opened === undefined) {
       const loadAuthConfig = this.component(ROOT).authConfig;
-      this.authConfig =
+      let authConfig: { readonly default?: unknown } | undefined;
+      const loaded = this.loadModules(
+        world,
         loadAuthConfig === undefined
-          ? Promise.resolve(undefined)
-          : loadAuthConfig().then((module) => module.default);
-      this.opened = Promise.all([
-        ...Array.from(this.components.values(), (component) =>
-          Promise.all(
-            Array.from(component.loaders, ([path, load]) =>
-              Promise.all([load(), runtimeFromSource(component, path)]).then(
-                ([module, runtime]) => {
-                  component.loaded.set(path, module);
-                  if (runtime !== undefined)
-                    component.runtimes.set(path, runtime);
-                  return undefined;
+          ? []
+          : [
+              {
+                modulePath: "auth.config",
+                load: loadAuthConfig,
+                keep: (module) => {
+                  authConfig = module;
                 },
-              ),
-            ),
-          ),
-        ),
-        this.authConfig,
-      ])
+              },
+            ],
+      );
+      this.authConfig = loaded.then(() => authConfig?.default);
+      this.opened = Promise.all([loaded, this.authConfig])
         .then(() => {
           for (const component of this.components.values()) {
             checkActionRuntimes(
@@ -1161,6 +1375,90 @@ export class World {
         .then(() => this.readDeclarations());
     }
     return this.opened;
+  }
+
+  /**
+   * Load each module under its own copy of the globals, whose `Math.random`,
+   * `crypto.getRandomValues` and `crypto.randomUUID` draw, while the load runs,
+   * from `world`'s random stream. The binary lets a module draw while it loads,
+   * from a generator seeded once per push
+   * (`crates/isolate/src/environment/udf/phase.rs:186-193`,
+   * `crates/isolate/src/environment/analyze.rs:284`, convex-backend
+   * `cccbade4`); the kernel holds no generator, so the driver's stream stands
+   * in for the seed. The globals resolve their stream on every call, so a
+   * function a module keeps while it loads draws, when a handler later calls
+   * it, from that handler's stream. Modules load one at a time, components in
+   * registration order and each component's modules in the order its map lists
+   * them, so the draws land in one order and a replay with the same stream
+   * draws them again. With no world, a draw refuses with
+   * `LoadRandomUnavailable`, and the load refuses with it too, even when the
+   * module caught it. A `crypto.subtle` operation that draws cryptographic
+   * randomness rejects with the binary's queries-and-mutations error, as a load
+   * for one of those does. A module the host runtime already evaluated is not
+   * evaluated again, so it draws nothing.
+   */
+  private loadModules(
+    world: Invocation.World | undefined,
+    extra: ReadonlyArray<{
+      readonly modulePath: string;
+      readonly load: () => Promise<any>;
+      readonly keep: (module: any) => unknown;
+    }> = [],
+  ): Promise<void> {
+    let refused: KernelRefusal.LoadRandomUnavailable | undefined;
+    const entries = Arr.flatMap(
+      Array.from(this.components.values()),
+      (component) =>
+        Arr.map(Array.from(component.loaders), ([modulePath, load]) => ({
+          component,
+          modulePath,
+          load,
+          // Each module's runtime is read from its source beside its load,
+          // when the test supplied sources.
+          keep: (module: any): unknown =>
+            runtimeFromSource(component, modulePath).then((runtime) => {
+              component.loaded.set(modulePath, module);
+              if (runtime !== undefined)
+                component.runtimes.set(modulePath, runtime);
+              return undefined;
+            }),
+        })),
+    ).concat(
+      Arr.map(extra, (entry) => ({
+        ...entry,
+        component: this.component(ROOT),
+      })),
+    );
+    const loadOne = ({
+      component,
+      modulePath,
+      load,
+      keep,
+    }: (typeof entries)[number]): Promise<unknown> => {
+      const random =
+        world?.random ??
+        (() => {
+          refused ??= KernelRefusal.LoadRandomUnavailable.make({
+            componentPath: component.path,
+            modulePath,
+            message: `Module "${modulePath}"${component.path === ROOT ? "" : ` of component "${component.path}"`} draws a random value while it loads, which Convex draws from a generator seeded once per push, and no test world was bound when the backend opened, nor given to it, to draw it from. The kernel holds no generator. Open the backend under a bound invocation, or give it a world, whose random stream the load draws from.`,
+          });
+          throw refused;
+        });
+      return moduleLoads
+        .run({ phase: "load", random }, () =>
+          Globals.own(() => {
+            installEntropy();
+            return load();
+          }),
+        )
+        .then(keep);
+    };
+    return Arr.reduce(
+      entries,
+      Promise.resolve<unknown>(undefined),
+      (previous, entry) => previous.then(() => loadOne(entry)),
+    ).then(() => (refused === undefined ? undefined : Promise.reject(refused)));
   }
 
   /**
@@ -1977,7 +2275,7 @@ export class World {
       readonly secrets?: Redaction.Secrets;
     } = {},
   ): Promise<void> {
-    return this.load().then(() =>
+    return this.load(Invocation.current()?.world ?? this.own).then(() =>
       this.restore(
         bytes,
         options.worlds ?? [],

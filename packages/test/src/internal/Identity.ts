@@ -4,6 +4,7 @@
 // Its key and signatures come from @noble/curves. The verifier follows the
 // binary's `validate_id_token`, cited at each rule.
 
+import { ecdsa, weierstrass } from "@noble/curves/abstract/weierstrass.js";
 import { p256 } from "@noble/curves/nist.js";
 import { hmac } from "@noble/hashes/hmac.js";
 import { sha256 } from "@noble/hashes/sha2.js";
@@ -13,12 +14,33 @@ import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Rec from "effect/Record";
 import * as Str from "effect/String";
+import * as HostGlobals from "./HostGlobals.js";
 import * as Json from "./Json.js";
 import * as KernelRefusal from "./KernelRefusal.js";
 import { base64UrlEncode, base64UrlEncodeBytes } from "./KernelValues.js";
 
-// Read once at load, outside any invocation's pinned copy of `crypto`.
-const subtle = globalThis.crypto.subtle;
+// The host's, captured at load, never an invocation's copy of `crypto`.
+const subtle = HostGlobals.crypto.subtle;
+
+/**
+ * The random bytes @noble/curves blinds each scalar multiplication with, from
+ * the host's `crypto` captured at load, never `globalThis`. They change no
+ * result: the key derives from the seed, and the signature's nonce comes by RFC 6979.
+ * So they never reach a function, and they draw nothing from a function's
+ * stream, which a replay depends on.
+ */
+const blinding = (length = 32): Uint8Array<ArrayBuffer> =>
+  HostGlobals.crypto.getRandomValues(new Uint8Array(length));
+
+/**
+ * P-256 as @noble/curves builds `p256`, with its blinding drawn from `blinding`
+ * rather than the `globalThis.crypto` noble reads by default.
+ */
+const curve = ecdsa(
+  weierstrass(p256.Point.CURVE(), { randomBytes: blinding }),
+  sha256,
+  { randomBytes: blinding },
+);
 
 type Algorithm = "RS256" | "ES256";
 
@@ -658,8 +680,8 @@ const derive = (seed: Uint8Array): Derived => {
     label.set(KEY_LABEL);
     label[label.length - 1] = attempt;
     const secretKey = hmac(sha256, seed, label);
-    if (!p256.utils.isValidSecretKey(secretKey)) continue;
-    const point = p256.getPublicKey(secretKey, false);
+    if (!curve.utils.isValidSecretKey(secretKey)) continue;
+    const point = curve.getPublicKey(secretKey, false);
     const x = base64UrlEncodeBytes(point.subarray(1, 33));
     const y = base64UrlEncodeBytes(point.subarray(33, 65));
     const kid = base64UrlEncodeBytes(
@@ -842,8 +864,8 @@ export class DeploymentKey {
       ) +
       "." +
       base64UrlEncode(Json.stringify(payload));
-    // `p256.sign` hashes with SHA-256 and takes its nonce by RFC 6979.
-    const signature = p256.sign(
+    // `curve.sign` hashes with SHA-256 and takes its nonce by RFC 6979.
+    const signature = curve.sign(
       new TextEncoder().encode(signingInput),
       secretKey,
     );

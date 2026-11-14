@@ -13,6 +13,9 @@ export class RequiresBinary extends Schema.TaggedError<
     "vectorSearch",
     "storageUpload",
     "storageDownload",
+    "subtleGenerateKey",
+    "subtleEncrypt",
+    "subtleSign",
     "oidcDiscovery",
     "remoteJwks",
     "adminAuthentication",
@@ -180,6 +183,35 @@ export class CronRandomUnavailable extends Schema.TaggedError<
 }) {}
 
 /**
+ * A module drew a random value while it loaded, and no test world was bound
+ * when the backend opened, nor given to the backend, to draw it from. The
+ * binary seeds a module's load once per push; the kernel holds no generator of
+ * its own.
+ */
+export class LoadRandomUnavailable extends Schema.TaggedError<
+  LoadRandomUnavailable,
+  { readonly brand: unique symbol }
+>()("LoadRandomUnavailable", {
+  componentPath: Schema.String,
+  modulePath: Schema.String,
+  message: Schema.String,
+}) {}
+
+/**
+ * A function drew a random value, and neither an invocation bound to it nor the
+ * backend's own world supplied a stream to draw from. The binary seeds every
+ * function; the kernel holds no generator of its own.
+ */
+export class FunctionRandomUnavailable extends Schema.TaggedError<
+  FunctionRandomUnavailable,
+  { readonly brand: unique symbol }
+>()("FunctionRandomUnavailable", {
+  componentPath: Schema.String,
+  udfPath: Schema.String,
+  message: Schema.String,
+}) {}
+
+/**
  * Computing a cron job's next run reaches arithmetic that aborts the Convex
  * binary, which is built with overflow checks.
  */
@@ -216,15 +248,83 @@ export class SnapshotCronMismatch extends Schema.TaggedError<
  * descriptor was replaced while the function ran, so a call made through the
  * replacement reached it unchecked. The function fails at settlement, a
  * mutation publishes none of its writes, and the guard is installed again.
+ * `installFailed`: installing the kernel's own on a global it could redefine
+ * threw, as a getter a test left throwing does, so nothing started.
  */
 export class UnguardableGlobal extends Schema.TaggedError<
   UnguardableGlobal,
   { readonly brand: unique symbol }
 >()("UnguardableGlobal", {
-  reason: Schema.Literals(["notConfigurable", "replacedWhileRunning"]),
+  reason: Schema.Literals([
+    "notConfigurable",
+    "replacedWhileRunning",
+    "installFailed",
+  ]),
   globals: Schema.Array(Schema.String),
   message: Schema.String,
 }) {}
+
+/**
+ * Effect's own construction of a class instance from fields its caller vouches
+ * for, without the class's parser (`Schema.makeClassTrusted`, which `make`
+ * itself ends in). Effect exports it at run time and marks it internal in its
+ * declarations. The entropy install's refusal is built with it because Effect's
+ * parser reads the ambient `Math`, compiling and parsing alike, and that is the
+ * global the install just failed to own, which a test may have left throwing.
+ * Its fields here are kernel-built strings and literals. `Randomness.test.ts`
+ * checks that it builds what `make` builds, so an Effect release that changes
+ * it fails there. My refusals for a global replaced while a function ran, or
+ * that a test left non-configurable, are built the same way, since the kernel
+ * builds them while a function's copy of the globals may be in place.
+ *
+ * WORKAROUND: Effect 4.1.4 has no public parser-free constructor for a class
+ * instance. This helper goes once Effect exposes one, and these refusals are
+ * built with it.
+ */
+const makeTrusted = (
+  Schema as unknown as {
+    readonly makeClassTrusted?: <Self>(
+      self: new (input: never) => Self,
+      fields: object,
+    ) => Self;
+  }
+).makeClassTrusted;
+if (typeof makeTrusted !== "function") {
+  throw new TypeError(
+    "effect/Schema no longer exports makeClassTrusted, which the test kernel's UnguardableGlobal refusal is built with.",
+  );
+}
+
+/**
+ * The kernel could not place its own `Math` or `crypto` in a function's or a
+ * module load's copy of the globals, because a test left the global as a
+ * property it cannot redefine. Each entry names the global and what it holds.
+ * The load or function refuses before any of its code runs, so nothing draws
+ * from the host's randomness in the kernel's place.
+ */
+export const uninstallableEntropy = (
+  failures: ReadonlyArray<{
+    readonly global: string;
+    readonly holds: string;
+    readonly fixed: boolean;
+  }>,
+): UnguardableGlobal => {
+  let fixed = true;
+  const globals: Array<string> = [];
+  const held: Array<string> = [];
+  for (const failure of failures) {
+    fixed &&= failure.fixed;
+    globals.push(failure.global);
+    held.push(`globalThis.${failure.global} is ${failure.holds}`);
+  }
+  // No parser runs, so building the refusal never reads the ambient `Math`.
+  return makeTrusted(UnguardableGlobal, {
+    _tag: "UnguardableGlobal",
+    reason: fixed ? "notConfigurable" : "installFailed",
+    globals,
+    message: `The test kernel cannot install its own random sources: ${Array.join(held, "; ")}. Code that read it would draw from the host's randomness, so the kernel refuses before any module or function code runs. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`,
+  });
+};
 
 const qualified = (globals: ReadonlyArray<string>) =>
   Array.join(
@@ -232,18 +332,37 @@ const qualified = (globals: ReadonlyArray<string>) =>
     ", ",
   );
 
-export const unguardableGlobal = (globals: ReadonlyArray<string>) =>
-  UnguardableGlobal.make({
-    reason: "notConfigurable",
+/**
+ * Why the I/O guards could not stand before a function ran: each global with
+ * whether a test left it as a property the kernel cannot redefine
+ * (`notConfigurable`), or whether its redefinition threw or a later step of the
+ * install undid it (`installFailed`, when any did).
+ */
+export const unguardableGlobal = (
+  failures: ReadonlyArray<{ readonly name: string; readonly fixed: boolean }>,
+) => {
+  let fixed = true;
+  const globals: Array<string> = [];
+  for (const failure of failures) {
+    fixed &&= failure.fixed;
+    globals.push(failure.name);
+  }
+  return makeTrusted(UnguardableGlobal, {
+    _tag: "UnguardableGlobal",
+    reason: fixed ? "notConfigurable" : "installFailed",
     globals,
-    message: `The test kernel cannot guard ${qualified(globals)}: a test replaced it with a property that cannot be redefined, so a function could reach the host's implementation unchecked. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`,
+    message: fixed
+      ? `The test kernel cannot guard ${qualified(globals)}: a test replaced it with a property that cannot be redefined, so a function could reach the host's implementation unchecked. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`
+      : `The test kernel could not install its guard on ${qualified(globals)}: redefining it threw, or a later step of the install undid it, as a getter a test left on another global that replaces this one when read does, so a function could reach the host's implementation unchecked. The function does not start. Replace the global with a plain configurable property, as vi.stubGlobal does, or assign it.`,
   });
+};
 
 export const replacedWhileRunning = (
   udfPath: string,
   globals: ReadonlyArray<string>,
 ) =>
-  UnguardableGlobal.make({
+  makeTrusted(UnguardableGlobal, {
+    _tag: "UnguardableGlobal",
     reason: "replacedWhileRunning",
     globals,
     message: `${qualified(globals)} was redefined while ${udfPath} ran, so a call made through the replacement reached it without the test kernel's check. The function fails, a mutation's writes are rolled back, and the guard is installed again. Replace a global between functions, or assign it, which keeps it guarded.`,
@@ -514,6 +633,8 @@ const refusals = Array.map(
   [
     RequiresBinary,
     KernelRowPending,
+    FunctionRandomUnavailable,
+    UnguardableGlobal,
     RegisteredAfterOpen,
     ClosedAttempt,
     StaleAttempt,

@@ -16,3 +16,13 @@ export const inlineSources = (
     (_, path) => () =>
       Promise.resolve(Arr.contains(node, path) ? '"use node";\n' : ""),
   );
+
+/**
+ * `modules` with their sources, for a test that builds a kernel over modules it
+ * defines inline: as {@link inlineSources}, with `files` taking the place of the
+ * empty source for each module the test loads from a real file.
+ */
+export const withSources = <M extends Record<string, unknown>>(
+  modules: M,
+  files: Record<string, () => Promise<string>> = {},
+) => ({ modules, sources: { ...inlineSources(modules), ...files } });

@@ -1130,6 +1130,61 @@ describe("replaced globals", () => {
   );
 
   it.effect(
+    "a getter a test leaves on one guarded global that replaces another when read refuses the function before it runs, with installFailed naming the global it undid",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest({ schema, modules, sources });
+        yield* Effect.promise(() => t.query(io.notes, {}));
+        const fetchBefore = original("fetch");
+        const timeoutBefore = original("setTimeout");
+        const guardedTimeout = globalThis.setTimeout;
+        redefinedFetch.mockClear();
+        Object.defineProperty(globalThis, "setTimeout", {
+          get: () => {
+            redefineFetch();
+            return guardedTimeout;
+          },
+          configurable: true,
+        });
+        const outcome = yield* replacedOutcome(
+          t.query(io.fetchInQuery, { url }),
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() => {
+              Object.defineProperty(globalThis, "setTimeout", timeoutBefore);
+              Object.defineProperty(globalThis, "fetch", fetchBefore);
+            }),
+          ),
+        );
+        expect(outcome).toEqual({
+          failed: "UnguardableGlobal",
+          reason: "installFailed",
+          globals: ["fetch"],
+        });
+        expect(redefinedFetch).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect(
+    "the guards build with the host's Request captured at load, so a Request a test stubs never answers a refused fetch",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest({ schema, modules, sources });
+        yield* Effect.promise(() => t.query(io.notes, {}));
+        vi.stubGlobal(
+          "Request",
+          vi.fn(function stubbedRequest() {
+            throw new Error("the stubbed Request");
+          }),
+        );
+        const outcome = yield* Effect.promise(() =>
+          t.query(io.fetchInQuery, { url }),
+        ).pipe(Effect.ensuring(Effect.sync(() => vi.unstubAllGlobals())));
+        expect(outcome).toEqual(fetchRefusal);
+      }),
+  );
+
+  it.effect(
     "an accessor laid over the guard while a query runs reads through it and is no replacement",
     () =>
       Effect.gen(function* () {

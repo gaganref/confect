@@ -22,7 +22,9 @@ import * as Util from "node:util";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
+import * as Result from "effect/Result";
 import * as Str from "effect/String";
+import * as HostGlobals from "./HostGlobals.js";
 
 type UdfType = "query" | "mutation" | "action";
 
@@ -193,7 +195,9 @@ const fetchRule: Rule = (_state, running, args) => {
   // with the host's own error.
   let request: Request;
   try {
-    request = new Request(...(args as ConstructorParameters<typeof Request>));
+    request = new HostGlobals.request(
+      ...(args as ConstructorParameters<typeof Request>),
+    );
   } catch (error) {
     return { answer: Promise.reject(error) };
   }
@@ -357,21 +361,27 @@ const inherited = (
  * implementation beneath, still guarded, and assigning a guard back, as fake
  * timers do when they uninstall, stores the implementation it guards.
  */
+/**
+ * How installing a guard ended: guarded, a property the kernel cannot redefine,
+ * or a redefinition that threw.
+ */
+type GuardResult = "guarded" | "notConfigurable" | "installFailed";
+
 const guardGlobal = (
   state: State,
   { name, rule, promised, absent }: (typeof guarded)[number],
-): boolean => {
+): GuardResult => {
   const global = globalThis as unknown as Global;
   const own = Object.getOwnPropertyDescriptor(global, name);
   // oxlint-disable-next-line typescript/unbound-method -- Compared by identity, never called.
-  if (own?.get !== undefined && state.made.has(own.get)) return true;
-  if (own?.get !== undefined && readsThrough(state, own)) return true;
+  if (own?.get !== undefined && state.made.has(own.get)) return "guarded";
+  if (own?.get !== undefined && readsThrough(state, own)) return "guarded";
   // A replacement the kernel cannot redefine stays the host's.
-  if (own?.configurable === false) return false;
+  if (own?.configurable === false) return "notConfigurable";
   const found = own ?? inherited(global, name);
   // A global that is gone, own and inherited, leaves a function nothing of the
   // host's to reach.
-  if (found === undefined) return true;
+  if (found === undefined) return "guarded";
   let beneath: PropertyDescriptor = found;
   // Another library's accessor beneath answers per read, so one guard reads
   // through it at each call.
@@ -417,9 +427,9 @@ const guardGlobal = (
       enumerable: found.enumerable ?? false,
     });
   } catch {
-    return false;
+    return "installFailed";
   }
-  return true;
+  return "guarded";
 };
 
 /**
@@ -471,24 +481,47 @@ const stateOf = (): State =>
   });
 
 /**
+ * A guarded global the install could not leave guarded, and whether it is a
+ * property the kernel cannot redefine.
+ */
+export interface Unguarded {
+  readonly name: string;
+  readonly fixed: boolean;
+}
+
+/**
  * Guard `fetch`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`
  * and multipart `formData()`, unless they are already guarded.
  * `@confect/test/setup` calls this before any test module loads, and the kernel
  * again whenever a world opens or a function starts, which adopts a global a
  * test redefined, as `vi.stubGlobal` does, as the implementation beneath a
- * fresh guard. It answers the names it could not guard: a replacement made
- * non-configurable, or one the realm refused to redefine.
+ * fresh guard. It answers the globals it could not leave guarded: a replacement
+ * made non-configurable, one whose redefinition threw, or, in one final pass
+ * that reads every guarded global back once all are installed, one a later step
+ * undid, as a test's getter that replaces another global when it is read does.
+ * A read that answers no function, as a test that stubbed the global to
+ * `undefined` leaves it, has nothing to guard.
  */
-export const install = (): ReadonlyArray<string> => {
+export const install = (): ReadonlyArray<Unguarded> => {
   const state = stateOf();
-  const unguarded = pipe(
-    guarded,
-    Arr.filter((entry) => !guardGlobal(state, entry)),
-    Arr.map(({ name }) => name),
-  );
-  guardFormData(state, Request.prototype);
-  guardFormData(state, Response.prototype);
-  return unguarded;
+  const failed = Arr.filterMap(guarded, (entry) => {
+    const result = guardGlobal(state, entry);
+    return result === "guarded"
+      ? Result.failVoid
+      : Result.succeed({
+          name: entry.name,
+          fixed: result === "notConfigurable",
+        });
+  });
+  guardFormData(state, HostGlobals.request.prototype);
+  guardFormData(state, HostGlobals.response.prototype);
+  if (failed.length > 0) return failed;
+  return Arr.filterMap(guarded, ({ name }) => {
+    const read = readThroughChain(state, name);
+    return typeof read !== "function" || state.made.has(read)
+      ? Result.failVoid
+      : Result.succeed({ name, fixed: false });
+  });
 };
 
 /**
