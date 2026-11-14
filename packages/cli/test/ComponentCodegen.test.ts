@@ -30,6 +30,13 @@ import * as Array from "effect/Array";
 import { assertIs } from "./internal/assertIs";
 
 const fixture = `${import.meta.dirname}/fixtures/authored-component`;
+
+/**
+ * A declared component's descriptor with no `init`, as `client.ts` beside its
+ * `confect/` holds one, which its generated test subject reads.
+ */
+const descriptor = (name: string) =>
+  `import { Component } from "@confect/core";\nexport default Component.make("${name}", { client: (native: unknown) => native });\n`;
 const freshFixture = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -131,6 +138,7 @@ export default App.make({ kind: "component", env: Env.make("counter", {}) });
             "package.json",
             '{"name":"@confect-fixtures/raw-ctx","type":"module"}',
           );
+          yield* project.write("client.ts", descriptor("counter"));
           yield* Effect.gen(function* () {
             const services6 = yield* Layer.build(
               DirectoryOptions.layer({
@@ -455,6 +463,10 @@ import env from "./env";
 export default App.make({ kind: "component", env });
 `,
         );
+        yield* fs.writeFileString(
+          `${directory}/client.ts`,
+          descriptor("counter"),
+        );
         yield* Effect.gen(function* () {
           const services20 = yield* Layer.build(
             DirectoryOptions.layer({
@@ -668,6 +680,7 @@ it.effect.each(["configured", "declared"] as const)(
             "confect/app.ts",
             'import { App } from "@confect/core";\nimport env from "./env";\nexport default App.make({ kind: "component", env });\n',
           );
+          yield* project.write("client.ts", descriptor("nodeComponent"));
         }
         yield* project.write(
           "confect/tasks.spec.ts",
@@ -801,6 +814,10 @@ it.effect.each(["configured", "declared"] as const)(
             `${import.meta.dirname}/fixtures/declaration-checks/component.ts`,
             `${directory}/confect/app.ts`,
           );
+          yield* fs.writeFileString(
+            `${directory}/client.ts`,
+            descriptor("counter"),
+          );
         }
         const run = Effect.gen(function* () {
           const services31 = yield* Layer.build(
@@ -877,6 +894,7 @@ import { observe } from "./observe";
 export default App.make({ kind: "component", env: Env.make("ledger", {}), manifestSections: [{ key: "observe", section: observe }] });
 `,
         );
+        yield* project.write("client.ts", descriptor("ledger"));
         yield* project.write(
           "confect/observe.ts",
           `export const observe = {
