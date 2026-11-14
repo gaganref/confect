@@ -1,7 +1,7 @@
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import * as MutationCtx from "@confect/server/MutationCtx";
 import { TestBackend, TestComponent } from "@confect/test";
-import { Callback, FunctionSpec, Ref } from "@confect/core";
+import { Callback, FunctionSpec, GenericId, Ref } from "@confect/core";
 import { assert, describe, expect, expectTypeOf, it } from "@effect/vitest";
 import {
   actionGeneric,
@@ -53,6 +53,27 @@ const OnEvent = Callback.mutation("mailer/onEvent", {
   returns: () => Schema.Struct({ ticket: Schema.String }),
   error: () => Bounced,
 });
+
+/**
+ * A contract whose answer is a ticket, an id of `tickets`, which a drawn string
+ * is not.
+ */
+const OnTicket = Callback.mutation("mailer/onTicket", {
+  returns: () => Schema.Struct({ ticket: GenericId.GenericId("tickets") }),
+});
+
+/**
+ * A call to the handle it is given, and what reached it: `returned`, or the
+ * error's message.
+ */
+const ticketed = Ref.make(
+  "mail",
+  FunctionSpec.internalMutation({
+    name: "ticketed",
+    args: () => ({ handle: Schema.String }),
+    returns: () => Schema.String,
+  }),
+);
 
 const send = FunctionSpec.publicMutation({
   name: "send",
@@ -261,6 +282,15 @@ const mailer = {
                 (error: unknown) =>
                   error instanceof Error ? error.message : String(error),
               ),
+          ),
+      }),
+      ticketed: mutationGeneric({
+        args: { handle: v.string() },
+        handler: (ctx, { handle }) =>
+          ctx.runMutation(handle as never, {} as never).then(
+            () => "returned",
+            (error: unknown) =>
+              error instanceof Error ? error.message : String(error),
           ),
       }),
       twice: mutationGeneric({
@@ -669,6 +699,40 @@ describe("TestComponent's draws around a slot call", () => {
         const withCall = yield* seeded(true);
         expect(withCall).toEqual(without);
       }),
+  );
+});
+
+/**
+ * The same component, whose one slot answers a ticket.
+ */
+const ticketing = TestComponent.make(subject.app, {
+  ...subject,
+  slots: { "mailer/onTicket": TestComponent.slot(OnTicket) },
+  obligations: [
+    ...Arr.filter(subject.obligations, ({ kind }) => kind !== "callback"),
+    { kind: "callback", slot: "mailer/onTicket" },
+  ],
+});
+
+describe("TestComponent's slot returns", () => {
+  it.effect(
+    "refuses an answer its slot's return validator refuses, as the binary refuses a handle's return",
+    () =>
+      Effect.gen(function* () {
+        const test = yield* TestComponent.ComponentRuntime<typeof schema>();
+        const handle = yield* Schema.encodeEffect(Callback.handle(OnTicket))(
+          ticketing.slots["mailer/onTicket"].handle,
+        ).pipe(Effect.orDie);
+        const calling = yield* Effect.forkChild(
+          test.mutation(ticketed, { handle }),
+        );
+        const command = yield* arrival(0);
+        yield* TestComponent.answer(command, "returned");
+        const reached = yield* Fiber.join(calling);
+        expect(reached).toMatch(
+          /^ReturnsValidationError: Value does not match validator\.\nPath: \.ticket\nValue: "[^\n]*"\nValidator: v\.id\("tickets"\)$/,
+        );
+      }).pipe((body) => within(ticketing.layer({ config, install }), body)),
   );
 });
 

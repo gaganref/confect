@@ -1,6 +1,12 @@
 import { Callback, SchemaToValidator, type Ref } from "@confect/core";
 import type { DatabaseSchema, RegisteredConvexFunction } from "@confect/server";
-import { ConvexError, convexToJson, v, type Value } from "convex/values";
+import {
+  ConvexError,
+  convexToJson,
+  v,
+  type GenericValidator,
+  type Value,
+} from "convex/values";
 import * as Arbitrary from "effect/Arbitrary";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
@@ -15,7 +21,6 @@ import * as Schema from "effect/Schema";
 import type * as SchemaAST from "effect/SchemaAST";
 import * as Sink from "./internal/Sink.js";
 import { stringify } from "./internal/Json.js";
-import type { ValidatorJSON } from "./internal/KernelValues.js";
 import {
   openSession,
   type MountInitFailed,
@@ -380,27 +385,27 @@ const makeEngine = (
       ),
     );
   };
-  const validators = new Map<string, ValidatorJSON>();
   /**
-   * A slot's declared argument validator, compiled from its contract once.
+   * A slot's declared argument and return validators, compiled from its
+   * contract once.
    */
-  const argsOf = (id: string): ValidatorJSON | undefined => {
+  const validators = new Map<
+    string,
+    { readonly args: GenericValidator; readonly returns: GenericValidator }
+  >();
+  const validatorsOf = (id: string) => {
     const found = slots[id];
     if (found === undefined) return undefined;
-    let validator = validators.get(id);
-    if (validator === undefined) {
-      // A Convex validator carries the JSON a registered function's
-      // `exportArgs` serializes, the form the kernel checks every call with.
-      validator = (
-        v.object(
-          SchemaToValidator.compileArgsSchema(
-            found.contract.functionProvenance.args,
-          ),
-        ) as unknown as { readonly json: ValidatorJSON }
-      ).json;
-      validators.set(id, validator);
+    let compiled = validators.get(id);
+    if (compiled === undefined) {
+      const provenance = found.contract.functionProvenance;
+      compiled = {
+        args: v.object(SchemaToValidator.compileArgsSchema(provenance.args)),
+        returns: SchemaToValidator.compileReturnsSchema(provenance.returns),
+      };
+      validators.set(id, compiled);
     }
-    return validator;
+    return compiled;
   };
   const call: Sink.Sink["call"] = ({ slot: id, args, caller }) => {
     const found = slots[id];
@@ -463,7 +468,11 @@ const makeEngine = (
       return Effect.sync(() => waiting.delete(check));
     });
   return {
-    sink: { args: argsOf, call } satisfies Sink.Sink,
+    sink: {
+      args: (id) => validatorsOf(id)?.args,
+      returns: (id) => validatorsOf(id)?.returns,
+      call,
+    } satisfies Sink.Sink,
     open: () => {
       open = true;
     },

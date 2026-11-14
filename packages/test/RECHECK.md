@@ -1882,12 +1882,19 @@ the deterministic operations in every phase.
   `draws` and the command's ID, so the same session draws the same values. A
   contract's codecs must bound what Convex cannot store, such as an int64.
 - A slot call's arguments are checked against the slot's declared validator
-  before the sink holds it, and refused as the binary refuses a handle call
-  whose target's validator fails: an `Error` whose message is the binary's
-  `ArgumentValidationError` text. Present fields are checked first in key
-  order, then missing required fields, then extra ones, and values print as
-  the binary prints them, a float64 in Rust's `{:?}` form. An action's caller
-  gets one more trailing newline. `callbackArgs.test.ts` on the local-backend
-  lane compares 24 argument shapes from a mutation and an action, byte for
-  byte. The kernel's own argument check for registered functions keeps
-  convex-test's wording; only the sink's matches the binary.
+  before the sink holds it, and its answer against the slot's declared return,
+  as the binary checks a handle's target both ways. A refusal is an `Error`
+  whose message is the binary's `ArgumentValidationError` or
+  `ReturnsValidationError` text. One exhaustive switch over every kind of
+  convex 1.49's `Validator` union checks both, so a kind added later fails
+  typecheck. Present fields are checked first in key order, then missing
+  required fields, then extra ones. Values print as the binary prints them, a
+  float64 in Rust's `{:?}` form, and only once a value is refused, with bytes
+  printed in chunks, so a large valid value is never printed. An id of another
+  table gets the binary's `Found ID ... from table` text. An action's caller
+  gets one more trailing newline, and a mutation's caller of a refused return
+  none. `callbackArgs.test.ts` on the local-backend lane compares 39 cases from
+  a mutation and an action, byte for byte: every validator kind valid and
+  refused, 200,000-byte and 1 MiB bytes, and three returns. The kernel's own
+  argument check for registered functions keeps convex-test's wording; only
+  the sink's matches the binary.

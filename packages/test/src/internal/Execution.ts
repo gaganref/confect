@@ -2607,21 +2607,31 @@ export class World {
             componentPath: from.parent.componentPath,
             functionName: from.parent.udfPath,
           };
-    const validator = this.sink.args(functionPath.udfPath);
-    const refused =
-      validator === undefined
-        ? undefined
-        : ArgumentValidation.refusal(validator, args);
-    // An action's caller receives the binary's refusal with one more newline
+    // An action's caller receives the binary's refusals with one more newline
     // than a mutation's.
-    if (refused !== undefined)
-      return Promise.reject(
-        new Error(from.parent?.udfType === "action" ? `${refused}\n` : refused),
-      );
+    const refusal = (message: string) =>
+      new Error(from.parent?.udfType === "action" ? `${message}\n` : message);
+    const argsValidator = this.sink.args(functionPath.udfPath);
+    const refused =
+      argsValidator === undefined
+        ? undefined
+        : ArgumentValidation.argumentRefusal(argsValidator, args);
+    if (refused !== undefined) return Promise.reject(refusal(refused));
+    const returnsValidator = this.sink.returns(functionPath.udfPath);
     // The sink rejects as a function's thrown error leaves it, with its data
-    // serialized, and the caller receives it as a nested call's error.
+    // serialized, and the caller receives it as a nested call's error. A
+    // return its slot's validator refuses fails the call as the binary fails
+    // a handle's target.
     return this.sink
       .call({ slot: functionPath.udfPath, args, caller })
+      .then((value: unknown) => {
+        const wrong =
+          returnsValidator === undefined
+            ? undefined
+            : ArgumentValidation.returnsRefusal(returnsValidator, value);
+        if (wrong !== undefined) throw refusal(wrong);
+        return value;
+      })
       .catch((error: unknown) => {
         throw receiveConvexErrorData(error, convexErrorDataFor(from));
       });

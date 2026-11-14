@@ -1,4 +1,4 @@
-import { jsonToConvex, type JSONValue } from "convex/values";
+import { CommitTsPlaceholder, type GenericValidator } from "convex/values";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Order from "effect/Order";
@@ -6,34 +6,71 @@ import * as Predicate from "effect/Predicate";
 import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import { stringify } from "./Json.js";
-import type { ObjectFieldType, ValidatorJSON } from "./KernelValues.js";
+import { readFunctionHandle, tableNameFromId } from "./KernelValues.js";
 
 /**
- * The binary's refusal of a function's arguments, as the caller of a function
- * handle receives it: an `Error` whose message the binary's validator check
- * writes (local backend `precompiled-2026-10-28-cccbade`, probed by
- * `packages/server/test/local-backend/callbackArgs.test.ts`). Present fields
- * are checked first, in key order and recursively, then missing required
- * fields, then extra ones. The first problem is the one reported.
+ * The binary's validation of a function's arguments and of its return, as a
+ * handle's caller sees each refused: an `Error` whose message the binary's
+ * validator check writes (local backend `precompiled-2026-10-28-cccbade`,
+ * probed by `packages/server/test/local-backend/callbackArgs.test.ts`). Present
+ * fields are checked first, in key order and recursively, then missing required
+ * fields, then extra ones, and the first problem is the one reported. A
+ * refusal's text is built only once a value is refused, so a valid value is
+ * never printed.
  */
-export const refusal = (
-  validator: ValidatorJSON,
+
+/**
+ * The arguments' refusal, or `undefined` when `validator` accepts them.
+ */
+export const argumentRefusal = (
+  validator: GenericValidator,
   args: unknown,
 ): string | undefined => {
   if (!isPlainObject(args))
-    return `The arguments to a Convex function must be an object. Received: ${String(args)}`;
+    return `The arguments to a Convex function must be an object. Received: ${Predicate.isObject(args) ? "an array or bytes" : String(args as string | number | bigint | boolean | symbol | null | undefined)}`;
   const problem = check(validator, args, "");
   return problem === undefined
     ? undefined
-    : `ArgumentValidationError: ${problem.headline}\n${problem.path === "" ? "" : `Path: ${problem.path}`}\n${problem.shown}\nValidator: ${printValidator(problem.validator)}\n`;
+    : `ArgumentValidationError: ${describe(problem)}\n`;
 };
 
-interface Problem {
-  readonly headline: string;
-  readonly path: string;
-  readonly shown: string;
-  readonly validator: ValidatorJSON;
-}
+/**
+ * The return's refusal, or `undefined` when `validator` accepts it.
+ */
+export const returnsRefusal = (
+  validator: GenericValidator,
+  value: unknown,
+): string | undefined => {
+  const problem = check(validator, value, "");
+  return problem === undefined
+    ? undefined
+    : `ReturnsValidationError: ${describe(problem)}`;
+};
+
+/**
+ * What failed and where. `shown` prints the refused value only when a refusal
+ * is written.
+ */
+type Problem =
+  | {
+      readonly kind: "mismatch" | "missing" | "extra";
+      readonly headline: string;
+      readonly path: string;
+      readonly shown: () => string;
+      readonly validator: GenericValidator;
+    }
+  | {
+      readonly kind: "table";
+      readonly id: string;
+      readonly table: string;
+      readonly path: string;
+      readonly validator: GenericValidator;
+    };
+
+const describe = (problem: Problem): string =>
+  problem.kind === "table"
+    ? `Found ID ${stringify(problem.id)} from table \`${problem.table}\`, which does not match the table name in validator \`${printValidator(problem.validator)}\`.${problem.path === "" ? "" : `Path: ${problem.path}`}`
+    : `${problem.headline}\n${problem.path === "" ? "" : `Path: ${problem.path}`}\n${problem.shown()}\nValidator: ${printValidator(problem.validator)}`;
 
 const isPlainObject = (value: unknown): value is Record<string, unknown> =>
   Predicate.isObject(value) &&
@@ -43,63 +80,84 @@ const isPlainObject = (value: unknown): value is Record<string, unknown> =>
 const mismatch = (
   path: string,
   value: unknown,
-  validator: ValidatorJSON,
+  validator: GenericValidator,
 ): Problem => ({
+  kind: "mismatch",
   headline: "Value does not match validator.",
   path,
-  shown: `Value: ${printValue(value)}`,
+  shown: () => `Value: ${printValue(value)}`,
   validator,
 });
+
+const accepts =
+  (holds: boolean) =>
+  (path: string, value: unknown, validator: GenericValidator) =>
+    holds ? undefined : mismatch(path, value, validator);
 
 const sortedKeys = (record: Readonly<Record<string, unknown>>) =>
   Arr.sort(Rec.keys(record), Order.String);
 
+const assertNever = (validator: never): never => {
+  throw new Error(
+    `The test kernel cannot check the validator kind of ${String((validator as { readonly kind?: unknown }).kind)}.`,
+  );
+};
+
+/**
+ * The first problem with `value` under `validator`, one case per validator kind
+ * of convex 1.49's `Validator` union, so a kind added later fails typecheck
+ * here rather than passing unchecked.
+ */
 const check = (
-  validator: ValidatorJSON,
+  validator: GenericValidator,
   value: unknown,
   path: string,
 ): Problem | undefined => {
-  switch (validator.type) {
+  switch (validator.kind) {
     case "any":
       return undefined;
     case "null":
-      return value === null ? undefined : mismatch(path, value, validator);
-    case "number":
-      return typeof value === "number"
-        ? undefined
-        : mismatch(path, value, validator);
-    case "bigint":
-      return typeof value === "bigint"
-        ? undefined
-        : mismatch(path, value, validator);
+      return accepts(value === null)(path, value, validator);
+    case "float64":
+      return accepts(typeof value === "number")(path, value, validator);
+    case "int64":
+      return accepts(typeof value === "bigint")(path, value, validator);
+    case "commitTs":
+      return accepts(
+        typeof value === "bigint" || value instanceof CommitTsPlaceholder,
+      )(path, value, validator);
     case "boolean":
-      return typeof value === "boolean"
-        ? undefined
-        : mismatch(path, value, validator);
+      return accepts(typeof value === "boolean")(path, value, validator);
     case "string":
-    case "id":
-      return typeof value === "string"
-        ? undefined
-        : mismatch(path, value, validator);
+      return accepts(typeof value === "string")(path, value, validator);
     case "bytes":
-      return value instanceof ArrayBuffer
+      return accepts(value instanceof ArrayBuffer)(path, value, validator);
+    case "function":
+      // The binary accepts a string it parses as a handle; the kernel's
+      // handles are its own format.
+      return accepts(
+        typeof value === "string" && readFunctionHandle(value) !== undefined,
+      )(path, value, validator);
+    case "id": {
+      const table = typeof value === "string" ? tableNameFromId(value) : null;
+      if (table === null) return mismatch(path, value, validator);
+      return table === validator.tableName
         ? undefined
-        : mismatch(path, value, validator);
+        : { kind: "table", id: value as string, table, path, validator };
+    }
     case "literal":
-      return literalMatches(validator.value, value)
-        ? undefined
-        : mismatch(path, value, validator);
+      return accepts(value === validator.value)(path, value, validator);
     case "union":
-      return Arr.some(
-        validator.value,
-        (member) => check(member, value, path) === undefined,
-      )
-        ? undefined
-        : mismatch(path, value, validator);
+      return accepts(
+        Arr.some(
+          validator.members,
+          (member) => check(member, value, path) === undefined,
+        ),
+      )(path, value, validator);
     case "array": {
       if (!Arr.isArray(value)) return mismatch(path, value, validator);
       for (const [index, element] of value.entries()) {
-        const problem = check(validator.value, element, `${path}[${index}]`);
+        const problem = check(validator.element, element, `${path}[${index}]`);
         if (problem !== undefined) return problem;
       }
       return undefined;
@@ -107,10 +165,10 @@ const check = (
     case "record": {
       if (!isPlainObject(value)) return mismatch(path, value, validator);
       for (const key of sortedKeys(value)) {
-        const keyProblem = check(validator.keys, key, `${path}.keys()`);
+        const keyProblem = check(validator.key, key, `${path}.keys()`);
         if (keyProblem !== undefined) return keyProblem;
         const valueProblem = check(
-          validator.values.fieldType,
+          validator.value,
           value[key],
           `${path}.values()`,
         );
@@ -121,29 +179,30 @@ const check = (
     case "object":
       return checkObject(validator, value, path);
     default:
-      return undefined;
+      return assertNever(validator);
   }
 };
 
 const checkObject = (
-  validator: Extract<ValidatorJSON, { type: "object" }>,
+  validator: Extract<GenericValidator, { readonly kind: "object" }>,
   value: unknown,
   path: string,
 ): Problem | undefined => {
   if (!isPlainObject(value)) return mismatch(path, value, validator);
-  const fields = validator.value;
+  const fields = validator.fields as Readonly<Record<string, GenericValidator>>;
   for (const key of sortedKeys(fields)) {
     if (value[key] === undefined) continue;
-    const problem = check(fields[key]!.fieldType, value[key], `${path}.${key}`);
+    const problem = check(fields[key]!, value[key], `${path}.${key}`);
     if (problem !== undefined) return problem;
   }
-  const shown = `Object: ${printValue(value)}`;
+  const shown = () => `Object: ${printValue(value)}`;
   const missing = Arr.findFirst(
     sortedKeys(fields),
-    (key) => !fields[key]!.optional && value[key] === undefined,
+    (key) => fields[key]!.isOptional !== "optional" && value[key] === undefined,
   );
   if (missing._tag === "Some")
     return {
+      kind: "missing",
       headline: `Object is missing the required field \`${missing.value}\`. Consider wrapping the field validator in \`v.optional(...)\` if this is expected.`,
       path,
       shown,
@@ -155,6 +214,7 @@ const checkObject = (
   );
   if (extra._tag === "Some")
     return {
+      kind: "extra",
       headline: `Object contains extra field \`${extra.value}\` that is not in the validator.`,
       path,
       shown,
@@ -162,15 +222,6 @@ const checkObject = (
     };
   return undefined;
 };
-
-const literalMatches = (literal: unknown, value: unknown) =>
-  literalOf(literal) === value;
-
-/**
- * A literal from validator JSON, which carries an int64 as Convex JSON.
- */
-const literalOf = (literal: unknown): unknown =>
-  jsonToConvex(literal as JSONValue);
 
 /**
  * A float64 as the binary prints it, Rust's `{:?}`: the shortest round-trip
@@ -192,8 +243,17 @@ const printFloat = (value: number): string => {
   return pipe(fixed, Str.includes(".")) ? fixed : `${fixed}.0`;
 };
 
-const base64 = (buffer: ArrayBuffer): string =>
-  btoa(String.fromCharCode(...new Uint8Array(buffer)));
+/**
+ * Base64 of `buffer`, built in chunks, so a large buffer never spreads into one
+ * call's arguments.
+ */
+const base64 = (buffer: ArrayBuffer): string => {
+  const bytes = new Uint8Array(buffer);
+  const chunks: Array<string> = [];
+  for (let start = 0; start < bytes.length; start += 0x8000)
+    chunks.push(String.fromCharCode(...bytes.subarray(start, start + 0x8000)));
+  return btoa(Arr.join(chunks, ""));
+};
 
 const printValue = (value: unknown): string => {
   if (value === null) return "null";
@@ -216,36 +276,46 @@ const printValue = (value: unknown): string => {
   return typeof value;
 };
 
-const printField = ({ fieldType, optional }: ObjectFieldType): string =>
-  optional
-    ? `v.optional(${printValidator(fieldType)})`
-    : printValidator(fieldType);
+const printField = (validator: GenericValidator): string =>
+  validator.isOptional === "optional"
+    ? `v.optional(${printValidator(validator)})`
+    : printValidator(validator);
 
-const printValidator = (validator: ValidatorJSON): string => {
-  switch (validator.type) {
-    case "number":
-      return "v.float64()";
-    case "bigint":
-      return "v.int64()";
+const printValidator = (validator: GenericValidator): string => {
+  switch (validator.kind) {
     case "id":
       return `v.id(${stringify(validator.tableName)})`;
     case "literal":
-      return `v.literal(${printValue(literalOf(validator.value))})`;
+      return `v.literal(${printValue(validator.value)})`;
     case "array":
-      return `v.array(${printValidator(validator.value)})`;
+      return `v.array(${printValidator(validator.element)})`;
     case "union":
-      return `v.union(${Arr.join(Arr.map(validator.value, printValidator), ", ")})`;
+      return `v.union(${Arr.join(Arr.map(validator.members, printValidator), ", ")})`;
     case "record":
-      return `v.record(${printValidator(validator.keys)}, ${printField(validator.values)})`;
-    case "object":
+      return `v.record(${printValidator(validator.key)}, ${printValidator(validator.value)})`;
+    case "object": {
+      const fields = validator.fields as Readonly<
+        Record<string, GenericValidator>
+      >;
       return `v.object({${Arr.join(
         Arr.map(
-          sortedKeys(validator.value),
-          (key) => `${key}: ${printField(validator.value[key]!)}`,
+          sortedKeys(fields),
+          (key) => `${key}: ${printField(fields[key]!)}`,
         ),
         ", ",
       )}})`;
+    }
+    case "any":
+    case "null":
+    case "float64":
+    case "int64":
+    case "commitTs":
+    case "boolean":
+    case "string":
+    case "bytes":
+    case "function":
+      return `v.${validator.kind}()`;
     default:
-      return `v.${validator.type}()`;
+      return assertNever(validator);
   }
 };
