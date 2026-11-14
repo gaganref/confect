@@ -478,3 +478,64 @@ export const register = (t, name) =>
 ```
 
 When a mount's descriptor carries a Confect `contract`, codegen refuses a kit that exports no `secrets` with `TestKitSecretsMissingError`, and a kit whose exports it cannot list without running it, such as a CommonJS kit, with `TestKitExportsUnknownError`. Write the kit as an ES module that exports `secrets` by name, `{}` when the component holds no secret.
+
+## The generated component subject
+
+For a component (`App.make({ kind: "component" })`) that can import `@confect/test`, codegen writes the same `TestBackend` export, built by `TestComponent.make`. Its `kind` is `"component"`. It has no groups and no manifest digest, and it holds:
+
+- `functions`: every public function, keyed by `group:name`, such as `mail:send`.
+- `slots`: every callback contract a handle in the component's function args or tables names, keyed by contract id. Each slot has its `contract`, the `handle` a test passes where the component takes one, and its `outcomes`: `"returned"` and each declared error tag, through nested and suspended unions.
+- `init`: the component's own `init`, from its descriptor. Codegen finds the descriptor from the component's own root, the directory holding its `convex/` and `confect/`, so a nested component reads its own and never its parent's. A root whose `package.json` has a name and `exports` names it by `<package>/client`, resolved as Node resolves a package importing itself, through nested conditions and arrays. Otherwise it is `client.ts` beside `confect/`.
+- `obligations`: an `export` proof per function, one `laws` proof, and a `callback` proof per slot. A component owes no access or realm proof, so its obligations cannot name either.
+- `laws`, `ports`, `mounts` and `settings`, as an app's subject has them.
+
+A slot's contract must be exported from `confect/callbacks.ts`. A handle whose contract it does not export stops codegen with `UndeclaredCallbackSlotError`. A descriptor whose `init` is no internal mutation of the component stops codegen too. Otherwise the descriptor rule is:
+
+- A declared descriptor that doesn't resolve, or a `client.*` file that isn't a descriptor, stops codegen.
+- A component that declares no descriptor at all has no `init` to lose, so it gets none. That is the layout where the host writes the descriptor inline, as `Mount.make(Component.make("counter", { client }))` in the host's `app.ts`. A manifest section may add laws and ports to a component, but no owner, open function or access obligation.
+
+`TestBackend.layer({ config, install, seed })` opens the component as a push initialises it. Every module loads. Then the component's own `init` runs with `install`, which is typed from `init`'s args, then each of its mounts' `init`, through the same `MountSteps.run` traversal a push uses, as a parent's push runs a mounted component. Then `seed` runs. The session's runtime is `TestComponent.ComponentRuntime`, which has no `withIdentity`, since a component never sees its caller's identity.
+
+The test adds no backend function. A slot's handle names the session's sink. A call whose arguments break the slot's contract is refused before anything holds it, as the binary refuses a handle's call: with an `Error` whose message is the binary's `ArgumentValidationError`. A call to it during `init` or `seed` returns at once. Every later call, including a scheduled job that runs a stored handle, is held as a pending `{ kind: "callback", slot, input }` command, and the component's call waits until the test answers it. `TestComponent.commands(subject)` lists the pending commands, and `TestComponent.answer(command, outcome)` settles one. `returned` gives a value drawn from the contract's return codec, and a declared error tag gives an error drawn from that alternative's codec. Both draws use the session's `draws` seed, and a declared error crosses as Convex JSON, as the binary sends it. Between a call and its answer, the test can make other calls.
+
+```ts
+import { TestBackend } from "../confect/_generated/testing";
+
+const install = {
+  fromName: "Ada",
+  onEvent: TestBackend.slots["mailer/onEvent"].handle,
+};
+
+it.effect("holds a delivery until the host answers", () =>
+  Effect.gen(function* () {
+    const t =
+      yield* TestComponent.ComponentRuntime<typeof TestBackend.app.schema>();
+    const sending = yield* Effect.forkChild(
+      t.mutation(refs.public.mail.send, { message: "hi" }),
+    );
+    const [command] = yield* TestComponent.commands(TestBackend);
+    // ... another call here sees the send uncommitted ...
+    yield* TestComponent.answer(command, "Bounced");
+    yield* Fiber.join(sending);
+  }).pipe(Effect.provide(TestBackend.layer({ config, install }))),
+);
+
+const answered = TestComponent.callbacks(TestBackend, {
+  "mailer/onEvent": {
+    returned: {
+      name: "delivers",
+      call: "mail:send",
+      args: { message: "hi" },
+      postimage: { sent: [{ message: "hi", status: "delivered" }] },
+    },
+    Bounced: {
+      name: "records the bounce",
+      call: "mail:send",
+      args: { message: "hi" },
+      postimage: { sent: [{ message: "hi", status: "bounced" }] },
+    },
+  },
+});
+```
+
+`TestComponent.exports` takes at least one case per function, and `TestComponent.callbacks` takes one case per slot per outcome, so a missing function or outcome does not compile. Each case pays its obligation and runs on a fresh session through `run({ config, install, seed })`. An export case states a literal return and the postimage, or one of the function's declared errors, and answers any callback its call makes `returned`. A callback case makes one exported call and answers each command that call makes to its slot with its outcome. It fails when the call never reaches the slot: a call `init` or `seed` made does not count. It then states the postimage. A postimage lists each table's documents without system fields, and a table it leaves out is empty. `TestComponent.laws(subject, seed)` pays `laws` and hands the laws to Frame's testing door, which checks them.

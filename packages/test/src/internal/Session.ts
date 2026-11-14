@@ -25,6 +25,7 @@ import type {
 } from "../TestConfect.js";
 import { convexTest as kernelTest } from "./ConvexTest.js";
 import * as DriverWorld from "./DriverWorld.js";
+import type * as Execution from "./Execution.js";
 import * as MountedHttp from "./MountedHttp.js";
 import * as Redaction from "./Redaction.js";
 
@@ -281,6 +282,7 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   convexSchemaDefinition: SchemaDefinition<GenericSchema, true>,
   modules: Record<string, () => Promise<any>>,
   options: LayerOptions = {},
+  sink?: Execution.Sink,
 ): { readonly service: TestConfect<DatabaseSchema_>; readonly raw: any } => {
   process.env.CONVEX_CLOUD_URL ??= "https://some-deployment.convex.cloud";
   process.env.CONVEX_SITE_URL ??= "https://some.convex.site";
@@ -293,6 +295,7 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
           schema: convexSchemaDefinition,
           modules,
           world: DriverWorld.make("TestConfect.layer", options.seed ?? 0),
+          ...(sink === undefined ? {} : { sink }),
           redaction: Redaction.policy(
             Redaction.merge(
               { tables: { "": Redaction.tablesOf(databaseSchema) } },

@@ -1,4 +1,4 @@
-import type { GroupSpec, ManifestSection } from "@confect/core";
+import { Callback, type GroupSpec, type ManifestSection } from "@confect/core";
 import * as Array from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
@@ -6,6 +6,7 @@ import * as Order from "effect/Order";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as SchemaAST from "effect/SchemaAST";
 import * as String from "effect/String";
 import { InvalidManifestSectionError } from "./CodegenError.js";
 import { stringify } from "./Json.js";
@@ -411,6 +412,50 @@ export interface MountEntry {
   readonly env: Readonly<Record<string, Binding>>;
   readonly required: ReadonlyArray<string>;
 }
+
+/**
+ * Every callback contract a handle in `schema` names, through structs, records,
+ * arrays, tuples, unions, declarations' type parameters and suspended schemas.
+ * A handle's contract sits on its encoded string.
+ */
+export const callbackContracts = (schema: Schema.Top): Array<Callback.Any> => {
+  const found: Array<Callback.Any> = [];
+  const seen = new Set<SchemaAST.AST>();
+  const walk = (ast: SchemaAST.AST): void => {
+    if (seen.has(ast)) return;
+    seen.add(ast);
+    const contract = Array.findFirst(
+      Record.values(SchemaAST.resolve(ast) ?? {}),
+      Callback.isContract,
+    );
+    if (Option.isSome(contract)) {
+      found.push(contract.value);
+      return;
+    }
+    switch (ast._tag) {
+      case "Objects":
+        for (const property of ast.propertySignatures) walk(property.type);
+        for (const index of ast.indexSignatures) walk(index.type);
+        return;
+      case "Arrays":
+        for (const element of [...ast.elements, ...ast.rest]) walk(element);
+        return;
+      case "Union":
+        for (const member of ast.types) walk(member);
+        return;
+      case "Declaration":
+        for (const parameter of ast.typeParameters) walk(parameter);
+        return;
+      case "Suspend":
+        walk(ast.thunk());
+        return;
+      default:
+        return;
+    }
+  };
+  walk(Schema.toEncoded(schema).ast);
+  return found;
+};
 
 /**
  * One Confect function of a spec, with the codecs its ref carries.

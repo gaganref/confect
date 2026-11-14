@@ -1852,3 +1852,32 @@ the deterministic operations in every phase.
   hold a `Schema.Redacted` node, so the kernel's redaction (row 6) builds each
   schema only when it first needs it. A kit adds its component's policy at
   registration, keyed at the registered path.
+
+## Generated component subject (row 9)
+
+- A handle under `~sink` reaches no registered function. The kernel hands its
+  query, mutation or action call, and a due job that targets it, to the
+  session's sink. The sink holds the call as a pending command until the test
+  answers it. The binary has no such path: a real handle names a host
+  function.
+- A declared error leaves the sink as a `ConvexError` whose data is Convex
+  JSON. The caller's syscall reads that back with `jsonToConvex`
+  (`src/server/impl/syscall.ts:46-51`, convex 1.49), so an int64 or bytes
+  field arrives decoded.
+- Scheduling a sink handle is accepted. Each job runs through the sink when it
+  comes due, so a stored callback handle can be scheduled, as production
+  allows.
+- A drawn value comes from `Arbitrary.schema` of the contract's return codec,
+  or of the declared error's alternative. It is seeded by the session's
+  `draws` and the command's ID, so the same session draws the same values. A
+  contract's codecs must bound what Convex cannot store, such as an int64.
+- A slot call's arguments are checked against the slot's declared validator
+  before the sink holds it, and refused as the binary refuses a handle call
+  whose target's validator fails: an `Error` whose message is the binary's
+  `ArgumentValidationError` text. Present fields are checked first in key
+  order, then missing required fields, then extra ones, and values print as
+  the binary prints them, a float64 in Rust's `{:?}` form. An action's caller
+  gets one more trailing newline. `callbackArgs.test.ts` on the local-backend
+  lane compares 24 argument shapes from a mutation and an action, byte for
+  byte. The kernel's own argument check for registered functions keeps
+  convex-test's wording; only the sink's matches the binary.

@@ -40,11 +40,39 @@ export interface Runner<E, R> {
 }
 
 /**
+ * The step a push runs for a backend another backend mounts: its own `init`, if
+ * it has one, then its own steps, when it has a deploy module.
+ */
+export interface Root {
+  readonly init: {
+    readonly functionName: string;
+    readonly args: unknown;
+  } | null;
+  readonly nested: boolean;
+}
+
+const app: Root = { init: null, nested: true };
+
+/**
  * Run every mount's `init` in the order a push runs them: the app's steps in
  * declaration order, each mount's `init` and then its nested component's own
- * steps. The first failing mount stops the run.
+ * steps. The first failing mount stops the run. `root` is the backend's own
+ * step, which a component's test session runs at the empty component path as
+ * its parent's push would. It defaults to an app's: no `init`, then its steps.
  */
-export const run = <E, R>(runner: Runner<E, R>): Effect.Effect<void, E, R> => {
+export const run = <E, R>(
+  runner: Runner<E, R>,
+  root: Root = app,
+): Effect.Effect<void, E, R> => {
+  const step = (
+    mount: string | undefined,
+    { init, nested }: Root,
+  ): Effect.Effect<void, E, R> =>
+    Effect.gen(function* () {
+      if (init !== null)
+        yield* runner.init(mount ?? "", init.functionName, init.args);
+      if (nested) yield* visit(mount);
+    });
   const visit = (prefix: string | undefined): Effect.Effect<void, E, R> =>
     Effect.gen(function* () {
       const steps = yield* runner
@@ -58,17 +86,15 @@ export const run = <E, R>(runner: Runner<E, R>): Effect.Effect<void, E, R> => {
             ),
           ),
         );
-      for (const step of steps) {
+      for (const each of steps) {
         const mount =
           prefix === undefined
-            ? step.componentPath
-            : `${prefix}/${step.componentPath}`;
-        if ("failure" in step)
-          return yield* Effect.fail(runner.failed(mount, step.failure));
-        if (step.init !== null)
-          yield* runner.init(mount, step.init.functionName, step.init.args);
-        if (step.nested) yield* visit(mount);
+            ? each.componentPath
+            : `${prefix}/${each.componentPath}`;
+        if ("failure" in each)
+          return yield* Effect.fail(runner.failed(mount, each.failure));
+        yield* step(mount, each);
       }
     });
-  return visit(undefined);
+  return step(undefined, root);
 };

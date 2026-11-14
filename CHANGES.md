@@ -482,6 +482,34 @@ of one component refuses to load. This is row 8 of Frame's backend testing kerne
 ADR 0012). Changeset: `generated-test-backend.md`. Upstream: fork only, as the
 kernel is fork-specific.
 
+## Generated component subject
+
+For a component that can import `@confect/test`, codegen writes `TestBackend`
+built by `TestComponent.make`: its public functions by `group:name`, its
+callback slots by contract id, its own `init` from the descriptor at its own
+root, its laws,
+ports, mounts and settings, and three kinds of obligation, `export` per
+function, `laws` and `callback` per slot. It has no groups and owes no access
+or realm proof. A slot is a callback contract a handle in the component's
+function args or tables names, and a contract `confect/callbacks.ts` does not
+export stops codegen with `UndeclaredCallbackSlotError`. A manifest section may
+add only laws and ports to a component. `TestBackend.layer` opens it through
+the same session opener as an app's subject: modules load, the component's own
+`init` runs with the test's typed `install` args as the root step of
+`MountSteps.run`, which now takes one, then each mount's `init`, then the
+seed. The kernel hands a call to a handle under its reserved `~sink`
+path, and a due job that targets one, to the session's sink, so the test adds
+no function. Each call after the seed is held as a pending `callback` command
+until the test answers it with `returned` or a declared error tag. The answer's
+value is drawn from the contract's codec, and a declared error crosses as
+Convex JSON. `TestComponent.exports` and `TestComponent.callbacks` are total by
+type, run each case on a fresh session, and count only the slot calls each
+case's own call makes. `TestComponent.laws` is a typed slot Frame's testing
+door fills. A slot call whose arguments break its contract is
+refused before it is held, with the binary's `ArgumentValidationError` message. This is row 9 of Frame's backend testing kernel (Frame ADR 0012).
+Changeset: `generated-test-component.md`. Upstream: fork only, as the kernel is
+fork-specific.
+
 ## Table info through Table's extractors
 
 `TableInfo` reads a table's name, schema, validator, scope and search and vector

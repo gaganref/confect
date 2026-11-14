@@ -279,6 +279,19 @@ export class TestKitSecretsMissingError extends Schema.TaggedError<
 }) {}
 
 /**
+ * A component holds a callback handle whose contract its `callbacks.ts` does
+ * not export, so its test subject cannot declare the slot or its outcomes.
+ */
+export class UndeclaredCallbackSlotError extends Schema.TaggedError<
+  UndeclaredCallbackSlotError,
+  { readonly brand: unique symbol }
+>()("UndeclaredCallbackSlotError", {
+  declarationPath: Schema.String,
+  contractId: Schema.String,
+  heldBy: Schema.String,
+}) {}
+
+/**
  * A packaged Confect component whose test kit codegen cannot list without
  * running it, such as a CommonJS kit, so it cannot see whether the kit passes
  * its component's secret policy.
@@ -295,6 +308,7 @@ export const CodegenError = Schema.Union([
   TestKitExportsUnknownError,
   TestKitSecretsMissingError,
   MissingTestKitError,
+  UndeclaredCallbackSlotError,
   SnapshotError,
   BuildError,
   MissingImplFileError,
@@ -583,6 +597,13 @@ export const renderCodegenError = (error: CodegenError): string => {
       ". `confect codegen` writes it from ",
       formatPath(error.declarationPath),
       " now; move its contents there and delete the file.",
+    );
+  }
+  if (error._tag === "UndeclaredCallbackSlotError") {
+    return singleLine(
+      `The callback slot "${error.contractId}", held by ${error.heldBy}, has no declared contract. Export the contract from `,
+      formatPath(error.declarationPath),
+      ", so the component's test subject can name the slot and its outcomes.",
     );
   }
   if (error._tag === "MissingTestKitError") {
