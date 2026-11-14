@@ -1625,6 +1625,172 @@ describe("module loads", () => {
         expect(server.hits()).toBe(0);
       }).pipe(Effect.scoped),
   );
+
+  type Scheduler = "setImmediate" | "queueMicrotask" | "MessageChannel";
+
+  /**
+   * Start `name`'s callback as a module's top level would, through the global a
+   * function reads.
+   */
+  const schedule = (name: Scheduler, callback: () => void) => {
+    const global = globalThis as unknown as Record<string, unknown>;
+    if (name === "MessageChannel") {
+      const Channel = global["MessageChannel"] as typeof MessageChannel;
+      const channel = new Channel();
+      channel.port1.addEventListener("message", () => {
+        channel.port1.close();
+        callback();
+      });
+      channel.port1.start();
+      channel.port2.postMessage(null);
+      return;
+    }
+    (global[name] as (callback: () => void) => void)(callback);
+  };
+
+  /**
+   * A module that starts a promise on `name` at its top level and exports a
+   * query returning it.
+   */
+  const schedulingModule = (name: Scheduler, fired: () => void) => () => {
+    // oxlint-disable-next-line effecttsgo/new-promise -- The module waits on the runtime's own scheduler, which is what the kernel hides in the isolate.
+    const started = new Promise<string>((resolve) => {
+      schedule(name, () => {
+        fired();
+        resolve("fired");
+      });
+    });
+    started.catch(() => undefined);
+    return Promise.resolve({
+      query: queryGeneric({ args: {}, handler: () => started }),
+      action: actionGeneric({ args: {}, handler: () => started }),
+    });
+  };
+
+  const schedulerSurface = () => ({
+    setImmediate: typeof setImmediate,
+    queueMicrotask: typeof queueMicrotask,
+    MessageChannel: typeof MessageChannel,
+  });
+
+  /**
+   * A module that reads the surface at its top level and exports functions that
+   * answer it beside the surface they read themselves.
+   */
+  const surfaceModule = () => {
+    const atLoad = schedulerSurface();
+    return Promise.resolve({
+      query: queryGeneric({
+        args: {},
+        handler: () =>
+          Promise.resolve({ atLoad, inFunction: schedulerSurface() }),
+      }),
+      action: actionGeneric({
+        args: {},
+        handler: () =>
+          Promise.resolve({ atLoad, inFunction: schedulerSurface() }),
+      }),
+    });
+  };
+
+  it.effect.each(["setImmediate", "queueMicrotask", "MessageChannel"] as const)(
+    'a module without "use node" that starts a promise on %s at its top level and exports a query returning it never fires, as the isolate has no such global',
+    (name) =>
+      Effect.gen(function* () {
+        const fired = vi.fn();
+        const t = kernelOver({ "load.ts": schedulingModule(name, fired) });
+        const observed = yield* refusalOf(t.query(query, {}));
+        // The global reads `undefined`, so the call throws a TypeError where
+        // the binary, which has no binding, throws a ReferenceError.
+        expect(observed).toMatchObject({ name: "TypeError" });
+        expect(fired).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect(
+    'an isolate module reads no setImmediate, queueMicrotask or MessageChannel while it loads or in a query or an action, and a "use node" module reads all three, as on the binary',
+    () =>
+      Effect.gen(function* () {
+        const absentAll = {
+          setImmediate: "undefined",
+          queueMicrotask: "undefined",
+          MessageChannel: "undefined",
+        };
+        const nodeAll = {
+          setImmediate: "function",
+          queueMicrotask: "function",
+          MessageChannel: "function",
+        };
+        const t = kernelOver(
+          { "load.ts": surfaceModule, "nodeLoad.ts": surfaceModule },
+          ["nodeLoad.ts"],
+        );
+        const observed = {
+          query: yield* refusalOf(t.query(query, {})),
+          action: yield* refusalOf(t.action(action, {})),
+          node: yield* refusalOf(
+            t.action(makeFunctionReference<"action">("nodeLoad:action"), {}),
+          ),
+        };
+        expect(observed).toEqual({
+          query: { returned: { atLoad: absentAll, inFunction: absentAll } },
+          action: { returned: { atLoad: absentAll, inFunction: absentAll } },
+          node: { returned: { atLoad: nodeAll, inFunction: nodeAll } },
+        });
+      }),
+  );
+
+  it.effect(
+    "a setImmediate a module kept before any backend existed fails as the missing global would when an isolate module's top level calls it",
+    () =>
+      Effect.gen(function* () {
+        const fired = vi.fn();
+        const t = kernelOver({
+          "load.ts": () => {
+            let failed: string | undefined;
+            try {
+              keptSetImmediate(fired);
+            } catch (error) {
+              failed = String(error);
+            }
+            return Promise.resolve({
+              query: queryGeneric({
+                args: {},
+                handler: () => Promise.resolve(failed ?? "called"),
+              }),
+            });
+          },
+        });
+        const observed = yield* refusalOf(t.query(query, {}));
+        expect(observed).toEqual({
+          returned: "ReferenceError: setImmediate is not defined",
+        });
+        yield* Effect.promise(() => awaitTimer("setTimeout"));
+        expect(fired).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect(
+    "outside a kernel function MessageChannel is the host's, through its guard",
+    () =>
+      Effect.gen(function* () {
+        const channel = new MessageChannel();
+        const received = yield* Effect.promise(
+          () =>
+            // oxlint-disable-next-line effecttsgo/new-promise -- The case waits on the host's own message port.
+            new Promise<unknown>((resolve) => {
+              channel.port1.addEventListener("message", (event) =>
+                resolve(event.data),
+              );
+              channel.port1.start();
+              channel.port2.postMessage("ping");
+            }),
+        );
+        channel.port1.close();
+        expect(channel).toBeInstanceOf(MessageChannel);
+        expect(received).toBe("ping");
+      }),
+  );
 });
 
 describe("module runtimes", () => {
@@ -1842,7 +2008,7 @@ describe("module runtimes", () => {
     }),
   );
 
-  it("reads the directive prologue as the bundler does", () => {
+  it("reads the directive prologue as the bundler does, through the same parser", () => {
     expect(hasUseNodeDirective('"use node";\nexport {};')).toBe(true);
     expect(hasUseNodeDirective("'use node'\nexport {};")).toBe(true);
     expect(
@@ -1852,6 +2018,8 @@ describe("module runtimes", () => {
     ).toBe(true);
     expect(hasUseNodeDirective('import x from "y";\n"use node";')).toBe(false);
     expect(hasUseNodeDirective('"use node".length;')).toBe(false);
+    // A literal the next line continues is an expression, not a directive.
+    expect(hasUseNodeDirective('"use node"\n.length;\nexport {};')).toBe(false);
     expect(hasUseNodeDirective('const note = "use node";')).toBe(false);
   });
 });

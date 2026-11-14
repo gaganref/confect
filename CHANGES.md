@@ -234,8 +234,12 @@ that starts `setTimeout` or `setInterval` fails with the binary's "Can't use
 setTimeout in queries and mutations" at once, whatever the handler caught and
 even while it awaits the timer, and a mutation publishes none of its writes. A
 multipart `formData()` rejects with the binary's error. Queries, mutations and
-isolate actions find no `setImmediate` or `queueMicrotask`, as the binary's
-isolate defines neither, while a Node action has Node's. `RegisteredNodeFunction`
+isolate actions find no `setImmediate`, `queueMicrotask` or `MessageChannel`,
+as the binary's isolate defines none of them, and neither does a module
+without `"use node"` while it loads, while a Node action has Node's. The kernel
+reads each module's `"use node"` directive with `@babel/parser`, the parser
+and options `convex` 1.49's bundler uses, now a runtime dependency of
+`@confect/test`. `RegisteredNodeFunction`
 in `@confect/server` marks a Node action so the kernel can tell. Each of these
 globals is an accessor that returns a guard, installed by the new
 `@confect/test/setup` before any test module loads, so a reference a module

@@ -7,6 +7,7 @@
     "url": "https://github.com/rjdellecese/confect/issues"
   },
   "dependencies": {
+    "@babel/parser": "7.29.7",
     "@noble/curves": "2.4.0",
     "@noble/hashes": "2.4.0"
   },

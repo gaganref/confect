@@ -302,5 +302,46 @@ layer(LocalBackend.plainLayer, { timeout: "120 seconds" })(
           expect(observed).toEqual({ status: 200, body: "ok" });
         }),
     );
+
+    it.effect(
+      "an isolate module defines no setImmediate, queueMicrotask or MessageChannel while it loads or in a query or an action, and a Node module defines all three",
+      () =>
+        Effect.gen(function* () {
+          const { client } = yield* LocalBackend.LocalBackend;
+          const absent = {
+            setImmediate: "undefined",
+            queueMicrotask: "undefined",
+            MessageChannel: "undefined",
+          };
+          const node = {
+            setImmediate: "function",
+            queueMicrotask: "function",
+            MessageChannel: "function",
+          };
+          const query = yield* Effect.promise(() =>
+            client.query(
+              makeFunctionReference<"query">("isolateGlobals:query"),
+              {},
+            ),
+          );
+          const action = yield* Effect.promise(() =>
+            client.action(
+              makeFunctionReference<"action">("isolateGlobals:action"),
+              {},
+            ),
+          );
+          const nodeAction = yield* Effect.promise(() =>
+            client.action(
+              makeFunctionReference<"action">("isolateGlobalsNode:action"),
+              {},
+            ),
+          );
+          expect({ query, action, nodeAction }).toEqual({
+            query: { atLoad: absent, inFunction: absent },
+            action: { atLoad: absent, inFunction: absent },
+            nodeAction: { atLoad: node, inFunction: node },
+          });
+        }),
+    );
   },
 );
