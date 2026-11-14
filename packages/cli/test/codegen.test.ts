@@ -2232,10 +2232,32 @@ type Subject = TestBackend.GeneratedBackend<
 >;
 
 /**
+ * `@confect/test` resolved by Node from its own package, as a product's test
+ * imports it, so its dependencies resolve from there.
+ */
+const testKitExternal: esbuild.Plugin = {
+  name: "test-kit-external",
+  setup(build) {
+    build.onResolve({ filter: /^@confect\/test$/ }, ({ path }) => ({
+      path,
+      external: true,
+    }));
+  },
+};
+
+/**
+ * The generated `testing.ts`, bundled with `@confect/test` left to Node.
+ */
+const bundleTesting = (project: { readonly root: string }) =>
+  Bundler.bundle(`${project.root}/confect/_generated/testing.ts`, {
+    plugins: [testKitExternal],
+  });
+
+/**
  * The generated `TestBackend` export, read as data.
  */
 const testBackendOf = (project: { readonly root: string }) =>
-  Bundler.bundle(`${project.root}/confect/_generated/testing.ts`).pipe(
+  bundleTesting(project).pipe(
     Effect.map(({ module }) => module["TestBackend"] as Subject),
   );
 
@@ -2243,7 +2265,7 @@ const testBackendOf = (project: { readonly root: string }) =>
  * The generated registry's secret policy, each schema a thunk.
  */
 const secretsOf = (project: { readonly root: string }) =>
-  Bundler.bundle(`${project.root}/confect/_generated/testing.ts`).pipe(
+  bundleTesting(project).pipe(
     Effect.map(
       ({ module }) =>
         module["default"].secrets as {
@@ -2535,9 +2557,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             "export const helper = 1;\n",
           );
           yield* project.run;
-          const { module } = yield* Bundler.bundle(
-            `${project.root}/confect/_generated/testing.ts`,
-          );
+          const { module } = yield* bundleTesting(project);
           expect(Rec.keys(module["default"].modules)).toEqual([
             "_generated/testing.ts",
             "http.ts",
@@ -3254,9 +3274,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             "confect/_generated/testing.ts",
           );
           expect(generated).toContain(`import * as poolKit from "${kit}";`);
-          const { module } = yield* Bundler.bundle(
-            `${project.root}/confect/_generated/testing.ts`,
-          );
+          const { module } = yield* bundleTesting(project);
           const state = globalThis as { registered?: Array<string> };
           state.registered = [];
           const databaseSchema = DatabaseSchema.make({});
