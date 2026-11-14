@@ -43,6 +43,7 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "groups/mounts.ts": () => import("../../convex/groups/mounts.js"),
 "groups/nativeComponents.ts": () => import("../../convex/groups/nativeComponents.js"),
 "groups/pagination.ts": () => import("../../convex/groups/pagination.js"),
+"groups/randomness.ts": () => import("../../convex/groups/randomness.js"),
 "groups/requests.ts": () => import("../../convex/groups/requests.js"),
 "groups/reserved.ts": () => import("../../convex/groups/reserved.js"),
 "groups/scheduling.ts": () => import("../../convex/groups/scheduling.js"),

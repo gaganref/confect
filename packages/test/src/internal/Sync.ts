@@ -1,5 +1,6 @@
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The ledger's argument digest uses the same SHA-256 as the snapshot's.
 import { createHash } from "node:crypto";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { makeFunctionReference } from "convex/server";
 import {
   Base64,
@@ -538,6 +539,15 @@ export class Connection {
   private updateScheduled = false;
   private closed = false;
   private readonly counted: { readonly close: () => void };
+  /**
+   * The async context of the code that opened the socket, its client. A frame's
+   * handling and each update run in it, never in the context of whatever woke
+   * them, as the binary runs each of a socket's requests as the socket's own. A
+   * commit wakes an update from inside the committing function's turn, so
+   * without this a rerun drew from the committer's bound invocation's stream;
+   * an unbound client's runs draw from the backend's own world instead.
+   */
+  readonly inContext = AsyncLocalStorage.snapshot();
 
   constructor(
     private readonly server: Server,
@@ -926,12 +936,12 @@ export class Connection {
     };
     // Updates start after the current turn, so messages that arrived together
     // share one transition, as the binary batches what it received.
-    void Promise.resolve()
-      .then(loop)
-      .catch((error: unknown) => {
+    void this.inContext(() => Promise.resolve().then(loop)).catch(
+      (error: unknown) => {
         this.updating = false;
         this.fatal(error);
-      });
+      },
+    );
   }
 
   /**
@@ -1216,8 +1226,11 @@ export class KernelWebSocket {
     if (this.readyState !== 1) {
       throw new Error("WebSocket is not open");
     }
-    // The server reads it in a later turn, as a network would.
-    void Promise.resolve().then(() => this.connection.receive(data));
+    // The server reads it in a later turn, as a network would, in the context
+    // of the code that opened the socket.
+    void this.connection.inContext(() =>
+      Promise.resolve().then(() => this.connection.receive(data)),
+    );
   }
 
   close(code = 1000, reason = "") {

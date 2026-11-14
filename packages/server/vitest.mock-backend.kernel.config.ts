@@ -9,9 +9,10 @@ import sharedConfig from "../../vitest.shared";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 
+// The kernel's shim, whose backends the lane opens under a seeded world.
 const shim = path.resolve(
   import.meta.dirname,
-  "../test/src/internal/ConvexTest.ts",
+  "./test/mock-backend/kernelShim.ts",
 );
 
 // The installed convex-test package. Nothing in the kernel lane may load it.
@@ -47,8 +48,9 @@ const refuseConvexTest: Plugin = {
 };
 
 // Lane 1: the mock-backend suite on the test kernel. `convex-test` resolves to
-// the kernel's shim, the real package is refused, and the cases the inventory
-// places in later rows are skipped by `kernelLane.ts`.
+// the kernel's shim, each backend opened under a world seeded as
+// `TestConfect.layer` seeds its own, the real package is refused, and the cases
+// the inventory places in later rows are skipped by `kernelLane.ts`.
 export default mergeConfig(
   sharedConfig,
   defineConfig({
