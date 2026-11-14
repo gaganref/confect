@@ -265,6 +265,31 @@ export class UnguardableGlobal extends Schema.TaggedError<
 }) {}
 
 /**
+ * Effect's own construction of a class instance from fields its caller vouches
+ * for, without the class's parser (`Schema.makeClassTrusted`, which `make`
+ * itself ends in). Effect exports it at run time and marks it internal in its
+ * declarations. The entropy install's refusal is built with it because Effect's
+ * parser reads the ambient `Math`, compiling and parsing alike, and that is the
+ * global the install just failed to own, which a test may have left throwing.
+ * Its fields here are kernel-built strings and literals. `Randomness.test.ts`
+ * checks that it builds what `make` builds, so an Effect release that changes
+ * it fails there.
+ */
+const makeTrusted = (
+  Schema as unknown as {
+    readonly makeClassTrusted?: <Self>(
+      self: new (input: never) => Self,
+      fields: object,
+    ) => Self;
+  }
+).makeClassTrusted;
+if (typeof makeTrusted !== "function") {
+  throw new TypeError(
+    "effect/Schema no longer exports makeClassTrusted, which the test kernel's UnguardableGlobal refusal is built with.",
+  );
+}
+
+/**
  * The kernel could not place its own `Math` or `crypto` in a function's or a
  * module load's copy of the globals, because a test left the global as a
  * property it cannot redefine. Each entry names the global and what it holds.
@@ -277,20 +302,23 @@ export const uninstallableEntropy = (
     readonly holds: string;
     readonly fixed: boolean;
   }>,
-) =>
-  UnguardableGlobal.make({
-    reason: Array.every(failures, ({ fixed }) => fixed)
-      ? "notConfigurable"
-      : "installFailed",
-    globals: Array.map(failures, ({ global }) => global),
-    message: `The test kernel cannot install its own random sources: ${Array.join(
-      Array.map(
-        failures,
-        ({ global, holds }) => `globalThis.${global} is ${holds}`,
-      ),
-      "; ",
-    )}. Code that read it would draw from the host's randomness, so the kernel refuses before any module or function code runs. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`,
+): UnguardableGlobal => {
+  let fixed = true;
+  const globals: Array<string> = [];
+  const held: Array<string> = [];
+  for (const failure of failures) {
+    fixed &&= failure.fixed;
+    globals.push(failure.global);
+    held.push(`globalThis.${failure.global} is ${failure.holds}`);
+  }
+  // No parser runs, so building the refusal never reads the ambient `Math`.
+  return makeTrusted(UnguardableGlobal, {
+    _tag: "UnguardableGlobal",
+    reason: fixed ? "notConfigurable" : "installFailed",
+    globals,
+    message: `The test kernel cannot install its own random sources: ${Array.join(held, "; ")}. Code that read it would draw from the host's randomness, so the kernel refuses before any module or function code runs. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`,
   });
+};
 
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
   RequiresBinary.make({

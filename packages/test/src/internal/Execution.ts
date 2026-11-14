@@ -502,18 +502,52 @@ const heldAs = (name: "Math" | "crypto", threw: unknown): string => {
 const installEntropy = () => {
   kernelMath ??= Entropy.kernelMath(HostGlobals.math, entropySource);
   kernelCrypto ??= Entropy.kernelCrypto(HostGlobals.crypto, entropySource);
-  const failed = Arr.filterMap(
-    [
-      ["Math", kernelMath],
-      ["crypto", kernelCrypto],
-    ] as const,
-    ([name, value]) => {
-      const failure = installGuarded(name, value);
-      return failure === undefined ? Result.failVoid : Result.succeed(failure);
-    },
-  );
-  if (failed.length > 0) {
-    throw KernelRefusal.uninstallableEntropy(failed);
+  const globals = [
+    ["Math", kernelMath],
+    ["crypto", kernelCrypto],
+  ] as const;
+  const failed = Arr.filterMap(globals, ([name, value]) => {
+    const failure = installGuarded(name, value);
+    return failure === undefined ? Result.failVoid : Result.succeed(failure);
+  });
+  // One final pass reads every global back, once all are installed, so a later
+  // step that undid an earlier one, as a test's getter that restores another
+  // global does, refuses before any user code runs.
+  const undone =
+    failed.length > 0
+      ? []
+      : Arr.filterMap(globals, ([name, value]) => {
+          const failure = confirmInstalled(name, value);
+          return failure === undefined
+            ? Result.failVoid
+            : Result.succeed(failure);
+        });
+  if (failed.length > 0 || undone.length > 0) {
+    throw KernelRefusal.uninstallableEntropy([...failed, ...undone]);
+  }
+};
+
+/**
+ * The final pass's read of `globalThis[name]`, inside its own guard:
+ * `undefined` when it still holds `value`, or the failure to refuse with.
+ */
+const confirmInstalled = (
+  name: "Math" | "crypto",
+  value: object,
+):
+  | { readonly global: string; readonly holds: string; readonly fixed: boolean }
+  | undefined => {
+  try {
+    return Reflect.get(globalThis, name) === value
+      ? undefined
+      : {
+          global: name,
+          holds:
+            "no longer the kernel's after a later step of the install replaced it",
+          fixed: isFixed(name),
+        };
+  } catch (error) {
+    return { global: name, holds: heldAs(name, error), fixed: isFixed(name) };
   }
 };
 

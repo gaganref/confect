@@ -72,6 +72,19 @@ const freezes: Record<string, () => void> = {
       set: () => {},
       configurable: false,
     }),
+  "crypto-getter-restores-math": () =>
+    Object.defineProperty(globalThis, "crypto", {
+      get: () => {
+        // A hostile getter: it puts the host's Math back over the kernel's.
+        Object.defineProperty(globalThis, "Math", {
+          value: host.Math,
+          writable: true,
+          configurable: true,
+        });
+        return host.crypto;
+      },
+      configurable: true,
+    }),
   "throwing-getter-crypto": () =>
     Object.defineProperty(globalThis, "crypto", {
       get: () => {

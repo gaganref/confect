@@ -13,6 +13,7 @@ import {
 import { v } from "convex/values";
 import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
+import * as Schema from "effect/Schema";
 import * as Context from "effect/Context";
 import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
@@ -20,6 +21,7 @@ import refs from "../../../tools/local-backend/fixtures/confect/_generated/refs"
 import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Invocation from "../src/internal/Invocation";
 import * as Json from "../src/internal/Json";
+import * as KernelRefusal from "../src/internal/KernelRefusal";
 import { call, localBackendWorld } from "./fixtures/localBackendWorld";
 import {
   calls,
@@ -430,6 +432,33 @@ describe("randomness on the kernel", () => {
     ]);
   }, 120_000);
 
+  it("the entropy install's refusal, built without the class's parser, is what UnguardableGlobal.make builds", () => {
+    const failures = [
+      { global: "Math", holds: "a non-writable value", fixed: true },
+      { global: "crypto", holds: "a getter with no setter", fixed: false },
+    ];
+    const trusted = KernelRefusal.uninstallableEntropy(failures);
+    const parsed = KernelRefusal.UnguardableGlobal.make({
+      reason: trusted.reason,
+      globals: trusted.globals,
+      message: trusted.message,
+    });
+    expect(trusted).toBeInstanceOf(KernelRefusal.UnguardableGlobal);
+    expect(Schema.is(KernelRefusal.UnguardableGlobal)(trusted)).toBe(true);
+    const shape = (error: KernelRefusal.UnguardableGlobal) => [
+      error._tag,
+      error.reason,
+      error.globals,
+      error.message,
+      Reflect.ownKeys(error),
+    ];
+    expect(shape(trusted)).toEqual(shape(parsed));
+    expect([trusted.reason, trusted.globals]).toEqual([
+      "installFailed",
+      ["Math", "crypto"],
+    ]);
+  });
+
   describe("a Math or crypto the kernel cannot redefine refuses with UnguardableGlobal before any code runs", () => {
     const loader = pathToFileURL(
       createRequire(import.meta.url).resolve("tsx/esm"),
@@ -480,6 +509,46 @@ describe("randomness on the kernel", () => {
           false,
         ),
       );
+    }, 60_000);
+    it("a crypto getter that puts the host's Math back after Math's install refuses the open, and the next function after an open, through the final read-back pass", () => {
+      const undone = (loaded: boolean) => ({
+        outcome: "refused",
+        _tag: "UnguardableGlobal",
+        reason: "installFailed",
+        globals: ["Math"],
+        message: expect.stringContaining(
+          "globalThis.Math is no longer the kernel's after a later step of the install replaced it",
+        ),
+        loaded,
+        ran: false,
+      });
+      expect({
+        atOpen: outcome("crypto-getter-restores-math"),
+        afterOpen: outcome("crypto-getter-restores-math-after-open"),
+      }).toEqual({ atOpen: undone(false), afterOpen: undone(true) });
+    }, 60_000);
+    it("a configurable Math getter that throws gets a tagged UnguardableGlobal, built without the ambient Math", () => {
+      const run = spawnSync(
+        process.execPath,
+        [
+          "--import",
+          loader,
+          fileURLToPath(new URL("fixtures/throwingMath.ts", import.meta.url)),
+        ],
+        { encoding: "utf8" },
+      );
+      expect([run.status, run.stderr]).toEqual([0, ""]);
+      expect(Json.parse(run.stdout)).toEqual({
+        outcome: "refused",
+        _tag: "UnguardableGlobal",
+        reason: "installFailed",
+        globals: ["Math"],
+        message: expect.stringContaining(
+          "globalThis.Math is an accessor whose install threw TypeError: Math getter fails",
+        ),
+        loaded: false,
+        ran: false,
+      });
     }, 60_000);
     it("a crypto accessor whose getter throws refuses the open with UnguardableGlobal, non-configurable or configurable, never the raw error", () => {
       const thrownBy = (reason: string, holds: string) => ({

@@ -1661,7 +1661,20 @@ failing global is non-configurable, and `installFailed` otherwise, as for a
 configurable getter that throws. Its message describes each global and what
 was thrown through helpers that never throw (`heldAs`, `describeThrown`): each
 reads behind its own try and falls back to fixed text, such as "a thrown value
-that could not be described".
+that could not be described". The refusal is built without
+`UnguardableGlobal`'s parser (`makeTrusted` in `KernelRefusal.ts`, Effect's
+`Schema.makeClassTrusted`), because Effect's parser reads the ambient `Math`
+when it compiles and when it parses, and that is the global the install just
+failed to own.
+
+Once every global is installed, one final pass reads all of them back, inside
+the same guard, before any user code runs, at every module load and every
+function start. So a later step that undid an earlier global, such as a
+`crypto` getter that puts the host's `Math` back, refuses too.
+
+Test code that installs accessors which run arbitrary code to rewrite other
+globals during the kernel's install is hostile. It is out of scope beyond the
+final read-back pass, the same threat model as #1593.
 
 The kernel's own work uses the host's `Math` and `crypto`, captured once when
 its modules load and before any install (`HostGlobals.ts`). That covers
@@ -1684,8 +1697,10 @@ error whose `message` getter throws, read while describing it, and made
 `pin` build over the captured references. A bound Confect handler had failed
 with its generic "cannot pin" error under a non-configurable but writable
 `crypto`, because `pin` saw the kernel's object in place and took it for one it
-had assigned. A further descriptor shape that keeps this contract is not a
-finding.
+had assigned. Fix round 6 added the final read-back pass and built the refusal
+without the class's parser, after a configurable `Math` getter that throws made
+building the refusal throw again, untagged. A further descriptor shape that
+keeps this contract is not a finding.
 
 Row 7's Sync serving runs every query, mutation and action through the same
 `enter`, so each gets the kernel's `Math` and `crypto`. Its runs had leaked
