@@ -5,9 +5,12 @@
  * async op its query and mutation environment refuses (`start_async_op` in
  * `crates/isolate/src/environment/udf/mod.rs:367-375`, `not_allowed_in_udf` at
  * `:264-272`, at the local backend's `cccbade4`). Its isolate defines no
- * `setImmediate` and no `queueMicrotask`
- * (`npm-packages/udf-runtime/src/setup.ts` installs neither), in queries,
- * mutations and actions alike, while a Node action runs in Node.
+ * `setImmediate`, no `queueMicrotask` and no `MessageChannel`: of the timers,
+ * `setupTimers` installs only `setTimeout`, `setInterval`, `clearTimeout` and
+ * `clearInterval` (`npm-packages/udf-runtime/src/02_timers.ts:86-91`, called
+ * from `setup.ts:52`), and no other setup installs any of the three. That holds
+ * in queries, mutations and actions alike, and while a module loads, while a
+ * Node action, and a `"use node"` module, runs in Node.
  *
  * Each of these globals is an accessor that reads as a guard of the
  * implementation beneath it. A guard checks the kernel function running in the
@@ -175,8 +178,17 @@ const callerOf = (state: State, atLoad: boolean): Running | undefined => {
 const inTransaction = (running: Running | undefined): boolean =>
   running !== undefined && running.udfType !== "action";
 
-const inIsolate = (state: State): boolean =>
-  !state.probing && runningOf(state)?.runtime === "isolate";
+/**
+ * Whether the code running now runs in the isolate: a function, or else a
+ * module loading outside any function.
+ */
+const inIsolate = (state: State): boolean => {
+  if (state.probing) return false;
+  const running = runningOf(state);
+  return running === undefined
+    ? state.hooks?.loading() === "isolate"
+    : running.runtime === "isolate";
+};
 
 /**
  * Node's own modules that read or call a global the isolate lacks while doing a
@@ -312,13 +324,19 @@ const guarded: ReadonlyArray<Guarded> = [
     name: "setImmediate",
     rule: absentRule("setImmediate"),
     absent: true,
-    atLoad: false,
+    atLoad: true,
   },
   {
     name: "queueMicrotask",
     rule: absentRule("queueMicrotask"),
     absent: true,
-    atLoad: false,
+    atLoad: true,
+  },
+  {
+    name: "MessageChannel",
+    rule: absentRule("MessageChannel"),
+    absent: true,
+    atLoad: true,
   },
 ];
 
@@ -335,9 +353,26 @@ const makeGuard = (
         ? undefined
         : rule(state, running, args, readByNode);
     if (refused !== undefined) return refused.answer;
-    return Reflect.apply(implementation() as Fn, this, args);
+    const target = implementation() as Fn;
+    // A constructor, as `MessageChannel` is, builds through `new` as the host's
+    // would, with the host's prototype.
+    if (new.target !== undefined) {
+      return Reflect.construct(
+        target,
+        args,
+        new.target === guard ? target : new.target,
+      ) as unknown;
+    }
+    return Reflect.apply(target, this, args);
   }
   Object.defineProperty(guard, "name", { value: name });
+  // An instance of the host's constructor is an instance of its guard.
+  Object.defineProperty(guard, Symbol.hasInstance, {
+    value: (value: unknown) => {
+      const target = implementation();
+      return typeof target === "function" && value instanceof target;
+    },
+  });
   // `util.promisify(setTimeout)` reads the implementation's promisified
   // form, which is guarded too.
   const promisified = new WeakMap<object, Fn>();
@@ -459,6 +494,14 @@ const guardGlobal = (state: State, entry: Guarded): GuardResult => {
     return "value" in beneath ? guardOf(beneath.value) : throughAccessor;
   };
   const set = (value: unknown) => {
+    // Where the isolate lacks the global it reads `undefined`, so code that
+    // saves the global and restores it afterwards, as Vitest's
+    // `withSafeTimers` does around each module fetch, even one a load makes,
+    // assigns `undefined` back. That restores the absence it read, and leaves
+    // the implementation beneath in place.
+    if (absent && value === undefined && inIsolate(state) && !readByNode()) {
+      return;
+    }
     if (!("value" in beneath) && beneath.set !== undefined) {
       // Another library's accessor keeps its own store.
       beneath.set.call(global, value);

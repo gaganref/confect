@@ -1,3 +1,4 @@
+import { parse as parseAST } from "@babel/parser";
 import { AsyncLocalStorage } from "node:async_hooks";
 import {
   actionGeneric,
@@ -965,70 +966,38 @@ const isFunctionModule = (file: string): boolean => {
 };
 
 /**
- * Whether `source` opens with a `"use node"` directive: a string-literal
- * statement in its directive prologue, which is what the bundler reads
- * (`hasUseNodeDirective`, `npm-packages/convex/src/bundler/index.ts:508-548`,
- * at the local backend's `cccbade4`, which takes Babel's `program.directives`).
- * Comments and a hashbang may come before it.
+ * The bundler's fallback for a source Babel cannot parse
+ * (`useNodeDirectiveRegex`, `npm-packages/convex/src/bundler/index.ts:506` in
+ * `convex` 1.49.0).
+ */
+const useNodeDirectiveRegex = /^\s*("|')use node("|');?\s*$/;
+
+/**
+ * Whether `source` has a `"use node"` directive, decided as `convex` 1.49.0's
+ * bundler decides it (`hasUseNodeDirective`,
+ * `npm-packages/convex/src/bundler/index.ts:508-548`): a source without the
+ * text has none (`:512`); otherwise Babel parses it as a module with the `jsx`
+ * and `typescript` plugins, the bundler's options, and its `program.directives`
+ * decide (`:519-529`); a source Babel cannot parse has one when any line
+ * matches the bundler's fallback regex (`:530-545`). `convex` exports no such
+ * check, so this calls the same parser, `@babel/parser`, with the same
+ * options.
  */
 export const hasUseNodeDirective = (source: string): boolean => {
   if (!pipe(source, Str.includes("use node"))) return false;
-  let at = 0;
-  const rest = () => pipe(source, Str.slice(at));
-  // The offset of `token` in the rest of the source, past `from`, or its end.
-  const past = (token: string, from: number) =>
-    pipe(
-      rest(),
-      Str.slice(from),
-      Str.indexOf(token),
-      Option.match({
-        onNone: () => source.length - at,
-        onSome: (index) => from + index,
-      }),
+  try {
+    const ast = parseAST(source, {
+      sourceType: "module",
+      plugins: ["jsx", "typescript"],
+    });
+    return Arr.some(
+      ast.program.directives,
+      (directive) => directive.value.value === "use node",
     );
-  const skipTrivia = (newlines: boolean) => {
-    for (;;) {
-      const space = newlines ? /^\s+/.exec(rest()) : /^[ \t]+/.exec(rest());
-      if (space !== null) {
-        at += space[0].length;
-      } else if (
-        pipe(rest(), Str.startsWith("//")) ||
-        (at === 0 && pipe(rest(), Str.startsWith("#!")))
-      ) {
-        if (!newlines) return;
-        at += past("\n", 0);
-      } else if (pipe(rest(), Str.startsWith("/*"))) {
-        at = Math.min(source.length, at + past("*/", 2) + 2);
-      } else {
-        return;
-      }
-    }
-  };
-  for (;;) {
-    skipTrivia(true);
-    const quote = source[at];
-    if (quote !== '"' && quote !== "'") return false;
-    let end = at + 1;
-    while (end < source.length && source[end] !== quote) {
-      end += source[end] === "\\" ? 2 : 1;
-    }
-    if (end >= source.length) return false;
-    const value = pipe(source, Str.slice(at + 1, end));
-    at = end + 1;
-    skipTrivia(false);
-    // A directive is a whole statement: the literal ends at `;`, a line end,
-    // the end of the file, or a comment that runs to one.
-    const next = source[at];
-    const ended =
-      next === undefined ||
-      next === ";" ||
-      next === "\n" ||
-      next === "\r" ||
-      pipe(rest(), Str.startsWith("//")) ||
-      pipe(rest(), Str.startsWith("/*"));
-    if (!ended) return false;
-    if (value === "use node") return true;
-    if (next === ";") at += 1;
+  } catch {
+    return Arr.some(Str.split(source, "\n"), (line) =>
+      useNodeDirectiveRegex.test(line),
+    );
   }
 };
 

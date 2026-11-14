@@ -595,10 +595,16 @@ JavaScript as a plain, catchable `Error` with that message
   multipart formdata.", and a urlencoded body parses in JavaScript and is
   allowed. A handler reaches this with the runtime's own `Request` and
   `Response`, so the kernel guards it.
-- The isolate defines no `setImmediate` and no `queueMicrotask`
-  (`npm-packages/udf-runtime/src/setup.ts:32-66` installs neither, and V8
-  provides neither), in queries, mutations and actions alike. A Node action
-  runs in Node and has both.
+- The isolate defines no `setImmediate`, no `queueMicrotask` and no
+  `MessageChannel` (`npm-packages/udf-runtime/src/setup.ts:32-66` installs
+  none of them; of the timers, `setupTimers` installs only `setTimeout`,
+  `setInterval`, `clearTimeout` and `clearInterval`,
+  `npm-packages/udf-runtime/src/02_timers.ts:86-91`; and V8 provides none).
+  That holds in queries, mutations and actions alike, and while a module
+  loads. A Node action runs in Node and has all three, and so does a
+  `"use node"` module while it loads. The plain fixture's `isolateGlobals` and
+  `isolateGlobalsNode` modules show it on the binary, at load and in each
+  function (`packages/server/test/local-backend/ioBans.test.ts`).
 
 The kernel's `src/internal/IoBans.ts` makes each of `fetch`, `setTimeout`,
 `setInterval`, `setImmediate` and `queueMicrotask` an accessor on `globalThis`,
@@ -718,8 +724,17 @@ script that names itself after a Node module does not pass.
 
 A module's runtime comes from its `"use node"` directive, read from its source
 when the world opens, as the bundler's `determineEnvironment` decides
-(`npm-packages/convex/src/bundler/index.ts:558-588`, with the directive from
-Babel's `program.directives` at `:508-548`). The test supplies the sources as a
+(`npm-packages/convex/src/bundler/index.ts:558-588`). The directive is read
+exactly as `convex` 1.49.0's `hasUseNodeDirective` reads it (`:508-548`):
+`convex` exports no such check, so `Execution.hasUseNodeDirective` calls the
+same parser, `@babel/parser`, now a runtime dependency of `@confect/test`
+(7.29.7, the copy already in the workspace's tree), with the same options,
+`sourceType: "module"` and the `jsx` and `typescript` plugins (`:519-526`),
+and reads `program.directives` (`:527-529`). A source without the text
+`use node` has none (`:512`), and one Babel cannot parse falls back to the
+bundler's line regex (`:506`, `:530-545`). Before fix round 7 a hand-rolled
+scanner read the prologue and took `"use node"\n.length;` as a directive,
+where Babel reads an expression. The test supplies the sources as a
 `?raw` glob of the same files from any test file, matched to its module by
 its path below the directory that holds `_generated`, through the kernel
 shim's `sources`,
@@ -756,9 +771,18 @@ layer fail there.
 - In a query or mutation: `fetch` rejects with the binary's `TypeError`; a
   timer returns an ID and ends its function; multipart `formData()` rejects
   with the binary's error.
-- In a query, a mutation or an isolate action, `setImmediate` and
-  `queueMicrotask` read `undefined`, and a reference to either taken earlier
-  throws `ReferenceError: <name> is not defined`. Node's own modules still find
+- In a query, a mutation or an isolate action, and while a module without
+  `"use node"` loads, `setImmediate`, `queueMicrotask` and `MessageChannel`
+  read `undefined`, and a reference to any of them taken earlier throws
+  `ReferenceError: <name> is not defined`. Before fix round 7 a module's load
+  saw the host's, so a module that started a promise on `setImmediate` at its
+  top level and exported a query returning it answered `"fired"`, and
+  `MessageChannel` was not guarded at all. Outside a function the guard is the
+  host's constructor: `new MessageChannel()` builds through it, and an instance
+  is an instance of it. Vitest's `withSafeTimers` saves and restores
+  `setImmediate` around each module fetch, a load's included, so it assigns
+  back the `undefined` it read there; that assignment restores the absence it
+  read and leaves the implementation beneath in place. Node's own modules still find
   them: its `fetch` and web streams read and call `queueMicrotask` while doing a
   function's work, where the binary's built-ins need neither, so the guard
   checks whether the calling frame is a `node:` module.
