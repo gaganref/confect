@@ -173,7 +173,8 @@ const localComponent = (
 
 /**
  * A local `tally` component under `project` whose module reads its bound
- * `LABEL` while it loads, and whose `label` query answers what it read.
+ * `LABEL` while it loads, as does a helper it imports from outside its own
+ * folder, and whose `label` query answers both as `<own>/<helper>`.
  */
 const tallyComponent = (project: { readonly root: string }) =>
   Effect.gen(function* () {
@@ -191,13 +192,18 @@ const tallyComponent = (project: { readonly root: string }) =>
       "confect/loaded.ts",
       'export default process.env["LABEL"] ?? "unset";\n',
     );
+    yield* fs.makeDirectory(`${project.root}/shared`, { recursive: true });
+    yield* fs.writeFileString(
+      `${project.root}/shared/label.ts`,
+      'export default process.env["LABEL"] ?? "unset";\n',
+    );
     yield* write(
       "confect/tally.spec.ts",
       'import { FunctionSpec, GroupSpec } from "@confect/core";\nimport * as Schema from "effect/Schema";\nexport default GroupSpec.make().addFunction(FunctionSpec.publicQuery({ name: "label", returns: () => Schema.String }));\n',
     );
     yield* write(
       "confect/tally.impl.ts",
-      'import { FunctionImpl, GroupImpl } from "@confect/server";\nimport * as Effect from "effect/Effect";\nimport * as Layer from "effect/Layer";\nimport databaseSchema from "./_generated/schema";\nimport loaded from "./loaded";\nimport tally from "./tally.spec";\nconst label = FunctionImpl.make(databaseSchema, tally, "label", () => Effect.succeed(loaded));\nexport default GroupImpl.make(databaseSchema, tally).pipe(Layer.provide(label), GroupImpl.finalize);\n',
+      'import { FunctionImpl, GroupImpl } from "@confect/server";\nimport * as Effect from "effect/Effect";\nimport * as Layer from "effect/Layer";\nimport databaseSchema from "./_generated/schema";\nimport loaded from "./loaded";\nimport helper from "../../../shared/label";\nimport tally from "./tally.spec";\nconst label = FunctionImpl.make(databaseSchema, tally, "label", () => Effect.succeed(`${loaded}/${helper}`));\nexport default GroupImpl.make(databaseSchema, tally).pipe(Layer.provide(label), GroupImpl.finalize);\n',
     );
     yield* write(
       "client.ts",
@@ -476,7 +482,7 @@ layer(NodeServices.layer)("codegen's generated component subject", (it) => {
   );
 
   it.effect(
-    "gives each of a component's mounts its own copy of the mounted component's modules, read under that mount's settings",
+    "gives each of a component's mounts its own copy of the mounted component's modules and of a helper outside its folder, read under that mount's settings",
     () =>
       Effect.gen(function* () {
         const project = yield* componentProject;
@@ -529,7 +535,7 @@ layer(NodeServices.layer)("codegen's generated component subject", (it) => {
             Schema.String,
           );
         }).pipe(Effect.provideContext(services));
-        expect(labels).toBe("first second");
+        expect(labels).toBe("first/first second/second");
       }).pipe(Effect.scoped),
     { timeout: 120000 },
   );
