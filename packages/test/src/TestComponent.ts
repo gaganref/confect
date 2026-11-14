@@ -1,7 +1,6 @@
 import { Callback, SchemaToValidator, type Ref } from "@confect/core";
 import type { DatabaseSchema, RegisteredConvexFunction } from "@confect/server";
-import { internalMutationGeneric } from "convex/server";
-import { ConvexError, convexToJson, type Value } from "convex/values";
+import { ConvexError, convexToJson, v, type Value } from "convex/values";
 import * as Arbitrary from "effect/Arbitrary";
 import * as Arr from "effect/Array";
 import * as Context from "effect/Context";
@@ -15,7 +14,7 @@ import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import type * as SchemaAST from "effect/SchemaAST";
 import * as Execution from "./internal/Execution.js";
-import { parse, stringify } from "./internal/Json.js";
+import { stringify } from "./internal/Json.js";
 import type { ValidatorJSON } from "./internal/KernelValues.js";
 import {
   openSession,
@@ -390,16 +389,15 @@ const makeEngine = (
     if (found === undefined) return undefined;
     let validator = validators.get(id);
     if (validator === undefined) {
-      // A registered function's `exportArgs` is how the kernel reads every
-      // function's validator, so a slot's is read the same way.
-      validator = parse(
-        internalMutationGeneric({
-          args: SchemaToValidator.compileArgsSchema(
+      // A Convex validator carries the JSON a registered function's
+      // `exportArgs` serializes, the form the kernel checks every call with.
+      validator = (
+        v.object(
+          SchemaToValidator.compileArgsSchema(
             found.contract.functionProvenance.args,
           ),
-          handler: () => null,
-        }).exportArgs(),
-      ) as ValidatorJSON;
+        ) as unknown as { readonly json: ValidatorJSON }
+      ).json;
       validators.set(id, validator);
     }
     return validator;
