@@ -1717,9 +1717,9 @@ const SIBLING_DESCRIPTORS = [
  * The file the component at `root` keeps its descriptor in. A package with
  * `exports` names it by `<package>/client`, resolved as Node resolves a package
  * importing itself, through nested conditions and arrays. Otherwise, as an
- * in-repo component keeps it, it is `client.ts` beside `confect/`. A component
- * with neither stops codegen, as does a `./client` export that does not
- * resolve.
+ * in-repo component keeps it, it is `client.ts` beside `confect/`. None when
+ * the component declares neither, since its host may declare its descriptor. A
+ * `./client` export that does not resolve stops codegen.
  */
 const descriptorFile = Effect.fnUntraced(function* (root: string) {
   const fs = yield* FileSystem.FileSystem;
@@ -1736,7 +1736,7 @@ const descriptorFile = Effect.fnUntraced(function* (root: string) {
         `${declared.name}/client`,
         manifest,
       );
-      if (Option.isSome(resolved)) return resolved.value;
+      if (Option.isSome(resolved)) return resolved;
       if (
         Predicate.isObject(declared.exports) &&
         Predicate.hasProperty(declared.exports, "./client")
@@ -1749,13 +1749,12 @@ const descriptorFile = Effect.fnUntraced(function* (root: string) {
   }
   for (const sibling of SIBLING_DESCRIPTORS) {
     const file = path.join(root, sibling);
-    if (yield* fs.exists(file)) return file;
+    if (yield* fs.exists(file)) return Option.some(file);
   }
-  return yield* CodegenError.InvalidDeclarationError.make({
-    declarationPath: display("client.ts"),
-    reason:
-      'the component has no descriptor. Export its `Component.make` descriptor from the package\'s "./client" entry, or default-export it from client.ts beside confect/.',
-  });
+  // A component may leave its descriptor to the host that mounts it, as a
+  // host's `Mount.make(Component.make(...))` does, and then declares no `init`
+  // of its own.
+  return Option.none<string>();
 });
 
 /**
@@ -1775,8 +1774,9 @@ const displayFrom = Effect.fnUntraced(function* (root: string) {
 /**
  * The component's own `init`, from the descriptor at its own root, with the
  * specifier `_generated/testing.ts` imports the descriptor by. None when the
- * descriptor declares no `init`. A file that default-exports no descriptor, or
- * an `init` that is no internal mutation of the component, stops codegen.
+ * component declares no descriptor of its own, or its descriptor no `init`. A
+ * file that default-exports no descriptor, or an `init` that is no internal
+ * mutation of the component, stops codegen.
  */
 const descriptorInit = Effect.fnUntraced(function* (
   groups: ReadonlyArray<TestingManifest.FoundGroup>,
@@ -1786,7 +1786,9 @@ const descriptorInit = Effect.fnUntraced(function* (
   const convexDirectory = yield* ConvexDirectory.get;
   const root = componentRoot(path, convexDirectory);
   const confectDirectory = yield* ConfectDirectory.get;
-  const file = yield* descriptorFile(root);
+  const located = yield* descriptorFile(root);
+  if (Option.isNone(located)) return undefined;
+  const file = located.value;
   const display = yield* displayFrom(path.dirname(file));
   const declarationPath = display(path.basename(file));
   const module = yield* bundledModule(file);

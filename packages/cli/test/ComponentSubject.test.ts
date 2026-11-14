@@ -339,7 +339,7 @@ layer(NodeServices.layer)("codegen's generated component subject", (it) => {
   );
 
   it.effect(
-    "stops codegen for a component with no descriptor",
+    "takes no init for a component that leaves its descriptor to its host",
     () =>
       Effect.gen(function* () {
         const project = yield* componentProject;
@@ -348,12 +348,30 @@ layer(NodeServices.layer)("codegen's generated component subject", (it) => {
           '{"name":"@confect-fixtures/mailer","type":"module"}',
         );
         yield* project.remove("client.ts");
+        yield* project.run;
+        const testing = yield* project.read("confect/_generated/testing.ts");
+        expect(testing).not.toContain("$descriptor");
+        expect(testing).toContain("  init: undefined,");
+      }).pipe(Effect.scoped),
+    { timeout: 60000 },
+  );
+
+  it.effect(
+    "stops codegen for a client.ts that default-exports no descriptor",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* componentProject;
+        yield* project.write(
+          "package.json",
+          '{"name":"@confect-fixtures/mailer","type":"module"}',
+        );
+        yield* project.write("client.ts", "export default 1;\n");
         const refused = yield* Effect.flip(project.run);
         expect(refused).toEqual(
           InvalidDeclarationError.make({
             declarationPath: "client.ts",
             reason:
-              'the component has no descriptor. Export its `Component.make` descriptor from the package\'s "./client" entry, or default-export it from client.ts beside confect/.',
+              "it holds the component's descriptor, so it default-exports what `Component.make` returns.",
           }),
         );
       }).pipe(Effect.scoped),
