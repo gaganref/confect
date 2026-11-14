@@ -36,16 +36,51 @@ export const onShape = mutationGeneric({
 });
 
 /**
- * A handle for `onShape`, as a host creates one for a component's slot.
+ * The validator kinds `shape` leaves out: an id of a table, a function handle,
+ * a commit timestamp, and bytes, which a refusal of a large value shows.
+ */
+export const kinds = {
+  doc: v.id("documents"),
+  callback: v.function(),
+  stamp: v.commitTs(),
+  blob: v.bytes(),
+};
+
+export const onKinds = mutationGeneric({
+  args: kinds,
+  handler: () => Promise.resolve(null),
+});
+
+/**
+ * A host function whose declared return its answer may break: it returns the
+ * ticket it is given, and declares a ticket an id of `documents`.
+ */
+export const badReturn = mutationGeneric({
+  args: { ticket: v.string() },
+  returns: v.object({ ticket: v.id("documents") }),
+  handler: (_ctx, { ticket }) => Promise.resolve({ ticket } as never),
+});
+
+/**
+ * A handle for one of this module's targets, as a host creates one for a
+ * component's slot: `onShape` unless `target` names another.
  */
 export const handle = mutationGeneric({
-  args: {},
-  handler: () =>
+  args: { target: v.optional(v.string()) },
+  handler: (_ctx, { target }) =>
     createFunctionHandle(
       makeFunctionReference<"mutation", Record<string, Value>, null>(
-        "callbackArgs:onShape",
+        `callbackArgs:${target ?? "onShape"}`,
       ),
     ),
+});
+
+/**
+ * A new document of `table`'s id, for an argument an id validator accepts.
+ */
+export const makeDocument = mutationGeneric({
+  args: { table: v.union(v.literal("documents"), v.literal("others")) },
+  handler: (ctx, { table }) => ctx.db.insert(table, {}),
 });
 
 /**
