@@ -113,6 +113,18 @@ export default GroupSpec.make()
   )
   .addFunction(
     FunctionSpec.publicMutation({
+      name: "systemShare",
+      args: () => ({}),
+      returns: () =>
+        Schema.Struct({
+          root: Schema.Finite,
+          nested: Schema.Finite,
+          stale: Schema.Finite,
+        }),
+    }),
+  )
+  .addFunction(
+    FunctionSpec.publicMutation({
       name: "metrics",
       args: () => ({ caseId: Schema.String }),
       returns: () => {

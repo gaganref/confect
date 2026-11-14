@@ -298,6 +298,40 @@ const staleMetrics = FunctionImpl.make(
     }).pipe(Effect.orDie),
 );
 
+/**
+ * The system-table read intervals the binary counts in `databaseQueries` to run
+ * a function, measured with no user table touched: a root mutation's count at
+ * its start, what its first nested call adds, and a stale-snapshot query's
+ * count at its start. The test kernel counts only a function's own reads, so it
+ * answers 0 for each.
+ */
+const systemShare = FunctionImpl.make(
+  databaseSchema,
+  transactions,
+  "systemShare",
+  () =>
+    Effect.gen(function* () {
+      const transaction = yield* TransactionMetadata;
+      const queries = yield* QueryRunner;
+      const start = yield* transaction.getMetrics();
+      yield* queries.runQuery(
+        refs.internal.groups.transactions.readMetrics,
+        {},
+      );
+      const afterNested = yield* transaction.getMetrics();
+      const stale = yield* queries.runQuery(
+        refs.internal.groups.transactions.readMetrics,
+        {},
+        { useStaleSnapshot: true },
+      );
+      return {
+        root: start.databaseQueries.used,
+        nested: afterNested.databaseQueries.used - start.databaseQueries.used,
+        stale: stale.databaseQueries!.used,
+      };
+    }).pipe(Effect.orDie),
+);
+
 export default GroupImpl.make(databaseSchema, transactions).pipe(
   Layer.provide(read),
   Layer.provide(write),
@@ -308,6 +342,7 @@ export default GroupImpl.make(databaseSchema, transactions).pipe(
   Layer.provide(rollback),
   Layer.provide(staleRead),
   Layer.provide(metrics),
+  Layer.provide(systemShare),
   Layer.provide(insertedIntervals),
   Layer.provide(idle),
   Layer.provide(readMetrics),

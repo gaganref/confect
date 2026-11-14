@@ -32,6 +32,14 @@ export interface KernelControls {
   ) => Promise<Execution.HeldAttempt>;
   readonly apply: (id: string) => Promise<Execution.KernelApply>;
   readonly held: () => ReadonlyArray<Execution.HeldAttempt>;
+  /**
+   * The provider port calls actions made, held until answered, oldest first.
+   */
+  readonly commands: () => ReadonlyArray<Execution.HeldCommand>;
+  /**
+   * Answer a held command, so its port call returns `output`.
+   */
+  readonly answer: (id: string, output: unknown) => void;
   readonly withIdentity: (identity: Partial<UserIdentity>) => KernelControls;
   readonly withRequestMetadata: (metadata: {
     readonly ip?: string | null;
@@ -145,6 +153,13 @@ export interface RegisterOptions {
    * keys it at the path the component is registered at.
    */
   readonly secrets?: Redaction.Declared;
+  /**
+   * Each module's source, such as `import.meta.glob(pattern, { query: "?raw",
+   * import: "default" })` of the same files gives, matched to its module by its
+   * path below the directory that holds `_generated`. The kernel reads each
+   * module's `"use node"` directive from it.
+   */
+  readonly sources?: Record<string, () => Promise<string>>;
 }
 
 const isSchemaDefinition = (
@@ -198,6 +213,8 @@ const accessor = (
       );
     },
     held: () => Array.map(world.held(), (view) => world.projectHeld(view)),
+    commands: () => world.commands(),
+    answer: (id: string, output: unknown) => world.answer(id, output),
     subscriber: () => {
       const subscriber = subscriptions.subscriber(caller);
       // A refusal reaches the subscriber's next subscription.
@@ -324,8 +341,10 @@ const accessor = (
  * timer, and a cron run's delay draws from the random stream of the world bound
  * when the backend opened, or else the backend's own `world`. A subscriber's
  * subscriptions go stale when a commit changes what they read or the identity
- * they read changes, and `refresh` reruns them. `redaction` names the secret
- * schema nodes of tables and functions: a value under one reaches a snapshot, a
+ * they read changes, and `refresh` reruns them. An action's raw `fetch` dies
+ * with `BackendRefusal` `UndeclaredFetch`, and its provider port calls wait in
+ * `commands` until `answer` settles them. `redaction` names the secret schema
+ * nodes of tables and functions: a value under one reaches a snapshot, a
  * failure report or a diff only as a marker.
  */
 export function convexTest(
@@ -336,6 +355,17 @@ export function convexTest(
         readonly modules?: Modules;
         readonly transactionLimits?: unknown;
         readonly runtime?: Kernel.KernelRuntime;
+        /**
+         * Each module's source, matched to its module by its path below the
+         * directory that holds `_generated`, so the kernel reads each module's
+         * `"use node"` directive as Convex's bundler does.
+         */
+        readonly sources?: Record<string, () => Promise<string>>;
+        /**
+         * The runtime of each listed component's plain Convex actions, for a
+         * component registered without sources.
+         */
+        readonly componentRuntimes?: Execution.ComponentRuntimes;
         readonly redaction?: Redaction.Policy;
         /**
          * The backend's own world. A backend opened with no invocation bound
@@ -355,7 +385,9 @@ export function convexTest(
 ): any {
   let schema: SchemaDefinition<GenericSchema, boolean> | undefined;
   let runtime: Kernel.KernelRuntime | undefined;
+  let sources: Record<string, () => Promise<string>> | undefined;
   let redaction: Redaction.Policy | undefined;
+  let componentRuntimes: Execution.ComponentRuntimes | undefined;
   let own: Invocation.World | undefined;
   let queryCacheAge: number | undefined;
   if (isSchemaDefinition(schemaOrOptions)) {
@@ -367,7 +399,9 @@ export function convexTest(
     schema = schemaOrOptions.schema;
     modules = schemaOrOptions.modules;
     runtime = schemaOrOptions.runtime;
+    sources = schemaOrOptions.sources;
     redaction = schemaOrOptions.redaction;
+    componentRuntimes = schemaOrOptions.componentRuntimes;
     own = schemaOrOptions.world;
     queryCacheAge = schemaOrOptions.queryCacheAge;
   }
@@ -376,7 +410,15 @@ export function convexTest(
       "The test kernel needs the modules map: pass `import.meta.glob(...)` as the second argument.",
     );
   }
-  const world = new Execution.World(schema, modules, runtime, redaction, own);
+  const world = new Execution.World(
+    schema,
+    modules,
+    runtime,
+    redaction,
+    own,
+    sources,
+    componentRuntimes,
+  );
   const subscriptions = new Subscriptions.Registry(world, queryCacheAge);
   return {
     ...accessor(
@@ -397,6 +439,7 @@ export function convexTest(
         componentModules,
         options?.standing,
         options?.secrets,
+        options?.sources,
       );
       return (componentsGeneric() as any)[componentPath];
     },

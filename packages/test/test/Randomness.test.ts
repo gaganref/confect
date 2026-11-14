@@ -32,6 +32,7 @@ import {
 } from "./fixtures/drawingBackend";
 import { expectedOnKernel, normalize } from "./fixtures/randomnessProbe";
 import { keptAtImport } from "./fixtures/randomKeptAtImport";
+import { withSources } from "./fixtures/inlineSources";
 
 const probe = refs.public.groups.randomness;
 
@@ -99,7 +100,7 @@ const drawingAtLoad = (
 ): KernelControls =>
   convexTest({
     schema: defineSchema({}),
-    modules: {
+    ...withSources({
       "_generated/server.ts": () => Promise.resolve({}),
       "draws.ts": () => {
         const drawn = draw();
@@ -110,7 +111,7 @@ const drawingAtLoad = (
           }),
         });
       },
-    },
+    }),
     ...(world === undefined ? {} : { world }),
   });
 
@@ -121,7 +122,7 @@ const drawingAtLoad = (
 const keepingAtLoad = (world?: Invocation.World): KernelControls =>
   convexTest({
     schema: defineSchema({}),
-    modules: {
+    ...withSources({
       "_generated/server.ts": () => Promise.resolve({}),
       "kept.ts": () => {
         const { random } = Math;
@@ -146,7 +147,7 @@ const keepingAtLoad = (world?: Invocation.World): KernelControls =>
           }),
         });
       },
-    },
+    }),
     ...(world === undefined ? {} : { world }),
   });
 
@@ -527,6 +528,51 @@ describe("randomness on the kernel", () => {
         afterOpen: outcome("crypto-getter-restores-math-after-open"),
       }).toEqual({ atOpen: undone(false), afterOpen: undone(true) });
     }, 60_000);
+    it("a Math setter that takes the kernel's Math and replaces fetch refuses the open, and the next function after an open, through the one final read-back of every guarded global, before the replacement is called", () => {
+      const replaced = (loaded: boolean) => ({
+        outcome: "refused",
+        _tag: "UnguardableGlobal",
+        reason: "installFailed",
+        globals: ["fetch"],
+        message: expect.stringContaining("globalThis.fetch"),
+        loaded,
+        ran: false,
+        fetched: 0,
+      });
+      expect({
+        atOpen: outcome("math-setter-replaces-fetch"),
+        afterOpen: outcome("math-setter-replaces-fetch-after-open"),
+      }).toEqual({ atOpen: replaced(false), afterOpen: replaced(true) });
+    }, 60_000);
+    it("a console a test left as a property the kernel cannot redefine refuses the open with notConfigurable naming console", () => {
+      expect(outcome("fixed-console")).toEqual({
+        outcome: "refused",
+        _tag: "UnguardableGlobal",
+        reason: "notConfigurable",
+        globals: ["console"],
+        message: expect.stringContaining(
+          "The test kernel cannot guard globalThis.console",
+        ),
+        loaded: false,
+        ran: false,
+      });
+    }, 60_000);
+    it("a Math setter that takes the kernel's Math and replaces console refuses the open, and the next function after an open, through the one final read-back of every guarded global, before the action logs", () => {
+      const replaced = (loaded: boolean) => ({
+        outcome: "refused",
+        _tag: "UnguardableGlobal",
+        reason: "installFailed",
+        globals: ["console"],
+        message: expect.stringContaining("globalThis.console"),
+        loaded,
+        ran: false,
+        logged: 0,
+      });
+      expect({
+        atOpen: outcome("math-setter-replaces-console"),
+        afterOpen: outcome("math-setter-replaces-console-after-open"),
+      }).toEqual({ atOpen: replaced(false), afterOpen: replaced(true) });
+    }, 60_000);
     it("a configurable Math getter that throws gets a tagged UnguardableGlobal, built without the ambient Math", () => {
       const run = spawnSync(
         process.execPath,
@@ -666,7 +712,7 @@ describe("randomness on the kernel", () => {
       const t: KernelControls = convexTest({
         schema: defineSchema({ ticks: defineTable({ n: v.number() }) }),
         world: { ...worldOf("own"), random: streamFor(200) },
-        modules: {
+        ...withSources({
           "_generated/server.ts": () => Promise.resolve({}),
           "ticks.ts": () =>
             Promise.resolve({
@@ -693,7 +739,7 @@ describe("randomness on the kernel", () => {
                 handler: () => Promise.resolve(Math.random()),
               }),
             }),
-        },
+        }),
       });
       const received: Array<Record<string, any>> = [];
       const open = () => {

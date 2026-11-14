@@ -225,6 +225,12 @@ export const make = (
         }
       },
     });
+    // The bridge runs the component's `http.ts` routes, which Convex runs in
+    // its isolate, so it carries Confect's isolate mark, and a source with no
+    // `"use node"` directive when the component's sources are given.
+    Object.defineProperty(invoke, Symbol.for("@confect/server/NodeAction"), {
+      value: false,
+    });
     // The bridge builds the component's router itself, once per site URL, as
     // a deployment builds a mounted component's router at its mount. So the
     // backend never loads the HTTP module on its own: the test kernel would
@@ -240,7 +246,15 @@ export const make = (
       componentPath,
       schema,
       { ...backendModules, [bridgePath]: () => Promise.resolve({ invoke }) },
-      options,
+      options?.sources === undefined
+        ? options
+        : {
+            ...options,
+            sources: {
+              ...options.sources,
+              [bridgePath]: () => Promise.resolve(""),
+            },
+          },
     );
     registered.add(componentPath);
   };

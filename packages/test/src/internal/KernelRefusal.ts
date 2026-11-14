@@ -273,7 +273,13 @@ export class UnguardableGlobal extends Schema.TaggedError<
  * global the install just failed to own, which a test may have left throwing.
  * Its fields here are kernel-built strings and literals. `Randomness.test.ts`
  * checks that it builds what `make` builds, so an Effect release that changes
- * it fails there.
+ * it fails there. My refusals for a global replaced while a function ran, or
+ * that a test left non-configurable, are built the same way, since the kernel
+ * builds them while a function's copy of the globals may be in place.
+ *
+ * WORKAROUND: Effect 4.1.4 has no public parser-free constructor for a class
+ * instance. This helper goes once Effect exposes one, and these refusals are
+ * built with it.
  */
 const makeTrusted = (
   Schema as unknown as {
@@ -319,6 +325,233 @@ export const uninstallableEntropy = (
     message: `The test kernel cannot install its own random sources: ${Array.join(held, "; ")}. Code that read it would draw from the host's randomness, so the kernel refuses before any module or function code runs. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`,
   });
 };
+
+const qualified = (globals: ReadonlyArray<string>) =>
+  Array.join(
+    Array.map(globals, (global) => `globalThis.${global}`),
+    ", ",
+  );
+
+/**
+ * Why the I/O guards could not stand before a function ran: each global with
+ * whether a test left it as a property the kernel cannot redefine
+ * (`notConfigurable`), or whether its redefinition threw or a later step of the
+ * install undid it (`installFailed`, when any did).
+ */
+export const unguardableGlobal = (
+  failures: ReadonlyArray<{ readonly name: string; readonly fixed: boolean }>,
+) => {
+  let fixed = true;
+  const globals: Array<string> = [];
+  for (const failure of failures) {
+    fixed &&= failure.fixed;
+    globals.push(failure.name);
+  }
+  return makeTrusted(UnguardableGlobal, {
+    _tag: "UnguardableGlobal",
+    reason: fixed ? "notConfigurable" : "installFailed",
+    globals,
+    message: fixed
+      ? `The test kernel cannot guard ${qualified(globals)}: a test replaced it with a property that cannot be redefined, so a function could reach the host's implementation unchecked. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`
+      : `The test kernel could not install its guard on ${qualified(globals)}: redefining it threw, or a later step of the install undid it, as a getter a test left on another global that replaces this one when read does, so a function could reach the host's implementation unchecked. The function does not start. Replace the global with a plain configurable property, as vi.stubGlobal does, or assign it.`,
+  });
+};
+
+/**
+ * The one refusal for a boundary whose installs or final read-back failed: the
+ * I/O guards' globals and the entropy install's, each as its own refusal says
+ * it, in one `UnguardableGlobal` naming every global. Its reason is
+ * `notConfigurable` only when every global is a property the kernel cannot
+ * redefine.
+ */
+export const unguardableGlobals = (
+  io: ReadonlyArray<{ readonly name: string; readonly fixed: boolean }>,
+  entropy: ReadonlyArray<{
+    readonly global: string;
+    readonly holds: string;
+    readonly fixed: boolean;
+  }>,
+): UnguardableGlobal => {
+  if (entropy.length === 0) return unguardableGlobal(io);
+  if (io.length === 0) return uninstallableEntropy(entropy);
+  const ioRefusal = unguardableGlobal(io);
+  const entropyRefusal = uninstallableEntropy(entropy);
+  const fixed =
+    ioRefusal.reason === "notConfigurable" &&
+    entropyRefusal.reason === "notConfigurable";
+  return makeTrusted(UnguardableGlobal, {
+    _tag: "UnguardableGlobal",
+    reason: fixed ? "notConfigurable" : "installFailed",
+    globals: [...entropyRefusal.globals, ...ioRefusal.globals],
+    message: `${entropyRefusal.message} ${ioRefusal.message}`,
+  });
+};
+
+export const replacedWhileRunning = (
+  udfPath: string,
+  globals: ReadonlyArray<string>,
+) =>
+  makeTrusted(UnguardableGlobal, {
+    _tag: "UnguardableGlobal",
+    reason: "replacedWhileRunning",
+    globals,
+    message: `${qualified(globals)} was redefined while ${udfPath} ran, so a call made through the replacement reached it without the test kernel's check. The function fails, a mutation's writes are rolled back, and the guard is installed again. Replace a global between functions, or assign it, which keeps it guarded.`,
+  });
+
+/**
+ * The kernel could not tell, or refuses, the runtime a module runs in: a module
+ * with no source when the test gave sources, a `"use node"` directive where the
+ * bundler forbids one, or a Confect action whose registered runtime the
+ * module's directive contradicts.
+ */
+export class ModuleRuntime extends Schema.TaggedError<
+  ModuleRuntime,
+  { readonly brand: unique symbol }
+>()("ModuleRuntime", {
+  reason: Schema.Literals([
+    "missingSource",
+    "nodeNotAllowed",
+    "markerDisagrees",
+  ]),
+  componentPath: Schema.String,
+  module: Schema.String,
+  message: Schema.String,
+}) {}
+
+/**
+ * A module exports an action whose runtime the kernel cannot tell: the test
+ * gave the component no sources to read its `"use node"` directive from, and
+ * the action carries no Confect mark, so it is a plain Convex action that
+ * Convex could run in Node or in its isolate. Refused when the kernel opens,
+ * before any function runs.
+ */
+export class ActionRuntimeUnknown extends Schema.TaggedError<
+  ActionRuntimeUnknown,
+  { readonly brand: unique symbol }
+>()("ActionRuntimeUnknown", {
+  componentPath: Schema.String,
+  module: Schema.String,
+  exports: Schema.Array(Schema.String),
+  message: Schema.String,
+}) {}
+
+/**
+ * A refusal a test can read: what failed, why the kernel refuses it, what to do
+ * instead, and where the testing guide explains it. `UndeclaredFetch` is the
+ * kernel's one deliberate departure from the binary, which performs a raw
+ * `fetch` in an action.
+ */
+export class BackendRefusal extends Schema.TaggedError<
+  BackendRefusal,
+  { readonly brand: unique symbol }
+>()("BackendRefusal", {
+  reason: Schema.Literal("UndeclaredFetch"),
+  componentPath: Schema.String,
+  /**
+   * The action that fetched, or, for a fetch a module made while it loaded,
+   * `module` instead.
+   */
+  functionName: Schema.optionalKey(Schema.String),
+  module: Schema.optionalKey(Schema.String),
+  host: Schema.String,
+  failed: Schema.String,
+  because: Schema.String,
+  instead: Schema.String,
+  docs: Schema.TemplateLiteral(["https://", Schema.String, "#", Schema.String]),
+  message: Schema.String,
+}) {}
+
+const egressDocs =
+  "https://confect.dev/guides/testing#reach-the-network-from-an-action" as const;
+
+/**
+ * The action at `componentPath` and `functionName` fetched `host` directly.
+ */
+export const undeclaredFetch = (
+  componentPath: string,
+  functionName: string,
+  host: string,
+) => {
+  const action =
+    componentPath === ""
+      ? `The action ${functionName}`
+      : `The action ${functionName} in component "${componentPath}"`;
+  const failed = `${action} fetched ${host} directly.`;
+  const because =
+    "The test kernel performs no raw fetch, so a test never reaches the network and a run replays.";
+  const instead = `Reach ${host} through a provider port. The kernel holds each port call as a command the test answers.`;
+  return BackendRefusal.make({
+    reason: "UndeclaredFetch",
+    componentPath,
+    functionName,
+    host,
+    failed,
+    because,
+    instead,
+    docs: egressDocs,
+    message: `${failed} ${because} ${instead} See ${egressDocs}.`,
+  });
+};
+
+/**
+ * The `"use node"` module at `componentPath` and `module` fetched `host`
+ * directly while it loaded, before any action ran.
+ */
+export const undeclaredLoadFetch = (
+  componentPath: string,
+  module: string,
+  host: string,
+) => {
+  const loaded =
+    componentPath === ""
+      ? `The module ${module}`
+      : `The module ${module} in component "${componentPath}"`;
+  const failed = `${loaded} fetched ${host} directly while it loaded.`;
+  const because =
+    "The test kernel performs no raw fetch, a module's top level included, so a test never reaches the network and a run replays.";
+  const instead = `Reach ${host} through a provider port from an action. The kernel holds each port call as a command the test answers.`;
+  return BackendRefusal.make({
+    reason: "UndeclaredFetch",
+    componentPath,
+    module,
+    host,
+    failed,
+    because,
+    instead,
+    docs: egressDocs,
+    message: `${failed} ${because} ${instead} See ${egressDocs}.`,
+  });
+};
+
+/**
+ * `answer` named a command the kernel does not hold: it was already answered,
+ * never held, or cancelled when its action ended.
+ */
+export class StaleCommand extends Schema.TaggedError<
+  StaleCommand,
+  { readonly brand: unique symbol }
+>()("StaleCommand", {
+  id: Schema.String,
+  /**
+   * `cancelled` when the command's action ended before an answer, `notHeld`
+   * when it was already answered or never held.
+   */
+  reason: Schema.Literals(["notHeld", "cancelled"]),
+  message: Schema.String,
+}) {}
+
+/**
+ * An action that already ended made a provider port call. An ended function
+ * runs no more JavaScript on the binary, so the kernel holds nothing for it.
+ */
+export class ActionEnded extends Schema.TaggedError<
+  ActionEnded,
+  { readonly brand: unique symbol }
+>()("ActionEnded", {
+  componentPath: Schema.String,
+  functionName: Schema.String,
+  message: Schema.String,
+}) {}
 
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
   RequiresBinary.make({
@@ -454,6 +687,7 @@ export class SnapshotAllocatorBehind extends Schema.TaggedError<
     "identityEpoch",
     "nextFile",
     "nextUploadToken",
+    "nextCommandId",
   ]),
   value: Schema.Finite,
   required: Schema.Finite,

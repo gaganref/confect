@@ -34,6 +34,7 @@ import { convexTest, type KernelControls } from "../src/internal/ConvexTest";
 import * as Invocation from "../src/internal/Invocation";
 import * as Arr from "effect/Array";
 import * as Json from "../src/internal/Json";
+import { inlineSources } from "./fixtures/inlineSources";
 
 const start = 1_000_000;
 const runtime = {
@@ -410,7 +411,12 @@ const world = (
     ) => unknown;
   }) => void = () => {},
 ): KernelControls => {
-  const t = convexTest({ schema: hostSchema, modules: hostModules, runtime });
+  const t = convexTest({
+    schema: hostSchema,
+    modules: hostModules,
+    sources: inlineSources(hostModules),
+    runtime,
+  });
   register(t);
   return t;
 };
@@ -792,13 +798,15 @@ const cronControls = (
 ): KernelControls => {
   const crons = cronJobs();
   declare(crons);
+  const modules = {
+    ...hostModules,
+    "ticks.ts": () => Promise.resolve(ticksModule),
+    "crons.ts": () => Promise.resolve({ default: crons }),
+  };
   const t = convexTest({
     schema: hostSchema,
-    modules: {
-      ...hostModules,
-      "ticks.ts": () => Promise.resolve(ticksModule),
-      "crons.ts": () => Promise.resolve({ default: crons }),
-    },
+    modules,
+    sources: inlineSources(modules),
     runtime: cronRuntime,
   });
   register(t);
@@ -1136,13 +1144,15 @@ describe("declared cron jobs", () => {
       Effect.gen(function* () {
         const crons = cronJobs();
         crons.cron("minutely", "* * * * *", ticks.log, { label: "minutely" });
+        const modules = {
+          ...hostModules,
+          "ticks.ts": () => Promise.resolve(ticksModule),
+          "crons.ts": () => Promise.resolve({ default: crons }),
+        };
         const t: KernelControls = convexTest({
           schema: hostSchema,
-          modules: {
-            ...hostModules,
-            "ticks.ts": () => Promise.resolve(ticksModule),
-            "crons.ts": () => Promise.resolve({ default: crons }),
-          },
+          modules,
+          sources: inlineSources(modules),
           runtime: cronRuntime,
           world: cronOwner,
         });

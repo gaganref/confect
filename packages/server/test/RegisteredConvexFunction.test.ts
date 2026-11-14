@@ -171,6 +171,30 @@ describe("make", () => {
       expect(item.handler).toBe(handler);
     },
   );
+
+  // `@confect/test`'s kernel reads the mark, since a module's "use node"
+  // directive is gone once it loads.
+  it.each([
+    { spec: FunctionSpec.publicQuery(options), mark: undefined },
+    { spec: FunctionSpec.internalMutation(options), mark: undefined },
+    { spec: FunctionSpec.publicAction(options), mark: false },
+    { spec: FunctionSpec.internalAction(options), mark: false },
+  ])(
+    "marks the runtime of a registered action as Convex's isolate, and no other function",
+    ({ spec, mark }) => {
+      const item = FunctionRegistryItem.make({
+        functionSpec: spec,
+        groupMiddlewareAttachments: [],
+        handler: () => Effect.succeed("ok"),
+      });
+      assert(item._tag === "Confect");
+      const registered = RegisteredConvexFunction.make(
+        DatabaseSchema.make({}),
+        item,
+      ) as unknown as Record<symbol, unknown>;
+      expect(registered[Symbol.for("@confect/server/NodeAction")]).toBe(mark);
+    },
+  );
 });
 
 describe("invocation context", () => {
