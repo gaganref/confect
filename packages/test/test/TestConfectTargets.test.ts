@@ -123,6 +123,38 @@ it.effect.each([
     }).pipe(Effect.scoped),
 );
 
+// convex-test lays its own accessor over the kernel's guards on the globals it
+// proxies, `fetch` among them. A kernel function that settles while that
+// accessor is on top still reads through to the guard, so it is not refused,
+// and its entry leaves convex-test's accessor where it is.
+it.effect(
+  "a kernel function that settles while a convex-test layer's accessor is on the guarded globals is not refused",
+  () =>
+    Effect.gen(function* () {
+      const services1 = yield* Layer.build(layer("convex-test"));
+      return yield* Effect.gen(function* () {
+        const other = yield* Test;
+        yield* insert(other, "other");
+        // oxlint-disable-next-line typescript/unbound-method -- Compared by identity and never called.
+        const top = Object.getOwnPropertyDescriptor(globalThis, "fetch")?.get;
+        const settled = yield* Effect.gen(function* () {
+          const services2 = yield* Layer.build(layer("kernel"));
+          return yield* Effect.gen(function* () {
+            const kernel = yield* Test;
+            yield* insert(kernel, "kernel");
+            return yield* read(kernel);
+          }).pipe(Effect.provideContext(services2));
+        }).pipe(Effect.scoped);
+        expect(settled).toEqual(["kernel"]);
+        expect(top).toBeTypeOf("function");
+        // oxlint-disable-next-line typescript/unbound-method -- Compared by identity and never called.
+        expect(Object.getOwnPropertyDescriptor(globalThis, "fetch")?.get).toBe(
+          top,
+        );
+      }).pipe(Effect.provideContext(services1));
+    }).pipe(Effect.scoped),
+);
+
 /**
  * The accessor each pinned global answers through, compared by identity.
  */

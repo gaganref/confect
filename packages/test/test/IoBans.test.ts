@@ -219,6 +219,15 @@ const io = {
   overlaidFetchInQuery: makeFunctionReference<"query", { url: string }>(
     "io:overlaidFetchInQuery",
   ),
+  getterFetchInMutation: makeFunctionReference<"mutation", { url: string }>(
+    "io:getterFetchInMutation",
+  ),
+  restoredFetchInMutation: makeFunctionReference<"mutation", { url: string }>(
+    "io:restoredFetchInMutation",
+  ),
+  inheritedFetchInMutation: makeFunctionReference<"mutation", { url: string }>(
+    "io:inheritedFetchInMutation",
+  ),
 };
 
 /**
@@ -448,8 +457,8 @@ const modules = {
       }),
       overlaidFetchInQuery: queryGeneric({
         args: { url: v.string() },
-        // An accessor laid over the guard's, as convex-test lays its own
-        // before each of its handlers, reads through the guard.
+        // An accessor laid over the guard's that reads through it, as
+        // convex-test lays its own before each of its handlers.
         handler: (_ctx, { url }) => {
           const beneath = Object.getOwnPropertyDescriptor(globalThis, "fetch")!;
           Object.defineProperty(globalThis, "fetch", {
@@ -461,6 +470,58 @@ const modules = {
           });
           // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
           return outcomeOf(fetch(url));
+        },
+      }),
+      getterFetchInMutation: mutationGeneric({
+        args: { url: v.string() },
+        // A getter that answers the replacement while the handler runs and the
+        // guard again by the time the function settles.
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
+        handler: async (ctx, { url }) => {
+          const guard = globalThis.fetch;
+          let settling = false;
+          Object.defineProperty(globalThis, "fetch", {
+            get: () => (settling ? guard : redefinedFetch),
+            configurable: true,
+          });
+          // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
+          await fetch(url);
+          await ctx.db.insert("notes", { text: "after" });
+          settling = true;
+          return "returned";
+        },
+      }),
+      restoredFetchInMutation: mutationGeneric({
+        args: { url: v.string() },
+        // A replacement redefined, called and removed again, its exact
+        // descriptor restored, before the function settles.
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
+        handler: async (ctx, { url }) => {
+          const before = Object.getOwnPropertyDescriptor(globalThis, "fetch")!;
+          redefineFetch();
+          // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
+          await fetch(url);
+          Object.defineProperty(globalThis, "fetch", before);
+          await ctx.db.insert("notes", { text: "after" });
+          return "returned";
+        },
+      }),
+      inheritedFetchInMutation: mutationGeneric({
+        args: { url: v.string() },
+        // A replacement moved onto the global's prototype, with the own
+        // property deleted.
+        // oxlint-disable-next-line effecttsgo/async-function -- A plain Convex handler is async, as product code is.
+        handler: async (ctx, { url }) => {
+          Object.defineProperty(Object.getPrototypeOf(globalThis), "fetch", {
+            value: redefinedFetch,
+            writable: true,
+            configurable: true,
+          });
+          Reflect.deleteProperty(globalThis, "fetch");
+          // oxlint-disable-next-line effecttsgo/global-fetch -- The handler calls the runtime's own fetch, which the I/O bans refuse or allow.
+          await fetch(url);
+          await ctx.db.insert("notes", { text: "after" });
+          return "returned";
         },
       }),
       timersInAction: actionGeneric({
@@ -1089,6 +1150,80 @@ describe("replaced globals", () => {
   );
 
   it.effect(
+    "the documented limit: a getter that answers the replacement while a mutation runs and the guard at settlement is hostile, so it is neither blocked nor reported",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest({ schema, modules, sources });
+        const before = original("fetch");
+        redefinedFetch.mockClear();
+        const outcome = yield* replacedOutcome(
+          t.mutation(io.getterFetchInMutation, { url }),
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() =>
+              Object.defineProperty(globalThis, "fetch", before),
+            ),
+          ),
+        );
+        const notes = yield* Effect.promise(() => t.query(io.notes, {}));
+        expect(outcome).toEqual({ returned: "returned" });
+        expect(redefinedFetch).toHaveBeenCalledOnce();
+        expect(notes).toEqual(["after"]);
+      }),
+  );
+
+  it.effect(
+    "the documented limit: a replacement redefined, called and removed again before the function settles is neither blocked nor reported",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest({ schema, modules, sources });
+        const before = original("fetch");
+        redefinedFetch.mockClear();
+        const outcome = yield* replacedOutcome(
+          t.mutation(io.restoredFetchInMutation, { url }),
+        ).pipe(
+          Effect.ensuring(
+            Effect.sync(() =>
+              Object.defineProperty(globalThis, "fetch", before),
+            ),
+          ),
+        );
+        const notes = yield* Effect.promise(() => t.query(io.notes, {}));
+        expect(outcome).toEqual({ returned: "returned" });
+        expect(redefinedFetch).toHaveBeenCalledOnce();
+        expect(notes).toEqual(["after"]);
+      }),
+  );
+
+  it.effect(
+    "a replacement moved onto the global's prototype fails its mutation, and the next mutation meets an own guard again",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest({ schema, modules, sources });
+        const before = original("fetch");
+        const prototype = Object.getPrototypeOf(globalThis) as object;
+        redefinedFetch.mockClear();
+        const restore = Effect.sync(() => {
+          Reflect.deleteProperty(prototype, "fetch");
+          Object.defineProperty(globalThis, "fetch", before);
+        });
+        const first = yield* replacedOutcome(
+          t.mutation(io.inheritedFetchInMutation, { url }),
+        ).pipe(Effect.onError(() => restore));
+        const reguarded = "get" in original("fetch");
+        const second = yield* Effect.promise(() =>
+          t.mutation(io.fetchInMutation, { url }),
+        ).pipe(Effect.ensuring(restore));
+        const notes = yield* Effect.promise(() => t.query(io.notes, {}));
+        expect(first).toEqual(replacedRefusal);
+        expect(reguarded).toBe(true);
+        expect(second).toEqual(fetchRefusal);
+        expect(redefinedFetch).toHaveBeenCalledOnce();
+        expect(notes).toEqual([]);
+      }),
+  );
+
+  it.effect(
     "util.promisify(setTimeout) in a query ends it with the binary's error",
     () =>
       Effect.gen(function* () {
@@ -1269,6 +1404,36 @@ describe("module runtimes", () => {
           componentPath: "",
           module: "plainNode",
           exports: ["surface"],
+        });
+      }),
+  );
+
+  it.effect(
+    "a component named like an Object.prototype member, such as constructor, declares no runtime unless the test lists it",
+    () =>
+      Effect.gen(function* () {
+        const t = convexTest({
+          schema: defineSchema({}),
+          modules: only(runtimeModules, []),
+          sources: only(runtimeSources, []),
+        });
+        t.registerComponent(
+          "constructor",
+          defineSchema({}),
+          only(runtimeModules, ["plainIsolate.ts"]),
+        );
+        const refused = yield* Effect.promise(() =>
+          t
+            .run(() => Promise.resolve(null))
+            .then(
+              () => undefined,
+              (error: unknown) => error,
+            ),
+        );
+        expect(refused).toMatchObject({
+          _tag: "ActionRuntimeUnknown",
+          componentPath: "constructor",
+          module: "plainIsolate",
         });
       }),
   );
