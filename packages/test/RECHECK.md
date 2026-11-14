@@ -1815,3 +1815,50 @@ the deterministic operations in every phase.
   and a module evaluated once per process draws once per process.
 - A nested query's or mutation's own seed: the kernel's nested call draws on
   from its caller's stream.
+
+## Generated test backend (row 8)
+
+- `TestBackend.layer` opens on the kernel target only. It opens the kernel
+  explicitly, so every module loads even when no init or seed calls it, then runs
+  each mount's `init` through the `confectDeploy:steps` mutation production
+  registers, with `runInComponent` at each component path, so the subject adds
+  no function.
+- The order is the push's. `MountSteps.run` in `@confect/core` is the one
+  traversal, and Alchemy's `MountInit.run` and the test layer both call it: a
+  mount's `init`, then its nested component's own steps. The binary's
+  child-first walk at `cccbade4` evaluates definitions and runs no Confect
+  init, so parent-first is what a deployment does today. ADR 0012's
+  nested-before-parent text is corrected to it.
+- A component's environment: inside a function of a component with a bound
+  environment, and while its modules load, `process.env` answers that
+  environment and Convex's system URLs only, as a plain object for reads,
+  spreads, keys and `in` (`internal/Environment.ts`). Elsewhere it answers the
+  host's. Each mount of a local component loads its own copy of the
+  component's modules: generated `testing.ts` tags each mount's imports with
+  its path, and `@confect/test/Vite` carries the tag down the import graph to
+  every file they import, wherever it sits. A deployment does the same: it
+  bundles everything a component imports into each mount, each mount is its own
+  `ComponentId`, `PreloadedEnvVars::load` reads that id's bindings
+  (`crates/udf/src/environment.rs:141-171`), and a saved context and its
+  module map are reused only for the same component and module path
+  (`crates/isolate/src/context_cache.rs:116-150`, convex-backend `cccbade4`).
+  The local-backend probe in `components.test.ts` reads each mount's value from
+  module-level reads in a helper inside the component, one outside it, one in
+  the app's folder and one three imports deep, and `MountModules.test.ts`
+  checks the same on the kernel, with a helper two components share. Without
+  the plugin, a second mount of one component refuses to load.
+- **Limit.** A package under `node_modules`, a packaged component's kit
+  included, stays one copy across mounts, because the kernel runs on Effect,
+  `convex` and `@confect/test` and needs them as one instance. A deployment
+  evaluates each mount's packages apart, so a package's module-level state is
+  per mount there and shared here. `MountModules.test.ts` pins it: two mounts'
+  copies of a helper hold the test's own `Schema.String`. The repo's tests
+  alias each package to its source, so `vitest.shared.ts` names those source
+  directories in `plugin({ packages })`.
+  Each mount's copy loads under row 6's load-phase draws too, as the binary
+  seeds each component's import phase from that component's own config
+  (`crates/isolate/src/environment/udf/phase.rs:186-193`).
+- Codegen writes the registry's `secrets` as thunks of the Confect codecs that
+  hold a `Schema.Redacted` node, so the kernel's redaction (row 6) builds each
+  schema only when it first needs it. A kit adds its component's policy at
+  registration, keyed at the registered path.

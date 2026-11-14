@@ -229,7 +229,7 @@ A value under a secret schema node, a `Schema.Redacted` that
 `Schema.RedactedFromValue` decodes to, reaches every artifact the kernel
 writes as a marker. The kernel reads the nodes from Effect schemas: a Confect
 database schema's tables, and a secret policy keyed by component and function
-or table, which `TestConfect.layer` takes as `secrets` and codegen will fill
+or table, which `TestConfect.layer` takes as `secrets` and codegen fills
 from the Confect specs. Each marking walks the value together with its schema,
 so recursive and reused schemas, compound secrets and overlapping union
 members are all covered. The kernel keeps each secret before validating it, in
@@ -449,6 +449,39 @@ with the probe beside component identity's chain.
 This is row 6 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-randomness.md`. Upstream: fork only, as the kernel is
 fork-specific.
+
+## Generated test backend
+
+For an app that can import `@confect/test`, codegen writes `TestBackend` into
+`_generated/testing.ts` from the same `App.make` mounts and specs as the
+production entrypoints. It holds each public group with its owner and open
+list, an access obligation per public group, a realm obligation when
+`confect/auth.ts` declares verifiers, the schema laws `decodes` and `idScope`
+per table, ports, the manifest digest, the app settings, and the mounts in push
+order with the settings each binds and its component requires. The registry
+gains `secrets`, a thunk of each codec holding a `Schema.Redacted` node among
+the app's functions and each local mount's tables and functions, which the
+kernel's redaction reads; `@confect/core/SecretSchema` is the one walk both
+use. A manifest section's new `testing` hook adds owners, open functions,
+obligations, laws and ports, which codegen checks against the specs, tables,
+fields, indexes and mounts. `TestBackend.layer` opens a kernel session: every
+module loads, each mount's `init` runs through `@confect/core/MountSteps`, the
+traversal Alchemy's push runs, parent before child, then the seed runs in one
+mutation. Each component reads only the settings its mount binds. A missing app
+or mount setting fails `TestConfigMissing`. A kit passes its component's
+secret policy to `registerComponent`, and a packaged Confect component whose
+kit exports none fails `TestKitSecretsMissingError`, or `TestKitExportsUnknownError`
+when codegen cannot list the kit's exports. The registry now lists
+only the modules a push registers, and a package mount with no test kit fails
+`MissingTestKitError`; a nested component's own declaration names its mounts'
+kits whether or not the app can import `@confect/test`. Each mount of a local
+component loads its own copy of the component's modules, as a deployment
+evaluates each mount apart, and the new `@confect/test/Vite` plugin gives
+every file they import a copy per mount too, wherever it sits; packages under
+`node_modules` stay one copy; without it, a second mount
+of one component refuses to load. This is row 8 of Frame's backend testing kernel (Frame
+ADR 0012). Changeset: `generated-test-backend.md`. Upstream: fork only, as the
+kernel is fork-specific.
 
 ## Table info through Table's extractors
 

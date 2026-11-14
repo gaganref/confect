@@ -120,6 +120,14 @@ const resolveExternalEsm = Option.liftThrowable(
     resolveModulePath(specifier, { from: importer, conditions }),
 );
 
+/**
+ * Whether `importer` can import `specifier` as ESM and TypeScript would. Unlike
+ * {@link resolveModule}, it ignores `NODE_PATH`, which `pnpm` sets to its
+ * hoisted store when it runs a bin.
+ */
+export const canImport = (specifier: string, importer: string): boolean =>
+  Option.isSome(resolveEsm(specifier, importer));
+
 export const resolveModule = (
   specifier: string,
   importer: string,

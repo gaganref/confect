@@ -402,6 +402,9 @@ importers:
         specifier: ^3.3.1
         version: 3.3.1
     devDependencies:
+      '@confect/test':
+        specifier: workspace:*
+        version: link:../test
       '@convex-dev/workpool':
         specifier: 0.4.14
         version: 0.4.14(convex-helpers@0.1.134(@standard-schema/spec@1.1.0)(convex@1.49.0(react@19.3.1))(hono@4.13.5)(prettier@3.9.5)(react@19.3.1)(typescript@7.1.0-beta)(zod@3.25.76))(convex@1.49.0(react@19.3.1))(react@19.3.1)
@@ -420,6 +423,9 @@ importers:
       convex:
         specifier: 1.49.0
         version: 1.49.0(react@19.3.1)
+      convex-test:
+        specifier: 0.0.67
+        version: 0.0.67(convex@1.49.0(react@19.3.1))
       effect:
         specifier: 4.1.4
         version: 4.1.4

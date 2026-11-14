@@ -59,5 +59,6 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         }>,
         Name
       >;
+      shared: FunctionReference<"query", "internal", {}, number, Name>;
     };
   };

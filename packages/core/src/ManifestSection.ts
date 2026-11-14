@@ -78,6 +78,91 @@ export interface SummarizeInput<Value = unknown> {
   readonly sources: Readonly<Record<string, string>>;
 }
 
+/**
+ * One public or internal function of a group, as `testing` sees it. A
+ * `"Convex"` provenance function wraps a raw Convex function, so it carries no
+ * Confect codecs.
+ */
+export interface TestingFunction {
+  readonly name: string;
+  readonly kind: "query" | "mutation" | "action";
+  readonly visibility: "public" | "internal";
+  readonly provenance: "Confect" | "Convex";
+}
+
+/**
+ * What codegen hands a section's `testing`: the files its `generate` matched,
+ * each function's description by path, and every group by its path, such as
+ * `tasks/tasks`, with its functions.
+ */
+export interface TestingInput<Value = unknown> {
+  readonly modules: GenerateInput["modules"];
+  readonly functions: Readonly<Record<string, Value>>;
+  readonly groups: ReadonlyArray<{
+    readonly path: string;
+    readonly functions: ReadonlyArray<TestingFunction>;
+  }>;
+}
+
+/**
+ * A law the schema alone does not state, declared by the section that owns its
+ * declaration. `table` and `aggregate` name the app's own tables.
+ */
+export type DeclaredLaw =
+  | { readonly law: "placement"; readonly table: string }
+  | {
+      readonly law: "aggregate";
+      readonly table: string;
+      readonly aggregate: string;
+    }
+  | {
+      readonly law: "reference";
+      readonly table: string;
+      readonly field: string;
+      readonly policy: "restrict" | "retain";
+    }
+  | { readonly law: "unique"; readonly table: string; readonly index: string }
+  | {
+      readonly law: "fixed";
+      readonly table: string;
+      readonly fields: ReadonlyArray<string>;
+    }
+  | { readonly law: "audit"; readonly table: string }
+  | { readonly law: "observeEvent" }
+  | { readonly law: "atomic" };
+
+/**
+ * A proof the backend owes beyond each public group's access proof and the
+ * realm proof codegen derives. `ref` is a function path, `group:name`.
+ */
+export type DeclaredObligation =
+  | { readonly kind: "roles" }
+  | { readonly kind: "includeReach"; readonly ref: string }
+  | { readonly kind: "migration"; readonly ref: string };
+
+/**
+ * A provider port: its name, the export in `confect/` holding its input codec,
+ * as `<file>#<export>`, and its declared outcomes.
+ */
+export interface DeclaredPort {
+  readonly name: string;
+  readonly input: string;
+  readonly outcomes: readonly [string, ...Array<string>];
+}
+
+/**
+ * What a section tells the generated test subject. `owners` maps a group path
+ * to the door that hosts it. `open` lists function paths a scope role admits.
+ * Codegen refuses a fact that names no such group, public function or table.
+ */
+export interface TestingFacts {
+  readonly owners?: Readonly<Record<string, `door:${string}`>>;
+  readonly open?: ReadonlyArray<string>;
+  readonly obligations?: ReadonlyArray<DeclaredObligation>;
+  readonly laws?: ReadonlyArray<DeclaredLaw>;
+  readonly ports?: ReadonlyArray<DeclaredPort>;
+}
+
 export interface ManifestSection<
   Value = unknown,
   Data_ extends { readonly format: number } = Data<Value>,
@@ -98,6 +183,11 @@ export interface ManifestSection<
     readonly notes: ReadonlyArray<string>;
   };
   readonly generate?: Generate;
+  /**
+   * The facts this section adds to `_generated/testing.ts`'s `TestBackend`.
+   * Codegen runs it once the manifest is written, and only for an app.
+   */
+  testing?(input: TestingInput<Value>): TestingFacts;
 }
 
 export type Any = ManifestSection<unknown, { readonly format: number }>;

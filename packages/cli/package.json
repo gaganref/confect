@@ -18,12 +18,14 @@
     "jsonc-parser": "^3.3.1"
   },
   "devDependencies": {
+    "@confect/test": "workspace:*",
     "@convex-dev/workpool": "0.4.14",
     "@effect/tsgo": "0.67.5",
     "@effect/vitest": "4.1.4",
     "@types/node": "26.6.6",
     "@vitest/coverage-v8": "5.1.0",
     "convex": "1.49.0",
+    "convex-test": "0.0.67",
     "effect": "4.1.4",
     "tsdown": "0.23.7",
     "tsrs": "0.23.0-ts7.1.0-beta",

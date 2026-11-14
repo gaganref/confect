@@ -1,3 +1,4 @@
+import * as SecretSchema from "@confect/core/SecretSchema";
 import * as DatabaseSchema from "@confect/server/DatabaseSchema";
 import {
   Base64,
@@ -8,7 +9,7 @@ import {
 } from "convex/values";
 import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
-import * as SchemaAST from "effect/SchemaAST";
+import type * as SchemaAST from "effect/SchemaAST";
 import * as KernelRefusal from "./KernelRefusal.js";
 import type { FunctionPath } from "./KernelValues.js";
 import * as Arr from "effect/Array";
@@ -54,62 +55,13 @@ export interface Placement {
   readonly shape: Shape;
 }
 
-const isSecretNode = (ast: SchemaAST.AST): boolean =>
-  ast._tag === "Declaration" &&
-  (SchemaAST.resolve(ast)?.["representation"] as { id?: unknown } | undefined)
-    ?.id === "effect/schema/Redacted";
+const { isSecretNode } = SecretSchema;
 
 /**
- * Whether a secret node is reachable from `ast`. A suspension is followed once
- * per ancestry, so a recursive schema ends, and a suspension reused at another
- * path is followed again there.
+ * Whether `shape` holds a secret anywhere beneath it, by the walk codegen's
+ * secret policy reads too.
  */
-const reachesSecret = (
-  ast: SchemaAST.AST,
-  ancestry: Set<SchemaAST.AST>,
-): boolean => {
-  if (isSecretNode(ast)) return true;
-  switch (ast._tag) {
-    case "Objects":
-      return (
-        Arr.some(ast.propertySignatures, (p) =>
-          reachesSecret(p.type, ancestry),
-        ) ||
-        Arr.some(ast.indexSignatures, (i) => reachesSecret(i.type, ancestry))
-      );
-    case "Arrays":
-      return Arr.some([...ast.elements, ...ast.rest], (e) =>
-        reachesSecret(e, ancestry),
-      );
-    case "Union":
-      return Arr.some(ast.types, (t) => reachesSecret(t, ancestry));
-    case "Declaration":
-      return Arr.some(ast.typeParameters, (t) => reachesSecret(t, ancestry));
-    case "Suspend": {
-      if (ancestry.has(ast)) return false;
-      ancestry.add(ast);
-      const found = reachesSecret(ast.thunk(), ancestry);
-      ancestry.delete(ast);
-      return found;
-    }
-    default:
-      return false;
-  }
-};
-
-const reaches = new WeakMap<SchemaAST.AST, boolean>();
-
-/**
- * Whether `shape` holds a secret anywhere beneath it.
- */
-export const hasSecret = (shape: Shape): boolean => {
-  let found = reaches.get(shape);
-  if (found === undefined) {
-    found = reachesSecret(shape, new Set());
-    reaches.set(shape, found);
-  }
-  return found;
-};
+export const hasSecret: (shape: Shape) => boolean = SecretSchema.hasSecret;
 
 const isObject = (json: JSONValue): json is { [key: string]: JSONValue } =>
   typeof json === "object" && json !== null && !Arr.isArray(json);
@@ -419,6 +371,41 @@ export const merge = (first: Declared, second: Declared): Declared => {
   return {
     tables: each(first.tables, second.tables),
     functions: each(first.functions, second.functions),
+  };
+};
+
+/**
+ * A component kit's declaration, keyed from the component (`""` for itself,
+ * `child` for a component it mounts), as the backend keys it at
+ * `componentPath`.
+ */
+export const qualify = (
+  declared: Declared,
+  componentPath: string,
+): Declared => {
+  const rekey = <A>(
+    record: Readonly<Record<string, A>> | undefined,
+  ): Record<string, A> =>
+    Rec.mapKeys(record ?? {}, (relative) =>
+      relative === "" ? componentPath : `${componentPath}/${relative}`,
+    );
+  return {
+    tables: rekey(declared.tables),
+    functions: rekey(declared.functions),
+  };
+};
+
+/**
+ * `base` with `declared`'s schemas added; `declared` wins where both name one.
+ */
+export const extend = (base: Policy, declared: Declared): Policy => {
+  const added = policy(declared);
+  return {
+    table: (componentPath, name) =>
+      added.table(componentPath, name) ?? base.table(componentPath, name),
+    args: (functionPath) => added.args(functionPath) ?? base.args(functionPath),
+    returns: (functionPath) =>
+      added.returns(functionPath) ?? base.returns(functionPath),
   };
 };
 

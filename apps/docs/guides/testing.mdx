@@ -70,9 +70,9 @@ export default Component.make("aggregate", {
 });
 ```
 
-Codegen then imports that kit for every mount of the descriptor from another package and skips the `<package>/testing` and `<package>/test` search. A local component's mount ignores it. It fails, naming the mount and the kit, when the specifier is a relative or absolute path, does not resolve from `convex/convex.config.ts`, or lists its exports without a `register`.
+Codegen then imports that kit for every mount of the descriptor from another package, at any depth, a nested component's own declaration included, and skips the `<package>/testing` and `<package>/test` search. A local component's mount ignores it. It fails, naming the mount and the kit, when the specifier is a relative or absolute path, does not resolve from `convex/convex.config.ts`, or lists its exports without a `register`.
 
-Local kits use names such as `emailSchema` and `emailKit`. Repeated mounts of one definition share the first mount's kit. Codegen sanitizes identifiers, adds suffixes on collision, and writes imports before local kit declarations. Relative imports carry `.js` extensions for NodeNext. Module-map keys retain their source extensions, such as `mail.ts`. When neither public test entry resolves, codegen reports both entries it tried. It never writes another package's private file paths.
+Local kits use names such as `emailSchema` and `emailKit`. Repeated mounts of one definition share the first mount's kit, which each mount calls with its own path, so each mount loads its own copy of the component's modules, as the next section sets out. Codegen sanitizes identifiers, adds suffixes on collision, and writes imports before local kit declarations. Relative imports carry `.js` extensions for NodeNext. Module-map keys retain their source extensions, such as `mail.ts`. When neither public test entry resolves, codegen reports both entries it tried. It never writes another package's private file paths.
 
 Keep the registry in test imports only. It is separate from the runtime schema and function wrappers, so production functions retain their per-group bundles. Regenerate it when adding functions or changing component installations. The schema-based constructor above remains available for hand-written component kits and custom HTTP router loaders.
 
@@ -414,4 +414,67 @@ TestConfect.layer(databaseSchema, convexSchemaDefinition, modules, {
 });
 ```
 
-`secrets` is keyed by component path (`""` for the app), then by `module:export` or table name, and each schema is a thunk the kernel builds only when it first needs it. Codegen will fill the same record from your Confect specs as `secrets` in `confect/_generated/testing`, which replaces a hand-written policy.
+`secrets` is keyed by component path (`""` for the app), then by `module:export` or table name, and each schema is a thunk the kernel builds only when it first needs it. Codegen fills the same record from your Confect specs as `secrets` in `confect/_generated/testing`, which replaces a hand-written policy. It lists each function codec that holds a secret, and each table of a local mount that does. A package mount's kit registers only Convex schemas, so its tables and functions carry no policy.
+
+## The generated test backend
+
+For an app that can import `@confect/test`, `confect codegen` writes `TestBackend` into `confect/_generated/testing.ts`, beside the registry. Without it the file holds the registry alone, so a backend that does not test with Confect still compiles. It follows the same `confect/app.ts` mounts and specs as the production entrypoints, and it holds:
+
+- `groups`: every group with a public function, keyed by its path, such as `tasks/tasks`. Each has its `owner`, `"product"` or the door that hosts it, its public functions' refs, and `open`, the functions a role held for `public`, `signedIn` or `self` admits.
+- `obligations`: an `access` proof per public group, `realm` when `confect/auth.ts` declares verifiers, and whatever a manifest section declares.
+- `laws`: `decodes` and `idScope` for every table, and any law a section declares.
+- `ports`, `manifestDigest` and `settings`.
+- `mounts`: every installed component, in the order a push runs their `init`, with what each mount binds its component's settings to, a literal or a setting of the backend that mounts it, and which of them the component requires.
+
+`TestBackend.layer` passes the registry's `secrets` to the kernel, as `TestConfect.layer` does.
+
+A manifest section adds what Confect cannot know through `testing`, which returns owners, open functions, obligations, laws and ports. Codegen refuses a fact that names no such group, public function, table, field, index or mount, before it writes `testing.ts`. In an app an `aggregate` law names the mount that keeps the aggregate.
+
+```ts
+import { TestBackend } from "../confect/_generated/testing";
+
+it.effect("assigns a task", () =>
+  Effect.gen(function* () {
+    const services = yield* Layer.build(TestBackend.layer({ config, seed }));
+    yield* Effect.gen(function* () {
+      const t = yield* TestConfect.TestConfect<typeof TestBackend.app.schema>();
+      // ...
+    }).pipe(Effect.provideContext(services));
+  }),
+);
+```
+
+`TestBackend.layer` opens a fresh session on the test kernel. Every module of every mount loads. Then each mount's `init` runs through the deploy modules a push runs, in the order Alchemy's push runs them: a parent's `init` before the components it mounts. So a parent's `init` sees its children before theirs ran, as on a deployment. A failing `init` stops the session with `MountInitFailed`. Then `seed` runs in one mutation. `TestBackend.Session` reports each kit's standing sources, the declared cron jobs and the inits that ran.
+
+### Configuration
+
+A session takes every app setting from `config`, and a required one is required by type. Codegen never reads `.env` or deployment state. A missing setting fails `TestConfigMissing` with the setting, the backend that declares it and this section's link. The session sets the values for its lifetime and restores the previous ones when it closes.
+
+Each mount gets the settings it binds, as on Convex: a literal, or a setting of the backend that mounts it, the app's from `config` and a parent component's from what its own mount bound. A component's module code and functions read only their own settings, beside `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL`, and the app never reads a component's. There `process.env` is a plain object of those settings, so a spread, `Object.keys` and `in` see exactly them. A required component setting left without a value fails `TestConfigMissing` naming the mount.
+
+### Each mount loads its own modules
+
+A deployment evaluates each mount's modules apart, so a module-level read in a component mounted twice sees each mount's own settings. The generated registry loads each mount's copy of a local component's modules. Under Vitest, the plugin from `@confect/test/Vite` gives each mount its own copy of every file those modules import, wherever it sits: inside the component, elsewhere in the repo or in the app's own folder, as a deployment bundles them into each mount:
+
+```ts
+import { plugin } from "@confect/test/Vite";
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({ plugins: [plugin()] });
+```
+
+Packages under `node_modules` stay one copy for the whole test, because the kernel itself runs on Effect, `convex` and `@confect/test`. That is a limit: a deployment evaluates each mount's packages apart, so a package's module-level state is per mount there and shared across mounts in a test. A packaged component's kit is a package too. A workspace that aliases its packages to their source passes those source directories as `plugin({ packages })`, so they stay one copy as well. Without the plugin, the second mount of one component fails to load, naming both mounts and the module.
+
+### Packaged components keep their secrets
+
+A packaged Confect component's test kit hands the kernel its component's secret policy as it registers, keyed from the component: `""` for its own tables and functions, a child's name for a component it mounts. The kernel keys it at the path the kit registers.
+
+```ts
+export const secrets = {
+  tables: { "": { tokens: () => Tokens.Fields } },
+};
+export const register = (t, name) =>
+  t.registerComponent(name, schema, modules, { secrets });
+```
+
+When a mount's descriptor carries a Confect `contract`, codegen refuses a kit that exports no `secrets` with `TestKitSecretsMissingError`, and a kit whose exports it cannot list without running it, such as a CommonJS kit, with `TestKitExportsUnknownError`. Write the kit as an ES module that exports `secrets` by name, `{}` when the component holds no secret.

@@ -24,6 +24,7 @@ import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
 import * as Crons from "./Crons.js";
 import * as Entropy from "./Entropy.js";
+import * as Environment from "./Environment.js";
 import * as Globals from "./Globals.js";
 import * as HostGlobals from "./HostGlobals.js";
 import * as Identity from "./Identity.js";
@@ -930,7 +931,7 @@ export class World {
     schema: SchemaDefinition<GenericSchema, boolean> | null | undefined,
     modules: Modules,
     private readonly runtime: Kernel.KernelRuntime = Kernel.wallClock(),
-    private readonly redaction: Redaction.Policy = Redaction.none,
+    private redaction: Redaction.Policy = Redaction.none,
     /**
      * The world the driver gives the backend itself, which a backend opened
      * with no invocation bound declares its cron jobs in.
@@ -939,14 +940,25 @@ export class World {
   ) {
     installConvexGlobal();
     installDate();
+    Environment.install(() => {
+      const execution = executions.getStore();
+      return execution?.world.environments.get(execution.componentPath);
+    });
     this.components.set(ROOT, makeComponent(ROOT, schema, modules));
   }
+
+  /**
+   * The environment each component's mount binds, by component path. A
+   * component's functions read only theirs, as on Convex.
+   */
+  readonly environments = new Map<string, Readonly<Record<string, string>>>();
 
   register(
     componentPath: string,
     schema: SchemaDefinition<GenericSchema, boolean>,
     modules: Modules,
     standing: ReadonlyArray<string> = [],
+    secrets?: Redaction.Declared,
   ) {
     if (this.opened !== undefined) {
       throw KernelRefusal.RegisteredAfterOpen.make({
@@ -958,6 +970,32 @@ export class World {
       componentPath,
       makeComponent(componentPath, schema, modules, standing),
     );
+    if (secrets !== undefined)
+      this.redaction = Redaction.extend(
+        this.redaction,
+        Redaction.qualify(secrets, componentPath),
+      );
+  }
+
+  /**
+   * Give a component the environment its mount binds, before the backend opens.
+   */
+  setEnvironment(componentPath: string, env: Readonly<Record<string, string>>) {
+    if (this.opened !== undefined) {
+      throw KernelRefusal.RegisteredAfterOpen.make({
+        componentPath,
+        message: `Component "${componentPath}"'s environment was set after the test backend opened. Set every environment before the first call.`,
+      });
+    }
+    this.environments.set(componentPath, env);
+  }
+
+  /**
+   * Whether a component registered the module at `modulePath`, without its
+   * extension.
+   */
+  hasModule(componentPath: string, modulePath: string): boolean {
+    return this.components.get(componentPath)?.loaders.has(modulePath) ?? false;
   }
 
   /**
@@ -1076,14 +1114,16 @@ export class World {
           });
           throw refused;
         });
-      return moduleLoads
-        .run({ phase: "load", random }, () =>
+      // A component's module code reads that component's environment, as it
+      // does on a deployment.
+      return Environment.loading(this.environments.get(component.path), () =>
+        moduleLoads.run({ phase: "load", random }, () =>
           Globals.own(() => {
             installEntropy();
             return load();
           }),
-        )
-        .then(keep);
+        ),
+      ).then(keep);
     };
     return Arr.reduce(
       entries,

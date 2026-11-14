@@ -184,6 +184,10 @@ export const contract = {
       excluded:
         "Registered code, not state: the restoring world registers the same components, which `components` checks.",
     },
+    environments: {
+      excluded:
+        "Configuration, not state: each mount's bound settings, which the driver sets on the restoring world before it opens, as it registers its components.",
+    },
     state: { exported: "the committed state above" },
     opened: {
       excluded: "Whether modules loaded. A restore opens its world first.",

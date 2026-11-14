@@ -6,6 +6,7 @@ import { MutationRunner, QueryRunner } from "./_generated/services";
 import { child, deep } from "./child";
 import { identityChain } from "./identityChain";
 import parent from "./parent.spec";
+import { drawn } from "../../sharedLoaded";
 import * as Array from "effect/Array";
 
 const create = FunctionImpl.make(schema, parent, "create", (args) =>
@@ -41,6 +42,9 @@ const deepLocation = FunctionImpl.make(schema, parent, "deepLocation", () =>
     return yield* runner.runQuery(deep.parent.location, {});
   }).pipe(Effect.orDie),
 );
+const shared = FunctionImpl.make(schema, parent, "shared", () =>
+  Effect.succeed(drawn),
+);
 export default GroupImpl.make(schema, parent).pipe(
   Layer.provide([
     create,
@@ -48,6 +52,7 @@ export default GroupImpl.make(schema, parent).pipe(
     deepCreate,
     deepList,
     deepLocation,
+    shared,
     FunctionImpl.make(schema, parent, "identityChain", identityChain),
   ]),
   GroupImpl.finalize,

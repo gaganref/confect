@@ -9,6 +9,7 @@ import * as Schema from "effect/Schema";
 import { BuildError, isBuildError } from "./BuildError.js";
 import { SnapshotError } from "./SnapshotError.js";
 import * as Ansi from "./Ansi.js";
+import { quote } from "./Json.js";
 import { formatPath, renderBuildError } from "./log.js";
 
 // --- Variants ---
@@ -251,7 +252,49 @@ export class CallbackPrefixError extends Schema.TaggedError<
   componentName: Schema.String,
 }) {}
 
+/**
+ * A mount whose component comes from a package that exports no test kit, so the
+ * generated test backend could not register what production mounts.
+ */
+export class MissingTestKitError extends Schema.TaggedError<
+  MissingTestKitError,
+  { readonly brand: unique symbol }
+>()("MissingTestKitError", {
+  configPath: Schema.String,
+  mount: Schema.String,
+  component: Schema.String,
+  entries: Schema.Array(Schema.String),
+}) {}
+
+/**
+ * A packaged Confect component whose test kit exports no `secrets`, so the test
+ * kernel would hold its secret fields unmarked.
+ */
+export class TestKitSecretsMissingError extends Schema.TaggedError<
+  TestKitSecretsMissingError,
+  { readonly brand: unique symbol }
+>()("TestKitSecretsMissingError", {
+  mount: Schema.String,
+  kit: Schema.String,
+}) {}
+
+/**
+ * A packaged Confect component whose test kit codegen cannot list without
+ * running it, such as a CommonJS kit, so it cannot see whether the kit passes
+ * its component's secret policy.
+ */
+export class TestKitExportsUnknownError extends Schema.TaggedError<
+  TestKitExportsUnknownError,
+  { readonly brand: unique symbol }
+>()("TestKitExportsUnknownError", {
+  mount: Schema.String,
+  kit: Schema.String,
+}) {}
+
 export const CodegenError = Schema.Union([
+  TestKitExportsUnknownError,
+  TestKitSecretsMissingError,
+  MissingTestKitError,
   SnapshotError,
   BuildError,
   MissingImplFileError,
@@ -540,6 +583,23 @@ export const renderCodegenError = (error: CodegenError): string => {
       ". `confect codegen` writes it from ",
       formatPath(error.declarationPath),
       " now; move its contents there and delete the file.",
+    );
+  }
+  if (error._tag === "MissingTestKitError") {
+    return singleLine(
+      `The mount "${error.mount}" in `,
+      formatPath(error.configPath),
+      ` installs the component package "${error.component}", which exports no test kit at ${pipe(error.entries, Array.map(quote), Array.join(" or "))}. The generated test backend registers every mount through its kit's \`register(t, name)\`; name one with the component descriptor's \`testing\` option.`,
+    );
+  }
+  if (error._tag === "TestKitExportsUnknownError") {
+    return singleLine(
+      `The mount "${error.mount}" installs a packaged Confect component whose test kit "${error.kit}" codegen cannot read without running it, as with a CommonJS kit or one that re-exports with \`export *\`. So codegen cannot see whether it exports the component's \`secrets\`. Make the kit an ES module that exports \`secrets\` by name, \`{}\` when the component holds none.`,
+    );
+  }
+  if (error._tag === "TestKitSecretsMissingError") {
+    return singleLine(
+      `The mount "${error.mount}" installs a packaged Confect component whose test kit "${error.kit}" exports no \`secrets\`. A kit hands the test kernel its component's secret policy as it registers, \`registerComponent(name, schema, modules, { secrets })\`, so the component's secret fields stay out of test artifacts. Export \`secrets\` from the kit, \`{}\` when the component holds none.`,
     );
   }
   if (error._tag === "UnownedConvexEntrypointError") {

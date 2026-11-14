@@ -37,12 +37,21 @@ const RESERVED_CONVEX_TS_FILE_NAMES = new Set([
 // Only the root module is codegen's; a nested group may take the name.
 const DEPLOY_MODULE = "confectDeploy.ts";
 
-// Keep ownership and removal aligned with Convex's bundler entryPoints filter.
-const getEntrypoints = Effect.gen(function* () {
+/**
+ * The files of a Convex directory that a push registers as modules, matching
+ * Convex's bundler entryPoints filter, so ownership, removal and the test
+ * subject see the same modules as production. Convex skips non-JS files,
+ * dotfiles, files with more than one dot or a space, and component directories
+ * inside it. `_generated` holds no module.
+ *
+ * @internal
+ */
+export const registeredModules = Effect.fnUntraced(function* (
+  directory: string,
+) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const convex = yield* ConvexDirectory.get;
-  const files = yield* fs.readDirectory(convex, { recursive: true });
+  const files = yield* fs.readDirectory(directory, { recursive: true });
   const components = pipe(
     files,
     Array.filter(
@@ -67,11 +76,19 @@ const getEntrypoints = Effect.gen(function* () {
         String.match(/\./g),
         Option.match({ onNone: () => 0, onSome: (dots) => dots.length }),
       ) === 1 &&
-      base !== "schema.ts" &&
-      base !== "schema.js" &&
       !pipe(file, String.includes(" "))
     );
   });
+});
+
+const getEntrypoints = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const convex = yield* ConvexDirectory.get;
+  const modules = yield* registeredModules(convex);
+  return Array.filter(
+    modules,
+    (file) => !["schema.ts", "schema.js"].includes(path.basename(file)),
+  );
 });
 
 const tokenize = (
