@@ -1106,7 +1106,7 @@ export class World {
         for (const component of this.components.values()) {
           checkActionRuntimes(
             component,
-            this.componentRuntimes[component.path],
+            this.componentRuntimeOf(component.path),
           );
         }
         return this.checkStanding();
@@ -1291,6 +1291,20 @@ export class World {
     return Math.max(this.runtime.now(), this.floor);
   }
 
+  /**
+   * The runtime the test declared for the component at `componentPath`, read
+   * from the declaration's own entries only, so a component named like an
+   * `Object.prototype` member, such as `constructor`, declares nothing unless
+   * the test lists it.
+   */
+  private componentRuntimeOf(
+    componentPath: string,
+  ): IoBans.Runtime | undefined {
+    return Option.getOrUndefined(
+      Rec.get(this.componentRuntimes, componentPath),
+    );
+  }
+
   private component(componentPath: string): Component {
     const component = this.components.get(componentPath);
     if (component === undefined) throw unregistered(this, componentPath);
@@ -1342,7 +1356,7 @@ export class World {
         modulePath,
         exportName,
         func,
-        this.componentRuntimes[component.path],
+        this.componentRuntimeOf(component.path),
       ),
     };
   }
