@@ -762,8 +762,11 @@ const watches = new WeakMap<Execution, () => ReadonlyArray<string>>();
  * guard cannot stop a call made through a replacement, which a descriptor
  * change such as `Object.defineProperty` makes, so the change is caught when
  * the function settles: it fails with `UnguardableGlobal`, whatever it
- * returned, and the guard is installed again. Applied before a mutation's
- * commit point, so it publishes none of its writes.
+ * returned, and the guard is installed again. It is each function's one
+ * finalizer, applied to the outermost promise of its run, outside the race with
+ * its ending, so it runs however the function ends: returned, failed, refused
+ * or terminated. Applied before a mutation's commit point, so it publishes none
+ * of its writes.
  */
 const unlessReplaced = <A>(
   execution: Execution,
@@ -3528,13 +3531,10 @@ export class World {
         invokeAction: (requestId: string, args: string) => Promise<string>;
       };
       const run = () =>
-        unlessReplaced(
-          execution,
-          enter(execution, () =>
-            a.invokeAction(
-              from.request.requestId,
-              Json.stringify(convexToJson([parseArgs(args)])),
-            ),
+        enter(execution, () =>
+          a.invokeAction(
+            from.request.requestId,
+            Json.stringify(convexToJson([parseArgs(args)])),
           ),
         );
       // An action another function calls is an invocation of its own, with its
@@ -3553,8 +3553,15 @@ export class World {
               ),
               run,
             );
-      return unlessEnded(execution, started)
-        .finally(() => this.closeCommands(execution))
+      // One finalizer for every way the action ends, its ending included: a
+      // terminated action whose handler never settles still has its globals
+      // checked and its guards installed again.
+      return unlessReplaced(
+        execution,
+        unlessEnded(execution, started).finally(() =>
+          this.closeCommands(execution),
+        ),
+      )
         .then((raw) => {
           const result = jsonToConvex(Json.parse(raw));
           this.keepReturns(functionPath, result);
