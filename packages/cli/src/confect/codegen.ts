@@ -1188,6 +1188,36 @@ const checkTestKit = Effect.fnUntraced(function* (
   }
 });
 
+/**
+ * The loader generated `testing.ts` gives each module of a local component's
+ * mount. Under Vite it loads the module for that mount alone, and
+ * `@confect/test/Vite`'s plugin carries the mount to the component's own files
+ * it imports, as a deployment evaluates each mount's modules apart. A second
+ * mount of one component refuses to load without the plugin, since its helpers'
+ * module code would run under the first mount's settings. Elsewhere, as in a
+ * bundle, every mount shares one copy.
+ */
+const mountModule = `// Each mount loads its own copy of its component's modules, as a deployment does.
+const mountModules = new Map<string, string>();
+const mountModule =
+  (mount: string, specifier: string, load: () => Promise<unknown>) =>
+  (import.meta as { readonly env?: unknown }).env === undefined
+    ? load
+    : () => {
+        const first = mountModules.get(specifier) ?? mount;
+        mountModules.set(specifier, first);
+        return import(/* @vite-ignore */ \`\${specifier}?confect-mount=\${encodeURIComponent(mount)}\`).then((module: unknown) => {
+          if (
+            first !== mount &&
+            (globalThis as Record<symbol, unknown>)[Symbol.for("@confect/test/Vite")] !== true
+          )
+            throw new Error(
+              \`Mounts "\${first}" and "\${mount}" both load \${specifier}, and each needs its own copy of the files it imports, as a deployment gives each mount. Add plugin() from "@confect/test/Vite" to the Vitest config's plugins.\`,
+            );
+          return module;
+        });
+      };`;
+
 const generateTesting = Effect.fnUntraced(function* (
   app: App.Any,
   input: TestingInput,
@@ -1219,21 +1249,34 @@ const generateTesting = Effect.fnUntraced(function* (
     'import schema from "./schema.js";',
     'import convexSchema from "./convexSchema.js";',
   ];
-  const moduleMap = Effect.fnUntraced(function* (directory: string) {
+  // A component's loaders take the mount they load for, so each mount gets its
+  // own copy of the component's modules.
+  const moduleMap = Effect.fnUntraced(function* (
+    directory: string,
+    perMount: boolean,
+  ) {
     const files = [
       ...(yield* FunctionModule.registeredModules(directory)),
     ].sort();
     return `{ "_generated/testing.ts": () => Promise.resolve({}),\n${pipe(
       files,
       Array.map((file) => {
-        const specifier = relative(path.join(directory, file));
-        return `${quote(Array.join(pipe(file, String.split(path.sep)), "/"))}: () => import(${quote(pipe(specifier, String.replace(/\.([cm]?)[jt]s$/, ".$1js")))}),`;
+        const source = relative(path.join(directory, file));
+        // A runtime import names the source file itself, as nothing rewrites
+        // its extension.
+        const load = `() => import(${quote(pipe(source, String.replace(/\.([cm]?)[jt]s$/, ".$1js")))})`;
+        return `${quote(Array.join(pipe(file, String.split(path.sep)), "/"))}: ${perMount ? `mountModule(mount, ${quote(source)}, ${load})` : load},`;
       }),
       Array.join("\n"),
     )}\n}`;
   });
   const declarations: Array<string> = [];
-  const identifiers = new Set(["schema", "convexSchema"]);
+  const identifiers = new Set([
+    "schema",
+    "convexSchema",
+    "mountModule",
+    "mountModules",
+  ]);
   const components: Array<string> = [];
   const httpMounts: Array<string> = [];
   const kits = new Map<string, string>();
@@ -1354,8 +1397,9 @@ const generateTesting = Effect.fnUntraced(function* (
           imports.push(
             `import ${schemaIdentifier} from ${quote(relative(path.join(resolved, "schema.js")))};`,
           );
+          if (declarations.length === 0) declarations.push(mountModule);
           declarations.push(
-            `const ${identifier} = { schema: ${schemaIdentifier}, modules: ${yield* moduleMap(resolved)} };`,
+            `const ${identifier} = (mount: string) => ({ schema: ${schemaIdentifier}, modules: ${yield* moduleMap(resolved, true)} });`,
           );
         } else {
           if (kitEntry === undefined) {
@@ -1369,7 +1413,9 @@ const generateTesting = Effect.fnUntraced(function* (
           imports.push(`import * as ${identifier} from ${quote(kitEntry)};`);
         }
       }
-      components.push(`${quote(name)}: ${identifier},`);
+      components.push(
+        `${quote(name)}: ${fromPackage ? identifier : `${identifier}(${quote(name)})`},`,
+      );
       // A packaged Confect component keeps its secret fields, so its kit
       // must hand the kernel its secret policy as it registers.
       if (
@@ -1405,10 +1451,9 @@ const generateTesting = Effect.fnUntraced(function* (
       });
       if (!fromPackage) {
         sources.push({ path: name, identifier, confect: local });
-        // The subject alone needs a nested mount's bindings, so a registry
-        // never loads a component's own declaration.
-        const own = path.join(local, "app.ts");
-        const nested = subjected ? yield* bundledDefault(own) : undefined;
+        // A component's own declaration names its mounts' kits, which the
+        // registry needs, and their bindings, which the subject needs.
+        const nested = yield* bundledDefault(path.join(local, "app.ts"));
         yield* visit(
           resolved,
           `${name}/`,
@@ -1445,7 +1490,7 @@ const generateTesting = Effect.fnUntraced(function* (
   imports.push(
     ...Array.filter(subject.imports, (line) => !imports.includes(line)),
   );
-  const modules = yield* moduleMap(convexDirectory);
+  const modules = yield* moduleMap(convexDirectory, false);
   const policy =
     secrets.policy === undefined ? "" : `, secrets: ${secrets.policy}`;
   const registry = `{ httpMounts: [${Array.join(httpMounts, ",")}], schema, convexSchema, modules: ${modules}, components: {${Array.join(components, "\n")}}${policy} }`;

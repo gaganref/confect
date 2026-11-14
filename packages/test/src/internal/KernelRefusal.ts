@@ -13,6 +13,9 @@ export class RequiresBinary extends Schema.TaggedError<
     "vectorSearch",
     "storageUpload",
     "storageDownload",
+    "subtleGenerateKey",
+    "subtleEncrypt",
+    "subtleSign",
     "oidcDiscovery",
     "remoteJwks",
     "adminAuthentication",
@@ -180,6 +183,35 @@ export class CronRandomUnavailable extends Schema.TaggedError<
 }) {}
 
 /**
+ * A module drew a random value while it loaded, and no test world was bound
+ * when the backend opened, nor given to the backend, to draw it from. The
+ * binary seeds a module's load once per push; the kernel holds no generator of
+ * its own.
+ */
+export class LoadRandomUnavailable extends Schema.TaggedError<
+  LoadRandomUnavailable,
+  { readonly brand: unique symbol }
+>()("LoadRandomUnavailable", {
+  componentPath: Schema.String,
+  modulePath: Schema.String,
+  message: Schema.String,
+}) {}
+
+/**
+ * A function drew a random value, and neither an invocation bound to it nor the
+ * backend's own world supplied a stream to draw from. The binary seeds every
+ * function; the kernel holds no generator of its own.
+ */
+export class FunctionRandomUnavailable extends Schema.TaggedError<
+  FunctionRandomUnavailable,
+  { readonly brand: unique symbol }
+>()("FunctionRandomUnavailable", {
+  componentPath: Schema.String,
+  udfPath: Schema.String,
+  message: Schema.String,
+}) {}
+
+/**
  * Computing a cron job's next run reaches arithmetic that aborts the Convex
  * binary, which is built with overflow checks.
  */
@@ -208,6 +240,85 @@ export class SnapshotCronMismatch extends Schema.TaggedError<
   reason: Schema.Literals(["undeclared", "missing", "changed"]),
   message: Schema.String,
 }) {}
+
+/**
+ * A function would have run, or ran, with a host global the kernel refuses
+ * unguarded. `notConfigurable`: a test replaced it with a property the kernel
+ * cannot redefine, so the function did not start. `replacedWhileRunning`: its
+ * descriptor was replaced while the function ran, so a call made through the
+ * replacement reached it unchecked. The function fails at settlement, a
+ * mutation publishes none of its writes, and the guard is installed again.
+ * `installFailed`: installing the kernel's own on a global it could redefine
+ * threw, as a getter a test left throwing does, so nothing started.
+ */
+export class UnguardableGlobal extends Schema.TaggedError<
+  UnguardableGlobal,
+  { readonly brand: unique symbol }
+>()("UnguardableGlobal", {
+  reason: Schema.Literals([
+    "notConfigurable",
+    "replacedWhileRunning",
+    "installFailed",
+  ]),
+  globals: Schema.Array(Schema.String),
+  message: Schema.String,
+}) {}
+
+/**
+ * Effect's own construction of a class instance from fields its caller vouches
+ * for, without the class's parser (`Schema.makeClassTrusted`, which `make`
+ * itself ends in). Effect exports it at run time and marks it internal in its
+ * declarations. The entropy install's refusal is built with it because Effect's
+ * parser reads the ambient `Math`, compiling and parsing alike, and that is the
+ * global the install just failed to own, which a test may have left throwing.
+ * Its fields here are kernel-built strings and literals. `Randomness.test.ts`
+ * checks that it builds what `make` builds, so an Effect release that changes
+ * it fails there.
+ */
+const makeTrusted = (
+  Schema as unknown as {
+    readonly makeClassTrusted?: <Self>(
+      self: new (input: never) => Self,
+      fields: object,
+    ) => Self;
+  }
+).makeClassTrusted;
+if (typeof makeTrusted !== "function") {
+  throw new TypeError(
+    "effect/Schema no longer exports makeClassTrusted, which the test kernel's UnguardableGlobal refusal is built with.",
+  );
+}
+
+/**
+ * The kernel could not place its own `Math` or `crypto` in a function's or a
+ * module load's copy of the globals, because a test left the global as a
+ * property it cannot redefine. Each entry names the global and what it holds.
+ * The load or function refuses before any of its code runs, so nothing draws
+ * from the host's randomness in the kernel's place.
+ */
+export const uninstallableEntropy = (
+  failures: ReadonlyArray<{
+    readonly global: string;
+    readonly holds: string;
+    readonly fixed: boolean;
+  }>,
+): UnguardableGlobal => {
+  let fixed = true;
+  const globals: Array<string> = [];
+  const held: Array<string> = [];
+  for (const failure of failures) {
+    fixed &&= failure.fixed;
+    globals.push(failure.global);
+    held.push(`globalThis.${failure.global} is ${failure.holds}`);
+  }
+  // No parser runs, so building the refusal never reads the ambient `Math`.
+  return makeTrusted(UnguardableGlobal, {
+    _tag: "UnguardableGlobal",
+    reason: fixed ? "notConfigurable" : "installFailed",
+    globals,
+    message: `The test kernel cannot install its own random sources: ${Array.join(held, "; ")}. Code that read it would draw from the host's randomness, so the kernel refuses before any module or function code runs. Replace it with a configurable property, as vi.stubGlobal does, or assign it.`,
+  });
+};
 
 export const requiresBinary = (operation: RequiresBinary["operation"]) =>
   RequiresBinary.make({
@@ -437,6 +548,8 @@ const refusals = Array.map(
   [
     RequiresBinary,
     KernelRowPending,
+    FunctionRandomUnavailable,
+    UnguardableGlobal,
     RegisteredAfterOpen,
     ClosedAttempt,
     StaleAttempt,

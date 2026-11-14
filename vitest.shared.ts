@@ -5,6 +5,7 @@ import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import { configDefaults, defineConfig } from "vitest/config";
+import { plugin as mountModules } from "./packages/test/src/Vite";
 import { coverage } from "./vitest.coverage";
 
 const PackageManifest = Schema.fromJsonString(
@@ -58,6 +59,8 @@ const packageAliases = await discoverPackageAliases.pipe(
 );
 
 export default defineConfig({
+  // Each mount of a test's components loads its own copy of their modules.
+  plugins: [mountModules()],
   resolve: {
     alias: packageAliases,
   },

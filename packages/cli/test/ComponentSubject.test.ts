@@ -1,4 +1,3 @@
-import { pathToFileURL } from "node:url";
 import { codegenHandler } from "@confect/cli/confect/codegen";
 import {
   InvalidDeclarationError,
@@ -13,9 +12,23 @@ import { pipe } from "effect/Function";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Schema from "effect/Schema";
 import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import * as Project from "./integration/Project";
+import * as MutationCtx from "@confect/server/MutationCtx";
+import { TestComponent } from "@confect/test";
+import { componentsGeneric, type FunctionReference } from "convex/server";
+
+type Label = FunctionReference<"query", "internal", {}, string>;
+
+/**
+ * The `label` query of each mount of `tally`, as a parent reaches it.
+ */
+const mounted = componentsGeneric() as unknown as {
+  readonly first: { readonly tally: { readonly label: Label } };
+  readonly second: { readonly tally: { readonly label: Label } };
+};
 
 const app = (section = "") => `import { App, Env } from "@confect/core";
 ${section}export default App.make({
@@ -106,9 +119,7 @@ const subjectOf = (project: { readonly root: string }) =>
   Effect.promise(
     (): Promise<{ readonly TestBackend: any }> =>
       import(
-        /* @vite-ignore */ pathToFileURL(
-          `${project.root}/confect/_generated/testing.ts`,
-        ).href
+        /* @vite-ignore */ `${project.root}/confect/_generated/testing.ts`
       ),
   ).pipe(Effect.map(({ TestBackend }) => TestBackend));
 
@@ -156,6 +167,41 @@ const localComponent = (
         client(`refs.internal.${group}.init`),
         Str.replace('"mailer"', `"${name}"`),
       ),
+    );
+    return root;
+  });
+
+/**
+ * A local `tally` component under `project` whose module reads its bound
+ * `LABEL` while it loads, and whose `label` query answers what it read.
+ */
+const tallyComponent = (project: { readonly root: string }) =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const root = `${project.root}/components/tally`;
+    yield* fs.makeDirectory(`${root}/confect/tables`, { recursive: true });
+    yield* fs.makeDirectory(`${root}/convex`, { recursive: true });
+    const write = (file: string, contents: string) =>
+      fs.writeFileString(`${root}/${file}`, contents);
+    yield* write(
+      "confect/app.ts",
+      'import { App, Env } from "@confect/core";\nexport default App.make({ kind: "component", env: Env.make("tally", { LABEL: Env.string() }) });\n',
+    );
+    yield* write(
+      "confect/loaded.ts",
+      'export default process.env["LABEL"] ?? "unset";\n',
+    );
+    yield* write(
+      "confect/tally.spec.ts",
+      'import { FunctionSpec, GroupSpec } from "@confect/core";\nimport * as Schema from "effect/Schema";\nexport default GroupSpec.make().addFunction(FunctionSpec.publicQuery({ name: "label", returns: () => Schema.String }));\n',
+    );
+    yield* write(
+      "confect/tally.impl.ts",
+      'import { FunctionImpl, GroupImpl } from "@confect/server";\nimport * as Effect from "effect/Effect";\nimport * as Layer from "effect/Layer";\nimport databaseSchema from "./_generated/schema";\nimport loaded from "./loaded";\nimport tally from "./tally.spec";\nconst label = FunctionImpl.make(databaseSchema, tally, "label", () => Effect.succeed(loaded));\nexport default GroupImpl.make(databaseSchema, tally).pipe(Layer.provide(label), GroupImpl.finalize);\n',
+    );
+    yield* write(
+      "client.ts",
+      'import { Component } from "@confect/core";\nimport * as Schema from "effect/Schema";\nexport default Component.make("tally", { env: { LABEL: Schema.String }, client: (native: unknown) => native });\n',
     );
     return root;
   });
@@ -425,6 +471,65 @@ layer(NodeServices.layer)("codegen's generated component subject", (it) => {
         expect(own.init.convexFunctionName).toBe("setup:init");
         const deepest = yield* subjectOf({ root: grandchild });
         expect(deepest.init.convexFunctionName).toBe("prepare:init");
+      }).pipe(Effect.scoped),
+    { timeout: 120000 },
+  );
+
+  it.effect(
+    "gives each of a component's mounts its own copy of the mounted component's modules, read under that mount's settings",
+    () =>
+      Effect.gen(function* () {
+        const project = yield* componentProject;
+        const tally = yield* tallyComponent(project);
+        yield* generateAt(tally);
+        for (const name of ["first", "second"]) {
+          yield* project.write(
+            `confect/${name}.ts`,
+            `import { Mount } from "@confect/core";\nimport Tally from "../components/tally/client";\nexport const ${name === "first" ? "First" : "Second"} = Mount.make(Tally, { name: "${name}", env: { LABEL: "${name}" } });\n`,
+          );
+        }
+        yield* project.write(
+          "confect/app.ts",
+          'import { App, Env } from "@confect/core";\nimport tally from "../components/tally/convex/convex.config";\nimport { First } from "./first";\nimport { Second } from "./second";\nexport default App.make({\n  kind: "component",\n  env: Env.make("mailer", { REGION: Env.string() }),\n  components: [tally],\n  mounts: [First, Second],\n});\n',
+        );
+        yield* project.run;
+        const subject = yield* subjectOf(project);
+        expect(subject.mounts).toEqual([
+          {
+            path: "first",
+            kit: "local",
+            env: { LABEL: { value: "first" } },
+            required: ["LABEL"],
+          },
+          {
+            path: "second",
+            kit: "local",
+            env: { LABEL: { value: "second" } },
+            required: ["LABEL"],
+          },
+        ]);
+        const services = yield* Layer.build(
+          subject.layer({
+            config: { REGION: "eu" },
+            install: { onEvent: subject.slots["mailer/onEvent"].handle },
+          }) as Layer.Layer<TestComponent.ComponentRuntime<any>>,
+        );
+        const labels = yield* Effect.gen(function* () {
+          const runtime = yield* TestComponent.ComponentRuntime<any>();
+          return yield* runtime.run(
+            Effect.gen(function* () {
+              const ctx = yield* MutationCtx.MutationCtx<any>();
+              return yield* Effect.promise(() =>
+                Promise.all([
+                  ctx.runQuery(mounted.first.tally.label, {}),
+                  ctx.runQuery(mounted.second.tally.label, {}),
+                ]).then(([first, second]) => `${first} ${second}`),
+              );
+            }),
+            Schema.String,
+          );
+        }).pipe(Effect.provideContext(services));
+        expect(labels).toBe("first second");
       }).pipe(Effect.scoped),
     { timeout: 120000 },
   );

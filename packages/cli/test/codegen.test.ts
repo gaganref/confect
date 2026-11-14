@@ -2697,7 +2697,9 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const generated = yield* project.read(
             "confect/_generated/testing.ts",
           );
-          expect(generated).toContain('"first/inner": first_innerKit,');
+          expect(generated).toContain(
+            '"first/inner": first_innerKit("first/inner"),',
+          );
           const backend = yield* testBackendOf(project);
           expect(Array.map(backend.mounts, ({ path }) => path)).toEqual([
             "first",
@@ -2919,6 +2921,88 @@ export default Refs.make(spec);
     );
 
     it.effect.each([{ subject: true }, { subject: false }])(
+      "finds a custom kit a nested component's declaration names (subject: $subject)",
+      ({ subject }) =>
+        Effect.gen(function* () {
+          const project = yield* subjectProject;
+          const fs = yield* FileSystem.FileSystem;
+          for (const directory of [
+            "components/a/convex",
+            "components/a/confect",
+            "node_modules/pool-kit",
+          ])
+            yield* fs.makeDirectory(`${project.root}/${directory}`, {
+              recursive: true,
+            });
+          // The package has no `/testing` or `/test` entry, only the one the
+          // declaration names.
+          yield* project.write(
+            "node_modules/pool-kit/package.json",
+            '{ "name": "pool-kit", "type": "module", "exports": { "./convex.config": "./convex.config.js", "./custom": "./custom.js" } }',
+          );
+          yield* project.write(
+            "node_modules/pool-kit/convex.config.js",
+            'import { defineComponent } from "convex/server";\nexport default defineComponent("pool");\n',
+          );
+          yield* project.write(
+            "node_modules/pool-kit/custom.js",
+            "export function register() {}\n",
+          );
+          yield* project.write(
+            "components/a/convex/convex.config.ts",
+            'import { defineComponent } from "convex/server";\nimport pool from "pool-kit/convex.config";\nconst component = defineComponent("a");\ncomponent.use(pool);\nexport default component;\n',
+          );
+          yield* project.write("components/a/convex/schema.ts", emptySchema);
+          yield* project.write(
+            "components/a/confect/app.ts",
+            `import { App, Component, Env, Mount } from "@confect/core";
+import pool from "pool-kit/convex.config";
+const client = (native: unknown) => native;
+export default App.make({
+  kind: "component",
+  env: Env.make("a", {}),
+  components: [pool],
+  mounts: [Mount.make(Component.make("pool", { client, testing: "pool-kit/custom" }), { name: "pool" })],
+});
+`,
+          );
+          const app = yield* project.read("confect/app.ts");
+          yield* project.write(
+            "confect/app.ts",
+            withMount(
+              app,
+              "a",
+              "../components/a/convex/convex.config",
+              'Mount.make(Component.make("a", { client }), { name: "a" })',
+            ),
+          );
+          if (!subject) {
+            // A package that exports nothing is one the app cannot import.
+            yield* fs.makeDirectory(
+              `${project.root}/node_modules/@confect/test`,
+              { recursive: true },
+            );
+            yield* project.write(
+              "node_modules/@confect/test/package.json",
+              '{ "name": "@confect/test", "exports": {} }',
+            );
+          }
+          yield* project.run;
+          const generated = yield* project.read(
+            "confect/_generated/testing.ts",
+          );
+          expect(generated).toContain(
+            'import * as a_poolKit from "pool-kit/custom";',
+          );
+          expect(generated).toContain('"a/pool": a_poolKit,');
+          expect(
+            pipe(generated, String.includes("export const TestBackend")),
+          ).toBe(subject);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect.each([{ subject: true }, { subject: false }])(
       "generates for components nested four deep, app to a to b to c (subject: $subject)",
       ({ subject }) =>
         Effect.gen(function* () {
@@ -3000,7 +3084,7 @@ export default App.make({
           const generated = yield* project.read(
             "confect/_generated/testing.ts",
           );
-          expect(generated).toContain('"a/b/c": a_b_cKit,');
+          expect(generated).toContain('"a/b/c": a_b_cKit("a/b/c"),');
           const declares = pipe(
             generated,
             String.includes("export const TestBackend"),
@@ -3380,8 +3464,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           expect(/httpMounts: (\[[^\]]*\])/.exec(testing)?.[1]).toBe(
             '[{ componentPath: "pool/b", httpPrefix: "/pool/b" }]',
           );
-          expect(testing).toContain('"pool": poolKit,');
-          expect(testing).toContain('"pool/b": pool_bKit,');
+          expect(testing).toContain('"pool": poolKit("pool"),');
+          expect(testing).toContain('"pool/b": pool_bKit("pool/b"),');
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -3422,9 +3506,9 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           );
           yield* project.run;
           const testing = yield* project.read("confect/_generated/testing.ts");
-          expect(testing).toContain('"a/b": a_bKit,');
-          expect(testing).toContain('"a_b": a_bKit2,');
-          expect(testing).toContain('"second": a_bKit2,');
+          expect(testing).toContain('"a/b": a_bKit("a/b"),');
+          expect(testing).toContain('"a_b": a_bKit2("a_b"),');
+          expect(testing).toContain('"second": a_bKit2("second"),');
           expect(testing).toContain(
             'import a_bSchema from "../../components/child/convex/schema.js";',
           );

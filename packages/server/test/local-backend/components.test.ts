@@ -369,7 +369,7 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
   );
 
   it.effect(
-    "reads each mount's bound env and the host's own env through the declared Config entries",
+    "reads each mount's bound env, in a helper its modules read while they load and through the declared Config entries, and the host's own env",
     () =>
       Effect.gen(function* () {
         const { client } = yield* LocalBackend.LocalBackend;
@@ -380,6 +380,8 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
           first: {
             required: "first-required",
             directRequired: "first-required",
+            loaded: "first-required",
+            drawn: expect.any(Number),
             optional: "first-optional",
             marker: "from-app",
             unbound: "unset",
@@ -388,6 +390,8 @@ layer(Layer.mergeAll(LocalBackend.layer, NodeHttpClient.layerUndici), {
           second: {
             required: "second-required",
             directRequired: "second-required",
+            loaded: "second-required",
+            drawn: expect.any(Number),
             optional: "from-app",
             marker: "from-app",
             unbound: "unset",

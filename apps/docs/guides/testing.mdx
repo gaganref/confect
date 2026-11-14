@@ -70,9 +70,9 @@ export default Component.make("aggregate", {
 });
 ```
 
-Codegen then imports that kit for every mount of the descriptor from another package and skips the `<package>/testing` and `<package>/test` search. A local component's mount ignores it. It fails, naming the mount and the kit, when the specifier is a relative or absolute path, does not resolve from `convex/convex.config.ts`, or lists its exports without a `register`.
+Codegen then imports that kit for every mount of the descriptor from another package, at any depth, a nested component's own declaration included, and skips the `<package>/testing` and `<package>/test` search. A local component's mount ignores it. It fails, naming the mount and the kit, when the specifier is a relative or absolute path, does not resolve from `convex/convex.config.ts`, or lists its exports without a `register`.
 
-Local kits use names such as `emailSchema` and `emailKit`. Repeated mounts of one definition share the first mount's kit. Codegen sanitizes identifiers, adds suffixes on collision, and writes imports before local kit declarations. Relative imports carry `.js` extensions for NodeNext. Module-map keys retain their source extensions, such as `mail.ts`. When neither public test entry resolves, codegen reports both entries it tried. It never writes another package's private file paths.
+Local kits use names such as `emailSchema` and `emailKit`. Repeated mounts of one definition share the first mount's kit, which each mount calls with its own path, so each mount loads its own copy of the component's modules, as the next section sets out. Codegen sanitizes identifiers, adds suffixes on collision, and writes imports before local kit declarations. Relative imports carry `.js` extensions for NodeNext. Module-map keys retain their source extensions, such as `mail.ts`. When neither public test entry resolves, codegen reports both entries it tried. It never writes another package's private file paths.
 
 Keep the registry in test imports only. It is separate from the runtime schema and function wrappers, so production functions retain their per-group bundles. Regenerate it when adding functions or changing component installations. The schema-based constructor above remains available for hand-written component kits and custom HTTP router loaders.
 
@@ -388,6 +388,12 @@ TestConfect.layer(registry, { target: "kernel", seed: 7 });
 
 A cron run counts as no work for `finishAllScheduledFunctions`, so a drain never runs one. Advancing fake timers and then calling `finishInProgressScheduledFunctions` runs every cron run that came due, in time order with scheduled jobs. Cron expressions with `L`, `W` and `#` run as Convex runs them.
 
+### Randomness on the kernel
+
+On the kernel, every random source a function or a module reaches draws from a seeded stream: `Math.random`, `crypto.getRandomValues` and `crypto.randomUUID`, in Confect and plain Convex functions, in component functions, and in modules while they load. The stream is the bound invocation's, or else the layer's own, which `seed` starts, so two runs with the same seed draw the same values. `crypto.subtle` operations that need cryptographic randomness, such as `generateKey`, are refused as a deployment refuses them in queries and mutations. In actions, where only a real deployment can supply them, they are refused with `RequiresBinary`.
+
+The kernel installs its own `Math` and `crypto` in each function's globals. If a test leaves either global as a property the kernel cannot replace, for example by freezing it with `Object.defineProperty`, the backend refuses with `UnguardableGlobal` before any of your code runs, rather than letting it draw from the host. Replace globals with `vi.stubGlobal` or by assignment instead. A reference to `Math.random` or `crypto` that your code takes before the kernel runs anything, such as at the top of a test file, stays the host's. Likewise, a `Math` or `crypto` that a test or setup file installs before `@confect/test` is first imported is what the kernel takes as the host's, and the kernel installs its own over it as usual. After installing both, the kernel reads them back once more before your code runs, so a step that undid one refuses too. Test code that installs accessors which run arbitrary code to rewrite other globals during the kernel's install is hostile and out of scope beyond that final read-back.
+
 ### Keep secrets out of kernel artifacts
 
 On the kernel, a value under a `Schema.Redacted` node, which a `Schema.RedactedFromValue` field decodes to, reaches the kernel's failure reports and diffs only as `[redacted]`. The raw value stays in memory as the backend's own state, so handlers and subscriptions still read it. The layer reads the secret nodes of the app's tables from its database schema. Pass `secrets` for function arguments and return values and for component tables:
@@ -446,6 +452,19 @@ A session takes every app setting from `config`, and a required one is required 
 
 Each mount gets the settings it binds, as on Convex: a literal, or a setting of the backend that mounts it, the app's from `config` and a parent component's from what its own mount bound. A component's module code and functions read only their own settings, beside `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL`, and the app never reads a component's. There `process.env` is a plain object of those settings, so a spread, `Object.keys` and `in` see exactly them. A required component setting left without a value fails `TestConfigMissing` naming the mount.
 
+### Each mount loads its own modules
+
+A deployment evaluates each mount's modules apart, so a module-level read in a component mounted twice sees each mount's own settings. The generated registry loads each mount's copy of a local component's modules. Under Vitest, the plugin from `@confect/test/Vite` gives the component's own files those modules import a copy per mount too:
+
+```ts
+import { plugin } from "@confect/test/Vite";
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({ plugins: [plugin()] });
+```
+
+A file belongs to a component when it sits under the parent of the directory that holds the component's `convex.config.ts`, as its `confect/` directory does. Packages under `node_modules`, the app's own files and a packaged component's kit stay one copy for the whole test. Without the plugin, the second mount of one component fails to load, naming both mounts and the module.
+
 ### Packaged components keep their secrets
 
 A packaged Confect component's test kit hands the kernel its component's secret policy as it registers, keyed from the component: `""` for its own tables and functions, a child's name for a component it mounts. The kernel keys it at the path the kit registers.
@@ -470,7 +489,10 @@ For a component (`App.make({ kind: "component" })`) that can import `@confect/te
 - `obligations`: an `export` proof per function, one `laws` proof, and a `callback` proof per slot. A component owes no access or realm proof, so its obligations cannot name either.
 - `laws`, `ports`, `mounts` and `settings`, as an app's subject has them.
 
-A slot's contract must be exported from `confect/callbacks.ts`. A handle whose contract it does not export stops codegen with `UndeclaredCallbackSlotError`. So does a `./client` export that does not resolve, a descriptor file that default-exports no descriptor, and a descriptor whose `init` is no internal mutation of the component. A component that declares neither a `./client` export nor `client.ts` leaves its descriptor to its host, as `Mount.make(Component.make(...))` in the host's `app.ts` does, and its subject has no `init`. A manifest section may add laws and ports to a component, but no owner, open function or access obligation.
+A slot's contract must be exported from `confect/callbacks.ts`. A handle whose contract it does not export stops codegen with `UndeclaredCallbackSlotError`. A descriptor whose `init` is no internal mutation of the component stops codegen too. Otherwise the descriptor rule is:
+
+- A declared descriptor that doesn't resolve, or a `client.*` file that isn't a descriptor, stops codegen.
+- A component that declares no descriptor at all has no `init` to lose, so it gets none. That is the layout where the host writes the descriptor inline, as `Mount.make(Component.make("counter", { client }))` in the host's `app.ts`. A manifest section may add laws and ports to a component, but no owner, open function or access obligation.
 
 `TestBackend.layer({ config, install, seed })` opens the component as a push initialises it. Every module loads. Then the component's own `init` runs with `install`, which is typed from `init`'s args, then each of its mounts' `init`, through the same `MountSteps.run` traversal a push uses, as a parent's push runs a mounted component. Then `seed` runs. The session's runtime is `TestComponent.ComponentRuntime`, which has no `withIdentity`, since a component never sees its caller's identity.
 

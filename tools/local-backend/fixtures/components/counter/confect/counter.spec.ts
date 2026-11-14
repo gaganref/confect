@@ -17,6 +17,8 @@ export const ScheduledId = GenericId.GenericId("_scheduled_functions", scope);
 export const Environment = Schema.Struct({
   required: Schema.String,
   directRequired: Schema.String,
+  loaded: Schema.String,
+  drawn: Schema.Finite,
   optional: Schema.String,
   marker: Schema.String,
   unbound: Schema.String,

@@ -931,8 +931,8 @@ negative: `Metering.ts` asserts it.
 difference by name. `SystemTableReadIntervals` is the one this row adds. The
 binary's `databaseQueries` also counts the system-table intervals it reads to
 run a function: the backend state, the module, the UDF config and the
-component. On the local-backend fixture a root mutation starts at 22, its first
-nested call adds 2, and a stale-snapshot query starts at 22 again. That share
+component. On the local-backend fixture a root mutation starts at 23, its first
+nested call adds 2, and a stale-snapshot query starts at 23 again. That share
 depends on the deployment, so the kernel does not simulate it.
 
 Each read maps a total `x` to `max(0, x - before) + after`, which never
@@ -942,8 +942,8 @@ the kernel's and the kernel's plus the system share:
 - While neither count saturates, the binary's is exactly the kernel's plus the
   share, and the binary refuses `TooManyReads` that many reads sooner.
 - A read that covers inserted IDs can saturate only the kernel's lower count,
-  and the gap shrinks. One insert and a read of its ID answer 22 on the binary
-  and 1 on the kernel, a gap of 21.
+  and the gap shrinks. One insert and a read of its ID answer 23 on the binary
+  and 1 on the kernel, a gap of 22.
 - Once a read saturates both, they agree. 100 inserts and a read of one answer
   100 on both.
 
@@ -1569,6 +1569,253 @@ without it:
   `World.authenticate` private, so a presented token reaches the verifier
   through `World.verify`, one live call as #134's own calls are.
 
+## Randomness (row 6)
+
+The binary gives every function a seeded generator, and `Math.random`,
+`crypto.getRandomValues` and `crypto.randomUUID` draw from it in a query, a
+mutation and an action alike (`crates/isolate/src/ops/random.rs:7-11`,
+`ops/crypto.rs:8-31`, convex-backend `cccbade4`). A nested query or mutation
+gets its own seed from its caller's generator
+(`isolate/src/environment/udf/phase.rs:357-385`). A module may draw while it
+loads, from a generator each push seeds once and stores in the deployment's
+`UdfConfig` (`udf/phase.rs:186-193`, `action/phase.rs:184`,
+`environment/analyze.rs:284`, `model/src/udf_config/types.rs:21`). Only a
+module deployed without that seed refuses, with `NoRandomDuringImport`
+(`udf/phase.rs:500-507`). A push of a module that calls `Math.random` or
+`getRandomValues` at module scope deploys on `precompiled-2026-10-28-cccbade`.
+
+On the kernel a bound invocation's `Math.random`, `getRandomValues` and
+`randomUUID` draw from its supplied stream. `randomUUID` builds a version 4
+UUID from 16 bytes of the stream, as the binary's `op_crypto_random_uuid`
+builds one from 16 bytes of its generator (`ops/crypto.rs:8-12`).
+`getRandomValues` answers as the binary's does rather than the host's
+(`npm-packages/udf-runtime/src/00_crypto.ts:28-53`):
+
+- a fill of more than 65,536 bytes throws `TypeError` "Byte length (N) exceeds
+  the number of bytes of entropy available via this API (65536)", where Node
+  throws `QuotaExceededError`;
+- a non-integer array throws `TypeMismatchError` "The provided ArrayBufferView
+  is not an integer array type", where Node's message differs;
+- a detached or rebound call draws, where Node throws `TypeError`, because the
+  binary's method never reads its receiver.
+
+### Every function, and every kept reference
+
+Row 1 pinned randomness through the Confect bridge, so a plain Convex query,
+mutation or action, a component's function and a module an action imported
+lazily read the host's sources under a bound invocation. The kernel now gives
+every execution its own `Math` and `crypto` (`Entropy.ts`), placed in the copy
+of the globals each function and each module load runs with (`installEntropy`
+in `Execution.ts`, called from `enter` and from `World.load`). They resolve
+their source on every call: the load running and its stream, or else the
+running function's type and its bound invocation's stream. A reference a module
+keeps while it loads therefore draws, when a handler later calls it, from that
+handler's stream rather than the load's, and one kept during an open with no
+world refuses nothing later. On the kernel the bridge leaves these in place.
+Elsewhere it pins a handler's to its invocation as before.
+
+A function with no invocation bound draws from the backend's own world, the
+one the driver gave the backend, which for `TestConfect.layer` is the stream
+its `seed` starts. A deployment JWT's signing seed resolves the same way
+(#134): the bound invocation's world first, then the backend's. An unbound
+`TestConfect.layer` call is therefore seeded and replays. With neither stream,
+a draw refuses with `FunctionRandomUnavailable` (`componentPath`, `udfPath`),
+a kernel refusal that never reads the host's. Like `RequiresBinary`, a
+function can catch it, as it can the binary's own query error. The
+mock-backend kernel lane's `convex-test` is a shim
+(`packages/server/test/mock-backend/kernelShim.ts`) that opens each backend
+under a world seeded 0, as `TestConfect.layer` does by default, so its one
+case that draws, `integration.test.ts > ActionRunner > getNumberViaRunner`,
+runs on the kernel. No other kernel-lane case changes its outcome under that
+seed.
+
+The kernel's `Math` and `crypto` go into each copy by assignment through
+`Globals`' accessors. A test can leave a global as a property `Globals` cannot
+redefine: a frozen value, or a getter with no setter, either non-configurable.
+The assignment then does not take, and the copy would keep the host's sources.
+`installEntropy` checks that both globals hold the kernel's after it assigns
+them. If either does not, it refuses with `UnguardableGlobal` (`reason:
+"notConfigurable"`, `globals`) before the load's or the function's code runs,
+and its message names each global and what it holds. It never carries on with
+the host's. The class is #136's, at #136's place, so the I/O guards and the
+entropy install refuse alike. `test/fixtures/unguardableEntropy.ts` freezes
+`Math`, freezes `crypto` or leaves `crypto` a getter, each in a process of its
+own because a frozen global cannot be undone. In each case the open refuses
+before the module loads. A `Math` frozen after the open makes the next function
+refuse before its handler runs.
+
+### The globals contract
+
+For every own-descriptor shape of `Math` and `crypto`, the kernel does one of
+two things. It installs its own objects and confirms that by reading the
+global back. Or it refuses with `UnguardableGlobal` (`reason`, `globals`)
+before any module or function code runs.
+
+Every failure is a tagged refusal. Each global's install runs in one boundary,
+`installGuarded` in `Execution.ts`, from the first read of its descriptor
+(`Globals.prepare`, whose `readsThrough` calls a test's getter) through the
+assignment to the read-back. A step that throws, an assignment that returns
+false, or a read-back of another object becomes `UnguardableGlobal`, never a
+raw error and never a carry-on. Its `reason` is `notConfigurable` when every
+failing global is non-configurable, and `installFailed` otherwise, as for a
+configurable getter that throws. Its message describes each global and what
+was thrown through helpers that never throw (`heldAs`, `describeThrown`): each
+reads behind its own try and falls back to fixed text, such as "a thrown value
+that could not be described". The refusal is built without
+`UnguardableGlobal`'s parser (`makeTrusted` in `KernelRefusal.ts`, Effect's
+`Schema.makeClassTrusted`), because Effect's parser reads the ambient `Math`
+when it compiles and when it parses, and that is the global the install just
+failed to own.
+
+Once every global is installed, one final pass reads all of them back, inside
+the same guard, before any user code runs, at every module load and every
+function start. So a later step that undid an earlier global, such as a
+`crypto` getter that puts the host's `Math` back, refuses too.
+
+Test code that installs accessors which run arbitrary code to rewrite other
+globals during the kernel's install is hostile. It is out of scope beyond the
+final read-back pass, the same threat model as #1593.
+
+The kernel's own work uses the host's `Math` and `crypto`, captured once when
+its modules load and before any install (`HostGlobals.ts`). That covers
+building its wrappers, its `subtle`, the blinding bytes its P-256 signing draws
+(`Identity.ts`, a curve built with `randomBytes` from that capture), and the
+invocation bridge's `pin`. It never re-reads `globalThis`, which in a
+function's copy, or in place, can hold the kernel's own wrappers. A
+replacement a test installs before `@confect/test`'s first import is what the
+kernel captures as the host, and that is within the contract.
+
+Fix round 4 closed the two shapes that broke this. A `crypto` left
+non-configurable but writable installs by assignment, in place, so the old
+`Globals.host` read of it answered the kernel's wrapper. Signing then drew 112
+stream values instead of the seed's 32, and a worldless restore refused
+signing with `FunctionRandomUnavailable`. A non-configurable accessor whose
+setter throws let that raw error escape the open. Both are tested in a process
+of their own, and each has a plant. Fix round 5 closed the reads that still
+sat outside the guard, a getter that throws, called by `readsThrough`, and an
+error whose `message` getter throws, read while describing it, and made
+`pin` build over the captured references. A bound Confect handler had failed
+with its generic "cannot pin" error under a non-configurable but writable
+`crypto`, because `pin` saw the kernel's object in place and took it for one it
+had assigned. Fix round 6 added the final read-back pass and built the refusal
+without the class's parser, after a configurable `Math` getter that throws made
+building the refusal throw again, untagged. A further descriptor shape that
+keeps this contract is not a finding.
+
+Row 7's Sync serving runs every query, mutation and action through the same
+`enter`, so each gets the kernel's `Math` and `crypto`. Its runs had leaked
+context, though. A commit wakes a socket's update from inside the committing
+mutation's turn, and the update ran in that turn's async context. So a rerun
+of a query the commit invalidated drew from the committer's bound invocation's
+stream, consuming the committer's draws. A frame's handling likewise ran in
+the context of whatever code sent it. Each socket now keeps the async context
+of the code that opened it, its client, and runs every frame and update in it.
+This mirrors the binary, which runs each of a socket's requests as the
+socket's own. An unbound socket's runs draw from the backend's own world, and a
+socket opened under a bound invocation draws from that invocation's stream,
+whoever committed or sent the frame. `World.verify` runs no user code of its
+own beyond the open's module loads, which already go through the install.
+
+One reference stays the host's. A reference taken outside every kernel copy,
+before the kernel ran any code, such as a module a test file imports, keeps
+what it read. That is the lazy-loading contract #136 states for `fetch` and
+timers. Its setup file is not on `main`, so there is no earlier point to
+install from yet.
+
+### Cryptographic randomness
+
+`crypto.subtle` draws from a `CryptoRng`, not the seeded generator.
+`generateKey` asks for it always, `encrypt` for RSA-OAEP and `sign` for ECDSA
+and RSA-PSS (`ops/subtle_crypto/mod.rs:326-333`, `:401`, `:472`;
+`webcrypto/src/lib.rs:349-373`, `:478-481`, `:525-531`;
+`webcrypto/src/rsa.rs:471-475`). A query's and a mutation's environment
+refuses it in every phase, with `not_allowed_in_udf("CryptoRng", ...)`
+(`environment/udf/mod.rs:264-272`, `:290-292`). A function sees a plain
+`Error`: "Can't use cryptographic randomness in queries and mutations. Please
+consider using an action. See https://docs.convex.dev/functions/actions for
+more details." An action's environment gives the system's
+(`environment/action/mod.rs:1576-1578`). Measured on the pinned binary, a
+query and a mutation get that error at run time and from a module-scope
+`generateKey`. An action generates the key in both places. A push of that
+module succeeds.
+
+The kernel rejects those operations with the binary's error in a query, a
+mutation and a module load. In an action it rejects them with `RequiresBinary`
+(`subtleGenerateKey`, `subtleEncrypt`, `subtleSign`): system entropy cannot be
+replayed, and the kernel never draws the host's in its place. The kernel loads
+each module once for every function type, so a load for an action gets the
+queries' error, where the binary generates the key. Both action cases are
+exact conformance entries in `packages/server/test/mock-backend/kernelBoundaries.ts`:
+`ActionCryptoRandomness` and `ActionLoadCryptoRandomness`. Digest, import,
+export, decrypt, verify, derivation, AES encryption with a given IV, and HMAC,
+Ed25519 or RSASSA-PKCS1-v1_5 signing run as on the host in every phase.
+
+### Load draws
+
+The kernel holds no generator, so a module's draws while it loads come from
+the driver too. `World.load` loads each module under its own copy of the
+globals, whose `Math.random`, `getRandomValues` and `randomUUID` draw from the
+random stream of the world the backend opens in: the bound invocation's world,
+or else the world given to the backend, which for `TestConfect.layer` is the
+stream its `seed` starts, the one row 5c's cron delays draw from. Modules load
+one at a time, components in registration order and each component's modules
+in its map's order, so the draws land in one order and a replay with the same
+seed draws them again. A restore that loads the modules draws from the
+restoring backend's world, as a push draws from its own seed. What a module
+drew is code state, which a snapshot does not carry.
+
+With neither world, a module that draws refuses with `LoadRandomUnavailable`
+(`componentPath`, `modulePath`), and so does the open, even when the module
+caught the draw. A module that draws nothing loads as before. The binary
+refuses only a module deployed without a seed (`udf/phase.rs:500-507`), which
+a push never is, so the refusal stands where the kernel has no seed to give,
+as `CronRandomUnavailable` does for a cron's delay.
+
+The host runtime evaluates a module once per process, so only the first
+backend to load it draws. A later backend in the same test file sees the first
+one's values, where each binary push draws its own.
+
+### Boundary check
+
+`groups/randomness` in the local-backend fixture is one Confect query, mutation
+and action that each try `Math.random`, a 4-byte and a 65,536-byte fill, a
+65,537-byte fill, a `Float64Array` fill, a detached fill, `randomUUID`, an HMAC
+`generateKey` and a SHA-256 digest, and record whether each ran, its error and
+what it produced. They also return what their module drew while it loaded:
+`Math.random`, a 4-byte fill, `randomUUID` and `generateKey`.
+`test/fixtures/randomnessProbe.ts` keeps what both targets fix: fill lengths,
+the UUID's length and version 4 layout, the digest and every refusal. It
+replaces only the values a target chooses by what they must satisfy: a draw
+in (0, 1), 4 bytes not all zero, a 65,536-byte fill that is not constant. It
+holds the binary's answer and the kernel's, which differs by the two entries
+above. A test checks that a zero-filled replacement of any chosen value fails
+it. `packages/server/test/local-backend/randomness.test.ts`
+gets it from the binary and `test/Randomness.test.ts` from the kernel, which
+also checks that `Math.random` and the 4-byte fill are the supplied stream's
+first draws in all three function types, and that the module's load draws are
+its world's stream's first draws. `test/fixtures/loadDrawReplay.ts` opens a
+module that draws from all three sources while it loads, through
+`TestConfect.layer` on the kernel target. `test/Randomness.test.ts` runs it in
+two processes with one seed and gets the same bytes, and with another seed
+gets others. `test/fixtures/handlerDrawReplay.ts` runs a plain query,
+mutation and action, a component's query the host calls, and an action that
+imports a drawing module lazily, each under its own bound stream. Two
+processes print the same bytes, each equal to its stream's draws.
+`test/Randomness.test.ts` also checks both kept-reference cases, and that a
+`Math.random` kept before the kernel ran stays the host's. `test/Entropy.test.ts`
+checks the `subtle` refusals for every drawing operation in every phase, and
+the deterministic operations in every phase.
+
+### Left on the binary
+
+- The native seeding policy, as the design says.
+- An action's cryptographic randomness, at run time and while a module loads
+  for it (`ActionCryptoRandomness`, `ActionLoadCryptoRandomness`).
+- The per-push seed itself: the kernel draws a load from the driver's stream,
+  and a module evaluated once per process draws once per process.
+- A nested query's or mutation's own seed: the kernel's nested call draws on
+  from its caller's stream.
+
 ## Generated test backend (row 8)
 
 - `TestBackend.layer` opens on the kernel target only. It opens the kernel
@@ -1586,8 +1833,21 @@ without it:
   environment, and while its modules load, `process.env` answers that
   environment and Convex's system URLs only, as a plain object for reads,
   spreads, keys and `in` (`internal/Environment.ts`). Elsewhere it answers the
-  host's. Node caches an imported module, so a module two mounts share loads
-  once per process; its module-level reads see the first mount's settings.
+  host's. Each mount of a local component loads its own copy of the
+  component's modules: generated `testing.ts` tags each mount's imports with
+  its path, and `@confect/test/Vite` carries the tag to the files inside the
+  component they import. A deployment does the same: each mount is its own
+  `ComponentId`, `PreloadedEnvVars::load` reads that id's bindings
+  (`crates/udf/src/environment.rs:141-171`), and a saved context and its
+  module map are reused only for the same component and module path
+  (`crates/isolate/src/context_cache.rs:116-150`, convex-backend `cccbade4`).
+  The local-backend probe in `components.test.ts` reads each mount's value from
+  a helper's module-level read. Packages under `node_modules`, the app's files
+  and a packaged component's kit stay one copy per test. Without the plugin,
+  a second mount of one component refuses to load.
+  Each mount's copy loads under row 6's load-phase draws too, as the binary
+  seeds each component's import phase from that component's own config
+  (`crates/isolate/src/environment/udf/phase.rs:186-193`).
 - Codegen writes the registry's `secrets` as thunks of the Confect codecs that
   hold a `Schema.Redacted` node, so the kernel's redaction (row 6) builds each
   schema only when it first needs it. A kit adds its component's policy at

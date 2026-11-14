@@ -7,6 +7,7 @@ import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import schema from "../../../../tools/local-backend/fixtures/sync/convex/schema";
 import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
+import * as Clock from "../../src/internal/Clock";
 import type * as Kernel from "../../src/internal/Kernel";
 import * as Redaction from "../../src/internal/Redaction";
 import { provider } from "../../../../tools/local-backend/fixtures/minted";
@@ -31,8 +32,25 @@ export const policy = Redaction.policy({
 });
 
 /**
+ * The host clock, except that no two reads answer the same millisecond. The
+ * app's time queries answer the time a run starts at. On a binary a rerun that
+ * a client's message causes starts a network round trip after the run it
+ * replaces. On the host clock the kernel's rerun can start inside that run's
+ * millisecond, answer the same time, and send the client nothing new.
+ */
+export const distinctMillis = (): Kernel.KernelRuntime => {
+  let latest = 0;
+  const now = () => {
+    latest = Math.max(Clock.hostNow(), latest + 1);
+    return latest;
+  };
+  return { now, commitTs: () => BigInt(now()) * 1_000_000n };
+};
+
+/**
  * A fresh kernel backend running the probe's app, whose `auth.config` declares
- * the minted tokens' provider with `jwks`.
+ * the minted tokens' provider with `jwks`. Its clock is `distinctMillis` unless
+ * `runtime` gives another.
  */
 export const kernelApp = (
   jwks: string,
@@ -64,7 +82,7 @@ export const kernelApp = (
         Promise.resolve({ default: { providers: [{ ...provider, jwks }] } }),
     },
     redaction: options.redaction ?? policy,
-    ...(options.runtime === undefined ? {} : { runtime: options.runtime }),
+    runtime: options.runtime ?? distinctMillis(),
     ...(options.queryCacheAge === undefined
       ? {}
       : { queryCacheAge: options.queryCacheAge }),

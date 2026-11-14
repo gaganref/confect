@@ -79,6 +79,35 @@ const init = FunctionSpec.internalMutation({
  * An action that calls a handle it is given, which reaches the kernel without a
  * syscall, unlike a mutation's call.
  */
+/**
+ * Two draws from the function's stream, with nothing between them.
+ */
+const twice = Ref.make(
+  "mail",
+  FunctionSpec.internalMutation({
+    name: "twice",
+    returns: () => Schema.String,
+  }),
+);
+
+/**
+ * Two draws from the function's stream, with a held call to the stored handle
+ * between them.
+ */
+const around = Ref.make(
+  "mail",
+  FunctionSpec.internalMutation({
+    name: "around",
+    returns: () => Schema.String,
+  }),
+);
+
+/**
+ * A draw from the running function's stream, which the kernel's `Math` reads.
+ */
+// oxlint-disable-next-line effecttsgo/global-random -- The fixture draws as product code does, through the kernel's Math.random.
+const drawFromStream = (): number => Math.random();
+
 const relay = Ref.make(
   "mail",
   FunctionSpec.internalAction({
@@ -233,6 +262,25 @@ const mailer = {
                   error instanceof Error ? error.message : String(error),
               ),
           ),
+      }),
+      twice: mutationGeneric({
+        args: {},
+        handler: () =>
+          Promise.resolve(`${drawFromStream()} ${drawFromStream()}`),
+      }),
+      around: mutationGeneric({
+        args: {},
+        handler: (ctx) => {
+          const before = drawFromStream();
+          return configuredBy(ctx).then((settings) =>
+            ctx
+              .runMutation(
+                settings.onEvent as never,
+                { fromName: settings.fromName, message: "around" } as never,
+              )
+              .then(() => `${before} ${drawFromStream()}`),
+          );
+        },
       }),
       relay: actionGeneric({
         args: { onEvent: v.string(), message: v.string() },
@@ -567,6 +615,61 @@ const breaking = TestComponent.make(subject.app, {
     { kind: "laws" },
     { kind: "callback", slot: "mailer/onEvent" },
   ],
+});
+
+describe("TestComponent's draws around a slot call", () => {
+  it.effect(
+    "leaves the calling function's stream as it was, so a held call and its answer draw nothing from it",
+    () =>
+      Effect.gen(function* () {
+        const plain = yield* Effect.gen(function* () {
+          const test = yield* runtime;
+          return yield* test.mutation(twice);
+        }).pipe(opened({ config, install }));
+        const held = yield* Effect.gen(function* () {
+          const test = yield* runtime;
+          const fiber = yield* Effect.forkChild(test.mutation(around));
+          const command = yield* arrival(0);
+          yield* TestComponent.answer(command, "returned");
+          return yield* Fiber.join(fiber);
+        }).pipe(opened({ config, install }));
+        expect(held).toBe(plain);
+      }),
+  );
+
+  it.effect(
+    "answers a seed's slot call without drawing from the seed's stream",
+    () =>
+      Effect.gen(function* () {
+        const seeded = (callSlot: boolean) =>
+          Effect.gen(function* () {
+            const engine = yield* TestComponent.Callbacks;
+            const image = yield* engine.image;
+            return image["seen"];
+          }).pipe(
+            opened({
+              config,
+              install,
+              seed: Effect.gen(function* () {
+                const ctx = yield* raw;
+                const first = drawFromStream();
+                if (callSlot)
+                  yield* Effect.promise(() =>
+                    ctx.runMutation(
+                      stored.onEvent as unknown as FunctionReference<"mutation">,
+                      { fromName: "seed", message: "seeded" },
+                    ),
+                  );
+                const entry = `${first} ${drawFromStream()}`;
+                yield* Effect.promise(() => ctx.db.insert("seen", { entry }));
+              }),
+            }),
+          );
+        const without = yield* seeded(false);
+        const withCall = yield* seeded(true);
+        expect(withCall).toEqual(without);
+      }),
+  );
 });
 
 describe("TestComponent's slot arguments", () => {
