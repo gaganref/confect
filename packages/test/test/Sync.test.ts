@@ -130,6 +130,9 @@ describe("the unmodified client on the kernel", () => {
         const disagreements = yield* Effect.promise(() => t.reference());
         expect(disagreements).toEqual([]);
       }),
+    // A rerun that never comes is waited for until the step deadline, once
+    // for each sign-in, so that it fails on `failing` rather than on time.
+    { timeout: Duration.toMillis(Legs.stepDeadline) * 3 },
   );
 
   it.live(

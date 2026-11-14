@@ -353,7 +353,9 @@ export interface Tokens {
  * change, and its cache answers the first with the value it already sent, while
  * the failure, never cached, runs again and fails anew. It waits out the cache
  * age and changes identity again: the cached value has expired, so both answer
- * a new time.
+ * a new time. A rerun shows only if it reads a later millisecond than the run
+ * before it, which a network round trip ensures on a binary and the kernel's
+ * clock ensures on the kernel (`syncApp`'s `distinctMillis`).
  */
 export const observable = (
   target: Target,
@@ -460,19 +462,22 @@ export const observable = (
           c.value("clock") !== undefined && c.value("failing") !== undefined,
       );
       const errors = () => (c.sequences()["failing"] ?? []).length;
-      const first = errors();
-      yield* signIn(c, tokens.person);
-      // Let the reruns this sign-in owes arrive, well within the cache age.
-      yield* Effect.sleep(Duration.millis(300));
-      const within = errors();
-      failing.withinWindow = within > first;
+      // Each sign-in's rerun answers a new error, so wait for that rather than
+      // for a window: a rerun the target owes and never sends shows as no
+      // change once the step deadline passes.
+      const changesOn = (token: string) =>
+        Effect.gen(function* () {
+          const before = errors();
+          yield* signIn(c, token);
+          return yield* c.until(() => errors() > before);
+        });
+      failing.withinWindow = yield* changesOn(tokens.person);
       yield* record;
       yield* Effect.sleep(Duration.millis(options.cacheAge + 1_500));
-      yield* signIn(c, tokens.other);
+      failing.afterExpiry = yield* changesOn(tokens.other);
       yield* c.until(() => (c.sequences()["clock"] ?? []).length > 1);
       // Let a late extra value show, should one come.
       yield* Effect.sleep(Duration.millis(500));
-      failing.afterExpiry = errors() > within;
       return observed();
     }).pipe(Effect.ensuring(record));
   }).pipe(Effect.scoped);

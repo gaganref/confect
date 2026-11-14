@@ -333,6 +333,20 @@ probe is skipped off Linux. This is row
 7 of Frame's backend testing kernel (Frame ADR 0012). Changeset:
 `test-kernel-sync.md`. Upstream: fork only, as the kernel is fork-specific.
 
+## Sync probe failing-clock reruns
+
+Leg 1 of the sync probe signs a client in and checks that a query failing with
+the time as its error data sends a new error. The leg runs on the kernel in
+`Sync.test.ts` and against the binary in `syncProbe`. It slept 300 ms, then
+compared. On the kernel it sometimes found no new error. The kernel had rerun
+the query, but inside the first run's millisecond, so the rerun answered the
+same error and the client had nothing new to show. On the binary a network
+round trip always separates the two runs. The probe app's kernel now reads a
+clock that never answers the same millisecond twice. The leg waits for each
+sign-in's new error, up to the step deadline, instead of for a window. Only
+test fixtures and tests changed, so there is no changeset. Upstream: fork only,
+as the kernel is fork-specific.
+
 ## Test kernel on Effect 4.1 and upstream 10.6.0
 
 The test kernel moved onto the fork's Effect 4.1.4 and upstream 10.6.0
