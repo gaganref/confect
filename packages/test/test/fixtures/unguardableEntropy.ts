@@ -3,10 +3,12 @@
 // cannot be undone in a process, so `Randomness.test.ts` runs each case in a
 // process of its own. `process.argv[2]` names the case.
 import {
+  actionGeneric,
   defineSchema,
   makeFunctionReference,
   queryGeneric,
 } from "convex/server";
+import * as Duration from "effect/Duration";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import * as Str from "effect/String";
@@ -16,13 +18,21 @@ import { withSources } from "./inlineSources";
 
 const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 
-const seen = { loaded: false, ran: false, fetched: 0 };
+const seen = { loaded: false, ran: false, fetched: 0, logged: 0 };
 
 // The `fetch` a test's `Math` setter puts in place of the guard: a raw call the
 // kernel never checks.
 const rawFetch = () => {
   seen.fetched += 1;
   return Promise.resolve(new Response("raw"));
+};
+
+// The console a test's `Math` setter puts in place of the guard's view: a
+// configurable, unfrozen object whose calls the kernel never drops.
+const rawConsole = {
+  log: () => {
+    seen.logged += 1;
+  },
 };
 
 const t = convexTest({
@@ -45,6 +55,18 @@ const t = convexTest({
             );
           },
         }),
+        // An action that logs before it returns, and again after.
+        logs: actionGeneric({
+          args: {},
+          handler: () => {
+            seen.ran = true;
+            // oxlint-disable-next-line effecttsgo/global-console -- The plain action logs through whatever console the kernel leaves it, the guard's view or a raw replacement.
+            console.log("before");
+            // oxlint-disable-next-line effecttsgo/global-timers, effecttsgo/global-console -- The plain action logs once more after it returns, on the runtime's own timer, through whatever console the kernel leaves it.
+            setTimeout(() => console.log("after"), 0);
+            return Promise.resolve(null);
+          },
+        }),
         read: queryGeneric({
           args: {},
           handler: () => {
@@ -65,6 +87,7 @@ const t = convexTest({
 const noop = makeFunctionReference<"query">("draws:noop");
 const fetches = makeFunctionReference<"query">("draws:fetches");
 const read = makeFunctionReference<"query">("draws:read");
+const logs = makeFunctionReference<"action">("draws:logs");
 
 const host = { Math: globalThis.Math, crypto: globalThis.crypto };
 
@@ -115,6 +138,28 @@ const freezes: Record<string, () => void> = {
         stored = value;
         Object.defineProperty(globalThis, "fetch", {
           value: rawFetch,
+          writable: true,
+          configurable: true,
+        });
+      },
+      configurable: false,
+    });
+  },
+  "fixed-console": () =>
+    Object.defineProperty(globalThis, "console", {
+      value: rawConsole,
+      writable: false,
+      configurable: false,
+    }),
+  "math-setter-replaces-console": () => {
+    // As above, with console replaced by a configurable, unfrozen object.
+    let stored: unknown = globalThis.Math;
+    Object.defineProperty(globalThis, "Math", {
+      get: () => stored,
+      set: (value: unknown) => {
+        stored = value;
+        Object.defineProperty(globalThis, "console", {
+          value: rawConsole,
           writable: true,
           configurable: true,
         });
@@ -191,12 +236,18 @@ const run = Effect.gen(function* () {
   }
   freeze();
   const fetching = Str.startsWith("math-setter-replaces-fetch")(name);
-  const result = yield* settle(() => t.query(fetching ? fetches : read, {}));
-  const { fetched, ...ranAndLoaded } = seen;
+  const logging = Str.startsWith("math-setter-replaces-console")(name);
+  const result = yield* settle(() =>
+    logging ? t.action(logs, {}) : t.query(fetching ? fetches : read, {}),
+  );
+  // Long enough for a log the action schedules after it returns.
+  if (logging) yield* Effect.sleep(Duration.millis(50));
+  const { fetched, logged, ...ranAndLoaded } = seen;
   const output = yield* Schema.encodeEffect(UnknownJson)({
     ...result,
     ...ranAndLoaded,
     ...(fetching ? { fetched } : {}),
+    ...(logging ? { logged } : {}),
   });
   process.stdout.write(output);
 });

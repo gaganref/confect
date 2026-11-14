@@ -47,6 +47,14 @@ export declare const api: {
       any
     >;
   };
+  egressNode: {
+    rawFetchNode: FunctionReference<
+      "action",
+      "public",
+      { url: string },
+      string
+    >;
+  };
   groups: {
     authentication: {
       sign: FunctionReference<

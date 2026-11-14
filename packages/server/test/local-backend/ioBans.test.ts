@@ -289,6 +289,21 @@ layer(LocalBackend.plainLayer, { timeout: "120 seconds" })(
     );
 
     it.effect(
+      'a "use node" module\'s top-level fetch is answered, where the kernel refuses it with UndeclaredFetch',
+      () =>
+        Effect.gen(function* () {
+          const { client } = yield* LocalBackend.LocalBackend;
+          const observed = yield* Effect.promise(() =>
+            client.action(
+              makeFunctionReference<"action">("moduleLoadFetchNode:loaded"),
+              {},
+            ),
+          );
+          expect(observed).toEqual({ status: 200, body: "ok" });
+        }),
+    );
+
+    it.effect(
       "an isolate module defines no setImmediate, queueMicrotask or MessageChannel while it loads or in a query or an action, and a Node module defines all three",
       () =>
         Effect.gen(function* () {

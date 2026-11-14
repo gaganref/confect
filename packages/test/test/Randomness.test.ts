@@ -544,6 +544,35 @@ describe("randomness on the kernel", () => {
         afterOpen: outcome("math-setter-replaces-fetch-after-open"),
       }).toEqual({ atOpen: replaced(false), afterOpen: replaced(true) });
     }, 60_000);
+    it("a console a test left as a property the kernel cannot redefine refuses the open with notConfigurable naming console", () => {
+      expect(outcome("fixed-console")).toEqual({
+        outcome: "refused",
+        _tag: "UnguardableGlobal",
+        reason: "notConfigurable",
+        globals: ["console"],
+        message: expect.stringContaining(
+          "The test kernel cannot guard globalThis.console",
+        ),
+        loaded: false,
+        ran: false,
+      });
+    }, 60_000);
+    it("a Math setter that takes the kernel's Math and replaces console refuses the open, and the next function after an open, through the one final read-back of every guarded global, before the action logs", () => {
+      const replaced = (loaded: boolean) => ({
+        outcome: "refused",
+        _tag: "UnguardableGlobal",
+        reason: "installFailed",
+        globals: ["console"],
+        message: expect.stringContaining("globalThis.console"),
+        loaded,
+        ran: false,
+        logged: 0,
+      });
+      expect({
+        atOpen: outcome("math-setter-replaces-console"),
+        afterOpen: outcome("math-setter-replaces-console-after-open"),
+      }).toEqual({ atOpen: replaced(false), afterOpen: replaced(true) });
+    }, 60_000);
     it("a configurable Math getter that throws gets a tagged UnguardableGlobal, built without the ambient Math", () => {
       const run = spawnSync(
         process.execPath,
