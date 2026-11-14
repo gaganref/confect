@@ -512,7 +512,8 @@ const consoleMethods = [
  * beneath it, whose logging methods drop an ended function's calls. The console
  * object itself is never written, so a console a test assigns keeps its own
  * methods, spies included, and assigning a view back stores the console it
- * shows.
+ * shows. A console a test froze keeps its own methods, which no view can
+ * replace, so an ended function's calls to it are not dropped.
  */
 const guardConsole = (state: State) => {
   const global = globalThis as unknown as Global;
@@ -530,6 +531,17 @@ const guardConsole = (state: State) => {
       const methods = new WeakMap<object, Fn>();
       view = new Proxy(target, {
         get: (on, property) => {
+          // A proxy answers a non-configurable property as its target holds
+          // it, as a frozen console's are, so such a method is the target's
+          // own and its calls cannot be dropped.
+          const held = Reflect.getOwnPropertyDescriptor(on, property);
+          if (held !== undefined && held.configurable === false) {
+            if ("value" in held) {
+              if (held.writable === false) return held.value as unknown;
+            } else if (held.get === undefined) {
+              return undefined;
+            }
+          }
           const value: unknown = Reflect.get(on, property, on);
           if (
             typeof value !== "function" ||
