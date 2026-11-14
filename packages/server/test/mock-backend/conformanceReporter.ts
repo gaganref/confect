@@ -1,66 +1,40 @@
-import type { Reporter, TestModule, Vitest } from "vitest/node";
+import type { Reporter, TestModule } from "vitest/node";
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- A Vitest reporter resolves module paths before any Effect runtime exists.
+import path from "node:path";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
-import * as Option from "effect/Option";
 import * as Str from "effect/String";
-import { exceptions } from "./conformance";
+import { exceptions, unrunExceptions, type CollectedCase } from "./conformance";
 
 /**
- * The convex-test lane's check that each excepted case ran. A case that did
- * not, skipped or with its whole file skipped, proves nothing, and Vitest runs
- * no hook of a file whose cases are all skipped, so the check reads the run's
- * results. A file left out of the run by a path filter is not checked, but one
- * the lane's config excludes fails the run, since it never runs there.
+ * The convex-test lane's check that each excepted case ran, read from Vitest's
+ * own results. A case that did not run proves nothing, whatever kept it out: a
+ * path filter, a glob or literal exclusion in the lane's config, a renamed
+ * case, a skip, or a file whose cases are all skipped, which runs no hook. So
+ * each entry must name a case the run collected, by its exact file under the
+ * mock-backend suite and its full name, that passed or failed, or the run
+ * fails.
  */
 export default class ConformanceReporter implements Reporter {
-  private excludes: ReadonlyArray<string> = [];
-
-  onInit(vitest: Vitest) {
-    this.excludes = vitest.config.exclude;
-  }
-
   onTestRunEnd(testModules: ReadonlyArray<TestModule>) {
-    const excluded = Arr.filter(exceptions, (entry) =>
-      Arr.some(this.excludes, (pattern) =>
-        pipe(
-          pattern,
+    const collected = Arr.flatMap(
+      testModules,
+      (module): Array<CollectedCase> => {
+        const file = pipe(
+          path.relative(import.meta.dirname, module.moduleId),
           Str.replaceAll("\\", "/"),
-          (path) =>
-            path === entry.file || pipe(path, Str.endsWith(`/${entry.file}`)),
-        ),
-      ),
+        );
+        return Arr.map(
+          Arr.fromIterable(module.children.allTests()),
+          (test) => ({
+            file,
+            name: test.fullName,
+            state: test.result().state,
+          }),
+        );
+      },
     );
-    if (excluded.length > 0) {
-      process.exitCode = 1;
-      process.stderr.write(
-        `conformance.ts excepts cases in files the convex-test lane's config excludes: ${Arr.join(
-          Arr.map(excluded, ({ file }) => file),
-          ", ",
-        )}. An excepted case must run there. Remove the exclusion.\n`,
-      );
-    }
-    const unrun = Arr.filter(exceptions, (entry) =>
-      pipe(
-        Arr.findFirst(testModules, (candidate) =>
-          pipe(
-            candidate.moduleId,
-            Str.replaceAll("\\", "/"),
-            Str.endsWith(`/${entry.file}`),
-          ),
-        ),
-        Option.exists((module) => {
-          const state = pipe(
-            Arr.findFirst(
-              Arr.fromIterable(module.children.allTests()),
-              (test) => test.fullName === entry.name,
-            ),
-            Option.map((test) => test.result().state),
-            Option.getOrUndefined,
-          );
-          return state !== "passed" && state !== "failed";
-        }),
-      ),
-    );
+    const unrun = unrunExceptions(exceptions, collected);
     if (unrun.length === 0) return;
     process.exitCode = 1;
     process.stderr.write(

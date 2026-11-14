@@ -182,6 +182,39 @@ export const exceptions: ReadonlyArray<ConformanceException> = [
   },
 ];
 
+/**
+ * One case a run collected: its file, relative to the mock-backend suite, its
+ * full name, and the state it ended in.
+ */
+export interface CollectedCase {
+  readonly file: string;
+  readonly name: string;
+  readonly state: string;
+}
+
+/**
+ * The excepted cases a run did not run, read from the run's own results: an
+ * entry whose exact file and full name the run never collected, or collected in
+ * a state other than passed or failed. Every reason a case does not run looks
+ * the same here, whether a path filter, a glob or literal exclusion in the
+ * lane's config, a renamed case or a skip, so each fails the run.
+ */
+export const unrunExceptions = (
+  entries: ReadonlyArray<ConformanceException>,
+  collected: ReadonlyArray<CollectedCase>,
+): ReadonlyArray<ConformanceException> =>
+  Arr.filter(
+    entries,
+    (entry) =>
+      !Arr.some(
+        collected,
+        ({ file, name, state }) =>
+          file === entry.file &&
+          name === entry.name &&
+          (state === "passed" || state === "failed"),
+      ),
+  );
+
 const glob = /[*?[\]{}]/;
 
 /**
