@@ -40,6 +40,14 @@ export type RegisterOptions = {
    * `finishAllScheduledFunctions` must finish. convex-test ignores it.
    */
   readonly standing?: ReadonlyArray<string>;
+  /**
+   * The component's module sources, such as `import.meta.glob(pattern, { query:
+   * "?raw", import: "default" })` of the same files gives from any test file:
+   * each matches its module by its path below the directory that holds
+   * `_generated`. The test kernel reads each module's `"use node"` directive
+   * from them, as Convex's bundler does. convex-test ignores it.
+   */
+  readonly sources?: Record<string, () => Promise<string>>;
 };
 
 /**
@@ -113,20 +121,50 @@ export type SecretPolicy = {
   >;
 };
 
-export type LayerOptions = TargetOptions & {
+export type SourceOptions = {
   /**
-   * Register component kits synchronously before the test service is available.
+   * The modules' sources, such as `import.meta.glob(pattern, { query: "?raw",
+   * import: "default" })` of the same files gives from any test file: each
+   * matches its module by its path below the directory that holds `_generated`.
+   * The test kernel reads from them whether each module has a `"use node"`
+   * directive, as Convex's bundler does. Without them the kernel takes a
+   * Confect action's runtime from its registration, and refuses when it opens
+   * with `ActionRuntimeUnknown` if a module exports a plain Convex action.
+   * convex-test ignores it.
    */
-  readonly register?: (registerComponent: RegisterComponent) => void;
+  readonly sources?: Record<string, () => Promise<string>>;
   /**
-   * Explicit HTTP mounts. The test layer does not evaluate convex.config.ts.
+   * The runtime each listed component's plain Convex actions run in, by
+   * component path, for a component registered without sources, as a package's
+   * test kit registers its modules: such as `{ "workflow/workpool": "isolate"
+   * }`. A component registered with sources takes each module's runtime from
+   * its directive instead. convex-test ignores it.
    */
-  readonly httpMounts?: ReadonlyArray<HttpMount>;
-  /**
-   * The secret policy, read by the kernel target only.
-   */
-  readonly secrets?: SecretPolicy;
+  readonly componentRuntimes?: ComponentRuntimes;
 };
+
+/**
+ * The runtime of each listed component's plain Convex actions, by component
+ * path.
+ */
+export type ComponentRuntimes = Readonly<Record<string, "isolate" | "node">>;
+
+export type LayerOptions = TargetOptions &
+  SourceOptions & {
+    /**
+     * Register component kits synchronously before the test service is
+     * available.
+     */
+    readonly register?: (registerComponent: RegisterComponent) => void;
+    /**
+     * Explicit HTTP mounts. The test layer does not evaluate convex.config.ts.
+     */
+    readonly httpMounts?: ReadonlyArray<HttpMount>;
+    /**
+     * The secret policy, read by the kernel target only.
+     */
+    readonly secrets?: SecretPolicy;
+  };
 
 export type { DeploymentJwk, DeploymentJwks } from "convex-test";
 
@@ -402,6 +440,10 @@ export type ComponentKit =
   | {
       readonly schema: SchemaDefinition<GenericSchema, boolean>;
       readonly modules: Record<string, () => Promise<any>>;
+      /**
+       * The component's module sources, as {@link RegisterOptions}'s.
+       */
+      readonly sources?: Record<string, () => Promise<string>>;
     }
   | {
       register(
@@ -426,7 +468,12 @@ const registerKit = (
   if ("register" in kit) {
     kit.register({ registerComponent }, name);
   } else if ("schema" in kit && "modules" in kit) {
-    registerComponent(name, kit.schema, kit.modules);
+    registerComponent(
+      name,
+      kit.schema,
+      kit.modules,
+      kit.sources === undefined ? undefined : { sources: kit.sources },
+    );
   } else {
     // Codegen accepts a kit whose exports it cannot list, such as CommonJS.
     throw InvalidComponentKit.make({
@@ -450,6 +497,14 @@ export type Registry<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> = {
    * kernel target only.
    */
   readonly secrets?: SecretPolicy;
+  /**
+   * The modules' sources and the package mounts' runtimes, as
+   * {@link SourceOptions}'s. Build-order row 8's generated test subject supplies
+   * them, the runtimes from each kit's metadata, and a layer's own options take
+   * their place.
+   */
+  readonly sources?: Record<string, () => Promise<string>>;
+  readonly componentRuntimes?: ComponentRuntimes;
 };
 
 /**
@@ -464,11 +519,11 @@ export type DeclaredApp<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> =
  * Build a fresh test backend from a declaration and its generated
  * `confect/_generated/testing` registry, without restating component mounts.
  * Pass `{ target: "kernel" }` to run it on Confect's test kernel instead of
- * convex-test.
+ * convex-test, with the modules' `sources` beside it.
  */
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   app: DeclaredApp<DatabaseSchema_>,
-  options?: TargetOptions,
+  options?: TargetOptions & SourceOptions,
 ): Layer.Layer<TestConfect<DatabaseSchema_>>;
 export function layer<
   A extends App.Any,
@@ -483,7 +538,7 @@ export function layer<
       >
     >;
   },
-  options?: TargetOptions,
+  options?: TargetOptions & SourceOptions,
 ): Layer.Layer<TestConfect<DatabaseSchema_>>;
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   databaseSchema: DatabaseSchema_,
@@ -496,8 +551,8 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   second?:
     | Registry<DatabaseSchema_>
     | SchemaDefinition<GenericSchema, true>
-    | TargetOptions,
-  third?: Record<string, () => Promise<any>> | TargetOptions,
+    | (TargetOptions & SourceOptions),
+  third?: Record<string, () => Promise<any>> | (TargetOptions & SourceOptions),
   options: LayerOptions = {},
 ): Layer.Layer<TestConfect<DatabaseSchema_>> {
   if (App.isApp(appOrSchema)) {
@@ -510,6 +565,7 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
       {
         ...targetOf(third as TargetOptions | undefined),
         ...secretsOf(registry),
+        ...sourcesOf(registry, third as SourceOptions | undefined),
         // reduce skips a sparse list's holes, which effect/Array's flatMap visits.
         httpMounts: Array.reduce(
           mounts,
@@ -541,6 +597,7 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
     return schemaLayer(app.schema, app.convexSchema, app.modules, {
       ...targetOf(second as TargetOptions | undefined),
       ...secretsOf(app),
+      ...sourcesOf(app, second as SourceOptions | undefined),
       httpMounts: app.httpMounts,
       register: (registerComponent) => {
         for (const [name, component] of Rec.toEntries(app.components)) {
@@ -567,11 +624,26 @@ const secretsOf = (registry: {
 }): Pick<LayerOptions, "secrets"> =>
   registry.secrets === undefined ? {} : { secrets: registry.secrets };
 
+const sourcesOf = (
+  registry: SourceOptions,
+  options: SourceOptions | undefined,
+): SourceOptions => {
+  const sources = options?.sources ?? registry.sources;
+  const componentRuntimes =
+    options?.componentRuntimes ?? registry.componentRuntimes;
+  return {
+    ...(sources === undefined ? {} : { sources }),
+    ...(componentRuntimes === undefined ? {} : { componentRuntimes }),
+  };
+};
+
 /**
- * The `"convex-test"` target's options. convex-test ignores `world`, but the
- * fork's kernel lane aliases `convex-test` to the kernel, which draws a signing
- * key or a cron delay from the backend's own world. Giving it the layer's
- * seeded world keeps one source of randomness on both lanes.
+ * The `"convex-test"` target's options. convex-test ignores `world`, the module
+ * sources and the component runtimes, but the fork's kernel lane aliases
+ * `convex-test` to the kernel, which draws a signing key or a cron delay from
+ * the backend's own world and reads each module's runtime from its source.
+ * Giving it the layer's seeded world and sources keeps one backend setup on
+ * both lanes.
  */
 const convexTestOptions = (
   schema: SchemaDefinition<GenericSchema, true>,
@@ -582,6 +654,10 @@ const convexTestOptions = (
     schema,
     modules,
     world: DriverWorld.make("TestConfect.layer", options.seed ?? 0),
+    ...(options.sources === undefined ? {} : { sources: options.sources }),
+    ...(options.componentRuntimes === undefined
+      ? {}
+      : { componentRuntimes: options.componentRuntimes }),
   };
   return withWorld;
 };
@@ -611,6 +687,12 @@ const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
                 options.secrets ?? {},
               ),
             ),
+            ...(options.sources === undefined
+              ? {}
+              : { sources: options.sources }),
+            ...(options.componentRuntimes === undefined
+              ? {}
+              : { componentRuntimes: options.componentRuntimes }),
           })
         : convexTest(
             convexTestOptions(convexSchemaDefinition, modules, options),

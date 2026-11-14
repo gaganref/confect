@@ -1,4 +1,5 @@
 import { getFunctionReference } from "@confect/core/RefInternal";
+import type { ConvexHttpClient } from "convex/browser";
 import { expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import refs from "confect-local-backend/refs";
@@ -8,9 +9,28 @@ import { TestConfect } from "../../../test/src/index";
 import { boundary } from "../mock-backend/kernelBoundaries";
 import * as Layer from "effect/Layer";
 
+// The fixture's module sources, which its plain Convex actions need on the
+// test kernel. Row 8's generated registry supplies them.
+const sources = import.meta.glob<string>(
+  "../../../../tools/local-backend/fixtures/convex/**/*.ts",
+  { query: "?raw", import: "default" },
+);
+
 const functions = refs.public.groups.transactions;
 
 type Metrics = Record<string, { used: number; remaining: number }>;
+
+type Share = { root: number; nested: number; stale: number };
+
+/**
+ * The `SystemTableReadIntervals` boundary's share on this deployment, which
+ * depends on its modules, measured by the control function that touches no user
+ * table.
+ */
+const systemShare = (client: ConvexHttpClient) =>
+  Effect.promise((): Promise<Share> =>
+    client.mutation(getFunctionReference(functions.systemShare), {}),
+  );
 
 /**
  * Run `program` on a fresh test kernel loaded with the same fixture.
@@ -22,7 +42,7 @@ const onKernel = <A, E>(
 ) =>
   Effect.gen(function* () {
     const services = yield* Layer.build(
-      TestConfect.layer(registry, { target: "kernel" }),
+      TestConfect.layer(registry, { target: "kernel", sources }),
     );
     return yield* Effect.gen(function* () {
       const testConfect =
@@ -176,7 +196,15 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
                 Effect.andThen(test.mutation(functions.metrics, { caseId })),
               ),
           );
-          const { rootMutationStart, firstNestedCall } = systemReads.measured;
+          const share = yield* systemShare(client);
+          // The control touches no user table, so the kernel counts nothing.
+          const observed = yield* onKernel((test) =>
+            test.mutation(functions.systemShare, {}),
+          );
+          expect(observed).toEqual({ root: 0, nested: 0, stale: 0 });
+          expect(share.root).toBeGreaterThan(0);
+          const rootMutationStart = share.root;
+          const firstNestedCall = share.nested;
           // Every metric but `databaseQueries` is equal.
           const besides = ({ databaseQueries: _, ...rest }: Metrics) => rest;
           expect(besides(kernel.start)).toEqual(besides(binary.start));
@@ -186,12 +214,12 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
           // the end. No read covers an inserted ID, so neither count saturates.
           expect(kernel.start.databaseQueries!.used).toBe(0);
           expect(binary.start.databaseQueries!.used).toBe(
-            kernel.start.databaseQueries!.used + rootMutationStart!,
+            kernel.start.databaseQueries!.used + rootMutationStart,
           );
           expect(binary.end.databaseQueries!.used).toBe(
             kernel.end.databaseQueries!.used +
-              rootMutationStart! +
-              firstNestedCall!,
+              rootMutationStart +
+              firstNestedCall,
           );
           expect(kernel.end.documentsRead!.used).toBeGreaterThan(0);
           expect(kernel.end.databaseQueries!.used).toBeGreaterThan(0);
@@ -203,9 +231,7 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
       () =>
         Effect.gen(function* () {
           const { client } = yield* LocalBackend.LocalBackend;
-          const { rootMutationStart } = boundary(
-            "SystemTableReadIntervals",
-          ).measured;
+          const rootMutationStart = (yield* systemShare(client)).root;
           const caseId = "inserted-intervals";
           yield* Effect.promise(() =>
             client.mutation(getFunctionReference(functions.seed), {
@@ -231,7 +257,7 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
             afterScan: 1,
           });
           expect(binary).toEqual({
-            afterInserts: rootMutationStart!,
+            afterInserts: rootMutationStart,
             afterGet: 100,
             afterScan: 1,
           });
@@ -243,9 +269,7 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
       () =>
         Effect.gen(function* () {
           const { client } = yield* LocalBackend.LocalBackend;
-          const { rootMutationStart } = boundary(
-            "SystemTableReadIntervals",
-          ).measured;
+          const rootMutationStart = (yield* systemShare(client)).root;
           const caseId = "inserted-interval";
           yield* Effect.promise(() =>
             client.mutation(getFunctionReference(functions.seed), {
@@ -265,21 +289,19 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
           // Reading the one inserted ID drops the kernel's 0 by the index's 1
           // interval, saturating, and adds 1 back. The binary's count starts at
           // its system share and drops by 1 without saturating. So the gap
-          // shrinks from the share to the share less 1 (21 against 1 on the
-          // fixture). The `by_id` scan merges the one interval into one.
+          // shrinks from the share to the share less 1. The `by_id` scan
+          // merges the one interval into one.
           expect(kernel).toEqual({
             afterInserts: 0,
             afterGet: 1,
             afterScan: 1,
           });
           expect(binary).toEqual({
-            afterInserts: rootMutationStart!,
-            afterGet: rootMutationStart!,
-            afterScan: rootMutationStart!,
+            afterInserts: rootMutationStart,
+            afterGet: rootMutationStart,
+            afterScan: rootMutationStart,
           });
-          expect(binary.afterGet - kernel.afterGet).toBe(
-            rootMutationStart! - 1,
-          );
+          expect(binary.afterGet - kernel.afterGet).toBe(rootMutationStart - 1);
         }),
     );
 
@@ -296,15 +318,13 @@ layer(LocalBackend.layer, { timeout: "120 seconds" })(
           );
           // The stale query's clone reads the system tables afresh, the
           // boundary's share again; every other metric is equal.
-          const { staleSnapshotQueryStart } = boundary(
-            "SystemTableReadIntervals",
-          ).measured;
+          const staleSnapshotQueryStart = (yield* systemShare(client)).stale;
           const { databaseQueries: kernelQueries, ...kernelRest } = kernel;
           const { databaseQueries: binaryQueries, ...binaryRest } = binary;
           expect(kernelRest).toEqual(binaryRest);
           expect(kernelQueries!.used).toBe(0);
           expect(binaryQueries!.used).toBe(
-            kernelQueries!.used + staleSnapshotQueryStart!,
+            kernelQueries!.used + staleSnapshotQueryStart,
           );
           expect(binary.functionsScheduled).toEqual({
             used: 1,

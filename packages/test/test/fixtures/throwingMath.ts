@@ -11,13 +11,14 @@ import {
 import { convexTest } from "../../src/internal/ConvexTest";
 import * as DriverWorld from "../../src/internal/DriverWorld";
 import * as Json from "../../src/internal/Json";
+import { withSources } from "./inlineSources";
 
 const seen = { loaded: false, ran: false };
 
 const t = convexTest({
   schema: defineSchema({}),
   world: DriverWorld.make("throwing math", 0),
-  modules: {
+  ...withSources({
     "_generated/server.ts": () => Promise.resolve({}),
     "draws.ts": () => {
       seen.loaded = true;
@@ -31,7 +32,7 @@ const t = convexTest({
         }),
       });
     },
-  },
+  }),
 });
 
 Object.defineProperty(globalThis, "Math", {

@@ -15,6 +15,7 @@ import * as Context from "effect/Context";
 import { convexTest, type KernelControls } from "../../src/internal/ConvexTest";
 import * as Entropy from "../../src/internal/Entropy";
 import type * as Invocation from "../../src/internal/Invocation";
+import { withSources } from "./inlineSources";
 
 export interface Drawn {
   readonly random: number;
@@ -74,7 +75,7 @@ export const drawingBackend = (world?: Invocation.World): KernelControls => {
   const t = convexTest({
     ...(world === undefined ? {} : { world }),
     schema: defineSchema({}),
-    modules: {
+    ...withSources({
       "_generated/server.ts": () => Promise.resolve({}),
       "draws.ts": () =>
         Promise.resolve({
@@ -101,7 +102,7 @@ export const drawingBackend = (world?: Invocation.World): KernelControls => {
               import("./lazyDraws").then(({ drawn }) => drawn),
           }),
         }),
-    },
+    }),
   });
   t.registerComponent("drawer", defineSchema({}), {
     "_generated/server.ts": () => Promise.resolve({}),

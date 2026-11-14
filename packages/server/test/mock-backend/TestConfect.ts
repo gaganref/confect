@@ -22,11 +22,27 @@ const modules = import.meta.glob([
 ]);
 
 /**
- * The layer under `options`. A kernel backend draws its deployment signing key
- * from its `seed`, so another seed is another deployment's key. convex-test
- * ignores it.
+ * The same files as text, so the test kernel reads each module's `"use node"`
+ * directive as Convex's bundler does.
+ */
+const sources = import.meta.glob<string>(
+  [
+    "./fixtures/convex/**/*.ts",
+    "./fixtures/convex/**/*.js",
+    "!./fixtures/convex/**/*.*.*",
+  ],
+  { query: "?raw", import: "default" },
+);
+
+/**
+ * The layer under `options`, with the modules' sources. A kernel backend draws
+ * its deployment signing key from its `seed`, so another seed is another
+ * deployment's key. convex-test ignores both.
  */
 export const layerWith = (options: TestConfect_.LayerOptions) =>
-  TestConfect_.layer(confectSchema, convexSchema, modules, options);
+  TestConfect_.layer(confectSchema, convexSchema, modules, {
+    sources,
+    ...options,
+  });
 
 export const layer = layerWith({});

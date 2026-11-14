@@ -47,6 +47,8 @@ import {
   type Payload,
   type Target,
 } from "../../../tools/local-backend/fixtures/plain/convex/convexErrors";
+import { inlineSources, withSources } from "./fixtures/inlineSources";
+import { plainSource } from "./fixtures/fixtureSources";
 
 type Latch = { readonly promise: Promise<void>; readonly release: () => void };
 
@@ -276,8 +278,14 @@ const hostModules = {
 };
 
 const world = () => {
-  const t = convexTest(hostSchema, hostModules);
-  t.registerComponent("store", storeSchema, storeModules);
+  const t = convexTest({
+    schema: hostSchema,
+    modules: hostModules,
+    sources: inlineSources(hostModules),
+  });
+  t.registerComponent("store", storeSchema, storeModules, {
+    sources: inlineSources(storeModules),
+  });
   return t;
 };
 
@@ -716,7 +724,7 @@ describe("module loading", () => {
         loads.push(name);
         return Promise.resolve({});
       };
-      const t = convexTest(hostSchema, {
+      const modules = {
         "_generated/server.ts": recorded("_generated/server"),
         "schema.ts": recorded("schema"),
         "convex.config.ts": recorded("convex.config"),
@@ -725,6 +733,11 @@ describe("module loading", () => {
         "child/convex.config.ts": recorded("child/convex.config"),
         "child/rows.ts": recorded("child/rows"),
         "notes.ts": hostModules["notes.ts"],
+      };
+      const t = convexTest({
+        schema: hostSchema,
+        modules,
+        sources: inlineSources(modules),
       });
       yield* Effect.promise(() => t.query(notes.list, {}));
       expect(loads).toEqual([]);
@@ -786,18 +799,24 @@ describe("module loading", () => {
       Effect.gen(function* () {
         const loads: Array<string> = [];
         const registered: Array<string> = [];
-        const t = convexTest(hostSchema, {
-          "_generated/server.ts": () => Promise.resolve({}),
-          "first.ts": () =>
-            Promise.resolve({
-              run: queryGeneric({
-                args: {},
-                handler: () => {
-                  loads.push("handler");
-                  return null;
-                },
+        // The kit registers its modules without sources, so the test declares
+        // the runtime its components' plain actions run in.
+        const t = convexTest({
+          schema: hostSchema,
+          modules: {
+            "_generated/server.ts": () => Promise.resolve({}),
+            "first.ts": () =>
+              Promise.resolve({
+                run: queryGeneric({
+                  args: {},
+                  handler: () => {
+                    loads.push("handler");
+                    return null;
+                  },
+                }),
               }),
-            }),
+          },
+          componentRuntimes: { "workflow/workpool": "isolate" },
         });
         const recording = {
           ...t,
@@ -2032,6 +2051,13 @@ const convexErrorModules = {
     import("../../../tools/local-backend/fixtures/plain/convex/http"),
 };
 
+// The plain fixture's files as their own sources.
+const convexErrorWorld = () =>
+  withSources(convexErrorModules, {
+    "convexErrors.ts": plainSource("convexErrors.ts"),
+    "http.ts": plainSource("http.ts"),
+  });
+
 const convexErrors = {
   throwingQuery: makeFunctionReference<"query", { payload: Payload }>(
     "convexErrors:throwingQuery",
@@ -2117,7 +2143,7 @@ describe("nested ConvexError data", () => {
     "a ConvexError with $payload data thrown in a called $target reaches its $caller caller as that ConvexError and data",
     ({ payload, ...c }) =>
       Effect.gen(function* () {
-        const t: ConvexErrorWorld = convexTest(undefined, convexErrorModules);
+        const t: ConvexErrorWorld = convexTest(convexErrorWorld());
         const caught = yield* call(() => caughtIn(t, c, payload));
         expect(caught).toEqual({
           convexError: true,
@@ -2137,7 +2163,7 @@ describe("nested ConvexError data", () => {
     "a ConvexError with $payload data thrown in the $kind the test calls reaches it with that data as a Convex value",
     ({ kind, payload }) =>
       Effect.gen(function* () {
-        const t: KernelControls = convexTest(undefined, convexErrorModules);
+        const t: KernelControls = convexTest(convexErrorWorld());
         const run = (): Promise<unknown> =>
           kind === "query"
             ? t.query(convexErrors.throwingQuery, { payload })

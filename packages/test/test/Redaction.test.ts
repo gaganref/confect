@@ -31,6 +31,7 @@ import { pipe } from "effect/Function";
 
 const UnknownJson = Schema.fromJsonString(Schema.Unknown);
 import * as Json from "../src/internal/Json";
+import { inlineSources } from "./fixtures/inlineSources";
 
 // Each canary reaches the kernel by one route: a handler argument it never
 // stores, a stored row, a test provider's answer.
@@ -373,7 +374,13 @@ const policy = () =>
   });
 
 const backend = (): Backend =>
-  convexTest({ schema: convexSchema, modules, runtime, redaction: policy() });
+  convexTest({
+    schema: convexSchema,
+    modules,
+    sources: inlineSources(modules),
+    runtime,
+    redaction: policy(),
+  });
 
 const provider: Invocation.World = {
   name: "provider",

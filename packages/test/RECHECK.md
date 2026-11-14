@@ -561,6 +561,273 @@ deeper. The kernel now leaves an accessor in place when it already reads
 through one of the kernel's, which a sentinel in a fresh copy shows, and the
 chain settles after the first call on each target.
 
+## I/O bans (row 6)
+
+Convex refuses I/O inside a query or mutation. At the local backend's pinned
+`precompiled-2026-10-28-cccbade` (convex-backend `cccbade4`), a query's or
+mutation's async op is refused by `start_async_op`
+(`crates/isolate/src/environment/udf/mod.rs:367-375`) with
+`not_allowed_in_udf` (`:264-272`): `No{Name}InQueriesOrMutations`, "Can't use
+{description} in queries and mutations. Please consider using an action. See
+https://docs.convex.dev/functions/actions for more details." The names and
+descriptions are `AsyncOpRequest::name_for_error` and `description_for_error`
+(`crates/isolate/src/environment/async_op.rs:47-66`). The error reaches
+JavaScript as a plain, catchable `Error` with that message
+(`handle_syscall_or_op_error` in `crates/isolate/src/request_scope.rs`).
+
+- `fetch(url)` goes through `fetchWithoutRedirect`, which rewraps the op error
+  as a `TypeError` naming the target without its query string:
+  `fetch to <origin><path> failed: Can't use fetch() in queries and mutations.
+  …` (`npm-packages/udf-runtime/src/26_fetch.ts:78-113`). The handler can catch
+  it and go on.
+- `setTimeout` and `setInterval` return their ID, then their sleep op rejects
+  with no handler (`02_timers.ts:64-80`), so the function ends with "Can't use
+  setTimeout in queries and mutations. …" at its next microtask checkpoint
+  (`run_inner`'s unhandled rejection check, `udf/mod.rs:1121-1137`), whatever
+  the handler catches. `clearTimeout` and `clearInterval` are plain map
+  deletes and are allowed.
+- `formData()` on a multipart body with a boundary goes through
+  `parseFormData`'s `form/parseMultiPart` op, refused as `NoFormParse…`: the
+  call rejects with a plain `Error`, "Can't use formData() in queries and
+  mutations. …", after the body is read (`21_formdata.ts:126-150`,
+  `23_request.ts:220-224`, `23_response.ts:203-207`). A multipart type without
+  a boundary is a `TypeError`, "Missing boundary parameter in mime type of
+  multipart formdata.", and a urlencoded body parses in JavaScript and is
+  allowed. A handler reaches this with the runtime's own `Request` and
+  `Response`, so the kernel guards it.
+- The isolate defines no `setImmediate`, no `queueMicrotask` and no
+  `MessageChannel` (`npm-packages/udf-runtime/src/setup.ts:32-66` installs
+  none of them; of the timers, `setupTimers` installs only `setTimeout`,
+  `setInterval`, `clearTimeout` and `clearInterval`,
+  `npm-packages/udf-runtime/src/02_timers.ts:86-91`; and V8 provides none).
+  That holds in queries, mutations and actions alike, and while a module
+  loads. A Node action runs in Node and has all three, and so does a
+  `"use node"` module while it loads. The plain fixture's `isolateGlobals` and
+  `isolateGlobalsNode` modules show it on the binary, at load and in each
+  function (`packages/server/test/local-backend/ioBans.test.ts`).
+
+The kernel's `src/internal/IoBans.ts` makes each of `fetch`, `setTimeout`,
+`setInterval`, `setImmediate` and `queueMicrotask` an accessor on `globalThis`,
+as `Globals.ts` does for `Date`, `Math` and `crypto`. It reads as a guard of the
+implementation beneath, one guard per implementation, and a guard checks the
+kernel function running in the caller's async context at every call. An
+assignment stores the new implementation beneath, so a stub or a handler that
+assigns the global mid-invocation is still guarded, and assigning a guard back,
+as fake timers do when they uninstall, stores the implementation it guards. A
+reference keeps the implementation it was read with, as a kept reference to
+the host's function would: convex-test keeps the real `setTimeout` when it
+loads (`dist/index.js:2205`) and yields on it beside fake timers, so a single
+guard that followed the fakes made its drain loop forever. `formData()` is guarded on `Request`'s
+and `Response`'s prototypes. `@confect/test/setup` (`src/setup.ts`), a Vitest
+setup file, installs the guards before any test module loads, so a reference a
+module takes when it is imported is the guard. The kernel installs them again
+when a world opens and whenever a function starts, which guards again a global
+a test redefined with `Object.defineProperty`, as `vi.stubGlobal` does.
+
+Whenever a kernel function starts, the kernel checks each guarded global's
+descriptor. A replacement a test made, by `Object.defineProperty`, by `delete`
+and a fresh assignment, or by `vi.stubGlobal`, becomes the implementation
+beneath a fresh guard, so a stub keeps working outside a function and stays
+refused inside one. A replacement the kernel cannot redefine, a non-configurable
+one, refuses the function before it runs with `UnguardableGlobal`
+(`reason: "notConfigurable"`) naming the global. A redefinition that throws, or
+an install a later step undid, refuses it with `reason: "installFailed"`. The
+I/O guards and the entropy install for `Math` and `crypto` (#150) install
+first, all of them, inside the one boundary, the copy of the globals the code
+then runs in, and then one final read-back of every guarded global runs: `Math`,
+`crypto`, `fetch`, the timers and the rest. So a getter a test left on one
+global that replaces another when read, or a `Math` setter that takes the
+kernel's `Math` and replaces `fetch` when the entropy install assigns it,
+refuses the module load or the function before any of its code runs. Before fix
+round 5 the I/O guards read themselves back before the entropy install, so that
+setter let the handler call the replacement once before settlement refused. `UnguardableGlobal` is one refusal for both installs, with the
+reasons `notConfigurable`, `installFailed` and `replacedWhileRunning`, built
+through Effect's trusted constructor so that building it never reads the
+ambient `Math`. What the guards read for themselves, the `Request` they build a
+refused request with and the `Request` and `Response` prototypes whose
+`formData` they guard, comes from `HostGlobals.ts`, captured before anything is
+installed, never from `globalThis`; the implementation beneath a guard is
+whatever a test left there, so a stub keeps working outside a function. A
+timer's promisified form (`util.promisify(setTimeout)`, which reads
+`util.promisify.custom`) is guarded too, and ends a query or mutation as the
+timer does.
+
+While a module loads, outside any function (`loadModules`), the guards read the
+load's context (`IoBans.Hooks.loading`): the runtime the module runs in, read
+before it loads from its source, else from the component's `componentRuntimes`
+entry, else the isolate. A module that does not run in Node loads under the
+query and mutation rules. A top-level `fetch` rejects with the binary's
+`TypeError` and never reaches the host. A top-level `setTimeout` or
+`setInterval` ends the load with the binary's error, so the open refuses with
+it, whatever the module catches or awaits. The binary runs a query's or
+mutation's module top level in that function's environment (`start_async_op`,
+`crates/isolate/src/environment/udf/mod.rs:369`, at `cccbade4`), so there the
+kernel matches it. An isolate action's module fails its import on a timer
+(`require_executing`, `crates/isolate/src/environment/action/phase.rs:470`),
+with a message of its own, `NoSleepDuringImport` "setTimeout unsupported at
+import time" (`:473`, `:475`). The kernel does not match that message: it ends
+every isolate module's load on a timer with the queries-and-mutations error,
+since one module can export both a query and an action. The message is read
+from source only, because a module whose top level starts a timer fails the
+push, so no probe can hold it. Such a module's `fetch` starts its op only after an `await`, once the import is over
+(`npm-packages/udf-runtime/src/26_fetch.ts:81`), and is answered. The kernel
+loads each module once, before it knows what the module exports, so it refuses
+that `fetch` too. That is the one place it is stricter, recorded as kernel
+boundary `ActionModuleLoadFetch` in
+`packages/server/test/mock-backend/kernelBoundaries.ts`, whose local-backend
+probe measures both halves on the binary: the plain fixture's
+`moduleLoadFetch` module answers its query with the `TypeError` and its action
+with the fetched body. A `"use node"` module imports in Node
+(`npm-packages/node-executor/src/executor.ts:410`) and keeps the host's `fetch`
+and timers while it loads. Without sources, a Confect Node action's mark is
+read only once its module has loaded, so such a module loads under the
+isolate's rules unless its component's runtime is declared. Before fix round 6
+the guards saw no function at load and passed every call to the host.
+
+A descriptor replaced while a function runs, such as a handler's
+`Object.defineProperty(globalThis, "fetch", …)`, takes the global out from under
+its guard until the next entry, so a call made through the replacement is not
+blocked. The kernel is a parity aid, not a sandbox: such a call needs a
+deliberate redefinition of a global mid-invocation, and the guards never hand
+out the host's raw function. Locking the descriptors while a function runs would
+need them non-configurable, which cannot be undone and would break stubbing
+between tests, and running handlers in their own VM realm is out of scope. So
+the escape is reported instead. When a function settles, returned, failed or
+ended, the kernel reads each guarded global as a function would, through the
+prototype chain (`IoBans.watch`), and the read must answer one of the guards.
+A replacement still in place at settlement fails the function with
+`UnguardableGlobal` (`reason: "replacedWhileRunning"`) naming the global,
+whatever it returned, before a mutation's commit point, so a mutation publishes
+none of its writes. That covers a data property, an accessor that answers the
+replacement, and a replacement moved onto the global's prototype with the own
+property deleted. The guard is then installed again as an own property, which
+shadows anything inherited, so a later function never reaches an inherited
+replacement. An assignment stores beneath the guard and still reads as one. An
+accessor another library lays over a guard that reads through it is no
+replacement: convex-test lays its own over `fetch`, `setTimeout`,
+`setInterval` and `queueMicrotask` when it builds a world and before each of
+its handlers (`index.ts:3077-3110` at 0.0.67), and a kernel function in flight
+then, or settling under it, keeps going. Out of scope, and so neither blocked
+nor reported: accessors that run code to fake the guard at settlement are
+hostile and out of scope, such as a getter that answers the replacement while
+the handler runs and the guard by the time it settles, and so is a replacement
+removed again before the function settles. A call made through either reaches
+the replacement unchecked. `IoBans.test.ts` pins both limits.
+
+The exemption for Node's own modules reads the caller with `util.getCallSites`
+(Node 22.9 and later), kept when `IoBans.ts` loads, which does not go through
+`Error.prepareStackTrace`, so a user's override cannot fake it. The caller is
+the first frame outside `IoBans.ts`, and it must be one of the exact `node:`
+URLs the kernel's suites showed reading these globals: only
+`node:internal/deps/undici/undici`, Node's `fetch`, `Request` and `Response`. A
+script that names itself after a Node module does not pass.
+
+A module's runtime comes from its `"use node"` directive, read from its source
+when the world opens, as the bundler's `determineEnvironment` decides
+(`npm-packages/convex/src/bundler/index.ts:558-588`). The directive is read
+exactly as `convex` 1.49.0's `hasUseNodeDirective` reads it (`:508-548`):
+`convex` exports no such check, so `Execution.hasUseNodeDirective` calls the
+same parser, `@babel/parser`, now a runtime dependency of `@confect/test`
+(7.29.7, the copy already in the workspace's tree), with the same options,
+`sourceType: "module"` and the `jsx` and `typescript` plugins (`:519-526`),
+and reads `program.directives` (`:527-529`). A source without the text
+`use node` has none (`:512`), and one Babel cannot parse falls back to the
+bundler's line regex (`:506`, `:530-545`). Before fix round 7 a hand-rolled
+scanner read the prologue and took `"use node"\n.length;` as a directive,
+where Babel reads an expression. The test supplies the sources as a
+`?raw` glob of the same files from any test file, matched to its module by
+its path below the directory that holds `_generated`, through the kernel
+shim's `sources`,
+`registerComponent`'s `{ sources }`, a component kit's `sources`, or the
+`sources` option of each of `TestConfect.layer`'s three forms. A generated
+registry may carry them too, and a layer's own option takes their place. With
+sources, every function module needs one, `"use node"` in `http`, `crons`,
+`schema` or `auth.config` is refused with the bundler's message
+(`mustBeIsolate`, `:551-574`), and Confect's mark is a cross-check: a Confect
+Node action in a module without the directive, or a Confect isolate action in a
+module with it, is refused with `ModuleRuntime` (`reason: "markerDisagrees"`).
+
+Without sources, Confect's mark decides a Confect action's runtime, and a plain
+Convex action has none the kernel can tell. So when the world opens, a component
+with no sources whose modules export an action with no mark is refused with
+`ActionRuntimeUnknown`, naming the component, the module and its exports, before
+any function runs. A package's test kit registers its modules without sources
+(`@convex-dev/workflow`'s registers Workpool, whose `worker:runActionWrapper` is
+a plain action), and a test cannot add them, so the layer and the kernel shim
+take `componentRuntimes`, the runtime each listed component's plain actions run
+in, such as `{ "workflow/workpool": "isolate" }`, read from the declaration's
+own entries only, so a component named `constructor` or `toString` declares
+nothing it does not list. The refusal's message names
+the option. Build-order row 8's generated test subject supplies the modules'
+sources and emits these declarations for package mounts from each kit's
+metadata. The fork's mock-backend layer passes sources. A layer on the default
+target passes them, with `componentRuntimes`, in the options object it hands
+`convexTest` beside its seeded world, which convex-test ignores and the kernel
+lane's shim reads, so they reach the kernel there too: before, the lane's
+kernel never saw them, and
+`main`'s plain `clients:echoAction` made `components.test.ts`'s local host
+layer fail there.
+
+- In a query or mutation: `fetch` rejects with the binary's `TypeError`; a
+  timer returns an ID and ends its function; multipart `formData()` rejects
+  with the binary's error.
+- In a query, a mutation or an isolate action, and while a module without
+  `"use node"` loads, `setImmediate`, `queueMicrotask` and `MessageChannel`
+  read `undefined`, and a reference to any of them taken earlier throws
+  `ReferenceError: <name> is not defined`. Before fix round 7 a module's load
+  saw the host's, so a module that started a promise on `setImmediate` at its
+  top level and exported a query returning it answered `"fired"`, and
+  `MessageChannel` was not guarded at all. Outside a function the guard is the
+  host's constructor: `new MessageChannel()` builds through it, and an instance
+  is an instance of it. Vitest's `withSafeTimers` saves and restores
+  `setImmediate` around each module fetch, a load's included, so it assigns
+  back the `undefined` it read there; that assignment restores the absence it
+  read and leaves the implementation beneath in place. Node's own modules still find
+  them: its `fetch` and web streams read and call `queueMicrotask` while doing a
+  function's work, where the binary's built-ins need neither, so the guard
+  checks whether the calling frame is a `node:` module.
+- A Node action has Node's globals. `@confect/server` marks the actions it
+  registers with `Symbol.for("@confect/server/NodeAction")`: `true` from
+  `RegisteredNodeFunction.make`, `false` from `RegisteredConvexFunction`, since
+  a module's `"use node"` directive is gone once it loads. A plain Convex action
+  carries no mark, and its runtime comes from its module's source or its
+  component's declared runtime.
+
+A timer ends its function through `Execution.ts`'s `endings`. Each running
+function has an ending signal, and its invocation settles with the ending as
+soon as it fires, so a handler that awaits its timer fails promptly with the
+binary's message instead of hanging, and a mutation publishes none of its
+writes.
+
+`test/IoBans.test.ts` runs each call on the kernel, and
+`packages/server/test/local-backend/ioBans.test.ts` runs the same calls on the
+binary through `LocalBackend.ts`: the fetch, timer and awaited-timer
+refusals, both globals' absence in a query and an isolate action and their
+presence in a Node action, the clears, the multipart, boundaryless and
+urlencoded `formData()` cases, and an action's fetch and timers.
+
+convex-test 0.0.65 disagrees with the binary here and the kernel follows the
+binary: its `disallowedInTransaction` throws "`fetch` is not supported in Convex
+queries or mutations…" synchronously, and it also refuses `clearTimeout` and
+`clearInterval` (`index.ts:2929-2968`).
+
+Open: a reference to one of these globals taken before `@confect/test/setup`
+runs, by an earlier setup file or a global setup, stays the host's. The test
+project's Vitest config owns the order, and for Frame that is the generated
+test backend's preset (row 8), which lists the setup file first. A test that
+does not list it still gets the guards from the first world that opens, so only
+a reference taken before then escapes.
+
+Not covered: storage and stream ops are also refused in a query or mutation;
+their rows are storage and HTTP. Cryptographic randomness
+(`crypto.subtle.generateKey` and the algorithms that draw from `crypto_rng`,
+`udf/mod.rs:290-292`) belongs to the randomness row. Effect picks its
+scheduler's timer from the host realm when it loads, and its scheduler falls
+back to a microtask when `setImmediate` reads `undefined`, where the binary's
+would use `setTimeout`. Confect's queries and mutations run on Effect's
+`"sync"` scheduler (`RegisteredConvexFunction.ts:268`, `:385`), which sets no
+timer.
+
 ## Storage metadata (row 6)
 
 `src/internal/Storage.ts` is the file model. A file is a row in its
@@ -931,9 +1198,14 @@ negative: `Metering.ts` asserts it.
 difference by name. `SystemTableReadIntervals` is the one this row adds. The
 binary's `databaseQueries` also counts the system-table intervals it reads to
 run a function: the backend state, the module, the UDF config and the
-component. On the local-backend fixture a root mutation starts at 23, its first
-nested call adds 2, and a stale-snapshot query starts at 23 again. That share
-depends on the deployment, so the kernel does not simulate it.
+component. That share depends on the deployment's modules: a root mutation on the
+local-backend fixture has started at 19, 20, 21, 22 and 23 as groups were added,
+`groups/ioBans` among them. So the kernel does not
+simulate it, and the probes no longer pin it. `groups/transactions:systemShare`,
+a mutation that touches no user table, measures it on the binary at run time:
+a root mutation's count at its start, what its first nested call adds, and a
+stale-snapshot query's count at its start. The kernel answers 0 for each, and
+each probe compares the binary less the measured share with the kernel.
 
 Each read maps a total `x` to `max(0, x - before) + after`, which never
 decreases and never moves two totals apart. So the binary's count stays between
@@ -942,8 +1214,10 @@ the kernel's and the kernel's plus the system share:
 - While neither count saturates, the binary's is exactly the kernel's plus the
   share, and the binary refuses `TooManyReads` that many reads sooner.
 - A read that covers inserted IDs can saturate only the kernel's lower count,
-  and the gap shrinks. One insert and a read of its ID answer 23 on the binary
-  and 1 on the kernel, a gap of 22.
+  and the gap shrinks. One insert and a read of its ID answer the root share on
+  the binary and 1 on the kernel, a gap of the share less 1. These saturation
+  checks stay separate from the additive ones, since there the share is no
+  constant offset.
 - Once a read saturates both, they agree. 100 inserts and a read of one answer
   100 on both.
 
@@ -1667,14 +1941,15 @@ that could not be described". The refusal is built without
 when it compiles and when it parses, and that is the global the install just
 failed to own.
 
-Once every global is installed, one final pass reads all of them back, inside
-the same guard, before any user code runs, at every module load and every
-function start. So a later step that undid an earlier global, such as a
-`crypto` getter that puts the host's `Math` back, refuses too.
+Once every global is installed, the I/O guards' with them (#136), one final
+read-back of every guarded global runs, inside the same boundary, before any
+user code runs, at every module load and every function start. So a later step
+that undid an earlier global, such as a `crypto` getter that puts the host's
+`Math` back, or a `Math` setter that replaces `fetch`, refuses too.
 
 Test code that installs accessors which run arbitrary code to rewrite other
 globals during the kernel's install is hostile. It is out of scope beyond the
-final read-back pass, the same threat model as #1593.
+one final read-back of every guarded global, the same threat model as #1593.
 
 The kernel's own work uses the host's `Math` and `crypto`, captured once when
 its modules load and before any install (`HostGlobals.ts`). That covers

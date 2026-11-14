@@ -1,3 +1,5 @@
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- The fixture also runs in a plain Node process, where Vite's glob is absent, so it reads its modules' sources from disk.
+import { readFile } from "node:fs/promises";
 import { Ref } from "@confect/core";
 import * as Context from "effect/Context";
 import * as Rec from "effect/Record";
@@ -26,6 +28,24 @@ const ownWorld = (): Invocation.World => {
 };
 
 /**
+ * Each root module's source, read from the fixture's own file beside the module
+ * the generated registry loads, so the kernel reads its `"use node"` directive.
+ * A placeholder the registry adds, with no file, has none.
+ */
+const convexDirectory = new URL(
+  "../../../../tools/local-backend/fixtures/convex/",
+  import.meta.url,
+);
+const rootSources = Rec.map(
+  testing.modules,
+  (_, key) => () =>
+    readFile(new URL(key, convexDirectory), "utf8").catch(
+      (error: { readonly code?: string }) =>
+        error.code === "ENOENT" ? "" : Promise.reject(error),
+    ),
+);
+
+/**
  * The local-backend fixture's app, every component mounted as on the binary, on
  * a fresh test kernel. A probe calls the same registered functions here as the
  * binary lane calls over HTTP.
@@ -34,6 +54,7 @@ export const localBackendWorld = (): KernelControls => {
   const t = convexTest({
     schema: testing.convexSchema,
     modules: testing.modules,
+    sources: rootSources,
     world: ownWorld(),
   });
   for (const [name, kit] of Rec.toEntries(testing.components)) {

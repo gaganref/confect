@@ -36,11 +36,13 @@ export interface KernelBoundary {
    */
   readonly kernel: string;
   /**
-   * The amounts the probe measured on the pinned binary.
+   * The local-backend function that measures the difference at run time, on the
+   * deployment the probe runs against. The amounts depend on it, so none is
+   * pinned here.
    */
-  readonly measured: Readonly<Record<string, number>>;
+  readonly control: string;
   /**
-   * The binary the amounts were measured on.
+   * The binary the behaviour was read from.
    */
   readonly backend: string;
   readonly owner: string;
@@ -61,14 +63,11 @@ export const boundaries: ReadonlyArray<KernelBoundary> = [
     metric: "databaseQueries",
     refusal: "Too many reads in a single function execution (limit: 4096).",
     binary:
-      "The binary counts, in databaseQueries, the system-table intervals it reads to run a function: the backend state and info, the function's module, its UDF config and its component. They depend on the deployment's modules, components and environment. On the local-backend fixture a root mutation starts at 23 before its first read, and its first nested call adds 2. A stale-snapshot query runs on a clone whose read set starts empty, so it starts at 23 again.",
+      "The binary counts, in databaseQueries, the system-table intervals it reads to run a function: the backend state and info, the function's module, its UDF config and its component. They depend on the deployment's modules, components and environment, so every module a fixture adds can move them: a root mutation on the local-backend fixture has started at 19, 20, 21, 22 and 23 as groups were added. So the probe measures the share at run time, a root mutation's count at its start, what its first nested call adds and a stale-snapshot query's count at its start, and compares the binary less that share with the kernel.",
     kernel:
-      "The kernel counts only the intervals of the function's own reads, by the binary's rule, starting from zero. Each read maps a total x to max(0, x - before) + after, which never decreases and never moves two totals apart, so the binary's count stays between the kernel's and the kernel's plus the system share. While neither count saturates it is exactly the kernel's plus the share, and the binary refuses TooManyReads that many reads sooner. A read that covers inserted IDs can saturate only the kernel's lower count, and the gap shrinks: one insert and a read of its ID answer 23 on the binary and 1 on the kernel. Once both saturate they agree: 100 inserts and a read of one answer 100 on both. The binary refuses no later than the kernel, and at most the system share sooner.",
-    measured: {
-      rootMutationStart: 23,
-      firstNestedCall: 2,
-      staleSnapshotQueryStart: 23,
-    },
+      "The kernel counts only the intervals of the function's own reads, by the binary's rule, starting from zero. Each read maps a total x to max(0, x - before) + after, which never decreases and never moves two totals apart, so the binary's count stays between the kernel's and the kernel's plus the system share. While neither count saturates it is exactly the kernel's plus the share, and the binary refuses TooManyReads that many reads sooner. A read that covers inserted IDs can saturate only the kernel's lower count, and the gap shrinks: one insert and a read of its ID answer the share on the binary and 1 on the kernel. Once both saturate they agree: 100 inserts and a read of one answer 100 on both. The binary refuses no later than the kernel, and at most the system share sooner.",
+    control:
+      "groups/transactions:systemShare, a mutation that touches no user table and answers its root, first nested call and stale-snapshot shares. The kernel answers 0 for each.",
     backend: "precompiled-2026-10-28-cccbade",
     owner: "@confect/test kernel, build-order row 6 (transaction limits)",
     evidence:
@@ -165,6 +164,23 @@ export const refusalBoundaries: ReadonlyArray<KernelRefusalBoundary> = [
     evidence:
       "convex-backend cccbade4: the UDF environment refuses cryptographic randomness in every phase (crates/isolate/src/environment/udf/mod.rs:264-272, :290-292), and the action environment allows it in every phase (crates/isolate/src/environment/action/mod.rs:1576-1578). Measured on the pinned binary: a module-scope generateKey answers the refusal to a query and a mutation and generates the key for an action.",
     probe: randomnessProbe,
+  },
+  {
+    name: "ActionModuleLoadFetch",
+    operation:
+      'fetch at the top level of a module without a "use node" directive, while it loads for an action',
+    binary:
+      "The binary imports an isolate action's module in the action's environment. A fetch its top level starts sends its op only after an await, once the import is over and the action runs, so the fetch is answered, as the action's own would be. A timer its top level starts fails the import with a message of its own, NoSleepDuringImport \"setTimeout unsupported at import time\" (or setInterval). That message is read from source only and not measured: a module whose top level starts a timer fails the push, so no deployment can hold the probe.",
+    kernel:
+      "The kernel loads each module once for every function type, before any function runs, so it cannot tell an action's load from a query's. It refuses a top-level fetch in any module without a \"use node\" directive with the binary's queries-and-mutations TypeError, the answer a load for a query or a mutation gets, and never reaches the host. A \"use node\" module loads with the host's fetch and timers, as Node imports it. A timer an isolate module's top level starts ends the load with the queries-and-mutations error too, \"Can't use setTimeout in queries and mutations…\", not the binary's import-time message: one module can export both a query and an action, so the kernel cannot tell an action's load from a query's. The kernel does not match the binary's text for that case.",
+    refusal:
+      "TypeError: fetch to <url> failed: Can't use fetch() in queries and mutations. Please consider using an action. See https://docs.convex.dev/functions/actions for more details.",
+    backend: "precompiled-2026-10-28-cccbade",
+    owner: "@confect/test kernel, build-order row 6 (I/O bans)",
+    evidence:
+      "convex-backend cccbade4: the UDF environment refuses every async op, a query's or mutation's module top level included (start_async_op, crates/isolate/src/environment/udf/mod.rs:369); the action environment refuses a task only while importing (require_executing, crates/isolate/src/environment/action/phase.rs:470); fetch awaits the request's conversion before it performs its op (fetchWithoutRedirect, npm-packages/udf-runtime/src/26_fetch.ts:81), so the op starts after the import; a \"use node\" module is imported by Node (npm-packages/node-executor/src/executor.ts:410). The import-time timer message, read at convex-backend 1.49.0's source, where require_executing sits at the same line: the error code is formatted at crates/isolate/src/environment/action/phase.rs:473 and the message, \"{} unsupported at import time\", at :475, with the timer's name from AsyncOpRequest::description_for_error (crates/isolate/src/environment/async_op.rs:61); the push's analysis refuses the same op at import (crates/isolate/src/environment/analyze.rs:246-257), which is why it cannot be measured.",
+    probe:
+      "ioBans.test.ts > I/O bans while a module loads > an isolate module's top-level fetch is refused for a query and answered for an action, where the kernel refuses both",
   },
 ];
 

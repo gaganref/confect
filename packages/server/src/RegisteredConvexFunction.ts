@@ -25,6 +25,7 @@ import * as Match from "effect/Match";
 import * as Schema from "effect/Schema";
 import * as EffectScheduler from "effect/Scheduler";
 import * as Auth from "./Auth.js";
+import { markActionRuntime } from "./internal/actionRuntime.js";
 import * as ConvexConfigProvider from "./ConvexConfigProvider.js";
 import * as DatabaseReader from "./DatabaseReader.js";
 import * as DocumentIds from "./DocumentIds.js";
@@ -145,9 +146,17 @@ export const register = (self: Definition): RegisteredFunction.Any =>
         RegisteredFunction.toConvexDefinition(definition),
       ),
     PublicAction: (definition) =>
-      actionGeneric(RegisteredFunction.toConvexDefinition(definition)),
+      markActionRuntime(
+        actionGeneric(RegisteredFunction.toConvexDefinition(definition)),
+        false,
+      ),
     InternalAction: (definition) =>
-      internalActionGeneric(RegisteredFunction.toConvexDefinition(definition)),
+      markActionRuntime(
+        internalActionGeneric(
+          RegisteredFunction.toConvexDefinition(definition),
+        ),
+        false,
+      ),
     Registered: ({ handler }) => handler,
   });
 
