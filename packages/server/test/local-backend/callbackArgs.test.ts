@@ -141,7 +141,8 @@ const declared: Readonly<
   },
 };
 
-const slotOf = (slot: string) => slot.slice("fixture/".length) as Target;
+const slotOf = (slot: string) =>
+  pipe(slot, Str.slice("fixture/".length)) as Target;
 
 /**
  * The plain fixture on the test kernel, with a sink slot per target that
@@ -351,17 +352,15 @@ layer(LocalBackend.plainLayer, { timeout: "300 seconds" })(
           const { client } = yield* LocalBackend.LocalBackend;
           const probeCase = cases[name]!;
           const binary = yield* Effect.promise(() => binaryProbe(client));
-          const binaryRefusal = normalized(
-            yield* Effect.promise(() =>
-              refusalIn(
-                binary.calls,
-                caller,
-                binary.handles[probeCase.target],
-                probeCase.args(binary),
-              ),
+          const binaryOutcome = yield* Effect.promise(() =>
+            refusalIn(
+              binary.calls,
+              caller,
+              binary.handles[probeCase.target],
+              probeCase.args(binary),
             ),
-            binary,
           );
+          const binaryRefusal = normalized(binaryOutcome, binary);
           if (probeCase.expected === "returned")
             expect(binaryRefusal).toEqual({ returned: true });
           else
@@ -373,17 +372,15 @@ layer(LocalBackend.plainLayer, { timeout: "300 seconds" })(
               ),
             });
           const kernel = yield* Effect.promise(kernelProbe);
-          const kernelRefusal = normalized(
-            yield* Effect.promise(() =>
-              refusalIn(
-                kernel.calls,
-                caller,
-                kernel.handles[probeCase.target],
-                probeCase.args(kernel),
-              ),
+          const kernelOutcome = yield* Effect.promise(() =>
+            refusalIn(
+              kernel.calls,
+              caller,
+              kernel.handles[probeCase.target],
+              probeCase.args(kernel),
             ),
-            kernel,
           );
+          const kernelRefusal = normalized(kernelOutcome, kernel);
           expect(kernelRefusal).toEqual(binaryRefusal);
         }),
     );
