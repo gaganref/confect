@@ -357,6 +357,36 @@ export const unguardableGlobal = (
   });
 };
 
+/**
+ * The one refusal for a boundary whose installs or final read-back failed: the
+ * I/O guards' globals and the entropy install's, each as its own refusal says
+ * it, in one `UnguardableGlobal` naming every global. Its reason is
+ * `notConfigurable` only when every global is a property the kernel cannot
+ * redefine.
+ */
+export const unguardableGlobals = (
+  io: ReadonlyArray<{ readonly name: string; readonly fixed: boolean }>,
+  entropy: ReadonlyArray<{
+    readonly global: string;
+    readonly holds: string;
+    readonly fixed: boolean;
+  }>,
+): UnguardableGlobal => {
+  if (entropy.length === 0) return unguardableGlobal(io);
+  if (io.length === 0) return uninstallableEntropy(entropy);
+  const ioRefusal = unguardableGlobal(io);
+  const entropyRefusal = uninstallableEntropy(entropy);
+  const fixed =
+    ioRefusal.reason === "notConfigurable" &&
+    entropyRefusal.reason === "notConfigurable";
+  return makeTrusted(UnguardableGlobal, {
+    _tag: "UnguardableGlobal",
+    reason: fixed ? "notConfigurable" : "installFailed",
+    globals: [...entropyRefusal.globals, ...ioRefusal.globals],
+    message: `${entropyRefusal.message} ${ioRefusal.message}`,
+  });
+};
+
 export const replacedWhileRunning = (
   udfPath: string,
   globals: ReadonlyArray<string>,

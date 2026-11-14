@@ -493,14 +493,12 @@ export interface Unguarded {
  * Guard `fetch`, `setTimeout`, `setInterval`, `setImmediate`, `queueMicrotask`
  * and multipart `formData()`, unless they are already guarded.
  * `@confect/test/setup` calls this before any test module loads, and the kernel
- * again whenever a world opens or a function starts, which adopts a global a
- * test redefined, as `vi.stubGlobal` does, as the implementation beneath a
- * fresh guard. It answers the globals it could not leave guarded: a replacement
- * made non-configurable, one whose redefinition threw, or, in one final pass
- * that reads every guarded global back once all are installed, one a later step
- * undid, as a test's getter that replaces another global when it is read does.
- * A read that answers no function, as a test that stubbed the global to
- * `undefined` leaves it, has nothing to guard.
+ * again whenever a world opens, a module loads or a function starts, which
+ * adopts a global a test redefined, as `vi.stubGlobal` does, as the
+ * implementation beneath a fresh guard. It answers the globals it could not
+ * guard: a replacement made non-configurable, or one whose redefinition threw.
+ * It reads nothing back: the kernel runs {@link readBack} once every install of
+ * the boundary has run, the entropy install's included.
  */
 export const install = (): ReadonlyArray<Unguarded> => {
   const state = stateOf();
@@ -515,7 +513,19 @@ export const install = (): ReadonlyArray<Unguarded> => {
   });
   guardFormData(state, HostGlobals.request.prototype);
   guardFormData(state, HostGlobals.response.prototype);
-  if (failed.length > 0) return failed;
+  return failed;
+};
+
+/**
+ * The I/O guards' part of the one final read-back of every guarded global: each
+ * guarded global, read through the prototype chain, must answer a guard. A
+ * later install that undid one, as a test's setter on `Math` that replaces
+ * `fetch` when the entropy install assigns it does, is answered here, before
+ * any user code runs. A read that answers no function, as a test that stubbed
+ * the global to `undefined` leaves it, has nothing to guard.
+ */
+export const readBack = (): ReadonlyArray<Unguarded> => {
+  const state = stateOf();
   return Arr.filterMap(guarded, ({ name }) => {
     const read = readThroughChain(state, name);
     return typeof read !== "function" || state.made.has(read)
