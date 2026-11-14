@@ -2857,7 +2857,11 @@ export default Refs.make(spec);
       { timeout: 30000 },
     );
 
-    it.effect.each([
+    it.effect.each<{
+      readonly kit: string;
+      readonly files: Readonly<Record<string, string>>;
+      readonly refusal: "missing" | "unknown" | "none";
+    }>([
       {
         kit: "an ES module kit without secrets",
         files: { "testing.js": "export function register() {}\n" },
