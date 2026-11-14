@@ -322,6 +322,20 @@ const ordinals = (sequence: ReadonlyArray<JSONValue>): ReadonlyArray<number> =>
   );
 
 /**
+ * The time a failing clock's error carries, when its run started, or 0 when
+ * `value` is no such error, so that a deadline measured from it has passed. The
+ * leg measures from 0 too when it has no error yet.
+ */
+const startedAt = (value: JSONValue): number => {
+  const time = (
+    value as {
+      readonly failed?: { readonly data?: { readonly time?: unknown } };
+    } | null
+  )?.failed?.data?.time;
+  return typeof time === "number" ? time : 0;
+};
+
+/**
  * The names one run's rows go under, fresh so rows an earlier run left on a
  * binary never reach what this one compares.
  */
@@ -353,9 +367,11 @@ export interface Tokens {
  * change, and its cache answers the first with the value it already sent, while
  * the failure, never cached, runs again and fails anew. It waits out the cache
  * age and changes identity again: the cached value has expired, so both answer
- * a new time. A rerun shows only if it reads a later millisecond than the run
- * before it, which a network round trip ensures on a binary and the kernel's
- * clock ensures on the kernel (`syncApp`'s `distinctMillis`).
+ * a new time. The first sign-in's new error counts only if it comes before the
+ * cache age passes, so a failure served from the cache until it expires does
+ * not pass for a rerun. A rerun shows only if it reads a later millisecond than
+ * the run before it, which a network round trip ensures on a binary and the
+ * kernel's clock ensures on the kernel (`syncApp`'s `distinctMillis`).
  */
 export const observable = (
   target: Target,
@@ -464,17 +480,36 @@ export const observable = (
       const errors = () => (c.sequences()["failing"] ?? []).length;
       // Each sign-in's rerun answers a new error, so wait for that rather than
       // for a window: a rerun the target owes and never sends shows as no
-      // change once the step deadline passes.
-      const changesOn = (token: string) =>
+      // change once `deadline` passes.
+      const changesOn = (token: string, deadline: Duration.Duration) =>
         Effect.gen(function* () {
           const before = errors();
           yield* signIn(c, token);
           return yield* c.until(() => errors() > before);
-        });
-      failing.withinWindow = yield* changesOn(tokens.person);
+        }).pipe(
+          Effect.timeoutOrElse({
+            duration: deadline,
+            orElse: () => Effect.succeed(false),
+          }),
+        );
+      // The first sign-in's new error must come while a cached copy of the
+      // first failure would still be fresh: within the cache age from the
+      // first run, less a quarter of it as margin. A target that cached the
+      // failure would answer the stale error until then, and a new one only
+      // after it. The first error's time is when that run started, on the
+      // clock the cache ages by.
+      const ran = Arr.head(c.sequences()["failing"] ?? []).pipe(
+        Option.map(startedAt),
+        Option.getOrElse(() => 0),
+      );
+      const signingIn = yield* Clock.currentTimeMillis;
+      failing.withinWindow = yield* changesOn(
+        tokens.person,
+        Duration.millis(Math.max(0, ran + options.cacheAge * 0.75 - signingIn)),
+      );
       yield* record;
       yield* Effect.sleep(Duration.millis(options.cacheAge + 1_500));
-      failing.afterExpiry = yield* changesOn(tokens.other);
+      failing.afterExpiry = yield* changesOn(tokens.other, stepDeadline);
       yield* c.until(() => (c.sequences()["clock"] ?? []).length > 1);
       // Let a late extra value show, should one come.
       yield* Effect.sleep(Duration.millis(500));

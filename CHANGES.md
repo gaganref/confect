@@ -343,9 +343,11 @@ the query, but inside the first run's millisecond, so the rerun answered the
 same error and the client had nothing new to show. On the binary a network
 round trip always separates the two runs. The probe app's kernel now reads a
 clock that never answers the same millisecond twice. The leg waits for each
-sign-in's new error, up to the step deadline, instead of for a window. Only
-test fixtures and tests changed, so there is no changeset. Upstream: fork only,
-as the kernel is fork-specific.
+sign-in's new error instead of for a window. The first must come within three
+quarters of the cache age from the first run, so a cached failure that changes
+only once it expires still fails the leg. The second may take up to the step
+deadline. Only test fixtures and tests changed, so there is no changeset.
+Upstream: fork only, as the kernel is fork-specific.
 
 ## Test kernel on Effect 4.1 and upstream 10.6.0
 
