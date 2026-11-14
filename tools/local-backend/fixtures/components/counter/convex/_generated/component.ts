@@ -75,6 +75,7 @@ export type ComponentApi<Name extends string | undefined = string | undefined> =
         {
           directRequired: string;
           hostOnly: string;
+          loaded: string;
           marker: string;
           optional: string;
           required: string;

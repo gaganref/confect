@@ -214,6 +214,7 @@ export declare const api: {
           first: {
             directRequired: string;
             hostOnly: string;
+            loaded: string;
             marker: string;
             optional: string;
             required: string;
@@ -223,6 +224,7 @@ export declare const api: {
           second: {
             directRequired: string;
             hostOnly: string;
+            loaded: string;
             marker: string;
             optional: string;
             required: string;

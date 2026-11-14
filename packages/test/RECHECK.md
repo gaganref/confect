@@ -1586,8 +1586,18 @@ without it:
   environment, and while its modules load, `process.env` answers that
   environment and Convex's system URLs only, as a plain object for reads,
   spreads, keys and `in` (`internal/Environment.ts`). Elsewhere it answers the
-  host's. Node caches an imported module, so a module two mounts share loads
-  once per process; its module-level reads see the first mount's settings.
+  host's. Each mount of a local component loads its own copy of the
+  component's modules: generated `testing.ts` tags each mount's imports with
+  its path, and `@confect/test/Vite` carries the tag to the files inside the
+  component they import. A deployment does the same: each mount is its own
+  `ComponentId`, `PreloadedEnvVars::load` reads that id's bindings
+  (`crates/udf/src/environment.rs:141-171`), and a saved context and its
+  module map are reused only for the same component and module path
+  (`crates/isolate/src/context_cache.rs:116-150`, convex-backend `cccbade4`).
+  The local-backend probe in `components.test.ts` reads each mount's value from
+  a helper's module-level read. Packages under `node_modules`, the app's files
+  and a packaged component's kit stay one copy per test. Without the plugin,
+  a second mount of one component refuses to load.
 - Codegen writes the registry's `secrets` as thunks of the Confect codecs that
   hold a `Schema.Redacted` node, so the kernel's redaction (row 6) builds each
   schema only when it first needs it. A kit adds its component's policy at

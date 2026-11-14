@@ -2697,7 +2697,9 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const generated = yield* project.read(
             "confect/_generated/testing.ts",
           );
-          expect(generated).toContain('"first/inner": first_innerKit,');
+          expect(generated).toContain(
+            '"first/inner": first_innerKit("first/inner"),',
+          );
           const backend = yield* testBackendOf(project);
           expect(Array.map(backend.mounts, ({ path }) => path)).toEqual([
             "first",
@@ -3000,7 +3002,7 @@ export default App.make({
           const generated = yield* project.read(
             "confect/_generated/testing.ts",
           );
-          expect(generated).toContain('"a/b/c": a_b_cKit,');
+          expect(generated).toContain('"a/b/c": a_b_cKit("a/b/c"),');
           const declares = pipe(
             generated,
             String.includes("export const TestBackend"),
@@ -3380,8 +3382,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           expect(/httpMounts: (\[[^\]]*\])/.exec(testing)?.[1]).toBe(
             '[{ componentPath: "pool/b", httpPrefix: "/pool/b" }]',
           );
-          expect(testing).toContain('"pool": poolKit,');
-          expect(testing).toContain('"pool/b": pool_bKit,');
+          expect(testing).toContain('"pool": poolKit("pool"),');
+          expect(testing).toContain('"pool/b": pool_bKit("pool/b"),');
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -3422,9 +3424,9 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           );
           yield* project.run;
           const testing = yield* project.read("confect/_generated/testing.ts");
-          expect(testing).toContain('"a/b": a_bKit,');
-          expect(testing).toContain('"a_b": a_bKit2,');
-          expect(testing).toContain('"second": a_bKit2,');
+          expect(testing).toContain('"a/b": a_bKit("a/b"),');
+          expect(testing).toContain('"a_b": a_bKit2("a_b"),');
+          expect(testing).toContain('"second": a_bKit2("second"),');
           expect(testing).toContain(
             'import a_bSchema from "../../components/child/convex/schema.js";',
           );

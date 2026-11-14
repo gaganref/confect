@@ -26,6 +26,7 @@ import {
 } from "./_generated/services";
 import counter, { Rejected, ScheduledId } from "./counter.spec";
 import env from "./env";
+import loaded from "./loaded";
 
 const create = FunctionImpl.make(schema, counter, "create", (args) =>
   Effect.gen(function* () {
@@ -175,6 +176,7 @@ const environment = FunctionImpl.make(schema, counter, "environment", () =>
       hostOnly,
       // oxlint-disable-next-line effecttsgo/process-env-in-effect -- Compare direct native reads with Config for this installation.
       directRequired: process.env.COMPONENT_REQUIRED ?? "unset",
+      loaded,
     };
   }).pipe(Effect.orDie),
 );

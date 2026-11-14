@@ -70,9 +70,9 @@ export default Component.make("aggregate", {
 });
 ```
 
-Codegen then imports that kit for every mount of the descriptor from another package and skips the `<package>/testing` and `<package>/test` search. A local component's mount ignores it. It fails, naming the mount and the kit, when the specifier is a relative or absolute path, does not resolve from `convex/convex.config.ts`, or lists its exports without a `register`.
+Codegen then imports that kit for every mount of the descriptor from another package, at any depth, a nested component's own declaration included, and skips the `<package>/testing` and `<package>/test` search. A local component's mount ignores it. It fails, naming the mount and the kit, when the specifier is a relative or absolute path, does not resolve from `convex/convex.config.ts`, or lists its exports without a `register`.
 
-Local kits use names such as `emailSchema` and `emailKit`. Repeated mounts of one definition share the first mount's kit. Codegen sanitizes identifiers, adds suffixes on collision, and writes imports before local kit declarations. Relative imports carry `.js` extensions for NodeNext. Module-map keys retain their source extensions, such as `mail.ts`. When neither public test entry resolves, codegen reports both entries it tried. It never writes another package's private file paths.
+Local kits use names such as `emailSchema` and `emailKit`. Repeated mounts of one definition share the first mount's kit, which each mount calls with its own path, so each mount loads its own copy of the component's modules, as the next section sets out. Codegen sanitizes identifiers, adds suffixes on collision, and writes imports before local kit declarations. Relative imports carry `.js` extensions for NodeNext. Module-map keys retain their source extensions, such as `mail.ts`. When neither public test entry resolves, codegen reports both entries it tried. It never writes another package's private file paths.
 
 Keep the registry in test imports only. It is separate from the runtime schema and function wrappers, so production functions retain their per-group bundles. Regenerate it when adding functions or changing component installations. The schema-based constructor above remains available for hand-written component kits and custom HTTP router loaders.
 
@@ -445,6 +445,19 @@ it.effect("assigns a task", () =>
 A session takes every app setting from `config`, and a required one is required by type. Codegen never reads `.env` or deployment state. A missing setting fails `TestConfigMissing` with the setting, the backend that declares it and this section's link. The session sets the values for its lifetime and restores the previous ones when it closes.
 
 Each mount gets the settings it binds, as on Convex: a literal, or a setting of the backend that mounts it, the app's from `config` and a parent component's from what its own mount bound. A component's module code and functions read only their own settings, beside `CONVEX_CLOUD_URL` and `CONVEX_SITE_URL`, and the app never reads a component's. There `process.env` is a plain object of those settings, so a spread, `Object.keys` and `in` see exactly them. A required component setting left without a value fails `TestConfigMissing` naming the mount.
+
+### Each mount loads its own modules
+
+A deployment evaluates each mount's modules apart, so a module-level read in a component mounted twice sees each mount's own settings. The generated registry loads each mount's copy of a local component's modules. Under Vitest, the plugin from `@confect/test/Vite` gives the component's own files those modules import a copy per mount too:
+
+```ts
+import { plugin } from "@confect/test/Vite";
+import { defineConfig } from "vitest/config";
+
+export default defineConfig({ plugins: [plugin()] });
+```
+
+A file belongs to a component when it sits under the parent of the directory that holds the component's `convex.config.ts`, as its `confect/` directory does. Packages under `node_modules`, the app's own files and a packaged component's kit stay one copy for the whole test. Without the plugin, the second mount of one component fails to load, naming both mounts and the module.
 
 ### Packaged components keep their secrets
 

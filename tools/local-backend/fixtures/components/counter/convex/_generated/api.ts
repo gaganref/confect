@@ -62,6 +62,7 @@ export const api: {
       {
         directRequired: string;
         hostOnly: string;
+        loaded: string;
         marker: string;
         optional: string;
         required: string;
