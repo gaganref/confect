@@ -448,6 +448,40 @@ describe("provider ports", () => {
     );
 
     it.effect(
+      "a console a test froze keeps its own methods: reading one does not throw, and an ended action's later call to it is not dropped",
+      () =>
+        Effect.gen(function* () {
+          const t = convexTest({ schema, modules, sources });
+          const original = globalThis.console;
+          const log = vi.fn();
+          const frozen = Object.freeze({ ...original, log });
+          globalThis.console = frozen;
+          const { read } = yield* Effect.gen(function* () {
+            const method = globalThis.console.log;
+            yield* Effect.promise(() =>
+              t
+                .action(egress.logAroundRefusal, {
+                  url: "https://example.com/",
+                })
+                .catch(() => null),
+            );
+            return { read: method };
+          }).pipe(
+            Effect.ensuring(
+              Effect.sync(() => {
+                globalThis.console = original;
+              }),
+            ),
+          );
+          expect(read).toBe(log);
+          expect(log.mock.calls).toEqual([
+            ["before the refusal"],
+            ["after the refusal"],
+          ]);
+        }),
+    );
+
+    it.effect(
       "a console a test assigns keeps its own methods, and an ended action's later call to it is dropped",
       () =>
         Effect.gen(function* () {
