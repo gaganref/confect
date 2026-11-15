@@ -1,27 +1,40 @@
 /**
  * What the binary hands a component that calls a host's function handle with
- * arguments the target's validator refuses, compared with the test kernel,
- * where the same handle names a callback slot that declares the same validator
- * (`packages/test/src/internal/ArgumentValidation.ts`). Both refuse before the
- * target runs, with an `Error` whose message is the binary's
- * `ArgumentValidationError`, one newline longer for an action's call.
+ * arguments the target's validator refuses, or that the target answers with a
+ * return its validator refuses, compared with the test kernel, where the same
+ * handle names a callback slot that declares the same validators
+ * (`packages/test/src/internal/ArgumentValidation.ts`). Both refuse with an
+ * `Error` whose message is the binary's, one newline longer for an action's
+ * call. These are fixed cases, each regression the seeded differential in
+ * `validationDifferential.test.ts` or a review found among them.
  */
 import { expect, layer } from "@effect/vitest";
-import { makeFunctionReference } from "convex/server";
 import { v, type GenericValidator } from "convex/values";
-import { pipe } from "effect/Function";
-import * as Str from "effect/String";
 import * as Arr from "effect/Array";
 import * as Effect from "effect/Effect";
+import { pipe } from "effect/Function";
 import * as Rec from "effect/Record";
+import * as Str from "effect/String";
 import * as LocalBackend from "confect-local-backend/LocalBackend";
-import { convexTest } from "../../../test/src/internal/ConvexTest";
 import {
   kinds,
+  literal,
+  order,
   shape,
-  type Refusal,
 } from "../../../../tools/local-backend/fixtures/plain/convex/callbackArgs";
-import schema from "../../../../tools/local-backend/fixtures/plain/convex/schema";
+import {
+  binaryCalls,
+  type Caller,
+  type Calls,
+  handleOf,
+  idNames,
+  kernelCalls,
+  mint,
+  type Minted,
+  normalized,
+  refusalIn,
+  sinkOf,
+} from "./callbackProbe";
 
 const valid: Readonly<Record<string, unknown>> = {
   token: "t",
@@ -69,60 +82,22 @@ const shapes: Readonly<Record<string, unknown>> = {
   empty: {},
 };
 
-type Caller = "fromMutation" | "fromAction";
+type Target =
+  | "onShape"
+  | "onKinds"
+  | "badReturn"
+  | "onOrder"
+  | "onLiteral"
+  | "literalReturn";
 
-const callers = {
-  fromMutation: makeFunctionReference<
-    "mutation",
-    { handle: string; args: unknown },
-    Refusal
-  >("callbackArgs:fromMutation"),
-  fromAction: makeFunctionReference<
-    "action",
-    { handle: string; args: unknown },
-    Refusal
-  >("callbackArgs:fromAction"),
-};
-
-interface Calls {
-  readonly mutation: (reference: any, args: any) => Promise<any>;
-  readonly action: (reference: any, args: any) => Promise<any>;
-}
-
-const refusalIn = (
-  calls: Calls,
-  caller: Caller,
-  handle: string,
-  args: unknown,
-): Promise<Refusal> =>
-  caller === "fromMutation"
-    ? calls.mutation(callers.fromMutation, { handle, args })
-    : calls.action(callers.fromAction, { handle, args });
-
-const fixture = {
-  handle: makeFunctionReference<"mutation", { target?: string }, string>(
-    "callbackArgs:handle",
-  ),
-  makeDocument: makeFunctionReference<
-    "mutation",
-    { table: "documents" | "others" },
-    string
-  >("callbackArgs:makeDocument"),
-};
-
-/**
- * What a backend gives the probe: a handle for each target, a handle it minted
- * for a `v.function()` argument, and an id of `documents` and of `others`.
- */
-interface Probe {
-  readonly calls: Calls;
-  readonly handles: Readonly<Record<Target, string>>;
-  readonly kindsHandle: string;
-  readonly doc: string;
-  readonly other: string;
-}
-
-type Target = "onShape" | "onKinds" | "badReturn";
+const targets: ReadonlyArray<Target> = [
+  "onShape",
+  "onKinds",
+  "badReturn",
+  "onOrder",
+  "onLiteral",
+  "literalReturn",
+];
 
 /**
  * The declared validators of each target, which the kernel's sink slots take.
@@ -130,14 +105,23 @@ type Target = "onShape" | "onKinds" | "badReturn";
 const declared: Readonly<
   Record<
     Target,
-    { readonly args: GenericValidator; readonly returns: GenericValidator }
+    {
+      readonly args: GenericValidator;
+      readonly returns: GenericValidator | undefined;
+    }
   >
 > = {
-  onShape: { args: v.object(shape), returns: v.null() },
-  onKinds: { args: v.object(kinds), returns: v.null() },
+  onShape: { args: v.object(shape), returns: undefined },
+  onKinds: { args: v.object(kinds), returns: undefined },
   badReturn: {
     args: v.object({ ticket: v.string() }),
     returns: v.object({ ticket: v.id("documents") }),
+  },
+  onOrder: { args: v.object(order), returns: undefined },
+  onLiteral: { args: v.object(literal), returns: undefined },
+  literalReturn: {
+    args: v.object({ value: v.any() }),
+    returns: v.object(literal),
   },
 };
 
@@ -145,79 +129,71 @@ const slotOf = (slot: string) =>
   pipe(slot, Str.slice("fixture/".length)) as Target;
 
 /**
+ * What a backend gives the probe: a handle for each target, a handle it minted
+ * for a `v.function()` argument, and its ids of each kind.
+ */
+interface Probe {
+  readonly calls: Calls;
+  readonly handles: Readonly<Record<Target, string>>;
+  readonly kindsHandle: string;
+  readonly ids: Minted;
+}
+
+/**
  * The plain fixture on the test kernel, with a sink slot per target that
  * declares that target's validators and answers as the target does: `null`, or
- * for `badReturn` the ticket it was given.
+ * for `badReturn` the ticket it was given and for `literalReturn` its value.
  */
 const kernelProbe = (): Promise<Probe> => {
-  const t = convexTest({
-    schema,
-    modules: {
-      "_generated/server.ts": () => Promise.resolve({}),
-      "callbackArgs.ts": () =>
-        import("../../../../tools/local-backend/fixtures/plain/convex/callbackArgs"),
-    },
-    sink: {
-      args: (slot) => declared[slotOf(slot)]?.args,
-      returns: (slot) => declared[slotOf(slot)]?.returns,
-      call: ({ slot, args }) =>
-        Promise.resolve(
-          slotOf(slot) === "badReturn"
-            ? { ticket: (args as { ticket: string }).ticket }
-            : null,
+  const calls = kernelCalls(
+    sinkOf(
+      (slot) => declared[slotOf(slot)],
+      (slot, args) => {
+        switch (slotOf(slot)) {
+          case "badReturn":
+            return { ticket: (args as { ticket: string }).ticket };
+          case "literalReturn":
+            return (args as { value: unknown }).value;
+          default:
+            return null;
+        }
+      },
+    ),
+  );
+  return Promise.all([mint(calls), handleOf(calls, "onKinds")]).then(
+    ([ids, kindsHandle]) => ({
+      calls,
+      handles: Rec.fromEntries(
+        Arr.map(
+          targets,
+          (target) => [target, `function://~sink;fixture/${target}`] as const,
         ),
-    },
-  });
-  const calls: Calls = {
-    mutation: (reference, args) => t.mutation(reference, args),
-    action: (reference, args) => t.action(reference, args),
-  };
-  return Promise.all([
-    calls.mutation(fixture.makeDocument, { table: "documents" }),
-    calls.mutation(fixture.makeDocument, { table: "others" }),
-    calls.mutation(fixture.handle, { target: "onKinds" }),
-  ]).then(([doc, other, kindsHandle]) => ({
-    calls,
-    handles: {
-      onShape: "function://~sink;fixture/onShape",
-      onKinds: "function://~sink;fixture/onKinds",
-      badReturn: "function://~sink;fixture/badReturn",
-    },
-    kindsHandle,
-    doc,
-    other,
-  }));
+      ) as Record<Target, string>,
+      kindsHandle,
+      ids,
+    }),
+  );
 };
 
 /**
  * The same probe on the binary, whose handles name the real targets.
  */
-const binaryProbe = (client: {
-  readonly mutation: (reference: any, args: any) => Promise<any>;
-  readonly action: (reference: any, args: any) => Promise<any>;
-}): Promise<Probe> => {
-  const calls: Calls = {
-    mutation: (reference, args) => client.mutation(reference, args),
-    action: (reference, args) => client.action(reference, args),
-  };
+const binaryProbe = (client: Calls): Promise<Probe> => {
+  const calls = binaryCalls(client);
   return Promise.all([
-    calls.mutation(fixture.makeDocument, { table: "documents" }),
-    calls.mutation(fixture.makeDocument, { table: "others" }),
-    calls.mutation(fixture.handle, {}),
-    calls.mutation(fixture.handle, { target: "onKinds" }),
-    calls.mutation(fixture.handle, { target: "badReturn" }),
-  ]).then(([doc, other, onShape, onKinds, badReturn]) => ({
-    calls,
-    handles: { onShape, onKinds, badReturn },
-    kindsHandle: onKinds,
-    doc,
-    other,
-  }));
+    mint(calls),
+    Promise.all(Arr.map(targets, (target) => handleOf(calls, target))),
+  ]).then(([ids, made]) => {
+    const handles = Rec.fromEntries(
+      Arr.map(targets, (target, index) => [target, made[index]!] as const),
+    ) as Record<Target, string>;
+    return { calls, handles, kindsHandle: handles.onKinds, ids };
+  });
 };
 
 /**
- * One probe call: a target, and the arguments a backend's own ids and handles
- * build.
+ * One probe call: a target, the arguments a backend's own ids and handles
+ * build, and what the binary must answer, in part.
  */
 interface Case {
   readonly target: Target;
@@ -226,16 +202,30 @@ interface Case {
     | "returned"
     | "ArgumentValidationError"
     | "ReturnsValidationError";
+  /**
+   * Text the binary's refusal holds, after its ids are named.
+   */
+  readonly holds?: string;
 }
 
 const kindsWith =
   (overrides: (probe: Probe) => Record<string, unknown>) => (probe: Probe) => ({
-    doc: probe.doc,
+    doc: probe.ids["root.documents"],
     callback: probe.kindsHandle,
     stamp: 5n,
     blob: new Uint8Array([1, 2]).buffer,
     ...overrides(probe),
   });
+
+const refused = (target: Target, args: Case["args"], holds: string): Case => ({
+  target,
+  args,
+  expected:
+    target === "badReturn" || target === "literalReturn"
+      ? "ReturnsValidationError"
+      : "ArgumentValidationError",
+  holds,
+});
 
 const cases: Readonly<Record<string, Case>> = {
   ...Rec.map(shapes, (args, name): Case => ({
@@ -248,51 +238,74 @@ const cases: Readonly<Record<string, Case>> = {
     args: kindsWith(() => ({})),
     expected: "returned",
   },
-  commitTsNumber: {
+  commitTsNumber: refused(
+    "onKinds",
+    kindsWith(() => ({ stamp: 5 })),
+    "Path: .stamp",
+  ),
+  commitTsString: refused(
+    "onKinds",
+    kindsWith(() => ({ stamp: "nope" })),
+    "Path: .stamp",
+  ),
+  commitTsNull: refused(
+    "onKinds",
+    kindsWith(() => ({ stamp: null })),
+    "Path: .stamp",
+  ),
+  idNotAnId: refused(
+    "onKinds",
+    kindsWith(() => ({ doc: "not-an-id" })),
+    "Value does not match validator.",
+  ),
+  idOtherTable: refused(
+    "onKinds",
+    kindsWith((probe) => ({ doc: probe.ids["root.others"] })),
+    'Found ID "<root.others>" from table `others`',
+  ),
+  idNumber: refused(
+    "onKinds",
+    kindsWith(() => ({ doc: 7 })),
+    "Value does not match validator.",
+  ),
+  // A child's id resolves by its table number in the host's namespace: `aaa`
+  // numbers `others` first, as it has an index, so its `documents` id names
+  // the host's `others`, and its `others` id the host's `documents`.
+  idChildDocuments: refused(
+    "onKinds",
+    kindsWith((probe) => ({ doc: probe.ids["aaa.documents"] })),
+    'Found ID "<aaa.documents>" from table `others`, which does not match the table name in validator `v.id("documents")`.Path: .doc',
+  ),
+  idChildOthers: {
     target: "onKinds",
-    args: kindsWith(() => ({ stamp: 5 })),
-    expected: "ArgumentValidationError",
+    args: kindsWith((probe) => ({ doc: probe.ids["aaa.others"] })),
+    expected: "returned",
   },
-  commitTsString: {
-    target: "onKinds",
-    args: kindsWith(() => ({ stamp: "nope" })),
-    expected: "ArgumentValidationError",
-  },
-  commitTsNull: {
-    target: "onKinds",
-    args: kindsWith(() => ({ stamp: null })),
-    expected: "ArgumentValidationError",
-  },
-  idNotAnId: {
-    target: "onKinds",
-    args: kindsWith(() => ({ doc: "not-an-id" })),
-    expected: "ArgumentValidationError",
-  },
-  idOtherTable: {
-    target: "onKinds",
-    args: kindsWith((probe) => ({ doc: probe.other })),
-    expected: "ArgumentValidationError",
-  },
-  idNumber: {
-    target: "onKinds",
-    args: kindsWith(() => ({ doc: 7 })),
-    expected: "ArgumentValidationError",
-  },
-  functionNumber: {
-    target: "onKinds",
-    args: kindsWith(() => ({ callback: 123 })),
-    expected: "ArgumentValidationError",
-  },
-  functionString: {
-    target: "onKinds",
-    args: kindsWith(() => ({ callback: "not-a-handle" })),
-    expected: "ArgumentValidationError",
-  },
-  functionMalformedHandle: {
-    target: "onKinds",
-    args: kindsWith(() => ({ callback: "function://nope#x:y" })),
-    expected: "ArgumentValidationError",
-  },
+  idScheduled: refused(
+    "onKinds",
+    kindsWith((probe) => ({ doc: probe.ids["root.scheduled"] })),
+    'Found ID "<root.scheduled>" from a system table, which does not match the table name in validator `v.id("documents")`.Path: .doc',
+  ),
+  idChildStorage: refused(
+    "onKinds",
+    kindsWith((probe) => ({ doc: probe.ids["aaa.storage"] })),
+    'Found ID "<aaa.storage>" from a system table, which does not match the table name in validator `v.id("documents")`.Path: .doc',
+  ),
+  functionNumber: refused(
+    "onKinds",
+    kindsWith(() => ({ callback: 123 })),
+    "Path: .callback",
+  ),
+  functionString: refused(
+    "onKinds",
+    kindsWith(() => ({ callback: "not-a-handle" })),
+    "Path: .callback",
+  ),
+  functionMalformedHandle: refused(
+    "onKinds",
+    kindsWith(() => ({ callback: "function://nope#x:y" })),
+    "Path: .callback",
+  ),
   bytes200k: {
     target: "onKinds",
     args: kindsWith(() => ({ blob: new Uint8Array(200_000).buffer })),
@@ -303,44 +316,59 @@ const cases: Readonly<Record<string, Case>> = {
     args: kindsWith(() => ({ blob: new Uint8Array(1024 * 1024).buffer })),
     expected: "returned",
   },
-  returnsNotAnId: {
-    target: "badReturn",
-    args: () => ({ ticket: "nope" }),
-    expected: "ReturnsValidationError",
-  },
-  returnsOtherTable: {
-    target: "badReturn",
-    args: (probe) => ({ ticket: probe.other }),
-    expected: "ReturnsValidationError",
-  },
+  // Each declared field is checked in key order, so a missing `a` comes
+  // before the mismatched `z`.
+  missingBeforeMismatch: refused(
+    "onOrder",
+    () => ({ b: { x: "ok" }, z: "bad" }),
+    "Object is missing the required field `a`.",
+  ),
+  literalString: refused(
+    "onLiteral",
+    () => ({ kind: "failed" }),
+    '`"failed"` does not match literal validator `v.literal("ready")`.Path: .kind',
+  ),
+  literalSignedExponent: refused(
+    "onLiteral",
+    () => ({ kind: "ready", large: 5 }),
+    "`5.0` does not match literal validator `v.literal(1e+16)`.Path: .large",
+  ),
+  returnsLiteral: refused(
+    "literalReturn",
+    () => ({ value: { kind: "failed" } }),
+    '`"failed"` does not match literal validator `v.literal("ready")`.Path: .kind',
+  ),
+  returnsNotAnId: refused(
+    "badReturn",
+    () => ({ ticket: "nope" }),
+    "Value does not match validator.",
+  ),
+  returnsOtherTable: refused(
+    "badReturn",
+    (probe) => ({ ticket: probe.ids["root.others"] }),
+    "from table `others`",
+  ),
+  returnsSystemTable: refused(
+    "badReturn",
+    (probe) => ({ ticket: probe.ids["root.storage"] }),
+    "from a system table",
+  ),
   returnsValid: {
     target: "badReturn",
-    args: (probe) => ({ ticket: probe.doc }),
+    args: (probe) => ({ ticket: probe.ids["root.documents"] }),
     expected: "returned",
   },
 };
 
-/**
- * What reached the caller, with the backend's own `others` id written as a
- * placeholder, since the two backends mint different ids.
- */
-const normalized = (refusal: Refusal, probe: Probe): Refusal =>
-  refusal.returned
-    ? refusal
-    : {
-        ...refusal,
-        message: pipe(
-          refusal.message,
-          Str.replaceAll(probe.other, "<others id>"),
-        ),
-      };
+const namesOf = (probe: Probe) =>
+  Arr.map(idNames, (name) => [probe.ids[name], name] as const);
 
 layer(LocalBackend.plainLayer, { timeout: "300 seconds" })(
   "callback handle arguments and returns on the binary",
   (it) => {
     it.effect.each(
       Arr.flatMap(Rec.keys(cases), (name) =>
-        Arr.map(["fromMutation", "fromAction"] as const, (caller) => ({
+        Arr.map(["fromMutation", "fromAction"] as const, (caller: Caller) => ({
           name,
           caller,
         })),
@@ -353,14 +381,12 @@ layer(LocalBackend.plainLayer, { timeout: "300 seconds" })(
           const probeCase = cases[name]!;
           const binary = yield* Effect.promise(() => binaryProbe(client));
           const binaryOutcome = yield* Effect.promise(() =>
-            refusalIn(
-              binary.calls,
-              caller,
-              binary.handles[probeCase.target],
-              probeCase.args(binary),
-            ),
+            refusalIn(binary.calls, caller, {
+              handle: binary.handles[probeCase.target],
+              args: probeCase.args(binary),
+            }),
           );
-          const binaryRefusal = normalized(binaryOutcome, binary);
+          const binaryRefusal = normalized(binaryOutcome, namesOf(binary));
           if (probeCase.expected === "returned")
             expect(binaryRefusal).toEqual({ returned: true });
           else
@@ -371,17 +397,18 @@ layer(LocalBackend.plainLayer, { timeout: "300 seconds" })(
                 new RegExp(`^${probeCase.expected}: `),
               ),
             });
+          if (probeCase.holds !== undefined && !binaryRefusal.returned)
+            expect(binaryRefusal.message).toContain(probeCase.holds);
           const kernel = yield* Effect.promise(kernelProbe);
           const kernelOutcome = yield* Effect.promise(() =>
-            refusalIn(
-              kernel.calls,
-              caller,
-              kernel.handles[probeCase.target],
-              probeCase.args(kernel),
-            ),
+            refusalIn(kernel.calls, caller, {
+              handle: kernel.handles[probeCase.target],
+              args: probeCase.args(kernel),
+            }),
           );
-          const kernelRefusal = normalized(kernelOutcome, kernel);
-          expect(kernelRefusal).toEqual(binaryRefusal);
+          expect(normalized(kernelOutcome, namesOf(kernel))).toEqual(
+            binaryRefusal,
+          );
         }),
     );
   },
