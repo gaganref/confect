@@ -3838,7 +3838,8 @@ const plainCrons =
 /**
  * The declaration project with `confect/crons.ts` and two sections, `authz`
  * then `audit`, each writing a `crons` wrapper from `wrappers`. `wrap` sets
- * which of them declare `wrapsCrons`.
+ * which of them declare `wrapsCrons` and, optionally, which are declared and in
+ * what order.
  */
 const cronsProject = (
   wrappers: { readonly authz: string; readonly audit: string } = {
@@ -3856,10 +3857,16 @@ const cronsProject = (
     );
     const section = (key: keyof typeof wrappers, wraps: boolean) =>
       `{ key: "${key}", section: { owner: "test/${key}", format: 1, describe: () => null, generate: { file: "${key}.ts", match: () => false, render: () => ({ contents: ${quote(`export const crons = ${wrappers[key]};\n`)}, errors: [] })${wraps ? ", wrapsCrons: true" : ""} } } }`;
-    const wrap = (wraps: ReadonlyArray<keyof typeof wrappers>) =>
+    const wrap = (
+      wraps: ReadonlyArray<keyof typeof wrappers>,
+      declared: ReadonlyArray<keyof typeof wrappers> = ["authz", "audit"],
+    ) =>
       project.write(
         "confect/sections.ts",
-        `export const manifestSections = [${section("authz", wraps.includes("authz"))}, ${section("audit", wraps.includes("audit"))}];\n`,
+        `export const manifestSections = [${Array.join(
+          Array.map(declared, (key) => section(key, wraps.includes(key))),
+          ", ",
+        )}];\n`,
       );
     yield* wrap([]);
     const entry = Bundler.bundle(`${project.root}/convex/crons.ts`).pipe(
@@ -3921,6 +3928,56 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           );
           yield* project.wrap([]);
           yield* update;
+          const unwrapped = yield* project.read("convex/crons.ts");
+          expect(unwrapped).toBe(plainCrons);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "rewrites its own crons.ts when the wrapping sections swap order or one is removed",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* cronsProject();
+          yield* project.wrap(["authz", "audit"]);
+          yield* project.run;
+          yield* project.wrap(["authz", "audit"], ["audit", "authz"]);
+          yield* project.run;
+          const swapped = yield* project.read("convex/crons.ts");
+          expect(swapped).toContain(
+            'import { crons as wrap0 } from "../confect/_generated/audit.js";\nimport { crons as wrap1 } from "../confect/_generated/authz.js";\nimport crons',
+          );
+          yield* project.wrap(["audit"], ["audit"]);
+          yield* project.run;
+          const removed = yield* project.read("convex/crons.ts");
+          expect(removed).toContain(
+            'import { crons as wrap0 } from "../confect/_generated/audit.js";\nimport crons',
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "rewrites on a full run the crons.ts an incremental update wrapped, once that section is removed",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* cronsProject();
+          const { snapshot } = yield* project.provide(generateWithSnapshot);
+          yield* project.wrap(["audit"]);
+          yield* project.provide(
+            updateDeclarations(
+              snapshot,
+              [
+                {
+                  _tag: "Spec",
+                  relativePath: SpecModulePath.make("notes.spec.ts"),
+                },
+              ],
+              [],
+            ),
+          );
+          yield* project.wrap([], ["authz"]);
+          yield* project.run;
           const unwrapped = yield* project.read("convex/crons.ts");
           expect(unwrapped).toBe(plainCrons);
         }).pipe(Effect.scoped),

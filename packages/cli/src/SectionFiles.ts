@@ -17,6 +17,7 @@ import * as ConvexConfig from "./ConvexConfig.js";
 import type { LoadedLeafModule } from "./LeafModule.js";
 import { logFileRemoved } from "./log.js";
 import {
+  generateCrons,
   removePathIfExists,
   toPosixPath,
   writeFileStringAndLog,
@@ -53,6 +54,7 @@ const encodeSources = (sources: ReadonlyArray<string>) =>
 const decodeSources = Schema.decodeUnknownOption(Sources);
 const INPUTS = "sectionInputs.json";
 const VERIFY_INPUTS = "verifyInputs.json";
+const CRON_WRAPPERS = "cronWrappers.json";
 
 interface Claim {
   readonly key: string;
@@ -263,6 +265,35 @@ const record = Effect.fnUntraced(function* (name: string) {
   if (!(yield* fs.exists(file))) return none;
   const fileContents = yield* fs.readFileString(file);
   return Option.getOrElse(decodeSources(fileContents), () => none);
+});
+
+/**
+ * The section files whose `crons` wrap the `convex/crons.ts` codegen wrote
+ * last, in order, or none for a plain entry.
+ *
+ * @internal
+ */
+export const cronWrappers = record(CRON_WRAPPERS);
+
+/**
+ * Write `convex/crons.ts` passing crons through the `crons` of each of `files`,
+ * in order, and record `files` for `cronWrappers`.
+ *
+ * @internal
+ */
+export const syncCrons = Effect.fnUntraced(function* (
+  files: ReadonlyArray<string>,
+) {
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const recorded = path.join(confectDirectory, "_generated", CRON_WRAPPERS);
+  const entry = yield* generateCrons(files);
+  yield* Option.isSome(entry) && files.length > 0
+    ? encodeSources(files).pipe(
+        Effect.flatMap((sources) => writeFileStringAndLog(recorded, sources)),
+      )
+    : removePathIfExists(recorded);
+  return entry;
 });
 
 /**
