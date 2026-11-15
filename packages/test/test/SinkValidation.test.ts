@@ -86,19 +86,22 @@ const foundIn = (id: string, table: string, validator: string) =>
 
 describe("a sink slot's id check", () => {
   it.effect(
-    "reads an id minted before a snapshot by its table after the restore",
+    "reads a child's id minted before a snapshot by its table's number after the restore",
     () =>
       Effect.gen(function* () {
         const source = backend();
-        const id = yield* Effect.promise(() =>
-          source.mutation("host:make" as never, {}),
-        );
+        const zeta = (yield* Effect.promise(() =>
+          source.runInComponent("child", (ctx: any) =>
+            ctx.db.insert("zeta", {}),
+          ),
+        )) as string;
         const restored = backend();
         yield* Effect.promise(() =>
           restored.restoreSnapshot(source.exportSnapshot()),
         );
-        const answer = yield* sent(restored, "documents", id);
-        expect(answer).toBe(foundIn(id as string, "others", "documents"));
+        // `zeta` holds the child's second number, the host's `others`.
+        const answer = yield* sent(restored, "documents", zeta);
+        expect(answer).toBe(foundIn(zeta, "others", "documents"));
       }),
   );
 
