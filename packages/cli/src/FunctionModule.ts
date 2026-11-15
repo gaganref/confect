@@ -173,7 +173,8 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
   // in the same run codegen writes `convex/crons.ts` with exactly this run's
   // wrappers. So the crons template holds nothing to lose when it wraps
   // distinct files a section wrote, in any order, even ones that no longer
-  // wrap.
+  // wrap. The same-run rewrite holds for declared backends; an undeclared
+  // backend without `confect/crons.ts` keeps a leftover entry, as before.
   const cronsShapes = Effect.fnUntraced(function* (
     tokens: ReadonlyArray<string>,
   ) {
