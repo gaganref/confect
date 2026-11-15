@@ -119,7 +119,7 @@ export interface Backend {
 }
 
 /**
- * Full generation writes a declared backend's `convex/http.ts` and
+ * Full generation writes a declared backend's `convex/http.ts`, `crons.ts` and
  * `auth.config.ts` and rejects a component's `auth.ts`, so those edits need it
  * instead of the optional-file writers.
  */
@@ -128,7 +128,7 @@ export const forBackend = (pending: Pending, backend: Backend): Pending => {
     Match.value(file).pipe(
       Match.when("Http", () => backend.declared),
       Match.when("Auth", () => backend.declared || backend.component),
-      Match.when("Crons", () => false),
+      Match.when("Crons", () => backend.declared),
       Match.exhaustive,
     ),
   );

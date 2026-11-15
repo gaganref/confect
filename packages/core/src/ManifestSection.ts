@@ -65,6 +65,13 @@ export interface Generate {
     match(relativePath: string): boolean;
     check(input: VerifyInput): ReadonlyArray<string>;
   };
+  /**
+   * Set when `file` exports `crons`, a function from Confect's cron jobs to
+   * cron jobs. `convex/crons.ts` passes `confect/crons.ts`'s default export
+   * through the `crons` of each section that sets this, in the order `App.make`
+   * declares them, and deploys the result's `convexCronJobs`.
+   */
+  readonly wrapsCrons?: boolean;
 }
 
 /**

@@ -368,5 +368,55 @@ export const observe = { owner: "test/observe", format: 1, describe: () => null,
         }).pipe(Effect.scoped),
       { timeout: 45000 },
     );
+
+    it.effect(
+      "keeps crons wrapped through crons.ts edits and rewrites the entry when the section stops wrapping",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* Project.make;
+          const declare = (wraps: boolean) =>
+            project.write(
+              "confect/authz.ts",
+              `export const authz = { owner: "test/authz", format: 1, describe: () => null, generate: { file: "authz.ts", match: () => false, render: () => ({ contents: "export const crons = (jobs) => jobs;\\n", errors: [] }), wrapsCrons: ${wraps} } };`,
+            );
+          yield* declare(true);
+          yield* project.write(
+            "confect/app.ts",
+            `import { App, Env } from "@confect/core";
+import { authz } from "./authz";
+export default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "authz", section: authz }] });`,
+          );
+          const crons =
+            'import { CronJobs } from "@confect/server";\nexport default CronJobs.make();\n';
+          yield* project.write("confect/crons.ts", crons);
+          const entry = `${project.root}/convex/crons.ts`;
+          const wrapper =
+            'import { crons as wrap0 } from "../confect/_generated/authz.js";';
+          const watching = yield* project.start("dev");
+          yield* watching.waitFor(success);
+          const started = yield* fs.readFileString(entry);
+          expect(started).toContain(wrapper);
+          yield* project.write("confect/crons.ts", `${crons}// An edit.\n`);
+          yield* watching.waitFor(success);
+          const edited = yield* fs.readFileString(entry);
+          expect(edited).toContain(wrapper);
+          yield* fs.remove(`${project.root}/confect/crons.ts`);
+          yield* watching.waitFor(success);
+          const kept = yield* fs.exists(entry);
+          expect(kept).toBe(false);
+          yield* project.write("confect/crons.ts", crons);
+          yield* watching.waitFor(success);
+          const restored = yield* fs.readFileString(entry);
+          expect(restored).toContain(wrapper);
+          yield* declare(false);
+          yield* watching.waitFor(success);
+          const unwrapped = yield* fs.readFileString(entry);
+          expect(unwrapped).toBe(
+            'import crons from "../confect/crons.js";\n\nexport default crons.convexCronJobs;\n',
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
   },
 );

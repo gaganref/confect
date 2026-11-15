@@ -284,7 +284,8 @@ export const inputs = Effect.map(
  * after logging the rest. The record of section inputs is written either way,
  * keeping the previous inputs after a failure, so `confect dev` sees the fix.
  * Returns the claimed file names, whether they differ from the section files
- * that existed before, and the modules each section key matched.
+ * that existed before, the modules each section key matched, and the files of
+ * the sections that wrap crons, in the order `App.make` declares them.
  *
  * @internal
  */
@@ -334,6 +335,11 @@ export const sync = Effect.fnUntraced(function* (
   return {
     modules: new Map(Arr.map(rendered, ({ key, modules }) => [key, modules])),
     files: names,
+    crons: Option.isNone(backend)
+      ? []
+      : Arr.flatMap(backend.value.sections, ({ section: { generate } }) =>
+          generate?.wrapsCrons === true ? [generate.file] : [],
+        ),
     changed:
       names.length !== existing.length ||
       Arr.some(names, (file) => !existing.includes(file)),

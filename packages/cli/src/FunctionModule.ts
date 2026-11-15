@@ -80,7 +80,7 @@ const tokenize = (
   path: Path.Path,
 ): string[] | undefined => {
   const token =
-    /\s+|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[$A-Z_a-z][$\w]*|[{}()[\].,:;=]/y;
+    /\s+|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[$A-Z_a-z][$\w]*|=>|[{}()[\].,:;=<>]/y;
   const tokens: string[] = [];
   while (token.lastIndex < source.length) {
     const match = token.exec(source);
@@ -160,22 +160,30 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
         legacyRouter(template),
       ]),
     ],
-    [
-      "crons.ts",
-      [
-        yield* templates.crons({
-          cronsImportPath: yield* importFromConvex("crons.ts"),
-        }),
-      ],
-    ],
   ]);
   const written2 = yield* SectionFiles.written;
   // The declared HTTP router first imports each file a manifest section wrote.
-  const sectionImports = new Set(
-    Array.map(written2, (file) =>
+  const sectionImports = new Map(
+    Array.map(written2, (file) => [
       quote(path.join(confect, "_generated", path.basename(file, ".ts"))),
-    ),
+      file,
+    ]),
   );
+  // The crons entry codegen writes for the section files it wraps, in order.
+  const cronsShape = Effect.fnUntraced(function* (
+    tokens: ReadonlyArray<string>,
+  ) {
+    const wrapped = Array.flatMap(tokens, (token, index) => {
+      const file = sectionImports.get(token);
+      return tokens[index - 1] === "from" && file !== undefined ? [file] : [];
+    });
+    return yield* templates.crons({
+      cronsImportPath: yield* importFromConvex("crons.ts"),
+      sectionImportPaths: yield* Effect.forEach(wrapped, (file) =>
+        importFromConvex(`_generated/${file}`),
+      ),
+    });
+  });
   const withoutSectionImports = (
     tokens: ReadonlyArray<string>,
   ): ReadonlyArray<string> =>
@@ -190,7 +198,10 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
       continue;
     const tokens = tokenize(contents, absolute, path);
     if (tokens !== undefined) {
-      const shapes = optional.get(relative);
+      const shapes =
+        relative === "crons.ts"
+          ? [yield* cronsShape(tokens)]
+          : optional.get(relative);
       if (
         shapes !== undefined &&
         Array.some(shapes, (template) =>
