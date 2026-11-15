@@ -1,6 +1,8 @@
 import {
   actionGeneric,
+  componentsGeneric,
   createFunctionHandle,
+  internalMutationGeneric,
   makeFunctionReference,
   mutationGeneric,
 } from "convex/server";
@@ -52,6 +54,44 @@ export const onKinds = mutationGeneric({
 });
 
 /**
+ * Three fields whose first problem is a missing field before a mismatch in key
+ * order: `a` is required, `b` an object, `z` a number.
+ */
+export const order = {
+  a: v.string(),
+  b: v.object({ x: v.string() }),
+  z: v.number(),
+};
+
+export const onOrder = mutationGeneric({
+  args: order,
+  handler: () => Promise.resolve(null),
+});
+
+/**
+ * Literal fields, which the binary refuses with its literal message, and a
+ * float literal it prints with a signed exponent.
+ */
+export const literal = {
+  kind: v.literal("ready"),
+  large: v.optional(v.literal(1e16)),
+};
+
+export const onLiteral = mutationGeneric({
+  args: literal,
+  handler: () => Promise.resolve(null),
+});
+
+/**
+ * A host function that returns the value it is given, declaring `literal`.
+ */
+export const literalReturn = mutationGeneric({
+  args: { value: v.any() },
+  returns: v.object(literal),
+  handler: (_ctx, { value }) => Promise.resolve(value as never),
+});
+
+/**
  * A host function whose declared return its answer may break: it returns the
  * ticket it is given, and declares a ticket an id of `documents`.
  */
@@ -62,15 +102,16 @@ export const badReturn = mutationGeneric({
 });
 
 /**
- * A handle for one of this module's targets, as a host creates one for a
- * component's slot: `onShape` unless `target` names another.
+ * A handle for a host function, as a host creates one for a component's slot:
+ * `onShape` unless `target` names another, in this module unless `module` names
+ * another.
  */
 export const handle = mutationGeneric({
-  args: { target: v.optional(v.string()) },
-  handler: (_ctx, { target }) =>
+  args: { target: v.optional(v.string()), module: v.optional(v.string()) },
+  handler: (_ctx, { target, module }) =>
     createFunctionHandle(
       makeFunctionReference<"mutation", Record<string, Value>, null>(
-        `callbackArgs:${target ?? "onShape"}`,
+        `${module ?? "callbackArgs"}:${target ?? "onShape"}`,
       ),
     ),
 });
@@ -81,6 +122,58 @@ export const handle = mutationGeneric({
 export const makeDocument = mutationGeneric({
   args: { table: v.union(v.literal("documents"), v.literal("others")) },
   handler: (ctx, { table }) => ctx.db.insert(table, {}),
+});
+
+export const noop = internalMutationGeneric({
+  args: {},
+  handler: () => Promise.resolve(null),
+});
+
+const aaa = componentsGeneric() as unknown as {
+  readonly aaa: {
+    readonly ids: {
+      readonly mint: never;
+      readonly store: never;
+    };
+  };
+};
+
+/**
+ * A new document's id in each table and a scheduled job's, here and in the
+ * child component `aaa`, whose tables are numbered in its own namespace.
+ */
+export const mint = mutationGeneric({
+  args: {},
+  handler: (ctx) =>
+    Promise.all([
+      ctx.db.insert("documents", {}),
+      ctx.db.insert("others", {}),
+      ctx.scheduler.runAfter(
+        1e9,
+        makeFunctionReference<"mutation">("callbackArgs:noop"),
+        {},
+      ),
+    ]).then(([documents, others, scheduled]) =>
+      ctx.runMutation(aaa.aaa.ids.mint, {}).then((child: Value) => ({
+        root: { documents, others, scheduled },
+        aaa: child,
+      })),
+    ),
+});
+
+/**
+ * A stored file's id here and in `aaa`.
+ */
+export const store = actionGeneric({
+  args: {},
+  handler: (ctx) =>
+    ctx.storage
+      .store(new Blob(["root"]))
+      .then((root) =>
+        ctx
+          .runAction(aaa.aaa.ids.store, {})
+          .then((child: string) => ({ root, aaa: child })),
+      ),
 });
 
 /**
@@ -117,4 +210,43 @@ export const fromAction = actionGeneric({
   args: callerArgs,
   handler: (ctx, { handle: text, args }) =>
     refusal(() => ctx.runMutation(text as never, args as Value as never)),
+});
+
+const batchArgs = { calls: v.array(v.object(callerArgs)) };
+
+/**
+ * Each call's outcome, in order, one call after another.
+ */
+const inOrder = (
+  calls: ReadonlyArray<{ handle: string; args: unknown }>,
+  run: (handle: string, args: unknown) => Promise<unknown>,
+): Promise<Array<Refusal>> => {
+  let outcomes = Promise.resolve<Array<Refusal>>([]);
+  for (const { handle: text, args } of calls)
+    outcomes = outcomes.then((prior) =>
+      refusal(() => run(text, args)).then((outcome) => [...prior, outcome]),
+    );
+  return outcomes;
+};
+
+/**
+ * Each call's outcome, in order, for a batch of calls a mutation makes.
+ */
+export const fromMutationBatch = mutationGeneric({
+  args: batchArgs,
+  handler: (ctx, { calls }) =>
+    inOrder(calls, (text, args) =>
+      ctx.runMutation(text as never, args as Value as never),
+    ),
+});
+
+/**
+ * Each call's outcome, in order, for a batch of calls an action makes.
+ */
+export const fromActionBatch = actionGeneric({
+  args: batchArgs,
+  handler: (ctx, { calls }) =>
+    inOrder(calls, (text, args) =>
+      ctx.runMutation(text as never, args as Value as never),
+    ),
 });
