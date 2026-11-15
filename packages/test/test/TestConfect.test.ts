@@ -755,6 +755,30 @@ it.effect(
     }),
 );
 
+it("takes a packaged read whose missing values the generated reader writes as undefined", () => {
+  // Generated `testing.ts` compiles under `exactOptionalPropertyTypes`, where
+  // its reader writes a value it has none for as `undefined`.
+  const read: TestConfect.PackageRead = {
+    steps: [
+      {
+        package: "tool",
+        version: undefined,
+        file: "convex.config.js",
+        digest: "sha256:",
+        from: "/",
+        found: undefined,
+        installed: undefined,
+        bytes: undefined,
+        failure: undefined,
+      },
+    ],
+    files: [
+      { file: "a.js", digest: "sha256:", bytes: undefined, failure: undefined },
+    ],
+  };
+  expect(read.steps).toHaveLength(1);
+});
+
 it.effect(
   "on the kernel target, a component registered without sources is refused, naming it, until the layer declares its runtime or the kit passes its sources",
   () =>

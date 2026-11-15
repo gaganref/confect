@@ -35,15 +35,15 @@ export class PackagedComponentChanged extends Schema.TaggedError<
  * finds from `from`, and the definition's bytes.
  */
 export interface StepRead {
-  readonly package?: string;
-  readonly version?: string;
+  readonly package?: string | undefined;
+  readonly version?: string | undefined;
   readonly file: string;
   readonly digest: string;
   readonly from: string;
-  readonly found?: string;
-  readonly installed?: string;
-  readonly bytes?: Uint8Array;
-  readonly failure?: string;
+  readonly found?: string | undefined;
+  readonly installed?: string | undefined;
+  readonly bytes?: Uint8Array | undefined;
+  readonly failure?: string | undefined;
 }
 
 /**
@@ -52,8 +52,8 @@ export interface StepRead {
 export interface FileRead {
   readonly file: string;
   readonly digest: string;
-  readonly bytes?: Uint8Array;
-  readonly failure?: string;
+  readonly bytes?: Uint8Array | undefined;
+  readonly failure?: string | undefined;
 }
 
 /**
