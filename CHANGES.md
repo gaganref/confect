@@ -551,14 +551,18 @@ secret policy to `registerComponent`, and a packaged Confect component whose
 kit exports none fails `TestKitSecretsMissingError`, or `TestKitExportsUnknownError`
 when codegen cannot list the kit's exports. The registry, and each local kit,
 now carry each module's `sources`, read from disk, which `TestBackend.layer`
-hands the kernel for its `"use node"` check. Its `componentSources` carries
-the sources of each packaged mount and every component its definition mounts,
-read from the package's installed `convex.config` directory. At test time the
-registry reads those same files, finding each package by Node's
-`node_modules` lookup and checking its version, so no export condition picks
-others; a kit that registers without sources gets them. A package codegen
-cannot read fails `PackagedComponentUnreadableError`, and one that changed
-since codegen fails the session with `PackagedComponentChanged`. `TestBackend.layer` takes
+hands the kernel for its `"use node"` check. Its `packagedSources` reads
+the files of each packaged mount and every component its definition mounts,
+picked as Convex's deploy bundler picks them (esbuild, browser platform,
+`convex` and `module` conditions) and recorded with each file's SHA-256 digest.
+Each layer build reads them again, finding each package by Node's
+`node_modules` lookup; a changed version or file fails `TestBackend.layer` and
+`TestConfect.layer` with the typed `PackagedComponentChanged`, and a package
+the deploy bundler cannot resolve fails codegen with
+`PackagedComponentUnreadableError`. A kit that registers without sources gets
+them. `registeredModules` skips symbolic links, directories and TypeScript
+files without an `import` or `export`, as Convex's bundler does.
+`TestBackend.layer` takes
 `componentRuntimes` to declare a component's runtime in their place. The registry now lists
 only the modules a push registers, and a package mount with no test kit fails
 `MissingTestKitError`; a nested component's own declaration names its mounts'

@@ -11,6 +11,10 @@ import * as Option from "effect/Option";
 import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Str from "effect/String";
+import {
+  type PackagedComponentChanged,
+  validateAll,
+} from "./internal/PackagedSources.js";
 import { open, registerKit } from "./internal/Session.js";
 import {
   TestConfect,
@@ -238,7 +242,7 @@ export interface GeneratedBackend<
     options: LayerOptions<S, C>,
   ) => Layer.Layer<
     TestConfect<S> | Session,
-    TestConfigMissing | MountInitFailed
+    TestConfigMissing | MountInitFailed | PackagedComponentChanged
   >;
 }
 
@@ -388,6 +392,12 @@ export const make = <
             register(componentPath, schema, modules, options);
           };
         const bound = yield* environments(declaration.mounts, config);
+        // Read again on every open, so no session runs on packaged files that
+        // changed since codegen.
+        const componentSources = yield* validateAll(
+          app.packagedSources,
+          componentRuntimes ?? app.componentRuntimes,
+        );
         const opened = open(app.schema, app.convexSchema, app.modules, {
           target: "kernel",
           httpMounts: app.httpMounts,
@@ -398,9 +408,7 @@ export const make = <
             : {
                 componentRuntimes: componentRuntimes ?? app.componentRuntimes,
               }),
-          ...(app.componentSources === undefined
-            ? {}
-            : { componentSources: app.componentSources }),
+          ...(componentSources === undefined ? {} : { componentSources }),
           register: (registerComponent) => {
             const recording = record(registerComponent);
             for (const [name, kit] of Rec.toEntries(app.components)) {

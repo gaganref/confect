@@ -507,9 +507,21 @@ Packages under `node_modules` stay one copy for the whole test, because the kern
 
 ### Packaged components' modules
 
-The kernel reads each module's `"use node"` directive to run a plain Convex action in Node or in Convex's isolate, so it needs every component's sources. A local component's come from its own files. A package's test kit registers its modules without them, so the registry's `componentSources` holds each packaged mount's sources, and those of every component its definition mounts, such as `pool/batchWorker` below `@convex-dev/workpool`. They are the modules in the directory of the `convex.config` the mount imports, the files Convex's bundler reads, built JavaScript included. When a kit registers a component without sources, the session adds them at that path.
+The kernel reads each module's `"use node"` directive to run a plain Convex action in Node or in Convex's isolate, so it needs every component's sources. A local component's come from its own files. A package's test kit registers its modules without them, so the registry's `packagedSources` reads each packaged mount's files, and those of every component its definition mounts, such as `pool/batchWorker` below `@convex-dev/workpool`. When a kit registers a component without sources, the session adds them at that path.
 
-At test time the registry reads exactly the files codegen read, whatever conditions the test process resolves exports under. Vitest, for one, adds `development`. For each `convex.config` import it records the package the import names, the definition's file inside that package and the package's version, and names no installed path. At test time it finds each package by Node's `node_modules` lookup from `testing.ts`, and then from the definition before it, which no export condition changes. Codegen runs the same lookup and reads every module first. A package it cannot find or read fails `PackagedComponentUnreadableError`, naming the mount and the package, before `testing.ts` is written. If the installed package has gone, changed version, or lost the definition's file since codegen, the session refuses to open with `PackagedComponentChanged`, naming the mount, the package, codegen's location and the one found. Run codegen again.
+Codegen picks those files as Convex's deploy bundler does. It resolves each `convex.config` import with esbuild on the browser platform under the `convex` and `module` conditions, so a package's `convex` branch wins over its `import` branch as it does on a deploy. `convex dev --live-component-sources` adds a condition a deploy never uses, and the registry follows the deploy. The modules are the regular files in the definition's directory that a deploy bundles. A symbolic link, a directory and a TypeScript file with no `import` or `export` line are not modules. A package mount the deploy bundler cannot resolve fails `PackagedComponentUnreadableError`, naming the mount and the package, before `testing.ts` is written.
+
+For each `convex.config` import the registry records the package the import names, the definition's file inside that package, the package's version and a SHA-256 digest of the definition and of every module. It names no installed path. On every build of `TestBackend.layer` or `TestConfect.layer`, the registry reads those files again from the package Node's `node_modules` lookup finds, which no export condition changes, and the layer checks them. If the package has gone, its version differs, or any file is missing or its bytes differ, even at the same version, the layer fails with `PackagedComponentChanged`. That is a typed error naming the mount, the package, the file and the reason, so a test can catch it by tag:
+
+```ts
+Layer.build(TestBackend.layer({ config })).pipe(
+  Effect.catchTag("PackagedComponentChanged", (changed) =>
+    Effect.die(`${changed.mount}: ${changed.file} changed`),
+  ),
+);
+```
+
+Rerun `confect codegen` after a package changes, as after editing a linked package's build. Only a registry with packaged mounts carries `packagedSources`, so only its `TestConfect.layer` can fail this way.
 
 Give a component's runtime to `TestBackend.layer` only when its installed modules are not the ones its kit registers, such as a kit that patches them. The runtime takes the place of the package's sources for that component path:
 

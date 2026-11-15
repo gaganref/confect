@@ -16,10 +16,12 @@ import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Predicate from "effect/Predicate";
 import * as Rec from "effect/Record";
 import * as Schema from "effect/Schema";
+import * as String from "effect/String";
 import { type TestBackend, TestConfect } from "../../test/src";
 import * as Project from "./integration/Project";
 import { assertIs } from "./internal/assertIs";
@@ -210,11 +212,47 @@ const surfaceIn = (
     ),
   );
 
+/**
+ * `"opened"` when `subject` builds, else the `PackagedComponentChanged` it
+ * fails with, caught by its tag.
+ */
+const refusalOf = <A, E extends { readonly _tag: string }>(
+  subject: Layer.Layer<A, E | TestConfect.PackagedComponentChanged>,
+) =>
+  Layer.build(subject).pipe(
+    Effect.as("opened" as const),
+    Effect.catchTag("PackagedComponentChanged", (error) =>
+      Effect.succeed(error),
+    ),
+    Effect.orDie,
+  );
+
 const tool: PackageMount = {
   specifier: "node-tool/convex.config",
   component: "tool",
   name: "tool",
 };
+
+const plainExports = {
+  "./convex.config": "./component/convex.config.js",
+  "./test": "./test.js",
+};
+
+/**
+ * A project mounting `node-tool`, whose `surface` module has a `"use node"`
+ * directive, generated once.
+ */
+const generatedTool = Effect.gen(function* () {
+  const project = yield* packagedProject([tool]);
+  yield* writePackage(
+    project,
+    "node-tool",
+    plainExports,
+    toolComponent("component", true),
+  );
+  yield* project.run;
+  return project;
+});
 
 layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
   "codegen's packaged component sources",
@@ -236,12 +274,12 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const testing = yield* project.read("confect/_generated/testing.ts");
           expect(testing).not.toContain(".pnpm");
           expect(testing).not.toMatch(/node_modules[/\\]/);
-          expect(testing).toContain(
-            '{ package: "@convex-dev/workpool", version: "0.4.14", file: "dist/component/convex.config.js" }',
+          expect(testing).toMatch(
+            /\{ package: "@convex-dev\/workpool", version: "0\.4\.14", file: "dist\/component\/convex\.config\.js", digest: "sha256:[0-9a-f]{64}" \}/,
           );
           const generated = yield* importTesting(project);
-          const componentSources = generated.default.componentSources ?? {};
-          expect(Rec.keys(componentSources)).toEqual([
+          const packagedSources = generated.default.packagedSources ?? {};
+          expect(Rec.keys(packagedSources)).toEqual([
             "pool",
             "pool/batchWorker",
           ]);
@@ -258,21 +296,20 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             ["pool", workpool, "worker.js"],
             ["pool/batchWorker", batchWorker, "loop.js"],
           ] as const) {
-            const read = componentSources[mount]?.[module];
+            const read = packagedSources[mount];
             assertIs(read, Predicate.isNotUndefined);
-            const source = yield* Effect.promise(read);
-            const installed = yield* fs.readFileString(
+            const found = yield* Effect.promise(read);
+            const bytes = Option.getOrUndefined(
+              Array.findFirst(found.files, ({ file }) => file === module),
+            )?.bytes;
+            assertIs(bytes, Predicate.isNotUndefined);
+            const installed = yield* fs.readFile(
               path.join(root, "dist/component", module),
             );
-            expect(source).toBe(installed);
+            expect(new Uint8Array(bytes)).toEqual(new Uint8Array(installed));
           }
-          const opened = yield* Layer.build(
+          const opened = yield* refusalOf(
             generated.TestBackend.layer({ config: {} }),
-          ).pipe(
-            Effect.exit,
-            Effect.map((exit) =>
-              Exit.isFailure(exit) ? Cause.squash(exit.cause) : "opened",
-            ),
           );
           expect(opened).toBe("opened");
         }).pipe(Effect.scoped),
@@ -283,17 +320,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       "reads a packaged component's \"use node\" module as Convex does, unless the layer declares the component's runtime",
       () =>
         Effect.gen(function* () {
-          const project = yield* packagedProject([tool]);
-          yield* writePackage(
-            project,
-            "node-tool",
-            {
-              "./convex.config": "./component/convex.config.js",
-              "./test": "./test.js",
-            },
-            toolComponent("component", true),
-          );
-          yield* project.run;
+          const project = yield* generatedTool;
           const generated = yield* importTesting(project);
           const fromSources = yield* surfaceIn(generated);
           const declared = yield* surfaceIn(generated, { tool: "isolate" });
@@ -304,12 +331,43 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
+      "reads the config branch Convex's deploy bundler picks, here a convex branch before an import branch",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* packagedProject([tool]);
+          // The deploy resolves under convex and module, Node under import.
+          yield* writePackage(
+            project,
+            "node-tool",
+            {
+              "./convex.config": {
+                convex: "./component/convex.config.js",
+                import: "./node/convex.config.js",
+              },
+              "./test": "./test.js",
+            },
+            {
+              ...toolComponent("component", false),
+              ...toolComponent("node", true),
+            },
+          );
+          yield* project.run;
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(testing).toContain('file: "component/convex.config.js"');
+          const generated = yield* importTesting(project);
+          const surface = yield* surfaceIn(generated);
+          expect(surface).toBe("undefined");
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
       "reads the directory codegen read when the test process resolves the package's exports under other conditions",
       () =>
         Effect.gen(function* () {
           const project = yield* packagedProject([tool]);
-          // Vitest resolves under the `development` condition, codegen and
-          // Convex's bundler under `default`.
+          // Vitest resolves under the `development` condition, which neither
+          // codegen nor Convex's deploy bundler does.
           yield* writePackage(
             project,
             "node-tool",
@@ -358,68 +416,215 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
-      "refuses a session when the installed package changed since codegen, naming the mount, the package and both locations",
+      "lists as modules only the regular files Convex deploys",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const project = yield* packagedProject([tool]);
+          yield* writePackage(project, "node-tool", plainExports, {
+            ...toolComponent("component", true),
+            "component/empty.ts": "const unused = 1;\n",
+          });
+          const component = `${project.root}/node_modules/node-tool/component`;
+          yield* fs.makeDirectory(`${component}/folder.js`);
+          // Windows creates a file link only with a privilege CI lacks.
+          if (process.platform !== "win32")
+            yield* fs.symlink(
+              `${component}/surface.js`,
+              `${component}/linked.js`,
+            );
+          yield* project.run;
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          const files = Array.map(
+            [
+              ...String.matchAll(/\{ file: "([^"]+)", digest: "sha256:/g)(
+                testing,
+              ),
+            ],
+            ([, file]) => file,
+          );
+          expect(files).toEqual(["schema.js", "surface.js"]);
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "refuses at codegen a packaged component Convex's deploy bundler cannot resolve, naming the package",
       () =>
         Effect.gen(function* () {
           const project = yield* packagedProject([tool]);
-          const exports = {
-            "./convex.config": "./component/convex.config.js",
-            "./test": "./test.js",
-          };
           yield* writePackage(
             project,
             "node-tool",
-            exports,
+            {
+              "./convex.config": { node: "./component/convex.config.js" },
+              "./test": "./test.js",
+            },
             toolComponent("component", true),
           );
-          yield* project.run;
+          const error = yield* Effect.flip(project.run);
+          expect(error).toBeInstanceOf(PackagedComponentUnreadableError);
+          expect(error).toMatchObject({
+            mount: "tool",
+            component: "node-tool",
+            reason: expect.stringContaining("Convex's deploy bundler"),
+          });
+          const written = yield* project.exists(
+            "confect/_generated/testing.ts",
+          );
+          expect(written).toBe(false);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "refuses a session in its typed channel when the installed version changed since codegen",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* generatedTool;
           const upgraded = yield* Schema.encodeEffect(
             Schema.fromJsonString(Schema.Unknown),
-          )({ name: "node-tool", version: "2.0.0", type: "module", exports });
+          )({
+            name: "node-tool",
+            version: "2.0.0",
+            type: "module",
+            exports: plainExports,
+          });
           yield* project.write("node_modules/node-tool/package.json", upgraded);
           const generated = yield* importTesting(project);
-          const refused = yield* surfaceIn(generated);
+          const refused = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
           expect(refused).toMatchObject({
             _tag: "PackagedComponentChanged",
             mount: "tool",
             package: "node-tool",
-            codegen: "node-tool@1.0.0/component/convex.config.js",
-            found: expect.stringMatching(/^node-tool@2\.0\.0 at .*node-tool$/),
+            file: "package.json",
+            reason: expect.stringMatching(/2\.0\.0.*1\.0\.0/),
+          });
+          expect((refused as Error).message).toContain(
+            "Run confect codegen again",
+          );
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect.each([
+      {
+        changed: "component/surface.js",
+        source:
+          'import { actionGeneric } from "convex/server";\nexport const surface = actionGeneric({ args: {}, handler: () => typeof setImmediate });\n',
+      },
+      {
+        changed: "component/convex.config.js",
+        source:
+          'import { defineComponent } from "convex/server";\nexport default defineComponent("tool");\n// rebuilt\n',
+      },
+    ])(
+      "refuses a session when $changed changed at the same version",
+      ({ changed, source }) =>
+        Effect.gen(function* () {
+          const project = yield* generatedTool;
+          yield* project.write(`node_modules/node-tool/${changed}`, source);
+          const generated = yield* importTesting(project);
+          const refused = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          expect(refused).toMatchObject({
+            _tag: "PackagedComponentChanged",
+            mount: "tool",
+            package: "node-tool",
+            file: changed,
+            reason: "its bytes differ from the ones codegen read",
           });
         }).pipe(Effect.scoped),
       { timeout: 60000 },
     );
 
     it.effect(
-      "refuses at codegen a packaged component whose modules cannot be read, naming the package",
+      "checks the files again on every open, so a change after one session refuses the next",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* generatedTool;
+          const generated = yield* importTesting(project);
+          const first = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          yield* project.write(
+            "node_modules/node-tool/component/surface.js",
+            'import { actionGeneric } from "convex/server";\nexport const surface = actionGeneric({ args: {}, handler: () => "changed" });\n',
+          );
+          const second = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          expect(first).toBe("opened");
+          expect(second).toMatchObject({
+            _tag: "PackagedComponentChanged",
+            file: "component/surface.js",
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "refuses a missing module in the typed channel of TestBackend.layer and TestConfect.layer, naming the file",
       () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
+          const project = yield* generatedTool;
+          yield* fs.remove(
+            `${project.root}/node_modules/node-tool/component/surface.js`,
+          );
+          const generated = yield* importTesting(project);
+          const fromBackend = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          const fromLayer = yield* refusalOf(
+            TestConfect.layer(
+              generated.default as TestConfect.DeclaredApp<DatabaseSchema.AnyWithProps>,
+              { target: "kernel" },
+            ),
+          );
+          for (const refused of [fromBackend, fromLayer]) {
+            expect(refused).toMatchObject({
+              _tag: "PackagedComponentChanged",
+              mount: "tool",
+              package: "node-tool",
+              file: "component/surface.js",
+              reason: expect.stringContaining("ENOENT"),
+            });
+          }
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "keeps a registry without the test subject free of @confect/test imports",
+      () =>
+        Effect.gen(function* () {
           const project = yield* packagedProject([tool]);
           yield* writePackage(
             project,
             "node-tool",
-            {
-              "./convex.config": "./component/convex.config.js",
-              "./test": "./test.js",
-            },
+            plainExports,
             toolComponent("component", true),
           );
-          // A directory where a module belongs, which no read returns.
+          // A package that exports nothing, so codegen cannot import it.
+          const fs = yield* FileSystem.FileSystem;
           yield* fs.makeDirectory(
-            `${project.root}/node_modules/node-tool/component/broken.js`,
+            `${project.root}/node_modules/@confect/test`,
+            {
+              recursive: true,
+            },
           );
-          const error = yield* Effect.flip(project.run);
-          expect(error).toMatchObject({
-            _tag: "PackagedComponentUnreadableError",
-            mount: "tool",
-            component: "node-tool",
-          });
-          expect(error).toBeInstanceOf(PackagedComponentUnreadableError);
-          const written = yield* project.exists(
-            "confect/_generated/testing.ts",
+          yield* project.write(
+            "node_modules/@confect/test/package.json",
+            '{ "name": "@confect/test", "type": "module", "exports": {} }\n',
           );
-          expect(written).toBe(false);
+          yield* project.run;
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(testing).toContain('packagedSources: {"tool": packageRead(');
+          expect(testing).not.toContain("@confect/test");
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

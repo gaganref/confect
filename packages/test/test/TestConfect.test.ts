@@ -1,5 +1,7 @@
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The replay test compares the exact stdout of fresh Node processes.
 import { spawnSync } from "node:child_process";
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- A packaged read carries the SHA-256 codegen would record for its bytes.
+import { createHash } from "node:crypto";
 import { createRequire } from "node:module";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { TestConfect } from "@confect/test";
@@ -30,6 +32,8 @@ import registry from "../../../tools/local-backend/fixtures/confect/_generated/t
 import refs from "../../../tools/local-backend/fixtures/confect/_generated/refs";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
+import * as Rec from "effect/Record";
+import * as Str from "effect/String";
 import * as Json from "../src/internal/Json";
 import { assertIs } from "./internal/assertIs";
 
@@ -594,8 +598,8 @@ const surface = Effect.gen(function* () {
   return yield* test.action(nodeSurface);
 });
 // `surface` on a fresh backend the layer builds.
-const surfaceOn = (
-  layer: ReturnType<typeof TestConfect.layer<typeof runtimeRegistry.schema>>,
+const surfaceOn = <E>(
+  layer: Layer.Layer<TestConfect.TestConfect<typeof runtimeRegistry.schema>, E>,
 ) =>
   Effect.gen(function* () {
     const services = yield* Layer.build(layer);
@@ -677,7 +681,7 @@ it.effect(
 );
 
 it.effect(
-  "on the kernel target, a generated registry's component sources reach a kit that registers without its own, unless the layer declares the component's runtime",
+  "on the kernel target, a generated registry's packaged sources reach a kit that registers without its own, unless the layer declares the component's runtime",
   () =>
     Effect.gen(function* () {
       // A package's kit, which registers its modules without their sources.
@@ -693,34 +697,50 @@ it.effect(
             sources === undefined ? undefined : { sources },
           ),
       });
+      // What generated `testing.ts` reads for a packaged mount: here the kit's
+      // own module files, with the digests codegen would record.
+      const packageRead =
+        (sources: Record<string, () => Promise<string>>) => () =>
+          Promise.all(
+            Arr.map(Rec.toEntries(sources), ([key, read]) =>
+              read().then((text) => {
+                const bytes = new TextEncoder().encode(text);
+                return {
+                  file: pipe(key, Str.replace("./fixtures/runtime/", "")),
+                  digest: `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+                  bytes,
+                };
+              }),
+            ),
+          ).then((files) => ({ steps: [], files }));
       const generated = (
-        componentSources: TestConfect.ComponentSources,
+        packaged: Record<string, () => Promise<string>>,
         kitSources?: Record<string, () => Promise<string>>,
       ) => ({
         ...runtimeRegistry,
         httpMounts: [],
         sources: runtimeSources,
         components: { kit: kit(kitSources) },
-        componentSources,
+        packagedSources: { kit: packageRead(packaged) },
       });
       const ran = yield* surfaceOn(
-        TestConfect.layer(generated({ kit: runtimeSources }), {
+        TestConfect.layer(generated(runtimeSources), {
           target: "kernel",
         }),
       );
-      // Sources that name none of the kit's modules show the registry's are
-      // the ones the kernel read.
+      // A read that names none of the kit's modules shows the registry's are
+      // the sources the kernel read.
       const refused = yield* surfaceOn(
-        TestConfect.layer(generated({ kit: {} }), { target: "kernel" }),
+        TestConfect.layer(generated({}), { target: "kernel" }),
       ).pipe(refusalOf);
       const declared = yield* surfaceOn(
-        TestConfect.layer(generated({ kit: {} }), {
+        TestConfect.layer(generated({}), {
           target: "kernel",
           componentRuntimes: { kit: "node" },
         }),
       );
       const kitOwn = yield* surfaceOn(
-        TestConfect.layer(generated({ kit: {} }, runtimeSources), {
+        TestConfect.layer(generated({}, runtimeSources), {
           target: "kernel",
         }),
       );

@@ -39,10 +39,13 @@ const DEPLOY_MODULE = "confectDeploy.ts";
 
 /**
  * The files of a Convex directory that a push registers as modules, matching
- * Convex's bundler entryPoints filter, so ownership, removal and the test
- * subject see the same modules as production. Convex skips non-JS files,
- * dotfiles, files with more than one dot or a space, and component directories
- * inside it. `_generated` holds no module.
+ * Convex's bundler entryPoints filter (convex 1.49 `src/bundler/index.ts`), so
+ * ownership, removal and the test subject see the same modules as production.
+ * Convex skips non-JS files, dotfiles, files with more than one dot or a space,
+ * and component directories inside it. Its walk yields only regular files
+ * (`:34-44`), so a directory or a symbolic link with a module's name is no
+ * module, and it skips a TypeScript file with no line that starts with `import`
+ * or `export` (`:486-499`). `_generated` holds no module.
  *
  * @internal
  */
@@ -61,7 +64,7 @@ export const registeredModules = Effect.fnUntraced(function* (
     ),
     Array.map((file) => path.dirname(file) + path.sep),
   );
-  return Array.filter(files, (file) => {
+  const named = Array.filter(files, (file) => {
     const base = path.basename(file);
     return (
       !pipe(file, String.startsWith("_generated" + path.sep)) &&
@@ -79,6 +82,22 @@ export const registeredModules = Effect.fnUntraced(function* (
       !pipe(file, String.includes(" "))
     );
   });
+  const modules: Array<string> = [];
+  for (const file of named) {
+    const absolute = path.join(directory, file);
+    const info = yield* fs.stat(absolute).pipe(Effect.option);
+    const linked = yield* fs.readLink(absolute).pipe(
+      Effect.as(true),
+      Effect.orElseSucceed(() => false),
+    );
+    if (Option.isNone(info) || info.value.type !== "File" || linked) continue;
+    if (/\.tsx?$/.test(file)) {
+      const source = yield* fs.readFileString(absolute);
+      if (!/^\s{0,100}(?:import|export)/m.test(source)) continue;
+    }
+    modules.push(file);
+  }
+  return modules;
 });
 
 const getEntrypoints = Effect.gen(function* () {

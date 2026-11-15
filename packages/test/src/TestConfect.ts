@@ -8,14 +8,21 @@ import type {
 } from "convex/server";
 import type { Value } from "convex/values";
 import * as Context from "effect/Context";
-import type * as Effect from "effect/Effect";
+import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import type * as Schema from "effect/Schema";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Rec from "effect/Record";
+import * as PackagedSources from "./internal/PackagedSources.js";
 import * as Session from "./internal/Session.js";
+
+export {
+  PackagedComponentChanged,
+  type PackageRead,
+  type PackagedSources,
+} from "./internal/PackagedSources.js";
 
 /**
  * How a kit registers a component beyond its schema and modules.
@@ -161,7 +168,9 @@ export type LayerOptions = TargetOptions &
      */
     readonly secrets?: SecretPolicy;
     /**
-     * The generated registry's {@link Registry.componentSources}.
+     * Each packaged mount's module sources, by component path, as the layer
+     * read and checked them from the registry's
+     * {@link Registry.packagedSources}.
      */
     readonly componentSources?: ComponentSources;
   };
@@ -287,13 +296,30 @@ export type Registry<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> = {
   readonly sources?: Record<string, () => Promise<string>>;
   readonly componentRuntimes?: ComponentRuntimes;
   /**
-   * Each packaged mount's module sources, and those of each component its
-   * definition mounts, read from the installed package. A package's test kit
-   * registers its modules without them, so the kernel adds them to the kit's
-   * registration at that path. A runtime in `componentRuntimes` for the path
-   * takes their place.
+   * A reader of each packaged mount's installed files, and those of each
+   * component its definition mounts, by component path. Each layer build reads
+   * them again and checks them against codegen's digests, failing
+   * {@link PackagedComponentChanged} if any changed. A package's test kit
+   * registers its modules without sources, so the kernel adds these to the
+   * kit's registration at that path. A runtime in `componentRuntimes` for the
+   * path takes their place, and that path is not read.
    */
-  readonly componentSources?: ComponentSources;
+  readonly packagedSources?: PackagedSources.PackagedSources;
+};
+
+/**
+ * A registry for `A`, which registers a kit for each of its mounts.
+ */
+type AppRegistry<
+  A extends App.Any,
+  DatabaseSchema_ extends DatabaseSchema.AnyWithProps,
+> = Registry<DatabaseSchema_> & {
+  readonly components: Readonly<
+    Record<
+      Mount.NameOf<NoInfer<A>["mounts"][number]>,
+      Registry<DatabaseSchema_>["components"][string]
+    >
+  >;
 };
 
 /**
@@ -311,7 +337,24 @@ export type DeclaredApp<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> =
  * convex-test, with the modules' `sources` beside it.
  */
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
+  app: DeclaredApp<DatabaseSchema_> & { readonly packagedSources?: undefined },
+  options?: TargetOptions & SourceOptions,
+): Layer.Layer<TestConfect<DatabaseSchema_>>;
+export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   app: DeclaredApp<DatabaseSchema_>,
+  options?: TargetOptions & SourceOptions,
+): Layer.Layer<
+  TestConfect<DatabaseSchema_>,
+  PackagedSources.PackagedComponentChanged
+>;
+export function layer<
+  A extends App.Any,
+  DatabaseSchema_ extends DatabaseSchema.AnyWithProps,
+>(
+  app: A,
+  registry: AppRegistry<A, DatabaseSchema_> & {
+    readonly packagedSources?: undefined;
+  },
   options?: TargetOptions & SourceOptions,
 ): Layer.Layer<TestConfect<DatabaseSchema_>>;
 export function layer<
@@ -319,16 +362,12 @@ export function layer<
   DatabaseSchema_ extends DatabaseSchema.AnyWithProps,
 >(
   app: A,
-  registry: Registry<DatabaseSchema_> & {
-    readonly components: Readonly<
-      Record<
-        Mount.NameOf<NoInfer<A>["mounts"][number]>,
-        Registry<DatabaseSchema_>["components"][string]
-      >
-    >;
-  },
+  registry: AppRegistry<A, DatabaseSchema_>,
   options?: TargetOptions & SourceOptions,
-): Layer.Layer<TestConfect<DatabaseSchema_>>;
+): Layer.Layer<
+  TestConfect<DatabaseSchema_>,
+  PackagedSources.PackagedComponentChanged
+>;
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   databaseSchema: DatabaseSchema_,
   convexSchemaDefinition: SchemaDefinition<GenericSchema, true>,
@@ -343,18 +382,20 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
     | (TargetOptions & SourceOptions),
   third?: Record<string, () => Promise<any>> | (TargetOptions & SourceOptions),
   options: LayerOptions = {},
-): Layer.Layer<TestConfect<DatabaseSchema_>> {
+): Layer.Layer<
+  TestConfect<DatabaseSchema_>,
+  PackagedSources.PackagedComponentChanged
+> {
   if (App.isApp(appOrSchema)) {
     const registry = second as Registry<DatabaseSchema_>;
     const mounts = App.mounts(appOrSchema);
-    return schemaLayer(
-      registry.schema,
-      registry.convexSchema,
-      registry.modules,
-      {
+    const sources = sourcesOf(registry, third as SourceOptions | undefined);
+    return packagedLayer(registry, sources, (componentSources) =>
+      schemaLayer(registry.schema, registry.convexSchema, registry.modules, {
         ...targetOf(third as TargetOptions | undefined),
         ...secretsOf(registry),
-        ...sourcesOf(registry, third as SourceOptions | undefined),
+        ...sources,
+        ...componentSources,
         // reduce skips a sparse list's holes, which effect/Array's flatMap visits.
         httpMounts: Array.reduce(
           mounts,
@@ -378,22 +419,26 @@ export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
             }
           }
         },
-      },
+      }),
     );
   }
   if ("httpMounts" in appOrSchema) {
     const app = appOrSchema as DeclaredApp<DatabaseSchema_>;
-    return schemaLayer(app.schema, app.convexSchema, app.modules, {
-      ...targetOf(second as TargetOptions | undefined),
-      ...secretsOf(app),
-      ...sourcesOf(app, second as SourceOptions | undefined),
-      httpMounts: app.httpMounts,
-      register: (registerComponent) => {
-        for (const [name, component] of Rec.toEntries(app.components)) {
-          Session.registerKit(registerComponent, name, component);
-        }
-      },
-    });
+    const sources = sourcesOf(app, second as SourceOptions | undefined);
+    return packagedLayer(app, sources, (componentSources) =>
+      schemaLayer(app.schema, app.convexSchema, app.modules, {
+        ...targetOf(second as TargetOptions | undefined),
+        ...secretsOf(app),
+        ...sources,
+        ...componentSources,
+        httpMounts: app.httpMounts,
+        register: (registerComponent) => {
+          for (const [name, component] of Rec.toEntries(app.components)) {
+            Session.registerKit(registerComponent, name, component);
+          }
+        },
+      }),
+    );
   }
   return schemaLayer(
     appOrSchema as DatabaseSchema_,
@@ -414,20 +459,42 @@ const secretsOf = (registry: {
   registry.secrets === undefined ? {} : { secrets: registry.secrets };
 
 const sourcesOf = (
-  registry: SourceOptions & Pick<LayerOptions, "componentSources">,
+  registry: SourceOptions,
   options: SourceOptions | undefined,
-): Pick<LayerOptions, "sources" | "componentRuntimes" | "componentSources"> => {
+): SourceOptions => {
   const sources = options?.sources ?? registry.sources;
   const componentRuntimes =
     options?.componentRuntimes ?? registry.componentRuntimes;
   return {
     ...(sources === undefined ? {} : { sources }),
     ...(componentRuntimes === undefined ? {} : { componentRuntimes }),
-    ...(registry.componentSources === undefined
-      ? {}
-      : { componentSources: registry.componentSources }),
   };
 };
+
+/**
+ * The layer `make` builds from the registry's packaged sources, read and
+ * checked again on each build of it.
+ */
+const packagedLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
+  registry: Pick<Registry<DatabaseSchema_>, "packagedSources">,
+  sources: SourceOptions,
+  make: (
+    componentSources: Pick<LayerOptions, "componentSources">,
+  ) => Layer.Layer<TestConfect<DatabaseSchema_>>,
+): Layer.Layer<
+  TestConfect<DatabaseSchema_>,
+  PackagedSources.PackagedComponentChanged
+> =>
+  Layer.unwrap(
+    PackagedSources.validateAll(
+      registry.packagedSources,
+      sources.componentRuntimes,
+    ).pipe(
+      Effect.map((componentSources) =>
+        make(componentSources === undefined ? {} : { componentSources }),
+      ),
+    ),
+  );
 
 const schemaLayer = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
   databaseSchema: DatabaseSchema_,

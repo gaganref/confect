@@ -9,6 +9,8 @@ import {
 } from "@confect/core";
 import { DatabaseSchema } from "@confect/server";
 import type * as Mount from "@confect/core/Mount";
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- A synchronous hash of bytes already read, matching the digest the test layer checks; Effect's Crypto is a service.
+import { createHash } from "node:crypto";
 import * as Schema from "effect/Schema";
 import * as SchemaAST from "effect/SchemaAST";
 import * as Command from "effect/cli/Command";
@@ -1264,32 +1266,33 @@ const moduleSource = (path: string) => (): Promise<string> =>
   );`;
 
 /**
- * The reader generated `testing.ts` gives a packaged component's modules. It
- * reads exactly the files codegen read: each step names a package, found from
- * the step before by Node's `node_modules` lookup, which no export condition
- * changes, and the definition's file inside it. A package that is missing, or
- * whose version or files changed since codegen, refuses with
- * `PackagedComponentChanged`, naming the mount, the package and both locations.
- * Like {@link moduleSource}, it names no Node type.
+ * The reader generated `testing.ts` gives each packaged mount. It reads the
+ * files codegen read and returns them with codegen's entries, as data. Each
+ * step names a package, found from the step before by Node's `node_modules`
+ * lookup, which no export condition changes, and the definition's file inside
+ * it. The test layer checks the version and each file's digest on every open,
+ * so the reader holds no state and checks nothing. Like {@link moduleSource},
+ * it names no Node type.
  */
-const packageSources = `// Each module's text in an installed component package, from the files codegen read, for the test kernel's "use node" check.
-type PackageStep = { readonly package?: string; readonly version?: string; readonly file: string };
-type PackageReader = {
+const packageRead = `// Each packaged mount's installed files, read where codegen read them, for the test layer to check against codegen's digests.
+type PackageStep = { readonly package?: string; readonly version?: string; readonly file: string; readonly digest: string };
+type PackageFile = { readonly file: string; readonly digest: string };
+type PackageNode = {
   readonly existsSync: (file: string) => boolean;
-  readonly readFileSync: (file: string, encoding: "utf8") => string;
+  readonly readFileSync: { (file: string): Uint8Array; (file: string, encoding: "utf8"): string };
   readonly realpathSync: (file: string) => string;
   readonly basename: (file: string) => string;
   readonly dirname: (file: string) => string;
   readonly join: (...segments: ReadonlyArray<string>) => string;
   readonly fileURLToPath: (url: string) => string;
 };
-const packageReader = (): Promise<PackageReader> =>
+const packageNode = (): Promise<PackageNode> =>
   Promise.all([
     import(/* @vite-ignore */ String("node:fs")),
     import(/* @vite-ignore */ String("node:path")),
     import(/* @vite-ignore */ String("node:url")),
-  ]).then(([fs, path, url]: ReadonlyArray<any>) => ({ ...fs, ...path, ...url }) as PackageReader);
-const installedPackage = (node: PackageReader, from: string, name: string): string | undefined => {
+  ]).then(([fs, path, url]: ReadonlyArray<any>) => ({ ...fs, ...path, ...url }) as PackageNode);
+const installedPackage = (node: PackageNode, from: string, name: string): string | undefined => {
   for (let directory = from; ; directory = node.dirname(directory)) {
     const candidate = node.join(directory, "node_modules", name);
     if (node.basename(directory) !== "node_modules" && node.existsSync(node.join(candidate, "package.json")))
@@ -1297,49 +1300,41 @@ const installedPackage = (node: PackageReader, from: string, name: string): stri
     if (node.dirname(directory) === directory) return undefined;
   }
 };
-const packageDirectory = (node: PackageReader, mount: string, steps: ReadonlyArray<PackageStep>): string => {
-  let from = node.dirname(node.realpathSync(node.fileURLToPath((import.meta as unknown as { readonly url: string }).url)));
-  let root = from;
-  let name = "";
-  let version: string | undefined;
-  for (const step of steps) {
-    const codegen = () => \`\${name}\${version === undefined ? "" : \`@\${version}\`}/\${step.file}\`;
-    const changed = (found: string) =>
-      Object.assign(
-        new Error(
-          \`The mount "\${mount}" reads the modules codegen read at \${codegen()}, but finds \${found}. Run confect codegen again.\`,
-        ),
-        { _tag: "PackagedComponentChanged", mount, package: name, codegen: codegen(), found },
-      );
-    if (step.package !== undefined) {
-      name = step.package;
-      version = step.version;
-      const found = installedPackage(node, from, name);
-      if (found === undefined) throw changed(\`no \${name} in node_modules from \${from}\`);
-      const installed = (JSON.parse(node.readFileSync(node.join(found, "package.json"), "utf8")) as { readonly version?: string }).version;
-      if (installed !== version) throw changed(\`\${name}\${installed === undefined ? "" : \`@\${installed}\`} at \${found}\`);
-      root = found;
-    }
-    const file = node.join(root, step.file);
-    if (!node.existsSync(file)) throw changed(\`no \${step.file} in \${root}\`);
-    from = node.dirname(node.realpathSync(file));
-  }
-  return from;
-};
-const packageSources = (mount: string, steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<string>) => {
-  let located: Promise<{ readonly node: PackageReader; readonly directory: string }> | undefined;
-  const locate = () =>
-    (located ??= packageReader().then((node) => ({ node, directory: packageDirectory(node, mount, steps) })));
-  return {
-    "_generated/testing.ts": () => Promise.resolve(""),
-    ...Object.fromEntries(
-      files.map((file) => [
-        file,
-        (): Promise<string> => locate().then(({ node, directory }) => node.readFileSync(node.join(directory, file), "utf8")),
-      ]),
-    ),
-  };
-};`;
+const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<PackageFile>) => () =>
+  packageNode().then((node) => {
+    const attempt = <A,>(read: () => A): { readonly value?: A; readonly failure?: string } => {
+      try {
+        return { value: read() };
+      } catch (error) {
+        return { failure: String(error) };
+      }
+    };
+    let from = node.dirname(node.realpathSync(node.fileURLToPath((import.meta as unknown as { readonly url: string }).url)));
+    let root = from;
+    const located = steps.map((step) => {
+      const looked = from;
+      let installed: string | undefined;
+      if (step.package !== undefined) {
+        const found = installedPackage(node, looked, step.package);
+        if (found === undefined) return { ...step, from: looked };
+        root = found;
+        installed = attempt(
+          () => (JSON.parse(node.readFileSync(node.join(found, "package.json"), "utf8")) as { readonly version?: string }).version,
+        ).value;
+      }
+      const file = node.join(root, step.file);
+      const read = attempt(() => node.readFileSync(file));
+      if (read.value !== undefined) from = node.dirname(node.realpathSync(file));
+      return { ...step, from: looked, found: root, installed, bytes: read.value, failure: read.failure };
+    });
+    return {
+      steps: located,
+      files: files.map((entry) => {
+        const read = attempt(() => node.readFileSync(node.join(from, entry.file)));
+        return { ...entry, bytes: read.value, failure: read.failure };
+      }),
+    };
+  });`;
 
 const generateTesting = Effect.fnUntraced(function* (
   app: App.Any,
@@ -1417,13 +1412,13 @@ const generateTesting = Effect.fnUntraced(function* (
     "mountModules",
     "moduleSource",
     "PackageStep",
-    "PackageReader",
-    "packageReader",
+    "PackageFile",
+    "PackageNode",
+    "packageNode",
     "installedPackage",
-    "packageDirectory",
-    "packageSources",
+    "packageRead",
   ]);
-  const componentSources: Array<string> = [];
+  const packagedSources: Array<string> = [];
   const posix = (file: string) =>
     Array.join(pipe(file, String.split(path.sep)), "/");
   const fromProject = (file: string) => posix(path.relative(projectRoot, file));
@@ -1471,7 +1466,21 @@ const generateTesting = Effect.fnUntraced(function* (
         reason,
       });
     const { specifier } = imported.import;
+    if (!imported.import.deployed) {
+      return yield* unreadable(
+        `Convex's deploy bundler, which resolves on the browser platform under the convex and module conditions, finds no ${quote(specifier)}.`,
+      );
+    }
     const definition = yield* real(imported.import.path);
+    const digestOf = (file: string) =>
+      fs.readFile(file).pipe(
+        Effect.mapBoth({
+          onSuccess: (bytes) =>
+            `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+          onFailure: (error) => unreadable(`${error.message}.`),
+        }),
+      );
+    const definitionDigest = yield* digestOf(definition);
     const bare =
       !pipe(specifier, String.startsWith(".")) && !path.isAbsolute(specifier);
     let packageRoot = root;
@@ -1499,9 +1508,9 @@ const generateTesting = Effect.fnUntraced(function* (
           Effect.flatMap(Schema.decodeUnknownEffect(PackageVersion)),
           Effect.mapError((error) => unreadable(`${error.message}.`)),
         );
-      step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}file: ${quote(posix(path.relative(packageRoot, definition)))} }`;
+      step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)} }`;
     } else {
-      step = `{ file: ${quote(posix(path.relative(packageRoot, definition)))} }`;
+      step = `{ file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)} }`;
     }
     const chain = [...steps, step];
     const directory = path.dirname(definition);
@@ -1510,18 +1519,14 @@ const generateTesting = Effect.fnUntraced(function* (
         Effect.mapError((error) => unreadable(`${error.message}.`)),
       )),
     ].sort();
+    const entries: Array<string> = [];
     for (const file of files) {
-      yield* fs
-        .readFileString(path.join(directory, file))
-        .pipe(Effect.mapError((error) => unreadable(`${error.message}.`)));
+      const digest = yield* digestOf(path.join(directory, file));
+      entries.push(`{ file: ${quote(posix(file))}, digest: ${quote(digest)} }`);
     }
-    if (!declarations.includes(packageSources))
-      declarations.push(packageSources);
-    componentSources.push(
-      `${quote(name)}: packageSources(${quote(name)}, [${Array.join(chain, ", ")}], [${Array.join(
-        Array.map(files, (file) => quote(posix(file))),
-        ", ",
-      )}]),`,
+    if (!declarations.includes(packageRead)) declarations.push(packageRead);
+    packagedSources.push(
+      `${quote(name)}: packageRead([${Array.join(chain, ", ")}], [${Array.join(entries, ", ")}]),`,
     );
     for (const child of imported.mounts) {
       yield* packaged(
@@ -1767,11 +1772,11 @@ const generateTesting = Effect.fnUntraced(function* (
   const policy =
     secrets.policy === undefined ? "" : `, secrets: ${secrets.policy}`;
   const moduleSources = yield* sourceMap(convexDirectory);
-  const packagedSources =
-    componentSources.length === 0
+  const packagedField =
+    packagedSources.length === 0
       ? ""
-      : `, componentSources: {${Array.join(componentSources, "\n")}}`;
-  const registry = `{ httpMounts: [${Array.join(httpMounts, ",")}], schema, convexSchema, modules: ${modules}, sources: ${moduleSources}, components: {${Array.join(components, "\n")}}${packagedSources}${policy} }`;
+      : `, packagedSources: {${Array.join(packagedSources, "\n")}}`;
+  const registry = `{ httpMounts: [${Array.join(httpMounts, ",")}], schema, convexSchema, modules: ${modules}, sources: ${moduleSources}, components: {${Array.join(components, "\n")}}${packagedField}${policy} }`;
   yield* writeFileStringAndLog(
     path.join(generated, "testing.ts"),
     Array.join(

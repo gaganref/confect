@@ -284,15 +284,15 @@ const convexTestOptions = (
 
 /**
  * `register`, with the generated registry's sources for each component a kit
- * registers without its own. A runtime the test declares for the component
- * takes their place, as it would for a kit that gave none.
+ * registers without its own. The layer leaves out a component whose runtime the
+ * test declares, so that runtime takes their place, as it would for a kit that
+ * gave none.
  */
 const withComponentSources =
   (register: RegisterComponent, options: LayerOptions): RegisterComponent =>
   (componentPath, schema, modules, registered) => {
     const sources =
-      registered?.sources !== undefined ||
-      options.componentRuntimes?.[componentPath] !== undefined
+      registered?.sources !== undefined
         ? undefined
         : options.componentSources?.[componentPath];
     register(
