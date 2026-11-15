@@ -587,7 +587,9 @@ case's own call makes. `TestComponent.laws` is a typed slot Frame's testing
 door fills. A slot call whose arguments break its contract is
 refused before it is held, with the binary's `ArgumentValidationError` message,
 and an answer its declared return refuses fails with the binary's
-`ReturnsValidationError`. This is row 9 of Frame's backend testing kernel (Frame ADR 0012).
+`ReturnsValidationError`. Both checks port the binary's, ids read by table
+number in the root namespace, and a seeded differential on the local backend
+compares them. This is row 9 of Frame's backend testing kernel (Frame ADR 0012).
 Changeset: `generated-test-component.md`. Upstream: fork only, as the kernel is
 fork-specific.
 

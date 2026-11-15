@@ -2310,16 +2310,45 @@ the deterministic operations in every phase.
   before the sink holds it, and its answer against the slot's declared return,
   as the binary checks a handle's target both ways. A refusal is an `Error`
   whose message is the binary's `ArgumentValidationError` or
-  `ReturnsValidationError` text. One exhaustive switch over every kind of
-  convex 1.49's `Validator` union checks both, so a kind added later fails
-  typecheck. Present fields are checked first in key order, then missing
-  required fields, then extra ones. Values print as the binary prints them, a
-  float64 in Rust's `{:?}` form, and only once a value is refused, with bytes
-  printed in chunks, so a large valid value is never printed. An id of another
-  table gets the binary's `Found ID ... from table` text. An action's caller
-  gets one more trailing newline, and a mutation's caller of a refused return
-  none. `callbackArgs.test.ts` on the local-backend lane compares 39 cases from
-  a mutation and an action, byte for byte: every validator kind valid and
-  refused, 200,000-byte and 1 MiB bytes, and three returns. The kernel's own
-  argument check for registered functions keeps convex-test's wording; only
-  the sink's matches the binary.
+  `ReturnsValidationError` text. `ArgumentValidation.ts` ports convex-backend
+  `cccbade4`'s `Validator::check_value_internal`
+  (`crates/common/src/schemas/validator.rs`) case for case, one exhaustive
+  switch over every kind of convex 1.49's `Validator` union, so a kind added
+  later fails typecheck. An object's declared fields are walked in code point
+  order, each checked when present and refused when required and absent, then
+  the first extra field. A literal refuses with its own message. A union of
+  one member reports its member's problem. Values print as the binary's
+  `Display` prints them: a float64 in Rust's `{:?}` form, a string in Rust's
+  debug escaping, keys in code point order. A literal prints through
+  serde_json: JSON, a signed exponent (`1e+16`), `<bigint>` for an int64. A
+  value prints only once refused, with bytes in chunks, so a large valid value
+  is never printed. An action's caller gets one more trailing newline, and a
+  mutation's caller of a refused return none.
+- An id is read as the binary reads it: by its table number, in the namespace
+  of the function it validates for (`crates/udf/src/validation.rs:679`). The
+  sink's slots stand in for the host, so the kernel reads it in the root
+  namespace. The world records each id's component and table when it mints
+  it, rebuilt from the commit log and stored files on a restore. It numbers
+  each component's user tables as a fresh push creates them, from 10001:
+  tables with an index first, since the push adds indexes before it applies
+  the schema, then the rest, each group in name order, then each table a
+  write creates. A child component's id can so name another table in the
+  host's namespace, as on a deployment, and a system table's id gets the
+  binary's `from a system table` text. A deployment with table history
+  numbers its tables otherwise, which the kernel cannot see. The handles are
+  each backend's own format, so `v.function()` accepts the kernel's.
+- `validationDifferential.test.ts` on the local-backend lane is a seeded
+  differential: 40 validator shapes of every kind, nested objects, records,
+  arrays, unions of one to three members, optionals, literals and ids of root,
+  child and system tables, deployed on the binary from shape seed 1115. 2,000
+  values drawn from value seed 20261115, a quarter valid and the rest broken
+  in one or more places, go to each shape as its arguments and through an echo
+  as its held return, from a mutation or an action, 4,000 calls on each
+  backend, compared byte for byte. `CONFECT_VALIDATION_SEED` replays another
+  seed, and a failure prints it. It also checks the binary's table numbers,
+  decoded from its ids, against the kernel's model. `callbackArgs.test.ts`
+  keeps 48 fixed cases from both callers, among them each regression a review
+  or the differential found: a child's ids, system ids, a missing field before
+  a mismatch, literal messages and a literal's signed exponent. The kernel's
+  own argument check for registered functions keeps convex-test's wording;
+  only the sink's matches the binary.
