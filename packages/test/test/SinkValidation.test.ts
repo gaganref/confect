@@ -42,6 +42,18 @@ const childSchema = defineSchema({
   alpha: defineTable({}),
 });
 
+/**
+ * The reviewer's child: the host's two table names, with `others` staged-
+ * indexed, so a fresh push numbers `others` first and `documents` second.
+ */
+const aaaSchema = defineSchema({
+  documents: defineTable({}),
+  others: defineTable({ n: v.number() }).index("by_n", {
+    fields: ["n"],
+    staged: true,
+  }),
+});
+
 const childModules = {
   "_generated/server.ts": () => Promise.resolve({}),
 };
@@ -68,6 +80,9 @@ const backend = () => {
   t.registerComponent("child", childSchema, childModules, {
     sources: inlineSources(childModules),
   });
+  t.registerComponent("aaa", aaaSchema, childModules, {
+    sources: inlineSources(childModules),
+  });
   return t;
 };
 
@@ -79,6 +94,20 @@ const sent = (t: Backend, slot: string, doc: unknown) =>
       handle: `function://~sink;${slot}`,
       args: { doc },
     }),
+  );
+
+/**
+ * A document's id in each of `aaa`'s tables, minted on `t`.
+ */
+const mintedInAaa = (t: Backend) =>
+  Effect.promise(
+    () =>
+      t.runInComponent("aaa", (ctx: any) =>
+        Promise.all([
+          ctx.db.insert("documents", {}),
+          ctx.db.insert("others", { n: 0 }),
+        ]),
+      ) as Promise<[string, string]>,
   );
 
 const foundIn = (id: string, table: string, validator: string) =>
@@ -145,6 +174,39 @@ describe("a sink slot's id check", () => {
         const second = yield* sent(t, "documents", zeta);
         expect(first).toBe("returned");
         expect(second).toBe(foundIn(zeta, "others", "documents"));
+      }),
+  );
+
+  it.effect(
+    "reads a child's ids by their tables' numbers in the session that minted them, as the binary does",
+    () =>
+      Effect.gen(function* () {
+        const t = backend();
+        const [documents, others] = yield* mintedInAaa(t);
+        const asDocuments = yield* sent(t, "documents", documents);
+        const asOthers = yield* sent(t, "documents", others);
+        // `aaa` numbers `others` first: its `documents` id names the host's
+        // `others`, and its `others` id the host's `documents`.
+        expect(asDocuments).toBe(foundIn(documents, "others", "documents"));
+        expect(asOthers).toBe("returned");
+      }),
+  );
+
+  // A boundary the testing guide states: a kernel id carries its table's name
+  // but not its component, so outside the session or snapshot that minted it,
+  // a child's id names its own table in the root namespace. The binary refuses
+  // the child's `documents` id here and accepts its `others` id; the kernel
+  // does the reverse.
+  it.effect(
+    "reads a child's ids in another session by their own tables' names in the root namespace, unlike the binary",
+    () =>
+      Effect.gen(function* () {
+        const [documents, others] = yield* mintedInAaa(backend());
+        const fresh = backend();
+        const asDocuments = yield* sent(fresh, "documents", documents);
+        const asOthers = yield* sent(fresh, "documents", others);
+        expect(asDocuments).toBe("returned");
+        expect(asOthers).toBe(foundIn(others, "others", "documents"));
       }),
   );
 });

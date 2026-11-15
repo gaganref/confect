@@ -2345,7 +2345,10 @@ the deterministic operations in every phase.
   the world records each id's component when it mints it, rebuilt from the
   commit log and stored files on a restore. An id it did not mint, as from
   another session, names its own table in the validating namespace, as the
-  kernel's other id checks read it; the record never refuses an id. The world
+  kernel's other id checks read it; the record never refuses an id. A mint in a
+  transaction that rolls back, such as a child's insert whose mutation fails,
+  still leaves its record, which names the id's true component, so a later use
+  of that id resolves as the binary resolves it. The world
   numbers each component's user tables as a fresh push creates them, from
   10001: tables with an index of any kind first, staged db, text and vector
   indexes included, since the push adds every index `indexes_in_new_schema`
@@ -2355,11 +2358,18 @@ the deterministic operations in every phase.
   child component's id can so name another table in the host's namespace, as
   on a deployment, and a system table's id gets the binary's `from a system
   table` text.
-- Two limits, each pinned by a boundary test and stated in the testing guide:
+- Three limits, each pinned by a boundary test and stated in the testing guide:
   a deployment with dropped tables, or tables a later push added, numbers its
   tables otherwise than a fresh push, which the kernel cannot see
-  (`SinkValidation.test.ts`); and `v.function()` takes each side's own handle
-  format only, so each refuses the other's (`callbackArgs.test.ts`).
+  (`SinkValidation.test.ts`); `v.function()` takes each side's own handle
+  format only, so each refuses the other's (`callbackArgs.test.ts`); and a
+  child's id outside the session or restored snapshot that minted it names its
+  own table in the root namespace, since a kernel id carries no component. The
+  binary refuses a staged-indexed child's `documents` id against
+  `v.id("documents")` and accepts its `others` id, and the kernel does the
+  reverse there (`SinkValidation.test.ts`). Changing the id format would reach
+  snapshots, `normalizeId` and every id, and such an id names no document in
+  the fresh session.
 - `validationDifferential.test.ts` on the local-backend lane is a seeded
   differential: 40 validator shapes of every kind, nested objects, records,
   arrays, unions of one to three members, optionals, literals and ids of root,
