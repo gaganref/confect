@@ -97,7 +97,7 @@ const tokenize = (
   path: Path.Path,
 ): string[] | undefined => {
   const token =
-    /\s+|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[$A-Z_a-z][$\w]*|[{}()[\].,:;=]/y;
+    /\s+|\/\/[^\r\n]*|\/\*[\s\S]*?\*\/|"(?:\\.|[^"\\\r\n])*"|'(?:\\.|[^'\\\r\n])*'|[$A-Z_a-z][$\w]*|=>|[{}()[\].,:;=<>]/y;
   const tokens: string[] = [];
   while (token.lastIndex < source.length) {
     const match = token.exec(source);
@@ -177,22 +177,38 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
         legacyRouter(template),
       ]),
     ],
-    [
-      "crons.ts",
-      [
-        yield* templates.crons({
-          cronsImportPath: yield* importFromConvex("crons.ts"),
-        }),
-      ],
-    ],
   ]);
   const written2 = yield* SectionFiles.written;
   // The declared HTTP router first imports each file a manifest section wrote.
-  const sectionImports = new Set(
-    Array.map(written2, (file) =>
+  const sectionImports = new Map(
+    Array.map(written2, (file) => [
       quote(path.join(confect, "_generated", path.basename(file, ".ts"))),
-    ),
+      file,
+    ]),
   );
+  // This check only keeps codegen from overwriting hand-written code, and later
+  // in the same run codegen writes `convex/crons.ts` with exactly this run's
+  // wrappers. So the crons template holds nothing to lose when it wraps
+  // distinct files a section wrote, in any order, even ones that no longer
+  // wrap. The same-run rewrite holds for declared backends; an undeclared
+  // backend without `confect/crons.ts` keeps a leftover entry, as before.
+  const cronsShapes = Effect.fnUntraced(function* (
+    tokens: ReadonlyArray<string>,
+  ) {
+    const wrapped = Array.flatMap(tokens, (token, index) => {
+      const file = sectionImports.get(token);
+      return tokens[index - 1] === "from" && file !== undefined ? [file] : [];
+    });
+    if (new Set(wrapped).size !== wrapped.length) return [];
+    return [
+      yield* templates.crons({
+        cronsImportPath: yield* importFromConvex("crons.ts"),
+        sectionImportPaths: yield* Effect.forEach(wrapped, (file) =>
+          importFromConvex(`_generated/${file}`),
+        ),
+      }),
+    ];
+  });
   const withoutSectionImports = (
     tokens: ReadonlyArray<string>,
   ): ReadonlyArray<string> =>
@@ -207,7 +223,10 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
       continue;
     const tokens = tokenize(contents, absolute, path);
     if (tokens !== undefined) {
-      const shapes = optional.get(relative);
+      const shapes =
+        relative === "crons.ts"
+          ? yield* cronsShapes(tokens)
+          : optional.get(relative);
       if (
         shapes !== undefined &&
         Array.some(shapes, (template) =>

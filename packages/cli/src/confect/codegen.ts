@@ -251,7 +251,11 @@ const runCodegen = Effect.gen(function* () {
           onSome: (app) => syncDeclaredHttp(app, sections.files),
         }),
       ),
-      logGenerated(generateCrons),
+      logGenerated(
+        Option.isNone(declared)
+          ? generateCrons()
+          : syncDeclaredCrons(sections.crons),
+      ),
       Option.isNone(declared)
         ? logGenerated(generateAuthConfig)
         : Effect.succeedNone,
@@ -368,6 +372,9 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
         );
         if (sections.changed && Option.isSome(declared))
           yield* logGenerated(syncDeclaredHttp(declared.value, sections.files));
+        // Which sections wrap crons can change while the section files stay.
+        if (Option.isSome(declared))
+          yield* logGenerated(generateCrons(sections.crons));
         yield* SectionFiles.removeUnclaimed(sections.files);
         yield* FunctionModule.applyFunctionPlan(
           GenerationSnapshot.diff(snapshot, next),
@@ -1125,6 +1132,26 @@ const provisionalComponents = Effect.gen(function* () {
   if (yield* fs.exists(registry)) return;
   const components2 = yield* templates.components({ components: [] });
   yield* writeFileStringAndLog(registry, components2);
+});
+
+/**
+ * Write a declared backend's `convex/crons.ts`, or remove it once
+ * `confect/crons.ts` is gone. Its edits run full generation, so
+ * `assertOwnedEntrypoints` has proved an existing file is codegen's.
+ */
+const syncDeclaredCrons = Effect.fnUntraced(function* (
+  sectionFiles: ReadonlyArray<string>,
+) {
+  const written = yield* generateCrons(sectionFiles);
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const convexDirectory = yield* ConvexDirectory.get;
+  const convexCrons = path.join(convexDirectory, "crons.ts");
+  if (Option.isNone(written) && (yield* fs.exists(convexCrons))) {
+    yield* fs.remove(convexCrons);
+    yield* logFileRemoved(convexCrons);
+  }
+  return written;
 });
 
 const logGenerated = <E, R>(
