@@ -313,7 +313,9 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
               options.secrets ?? {},
             ),
           ),
-          ...(options.sources === undefined ? {} : { sources: options.sources }),
+          ...(options.sources === undefined
+            ? {}
+            : { sources: options.sources }),
           ...(options.componentRuntimes === undefined
             ? {}
             : { componentRuntimes: options.componentRuntimes }),
