@@ -283,6 +283,27 @@ const convexTestOptions = (
 };
 
 /**
+ * `register`, with the generated registry's sources for each component a kit
+ * registers without its own. A runtime the test declares for the component
+ * takes their place, as it would for a kit that gave none.
+ */
+const withComponentSources =
+  (register: RegisterComponent, options: LayerOptions): RegisterComponent =>
+  (componentPath, schema, modules, registered) => {
+    const sources =
+      registered?.sources !== undefined ||
+      options.componentRuntimes?.[componentPath] !== undefined
+        ? undefined
+        : options.componentSources?.[componentPath];
+    register(
+      componentPath,
+      schema,
+      modules,
+      sources === undefined ? registered : { ...registered, sources },
+    );
+  };
+
+/**
  * Open one backend: the convex-test world or the kernel shim the target names,
  * with every kit the options register. `raw` is the backend the service runs
  * on, for a caller that must reach a component path.
@@ -319,9 +340,12 @@ export const open = <DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
         })
       : convexTest(convexTestOptions(convexSchemaDefinition, modules, options));
   // convex-test takes three arguments and ignores the options. The kernel
-  // reads `standing`.
-  const registerComponent =
-    testConvex.registerComponent as unknown as RegisterComponent;
+  // reads `standing`, and a packaged kit's registration gains the sources
+  // codegen read from its package.
+  const registerComponent = withComponentSources(
+    testConvex.registerComponent as unknown as RegisterComponent,
+    options,
+  );
   const mountedHttp = MountedHttp.make(options.httpMounts ?? [], (...args) =>
     registerComponent(...args),
   );

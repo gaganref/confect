@@ -4,6 +4,7 @@ import { assert, expect, layer } from "@effect/vitest";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import { generateComponents } from "@confect/cli/confect/codegen";
 import { ConfectDirectory } from "@confect/cli/ConfectDirectory";
@@ -59,7 +60,7 @@ layer(TestLayer)("discoverInstalledComponents", (it) => {
           "convex/convex.config.ts",
         );
 
-        expect(components).toEqual([
+        expect(components).toMatchObject([
           {
             name: "secondPool",
             componentDefinitionPath: "@convex-dev/workpool",
@@ -110,9 +111,21 @@ layer(TestLayer)("discoverInstalledComponents", (it) => {
         );
 
         // The workpool nested inside `test-nested` mounts on that component,
-        // not on the app, so it isn't listed.
-        expect(components).toEqual([
+        // not on the app, so it isn't listed; its definition records it.
+        expect(components).toMatchObject([
           { name: "nested", componentDefinitionPath: "test-nested" },
+        ]);
+        const [nested] = components;
+        assert(nested !== undefined);
+        const imported = Option.getOrUndefined(nested.imported);
+        expect(imported?.import.specifier).toBe("test-nested/convex.config");
+        expect(imported?.mounts).toMatchObject([
+          {
+            name: "workpool",
+            definition: {
+              import: { specifier: "@convex-dev/workpool/convex.config" },
+            },
+          },
         ]);
       }),
   );

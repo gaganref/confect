@@ -677,6 +677,65 @@ it.effect(
 );
 
 it.effect(
+  "on the kernel target, a generated registry's component sources reach a kit that registers without its own, unless the layer declares the component's runtime",
+  () =>
+    Effect.gen(function* () {
+      // A package's kit, which registers its modules without their sources.
+      const kit = (sources?: Record<string, () => Promise<string>>) => ({
+        register: (
+          t: { readonly registerComponent: TestConfect.RegisterComponent },
+          name: string,
+        ) =>
+          t.registerComponent(
+            name,
+            defineSchema({}),
+            runtimeModules,
+            sources === undefined ? undefined : { sources },
+          ),
+      });
+      const generated = (
+        componentSources: TestConfect.ComponentSources,
+        kitSources?: Record<string, () => Promise<string>>,
+      ) => ({
+        ...runtimeRegistry,
+        httpMounts: [],
+        sources: runtimeSources,
+        components: { kit: kit(kitSources) },
+        componentSources,
+      });
+      const ran = yield* surfaceOn(
+        TestConfect.layer(generated({ kit: runtimeSources }), {
+          target: "kernel",
+        }),
+      );
+      // Sources that name none of the kit's modules show the registry's are
+      // the ones the kernel read.
+      const refused = yield* surfaceOn(
+        TestConfect.layer(generated({ kit: {} }), { target: "kernel" }),
+      ).pipe(refusalOf);
+      const declared = yield* surfaceOn(
+        TestConfect.layer(generated({ kit: {} }), {
+          target: "kernel",
+          componentRuntimes: { kit: "node" },
+        }),
+      );
+      const kitOwn = yield* surfaceOn(
+        TestConfect.layer(generated({ kit: {} }, runtimeSources), {
+          target: "kernel",
+        }),
+      );
+      expect(ran).toEqual(node);
+      expect(refused).toMatchObject({
+        _tag: "ModuleRuntime",
+        reason: "missingSource",
+        componentPath: "kit",
+      });
+      expect(declared).toEqual(node);
+      expect(kitOwn).toEqual(node);
+    }),
+);
+
+it.effect(
   "on the kernel target, a component registered without sources is refused, naming it, until the layer declares its runtime or the kit passes its sources",
   () =>
     Effect.gen(function* () {

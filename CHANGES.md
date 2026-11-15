@@ -551,7 +551,13 @@ secret policy to `registerComponent`, and a packaged Confect component whose
 kit exports none fails `TestKitSecretsMissingError`, or `TestKitExportsUnknownError`
 when codegen cannot list the kit's exports. The registry, and each local kit,
 now carry each module's `sources`, read from disk, which `TestBackend.layer`
-hands the kernel for its `"use node"` check. The registry now lists
+hands the kernel for its `"use node"` check. Its `componentSources` carries
+the sources of each packaged mount and every component its definition mounts,
+read from the package's installed `convex.config` directory and found at test
+time as Node's `require` finds the package; a kit that registers without
+sources gets them, and a package codegen cannot follow fails
+`PackagedComponentUnreadableError`. `TestBackend.layer` takes
+`componentRuntimes` to declare a component's runtime in their place. The registry now lists
 only the modules a push registers, and a package mount with no test kit fails
 `MissingTestKitError`; a nested component's own declaration names its mounts'
 kits whether or not the app can import `@confect/test`. Each mount of a local

@@ -291,7 +291,22 @@ export class TestKitExportsUnknownError extends Schema.TaggedError<
   kit: Schema.String,
 }) {}
 
+/**
+ * A packaged component whose installed modules the generated test registry
+ * could not read from where it runs, so the test kernel could not tell which of
+ * its actions Convex runs in Node.
+ */
+export class PackagedComponentUnreadableError extends Schema.TaggedError<
+  PackagedComponentUnreadableError,
+  { readonly brand: unique symbol }
+>()("PackagedComponentUnreadableError", {
+  mount: Schema.String,
+  component: Schema.String,
+  reason: Schema.String,
+}) {}
+
 export const CodegenError = Schema.Union([
+  PackagedComponentUnreadableError,
   TestKitExportsUnknownError,
   TestKitSecretsMissingError,
   MissingTestKitError,
@@ -595,6 +610,11 @@ export const renderCodegenError = (error: CodegenError): string => {
   if (error._tag === "TestKitExportsUnknownError") {
     return singleLine(
       `The mount "${error.mount}" installs a packaged Confect component whose test kit "${error.kit}" codegen cannot read without running it, as with a CommonJS kit or one that re-exports with \`export *\`. So codegen cannot see whether it exports the component's \`secrets\`. Make the kit an ES module that exports \`secrets\` by name, \`{}\` when the component holds none.`,
+    );
+  }
+  if (error._tag === "PackagedComponentUnreadableError") {
+    return singleLine(
+      `The mount "${error.mount}" installs the component package "${error.component}", whose modules the generated test registry cannot read: ${error.reason} The test kernel reads each module's "use node" directive, as Convex's bundler does, to run its plain actions in Node or in Convex's isolate. Make the package's \`convex.config\` resolve through Node's require from \`confect/_generated/testing.ts\`.`,
     );
   }
   if (error._tag === "TestKitSecretsMissingError") {

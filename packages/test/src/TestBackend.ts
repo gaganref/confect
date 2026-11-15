@@ -15,6 +15,7 @@ import { open, registerKit } from "./internal/Session.js";
 import {
   TestConfect,
   type ComponentKit,
+  type ComponentRuntimes,
   type DeclaredApp,
   type RegisterComponent,
 } from "./TestConfect.js";
@@ -188,6 +189,13 @@ export interface LayerOptions<
   C extends ReadonlyArray<Setting>,
 > {
   readonly config: Config<C>;
+  /**
+   * The runtime each listed component's plain Convex actions run in, by
+   * component path, in place of the `"use node"` directives the registry reads
+   * from its modules. For a component whose installed modules are not the ones
+   * its kit registers, such as a kit that patches them.
+   */
+  readonly componentRuntimes?: ComponentRuntimes;
   /**
    * Writes in one private mutation, after every mount's `init`.
    */
@@ -367,7 +375,7 @@ export const make = <
 ): GeneratedBackend<F, T, P, S, C, L, B> => ({
   ...declaration,
   app,
-  layer: ({ config, seed }) => {
+  layer: ({ config, seed, componentRuntimes }) => {
     const service = TestConfect<S>();
     return Layer.effectContext(
       Effect.gen(function* () {
@@ -385,9 +393,14 @@ export const make = <
           httpMounts: app.httpMounts,
           ...(app.secrets === undefined ? {} : { secrets: app.secrets }),
           ...(app.sources === undefined ? {} : { sources: app.sources }),
-          ...(app.componentRuntimes === undefined
+          ...((componentRuntimes ?? app.componentRuntimes) === undefined
             ? {}
-            : { componentRuntimes: app.componentRuntimes }),
+            : {
+                componentRuntimes: componentRuntimes ?? app.componentRuntimes,
+              }),
+          ...(app.componentSources === undefined
+            ? {}
+            : { componentSources: app.componentSources }),
           register: (registerComponent) => {
             const recording = record(registerComponent);
             for (const [name, kit] of Rec.toEntries(app.components)) {

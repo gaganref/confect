@@ -1235,6 +1235,49 @@ const moduleSource = (path: string) => (): Promise<string> =>
       ),
   );`;
 
+/**
+ * The reader generated `testing.ts` gives a packaged component's modules. It
+ * finds the component's directory as Node's `require` does from this file, one
+ * `convex.config` import after another, so the registry names no installed
+ * path. Like {@link moduleSource}, it names no Node type.
+ */
+const packageSources = `// Each module's text in an installed component package, found from here as Node finds the package, for the test kernel's "use node" check.
+type PackageReader = {
+  readonly createRequire: (from: string) => { readonly resolve: (specifier: string) => string };
+  readonly dirname: (file: string) => string;
+  readonly join: (directory: string, file: string) => string;
+  readonly readFile: (file: string, encoding: "utf8") => Promise<string>;
+};
+const packageReader = (): Promise<PackageReader> =>
+  Promise.all([
+    import(/* @vite-ignore */ String("node:module")),
+    import(/* @vite-ignore */ String("node:path")),
+    import(/* @vite-ignore */ String("node:fs/promises")),
+  ]).then(([module, path, fs]: ReadonlyArray<any>) => ({ ...module, ...path, ...fs }) as PackageReader);
+const packageSources = (chain: ReadonlyArray<string>, files: ReadonlyArray<string>) => ({
+  "_generated/testing.ts": () => Promise.resolve(""),
+  ...Object.fromEntries(
+    files.map((file) => [
+      file,
+      (): Promise<string> =>
+        packageReader().then((node) =>
+          node.readFile(
+            node.join(
+              node.dirname(
+                chain.reduce(
+                  (from, specifier) => node.createRequire(from).resolve(specifier),
+                  (import.meta as unknown as { readonly url: string }).url,
+                ),
+              ),
+              file,
+            ),
+            "utf8",
+          ),
+        ),
+    ]),
+  ),
+});`;
+
 const generateTesting = Effect.fnUntraced(function* (
   app: App.Any,
   input: TestingInput,
@@ -1310,7 +1353,87 @@ const generateTesting = Effect.fnUntraced(function* (
     "mountModule",
     "mountModules",
     "moduleSource",
+    "PackageReader",
+    "packageReader",
+    "packageSources",
   ]);
+  const componentSources: Array<string> = [];
+  const fromProject = (file: string) =>
+    Array.join(
+      pipe(path.relative(projectRoot, file), String.split(path.sep)),
+      "/",
+    );
+  // A packaged mount's modules, and those of each component its definition
+  // mounts, read where Convex's bundler reads them: the directory of the
+  // `convex.config` the mount imports. The registry finds them at test time
+  // through `chain`, so codegen refuses here what the reader could not find.
+  const packaged = Effect.fnUntraced(function* (
+    name: string,
+    component: string,
+    chain: ReadonlyArray<string>,
+    definition: string,
+    mounted: ConvexConfig.ImportedDefinition["mounts"],
+  ): Effect.fn.Return<
+    void,
+    CodegenError.PackagedComponentUnreadableError,
+    FileSystem.FileSystem | Path.Path
+  > {
+    const unreadable = (reason: string) =>
+      CodegenError.PackagedComponentUnreadableError.make({
+        mount: name,
+        component,
+        reason,
+      });
+    let from = path.join(generated, "testing.ts");
+    let last = "";
+    for (const specifier of chain) {
+      last = specifier;
+      const next = Bundler.resolveRequire(specifier, from);
+      if (Option.isNone(next)) {
+        return yield* unreadable(
+          `Node's require finds no ${quote(specifier)} from ${quote(fromProject(from))}.`,
+        );
+      }
+      from = next.value;
+    }
+    const real = (file: string) =>
+      fs.realPath(file).pipe(Effect.orElseSucceed(() => file));
+    if ((yield* real(from)) !== (yield* real(definition))) {
+      return yield* unreadable(
+        `Node's require finds ${quote(last)} at ${quote(fromProject(from))}, but Convex bundles ${quote(fromProject(definition))}.`,
+      );
+    }
+    const directory = path.dirname(definition);
+    const files = [
+      ...(yield* FunctionModule.registeredModules(directory).pipe(
+        Effect.mapError((error) => unreadable(`${error.message}.`)),
+      )),
+    ].sort();
+    for (const file of files) {
+      yield* fs
+        .readFileString(path.join(directory, file))
+        .pipe(Effect.mapError((error) => unreadable(`${error.message}.`)));
+    }
+    if (!declarations.includes(packageSources))
+      declarations.push(packageSources);
+    componentSources.push(
+      `${quote(name)}: packageSources([${Array.join(Array.map(chain, quote), ", ")}], [${Array.join(
+        Array.map(files, (file) =>
+          quote(Array.join(pipe(file, String.split(path.sep)), "/")),
+        ),
+        ", ",
+      )}]),`,
+    );
+    for (const child of mounted) {
+      yield* packaged(
+        `${name}/${child.name}`,
+        child.definition.import.specifier,
+        [...chain, child.definition.import.specifier],
+        child.definition.import.path,
+        child.definition.mounts,
+      );
+    }
+  });
   const components: Array<string> = [];
   const httpMounts: Array<string> = [];
   const kits = new Map<string, string>();
@@ -1327,6 +1450,7 @@ const generateTesting = Effect.fnUntraced(function* (
     | CodegenError.InvalidConvexConfigError
     | CodegenError.InvalidDeclarationError
     | CodegenError.MissingTestKitError
+    | CodegenError.PackagedComponentUnreadableError
     | CodegenError.TestKitSecretsMissingError
     | CodegenError.TestKitExportsUnknownError,
     FileSystem.FileSystem | Path.Path
@@ -1373,23 +1497,26 @@ const generateTesting = Effect.fnUntraced(function* (
           Option.isSome(Bundler.resolveModule(entry, config)),
         ),
       );
-      const resolved = fromPackage
+      const definitionSpecifier = `${component.componentDefinitionPath}/convex.config`;
+      const definition = fromPackage
         ? yield* ConvexConfig.resolveDefinition(
-            `${component.componentDefinitionPath}/convex.config`,
+            definitionSpecifier,
             config,
             path,
           ).pipe(
             Effect.fromOption,
-            Effect.mapBoth({
-              onFailure: () =>
-                CodegenError.InvalidConvexConfigError.make({
-                  configPath: relative(config),
-                  reason: `Cannot resolve component ${component.componentDefinitionPath} for testing.`,
-                }),
-              onSuccess: (definition) => path.dirname(definition),
-            }),
+            Effect.mapError(() =>
+              CodegenError.InvalidConvexConfigError.make({
+                configPath: relative(config),
+                reason: `Cannot resolve component ${component.componentDefinitionPath} for testing.`,
+              }),
+            ),
           )
-        : component.componentDefinitionPath;
+        : undefined;
+      const resolved =
+        definition === undefined
+          ? component.componentDefinitionPath
+          : path.dirname(definition);
       const localPrefix =
         prefix === "" ? mount?.httpPrefix : component.httpPrefix;
       const httpPrefix =
@@ -1477,6 +1604,22 @@ const generateTesting = Effect.fnUntraced(function* (
             kit: kitEntry,
           });
       }
+      if (definition !== undefined) {
+        if (Option.isNone(component.imported)) {
+          return yield* CodegenError.PackagedComponentUnreadableError.make({
+            mount: name,
+            component: component.componentDefinitionPath,
+            reason: `codegen cannot list the components its definition mounts from ${relative(config)}.`,
+          });
+        }
+        yield* packaged(
+          name,
+          component.componentDefinitionPath,
+          [definitionSpecifier],
+          definition,
+          component.imported.value.mounts,
+        );
+      }
       // A push runs a parent's `init` before the components it mounts.
       const local = path.join(path.dirname(resolved), "confect");
       mounts.push({
@@ -1525,7 +1668,11 @@ const generateTesting = Effect.fnUntraced(function* (
   const policy =
     secrets.policy === undefined ? "" : `, secrets: ${secrets.policy}`;
   const moduleSources = yield* sourceMap(convexDirectory);
-  const registry = `{ httpMounts: [${Array.join(httpMounts, ",")}], schema, convexSchema, modules: ${modules}, sources: ${moduleSources}, components: {${Array.join(components, "\n")}}${policy} }`;
+  const packagedSources =
+    componentSources.length === 0
+      ? ""
+      : `, componentSources: {${Array.join(componentSources, "\n")}}`;
+  const registry = `{ httpMounts: [${Array.join(httpMounts, ",")}], schema, convexSchema, modules: ${modules}, sources: ${moduleSources}, components: {${Array.join(components, "\n")}}${packagedSources}${policy} }`;
   yield* writeFileStringAndLog(
     path.join(generated, "testing.ts"),
     Array.join(

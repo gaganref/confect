@@ -38,6 +38,25 @@ export interface InstalledComponent {
    * component).
    */
   readonly componentDefinitionPath: string;
+  /**
+   * How the config imported the definition, and the definitions it mounts in
+   * turn. None when the definition was not imported through
+   * {@link componentConfigPlugin}, or Convex no longer keeps its mounts where
+   * {@link importedDefinition} reads them.
+   */
+  readonly imported: Option.Option<ImportedDefinition>;
+}
+
+/**
+ * A definition a config imported, as {@link componentConfigPlugin} recorded it,
+ * and each definition it mounts, by mount name.
+ */
+export interface ImportedDefinition {
+  readonly import: ComponentImport;
+  readonly mounts: ReadonlyArray<{
+    readonly name: string;
+    readonly definition: ImportedDefinition;
+  }>;
 }
 
 const COMPONENT_CONFIG_NAMESPACE = "confect-component-config";
@@ -68,6 +87,47 @@ export const componentImportOf = (
     ? Option.some({ specifier: recorded.specifier, path: recorded.path })
     : Option.none();
 };
+
+/**
+ * The mounts `use` recorded on a definition, as `[name, definition, ...]`.
+ * Convex's own analysis export reads them there, and no public API lists a
+ * mounted definition itself.
+ */
+const mountsOf = (definition: unknown): Option.Option<ReadonlyArray<unknown>> =>
+  Predicate.hasProperty(definition, "_childComponents") &&
+  Array.isArray(definition._childComponents)
+    ? Option.some(definition._childComponents)
+    : Option.none();
+
+const mountedDefinitions = (
+  definition: unknown,
+): Option.Option<ImportedDefinition["mounts"]> =>
+  Option.flatMap(mountsOf(definition), (mounts) =>
+    Option.all(
+      Array.map(mounts, (mount) =>
+        Array.isArray(mount) && Predicate.isString(mount[0])
+          ? Option.map(importedDefinition(mount[1]), (child) => ({
+              name: mount[0] as string,
+              definition: child,
+            }))
+          : Option.none(),
+      ),
+    ),
+  );
+
+/**
+ * How a definition {@link componentConfigPlugin} wrapped was imported, and the
+ * definitions it mounts, each wrapped as its import was.
+ */
+export const importedDefinition = (
+  definition: unknown,
+): Option.Option<ImportedDefinition> =>
+  Option.flatMap(componentImportOf(definition), (recorded) =>
+    Option.map(mountedDefinitions(definition), (mounts) => ({
+      import: recorded,
+      mounts,
+    })),
+  );
 
 /**
  * Matches the trailing `convex.config` segment of a component-definition import
@@ -313,6 +373,15 @@ export const discoverInstalledComponents = Effect.fn(
       return {
         name,
         componentDefinitionPath,
+        imported: Option.flatMap(mountsOf(app), (mounts) =>
+          Option.flatMap(
+            Array.findFirst(
+              mounts,
+              (mount) => Array.isArray(mount) && mount[0] === name,
+            ),
+            (mount) => importedDefinition((mount as ReadonlyArray<unknown>)[1]),
+          ),
+        ),
         ...(httpPrefix === undefined
           ? {}
           : { httpPrefix: pipe(httpPrefix, String.replace(/\/$/, "")) }),

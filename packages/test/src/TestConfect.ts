@@ -160,7 +160,19 @@ export type LayerOptions = TargetOptions &
      * The secret policy, read by the kernel target only.
      */
     readonly secrets?: SecretPolicy;
+    /**
+     * The generated registry's {@link Registry.componentSources}.
+     */
+    readonly componentSources?: ComponentSources;
   };
+
+/**
+ * Each packaged component's module sources, by the path its kit registers it
+ * at.
+ */
+export type ComponentSources = Readonly<
+  Record<string, Record<string, () => Promise<string>>>
+>;
 
 export type { DeploymentJwk, DeploymentJwks } from "convex-test";
 
@@ -274,6 +286,14 @@ export type Registry<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> = {
    */
   readonly sources?: Record<string, () => Promise<string>>;
   readonly componentRuntimes?: ComponentRuntimes;
+  /**
+   * Each packaged mount's module sources, and those of each component its
+   * definition mounts, read from the installed package. A package's test kit
+   * registers its modules without them, so the kernel adds them to the kit's
+   * registration at that path. A runtime in `componentRuntimes` for the path
+   * takes their place.
+   */
+  readonly componentSources?: ComponentSources;
 };
 
 /**
@@ -394,15 +414,18 @@ const secretsOf = (registry: {
   registry.secrets === undefined ? {} : { secrets: registry.secrets };
 
 const sourcesOf = (
-  registry: SourceOptions,
+  registry: SourceOptions & Pick<LayerOptions, "componentSources">,
   options: SourceOptions | undefined,
-): SourceOptions => {
+): Pick<LayerOptions, "sources" | "componentRuntimes" | "componentSources"> => {
   const sources = options?.sources ?? registry.sources;
   const componentRuntimes =
     options?.componentRuntimes ?? registry.componentRuntimes;
   return {
     ...(sources === undefined ? {} : { sources }),
     ...(componentRuntimes === undefined ? {} : { componentRuntimes }),
+    ...(registry.componentSources === undefined
+      ? {}
+      : { componentSources: registry.componentSources }),
   };
 };
 
