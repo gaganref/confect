@@ -13,39 +13,29 @@ import * as Schema from "effect/Schema";
 import registry from "../../../tools/local-backend/fixtures/confect/_generated/testing";
 import refs from "../../../tools/local-backend/fixtures/confect/_generated/refs";
 
-// The fixture's module sources, which its plain Convex actions need on the
-// kernel, until row 8's generated registry supplies them.
-const sources = import.meta.glob<string>(
-  "../../../tools/local-backend/fixtures/convex/**/*.ts",
-  { query: "?raw", import: "default" },
-);
-
-const backend = TestBackend.make(
-  { ...registry, sources },
-  {
-    refs: {},
-    groups: {},
-    ports: {},
-    laws: [],
-    obligations: [],
-    manifestDigest: "sha256:fixture",
-    mounts: [
-      {
-        path: "first",
-        kit: "local",
-        env: { COMPONENT_REQUIRED: { value: "first-required" } },
-        required: ["COMPONENT_REQUIRED"],
-      },
-      {
-        path: "second",
-        kit: "local",
-        env: { COMPONENT_REQUIRED: { value: "second-required" } },
-        required: ["COMPONENT_REQUIRED"],
-      },
-    ],
-    settings: [],
-  },
-);
+const backend = TestBackend.make(registry, {
+  refs: {},
+  groups: {},
+  ports: {},
+  laws: [],
+  obligations: [],
+  manifestDigest: "sha256:fixture",
+  mounts: [
+    {
+      path: "first",
+      kit: "local",
+      env: { COMPONENT_REQUIRED: { value: "first-required" } },
+      required: ["COMPONENT_REQUIRED"],
+    },
+    {
+      path: "second",
+      kit: "local",
+      env: { COMPONENT_REQUIRED: { value: "second-required" } },
+      required: ["COMPONENT_REQUIRED"],
+    },
+  ],
+  settings: [],
+});
 
 const components = componentsGeneric() as unknown as Record<
   "left" | "right",

@@ -5,6 +5,18 @@ import firstSchema from "../../components/counter/convex/schema.js";
 import leftSchema from "../../components/parent/convex/schema.js";
 import left_deepSchema from "../../components/middle/convex/schema.js";
 import left_deep_childSchema from "../../components/inner/convex/schema.js";
+// Each module's text, read from disk where the test runs, for the test kernel's "use node" check.
+const moduleSource = (path: string) => (): Promise<string> =>
+  import(/* @vite-ignore */ String("node:fs/promises")).then(
+    (fs: { readonly readFile: (file: unknown, encoding: "utf8") => Promise<string> }) =>
+      fs.readFile(
+        new (globalThis as unknown as { readonly URL: new (input: string, base: string) => unknown }).URL(
+          path,
+          (import.meta as unknown as { readonly url: string }).url,
+        ),
+        "utf8",
+      ),
+  );
 // Each mount loads its own copy of its component's modules, as a deployment does.
 const mountModules = new Map<string, string>();
 const mountModule =
@@ -34,18 +46,36 @@ const firstKit = (mount: string) => ({ schema: firstSchema, modules: { "_generat
 "pagination.ts": mountModule(mount, "../../components/counter/convex/pagination.ts", () => import("../../components/counter/convex/pagination.js")),
 "reserved.ts": mountModule(mount, "../../components/counter/convex/reserved.ts", () => import("../../components/counter/convex/reserved.js")),
 "schema.ts": mountModule(mount, "../../components/counter/convex/schema.ts", () => import("../../components/counter/convex/schema.js")),
+}, sources: { "_generated/testing.ts": () => Promise.resolve(""),
+"authoring.ts": moduleSource("../../components/counter/convex/authoring.ts"),
+"counter.ts": moduleSource("../../components/counter/convex/counter.ts"),
+"crons.ts": moduleSource("../../components/counter/convex/crons.ts"),
+"deliveries.ts": moduleSource("../../components/counter/convex/deliveries.ts"),
+"http.ts": moduleSource("../../components/counter/convex/http.ts"),
+"pagination.ts": moduleSource("../../components/counter/convex/pagination.ts"),
+"reserved.ts": moduleSource("../../components/counter/convex/reserved.ts"),
+"schema.ts": moduleSource("../../components/counter/convex/schema.ts"),
 } });
 const leftKit = (mount: string) => ({ schema: leftSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "parent.ts": mountModule(mount, "../../components/parent/convex/parent.ts", () => import("../../components/parent/convex/parent.js")),
 "schema.ts": mountModule(mount, "../../components/parent/convex/schema.ts", () => import("../../components/parent/convex/schema.js")),
+}, sources: { "_generated/testing.ts": () => Promise.resolve(""),
+"parent.ts": moduleSource("../../components/parent/convex/parent.ts"),
+"schema.ts": moduleSource("../../components/parent/convex/schema.ts"),
 } });
 const left_deepKit = (mount: string) => ({ schema: left_deepSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "parent.ts": mountModule(mount, "../../components/middle/convex/parent.ts", () => import("../../components/middle/convex/parent.js")),
 "schema.ts": mountModule(mount, "../../components/middle/convex/schema.ts", () => import("../../components/middle/convex/schema.js")),
+}, sources: { "_generated/testing.ts": () => Promise.resolve(""),
+"parent.ts": moduleSource("../../components/middle/convex/parent.ts"),
+"schema.ts": moduleSource("../../components/middle/convex/schema.ts"),
 } });
 const left_deep_childKit = (mount: string) => ({ schema: left_deep_childSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "parent.ts": mountModule(mount, "../../components/inner/convex/parent.ts", () => import("../../components/inner/convex/parent.js")),
 "schema.ts": mountModule(mount, "../../components/inner/convex/schema.ts", () => import("../../components/inner/convex/schema.js")),
+}, sources: { "_generated/testing.ts": () => Promise.resolve(""),
+"parent.ts": moduleSource("../../components/inner/convex/parent.ts"),
+"schema.ts": moduleSource("../../components/inner/convex/schema.ts"),
 } });
 export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{ componentPath: "left/child", httpPrefix: "/left/child" },{ componentPath: "left/deep/child/child", httpPrefix: "/left/deep/child/child" },{ componentPath: "right/child", httpPrefix: "/right/child" },{ componentPath: "right/deep/child/child", httpPrefix: "/right/deep/child/child" },{ componentPath: "second", httpPrefix: "/second" }], schema, convexSchema, modules: { "_generated/testing.ts": () => Promise.resolve({}),
 "clients.ts": () => import("../../convex/clients.js"),
@@ -75,6 +105,34 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "ioBansNode.ts": () => import("../../convex/ioBansNode.js"),
 "metadataNode.ts": () => import("../../convex/metadataNode.js"),
 "schema.ts": () => import("../../convex/schema.js"),
+}, sources: { "_generated/testing.ts": () => Promise.resolve(""),
+"clients.ts": moduleSource("../../convex/clients.ts"),
+"egressNode.ts": moduleSource("../../convex/egressNode.ts"),
+"groups/authentication.ts": moduleSource("../../convex/groups/authentication.ts"),
+"groups/cacheControl.ts": moduleSource("../../convex/groups/cacheControl.ts"),
+"groups/cacheStubbed.ts": moduleSource("../../convex/groups/cacheStubbed.ts"),
+"groups/callbacks.ts": moduleSource("../../convex/groups/callbacks.ts"),
+"groups/commitTs.ts": moduleSource("../../convex/groups/commitTs.ts"),
+"groups/componentAuthoring.ts": moduleSource("../../convex/groups/componentAuthoring.ts"),
+"groups/componentIdentity.ts": moduleSource("../../convex/groups/componentIdentity.ts"),
+"groups/components.ts": moduleSource("../../convex/groups/components.ts"),
+"groups/contextReuse.ts": moduleSource("../../convex/groups/contextReuse.ts"),
+"groups/documentIds.ts": moduleSource("../../convex/groups/documentIds.ts"),
+"groups/ioBans.ts": moduleSource("../../convex/groups/ioBans.ts"),
+"groups/metadata.ts": moduleSource("../../convex/groups/metadata.ts"),
+"groups/mounts.ts": moduleSource("../../convex/groups/mounts.ts"),
+"groups/nativeComponents.ts": moduleSource("../../convex/groups/nativeComponents.ts"),
+"groups/pagination.ts": moduleSource("../../convex/groups/pagination.ts"),
+"groups/randomness.ts": moduleSource("../../convex/groups/randomness.ts"),
+"groups/requests.ts": moduleSource("../../convex/groups/requests.ts"),
+"groups/reserved.ts": moduleSource("../../convex/groups/reserved.ts"),
+"groups/scheduling.ts": moduleSource("../../convex/groups/scheduling.ts"),
+"groups/storage.ts": moduleSource("../../convex/groups/storage.ts"),
+"groups/transactions.ts": moduleSource("../../convex/groups/transactions.ts"),
+"http.ts": moduleSource("../../convex/http.ts"),
+"ioBansNode.ts": moduleSource("../../convex/ioBansNode.ts"),
+"metadataNode.ts": moduleSource("../../convex/metadataNode.ts"),
+"schema.ts": moduleSource("../../convex/schema.ts"),
 }, components: {"first": firstKit("first"),
 "left": leftKit("left"),
 "left/child": firstKit("left/child"),

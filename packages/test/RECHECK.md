@@ -2272,6 +2272,9 @@ the deterministic operations in every phase.
   the app's folder and one three imports deep, and `MountModules.test.ts`
   checks the same on the kernel, with a helper two components share. Without
   the plugin, a second mount of one component refuses to load.
+  Each mount's copy loads under row 6's load-phase draws too, as the binary
+  seeds each component's import phase from that component's own config
+  (`crates/isolate/src/environment/udf/phase.rs:186-193`).
 - **Limit.** A package under `node_modules`, a packaged component's kit
   included, stays one copy across mounts, because the kernel runs on Effect,
   `convex` and `@confect/test` and needs them as one instance. A deployment
@@ -2279,10 +2282,21 @@ the deterministic operations in every phase.
   per mount there and shared here. `MountModules.test.ts` pins it: two mounts'
   copies of a helper hold the test's own `Schema.String`. The repo's tests
   alias each package to its source, so `vitest.shared.ts` names those source
-  directories in `plugin({ packages })`.
-  Each mount's copy loads under row 6's load-phase draws too, as the binary
-  seeds each component's import phase from that component's own config
-  (`crates/isolate/src/environment/udf/phase.rs:186-193`).
+  directories in `plugin({ packages })`. Each entry is resolved, so a trailing
+  separator names the same directory, and a missing one, or a file, stops the
+  plugin naming it (`Vite.test.ts`).
+- **Limit.** Only scripts and JSON get a copy per mount. An asset,
+  WASM and a `?raw` or `?url` import stay one copy across mounts. Their
+  exports are a string, a URL or a loader, so sharing them changes nothing a
+  module computes from them. A tagged JSON file
+  carries `&lang.json` after its tag so Vite's JSON plugin still parses it, and
+  each mount's object is its own. `Vite.test.ts` pins both, from inside a
+  component's folder and outside it.
+- Codegen writes the registry's `sources`, and each local kit's, as a read of
+  each module's file beside its loader, keyed as the loader is, so the kernel
+  reads every module's `"use node"` directive (#137) without a test passing
+  them. `TestBackend.layer` passes them, with the registry's
+  `componentRuntimes`, to the kernel. A packaged kit passes its own.
 - Codegen writes the registry's `secrets` as thunks of the Confect codecs that
   hold a `Schema.Redacted` node, so the kernel's redaction (row 6) builds each
   schema only when it first needs it. A kit adds its component's policy at
