@@ -128,15 +128,6 @@ const resolveExternalEsm = Option.liftThrowable(
 export const canImport = (specifier: string, importer: string): boolean =>
   Option.isSome(resolveEsm(specifier, importer));
 
-/**
- * Where Node's `require` finds `specifier` from `importer`, as the generated
- * test registry's reader of a packaged component's modules does.
- */
-export const resolveRequire = (
-  specifier: string,
-  importer: string,
-): Option.Option<string> => resolveCjs(specifier, importer);
-
 export const resolveModule = (
   specifier: string,
   importer: string,

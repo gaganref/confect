@@ -553,10 +553,12 @@ when codegen cannot list the kit's exports. The registry, and each local kit,
 now carry each module's `sources`, read from disk, which `TestBackend.layer`
 hands the kernel for its `"use node"` check. Its `componentSources` carries
 the sources of each packaged mount and every component its definition mounts,
-read from the package's installed `convex.config` directory and found at test
-time as Node's `require` finds the package; a kit that registers without
-sources gets them, and a package codegen cannot follow fails
-`PackagedComponentUnreadableError`. `TestBackend.layer` takes
+read from the package's installed `convex.config` directory. At test time the
+registry reads those same files, finding each package by Node's
+`node_modules` lookup and checking its version, so no export condition picks
+others; a kit that registers without sources gets them. A package codegen
+cannot read fails `PackagedComponentUnreadableError`, and one that changed
+since codegen fails the session with `PackagedComponentChanged`. `TestBackend.layer` takes
 `componentRuntimes` to declare a component's runtime in their place. The registry now lists
 only the modules a push registers, and a package mount with no test kit fails
 `MissingTestKitError`; a nested component's own declaration names its mounts'

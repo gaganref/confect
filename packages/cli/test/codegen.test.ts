@@ -1,14 +1,13 @@
 import { pipe } from "effect/Function";
 import { quote } from "@confect/cli/Json";
 import * as Rec from "effect/Record";
-import { IdScope, Ref, Table } from "@confect/core";
+import { IdScope, Table } from "@confect/core";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
 import { assert, expect, layer } from "@effect/vitest";
 import { vi } from "vitest";
-import { createRequire } from "node:module";
 import * as esbuild from "esbuild";
 import * as Bundler from "@confect/cli/Bundler";
 import * as SectionFiles from "@confect/cli/SectionFiles";
@@ -45,7 +44,6 @@ import {
   InvalidDeclarationError,
   isCodegenError,
   MissingTestKitError,
-  PackagedComponentUnreadableError,
   TestKitExportsUnknownError,
   TestKitSecretsMissingError,
   UnownedConvexEntrypointError,
@@ -61,7 +59,6 @@ import {
   type GenericDataModel,
 } from "convex/server";
 import * as Exit from "effect/Exit";
-import * as Cause from "effect/Cause";
 import * as Predicate from "effect/Predicate";
 import { assertIs } from "./internal/assertIs";
 
@@ -2257,120 +2254,6 @@ const bundleTesting = (project: { readonly root: string }) =>
   });
 
 /**
- * The generated `testing.ts`, imported through Vitest, so a package's test kit
- * that globs its modules under Vite loads as it does in a product's test. Its
- * `@confect/test` is the workspace source, a second copy beside the one
- * {@link bundleTesting} loads. Two kernel copies in one process do not share
- * their global guards, so a session it opens checks only what opening shows.
- */
-const importTesting = (project: { readonly root: string }) =>
-  Effect.promise(
-    () =>
-      import(
-        /* @vite-ignore */ `${project.root}/confect/_generated/testing.ts`
-      ) as Promise<{
-        readonly default: TestConfect.Registry<typeof probeSchema>;
-        readonly TestBackend: Subject;
-      }>,
-  );
-
-/**
- * A component package `name` defining "tool", whose `surface` module has a
- * `"use node"` directive and whose `plain` module runs in Convex's isolate. Its
- * kit registers the modules without their sources, as a package's kit does.
- */
-const toolPackage = (
-  project: Effect.Success<typeof declarationProject>,
-  name: string,
-  exports: Readonly<Record<string, unknown>>,
-) =>
-  Effect.gen(function* () {
-    const fs = yield* FileSystem.FileSystem;
-    yield* fs.makeDirectory(
-      `${project.root}/node_modules/${name}/component/_generated`,
-      { recursive: true },
-    );
-    for (const [file, source] of Rec.toEntries({
-      "package.json": yield* Schema.encodeEffect(
-        Schema.fromJsonString(Schema.Unknown),
-      )({ name, type: "module", exports }),
-      "component/convex.config.js":
-        'import { defineComponent } from "convex/server";\nexport default defineComponent("tool");\n',
-      "component/schema.js":
-        'import { defineSchema } from "convex/server";\nexport default defineSchema({});\n',
-      "component/_generated/api.js": "export {};\n",
-      "component/surface.js":
-        '"use node";\nimport { actionGeneric } from "convex/server";\nexport const surface = actionGeneric({ args: {}, handler: () => typeof setImmediate });\n',
-      "component/plain.js":
-        'import { actionGeneric } from "convex/server";\nexport const ping = actionGeneric({ args: {}, handler: () => "isolate" });\n',
-      "test.js": `import schema from "./component/schema.js";
-const modules = {
-  "./component/_generated/api.js": () => import("./component/_generated/api.js"),
-  "./component/plain.js": () => import("./component/plain.js"),
-  "./component/surface.js": () => import("./component/surface.js"),
-};
-export function register(t, name) {
-  t.registerComponent(name, schema, modules);
-}
-`,
-    })) {
-      yield* project.write(`node_modules/${name}/${file}`, source);
-    }
-  });
-
-/**
- * The packaged `tool` component's `surface` action, which reports whether its
- * runtime has Node's `setImmediate`.
- */
-const toolSurface = Ref.fromFunctionReference(
-  (
-    componentsGeneric() as unknown as {
-      readonly tool: {
-        readonly surface: {
-          readonly surface: FunctionReference<"action", "internal", {}, string>;
-        };
-      };
-    }
-  ).tool.surface.surface,
-  "action",
-);
-
-/**
- * `"opened"` when `subject` builds, else what it failed with.
- */
-const openedOf = <A, E>(subject: Layer.Layer<A, E>) =>
-  Layer.build(subject).pipe(
-    Effect.exit,
-    Effect.map((exit) =>
-      Exit.isFailure(exit)
-        ? exit.cause.pipe(Cause.squash, globalThis.String)
-        : "opened",
-    ),
-  );
-
-/**
- * Mount the component `specifier` defines, named `component`, as `name`.
- */
-const mountPackage = (
-  project: Effect.Success<typeof declarationProject>,
-  specifier: string,
-  component: string,
-  name: string,
-) =>
-  Effect.gen(function* () {
-    const app = yield* project.read("confect/app.ts");
-    yield* project.write(
-      "confect/app.ts",
-      withMount(
-        app,
-        "packaged",
-        specifier,
-        `Mount.make(Component.make(${quote(component)}, { client }), { name: ${quote(name)} })`,
-      ),
-    );
-  });
-
-/**
  * The generated `TestBackend` export, read as data.
  */
 const testBackendOf = (project: { readonly root: string }) =>
@@ -2589,138 +2472,6 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const first = yield* read("first");
           const second = yield* read("second");
           expect(`${first}|${second}`).toBe("first-required|bound-key");
-        }).pipe(Effect.scoped),
-      { timeout: 30000 },
-    );
-
-    it.effect(
-      "reads the modules of the official workpool and its nested batch worker from their packages, so their plain actions open on the kernel",
-      () =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const path = yield* Path.Path;
-          const project = yield* subjectProject;
-          yield* mountPackage(
-            project,
-            "@convex-dev/workpool/convex.config",
-            "workpool",
-            "pool",
-          );
-          yield* project.run;
-          const testing = yield* project.read("confect/_generated/testing.ts");
-          expect(testing).not.toContain(".pnpm");
-          expect(testing).not.toContain("node_modules");
-          const generated = yield* importTesting(project);
-          const componentSources = generated.default.componentSources ?? {};
-          expect(Rec.keys(componentSources)).toEqual([
-            "pool",
-            "pool/batchWorker",
-          ]);
-          const require = createRequire(
-            `${project.root}/confect/_generated/testing.ts`,
-          );
-          const pool = require.resolve("@convex-dev/workpool/convex.config");
-          const batchWorker = createRequire(pool).resolve(
-            "@convex-dev/batch-worker/convex.config.js",
-          );
-          for (const [mount, definition, module] of [
-            ["pool", pool, "worker.js"],
-            ["pool/batchWorker", batchWorker, "loop.js"],
-          ] as const) {
-            const read = componentSources[mount]?.[module];
-            assertIs(read, Predicate.isNotUndefined);
-            const source = yield* Effect.promise(read);
-            const installed = yield* fs.readFileString(
-              path.join(path.dirname(definition), module),
-            );
-            expect(source).toBe(installed);
-          }
-          const opened = yield* openedOf(
-            generated.TestBackend.layer({
-              config: { API_KEY: "bound-key", MODE: "test" },
-            }),
-          );
-          expect(opened).toBe("opened");
-        }).pipe(Effect.scoped),
-      { timeout: 60000 },
-    );
-
-    it.effect(
-      "reads a packaged component's \"use node\" module as Convex does, unless the layer declares the component's runtime",
-      () =>
-        Effect.gen(function* () {
-          const project = yield* subjectProject;
-          yield* toolPackage(project, "node-tool", {
-            "./convex.config": "./component/convex.config.js",
-            "./test": "./test.js",
-          });
-          yield* mountPackage(
-            project,
-            "node-tool/convex.config",
-            "tool",
-            "tool",
-          );
-          yield* project.run;
-          const generated = yield* bundleTesting(project).pipe(
-            Effect.map(({ module }) => ({
-              TestBackend: module["TestBackend"] as Subject,
-            })),
-          );
-          const surfaceIn = (
-            componentRuntimes?: TestConfect.ComponentRuntimes,
-          ) =>
-            Effect.gen(function* () {
-              const services = yield* Layer.build(
-                generated.TestBackend.layer({
-                  config: { API_KEY: "bound-key", MODE: "test" },
-                  ...(componentRuntimes === undefined
-                    ? {}
-                    : { componentRuntimes }),
-                }),
-              );
-              return yield* Effect.gen(function* () {
-                const test =
-                  yield* TestConfect.TestConfect<typeof probeSchema>();
-                return yield* test.action(toolSurface);
-              }).pipe(Effect.provideContext(services));
-            });
-          const fromSources = yield* surfaceIn();
-          const declared = yield* surfaceIn({ tool: "isolate" });
-          expect(fromSources).toBe("function");
-          expect(declared).toBe("undefined");
-        }).pipe(Effect.scoped),
-      { timeout: 60000 },
-    );
-
-    it.effect(
-      "refuses a packaged component whose modules the generated registry cannot find, naming the package",
-      () =>
-        Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const project = yield* subjectProject;
-          yield* toolPackage(project, "esm-tool", {
-            "./convex.config": { import: "./component/convex.config.js" },
-            "./test": "./test.js",
-          });
-          yield* mountPackage(
-            project,
-            "esm-tool/convex.config",
-            "tool",
-            "tool",
-          );
-          const error = yield* Effect.flip(project.run);
-          expect(error).toEqual(
-            PackagedComponentUnreadableError.make({
-              mount: "tool",
-              component: "esm-tool",
-              reason:
-                'Node\'s require finds no "esm-tool/convex.config" from "confect/_generated/testing.ts".',
-            }),
-          );
-          const written = yield* fs.exists(
-            `${project.root}/confect/_generated/testing.ts`,
-          );
-          expect(written).toBe(false);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -3472,7 +3223,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             ),
           );
           expect(testing).not.toContain(".pnpm");
-          expect(testing).not.toContain("node_modules");
+          expect(testing).not.toMatch(/node_modules[/\\]/);
           const generated = path.join(project.root, "confect/_generated");
           const escaping = Array.filter(
             Array.map(

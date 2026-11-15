@@ -614,7 +614,7 @@ export const renderCodegenError = (error: CodegenError): string => {
   }
   if (error._tag === "PackagedComponentUnreadableError") {
     return singleLine(
-      `The mount "${error.mount}" installs the component package "${error.component}", whose modules the generated test registry cannot read: ${error.reason} The test kernel reads each module's "use node" directive, as Convex's bundler does, to run its plain actions in Node or in Convex's isolate. Make the package's \`convex.config\` resolve through Node's require from \`confect/_generated/testing.ts\`.`,
+      `The mount "${error.mount}" installs the component package "${error.component}", whose modules the generated test registry cannot read: ${error.reason} The test kernel reads each module's "use node" directive, as Convex's bundler does, to run its plain actions in Node or in Convex's isolate, and the registry reads the files codegen read from the package Node's node_modules lookup finds from \`confect/_generated/testing.ts\`. Install the package where that lookup finds it.`,
     );
   }
   if (error._tag === "TestKitSecretsMissingError") {
