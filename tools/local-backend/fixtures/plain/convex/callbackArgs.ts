@@ -129,18 +129,20 @@ export const noop = internalMutationGeneric({
   handler: () => Promise.resolve(null),
 });
 
-const aaa = componentsGeneric() as unknown as {
+const children = componentsGeneric() as unknown as {
   readonly aaa: {
     readonly ids: {
       readonly mint: never;
       readonly store: never;
     };
   };
+  readonly bbb: { readonly ids: { readonly mint: never } };
 };
 
 /**
  * A new document's id in each table and a scheduled job's, here and in the
- * child component `aaa`, whose tables are numbered in its own namespace.
+ * child component `aaa`, and a document's id in each of `bbb`'s drawn tables.
+ * Each child's tables are numbered in its own namespace.
  */
 export const mint = mutationGeneric({
   args: {},
@@ -154,9 +156,13 @@ export const mint = mutationGeneric({
         {},
       ),
     ]).then(([documents, others, scheduled]) =>
-      ctx.runMutation(aaa.aaa.ids.mint, {}).then((child: Value) => ({
+      Promise.all([
+        ctx.runMutation(children.aaa.ids.mint, {}),
+        ctx.runMutation(children.bbb.ids.mint, {}),
+      ]).then(([aaa, bbb]: [Value, Value]) => ({
         root: { documents, others, scheduled },
-        aaa: child,
+        aaa,
+        bbb,
       })),
     ),
 });
@@ -171,7 +177,7 @@ export const store = actionGeneric({
       .store(new Blob(["root"]))
       .then((root) =>
         ctx
-          .runAction(aaa.aaa.ids.store, {})
+          .runAction(children.aaa.ids.store, {})
           .then((child: string) => ({ root, aaa: child })),
       ),
 });

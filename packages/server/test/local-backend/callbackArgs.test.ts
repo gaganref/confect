@@ -269,8 +269,9 @@ const cases: Readonly<Record<string, Case>> = {
     "Value does not match validator.",
   ),
   // A child's id resolves by its table number in the host's namespace: `aaa`
-  // numbers `others` first, as it has an index, so its `documents` id names
-  // the host's `others`, and its `others` id the host's `documents`.
+  // numbers `others` first, as it has an index, a staged one, so its
+  // `documents` id names the host's `others`, and its `others` id the host's
+  // `documents`.
   idChildDocuments: refused(
     "onKinds",
     kindsWith((probe) => ({ doc: probe.ids["aaa.documents"] })),
@@ -409,6 +410,39 @@ layer(LocalBackend.plainLayer, { timeout: "300 seconds" })(
           expect(normalized(kernelOutcome, namesOf(kernel))).toEqual(
             binaryRefusal,
           );
+        }),
+    );
+
+    // A boundary the testing guide states: each side's `v.function()` takes
+    // its own handle format, so a handle from the other refuses on both.
+    it.effect(
+      "refuses the other side's handle format for v.function(), on the binary and on the kernel",
+      () =>
+        Effect.gen(function* () {
+          const { client } = yield* LocalBackend.LocalBackend;
+          const binary = yield* Effect.promise(() => binaryProbe(client));
+          const kernel = yield* Effect.promise(kernelProbe);
+          const foreign = (probe: Probe, other: Probe) =>
+            Effect.promise(() =>
+              refusalIn(probe.calls, "fromMutation", {
+                handle: probe.handles.onKinds,
+                args: kindsWith(() => ({ callback: other.kindsHandle }))(probe),
+              }),
+            ).pipe(
+              Effect.map((refusal) =>
+                normalized(refusal, [[other.kindsHandle, "foreign handle"]]),
+              ),
+            );
+          const refusal = {
+            returned: false,
+            name: "Error",
+            message:
+              'ArgumentValidationError: Value does not match validator.\nPath: .callback\nValue: "<foreign handle>"\nValidator: v.function()\n',
+          };
+          const onBinary = yield* foreign(binary, kernel);
+          const onKernel = yield* foreign(kernel, binary);
+          expect(onBinary).toEqual(refusal);
+          expect(onKernel).toEqual(refusal);
         }),
     );
   },

@@ -138,3 +138,40 @@ export const shapes: ReadonlyArray<
   const draw = stream(SHAPE_SEED + index);
   return v.object(fieldsOf(draw, 0, 2 + Math.floor(draw() * 4)));
 });
+
+/**
+ * The kinds of index a child table can declare, which decide whether a push
+ * creates the table, and so numbers it, before the unindexed ones.
+ */
+export const indexKinds = [
+  "none",
+  "index",
+  "staged index",
+  "search index",
+  "staged search index",
+  "vector index",
+  "staged vector index",
+] as const;
+
+export type IndexKind = (typeof indexKinds)[number];
+
+/**
+ * The child component's drawn tables, `t0` to `t6`: one of each index kind, in
+ * an order drawn from the shape seed, so the binary's table numbering is
+ * compared across every kind.
+ */
+export const childTables: ReadonlyArray<{
+  readonly name: string;
+  readonly index: IndexKind;
+}> = (() => {
+  const draw = stream(SHAPE_SEED - 1);
+  const kinds: Array<IndexKind> = [...indexKinds];
+  for (let last = kinds.length - 1; last > 0; last--) {
+    const swap = Math.floor(draw() * (last + 1));
+    [kinds[last], kinds[swap]] = [kinds[swap]!, kinds[last]!];
+  }
+  const drawn: Array<{ readonly name: string; readonly index: IndexKind }> = [];
+  for (const [position, index] of kinds.entries())
+    drawn.push({ name: `t${position}`, index });
+  return drawn;
+})();

@@ -21,12 +21,14 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
 import * as Rec from "effect/Record";
 import * as Result from "effect/Result";
 import * as Str from "effect/String";
 import * as LocalBackend from "confect-local-backend/LocalBackend";
 import { stringify } from "../../../test/src/internal/Json";
 import {
+  childTables,
   fieldNames,
   pick,
   shapes,
@@ -38,6 +40,7 @@ import {
   type Caller,
   type Calls,
   handleOf,
+  type IdName,
   idNames,
   kernelCalls,
   mint,
@@ -401,22 +404,51 @@ layer(LocalBackend.plainLayer, { timeout: "600 seconds" })(
   "the binary's validation errors, by a seeded differential",
   (it) => {
     it.effect(
-      "numbers each component's user tables as a fresh push does, which the kernel models: indexed tables first, each group in name order",
+      "numbers each component's user tables as a fresh push does, which the kernel models: tables with an index of any kind, staged ones included, first, each group in name order",
       () =>
         Effect.gen(function* () {
           const { client } = yield* LocalBackend.LocalBackend;
           const ids = yield* Effect.promise(() => mint(binaryCalls(client)));
+          // `bbb`'s drawn tables, one of each index kind, and `aaa`'s
+          // unindexed `documents` and `others` with a staged index.
+          const numbered = (
+            prefix: string,
+            declared: ReadonlyArray<{
+              readonly name: string;
+              readonly index: string;
+            }>,
+          ) => {
+            const sorted = (indexed: boolean) =>
+              Arr.sort(
+                Arr.map(
+                  Arr.filter(
+                    declared,
+                    ({ index }) => (index !== "none") === indexed,
+                  ),
+                  ({ name }) => name,
+                ),
+                Order.String,
+              );
+            return Arr.map(
+              [...sorted(true), ...sorted(false)],
+              (name, position) =>
+                [`${prefix}.${name}`, 10001 + position] as const,
+            );
+          };
+          const expected = Rec.fromEntries([
+            ...numbered("bbb", childTables),
+            ...numbered("aaa", [
+              { name: "documents", index: "none" },
+              { name: "others", index: "staged index" },
+            ]),
+          ]);
+          expect(
+            Rec.map(expected, (_, name) => tableNumber(ids[name as IdName])),
+          ).toEqual(expected);
           expect({
             "root.documents": tableNumber(ids["root.documents"]),
             "root.others": tableNumber(ids["root.others"]),
-            "aaa.others": tableNumber(ids["aaa.others"]),
-            "aaa.documents": tableNumber(ids["aaa.documents"]),
-          }).toEqual({
-            "root.documents": 10001,
-            "root.others": 10002,
-            "aaa.others": 10001,
-            "aaa.documents": 10002,
-          });
+          }).toEqual({ "root.documents": 10001, "root.others": 10002 });
         }),
     );
 

@@ -3,19 +3,23 @@
  * caller in a mutation or an action that calls a host function's handle and
  * returns what reached it. On the kernel the same handle names a sink slot that
  * declares the host function's validators. Both backends mount the child
- * component `aaa`, whose tables are numbered in its own namespace.
+ * components `aaa` and `bbb`, whose tables are numbered in their own
+ * namespaces.
  */
 import { makeFunctionReference } from "convex/server";
 import type { GenericValidator } from "convex/values";
 import * as Arr from "effect/Array";
 import { pipe } from "effect/Function";
 import * as Order from "effect/Order";
+import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import { convexTest } from "../../../test/src/internal/ConvexTest";
 import type { Sink } from "../../../test/src/internal/Sink";
 import type { Refusal } from "../../../../tools/local-backend/fixtures/plain/convex/callbackArgs";
 import schema from "../../../../tools/local-backend/fixtures/plain/convex/schema";
 import aaaSchema from "../../../../tools/local-backend/fixtures/plain/aaa/schema";
+import bbbSchema from "../../../../tools/local-backend/fixtures/plain/bbb/schema";
+import { childTables } from "../../../../tools/local-backend/fixtures/plain/convex/differentialShapes";
 
 export type { Refusal };
 
@@ -58,7 +62,8 @@ const refs = {
     Record<string, never>,
     {
       root: { documents: string; others: string; scheduled: string };
-      aaa: { documents: string; others: string; scheduled: string };
+      aaa: Record<string, string>;
+      bbb: Record<string, string>;
     }
   >("callbackArgs:mint"),
   store: makeFunctionReference<
@@ -104,11 +109,12 @@ export const handleOf = (calls: Calls, target: string, module?: string) =>
 
 /**
  * A backend's ids of each kind, by `<component>.<table>`: a document of each
- * user table, a scheduled job and a stored file, at the root and in `aaa`.
+ * user table, a scheduled job and a stored file, at the root and in `aaa`, and
+ * a document of each of `bbb`'s drawn tables.
  */
 export type Minted = Readonly<Record<IdName, string>>;
 
-export const idNames = [
+const fixedNames = [
   "root.documents",
   "root.others",
   "root.scheduled",
@@ -119,20 +125,31 @@ export const idNames = [
   "aaa.storage",
 ] as const;
 
-export type IdName = (typeof idNames)[number];
+export type IdName = (typeof fixedNames)[number] | `bbb.t${number}`;
+
+export const idNames: ReadonlyArray<IdName> = [
+  ...fixedNames,
+  ...Arr.map(childTables, ({ name }) => `bbb.${name}` as IdName),
+];
 
 export const mint = (calls: Calls): Promise<Minted> =>
   Promise.all([
     calls.mutation(refs.mint, {}),
     calls.action(refs.store, {}),
   ]).then(([documents, files]) => ({
+    ...Rec.fromEntries(
+      Arr.map(
+        childTables,
+        ({ name }) => [`bbb.${name}` as IdName, documents.bbb[name]!] as const,
+      ),
+    ),
     "root.documents": documents.root.documents,
     "root.others": documents.root.others,
     "root.scheduled": documents.root.scheduled,
     "root.storage": files.root,
-    "aaa.documents": documents.aaa.documents,
-    "aaa.others": documents.aaa.others,
-    "aaa.scheduled": documents.aaa.scheduled,
+    "aaa.documents": documents.aaa["documents"]!,
+    "aaa.others": documents.aaa["others"]!,
+    "aaa.scheduled": documents.aaa["scheduled"]!,
     "aaa.storage": files.aaa,
   }));
 
@@ -140,6 +157,7 @@ const plainSources = import.meta.glob<string>(
   [
     "../../../../tools/local-backend/fixtures/plain/convex/*.ts",
     "../../../../tools/local-backend/fixtures/plain/aaa/*.ts",
+    "../../../../tools/local-backend/fixtures/plain/bbb/*.ts",
   ],
   { query: "?raw", import: "default" },
 );
@@ -184,6 +202,21 @@ export const kernelCalls = (sink: Sink): Calls => {
       sources: {
         "_generated/server.ts": () => Promise.resolve(""),
         "ids.ts": sourceOf("aaa/ids.ts"),
+      },
+    },
+  );
+  t.registerComponent(
+    "bbb",
+    bbbSchema,
+    {
+      "_generated/server.ts": () => Promise.resolve({}),
+      "ids.ts": () =>
+        import("../../../../tools/local-backend/fixtures/plain/bbb/ids"),
+    },
+    {
+      sources: {
+        "_generated/server.ts": () => Promise.resolve(""),
+        "ids.ts": sourceOf("bbb/ids.ts"),
       },
     },
   );
