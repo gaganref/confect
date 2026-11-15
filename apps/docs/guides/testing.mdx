@@ -59,7 +59,7 @@ export const Test = TestConfect.TestConfect<typeof app.schema>();
 export const layer = TestConfect.layer(app);
 ```
 
-The generated registry imports the schema and lazy module loaders of each local Convex component by a relative path. For a component mounted from another package, codegen tries `<package>/testing`, then `<package>/test`. It prefers `/testing` when both resolve. The registry imports the selected namespace as a mount-named kit, such as `workpoolKit`, and calls its `register(t, name)`. That kit also registers the package's nested components. `TestConfect.layer` names the mount if the kit exports neither `register` nor both `schema` and `modules`.
+The generated registry imports the schema and lazy module loaders of each local Convex component by a relative path. Beside each module it reads that module's source from disk, so the test kernel finds its `"use node"` directive as Convex's bundler does. For a component mounted from another package, codegen tries `<package>/testing`, then `<package>/test`. It prefers `/testing` when both resolve. The registry imports the selected namespace as a mount-named kit, such as `workpoolKit`, and calls its `register(t, name)`. That kit also registers the package's nested components. `TestConfect.layer` names the mount if the kit exports neither `register` nor both `schema` and `modules`.
 
 When a package's own kit is missing or wrong, the component's descriptor names the kit to use instead, by package specifier:
 

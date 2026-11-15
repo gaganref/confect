@@ -549,7 +549,9 @@ mutation. Each component reads only the settings its mount binds. A missing app
 or mount setting fails `TestConfigMissing`. A kit passes its component's
 secret policy to `registerComponent`, and a packaged Confect component whose
 kit exports none fails `TestKitSecretsMissingError`, or `TestKitExportsUnknownError`
-when codegen cannot list the kit's exports. The registry now lists
+when codegen cannot list the kit's exports. The registry, and each local kit,
+now carry each module's `sources`, read from disk, which `TestBackend.layer`
+hands the kernel for its `"use node"` check. The registry now lists
 only the modules a push registers, and a package mount with no test kit fails
 `MissingTestKitError`; a nested component's own declaration names its mounts'
 kits whether or not the app can import `@confect/test`. Each mount of a local

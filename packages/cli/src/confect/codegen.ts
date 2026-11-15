@@ -1245,6 +1245,7 @@ const generateTesting = Effect.fnUntraced(function* (
     return pipe(value, String.startsWith(".")) ? value : `./${value}`;
   };
   const imports = [
+    'import { readFile } from "node:fs/promises";',
     'import schema from "./schema.js";',
     'import convexSchema from "./convexSchema.js";',
   ];
@@ -1269,12 +1270,29 @@ const generateTesting = Effect.fnUntraced(function* (
       Array.join("\n"),
     )}\n}`;
   });
+  // Each module's text, keyed as its loader is, so the test kernel reads its
+  // `"use node"` directive as Convex's bundler does. Read from disk, as a
+  // bundle of this file would not carry Vite's `?raw` imports.
+  const sourceMap = Effect.fnUntraced(function* (directory: string) {
+    const files = [
+      ...(yield* FunctionModule.registeredModules(directory)),
+    ].sort();
+    return `{ "_generated/testing.ts": () => Promise.resolve(""),\n${pipe(
+      files,
+      Array.map(
+        (file) =>
+          `${quote(Array.join(pipe(file, String.split(path.sep)), "/"))}: () => readFile(new URL(${quote(relative(path.join(directory, file)))}, import.meta.url), "utf8"),`,
+      ),
+      Array.join("\n"),
+    )}\n}`;
+  });
   const declarations: Array<string> = [];
   const identifiers = new Set([
     "schema",
     "convexSchema",
     "mountModule",
     "mountModules",
+    "readFile",
   ]);
   const components: Array<string> = [];
   const httpMounts: Array<string> = [];
@@ -1398,7 +1416,7 @@ const generateTesting = Effect.fnUntraced(function* (
           );
           if (declarations.length === 0) declarations.push(mountModule);
           declarations.push(
-            `const ${identifier} = (mount: string) => ({ schema: ${schemaIdentifier}, modules: ${yield* moduleMap(resolved, true)} });`,
+            `const ${identifier} = (mount: string) => ({ schema: ${schemaIdentifier}, modules: ${yield* moduleMap(resolved, true)}, sources: ${yield* sourceMap(resolved)} });`,
           );
         } else {
           if (kitEntry === undefined) {
@@ -1488,7 +1506,8 @@ const generateTesting = Effect.fnUntraced(function* (
   const modules = yield* moduleMap(convexDirectory, false);
   const policy =
     secrets.policy === undefined ? "" : `, secrets: ${secrets.policy}`;
-  const registry = `{ httpMounts: [${Array.join(httpMounts, ",")}], schema, convexSchema, modules: ${modules}, components: {${Array.join(components, "\n")}}${policy} }`;
+  const moduleSources = yield* sourceMap(convexDirectory);
+  const registry = `{ httpMounts: [${Array.join(httpMounts, ",")}], schema, convexSchema, modules: ${modules}, sources: ${moduleSources}, components: {${Array.join(components, "\n")}}${policy} }`;
   yield* writeFileStringAndLog(
     path.join(generated, "testing.ts"),
     Array.join(

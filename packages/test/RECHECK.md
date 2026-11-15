@@ -2292,6 +2292,11 @@ the deterministic operations in every phase.
   carries `&lang.json` after its tag so Vite's JSON plugin still parses it, and
   each mount's object is its own. `Vite.test.ts` pins both, from inside a
   component's folder and outside it.
+- Codegen writes the registry's `sources`, and each local kit's, as a read of
+  each module's file beside its loader, keyed as the loader is, so the kernel
+  reads every module's `"use node"` directive (#137) without a test passing
+  them. `TestBackend.layer` passes them, with the registry's
+  `componentRuntimes`, to the kernel. A packaged kit passes its own.
 - Codegen writes the registry's `secrets` as thunks of the Confect codecs that
   hold a `Schema.Redacted` node, so the kernel's redaction (row 6) builds each
   schema only when it first needs it. A kit adds its component's policy at
