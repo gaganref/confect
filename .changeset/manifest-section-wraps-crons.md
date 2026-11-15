@@ -7,4 +7,4 @@ A manifest section can now wrap the backend's cron jobs. To opt in, set `wrapsCr
 
 In a declared backend, an edit to `confect/crons.ts` now runs full generation, as an edit to `confect/http.ts` does, so `confect dev` never writes the entry without its wrappers.
 
-Codegen's ownership check accepts a `convex/crons.ts` only with the wrappers it wrote last or writes now, so a duplicated, reordered or hand-added wrapper fails as a hand-written entry.
+Codegen's ownership check treats a `convex/crons.ts` as its own when it is the plain entry, or the wrapped entry over distinct `confect/_generated` files that carry a manifest section's header, in any order. Codegen then rewrites it with exactly this run's wrappers. A changed body, an extra statement, a wrapper imported twice, or a wrapper from outside `_generated`, from a missing file or from a file without the header fails as a hand-written entry.

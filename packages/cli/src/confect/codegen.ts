@@ -55,6 +55,7 @@ import * as TableModule from "../TableModule.js";
 import * as templates from "../templates.js";
 import {
   generateAuthConfig,
+  generateCrons,
   generateHttp,
   removePathIfExists,
   toModuleImportPath,
@@ -193,7 +194,7 @@ const runCodegen = Effect.gen(function* () {
   const sections = yield* SectionFiles.sync(backend, leaves, mounts);
   // Nothing above writes a Convex entrypoint. The check waits for this run's
   // section files, because the HTTP router may import any of them.
-  yield* FunctionModule.assertOwnedEntrypoints(sections.crons);
+  yield* FunctionModule.assertOwnedEntrypoints;
   yield* syncManifestSections(
     declaredSections(backend),
     leaves,
@@ -238,7 +239,7 @@ const runCodegen = Effect.gen(function* () {
       ),
       logGenerated(
         Option.isNone(declared)
-          ? SectionFiles.syncCrons([])
+          ? generateCrons()
           : syncDeclaredCrons(sections.crons),
       ),
       Option.isNone(declared)
@@ -354,7 +355,7 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           yield* logGenerated(syncDeclaredHttp(declared.value, sections.files));
         // Which sections wrap crons can change while the section files stay.
         if (Option.isSome(declared))
-          yield* logGenerated(SectionFiles.syncCrons(sections.crons));
+          yield* logGenerated(generateCrons(sections.crons));
         yield* SectionFiles.removeUnclaimed(sections.files);
         yield* FunctionModule.applyFunctionPlan(
           GenerationSnapshot.diff(snapshot, next),
@@ -1122,7 +1123,7 @@ const provisionalComponents = Effect.gen(function* () {
 const syncDeclaredCrons = Effect.fnUntraced(function* (
   sectionFiles: ReadonlyArray<string>,
 ) {
-  const written = yield* SectionFiles.syncCrons(sectionFiles);
+  const written = yield* generateCrons(sectionFiles);
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const convexDirectory = yield* ConvexDirectory.get;

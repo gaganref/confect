@@ -27,7 +27,6 @@ import {
   generateGroupModule,
 } from "@confect/cli/FunctionModule";
 import { assertIs } from "./internal/assertIs";
-import { stringify } from "@confect/cli/Json";
 
 const fixtureRoot = `${import.meta.dirname}/../../server/test/mock-backend/fixtures`;
 const fixtureConvex = `${fixtureRoot}/convex`;
@@ -337,7 +336,7 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
       yield* fs.makeDirectory(path.join(project.root, "convex/system"));
       yield* project.write("convex/system/status.ts", source);
       const provide2 = yield* project
-        .provide(assertOwnedEntrypoints([]))
+        .provide(assertOwnedEntrypoints)
         .pipe(Effect.as("owned"));
       expect(provide2).toBe("owned");
     }).pipe(Effect.scoped),
@@ -365,7 +364,7 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
       const project = yield* Project.make;
       yield* project.write(`convex/${file}`, source);
       const provide2 = yield* project
-        .provide(assertOwnedEntrypoints([]))
+        .provide(assertOwnedEntrypoints)
         .pipe(Effect.as("owned"));
       expect(provide2).toBe("owned");
     }).pipe(Effect.scoped),
@@ -393,7 +392,7 @@ layer(GenerateFunctionsLayer)("assertOwnedEntrypoints", (it) => {
             : "import crons from '../confect/crons'\nexport default crons.convexCronJobs\n"),
       );
       const result = yield* project
-        .provide(assertOwnedEntrypoints([]))
+        .provide(assertOwnedEntrypoints)
         .pipe(Effect.result);
       expect(result).toEqual(
         verdict === "accepts"
@@ -428,82 +427,52 @@ const wraps: ReadonlyArray<(crons: CronJobs.CronJobs) => CronJobs.CronJobs> = [$
 export default wraps.reduce((jobs, wrap) => wrap(jobs), crons).convexCronJobs;
 `;
 
-  // `wraps` is what this run wraps, `recorded` what the last run wrote.
-  it.effect.each<{
-    verdict: string;
-    case: string;
-    source: string;
-    wraps: ReadonlyArray<string>;
-    recorded?: ReadonlyArray<string>;
-  }>([
+  it.effect.each([
     {
       verdict: "accepts",
-      case: "the plain entry while this run wraps",
-      source:
-        'import crons from "../confect/crons.js";\n\nexport default crons.convexCronJobs;\n',
-      wraps: ["authz.ts"],
-    },
-    {
-      verdict: "accepts",
-      case: "the one section this run wraps",
+      case: "one wrapping section",
       source: wrapped(["authz"]),
-      wraps: ["authz.ts"],
     },
     {
       verdict: "accepts",
-      case: "the two sections this run wraps",
+      case: "two wrapping sections",
       source: wrapped(["authz", "audit"]),
-      wraps: ["authz.ts", "audit.ts"],
     },
     {
       verdict: "accepts",
-      case: "the sections the last run wrapped, once none wraps",
-      source: wrapped(["authz", "audit"]),
-      wraps: [],
-      recorded: ["authz.ts", "audit.ts"],
+      case: "wrapping sections in another order",
+      source: wrapped(["audit", "authz"]),
     },
     {
       verdict: "accepts",
-      case: "the order the last run wrapped, once the sections swap",
-      source: wrapped(["authz", "audit"]),
-      wraps: ["audit.ts", "authz.ts"],
-      recorded: ["authz.ts", "audit.ts"],
-    },
-    {
-      verdict: "refuses",
-      case: "a wrapper from a file no section wrote",
-      source: wrapped(["manual"]),
-      wraps: ["authz.ts"],
-    },
-    {
-      verdict: "refuses",
-      case: "a wrapper from a section file that is gone",
-      source: wrapped(["removed"]),
-      wraps: ["authz.ts"],
+      case: "a wrapper from a section file that no longer wraps",
+      source: wrapped(["authz", "stale"]),
     },
     {
       verdict: "refuses",
       case: "a wrapper imported twice",
       source: wrapped(["authz", "authz"]),
-      wraps: ["authz.ts", "audit.ts"],
     },
     {
       verdict: "refuses",
-      case: "wrappers out of declared order",
-      source: wrapped(["audit", "authz"]),
-      wraps: ["authz.ts", "audit.ts"],
+      case: "a wrapper from a section-headed file outside _generated",
+      source: pipe(
+        wrapped(["authz"]),
+        Str.replace(
+          "../confect/_generated/authz.js",
+          "../confect/lib/authz.js",
+        ),
+      ),
     },
     {
       verdict: "refuses",
-      case: "a wrapper from a section no run wrapped",
-      source: wrapped(["authz"]),
-      wraps: ["audit.ts"],
+      case: "a wrapper from a file no section wrote",
+      source: wrapped(["manual"]),
     },
     {
       verdict: "refuses",
-      case: "a wrapper from a section-headed file no section claims",
-      source: wrapped(["unclaimed"]),
-      wraps: ["authz.ts"],
+      case: "a wrapper from a section file that is gone",
+      source: wrapped(["removed"]),
     },
     {
       verdict: "refuses",
@@ -512,33 +481,32 @@ export default wraps.reduce((jobs, wrap) => wrap(jobs), crons).convexCronJobs;
         wrapped(["authz"]),
         Str.replace("wraps.reduce((jobs, wrap) => wrap(jobs), crons)", "crons"),
       ),
-      wraps: ["authz.ts"],
     },
     {
       verdict: "refuses",
       case: "an extra statement",
       source: `${wrapped(["authz"])}export const extra = 1;\n`,
-      wraps: ["authz.ts"],
     },
-  ])("$verdict a crons.ts with $case", ({ verdict, source, wraps, recorded }) =>
+  ])("$verdict a crons.ts with $case", ({ verdict, source }) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const project = yield* Project.make;
       yield* fs.makeDirectory(`${project.root}/confect/_generated`);
-      for (const key of ["authz", "audit", "unclaimed"])
+      yield* fs.makeDirectory(`${project.root}/confect/lib`);
+      for (const file of [
+        "_generated/authz",
+        "_generated/audit",
+        "_generated/stale",
+        "lib/authz",
+      ])
         yield* project.write(
-          `confect/_generated/${key}.ts`,
-          `// Generated by \`confect codegen\` from the manifest section "${key}". Do not edit.\n`,
+          `confect/${file}.ts`,
+          `// Generated by \`confect codegen\` from the manifest section "${file}". Do not edit.\n`,
         );
       yield* project.write("confect/_generated/manual.ts", "export {};\n");
-      if (recorded !== undefined)
-        yield* project.write(
-          "confect/_generated/cronWrappers.json",
-          stringify(recorded),
-        );
       yield* project.write("convex/crons.ts", source);
       const result = yield* project
-        .provide(assertOwnedEntrypoints(wraps))
+        .provide(assertOwnedEntrypoints)
         .pipe(Effect.result);
       expect(result).toEqual(
         verdict === "accepts"
@@ -568,7 +536,7 @@ export default wraps.reduce((jobs, wrap) => wrap(jobs), crons).convexCronJobs;
           extra,
       );
       const result = yield* project
-        .provide(assertOwnedEntrypoints([]))
+        .provide(assertOwnedEntrypoints)
         .pipe(Effect.result);
       assertIs(result, Result.isFailure);
       expect(result.failure).toMatchObject({
@@ -583,7 +551,7 @@ export default wraps.reduce((jobs, wrap) => wrap(jobs), crons).convexCronJobs;
       yield* project.write("convex/one.ts", "export const one = 1;\n");
       yield* project.write("convex/two.ts", "export const two = 2;\n");
       const result = yield* project
-        .provide(assertOwnedEntrypoints([]))
+        .provide(assertOwnedEntrypoints)
         .pipe(Effect.result);
       assertIs(result, Result.isFailure);
       expect(result.failure).toMatchObject({
@@ -620,7 +588,7 @@ export default wraps.reduce((jobs, wrap) => wrap(jobs), crons).convexCronJobs;
             "export const authored = 1;\n",
           );
         }
-        yield* project.provide(assertOwnedEntrypoints([]));
+        yield* project.provide(assertOwnedEntrypoints);
         const snapshot = yield* Effect.fromResult(GenerationSnapshot.parse([]));
         yield* project.provide(generateFunctions(snapshot));
         for (const file of files) {

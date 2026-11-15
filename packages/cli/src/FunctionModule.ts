@@ -128,14 +128,9 @@ const legacyRouter = String.replace(
 );
 
 /**
- * Fail unless every Convex entrypoint is one codegen writes. `crons` names the
- * section files this run's `convex/crons.ts` wraps, in order.
- *
  * @internal
  */
-export const assertOwnedEntrypoints = Effect.fnUntraced(function* (
-  crons: ReadonlyArray<string>,
-) {
+export const assertOwnedEntrypoints = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const convex = yield* ConvexDirectory.get;
@@ -157,20 +152,6 @@ export const assertOwnedEntrypoints = Effect.fnUntraced(function* (
       runtimeImportPath: yield* importFromConvex("runtime.ts"),
     }),
   ];
-  // The check runs before codegen rewrites `convex/crons.ts`, so the entry the
-  // last run wrote is codegen's even after a section stops wrapping, is removed
-  // or moves.
-  const cronsTemplates = yield* Effect.forEach(
-    [crons, yield* SectionFiles.cronWrappers],
-    Effect.fnUntraced(function* (files) {
-      return yield* templates.crons({
-        cronsImportPath: yield* importFromConvex("crons.ts"),
-        sectionImportPaths: yield* Effect.forEach(files, (file) =>
-          importFromConvex(`_generated/${file}`),
-        ),
-      });
-    }),
-  );
   const optional = new Map([
     [
       "http.ts",
@@ -179,15 +160,37 @@ export const assertOwnedEntrypoints = Effect.fnUntraced(function* (
         legacyRouter(template),
       ]),
     ],
-    ["crons.ts", cronsTemplates],
   ]);
   const written2 = yield* SectionFiles.written;
   // The declared HTTP router first imports each file a manifest section wrote.
-  const sectionImports = new Set(
-    Array.map(written2, (file) =>
+  const sectionImports = new Map(
+    Array.map(written2, (file) => [
       quote(path.join(confect, "_generated", path.basename(file, ".ts"))),
-    ),
+      file,
+    ]),
   );
+  // This check only keeps codegen from overwriting hand-written code, and later
+  // in the same run codegen writes `convex/crons.ts` with exactly this run's
+  // wrappers. So the crons template holds nothing to lose when it wraps
+  // distinct files a section wrote, in any order, even ones that no longer
+  // wrap.
+  const cronsShapes = Effect.fnUntraced(function* (
+    tokens: ReadonlyArray<string>,
+  ) {
+    const wrapped = Array.flatMap(tokens, (token, index) => {
+      const file = sectionImports.get(token);
+      return tokens[index - 1] === "from" && file !== undefined ? [file] : [];
+    });
+    if (new Set(wrapped).size !== wrapped.length) return [];
+    return [
+      yield* templates.crons({
+        cronsImportPath: yield* importFromConvex("crons.ts"),
+        sectionImportPaths: yield* Effect.forEach(wrapped, (file) =>
+          importFromConvex(`_generated/${file}`),
+        ),
+      }),
+    ];
+  });
   const withoutSectionImports = (
     tokens: ReadonlyArray<string>,
   ): ReadonlyArray<string> =>
@@ -202,7 +205,10 @@ export const assertOwnedEntrypoints = Effect.fnUntraced(function* (
       continue;
     const tokens = tokenize(contents, absolute, path);
     if (tokens !== undefined) {
-      const shapes = optional.get(relative);
+      const shapes =
+        relative === "crons.ts"
+          ? yield* cronsShapes(tokens)
+          : optional.get(relative);
       if (
         shapes !== undefined &&
         Array.some(shapes, (template) =>
