@@ -4078,9 +4078,11 @@ export class World {
 
   /**
    * `componentPath`'s user tables by number, as a fresh push creates them: the
-   * tables with an index first, as the push adds indexes before it applies the
-   * schema, then the others, each in name order (convex-backend `cccbade4`,
+   * tables with an index of any kind first, staged ones included, as the push
+   * adds every index the schema declares before it applies the schema, then the
+   * others, each in name order (convex-backend `cccbade4`,
    * `crates/model/src/components/config.rs:313-323`,
+   * `crates/database/src/bootstrap_model/index.rs:425-511` and `:685-687`,
    * `crates/database/src/bootstrap_model/schema/mod.rs:339-345`,
    * `crates/database/src/bootstrap_model/table.rs:328-356`).
    */
@@ -4090,19 +4092,22 @@ export class World {
     const tables = Arr.fromIterable(
       this.components.get(componentPath)?.schema?.tables ?? new Map(),
     );
-    const indexed = ([, table]: (typeof tables)[number]) => {
-      const exported = table as {
-        readonly indexes: ReadonlyArray<unknown>;
-        readonly searchIndexes?: ReadonlyArray<unknown>;
-        readonly vectorIndexes?: ReadonlyArray<unknown>;
-      };
-      return (
-        exported.indexes.length +
-          (exported.searchIndexes?.length ?? 0) +
-          (exported.vectorIndexes?.length ?? 0) >
-        0
+    // The six lists `indexes_in_new_schema` collects, from convex's
+    // `TableDefinition.export()`.
+    const indexed = ([, table]: (typeof tables)[number]) =>
+      Arr.some(
+        [
+          "indexes",
+          "stagedDbIndexes",
+          "searchIndexes",
+          "stagedSearchIndexes",
+          "vectorIndexes",
+          "stagedVectorIndexes",
+        ] as const,
+        (list) =>
+          ((table as Partial<Record<string, ReadonlyArray<unknown>>>)[list]
+            ?.length ?? 0) > 0,
       );
-    };
     const names = (entries: typeof tables) =>
       Arr.sort(
         Arr.map(entries, ([name]) => name),
@@ -4118,17 +4123,23 @@ export class World {
 
   /**
    * The table each ID names in `namespace`, as the binary resolves an ID's
-   * table number there (`all_tables_number_to_name`). A system table keeps its
-   * own name, since every component's namespace holds the same system tables.
+   * table number there (`all_tables_number_to_name`): the number its table
+   * holds in its own component, read in `namespace`. A kernel ID carries its
+   * table's name but not its component, which only the world that minted it
+   * records. An ID it did not mint, as from another session, is read as an ID
+   * of `namespace`'s own table, so it names that table, as every other kernel
+   * check reads it. A system table keeps its own name, since every component's
+   * namespace holds the same system tables.
    */
   private tableOf(namespace: string): ArgumentValidation.TableOf {
     return (id) => {
+      const table = tableNameFromId(id);
+      if (table === null) return undefined;
       const owner = this.owners.get(id);
-      if (owner === undefined) return undefined;
-      if (pipe(owner.table, Str.startsWith("_"))) return owner.table;
+      if (owner === undefined || pipe(table, Str.startsWith("_"))) return table;
       const number = Arr.findFirstIndex(
         this.userTables(owner.componentPath),
-        (table) => table === owner.table,
+        (name) => name === table,
       );
       return number._tag === "None"
         ? undefined
