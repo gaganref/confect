@@ -220,11 +220,24 @@ export const generateHttp = generateOptionalFile(
 /**
  * @internal
  */
-export const generateCrons = generateOptionalFile(
-  "crons.ts",
-  "crons.ts",
-  (importPath) => templates.crons({ cronsImportPath: importPath }),
-);
+export const generateCrons = Effect.fnUntraced(function* (
+  sectionFiles: ReadonlyArray<string> = [],
+) {
+  const path = yield* Path.Path;
+  const confectDirectory = yield* ConfectDirectory.get;
+  const convexDirectory = yield* ConvexDirectory.get;
+  const sectionImportPaths = yield* Effect.forEach(sectionFiles, (file) =>
+    toModuleImportPath(
+      path.relative(
+        convexDirectory,
+        path.join(confectDirectory, "_generated", file),
+      ),
+    ),
+  );
+  return yield* generateOptionalFile("crons.ts", "crons.ts", (importPath) =>
+    templates.crons({ cronsImportPath: importPath, sectionImportPaths }),
+  );
+});
 
 /**
  * @internal

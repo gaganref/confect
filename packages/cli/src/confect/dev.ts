@@ -382,7 +382,7 @@ const syncLoop = Effect.fnUntraced(function* (
           ? [syncOptionalFile(generateHttp, "http.ts")]
           : []),
         ...(HashSet.has(optional, "Crons")
-          ? [syncOptionalFile(generateCrons, "crons.ts")]
+          ? [syncOptionalFile(generateCrons(), "crons.ts")]
           : []),
         ...(HashSet.has(optional, "Auth")
           ? [syncOptionalFile(generateAuthConfig, "auth.config.ts")]
