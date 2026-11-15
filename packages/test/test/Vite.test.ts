@@ -1,5 +1,6 @@
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- The Windows case resolves an entry through Node's win32 path API, which only node:path has.
 import * as NodePath from "node:path";
+import { fileURLToPath } from "node:url";
 import { describe, expect, it } from "@effect/vitest";
 import { plugin } from "@confect/test/Vite";
 import * as Effect from "effect/Effect";
@@ -8,6 +9,13 @@ import { pipe } from "effect/Function";
 import * as PackageDirectory from "../src/internal/PackageDirectory";
 
 const fixtures = new URL("./fixtures/mountImports/", import.meta.url).pathname;
+
+// The same directory as a platform path, written with `/` as Vite writes ids.
+const directoryOf = (name: string) =>
+  pipe(
+    fileURLToPath(new URL(`./fixtures/mountImports/${name}`, import.meta.url)),
+    Str.replaceAll("\\", "/"),
+  );
 
 /**
  * One mount's copy of a fixture module, loaded as generated `testing.ts` loads
@@ -97,7 +105,7 @@ describe("the Vite plugin", () => {
     "keeps a package directory's files one copy, written with or without a trailing separator",
     () =>
       Effect.gen(function* () {
-        const directory = `${fixtures}component`;
+        const directory = directoryOf("component");
         const inside = `${directory}/module.ts`;
         for (const entry of [directory, `${directory}/`]) {
           const shared = yield* tagged(plugin({ packages: [entry] }), inside);
@@ -121,8 +129,8 @@ describe("the Vite plugin", () => {
   });
 
   it("refuses a packages entry that is missing or not a directory, naming it", () => {
-    const missing = `${fixtures}missing`;
-    const file = `${fixtures}outside.json`;
+    const missing = directoryOf("missing");
+    const file = directoryOf("outside.json");
     expect(() => plugin({ packages: [missing] })).toThrow(
       `the packages entry ${missing} is not a directory`,
     );
