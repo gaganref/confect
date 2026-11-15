@@ -1217,6 +1217,24 @@ const mountModule =
         });
       };`;
 
+/**
+ * The reader generated `testing.ts` gives each module's source. It reaches
+ * `node:fs` and `URL` without naming their types, so the file compiles in an
+ * app without `@types/node`.
+ */
+const moduleSource = `// Each module's text, read from disk where the test runs, for the test kernel's "use node" check.
+const moduleSource = (path: string) => (): Promise<string> =>
+  import(/* @vite-ignore */ String("node:fs/promises")).then(
+    (fs: { readonly readFile: (file: unknown, encoding: "utf8") => Promise<string> }) =>
+      fs.readFile(
+        new (globalThis as unknown as { readonly URL: new (input: string, base: string) => unknown }).URL(
+          path,
+          (import.meta as unknown as { readonly url: string }).url,
+        ),
+        "utf8",
+      ),
+  );`;
+
 const generateTesting = Effect.fnUntraced(function* (
   app: App.Any,
   input: TestingInput,
@@ -1245,7 +1263,6 @@ const generateTesting = Effect.fnUntraced(function* (
     return pipe(value, String.startsWith(".")) ? value : `./${value}`;
   };
   const imports = [
-    'import { readFile } from "node:fs/promises";',
     'import schema from "./schema.js";',
     'import convexSchema from "./convexSchema.js";',
   ];
@@ -1281,18 +1298,18 @@ const generateTesting = Effect.fnUntraced(function* (
       files,
       Array.map(
         (file) =>
-          `${quote(Array.join(pipe(file, String.split(path.sep)), "/"))}: () => readFile(new URL(${quote(relative(path.join(directory, file)))}, import.meta.url), "utf8"),`,
+          `${quote(Array.join(pipe(file, String.split(path.sep)), "/"))}: moduleSource(${quote(relative(path.join(directory, file)))}),`,
       ),
       Array.join("\n"),
     )}\n}`;
   });
-  const declarations: Array<string> = [];
+  const declarations: Array<string> = [moduleSource];
   const identifiers = new Set([
     "schema",
     "convexSchema",
     "mountModule",
     "mountModules",
-    "readFile",
+    "moduleSource",
   ]);
   const components: Array<string> = [];
   const httpMounts: Array<string> = [];
@@ -1414,7 +1431,8 @@ const generateTesting = Effect.fnUntraced(function* (
           imports.push(
             `import ${schemaIdentifier} from ${quote(relative(path.join(resolved, "schema.js")))};`,
           );
-          if (declarations.length === 0) declarations.push(mountModule);
+          if (!declarations.includes(mountModule))
+            declarations.push(mountModule);
           declarations.push(
             `const ${identifier} = (mount: string) => ({ schema: ${schemaIdentifier}, modules: ${yield* moduleMap(resolved, true)}, sources: ${yield* sourceMap(resolved)} });`,
           );
