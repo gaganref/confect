@@ -2327,20 +2327,31 @@ the deterministic operations in every phase.
 - An id is read as the binary reads it: by its table number, in the namespace
   of the function it validates for (`crates/udf/src/validation.rs:679`). The
   sink's slots stand in for the host, so the kernel reads it in the root
-  namespace. The world records each id's component and table when it mints
-  it, rebuilt from the commit log and stored files on a restore. It numbers
-  each component's user tables as a fresh push creates them, from 10001:
-  tables with an index first, since the push adds indexes before it applies
-  the schema, then the rest, each group in name order, then each table a
-  write creates. A child component's id can so name another table in the
-  host's namespace, as on a deployment, and a system table's id gets the
-  binary's `from a system table` text. A deployment with table history
-  numbers its tables otherwise, which the kernel cannot see. The handles are
-  each backend's own format, so `v.function()` accepts the kernel's.
+  namespace. A kernel id carries its table's name but not its component, so
+  the world records each id's component when it mints it, rebuilt from the
+  commit log and stored files on a restore. An id it did not mint, as from
+  another session, names its own table in the validating namespace, as the
+  kernel's other id checks read it; the record never refuses an id. The world
+  numbers each component's user tables as a fresh push creates them, from
+  10001: tables with an index of any kind first, staged db, text and vector
+  indexes included, since the push adds every index `indexes_in_new_schema`
+  collects before it applies the schema
+  (`crates/database/src/bootstrap_model/index.rs:425-511`, `:685-687`), then
+  the rest, each group in name order, then each table a write creates. A
+  child component's id can so name another table in the host's namespace, as
+  on a deployment, and a system table's id gets the binary's `from a system
+  table` text.
+- Two limits, each pinned by a boundary test and stated in the testing guide:
+  a deployment with dropped tables, or tables a later push added, numbers its
+  tables otherwise than a fresh push, which the kernel cannot see
+  (`SinkValidation.test.ts`); and `v.function()` takes each side's own handle
+  format only, so each refuses the other's (`callbackArgs.test.ts`).
 - `validationDifferential.test.ts` on the local-backend lane is a seeded
   differential: 40 validator shapes of every kind, nested objects, records,
   arrays, unions of one to three members, optionals, literals and ids of root,
-  child and system tables, deployed on the binary from shape seed 1115. 2,000
+  child and system tables, deployed on the binary from shape seed 1115, and a
+  child `bbb` of seven drawn tables, one of each index kind, staged ones
+  included, in an order the same seed draws. 2,000
   values drawn from value seed 20261115, a quarter valid and the rest broken
   in one or more places, go to each shape as its arguments and through an echo
   as its held return, from a mutation or an action, 4,000 calls on each
