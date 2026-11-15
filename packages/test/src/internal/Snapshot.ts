@@ -262,6 +262,14 @@ export const contract = {
       excluded:
         "The secret policy is configuration: the restoring world is built with its own.",
     },
+    owners: {
+      excluded:
+        "Each minted ID's component and table, which a restore rebuilds from the commit log and the stored files.",
+    },
+    numbering: {
+      excluded:
+        "Each component's user tables by number, which a restore rebuilds from its schema and the commit log.",
+    },
     sink: {
       excluded:
         "The callback sink is configuration: the restoring world is built with its own, and a held callback is the session's record, not kernel state.",

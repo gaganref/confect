@@ -67,6 +67,7 @@ import {
   validateReturnValue,
 } from "./KernelValues.js";
 import * as Option from "effect/Option";
+import * as Order from "effect/Order";
 import * as Arr from "effect/Array";
 import * as Rec from "effect/Record";
 import * as Str from "effect/String";
@@ -1285,6 +1286,21 @@ export class World {
   state: Kernel.State = Kernel.empty;
   private opened: Promise<void> | undefined;
   private nextDocId = 10000;
+  /**
+   * The component and table each ID this world minted names, so a validator
+   * reads an ID as the binary does: by its table number, in the namespace of
+   * the function it validates for. A restore rebuilds it from the commit log
+   * and the stored files.
+   */
+  private readonly owners = new Map<
+    string,
+    { readonly componentPath: string; readonly table: string }
+  >();
+  /**
+   * Each component's user tables in the order the binary numbers them, from
+   * 10001: as a fresh push creates them, then each table a write creates.
+   */
+  private readonly numbering = new Map<string, Array<string>>();
   private lastCreationTime = 0;
   private nextQueryId = 1;
   private readonly queries = new Map<number, Iterator<any>>();
@@ -2604,6 +2620,16 @@ export class World {
     this.state = image.state;
     this.floor = image.floor;
     this.nextDocId = image.identity.nextDocumentId;
+    this.owners.clear();
+    this.numbering.clear();
+    for (const commit of image.state.log)
+      for (const change of commit.changes)
+        if (!this.owners.has(change.id))
+          this.claim(
+            change.id,
+            change.componentPath,
+            tableNameFromId(change.id)!,
+          );
     this.lastCreationTime = image.identity.lastCreationTime;
     this.nextAttemptId = image.identity.nextAttemptId;
     this.identityEpoch = image.identity.identityEpoch;
@@ -2617,6 +2643,7 @@ export class World {
     for (const [id, file] of image.files) {
       this.files.set(id, file);
       this.legacyIds.set(file.uuid, id);
+      this.claim(id, file.componentPath, Storage.table);
     }
     this.targets.clear();
     for (const [id, target] of targets) this.targets.set(id, target);
@@ -3146,7 +3173,7 @@ export class World {
         ),
       );
     }
-    const id = this.generateId(Scheduling.table);
+    const id = this.generateId(execution.componentPath, Scheduling.table);
     attempt.meter.deriveInterval(jobsIndex, Metering.point([id]));
     attempt.write(
       execution.componentPath,
@@ -3219,7 +3246,11 @@ export class World {
     const refused =
       argsValidator === undefined
         ? undefined
-        : ArgumentValidation.argumentRefusal(argsValidator, args);
+        : ArgumentValidation.argumentRefusal(
+            argsValidator,
+            args,
+            this.tableOf(ROOT),
+          );
     if (refused !== undefined) return Promise.reject(refusal(refused));
     const returnsValidator = this.sink.returns(functionPath.udfPath);
     // The sink rejects as a function's thrown error leaves it, with its data
@@ -3232,7 +3263,11 @@ export class World {
         const wrong =
           returnsValidator === undefined
             ? undefined
-            : ArgumentValidation.returnsRefusal(returnsValidator, value);
+            : ArgumentValidation.returnsRefusal(
+                returnsValidator,
+                value,
+                this.tableOf(ROOT),
+              );
         if (wrong !== undefined) throw refusal(wrong);
         return value;
       })
@@ -4024,12 +4059,81 @@ export class World {
     attempt.write(execution.componentPath, id, doc);
   }
 
-  private generateId(table: string): DocumentId {
+  private generateId(componentPath: string, table: string): DocumentId {
     const counter = pipe(
       String(this.nextDocId++),
       Str.padStart(TYPICAL_CONVEX_ID_LENGTH - table.length, "0"),
     );
-    return (counter + table) as DocumentId;
+    const id = (counter + table) as DocumentId;
+    this.claim(id, componentPath, table);
+    return id;
+  }
+
+  private claim(id: string, componentPath: string, table: string) {
+    this.owners.set(id, { componentPath, table });
+    if (pipe(table, Str.startsWith("_"))) return;
+    const tables = this.userTables(componentPath);
+    if (!Arr.contains(tables, table)) tables.push(table);
+  }
+
+  /**
+   * `componentPath`'s user tables by number, as a fresh push creates them: the
+   * tables with an index first, as the push adds indexes before it applies the
+   * schema, then the others, each in name order (convex-backend `cccbade4`,
+   * `crates/model/src/components/config.rs:313-323`,
+   * `crates/database/src/bootstrap_model/schema/mod.rs:339-345`,
+   * `crates/database/src/bootstrap_model/table.rs:328-356`).
+   */
+  private userTables(componentPath: string): Array<string> {
+    const known = this.numbering.get(componentPath);
+    if (known !== undefined) return known;
+    const tables = Arr.fromIterable(
+      this.components.get(componentPath)?.schema?.tables ?? new Map(),
+    );
+    const indexed = ([, table]: (typeof tables)[number]) => {
+      const exported = table as {
+        readonly indexes: ReadonlyArray<unknown>;
+        readonly searchIndexes?: ReadonlyArray<unknown>;
+        readonly vectorIndexes?: ReadonlyArray<unknown>;
+      };
+      return (
+        exported.indexes.length +
+          (exported.searchIndexes?.length ?? 0) +
+          (exported.vectorIndexes?.length ?? 0) >
+        0
+      );
+    };
+    const names = (entries: typeof tables) =>
+      Arr.sort(
+        Arr.map(entries, ([name]) => name),
+        Order.String,
+      );
+    const ordered = [
+      ...names(Arr.filter(tables, indexed)),
+      ...names(Arr.filter(tables, (entry) => !indexed(entry))),
+    ];
+    this.numbering.set(componentPath, ordered);
+    return ordered;
+  }
+
+  /**
+   * The table each ID names in `namespace`, as the binary resolves an ID's
+   * table number there (`all_tables_number_to_name`). A system table keeps its
+   * own name, since every component's namespace holds the same system tables.
+   */
+  private tableOf(namespace: string): ArgumentValidation.TableOf {
+    return (id) => {
+      const owner = this.owners.get(id);
+      if (owner === undefined) return undefined;
+      if (pipe(owner.table, Str.startsWith("_"))) return owner.table;
+      const number = Arr.findFirstIndex(
+        this.userTables(owner.componentPath),
+        (table) => table === owner.table,
+      );
+      return number._tag === "None"
+        ? undefined
+        : this.userTables(namespace)[number.value];
+    };
   }
 
   syscall(op: string, jsonArgs: string): string {
@@ -4497,7 +4601,7 @@ export class World {
     const metered = execution.attempt !== undefined;
     if (metered)
       refuse(attempt.meter.checkStore(bytes.length, execution.limits));
-    const id = this.generateId(Storage.table);
+    const id = this.generateId(execution.componentPath, Storage.table);
     if (metered) attempt.meter.storeFile(id, bytes.length);
     const file: Storage.File = {
       componentPath: execution.componentPath,
@@ -4561,7 +4665,7 @@ export class World {
       table,
       value,
     );
-    const _id = this.generateId(table);
+    const _id = this.generateId(execution.componentPath, table);
     // A new ID joins the table's `by_id` reads without counting as one.
     attempt.meter.deriveInterval(
       indexKey(execution.componentPath, table, "by_id"),
