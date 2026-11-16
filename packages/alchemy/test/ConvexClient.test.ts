@@ -12,6 +12,7 @@ import type * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { inspect } from "node:util";
 import * as Arr from "effect/Array";
+import * as Str from "effect/String";
 
 const token = Redacted.make("management-secret-for-tests");
 const deployKey = Redacted.make("deployment-secret-for-tests");
@@ -540,7 +541,7 @@ describe("ConvexClient", () => {
       const secret = "untrusted-error-body-secret";
       const http = mockHttp(
         Arr.map([404, 409, 401, 429, 500, 302], (status) =>
-          Response.json({ code: "TestFailure", message: secret }, { status }),
+          Response.json({ code: secret, message: secret }, { status }),
         ),
       );
       return Effect.gen(function* () {
@@ -584,6 +585,14 @@ describe("ConvexClient", () => {
       serverCode: "OptimisticConcurrencyControlFailure",
     },
     { body: { message: "body-secret" }, serverCode: undefined },
+    { body: { code: 42 }, serverCode: undefined },
+    { body: { code: Str.repeat(64)("A") }, serverCode: Str.repeat(64)("A") },
+    { body: { code: Str.repeat(65)("A") }, serverCode: undefined },
+    { body: { code: Str.repeat(1_000_000)("a") }, serverCode: undefined },
+    {
+      body: { code: "prod:happy-otter-123|leaked-key-in-code" },
+      serverCode: undefined,
+    },
   ])(
     "preserves the server code independently of the HTTP classification ($serverCode)",
     ({ body, serverCode }) => {
@@ -612,6 +621,107 @@ describe("ConvexClient", () => {
       });
     },
   );
+
+  it.effect.each([404, 409, 503])(
+    "preserves validated server codes for function HTTP failures (%s)",
+    (status) => {
+      const http = mockHttp([
+        Response.json(
+          {
+            code: "OptimisticConcurrencyControlFailure",
+            message: "function-body-secret",
+          },
+          { status },
+        ),
+      ]);
+      return Effect.gen(function* () {
+        const services = yield* Layer.build(
+          clientLayer.pipe(Layer.provide(http.layer)),
+        );
+        return yield* Effect.gen(function* () {
+          const client = yield* ConvexClient.ConvexClient;
+          const error = yield* client
+            .runFunction(deploymentUrl, deployKey, "test:run", {})
+            .pipe(
+              Effect.match({
+                onSuccess: () => expect.unreachable("Expected an HTTP error"),
+                onFailure: (failure) => failure,
+              }),
+            );
+          expect(error).toMatchObject({
+            _tag:
+              status === 404
+                ? "ConvexNotFound"
+                : status === 409
+                  ? "ConvexConflict"
+                  : "ConvexApiError",
+            operation: "runFunction",
+            status,
+            code: "HttpError",
+            serverCode: "OptimisticConcurrencyControlFailure",
+          });
+          yield* expectSecretSafe(error, "function-body-secret");
+        }).pipe(Effect.provideContext(services));
+      });
+    },
+  );
+
+  it.effect("limits error body reads to 8 KiB before parsing", () => {
+    let pulls = 0;
+    let cancelled = false;
+    const body = new ReadableStream<Uint8Array>(
+      {
+        pull(controller) {
+          pulls++;
+          controller.enqueue(new TextEncoder().encode(Str.repeat(1024)(" ")));
+          if (pulls === 20) {
+            controller.enqueue(
+              new TextEncoder().encode('{"code":"TestFailure"}'),
+            );
+            controller.close();
+          }
+        },
+        cancel() {
+          cancelled = true;
+        },
+      },
+      { highWaterMark: 0 },
+    );
+    const http = mockHttp([new Response(body, { status: 503 })]);
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(http.layer)),
+      );
+      return yield* Effect.gen(function* () {
+        const client = yield* ConvexClient.ConvexClient;
+        const error = yield* client
+          .updateEnvironmentVariables(deploymentUrl, deployKey, [])
+          .pipe(Effect.flip);
+        expect(error).toMatchObject({ code: "HttpError", status: 503 });
+        expect(error.serverCode).toBeUndefined();
+        expect(pulls).toBeLessThanOrEqual(9);
+        expect(cancelled).toBe(true);
+      }).pipe(Effect.provideContext(services));
+    });
+  });
+
+  it.effect("ignores non-JSON error bodies", () => {
+    const http = mockHttp([new Response("body-secret", { status: 503 })]);
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(http.layer)),
+      );
+      return yield* Effect.gen(function* () {
+        const client = yield* ConvexClient.ConvexClient;
+        const error = yield* client
+          .updateEnvironmentVariables(deploymentUrl, deployKey, [])
+          .pipe(Effect.flip);
+        expect(error.code).toBe("HttpError");
+        expect(error.serverCode).toBeUndefined();
+        yield* expectSecretSafe(error, "body-secret");
+      }).pipe(Effect.provideContext(services));
+    });
+  });
 
   it.effect(
     "keeps missing reads and deletes in the typed not-found channel",
@@ -702,6 +812,7 @@ describe("ConvexClient", () => {
             _tag: "ConvexApiError",
             code: "TransportError",
           });
+          expect(error.message).toBe("getProject failed (TransportError)");
           yield* expectSecretSafe(error, secret);
           yield* expectSecretSafe(error, Redacted.value(token));
         }).pipe(Effect.provideContext(services12));
