@@ -100,6 +100,8 @@ import { Policy, Trace } from "./middleware";
 export default App.make({ env, requiresMiddleware: [Policy, Trace] });
 ```
 
+Mount names `app` and `docs` are reserved for the root app and docs page. `Mount.make` rejects either literal at `name`, and codegen rejects either value when its type is a widened `string`. Rename an existing mount, for example to `application` or `docsWorker`, and update references to its name.
+
 Each mount names itself. Codegen pairs it with the listed definition whose `defineComponent` name is its component's name, and writes one `app.use` per mount in list order. It fails, naming the mount or definition, when a mount's component has no listed definition, when a listed definition has no mount, when two mounts share a name, and when two listed definitions share a `defineComponent` name. `Mount.make` types `env` against the descriptor's env slots. These fail to typecheck:
 
 - leaving out a binding the component requires

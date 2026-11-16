@@ -42,6 +42,42 @@ const parseApp = (app: unknown) =>
   });
 
 describe("Declaration", () => {
+  it.each(["app", "docs"])(
+    "refuses the reserved mount name %s after widening",
+    (name: string) => {
+      const parsed = parseApp(
+        App.make({
+          env: Env.make("host", {}),
+          components: [workpool],
+          mounts: [Mount.make(Workpool, { name })],
+        }),
+      );
+      assertIs(parsed, Result.isFailure);
+      expect(parsed.failure).toMatchObject({
+        _tag: "ReservedMountName",
+        mount: name,
+        message: `The mount name "${name}" is reserved for the root app or docs page; choose another mount name.`,
+      });
+    },
+  );
+
+  it.each(["application", "docsWorker", "App", "Docs", "_worker", "worker2"])(
+    "accepts the mount name %s",
+    (name: string) => {
+      const parsed = parseApp(
+        App.make({
+          env: Env.make("host", {}),
+          components: [workpool],
+          mounts: [Mount.make(Workpool, { name })],
+        }),
+      );
+      assertIs(parsed, Result.isSuccess);
+      expect(Array.map(parsed.success.mounts, (mount) => mount.name)).toEqual([
+        name,
+      ]);
+    },
+  );
+
   it("rejects foreign, optional and secret provider env values", () => {
     const env = Env.make("tenant", {
       OPTIONAL: Env.optional(Env.string()),

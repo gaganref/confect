@@ -61,6 +61,33 @@ const ImportsPool = Mount.make(Workpool, {
 const DefaultPool = Mount.make(Workpool, { name: "defaultPool" });
 
 describe("Mount.make", () => {
+  it("reserves the app and docs owner names", () => {
+    const refused = () => {
+      void Mount.make(Workpool, {
+        // @ts-expect-error The root app owns this name.
+        name: "app",
+      });
+      void Mount.make(Workpool, {
+        // @ts-expect-error The docs page owns this name.
+        name: "docs",
+      });
+    };
+    void refused;
+    const refusedUnion = (name: "app" | "worker") => {
+      void Mount.make(Workpool, {
+        // @ts-expect-error Every possible name must be allowed.
+        name,
+      });
+    };
+    void refusedUnion;
+    expectTypeOf(Mount.make(Workpool, { name: "application" })).toExtend<
+      Mount.Mount<typeof Workpool, "application">
+    >();
+    expectTypeOf(Mount.make(Workpool, { name: "docsWorker" })).toExtend<
+      Mount.Mount<typeof Workpool, "docsWorker">
+    >();
+  });
+
   it("types the client from the component's client constructor", () => {
     expectTypeOf<Context.Service.Shape<typeof BulkEmail>>().toEqualTypeOf<
       ReturnType<typeof emailClient>

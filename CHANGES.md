@@ -12,6 +12,15 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Reserved mount names
+
+`Mount.make` rejects the literal mount names `app` and `docs`, and declaration
+codegen rejects them when types were widened or bypassed. These names belong
+to the root app and docs page in the planned infrastructure manifest.
+Changeset: `reserve-mount-owner-names.md` is a major for core and CLI because
+existing mounts with either name must be renamed. Upstream: fork only, as the
+reservation supports the fork's infrastructure manifest.
+
 ## Test invocation services
 
 `runHandlerPromise` starts a query, mutation or action handler with the
