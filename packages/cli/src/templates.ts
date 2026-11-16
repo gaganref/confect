@@ -376,7 +376,7 @@ export const crons = Effect.fnUntraced(function* ({
   );
   yield* cbw.newLine();
   yield* cbw.writeLine(
-    `export default wraps.reduce((jobs, wrap) => wrap(jobs), crons).convexCronJobs;`,
+    `export default wraps.reduce<CronJobs.CronJobs>((jobs, wrap) => wrap(jobs), crons).convexCronJobs;`,
   );
 
   return yield* cbw.toString();
