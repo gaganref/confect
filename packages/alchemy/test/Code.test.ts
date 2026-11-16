@@ -636,6 +636,76 @@ describe("Code command boundary", () => {
       }).pipe(Effect.scoped),
   );
 
+  it.live(
+    "returns after a CLI exits while its detached grandchild holds output pipes",
+    () =>
+      Effect.gen(function* () {
+        const services = yield* Layer.build(NodeServices.layer);
+        return yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const cwd = yield* project;
+          const pidFile = path.join(cwd, "grandchild.pid");
+          yield* Effect.addFinalizer(() =>
+            Effect.gen(function* () {
+              if (yield* fs.exists(pidFile)) {
+                const pidText = yield* fs.readFileString(pidFile);
+                const pid = Number(pidText);
+                yield* Effect.try({
+                  try: () => process.kill(pid),
+                  catch: () => ({
+                    _tag: "GrandchildSignalFailed" as const,
+                    pid,
+                  }),
+                }).pipe(Effect.ignore);
+              }
+            }).pipe(Effect.orDie),
+          );
+          yield* fs.writeFileString(
+            path.join(cwd, "grandchild.cjs"),
+            `
+        process.stdout.write('grandchild holds stdout');
+        process.stderr.write('grandchild holds stderr');
+        setInterval(() => {}, 1000);
+        process.send('ready');
+      `,
+          );
+          yield* fs.writeFileString(
+            path.join(cwd, "node_modules/convex/cli.js"),
+            `
+        const { spawn } = require('node:child_process');
+        const { writeFileSync } = require('node:fs');
+        const child = spawn(process.execPath, ['grandchild.cjs'], {
+          detached: true,
+          stdio: ['ignore', 'inherit', 'inherit', 'ipc'],
+        });
+        writeFileSync('grandchild.pid', String(child.pid));
+        child.once('message', () => {
+          child.disconnect();
+          child.unref();
+          process.exit(0);
+        });
+      `,
+          );
+          yield* deploy({
+            deployment: props.deployment,
+            deployKey: props.deployKey,
+            cwd,
+          }).pipe(
+            Effect.provide([
+              runnerLayer,
+              unlocked,
+              ConfigProvider.layer(ConfigProvider.fromEnv()),
+            ]),
+            Effect.timeout("3 seconds"),
+          );
+          const pidText = yield* fs.readFileString(pidFile);
+          const pid = Number(pidText);
+          expect(process.kill(pid, 0)).toBe(true);
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped),
+  );
+
   it.effect(
     "preserves Windows process prerequisites across environment casing",
     () =>
