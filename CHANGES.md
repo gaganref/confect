@@ -1185,8 +1185,12 @@ Upstream: planned; no linked proposal verified.
 ### Show failed code push diagnostics
 
 Include bounded stdout and stderr tails in failed code pushes so operators can
-see Convex validation errors. Redact child credentials and Convex deploy keys
-before constructing the error, including its message and serialized form.
+see Convex validation errors. Strip ANSI escapes and redact the runner's deploy
+key or self-hosted admin key, their URL-encoded and base64 forms, and Convex
+key-shaped values before constructing errors, causes, JSON, or logs. Credential
+needles require eight characters to avoid mangling ordinary diagnostics. Keep
+the real process prerequisites in the Windows regression test. Bound pipe
+draining to one second after CLI exit so inherited pipes cannot hang the push.
 Changeset: `alchemy-push-diagnostics.md`. Upstream: planned; no proposal submitted.
 
 ### Deploy Convex through Alchemy

@@ -61,7 +61,9 @@ pnpm alchemy deploy
 
 `Confect.Backend` runs `confect codegen`, then `convex deploy`. A codegen failure prevents the push. The deploy key selects the target explicitly, independently of the backend directory's environment files.
 
-If `convex deploy` fails, the error includes its exit code and the last 8,192 characters of stdout and stderr. Child credentials and values shaped like Convex deploy keys appear as `<REDACTED>`. A truncated stream can omit its first partial token. Successful pushes keep CLI output hidden.
+If `convex deploy` fails, the error includes its exit code and up to the last 8,192 characters of each output stream. The runner strips ANSI escape sequences and replaces the deploy key or self-hosted admin key with `<REDACTED>`, including URL-encoded and base64 forms. Credential matching requires at least eight characters to avoid replacing common diagnostic text. Values shaped like Convex deploy keys also appear as `<REDACTED>`. A truncated stream can omit its first partial token.
+
+The runner drains stdout and stderr for up to one second after the CLI exits. Output from descendants that keep a pipe open after that deadline is omitted. Successful pushes keep CLI output hidden.
 
 <Warning>
   Treat Alchemy state as a secret store. Deploy keys and managed environment

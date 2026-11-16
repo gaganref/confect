@@ -1,8 +1,8 @@
 import * as Arr from "effect/Array";
-import * as Rec from "effect/Record";
 import * as Str from "effect/String";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
+import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
@@ -11,6 +11,8 @@ import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
+import { Buffer } from "node:buffer";
+import { stripVTControlCharacters } from "node:util";
 
 export interface PrepareCommand {
   readonly command: string;
@@ -138,12 +140,21 @@ const packageBin = Effect.fn("CommandRunner.packageBin")(function* (
 
 const outputTailSize = 8192;
 const redaction = "<REDACTED>";
+// Short needles match common diagnostic text rather than useful credentials.
+const minimumCredentialLength = 8;
 
 const outputTail = <E>(
   stream: Stream.Stream<Uint8Array, E>,
   secrets: ReadonlyArray<string>,
 ) => {
-  const credentials = Arr.filter(secrets, (value) => value !== "");
+  const credentials = Arr.flatMap(
+    Arr.filter(secrets, (value) => value.length >= minimumCredentialLength),
+    (value: string) => [
+      value,
+      encodeURIComponent(value),
+      Buffer.from(value).toString("base64"),
+    ],
+  );
   const longest = Math.max(0, ...Arr.map(credentials, (value) => value.length));
   const capacity = outputTailSize + longest;
   return stream.pipe(
@@ -159,29 +170,15 @@ const outputTail = <E>(
       },
     ),
     Effect.map(({ text, truncated }) => {
+      text = stripVTControlCharacters(text);
       if (truncated) {
         // A clipped token may be an unrecognised deploy key. Drop it whole.
         text = Str.replace(/^\S*/, "")(text);
-        // A known credential may contain whitespace and cross that boundary.
-        let clipped = 0;
-        for (const credential of credentials) {
-          for (
-            let size = Math.min(credential.length - 1, text.length);
-            size > clipped;
-            size--
-          ) {
-            if (Str.startsWith(Str.slice(-size)(credential))(text)) {
-              clipped = size;
-              break;
-            }
-          }
-        }
-        if (clipped > 0) text = redaction + Str.slice(clipped)(text);
       }
       const pattern = new RegExp(
         Arr.join(
           [
-            "(?:prod|dev|preview|project|custom):[^\\s|]+\\|[a-zA-Z0-9+/=_-]+",
+            "(?:prod|dev|preview|project|custom):[^\\s|]+\\|[^\\s\"'&]+",
             ...Arr.map(credentials, (value) =>
               Str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")(value),
             ),
@@ -225,15 +222,24 @@ export const layer = Layer.effect(
                 stderr: "pipe",
               }),
             );
-            const secrets = [
-              ...credentials,
-              ...Arr.filter(Rec.values(env), (value) => value !== undefined),
-            ];
+            const exited = yield* Deferred.make<void>();
+            // Descendants can inherit pipes and keep them open after the CLI exits.
+            const drainDeadline = Deferred.await(exited).pipe(
+              Effect.andThen(Effect.sleep("1 second")),
+            );
             const [code, stdout, stderr] = yield* Effect.all(
               [
-                child.exitCode,
-                outputTail(child.stdout, secrets),
-                outputTail(child.stderr, secrets),
+                child.exitCode.pipe(
+                  Effect.tap(() => Deferred.succeed(exited, undefined)),
+                ),
+                outputTail(
+                  child.stdout.pipe(Stream.interruptWhen(drainDeadline)),
+                  credentials,
+                ),
+                outputTail(
+                  child.stderr.pipe(Stream.interruptWhen(drainDeadline)),
+                  credentials,
+                ),
               ],
               { concurrency: "unbounded" },
             );
