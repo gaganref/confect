@@ -28,6 +28,7 @@ import {
 import { PushLock, layer as lockLayer } from "../src/internal/PushLock";
 import { ConvexClient, ConvexFunctionError } from "../src/ConvexClient";
 import { MountInitFailed } from "../src/internal/MountInit";
+import { HealthCheckFailed } from "../src/internal/CodeDeployment";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
@@ -126,6 +127,81 @@ describe("Code", () => {
           }).pipe(Effect.provideContext(services));
         }).pipe(Effect.scoped);
       }),
+  );
+
+  const healthCases: ReadonlyArray<{
+    readonly answer: Effect.Effect<unknown, ConvexFunctionError>;
+    readonly failure: HealthCheckFailed | undefined;
+  }> = [
+    { answer: Effect.succeed("sha256:built"), failure: undefined },
+    ...Arr.map([undefined, null, 42], (answer) => ({
+      answer: Effect.succeed(answer),
+      failure: HealthCheckFailed.make({
+        expected: "sha256:built",
+        detail: "not a string",
+      }),
+    })),
+    {
+      answer: Effect.succeed("sha256:older"),
+      failure: HealthCheckFailed.make({
+        expected: "sha256:built",
+        answered: "sha256:older",
+      }),
+    },
+    {
+      answer: Effect.fail(
+        ConvexFunctionError.make({
+          functionPath: "confectHealth:digest",
+          errorMessage: "Could not find function",
+        }),
+      ),
+      failure: HealthCheckFailed.make({
+        expected: "sha256:built",
+        detail: "ConvexFunctionError",
+      }),
+    },
+  ];
+  it.effect.each(healthCases)(
+    "asks the pushed code for its manifest digest inside the lock, after the push",
+    ({ answer, failure }) =>
+      Effect.gen(function* () {
+        const calls: string[] = [];
+        const services = yield* Layer.build(
+          Layer.mergeAll(
+            Layer.succeed(CommandRunner, {
+              prepare: () => Effect.sync(() => void calls.push("prepare")),
+              deploy: () => Effect.sync(() => void calls.push("deploy")),
+            }),
+            Layer.succeed(PushLock, {
+              withLock: (_name, effect) =>
+                Effect.sync(() => void calls.push("lock")).pipe(
+                  Effect.andThen(effect),
+                  Effect.ensuring(Effect.sync(() => void calls.push("unlock"))),
+                ),
+            }),
+            Layer.mock(ConvexClient, {
+              runFunction: (_url, _key, path) =>
+                Effect.sync(() => void calls.push(path)).pipe(
+                  Effect.andThen(answer),
+                ),
+            }),
+            NodeServices.layer,
+          ),
+        );
+        const result = yield* deploy({ ...props, digest: "sha256:built" }).pipe(
+          Effect.provideContext(services),
+          Effect.result,
+        );
+        expect(calls).toEqual([
+          "lock",
+          "prepare",
+          "deploy",
+          "confectHealth:digest",
+          "unlock",
+        ]);
+        if (failure === undefined) assertIs(result, Result.isSuccess);
+        else expect(result).toEqual(Result.fail(failure));
+      }).pipe(Effect.scoped),
   );
 
   it.effect("does not deploy after preparation fails", () =>
@@ -791,6 +867,7 @@ describe("Code mount init", () => {
   };
   const push = (options: {
     readonly failAt?: string;
+    readonly digest?: string;
     readonly steps?: Record<string, ReadonlyArray<unknown>>;
   }) =>
     Effect.gen(function* () {
@@ -825,6 +902,11 @@ describe("Code mount init", () => {
         const client = Layer.mock(ConvexClient, {
           runFunction: (_url, _key, functionPath, _args, componentPath) =>
             Effect.gen(function* () {
+              if (functionPath === "confectHealth:digest") {
+                expect(componentPath).toBeUndefined();
+                yield* record("health");
+                return "sha256:built";
+              }
               if (functionPath === "confectDeploy:steps") {
                 yield* record(
                   pipe(`steps ${componentPath ?? ""}`, String.trim),
@@ -840,10 +922,11 @@ describe("Code mount init", () => {
               return null;
             }),
         });
-        const result = yield* deploy({ ...props, cwd }).pipe(
-          Effect.provide([lock, runner, client]),
-          Effect.result,
-        );
+        const result = yield* deploy({
+          ...props,
+          cwd,
+          ...(options.digest === undefined ? {} : { digest: options.digest }),
+        }).pipe(Effect.provide([lock, runner, client]), Effect.result);
         return { events, result };
       }).pipe(Effect.scoped, Effect.provideContext(services17));
     }).pipe(Effect.scoped);
@@ -867,6 +950,48 @@ describe("Code mount init", () => {
           "release",
         ]);
       }),
+  );
+
+  it.effect(
+    "checks the manifest digest after all nested mount init steps, before releasing the lock",
+    () =>
+      Effect.gen(function* () {
+        const { events, result } = yield* push({ digest: "sha256:built" });
+        expect(result).toEqual(Result.succeed(props.deployment));
+        expect(events).toEqual([
+          "acquire",
+          "prepare",
+          "deploy",
+          "steps",
+          "init bulkEmail",
+          "init relay",
+          "steps relay",
+          "init relay/inbox",
+          "init last",
+          "health",
+          "release",
+        ]);
+      }),
+  );
+
+  it.effect("skips the health query when a mount's init fails", () =>
+    Effect.gen(function* () {
+      const { events, result } = yield* push({
+        digest: "sha256:built",
+        failAt: "relay",
+      });
+      expect(events).toEqual([
+        "acquire",
+        "prepare",
+        "deploy",
+        "steps",
+        "init bulkEmail",
+        "init relay",
+        "release",
+      ]);
+      assertIs(result, Result.isFailure);
+      expect(result.failure).toBeInstanceOf(MountInitFailed);
+    }),
   );
 
   it.effect("stops the push at a failing mount, after earlier mounts", () =>

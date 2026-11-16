@@ -199,6 +199,9 @@ const backend = (
         },
         deployKey: props.deployKey,
         ...(props.cwd === undefined ? {} : { cwd: props.cwd }),
+        ...(props.manifest === undefined
+          ? {}
+          : { digest: props.manifest.digest }),
         prepare: { command: "confect", args: ["codegen"] },
       });
       return { code, environment, name: code.name, url: code.url };

@@ -618,6 +618,25 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
 });
 
 const DEPLOY_MODULE = "confectDeploy.ts";
+const HEALTH_MODULE = "confectHealth.ts";
+
+/**
+ * Write `convex/confectHealth.ts` into an app backend, the internal query that
+ * returns the digest of the manifest this run wrote; remove it from anything
+ * else. A deploy compares its answer with the manifest it deployed.
+ *
+ * @internal
+ */
+export const syncHealthModule = Effect.gen(function* () {
+  const path = yield* Path.Path;
+  const convexDirectory = yield* ConvexDirectory.get;
+  const target = (yield* ConvexDirectory.target).kind;
+  const healthPath = path.join(convexDirectory, HEALTH_MODULE);
+  const current = yield* readManifest;
+  if (target !== "app" || !Predicate.isString(current.digest))
+    return yield* removeGenerated(healthPath, []);
+  yield* writeFileString(healthPath, Declaration.healthModule(current.digest));
+});
 
 /**
  * Whether a mounted component's own codegen wrote a deploy module, so a push

@@ -192,6 +192,13 @@ export default App.make({
             path.join(out, "host-manifest.ts"),
             manifest,
           );
+          const healthModule = yield* fs.readFileString(
+            path.join(root, "host/convex/confectHealth.ts"),
+          );
+          yield* fs.writeFileString(
+            path.join(out, "host-confectHealth.ts"),
+            healthModule,
+          );
           yield* fs.writeFileString(
             path.join(out, "relay-convex.config.ts"),
             relayConfig,
@@ -251,6 +258,14 @@ export default App.make({
           ["relay", "/relay/ping", true],
           ["relay/child", "/relay/child/received", true],
         ]);
+        const health = yield* fs.readFileString(
+          path.join(root, "host/convex/confectHealth.ts"),
+        );
+        expect(health).toContain(`handler: () => "${data.digest}",`);
+        const componentHealth = yield* fs.exists(
+          path.join(root, "relay/convex/confectHealth.ts"),
+        );
+        expect(componentHealth).toBe(false);
         expect(relayConfig).toContain("CHILD_OPEN_SECRET: v.string(),");
         expect(relayConfig).toContain('REGION: "eu-west-1",');
         expect(relayConfig).toContain(
@@ -274,6 +289,10 @@ export default App.make({
           path.join(root, "host/confect/_generated/manifest.ts"),
         )).module.default as typeof data;
         expect(updated.digest).not.toBe(data.digest);
+        const updatedHealth = yield* fs.readFileString(
+          path.join(root, "host/convex/confectHealth.ts"),
+        );
+        expect(updatedHealth).toContain(`handler: () => "${updated.digest}",`);
         expect(updated.http.app?.meta?.status?.path).toBe("/renamed");
         expect(
           Arr.flatMap(Rec.values(updated.http), (groups) =>

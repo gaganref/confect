@@ -3790,17 +3790,17 @@ export const steps = MountInit.mutation([
       { timeout: 30000 },
     );
 
-    it.effect(
-      "refuses a group that would write convex/confectDeploy.ts, before writing anything",
-      () =>
+    it.effect.each(["confectDeploy", "confectHealth"])(
+      "refuses a group that would write convex/%s.ts, before writing anything",
+      (name) =>
         Effect.gen(function* () {
           const project = yield* initProject;
-          yield* project.write("confect/confectDeploy.spec.ts", Project.spec);
+          yield* project.write(`confect/${name}.spec.ts`, Project.spec);
           yield* project.write(
-            "confect/confectDeploy.impl.ts",
+            `confect/${name}.impl.ts`,
             pipe(
               Project.impl,
-              String.replace("./notes.spec", "./confectDeploy.spec"),
+              String.replace("./notes.spec", `./${name}.spec`),
             ),
           );
           const writtenFiles2 = yield* Project.writtenFiles(
@@ -3810,7 +3810,7 @@ export const steps = MountInit.mutation([
           const error = yield* Effect.flip(project.run);
           expect(error).toMatchObject({
             _tag: "InvalidDeclarationError",
-            declarationPath: "confect/confectDeploy.spec.ts",
+            declarationPath: `confect/${name}.spec.ts`,
           });
           expect(`${Reflect.get(error, "reason")}`).toContain(
             "Rename the group",
@@ -3819,40 +3819,42 @@ export const steps = MountInit.mutation([
       { timeout: 30000 },
     );
 
-    it.effect(
-      "removes a nested confectDeploy group's module once its files are deleted",
-      () =>
+    it.effect.each(["confectDeploy", "confectHealth"])(
+      "removes a nested %s group's module once its files are deleted",
+      (name) =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const project = yield* initProject;
           yield* fs.makeDirectory(path.join(project.root, "confect/jobs"));
           yield* project.write(
-            "confect/jobs/confectDeploy.spec.ts",
+            `confect/jobs/${name}.spec.ts`,
             pipe(Project.spec, String.replace("./_generated", "../_generated")),
           );
           yield* project.write(
-            "confect/jobs/confectDeploy.impl.ts",
+            `confect/jobs/${name}.impl.ts`,
             pipe(
               Project.impl,
               String.replaceAll("./_generated", "../_generated"),
-              String.replace("./notes.spec", "./confectDeploy.spec"),
+              String.replace("./notes.spec", `./${name}.spec`),
             ),
           );
           yield* project.run;
-          const found = yield* project.exists("convex/jobs/confectDeploy.ts");
+          const found = yield* project.exists(`convex/jobs/${name}.ts`);
           expect(found).toBe(true);
           yield* fs.remove(
-            path.join(project.root, "confect/jobs/confectDeploy.spec.ts"),
+            path.join(project.root, `confect/jobs/${name}.spec.ts`),
           );
           yield* fs.remove(
-            path.join(project.root, "confect/jobs/confectDeploy.impl.ts"),
+            path.join(project.root, `confect/jobs/${name}.impl.ts`),
           );
           yield* project.run;
-          const found2 = yield* project.exists("convex/jobs/confectDeploy.ts");
+          const found2 = yield* project.exists(`convex/jobs/${name}.ts`);
           expect(found2).toBe(false);
           const confectDeploy = yield* project.read("convex/confectDeploy.ts");
           expect(confectDeploy).toBe(expectedDeploy(false));
+          const healthExists = yield* project.exists("convex/confectHealth.ts");
+          expect(healthExists).toBe(true);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

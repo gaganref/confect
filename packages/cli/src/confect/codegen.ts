@@ -67,6 +67,7 @@ import {
   readPrevious,
   syncDeclaration,
   syncDeployModule,
+  syncHealthModule,
   syncDeclaredHttp,
   syncRoutes,
 } from "./declaration.js";
@@ -253,6 +254,7 @@ const runCodegen = Effect.gen(function* () {
   );
   yield* SectionFiles.removeUnclaimed(sections.files);
   yield* syncDeployModule(declared);
+  yield* syncHealthModule;
   if (Option.isSome(declared)) yield* generateTesting(declared.value);
   yield* SectionFiles.verify(backend, mounts);
   const fs = yield* FileSystem.FileSystem;
@@ -363,6 +365,7 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           );
         else if (Option.isSome(declared))
           yield* syncRoutes(declared.value, base);
+        if (Option.isSome(declared)) yield* syncHealthModule;
         // Which sections wrap crons can change while the section files stay.
         if (Option.isSome(declared))
           yield* logGenerated(generateCrons(sections.crons));
@@ -745,6 +748,12 @@ const rejectDeployModuleGroup = Effect.gen(function* () {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
   const confectDirectory = yield* ConfectDirectory.get;
+  if (yield* fs.exists(path.join(confectDirectory, "confectHealth.spec.ts")))
+    return yield* CodegenError.InvalidDeclarationError.make({
+      declarationPath: "confect/confectHealth.spec.ts",
+      reason:
+        "its functions would go in convex/confectHealth.ts, which codegen writes for the deploy's digest check. Rename the group.",
+    });
   if (yield* fs.exists(path.join(confectDirectory, "confectDeploy.spec.ts")))
     return yield* CodegenError.InvalidDeclarationError.make({
       declarationPath: "confect/confectDeploy.spec.ts",

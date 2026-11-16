@@ -239,6 +239,16 @@ New code can serve requests briefly before its mounts' `init` has run. Write han
 
 A push outside Alchemy, such as `convex deploy` or `convex dev`, does not run `init`, and is unsupported for a backend whose mounts declare one. `confect dev` does not push, so it runs no `init` either.
 
+## Verify the deployed manifest
+
+When `Confect.Backend` receives a `manifest`, every push checks that the live code answers its digest. Codegen writes `convex/confectHealth.ts`, which exports the internal query `confectHealth:digest`. The query returns the final digest as a literal and imports no backend modules. Components do not receive this file.
+
+Alchemy calls the query after all mount initialization, before releasing the deployment's push lock. A missing query, a failed call, a non-string answer, or another digest fails the deployment with `HealthCheckFailed`. The diagnostic includes the expected digest and either the answered digest or the failure category. A successful push alone is insufficient.
+
+Run codegen before the stack imports its manifest. If the prepare step regenerates a different manifest, the live query answers the new digest and the deployment fails against the old imported digest. Reload the stack with the regenerated manifest and deploy again.
+
+For a standalone `Convex.Code`, pass `digest: manifest.digest` to enable the same check. A `Backend` without a manifest and a `Code` without a digest retain their existing behavior. The check proves agreement with the generated manifest, not a hash of every backend source byte. A failure does not undo the pushed code or mount initialization that already completed.
+
 ## Understand updates and deletion
 
 Code is pushed on every Alchemy deployment, including when resource props have not changed. This deliberately catches source-only edits, workspace dependency changes, and out-of-band code pushes without relying on an incomplete file hash. Convex still performs its normal validation and deployment checks. Removing `Code` or `Backend` does not erase deployed functions or data.

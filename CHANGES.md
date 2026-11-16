@@ -1225,6 +1225,18 @@ secrets. `Backend` converts these refusals to defects to preserve the documented
 stack's typed error channel. Changeset: `root-mount-placement.md`.
 Upstream: not planned; manifest-driven mount settings are a fork concept.
 
+### Verify the live manifest after a push
+
+Codegen writes the app's final manifest digest into the generated internal
+query `confectHealth:digest` in `convex/confectHealth.ts`. A manifest-backed
+`Backend` passes the expected digest to `Code`, which calls the query after all
+mount initialization and before releasing the push lock. Missing, failed,
+non-string, or stale answers fail with `HealthCheckFailed`. Plain `Code` can
+opt in with `digest`; deployments without an expected digest keep their prior
+behavior. The check compares manifests and does not roll back an already
+pushed deployment. Changeset: `deploy-manifest-health.md`.
+Upstream: not planned; the manifest handshake is a fork concept.
+
 ### Deploy Convex through Alchemy
 
 Add the optional `@confect/alchemy` package for cloud projects, deployments, keys,

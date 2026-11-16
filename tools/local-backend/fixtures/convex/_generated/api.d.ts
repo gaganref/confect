@@ -1222,6 +1222,9 @@ export declare const api: {
  * ```
  */
 export declare const internal: {
+  confectHealth: {
+    digest: FunctionReference<"query", "internal", {}, string>;
+  };
   groups: {
     callbacks: {
       onEvent: FunctionReference<

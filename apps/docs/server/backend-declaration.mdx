@@ -4,18 +4,18 @@ title: "Backend Declaration"
 description: "Declare a backend's env, mounted components, auth providers and HTTP API in confect/, and let codegen write convex.config.ts, auth.config.ts and a manifest."
 ---
 
-A backend declaration describes your Convex backend in four files beside your functions. `confect codegen` and `confect dev` then write `convex/convex.config.ts`, `convex/auth.config.ts`, `convex/http.ts` and `confect/_generated/manifest.ts` from it, so the env your handlers read, the env Convex validates, the env each mounted component receives and the env your infrastructure supplies all come from one place.
+A backend declaration describes your Convex backend in four files beside your functions. `confect codegen` and `confect dev` then write `convex/convex.config.ts`, `convex/auth.config.ts`, `convex/http.ts`, `convex/confectHealth.ts` and `confect/_generated/manifest.ts` from it, so the env your handlers read, the env Convex validates, the env each mounted component receives and the env your infrastructure supplies all come from one place.
 
 After upgrading to the fork based on upstream 10.3.1, run `confect codegen` again. The generator output changed; do not keep files emitted by the previous generator.
 
 The declaration is opt-in. It applies when `confect/app.ts` exists. Without that file, you write `convex/convex.config.ts` yourself and `confect/auth.ts` and `confect/http.ts` keep their [existing forms](/concepts/project-structure).
 
-| File              | Holds                                | Codegen writes                                           |
-| ----------------- | ------------------------------------ | -------------------------------------------------------- |
-| `confect/env.ts`  | `Env.make(name, { ... })`            | The `env` of `convex/convex.config.ts`, and the manifest |
-| `confect/app.ts`  | `App.make({ env, mounts })`          | `convex/convex.config.ts`, and the manifest              |
-| `confect/auth.ts` | `Auth.make(app, { providers })`      | `convex/auth.config.ts`                                  |
-| `confect/http.ts` | `Http.make({ api, handlers, docs })` | `convex/http.ts`                                         |
+| File              | Holds                                | Codegen writes                                                         |
+| ----------------- | ------------------------------------ | ---------------------------------------------------------------------- |
+| `confect/env.ts`  | `Env.make(name, { ... })`            | The `env` of `convex/convex.config.ts`, and the manifest               |
+| `confect/app.ts`  | `App.make({ env, mounts })`          | `convex/convex.config.ts`, `convex/confectHealth.ts`, and the manifest |
+| `confect/auth.ts` | `Auth.make(app, { providers })`      | `convex/auth.config.ts`                                                |
+| `confect/http.ts` | `Http.make({ api, handlers, docs })` | `convex/http.ts`                                                       |
 
 ## `env.ts`
 
@@ -316,6 +316,8 @@ const values: Manifest.Values<typeof manifest> = {
 `Manifest.RouteOf<typeof manifest>` is the union of these leaves. When a manifest keeps its digest as a literal, a leaf from a different digest fails that type. Infrastructure can read `manifest.http.bulkEmail.webhooks.resend` without importing backend modules.
 
 `digest` covers the route catalogue as well as files that `env.ts`, `app.ts` or `auth.ts` imports from your project, the `convex` version, and the generator format. A route edit changes the digest on every leaf. Codegen writes the manifest before it validates anything else, and removes it when the declaration fails, so a stale manifest never outlives the declaration it came from.
+
+Declared apps also receive `convex/confectHealth.ts`. Its internal query `confectHealth:digest` returns the final manifest digest. [`Confect.Backend`](/guides/alchemy#verify-the-deployed-manifest) uses that answer to check the live deployment after mount initialization. The generated query imports no backend code. A component has no health query. The root group name `confectHealth` is reserved for this generated file; nested groups may use the name.
 
 ## Manifest sections
 
