@@ -12,6 +12,14 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Alchemy Convex error codes
+
+The Convex client retains the server's error code separately from its HTTP
+classification so callers can distinguish write conflicts from other failures.
+HTTP errors name the operation, status and code without retaining response body
+messages that could contain secrets. Changeset: `alchemy-convex-server-codes.md`.
+Upstream: planned, through the maintainer.
+
 ## Test invocation services
 
 `runHandlerPromise` starts a query, mutation or action handler with the

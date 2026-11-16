@@ -68,6 +68,7 @@ export type EnvironmentVariables = Readonly<
 const errorFields = {
   operation: Schema.String,
   status: Schema.optionalKey(Schema.Finite),
+  serverCode: Schema.optionalKey(Schema.String),
   code: Schema.Literals([
     "HttpError",
     "TransportError",
@@ -81,17 +82,29 @@ const errorFields = {
 export class ConvexApiError extends Schema.TaggedError<
   ConvexApiError,
   { readonly brand: unique symbol }
->()("ConvexApiError", errorFields) {}
+>()("ConvexApiError", errorFields) {
+  override get message() {
+    return `${this.operation} failed (${this.status ?? this.code}, ${this.serverCode ?? this.code})`;
+  }
+}
 
 export class ConvexNotFound extends Schema.TaggedError<
   ConvexNotFound,
   { readonly brand: unique symbol }
->()("ConvexNotFound", errorFields) {}
+>()("ConvexNotFound", errorFields) {
+  override get message() {
+    return `${this.operation} failed (${this.status ?? this.code}, ${this.serverCode ?? this.code})`;
+  }
+}
 
 export class ConvexConflict extends Schema.TaggedError<
   ConvexConflict,
   { readonly brand: unique symbol }
->()("ConvexConflict", errorFields) {}
+>()("ConvexConflict", errorFields) {
+  override get message() {
+    return `${this.operation} failed (${this.status ?? this.code}, ${this.serverCode ?? this.code})`;
+  }
+}
 
 /**
  * A function the deployment ran failed, with the message Convex reports.
@@ -249,26 +262,22 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
         ConvexApiError.make({ operation, code: "TransportError" }),
       ),
     );
-    if (response.status === 404) {
-      return yield* ConvexNotFound.make({
-        operation,
-        status: 404,
-        code: "HttpError",
-      });
-    }
-    if (response.status === 409) {
-      return yield* ConvexConflict.make({
-        operation,
-        status: 409,
-        code: "HttpError",
-      });
-    }
     if (response.status < 200 || response.status >= 300) {
-      return yield* ConvexApiError.make({
+      const server = yield* response.json.pipe(
+        Effect.flatMap(
+          Schema.decodeUnknownEffect(Schema.Struct({ code: Schema.String })),
+        ),
+        Effect.orElseSucceed(() => undefined),
+      );
+      const fields = {
         operation,
         status: response.status,
-        code: "HttpError",
-      });
+        code: "HttpError" as const,
+        ...(server === undefined ? {} : { serverCode: server.code }),
+      };
+      if (response.status === 404) return yield* ConvexNotFound.make(fields);
+      if (response.status === 409) return yield* ConvexConflict.make(fields);
+      return yield* ConvexApiError.make(fields);
     }
     return response;
   });

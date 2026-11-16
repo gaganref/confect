@@ -540,7 +540,7 @@ describe("ConvexClient", () => {
       const secret = "untrusted-error-body-secret";
       const http = mockHttp(
         Arr.map([404, 409, 401, 429, 500, 302], (status) =>
-          Response.json({ code: secret, message: secret }, { status }),
+          Response.json({ code: "TestFailure", message: secret }, { status }),
         ),
       );
       return Effect.gen(function* () {
@@ -571,6 +571,44 @@ describe("ConvexClient", () => {
           }
           expect(http.requests).toHaveLength(6);
         }).pipe(Effect.provideContext(services9));
+      });
+    },
+  );
+
+  it.effect.each([
+    {
+      body: {
+        code: "OptimisticConcurrencyControlFailure",
+        message: "body-secret",
+      },
+      serverCode: "OptimisticConcurrencyControlFailure",
+    },
+    { body: { message: "body-secret" }, serverCode: undefined },
+  ])(
+    "preserves the server code independently of the HTTP classification ($serverCode)",
+    ({ body, serverCode }) => {
+      const http = mockHttp([Response.json(body, { status: 503 })]);
+      return Effect.gen(function* () {
+        const services = yield* Layer.build(
+          clientLayer.pipe(Layer.provide(http.layer)),
+        );
+        return yield* Effect.gen(function* () {
+          const client = yield* ConvexClient.ConvexClient;
+          const error = yield* client
+            .updateEnvironmentVariables(deploymentUrl, deployKey, [])
+            .pipe(Effect.flip);
+          expect(error).toMatchObject({
+            _tag: "ConvexApiError",
+            operation: "updateEnvironmentVariables",
+            status: 503,
+            code: "HttpError",
+          });
+          expect(error.serverCode).toBe(serverCode);
+          expect(error.message).toContain("updateEnvironmentVariables");
+          expect(error.message).toContain("503");
+          expect(error.message).toContain(serverCode ?? "HttpError");
+          yield* expectSecretSafe(error, "body-secret");
+        }).pipe(Effect.provideContext(services));
       });
     },
   );
