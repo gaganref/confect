@@ -2,6 +2,9 @@ import { it, expect, expectTypeOf } from "@effect/vitest";
 import * as Layer from "effect/Layer";
 import { Unowned } from "alchemy/AdoptPolicy";
 import * as Effect from "effect/Effect";
+import * as Result from "effect/Result";
+import * as Record from "effect/Record";
+import * as Array from "effect/Array";
 
 import * as Deployment from "@confect/alchemy/Deployment";
 import { deployment, lifecycle, mockClient } from "./fixtures/ConvexClient";
@@ -436,6 +439,52 @@ it.effect(
         expect(error._tag).toBe("OwnedBySomeoneElse");
         expect(mock.client.createDeployment).toHaveBeenCalledTimes(1);
       }).pipe(Effect.provideContext(services5));
+    });
+  },
+);
+
+it.effect.each(
+  Array.flatMap(
+    [NaN, Infinity, -Infinity, 1.5, Number.MAX_SAFE_INTEGER + 1],
+    (expiresAt) =>
+      Array.map(
+        ["create", "update", "plan create", "plan update"] as const,
+        (operation) => ({ expiresAt, operation }),
+      ),
+  ),
+)(
+  "rejects unsafe expiry $expiresAt before any API call on $operation",
+  ({ expiresAt, operation }) => {
+    const mock = mockClient();
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(mock.layer);
+      const provider = yield* Deployment.provider.pipe(
+        Effect.provideContext(services),
+      );
+      const input = {
+        ...lifecycle,
+        news: { ...props, expiresAt },
+        olds: props,
+        output:
+          operation === "create" || operation === "plan create"
+            ? undefined
+            : { ...attrs, expiresAt: 1_800_000_000_000 },
+        oldBindings: [],
+        newBindings: [],
+      };
+      const result = yield* (
+        operation === "plan create" || operation === "plan update"
+          ? provider.diff(input).pipe(Effect.asVoid)
+          : provider.reconcile(input).pipe(Effect.asVoid)
+      ).pipe(Effect.result);
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result))
+        expect(result.failure).toMatchObject({
+          _tag: "InvalidDeploymentExpiry",
+          expiresAt,
+        });
+      for (const method of Record.values(mock.client))
+        expect(method).not.toHaveBeenCalled();
     });
   },
 );
