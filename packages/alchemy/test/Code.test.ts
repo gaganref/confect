@@ -19,6 +19,7 @@ import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Schedule from "effect/Schedule";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
 import * as TestClock from "effect/testing/TestClock";
@@ -714,7 +715,14 @@ describe("Code command boundary", () => {
                     pid,
                     cause,
                   }),
-                }).pipe(Effect.result);
+                }).pipe(
+                  Effect.result,
+                  Effect.repeat({
+                    while: (state) => Result.isSuccess(state),
+                    schedule: Schedule.spaced("10 millis"),
+                  }),
+                  Effect.timeout("3 seconds"),
+                );
                 assertIs(stopped, Result.isFailure);
                 expect(stopped.failure.cause).toMatchObject({ code: "ESRCH" });
               }
