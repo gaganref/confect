@@ -105,10 +105,7 @@ it.effect.each([{ expiresAt: null }, { expiresAt: 1_800_000_000_000 }])(
   },
 );
 
-it.effect.each([
-  { change: "remove", expiry: {} },
-  { change: "clear", expiry: { expiresAt: null } },
-])("clears a managed expiry in place on $change", ({ expiry }) => {
+it.effect("clears a managed expiry in place with explicit null", () => {
   const mock = mockClient();
   mock.state.deployments = [
     deployment({ deploymentType: "dev", expiresAt: 1_800_000_000_000 }),
@@ -118,7 +115,7 @@ it.effect.each([
     const provider = yield* Deployment.provider.pipe(
       Effect.provideContext(services),
     );
-    const news = { ...props, type: "dev" as const, ...expiry };
+    const news = { ...props, type: "dev" as const, expiresAt: null };
     const input = {
       ...lifecycle,
       news,
@@ -171,6 +168,38 @@ it.effect(
         expiresAt: 1_800_000_000_000,
       });
       expect(mock.client.updateDeployment).not.toHaveBeenCalled();
+    });
+  },
+);
+
+it.effect.each([{ expiresAt: 1_800_000_000_000 }, { expiresAt: null }])(
+  "preserves live expiry when the prop is omitted after $expiresAt",
+  (oldExpiry) => {
+    const mock = mockClient();
+    mock.state.deployments = [deployment({ expiresAt: 1_800_003_600_000 })];
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(mock.layer);
+      const provider = yield* Deployment.provider.pipe(
+        Effect.provideContext(services),
+      );
+      const input = {
+        ...lifecycle,
+        news: props,
+        olds: { ...props, ...oldExpiry },
+        output: { ...attrs, expiresAt: oldExpiry.expiresAt },
+        oldBindings: [],
+        newBindings: [],
+      };
+      const diff = yield* provider.diff(input);
+      expect(diff).toBeUndefined();
+      const preserved = yield* provider.reconcile(input);
+      expect(preserved).toMatchObject({
+        name: attrs.name,
+        expiresAt: 1_800_003_600_000,
+      });
+      expect(mock.client.updateDeployment).not.toHaveBeenCalled();
+      expect(mock.client.createDeployment).not.toHaveBeenCalled();
+      expect(mock.client.deleteDeployment).not.toHaveBeenCalled();
     });
   },
 );

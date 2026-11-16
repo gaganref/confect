@@ -114,7 +114,7 @@ const makeHarness = (
 
 describe("cloud deployment lifecycle", () => {
   it.effect(
-    "creates, extends, and removes a declared expiry without replacement",
+    "sets, clears with null, sets again, and retains expiry on resource removal",
     () =>
       Effect.gen(function* () {
         const fixture = mockClient();
@@ -152,9 +152,32 @@ describe("cloud deployment lifecycle", () => {
           name: "happy-otter-123",
           expiresAt: 1_800_003_600_000,
         });
-        const cleared = yield* deploy(resources({}));
+        const omitted = yield* deploy(resources({}));
+        expect(omitted).toEqual(extended);
+        expect(fixture.client.updateDeployment).toHaveBeenCalledTimes(1);
+        const cleared = yield* deploy(resources({ expiresAt: null }));
         expect(cleared).toEqual({ name: "happy-otter-123", expiresAt: null });
+        expect(fixture.client.updateDeployment).toHaveBeenLastCalledWith(
+          "happy-otter-123",
+          {
+            reference: "example",
+            expiresAt: null,
+          },
+        );
+        const reset = yield* deploy(
+          resources({ expiresAt: 1_800_007_200_000 }),
+        );
+        expect(reset).toEqual({
+          name: "happy-otter-123",
+          expiresAt: 1_800_007_200_000,
+        });
         yield* deploy(Effect.succeed({}));
+        expect(fixture.state.deployments).toEqual([
+          expect.objectContaining({
+            name: "happy-otter-123",
+            expiresAt: 1_800_007_200_000,
+          }),
+        ]);
         expect(fixture.client.createDeployment).toHaveBeenCalledTimes(1);
         expect(fixture.client.deleteDeployment).not.toHaveBeenCalled();
       }),
