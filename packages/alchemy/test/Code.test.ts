@@ -707,6 +707,16 @@ describe("Code command boundary", () => {
                     pid,
                   }),
                 }).pipe(Effect.ignore);
+                const stopped = yield* Effect.try({
+                  try: () => process.kill(pid, 0),
+                  catch: (cause) => ({
+                    _tag: "GrandchildProbeFailed" as const,
+                    pid,
+                    cause,
+                  }),
+                }).pipe(Effect.result);
+                assertIs(stopped, Result.isFailure);
+                expect(stopped.failure.cause).toMatchObject({ code: "ESRCH" });
               }
             }).pipe(Effect.orDie),
           );
