@@ -141,6 +141,57 @@ Effect.gen(function* () {
 
 Required keys must be present. Unknown keys, plain strings for secret fields, and values outside a field's declared literals fail to typecheck. Each value also accepts an Alchemy `Input`. Optional fields can be omitted; `env` itself can be omitted when all fields are optional. Without `manifest`, the existing untyped env record remains available. Infra imports only the generated manifest, never backend implementation code.
 
+## Use a custom domain
+
+Declare a custom address for a cloud deployment. Use `"convexCloud"` for client
+connections or `"convexSite"` for HTTP actions. The provider uses
+`CONVEX_ACCESS_TOKEN`.
+
+```ts
+const domain =
+  yield *
+  Convex.CustomDomain("ApiDomain", {
+    deployment,
+    domain: "api.example.com",
+    requestDestination: "convexCloud",
+    canonical: true,
+  });
+
+return {
+  url: domain.url,
+  canonicalUrl: domain.canonicalUrl,
+  verificationTime: domain.verificationTime,
+};
+```
+
+`url` is the domain's HTTPS address. `verificationTime` is `null` until Convex
+reports verification. The resource returns without waiting for DNS. Configure
+DNS from Convex's instructions for your deployment. The API does not describe a
+verification record, so this resource does not create or infer one.
+
+`canonical` defaults to `false`. Set it to `true` to make the domain the
+canonical URL for its destination. `canonicalUrl` reports that destination's
+current canonical URL. Turning the option off or removing the resource resets
+the canonical URL to Convex's default, rather than restoring an earlier custom
+URL. Give each deployment destination one canonical URL owner.
+
+Removing the resource deletes its domain. A change to the domain, destination,
+or deployment deletes the old domain before creating its replacement. That
+ordering prevents old-domain cleanup from resetting the new canonical URL,
+but can briefly interrupt the custom address. Repeated applies reuse a domain
+recorded in this resource's state. An existing domain outside its state is
+refused, including during replacement and with adoption enabled. If a create
+response or the ownership checkpoint is lost, the resource cannot prove
+ownership. Remove the orphaned domain before retrying, or repair the saved state.
+
+Not proven on a real account:
+
+- Which plans permit custom domains.
+- DNS verification records, timing, certificate issuance, and propagation.
+- Whether an unverified domain can become canonical on every supported plan.
+- How canonical URLs affect clients and sign-in redirects after propagation.
+- Local backend support. `alchemy dev` fails with `UnsupportedLocalCustomDomain`.
+
 ## Use plain Convex
 
 `Convex.Code` runs the Convex deploy command without Confect codegen:

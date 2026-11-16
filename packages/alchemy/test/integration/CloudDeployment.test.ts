@@ -2,6 +2,7 @@ import * as NodeServices from "../fixtures/NodeTestServices";
 import { it } from "@effect/vitest";
 import { Confect, Convex } from "@confect/alchemy";
 import * as Code from "@confect/alchemy/Code";
+import * as CustomDomain from "@confect/alchemy/CustomDomain";
 import * as Deployment from "@confect/alchemy/Deployment";
 import * as DeployKey from "@confect/alchemy/DeployKey";
 import * as EnvironmentVariables from "@confect/alchemy/EnvironmentVariables";
@@ -66,6 +67,7 @@ const makeHarness = (
       DeployKey.DeployKey,
       EnvironmentVariables.EnvironmentVariables,
       Code.Code,
+      CustomDomain.CustomDomain,
     ]),
   ).pipe(
     Layer.provide(
@@ -75,6 +77,7 @@ const makeHarness = (
         DeployKey.layer,
         EnvironmentVariables.layer,
         Code.layer,
+        CustomDomain.layer,
       ),
     ),
     Layer.provide(client),
@@ -457,3 +460,222 @@ describe("cloud deployment lifecycle", () => {
       }),
   );
 });
+
+it.effect(
+  "applies custom domains, restores drift, replaces domains and resets on removal",
+  () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const deploy = makeHarness(
+        fixture.layer,
+        Layer.succeed(CommandRunner, {
+          prepare: () => Effect.void,
+          deploy: () => Effect.void,
+        }),
+      );
+      const deployment = {
+        name: "happy-otter-123",
+        url: "https://happy-otter-123.convex.cloud",
+      };
+      const domain = (name: string, canonical: boolean) =>
+        Effect.gen(function* () {
+          const resource = yield* Convex.CustomDomain("Domain", {
+            deployment,
+            domain: name,
+            requestDestination: "convexCloud",
+            canonical,
+          });
+          return {
+            domain: resource.domain,
+            url: resource.url,
+            canonicalUrl: resource.canonicalUrl,
+            verificationTime: resource.verificationTime,
+          };
+        });
+      const first = yield* deploy(domain("api.example.com", true));
+      expect(first).toEqual({
+        domain: "api.example.com",
+        url: "https://api.example.com",
+        canonicalUrl: "https://api.example.com",
+        verificationTime: null,
+      });
+      const second = yield* deploy(domain("api.example.com", true));
+      expect(second).toEqual(first);
+      yield* fixture.client.updateCanonicalUrl(deployment.url, {
+        requestDestination: "convexCloud",
+        url: "https://manual.example.com",
+      });
+      const restored = yield* deploy(domain("api.example.com", true));
+      expect(restored).toEqual(first);
+      const replaced = yield* deploy(domain("new.example.com", true));
+      const urls = yield* fixture.client.getCanonicalUrls(deployment.url);
+      const domains = yield* fixture.client.listCustomDomains(deployment.name);
+      expect({ replaced, urls, domains }).toEqual({
+        replaced: {
+          domain: "new.example.com",
+          url: "https://new.example.com",
+          canonicalUrl: "https://new.example.com",
+          verificationTime: null,
+        },
+        urls: {
+          convexCloudUrl: "https://new.example.com",
+          convexSiteUrl: "https://happy-otter-123.convex.site",
+        },
+        domains: [
+          {
+            deploymentName: deployment.name,
+            domain: "new.example.com",
+            requestDestination: "convexCloud",
+            creationTime: 100,
+            verificationTime: null,
+          },
+        ],
+      });
+      const reset = yield* deploy(domain("new.example.com", false));
+      expect(reset.canonicalUrl).toBe(deployment.url);
+      yield* deploy(domain("new.example.com", true));
+      yield* deploy(Effect.succeed({}));
+      const after = yield* fixture.client.getCanonicalUrls(deployment.url);
+      const remaining = yield* fixture.client.listCustomDomains(
+        deployment.name,
+      );
+      expect({ after, remaining }).toEqual({
+        after: {
+          convexCloudUrl: deployment.url,
+          convexSiteUrl: "https://happy-otter-123.convex.site",
+        },
+        remaining: [],
+      });
+    }),
+);
+
+it.effect(
+  "refuses a foreign replacement domain before deleting the current domain",
+  () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const deploy = makeHarness(
+        fixture.layer,
+        Layer.succeed(CommandRunner, {
+          prepare: () => Effect.void,
+          deploy: () => Effect.void,
+        }),
+      );
+      const deployment = {
+        name: "happy-otter-123",
+        url: "https://happy-otter-123.convex.cloud",
+      };
+      const domain = (name: string) =>
+        Effect.gen(function* () {
+          const resource = yield* Convex.CustomDomain("Domain", {
+            deployment,
+            domain: name,
+            requestDestination: "convexCloud",
+            canonical: true,
+          });
+          return { url: resource.url };
+        });
+      yield* deploy(domain("api.example.com"));
+      yield* fixture.client.createCustomDomain(deployment.name, {
+        domain: "foreign.example.com",
+        requestDestination: "convexCloud",
+      });
+      const result = yield* deploy(domain("foreign.example.com")).pipe(
+        Effect.result,
+      );
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "OwnedBySomeoneElse" },
+      });
+      const domains = yield* fixture.client.listCustomDomains(deployment.name);
+      const urls = yield* fixture.client.getCanonicalUrls(deployment.url);
+      expect({ domains, urls }).toEqual({
+        domains: [
+          {
+            deploymentName: deployment.name,
+            domain: "api.example.com",
+            requestDestination: "convexCloud",
+            creationTime: 100,
+            verificationTime: null,
+          },
+          {
+            deploymentName: deployment.name,
+            domain: "foreign.example.com",
+            requestDestination: "convexCloud",
+            creationTime: 100,
+            verificationTime: null,
+          },
+        ],
+        urls: {
+          convexCloudUrl: "https://api.example.com",
+          convexSiteUrl: "https://happy-otter-123.convex.site",
+        },
+      });
+    }),
+);
+
+it.effect.each([false, true])(
+  "recovers an interrupted canonical update with retry=%s",
+  (retry) =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      let loseResponse = true;
+      const client = Layer.succeed(ConvexClient, {
+        ...fixture.client,
+        updateCanonicalUrl: (url, input) =>
+          fixture.client.updateCanonicalUrl(url, input).pipe(
+            Effect.andThen(
+              Effect.suspend(() => {
+                if (!loseResponse) return Effect.void;
+                loseResponse = false;
+                return Effect.fail(
+                  ConvexApiError.make({
+                    operation: "updateCanonicalUrl",
+                    code: "TransportError",
+                  }),
+                );
+              }),
+            ),
+          ),
+      });
+      const deploy = makeHarness(
+        client,
+        Layer.succeed(CommandRunner, {
+          prepare: () => Effect.void,
+          deploy: () => Effect.void,
+        }),
+      );
+      const deployment = {
+        name: "happy-otter-123",
+        url: "https://happy-otter-123.convex.cloud",
+      };
+      const resources = Effect.gen(function* () {
+        const domain = yield* Convex.CustomDomain("Domain", {
+          deployment,
+          domain: "api.example.com",
+          requestDestination: "convexCloud",
+          canonical: true,
+        });
+        return { canonicalUrl: domain.canonicalUrl };
+      });
+      const result = yield* deploy(resources).pipe(Effect.result);
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "ConvexApiError", code: "TransportError" },
+      });
+      if (retry) {
+        const output = yield* deploy(resources);
+        expect(output).toEqual({ canonicalUrl: "https://api.example.com" });
+      }
+      yield* deploy(Effect.succeed({}));
+      const domains = yield* fixture.client.listCustomDomains(deployment.name);
+      const urls = yield* fixture.client.getCanonicalUrls(deployment.url);
+      expect({ domains, urls }).toEqual({
+        domains: [],
+        urls: {
+          convexCloudUrl: deployment.url,
+          convexSiteUrl: "https://happy-otter-123.convex.site",
+        },
+      });
+    }),
+);

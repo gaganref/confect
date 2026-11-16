@@ -8,6 +8,11 @@ import { vi } from "vitest";
 import {
   ConvexClient,
   ConvexNotFound,
+  ConvexConflict,
+  type CustomDomain,
+  type CustomDomainInput,
+  type CanonicalUrls,
+  type UpdateCanonicalUrlInput,
   type Deployment,
   type DeployKey,
   type Project,
@@ -15,6 +20,8 @@ import {
   type UpdateProjectInput,
 } from "../../src/ConvexClient";
 import * as Option from "effect/Option";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 
 export const lifecycle = {
@@ -65,14 +72,99 @@ export const key = (overrides: Partial<DeployKey> = {}): DeployKey => ({
 export const mockClient = (options: { readonly deployKey?: string } = {}) => {
   const issuedKeys = new Map<string, number>();
   const state: {
+    domains: CustomDomain[];
+    canonicalUrls: Record<string, CanonicalUrls>;
     projects: Project[];
     deployments: Deployment[];
     keys: DeployKey[];
     variables: Record<string, Redacted.Redacted<string>>;
-  } = { projects: [], deployments: [], keys: [], variables: {} };
+  } = {
+    domains: [],
+    canonicalUrls: {},
+    projects: [],
+    deployments: [],
+    keys: [],
+    variables: {},
+  };
   const missing = () =>
     ConvexNotFound.make({ operation: "test", code: "HttpError", status: 404 });
   const client = {
+    listCustomDomains: vi.fn((name: string) =>
+      Effect.sync(() =>
+        Array.filter(state.domains, (domain) => domain.deploymentName === name),
+      ),
+    ),
+    createCustomDomain: vi.fn((name: string, input: CustomDomainInput) =>
+      Effect.suspend(() => {
+        if (
+          Array.some(
+            state.domains,
+            (domain) =>
+              domain.domain === input.domain &&
+              domain.requestDestination === input.requestDestination,
+          )
+        )
+          return Effect.fail(
+            ConvexConflict.make({
+              operation: "createCustomDomain",
+              code: "HttpError",
+              status: 409,
+            }),
+          );
+        state.domains.push({
+          ...input,
+          deploymentName: name,
+          creationTime: 100,
+          verificationTime: null,
+        });
+        return Effect.void;
+      }),
+    ),
+    deleteCustomDomain: vi.fn((name: string, input: CustomDomainInput) =>
+      Effect.suspend(() => {
+        const matches = (domain: CustomDomain) =>
+          domain.deploymentName === name &&
+          domain.domain === input.domain &&
+          domain.requestDestination === input.requestDestination;
+        if (!Array.some(state.domains, matches)) return Effect.fail(missing());
+        state.domains = Array.filter(
+          state.domains,
+          (domain) => !matches(domain),
+        );
+        return Effect.void;
+      }),
+    ),
+    getCanonicalUrls: vi.fn((url: string) =>
+      Effect.sync(
+        () =>
+          state.canonicalUrls[url] ?? {
+            convexCloudUrl: url,
+            convexSiteUrl: pipe(
+              url,
+              String.replace(".convex.cloud", ".convex.site"),
+            ),
+          },
+      ),
+    ),
+    updateCanonicalUrl: vi.fn((url: string, input: UpdateCanonicalUrlInput) =>
+      Effect.sync(() => {
+        const defaults = {
+          convexCloudUrl: url,
+          convexSiteUrl: pipe(
+            url,
+            String.replace(".convex.cloud", ".convex.site"),
+          ),
+        };
+        const field =
+          input.requestDestination === "convexCloud"
+            ? "convexCloudUrl"
+            : "convexSiteUrl";
+        state.canonicalUrls[url] = {
+          ...(state.canonicalUrls[url] ?? defaults),
+          [field]: input.url ?? defaults[field],
+        };
+      }),
+    ),
     runFunction: vi.fn(() => Effect.die("runFunction is not faked")),
     listProjects: vi.fn(() => Effect.sync(() => state.projects)),
     getProject: vi.fn((id: number) =>

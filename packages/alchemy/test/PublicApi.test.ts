@@ -1,7 +1,7 @@
 import type { Input } from "alchemy/Input";
 import type * as Output from "alchemy/Output";
 import { Confect, Convex } from "@confect/alchemy";
-import { describe, expectTypeOf, it } from "@effect/vitest";
+import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import * as Alchemy from "alchemy";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
@@ -153,4 +153,26 @@ it("types Backend env from the manifest without executing resources", () => {
       manifest: optionalManifest,
     }),
   ).toExtend<Effect.Effect<unknown, unknown, unknown>>();
+});
+
+it("exports CustomDomain with typed destinations and canonical URL outputs", () => {
+  expect(Convex.CustomDomain.Type).toBe("Convex.CustomDomain");
+  const props = {
+    deployment: { name: "notes", url: "https://notes.convex.cloud" },
+    domain: "api.example.com",
+    requestDestination: "convexCloud" as const,
+    canonical: true,
+  };
+  const resource = Convex.CustomDomain("Domain", props);
+  expectTypeOf<Effect.Success<typeof resource>["url"]>().toExtend<
+    Output.Output<string>
+  >();
+  expectTypeOf<Effect.Success<typeof resource>["canonicalUrl"]>().toExtend<
+    Output.Output<string>
+  >();
+  expectTypeOf<Effect.Success<typeof resource>["verificationTime"]>().toExtend<
+    Output.Output<number | null>
+  >();
+  // @ts-expect-error Only Convex destinations are accepted.
+  void Convex.CustomDomain("Invalid", { ...props, requestDestination: "web" });
 });

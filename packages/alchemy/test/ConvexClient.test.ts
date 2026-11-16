@@ -12,6 +12,7 @@ import type * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { inspect } from "node:util";
 import * as Arr from "effect/Array";
+import * as Str from "effect/String";
 
 const token = Redacted.make("management-secret-for-tests");
 const deployKey = Redacted.make("deployment-secret-for-tests");
@@ -742,4 +743,178 @@ describe("ConvexClient", () => {
       });
     },
   );
+});
+
+it.effect("uses custom-domain and canonical-URL HTTP contracts", () => {
+  const domain = {
+    deploymentName: "happy-otter-123",
+    domain: "api.example.com",
+    requestDestination: "convexCloud" as const,
+    creationTime: 100,
+    verificationTime: null,
+  };
+  const urls = {
+    convexCloudUrl: "https://api.example.com",
+    convexSiteUrl: "https://happy-otter-123.convex.site",
+  };
+  const http = mockHttp([
+    new Response(null, { status: 200 }),
+    Response.json({ domains: [domain] }),
+    Response.json(urls),
+    new Response(null, { status: 200 }),
+    new Response(null, { status: 200 }),
+    new Response(null, { status: 200 }),
+  ]);
+  return Effect.gen(function* () {
+    const services = yield* Layer.build(
+      clientLayer.pipe(Layer.provide(http.layer)),
+    );
+    return yield* Effect.gen(function* () {
+      const client = yield* ConvexClient.ConvexClient;
+      const input = {
+        domain: domain.domain,
+        requestDestination: domain.requestDestination,
+      };
+      yield* client.createCustomDomain("happy/otter", input);
+      const domains = yield* client.listCustomDomains("happy/otter");
+      expect(domains).toEqual([domain]);
+      const canonicalUrls = yield* client.getCanonicalUrls(deploymentUrl);
+      expect(canonicalUrls).toEqual(urls);
+      yield* client.updateCanonicalUrl(deploymentUrl, {
+        requestDestination: "convexCloud",
+        url: "https://api.example.com",
+      });
+      yield* client.updateCanonicalUrl(deploymentUrl, {
+        requestDestination: "convexCloud",
+      });
+      yield* client.deleteCustomDomain("happy/otter", input);
+      expect(
+        Arr.map(http.requests, ({ method, url }) => [method, url]),
+      ).toEqual([
+        [
+          "POST",
+          "https://api.convex.dev/v1/deployments/happy%2Fotter/create_custom_domain",
+        ],
+        [
+          "GET",
+          "https://api.convex.dev/v1/deployments/happy%2Fotter/custom_domains",
+        ],
+        ["GET", `${deploymentUrl}/api/v1/get_canonical_urls`],
+        ["POST", `${deploymentUrl}/api/v1/update_canonical_url`],
+        ["POST", `${deploymentUrl}/api/v1/update_canonical_url`],
+        [
+          "POST",
+          "https://api.convex.dev/v1/deployments/happy%2Fotter/delete_custom_domain",
+        ],
+      ]);
+      const createBody = yield* requestBody(http.requests[0]);
+      expect(createBody).toEqual(input);
+      const setBody = yield* requestBody(http.requests[3]);
+      expect(setBody).toEqual({
+        requestDestination: "convexCloud",
+        url: "https://api.example.com",
+      });
+      const resetBody = yield* requestBody(http.requests[4]);
+      expect(resetBody).toEqual({
+        requestDestination: "convexCloud",
+      });
+      const deleteBody = yield* requestBody(http.requests[5]);
+      expect(deleteBody).toEqual(input);
+      expect(
+        Arr.map(http.requests, (request) => request.headers.authorization),
+      ).toEqual([
+        "Bearer management-secret-for-tests",
+        "Bearer management-secret-for-tests",
+        "Convex management-secret-for-tests",
+        "Convex management-secret-for-tests",
+        "Convex management-secret-for-tests",
+        "Bearer management-secret-for-tests",
+      ]);
+    }).pipe(Effect.provideContext(services));
+  });
+});
+
+it.effect.each([401, 403, 404, 409])(
+  "preserves custom-domain and canonical-URL HTTP status %s without server text",
+  (status) => {
+    const body = Str.repeat(10000)("private-server-detail");
+    const http = mockHttp(
+      Array.from({ length: 5 }, () => new Response(body, { status })),
+    );
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(http.layer)),
+      );
+      return yield* Effect.gen(function* () {
+        const client = yield* ConvexClient.ConvexClient;
+        const input = {
+          domain: "api.example.com",
+          requestDestination: "convexCloud" as const,
+        };
+        for (const effect of [
+          client.listCustomDomains("notes").pipe(Effect.asVoid),
+          client.createCustomDomain("notes", input),
+          client.deleteCustomDomain("notes", input),
+          client.getCanonicalUrls(deploymentUrl).pipe(Effect.asVoid),
+          client.updateCanonicalUrl(deploymentUrl, {
+            requestDestination: "convexCloud",
+          }),
+        ]) {
+          const error = yield* effect.pipe(Effect.flip);
+          expect(error).toMatchObject({
+            _tag:
+              status === 404
+                ? "ConvexNotFound"
+                : status === 409
+                  ? "ConvexConflict"
+                  : "ConvexApiError",
+            status,
+            code: "HttpError",
+          });
+          yield* expectSecretSafe(error, "private-server-detail");
+        }
+      }).pipe(Effect.provideContext(services));
+    });
+  },
+);
+
+it.effect.each([
+  {
+    domains: [
+      {
+        deploymentName: "notes",
+        domain: "api.example.com",
+        requestDestination: "web",
+        creationTime: 100,
+        verificationTime: null,
+      },
+    ],
+  },
+  {
+    domains: [
+      {
+        deploymentName: "notes",
+        domain: "api.example.com",
+        requestDestination: "convexCloud",
+        creationTime: 100,
+        verificationTime: "private-server-detail",
+      },
+    ],
+  },
+])("rejects malformed custom-domain response $domains", (body) => {
+  const http = mockHttp([Response.json(body)]);
+  return Effect.gen(function* () {
+    const services = yield* Layer.build(
+      clientLayer.pipe(Layer.provide(http.layer)),
+    );
+    return yield* Effect.gen(function* () {
+      const client = yield* ConvexClient.ConvexClient;
+      const error = yield* client.listCustomDomains("notes").pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "ConvexApiError",
+        code: "InvalidResponse",
+      });
+      yield* expectSecretSafe(error, "private-server-detail");
+    }).pipe(Effect.provideContext(services));
+  });
 });

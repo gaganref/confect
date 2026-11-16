@@ -20,3 +20,9 @@ export {
 } from "./EnvironmentVariables.js";
 export { Code, type CodeProps, type CodeAttributes } from "./Code.js";
 export { providers, Providers } from "./Providers.js";
+
+export {
+  CustomDomain,
+  type CustomDomainProps,
+  type CustomDomainAttributes,
+} from "./CustomDomain.js";
