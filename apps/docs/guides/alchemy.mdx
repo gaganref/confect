@@ -170,7 +170,7 @@ timestamp or `null`. Local deployments under `alchemy dev` ignore `expiresAt`
 without restarting the backend and have no expiry output.
 
 The API may refuse an expiry for a deployment type or retention limit. It
-requires a deadline at least 30 minutes in the future. The provider surfaces
+requires a deadline at least 30 minutes in the future. The provider reports
 API refusals as `ConvexApiError` without replacing the deployment.
 
 Convex deletes the deployment and its data at the deadline, even if Alchemy
