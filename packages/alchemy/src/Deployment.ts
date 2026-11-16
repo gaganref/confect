@@ -28,7 +28,8 @@ export interface DeploymentProps {
   readonly region?: RegionName;
   readonly class?: DeploymentClass;
   /**
-   * Milliseconds since the Unix epoch. Use null to clear a cloud expiry.
+   * Safe integer milliseconds since the Unix epoch. Omit to preserve the
+   * current cloud expiry; only null clears it.
    */
   readonly expiresAt?: number | null;
 }
@@ -107,14 +108,6 @@ const validateExpiry = Effect.fn("Deployment.validateExpiry")(function* ({
     });
 });
 
-const requestedExpiry = (
-  news: DeploymentProps,
-  olds: DeploymentProps | undefined,
-) =>
-  news.expiresAt === undefined && olds?.expiresAt !== undefined
-    ? null
-    : news.expiresAt;
-
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient;
   const attributes = Effect.fn("Deployment.attributes")(function* (
@@ -164,11 +157,11 @@ export const provider = Effect.gen(function* () {
     }
   });
   return {
-    diff: Effect.fn("Deployment.diff")(function* ({ news, olds, output }) {
+    diff: Effect.fn("Deployment.diff")(function* ({ news, output }) {
       if (!isResolved(news)) return;
       yield* validateExpiry(news);
       if (output === undefined) return;
-      const expiresAt = requestedExpiry(news, olds);
+      const expiresAt = news.expiresAt;
       yield* validate(output, news);
       const deployment = yield* client
         .getDeployment(output.name)
@@ -210,7 +203,6 @@ export const provider = Effect.gen(function* () {
       fqn,
       instanceId,
       news,
-      olds,
       output,
     }) {
       yield* validateExpiry(news);
@@ -226,7 +218,7 @@ export const provider = Effect.gen(function* () {
         news.reference ??
         output?.reference ??
         (yield* resourceName("deployment", fqn, instanceId));
-      const expiresAt = requestedExpiry(news, olds);
+      const expiresAt = news.expiresAt;
       if (deployment === undefined) {
         const existing = yield* find(news.projectId, reference);
         if (existing !== undefined && !(yield* shouldAdopt(fqn)))
