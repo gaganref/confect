@@ -424,7 +424,7 @@ const wraps: ReadonlyArray<(crons: CronJobs.CronJobs) => CronJobs.CronJobs> = [$
       ", ",
     )}];
 
-export default wraps.reduce((jobs, wrap) => wrap(jobs), crons).convexCronJobs;
+export default wraps.reduce<CronJobs.CronJobs>((jobs, wrap) => wrap(jobs), crons).convexCronJobs;
 `;
 
   it.effect.each([
@@ -479,7 +479,10 @@ export default wraps.reduce((jobs, wrap) => wrap(jobs), crons).convexCronJobs;
       case: "a hand-edited body",
       source: pipe(
         wrapped(["authz"]),
-        Str.replace("wraps.reduce((jobs, wrap) => wrap(jobs), crons)", "crons"),
+        Str.replace(
+          "wraps.reduce<CronJobs.CronJobs>((jobs, wrap) => wrap(jobs), crons)",
+          "crons",
+        ),
       ),
     },
     {
