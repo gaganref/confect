@@ -305,7 +305,21 @@ export class PackagedComponentUnreadableError extends Schema.TaggedError<
   reason: Schema.String,
 }) {}
 
+/**
+ * Codegen could not load the esbuild the installed `convex` bundles with, so it
+ * cannot resolve the component definitions a mount imports as Convex's deploy
+ * bundler does.
+ */
+export class ConvexBundlerUnavailableError extends Schema.TaggedError<
+  ConvexBundlerUnavailableError,
+  { readonly brand: unique symbol }
+>()("ConvexBundlerUnavailableError", {
+  mount: Schema.String,
+  reason: Schema.String,
+}) {}
+
 export const CodegenError = Schema.Union([
+  ConvexBundlerUnavailableError,
   PackagedComponentUnreadableError,
   TestKitExportsUnknownError,
   TestKitSecretsMissingError,
@@ -610,6 +624,11 @@ export const renderCodegenError = (error: CodegenError): string => {
   if (error._tag === "TestKitExportsUnknownError") {
     return singleLine(
       `The mount "${error.mount}" installs a packaged Confect component whose test kit "${error.kit}" codegen cannot read without running it, as with a CommonJS kit or one that re-exports with \`export *\`. So codegen cannot see whether it exports the component's \`secrets\`. Make the kit an ES module that exports \`secrets\` by name, \`{}\` when the component holds none.`,
+    );
+  }
+  if (error._tag === "ConvexBundlerUnavailableError") {
+    return singleLine(
+      `The mount "${error.mount}" imports a component definition that codegen resolves with the esbuild the installed convex package deploys with, and ${error.reason}. A newer esbuild resolves imports a deploy does not, so codegen does not fall back to its own. Install convex with its dependencies where Node finds it from the app.`,
     );
   }
   if (error._tag === "PackagedComponentUnreadableError") {

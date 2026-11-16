@@ -1275,7 +1275,7 @@ const moduleSource = (path: string) => (): Promise<string> =>
  * it names no Node type.
  */
 const packageRead = `// Each packaged mount's installed files, read where codegen read them, for the test layer to check against codegen's digests.
-type PackageStep = { readonly package?: string; readonly version?: string; readonly file: string; readonly digest: string };
+type PackageStep = { readonly package?: string; readonly version?: string; readonly manifest?: string; readonly file: string; readonly digest: string };
 type PackageFile = { readonly file: string; readonly digest: string };
 type PackageNode = {
   readonly existsSync: (file: string) => boolean;
@@ -1314,6 +1314,7 @@ const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<Pac
     const located = steps.map((step) => {
       const looked = from;
       let installed: string | undefined;
+      let manifestBytes: Uint8Array | undefined;
       if (step.package !== undefined) {
         const found = installedPackage(node, looked, step.package);
         if (found === undefined) return { ...step, from: looked };
@@ -1321,11 +1322,12 @@ const packageRead = (steps: ReadonlyArray<PackageStep>, files: ReadonlyArray<Pac
         installed = attempt(
           () => (JSON.parse(node.readFileSync(node.join(found, "package.json"), "utf8")) as { readonly version?: string }).version,
         ).value;
+        manifestBytes = attempt(() => node.readFileSync(node.join(found, "package.json"))).value;
       }
       const file = node.join(root, step.file);
       const read = attempt(() => node.readFileSync(file));
       if (read.value !== undefined) from = node.dirname(node.realpathSync(file));
-      return { ...step, from: looked, found: root, installed, bytes: read.value, failure: read.failure };
+      return { ...step, from: looked, found: root, installed, manifestBytes, bytes: read.value, failure: read.failure };
     });
     return {
       steps: located,
@@ -1456,7 +1458,9 @@ const generateTesting = Effect.fnUntraced(function* (
     steps: ReadonlyArray<string>,
   ): Effect.fn.Return<
     void,
-    CodegenError.PackagedComponentUnreadableError | PlatformError.PlatformError,
+    | CodegenError.ConvexBundlerUnavailableError
+    | CodegenError.PackagedComponentUnreadableError
+    | PlatformError.PlatformError,
     FileSystem.FileSystem | Path.Path
   > {
     const unreadable = (reason: string) =>
@@ -1465,12 +1469,14 @@ const generateTesting = Effect.fnUntraced(function* (
         component,
         reason,
       });
-    const { specifier } = imported.import;
-    if (!imported.import.deployed) {
-      return yield* unreadable(
-        `Convex's deploy bundler, which resolves on the browser platform under the convex and module conditions, finds no ${quote(specifier)}.`,
-      );
+    const { specifier, deploy } = imported.import;
+    if (deploy.kind === "bundlerUnavailable") {
+      return yield* CodegenError.ConvexBundlerUnavailableError.make({
+        mount: name,
+        reason: deploy.reason,
+      });
     }
+    if (deploy.kind === "refused") return yield* unreadable(deploy.reason);
     const definition = yield* real(imported.import.path);
     const digestOf = (file: string) =>
       fs.readFile(file).pipe(
@@ -1481,8 +1487,12 @@ const generateTesting = Effect.fnUntraced(function* (
         }),
       );
     const definitionDigest = yield* digestOf(definition);
+    // A `#` subpath import resolves inside the importing package, as a
+    // relative one does.
     const bare =
-      !pipe(specifier, String.startsWith(".")) && !path.isAbsolute(specifier);
+      !pipe(specifier, String.startsWith(".")) &&
+      !pipe(specifier, String.startsWith("#")) &&
+      !path.isAbsolute(specifier);
     let packageRoot = root;
     let step: string;
     if (bare) {
@@ -1502,20 +1512,25 @@ const generateTesting = Effect.fnUntraced(function* (
           `Node's node_modules lookup finds ${quote(packageName)} at ${quote(fromProject(packageRoot))}, but Convex bundles ${quote(fromProject(definition))}, outside it.`,
         );
       }
-      const manifest = yield* fs
-        .readFileString(path.join(packageRoot, "package.json"))
-        .pipe(
-          Effect.flatMap(Schema.decodeUnknownEffect(PackageVersion)),
-          Effect.mapError((error) => unreadable(`${error.message}.`)),
-        );
-      step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)} }`;
+      const manifestFile = path.join(packageRoot, "package.json");
+      const manifest = yield* fs.readFileString(manifestFile).pipe(
+        Effect.flatMap(Schema.decodeUnknownEffect(PackageVersion)),
+        Effect.mapError((error) => unreadable(`${error.message}.`)),
+      );
+      // Its exports, imports and main fields decide what a deploy resolves,
+      // so any change to it refuses the session, at the same version too.
+      const manifestDigest = yield* digestOf(manifestFile);
+      step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}manifest: ${quote(manifestDigest)}, file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)} }`;
     } else {
       step = `{ file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)} }`;
     }
     const chain = [...steps, step];
     const directory = path.dirname(definition);
+    // Every file whose name the bundler registers, so the test kernel reads
+    // each one's source and decides the rule's second half on it, whatever a
+    // kit's glob loads.
     const files = [
-      ...(yield* FunctionModule.registeredModules(directory).pipe(
+      ...(yield* FunctionModule.candidateModules(directory).pipe(
         Effect.mapError((error) => unreadable(`${error.message}.`)),
       )),
     ].sort();
@@ -1555,6 +1570,7 @@ const generateTesting = Effect.fnUntraced(function* (
     | CodegenError.InvalidConvexConfigError
     | CodegenError.InvalidDeclarationError
     | CodegenError.MissingTestKitError
+    | CodegenError.ConvexBundlerUnavailableError
     | CodegenError.PackagedComponentUnreadableError
     | CodegenError.TestKitSecretsMissingError
     | CodegenError.TestKitExportsUnknownError,
@@ -1724,6 +1740,24 @@ const generateTesting = Effect.fnUntraced(function* (
           [],
         );
       }
+      // A local mount's tree and modules are the deploy's only when its
+      // definition is the one Convex deploys.
+      const mountDeploy = Option.map(
+        component.imported,
+        ({ import: imported }) => imported.deploy,
+      );
+      if (!fromPackage && Option.isSome(mountDeploy)) {
+        if (mountDeploy.value.kind === "bundlerUnavailable")
+          return yield* CodegenError.ConvexBundlerUnavailableError.make({
+            mount: name,
+            reason: mountDeploy.value.reason,
+          });
+        if (mountDeploy.value.kind === "refused")
+          return yield* CodegenError.InvalidConvexConfigError.make({
+            configPath: relative(config),
+            reason: `the mount "${name}" is not the one Convex deploys: ${mountDeploy.value.reason}`,
+          });
+      }
       // A push runs a parent's `init` before the components it mounts.
       const local = path.join(path.dirname(resolved), "confect");
       mounts.push({
@@ -1772,9 +1806,11 @@ const generateTesting = Effect.fnUntraced(function* (
   const policy =
     secrets.policy === undefined ? "" : `, secrets: ${secrets.policy}`;
   const moduleSources = yield* sourceMap(convexDirectory);
+  // An explicit undefined tells `TestConfect.layer`'s types that no packaged
+  // mount can change under the session.
   const packagedField =
     packagedSources.length === 0
-      ? ""
+      ? ", packagedSources: undefined"
       : `, packagedSources: {${Array.join(packagedSources, "\n")}}`;
   const registry = `{ httpMounts: [${Array.join(httpMounts, ",")}], schema, convexSchema, modules: ${modules}, sources: ${moduleSources}, components: {${Array.join(components, "\n")}}${packagedField}${policy} }`;
   yield* writeFileStringAndLog(

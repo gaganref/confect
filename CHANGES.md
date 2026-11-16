@@ -553,15 +553,21 @@ when codegen cannot list the kit's exports. The registry, and each local kit,
 now carry each module's `sources`, read from disk, which `TestBackend.layer`
 hands the kernel for its `"use node"` check. Its `packagedSources` reads
 the files of each packaged mount and every component its definition mounts,
-picked as Convex's deploy bundler picks them (esbuild, browser platform,
-`convex` and `module` conditions) and recorded with each file's SHA-256 digest.
-Each layer build reads them again, finding each package by Node's
-`node_modules` lookup; a changed version or file fails `TestBackend.layer` and
-`TestConfect.layer` with the typed `PackagedComponentChanged`, and a package
-the deploy bundler cannot resolve fails codegen with
-`PackagedComponentUnreadableError`. A kit that registers without sources gets
-them. `registeredModules` skips symbolic links, directories and TypeScript
-files without an `import` or `export`, as Convex's bundler does.
+picked as Convex's deploy bundler picks them (the esbuild the installed
+`convex` pins, browser platform, `convex` and `module` conditions, a `.ts`
+definition over its `.js` sibling) and recorded with the SHA-256 digest of each
+file and of each package's `package.json`. Each layer build reads them again,
+finding each package by Node's `node_modules` lookup; a changed version,
+manifest or file fails `TestBackend.layer` and `TestConfect.layer` with the
+typed `PackagedComponentChanged`. A package the deploy bundler cannot resolve,
+or whose deployed definition mounts what its discovery did not read, fails
+codegen with `PackagedComponentUnreadableError`, and a `convex` that cannot
+load its pinned esbuild fails `ConvexBundlerUnavailableError`. A kit that
+registers without sources gets them. `@confect/core/DeployedModule` is the one
+rule for which files Convex's bundler registers, shared by codegen and the
+test kernel, and codegen's walk follows no symbolic link. A registry without a
+packaged mount carries `packagedSources: undefined`, and only that shape types
+`TestConfect.layer` without `PackagedComponentChanged`.
 `TestBackend.layer` takes
 `componentRuntimes` to declare a component's runtime in their place. The registry now lists
 only the modules a push registers, and a package mount with no test kit fails

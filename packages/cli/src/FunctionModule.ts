@@ -1,4 +1,6 @@
+import { DeployedModule } from "@confect/core";
 import * as FileSystem from "effect/FileSystem";
+import type * as PlatformError from "effect/PlatformError";
 import * as Path from "effect/Path";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
@@ -38,14 +40,68 @@ const RESERVED_CONVEX_TS_FILE_NAMES = new Set([
 const DEPLOY_MODULE = "confectDeploy.ts";
 
 /**
- * The files of a Convex directory that a push registers as modules, matching
- * Convex's bundler entryPoints filter (convex 1.49 `src/bundler/index.ts`), so
- * ownership, removal and the test subject see the same modules as production.
- * Convex skips non-JS files, dotfiles, files with more than one dot or a space,
- * and component directories inside it. Its walk yields only regular files
- * (`:34-44`), so a directory or a symbolic link with a module's name is no
- * module, and it skips a TypeScript file with no line that starts with `import`
- * or `export` (`:486-499`). `_generated` holds no module.
+ * Every file below `directory` that Convex's bundler walks, relative to it: the
+ * walk `walkDir` makes (convex 1.49 `src/bundler/index.ts:27-46`), which reads
+ * directory entries without following links, so a symbolic link to a file or a
+ * directory is neither and is skipped, and which skips a component directory
+ * inside it, one that holds a `convex.config.ts` (`entryPoints`, `:409-419`).
+ */
+const walked = Effect.fnUntraced(function* (directory: string) {
+  const fs = yield* FileSystem.FileSystem;
+  const path = yield* Path.Path;
+  const visit = (
+    relative: string,
+  ): Effect.Effect<ReadonlyArray<string>, PlatformError.PlatformError> =>
+    Effect.gen(function* () {
+      const found: Array<string> = [];
+      const names = yield* fs.readDirectory(path.join(directory, relative));
+      for (const name of [...names].sort()) {
+        const child = relative === "" ? name : path.join(relative, name);
+        const absolute = path.join(directory, child);
+        const linked = yield* fs.readLink(absolute).pipe(
+          Effect.as(true),
+          Effect.orElseSucceed(() => false),
+        );
+        if (linked) continue;
+        const info = yield* fs.stat(absolute).pipe(Effect.option);
+        if (Option.isNone(info)) continue;
+        if (info.value.type === "Directory") {
+          if (yield* fs.exists(path.join(absolute, "convex.config.ts")))
+            continue;
+          const nested = yield* visit(child);
+          found.push(...nested);
+        } else if (info.value.type === "File") found.push(child);
+      }
+      return found;
+    });
+  return yield* visit("");
+});
+
+/**
+ * The files below a Convex directory whose names Convex's bundler registers, by
+ * the first half of `@confect/core`'s {@link DeployedModule} rule. The test
+ * registry reads each of a packaged component's candidates, so the test kernel
+ * decides the rule's second half, on the same text, for every module a kit's
+ * glob loads.
+ *
+ * @internal
+ */
+export const candidateModules = Effect.fnUntraced(function* (
+  directory: string,
+) {
+  const path = yield* Path.Path;
+  const files = yield* walked(directory);
+  return Array.filter(files, (file) =>
+    DeployedModule.admitsName(
+      Array.join(pipe(file, String.split(path.sep)), "/"),
+    ),
+  );
+});
+
+/**
+ * The files of a Convex directory that a push registers as modules, schemas
+ * included, by `@confect/core`'s {@link DeployedModule} rule, so ownership,
+ * removal and the test subject see the same modules as production.
  *
  * @internal
  */
@@ -54,46 +110,23 @@ export const registeredModules = Effect.fnUntraced(function* (
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const files = yield* fs.readDirectory(directory, { recursive: true });
-  const components = pipe(
-    files,
-    Array.filter(
-      (file) =>
-        path.basename(file) === "convex.config.ts" &&
-        path.dirname(file) !== ".",
-    ),
-    Array.map((file) => path.dirname(file) + path.sep),
-  );
-  const named = Array.filter(files, (file) => {
-    const base = path.basename(file);
-    return (
-      !pipe(file, String.startsWith("_generated" + path.sep)) &&
-      !Array.some(components, (component) =>
-        pipe(file, String.startsWith(component)),
-      ) &&
-      /\.(?:js|mjs|cjs|ts|tsx|mts|cts|jsx)$/.test(base) &&
-      !pipe(base, String.startsWith(".")) &&
-      !pipe(base, String.startsWith("#")) &&
-      pipe(
-        base,
-        String.match(/\./g),
-        Option.match({ onNone: () => 0, onSome: (dots) => dots.length }),
-      ) === 1 &&
-      !pipe(file, String.includes(" "))
-    );
-  });
   const modules: Array<string> = [];
-  for (const file of named) {
-    const absolute = path.join(directory, file);
-    const info = yield* fs.stat(absolute).pipe(Effect.option);
-    const linked = yield* fs.readLink(absolute).pipe(
-      Effect.as(true),
-      Effect.orElseSucceed(() => false),
-    );
-    if (Option.isNone(info) || info.value.type !== "File" || linked) continue;
-    if (/\.tsx?$/.test(file)) {
-      const source = yield* fs.readFileString(absolute);
-      if (!/^\s{0,100}(?:import|export)/m.test(source)) continue;
+  for (const file of yield* candidateModules(directory)) {
+    const posix = Array.join(pipe(file, String.split(path.sep)), "/");
+    if (DeployedModule.needsSource(posix)) {
+      // A file removed since the walk is no module.
+      const source = yield* fs.readFileString(path.join(directory, file)).pipe(
+        Effect.asSome,
+        Effect.catchIf(
+          (error) => error.reason._tag === "NotFound",
+          () => Effect.succeedNone,
+        ),
+      );
+      if (
+        Option.isNone(source) ||
+        !DeployedModule.admitsSource(posix, source.value)
+      )
+        continue;
     }
     modules.push(file);
   }
@@ -106,7 +139,7 @@ const getEntrypoints = Effect.gen(function* () {
   const modules = yield* registeredModules(convex);
   return Array.filter(
     modules,
-    (file) => !["schema.ts", "schema.js"].includes(path.basename(file)),
+    (file) => !DeployedModule.isSchema(path.basename(file)),
   );
 });
 

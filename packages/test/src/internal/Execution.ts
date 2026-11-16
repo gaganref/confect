@@ -20,6 +20,7 @@ import {
   type JSONValue,
   type Value,
 } from "convex/values";
+import { DeployedModule } from "@confect/core";
 import * as Result from "effect/Result";
 import { KernelAttempt } from "./Attempt.js";
 import * as Clock from "./Clock.js";
@@ -74,6 +75,12 @@ import * as Json from "./Json.js";
 const ROOT = "";
 
 /**
+ * What a module's load gives when its source fails {@link DeployedModule}'s
+ * rule, so the world keeps nothing for it.
+ */
+const notRegistered: unique symbol = Symbol("notRegistered");
+
+/**
  * A cron job's declaration as a snapshot writes it and a restore compares it:
  * its name, function, arguments as Convex JSON through `args`, and schedule, a
  * cron expression by its text.
@@ -119,7 +126,16 @@ export type ComponentRuntimes = Readonly<Record<string, IoBans.Runtime>>;
 interface Component {
   readonly path: string;
   readonly schema: KernelQuery.KernelSchema | null;
-  readonly loaders: ReadonlyMap<string, () => Promise<any>>;
+  /**
+   * Each module's loader, by its path without an extension. The world drops a
+   * module whose source the bundler would not register as it opens.
+   */
+  readonly loaders: Map<string, () => Promise<any>>;
+  /**
+   * Each module's file, with its extension, by its path without one, which
+   * {@link DeployedModule}'s rule reads.
+   */
+  readonly files: ReadonlyMap<string, string>;
   readonly loaded: Map<string, any>;
   /**
    * The functions, as `module:export`, that schedule their own next run. A job
@@ -978,22 +994,26 @@ const makeComponent = (
     Arr.filter((file) => pipe(file, Str.endsWith("/convex.config.ts"))),
     Arr.map((file) => pipe(file, Str.slice(0, -"convex.config.ts".length))),
   );
+  const registered = pipe(
+    relative,
+    Arr.filter(
+      ([file]) =>
+        isFunctionModule(file) &&
+        !Arr.some(nested, (dir) => pipe(file, Str.startsWith(dir))),
+    ),
+    Arr.map(
+      ([file, load]) =>
+        [pipe(file, Str.replace(/\.[^.]+$/, "")), file, load] as const,
+    ),
+  );
   return {
     path,
     schema: KernelQuery.exportSchema(schema),
     loaders: new Map(
-      pipe(
-        relative,
-        Arr.filter(
-          ([file]) =>
-            isFunctionModule(file) &&
-            !Arr.some(nested, (dir) => pipe(file, Str.startsWith(dir))),
-        ),
-        Arr.map(([file, load]) => [
-          pipe(file, Str.replace(/\.[^.]+$/, "")),
-          load,
-        ]),
-      ),
+      Arr.map(registered, ([modulePath, , load]) => [modulePath, load]),
+    ),
+    files: new Map(
+      Arr.map(registered, ([modulePath, file]) => [modulePath, file]),
     ),
     loaded: new Map(),
     standing: new Set(standing),
@@ -1005,42 +1025,15 @@ const makeComponent = (
   };
 };
 
-const entryExtensions = [
-  ".js",
-  ".mjs",
-  ".cjs",
-  ".ts",
-  ".tsx",
-  ".mts",
-  ".cts",
-  ".jsx",
-];
-
 /**
- * Whether Convex's bundler deploys this file as a function module, by the rule
- * `entryPoints` applies in `convex/src/bundler/index.ts` (1.49). A test file, a
- * schema, a config and `_generated` never reach the binary, so the kernel
- * neither loads them nor resolves a function in them.
+ * Whether Convex's bundler deploys this file as a function module, by its name:
+ * the first half of {@link DeployedModule}'s rule, which codegen applies too,
+ * less the schema. A test file, a schema, a config and `_generated` never reach
+ * the binary, so the kernel neither loads them nor resolves a function in them.
+ * The rule's second half reads the module's source as the world opens.
  */
-const isFunctionModule = (file: string): boolean => {
-  const base = pipe(file, Str.split("/")).pop()!;
-  return (
-    Arr.some(entryExtensions, (extension) =>
-      pipe(file, Str.endsWith(extension)),
-    ) &&
-    !pipe(file, Str.startsWith("_generated/")) &&
-    !pipe(base, Str.startsWith(".")) &&
-    !pipe(base, Str.startsWith("#")) &&
-    base !== "schema.ts" &&
-    base !== "schema.js" &&
-    pipe(
-      base,
-      Str.match(/\./g),
-      Option.match({ onNone: () => 0, onSome: (dots) => dots.length }),
-    ) <= 1 &&
-    !pipe(file, Str.includes(" "))
-  );
-};
+const isFunctionModule = (file: string): boolean =>
+  DeployedModule.admitsName(file) && !DeployedModule.isSchema(file);
 
 /**
  * The bundler's fallback for a source Babel cannot parse
@@ -1089,13 +1082,15 @@ const mustBeIsolate = (path: string) =>
 /**
  * The runtime of the module at `path`, read from the source the test supplied:
  * `"node"` for a `"use node"` directive, else `"isolate"`, as the bundler's
- * `determineEnvironment` decides (`bundler/index.ts:558-588`). `undefined` when
- * the test supplied no sources for the component.
+ * `determineEnvironment` decides (`bundler/index.ts:558-588`). `"unregistered"`
+ * when the source fails the second half of {@link DeployedModule}'s rule, so the
+ * bundler never registers the module. `undefined` when the test supplied no
+ * sources for the component, where the rule's second half goes unread.
  */
 const runtimeFromSource = (
   component: Component,
   path: string,
-): Promise<IoBans.Runtime | undefined> => {
+): Promise<IoBans.Runtime | "unregistered" | undefined> => {
   if (component.sources === undefined) return Promise.resolve(undefined);
   const read = component.sources.get(path);
   if (read === undefined) {
@@ -1109,6 +1104,8 @@ const runtimeFromSource = (
     );
   }
   return read().then((source) => {
+    if (!DeployedModule.admitsSource(component.files.get(path) ?? path, source))
+      return "unregistered";
     if (!hasUseNodeDirective(source)) return "isolate";
     if (mustBeIsolate(path)) {
       throw KernelRefusal.ModuleRuntime.make({
@@ -1553,10 +1550,14 @@ export class World {
           load,
           // Each module's runtime is read from its source before it loads,
           // when the test supplied sources.
-          runtime: (): Promise<IoBans.Runtime> =>
+          runtime: (): Promise<IoBans.Runtime | "unregistered"> =>
             runtimeFromSource(component, modulePath).then((runtime) => {
               if (runtime === undefined) {
                 return this.componentRuntimeOf(component.path) ?? "isolate";
+              }
+              if (runtime === "unregistered") {
+                component.loaders.delete(modulePath);
+                return runtime;
               }
               component.runtimes.set(modulePath, runtime);
               return runtime;
@@ -1572,7 +1573,8 @@ export class World {
         component: this.component(ROOT),
         // Modules beside the registered ones, as `auth.config`, run in the
         // isolate (`mustBeIsolate`).
-        runtime: (): Promise<IoBans.Runtime> => Promise.resolve("isolate"),
+        runtime: (): Promise<IoBans.Runtime | "unregistered"> =>
+          Promise.resolve("isolate"),
       })),
     );
     const loadOne = ({
@@ -1596,6 +1598,7 @@ export class World {
       // does on a deployment.
       return Environment.loading(this.environments.get(component.path), () =>
         runtime().then((loadsIn) => {
+          if (loadsIn === "unregistered") return notRegistered;
           const { promise: ended, reject: end } =
             Promise.withResolvers<never>();
           // Read only through the race, so an ending nothing awaits is no
@@ -1619,7 +1622,7 @@ export class World {
               }),
           );
         }),
-      ).then(keep);
+      ).then((module) => (module === notRegistered ? undefined : keep(module)));
     };
     return Arr.reduce(
       entries,

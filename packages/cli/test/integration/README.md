@@ -74,3 +74,13 @@ definition with throwing modules and bundles the handler and descriptors. Run:
 ```sh
 pnpm exec vitest run --project @confect/cli test/integration/codegen.test.ts --testNamePattern 'generates runtime provider'
 ```
+
+## The deploy differential
+
+`convexDeploy.test.ts` runs Convex's own definition bundling on a corpus of packaged components and compares it with what codegen records: the mount tree, each mount's definition file and directory, and the modules each mount deploys, plus the app's modules. For each fixture it runs codegen in process, then `convexDeploy/deploy.mjs` in a child process, which calls the code a push runs (`componentGraph`, `bundleDefinitions`, then `entryPoints` per component directory) with the esbuild the installed `convex` resolves beside itself, evaluates the definition bundles as a deployment does, and prints what it would deploy. Convex exports none of those functions, so the script imports them from `convex/dist/esm` by file path and stubs the packages that build imports without depending on them; its `WORKAROUND:` comment says when that goes. Where Convex's deploy fails, codegen must refuse.
+
+`convexDeploy/corpus.ts` holds the fixtures. To add one, add an entry with its files below `node_modules`, the mounts the app declares, whether `convex deploy` deploys it, and the cases it covers. A test fails if the corpus stops covering a case in `cases`. Run it after `pnpm build`:
+
+```sh
+pnpm exec vitest run --project @confect/cli test/integration/convexDeploy.test.ts
+```

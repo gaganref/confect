@@ -10,7 +10,11 @@ import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as String from "effect/String";
-import * as esbuild from "esbuild";
+import * as Result from "effect/Result";
+import type * as esbuild from "esbuild";
+// oxlint-disable-next-line effecttsgo/node-builtin-import -- An esbuild hook has no services, and both checks it makes are synchronous, as Convex's own are.
+import { existsSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { fromBundlerError, type BuildError } from "./BuildError.js";
 import * as Bundler from "./Bundler.js";
 import { InvalidConvexConfigError } from "./CodegenError.js";
@@ -73,13 +77,32 @@ export interface ComponentImport {
   readonly specifier: string;
   readonly path: string;
   /**
-   * Whether `path` is the file Convex's deploy bundler resolves the import to
-   * ({@link resolveDeployed}). When it cannot, the plugin falls back to Node's
-   * resolution so codegen still loads the definition, and the test registry
-   * refuses the mount.
+   * Whether `path` is the definition Convex's deploy bundler deploys for the
+   * import ({@link deployedDefinition}). When it is not, the plugin falls back
+   * to Node's resolution so codegen still loads the definition, and the test
+   * registry refuses the mount with the reason.
    */
-  readonly deployed: boolean;
+  readonly deploy: Deploy;
 }
+
+/**
+ * What Convex's deploy bundler does with a component definition import: it
+ * deploys `path`'s definition, it would fail or deploy what discovery did not
+ * read, or codegen could not load the esbuild the installed `convex` bundles
+ * with.
+ */
+export type Deploy =
+  | { readonly kind: "deployed" }
+  | { readonly kind: "refused"; readonly reason: string }
+  | { readonly kind: "bundlerUnavailable"; readonly reason: string };
+
+const DeploySchema = Schema.Union([
+  Schema.Struct({ kind: Schema.Literal("deployed") }),
+  Schema.Struct({
+    kind: Schema.Literals(["refused", "bundlerUnavailable"]),
+    reason: Schema.String,
+  }),
+]);
 
 export const componentImportOf = (
   definition: unknown,
@@ -88,16 +111,18 @@ export const componentImportOf = (
     return Option.none();
   }
   const recorded = definition[COMPONENT_IMPORT_KEY];
+  const deploy = Predicate.hasProperty(recorded, "deploy")
+    ? Schema.decodeUnknownOption(DeploySchema)(recorded.deploy)
+    : Option.none();
   return Predicate.hasProperty(recorded, "specifier") &&
     Predicate.isString(recorded.specifier) &&
     Predicate.hasProperty(recorded, "path") &&
     Predicate.isString(recorded.path) &&
-    Predicate.hasProperty(recorded, "deployed") &&
-    Predicate.isBoolean(recorded.deployed)
+    Option.isSome(deploy)
     ? Option.some({
         specifier: recorded.specifier,
         path: recorded.path,
-        deployed: recorded.deployed,
+        deploy: deploy.value,
       })
     : Option.none();
 };
@@ -151,98 +176,276 @@ export const importedDefinition = (
 const CONVEX_CONFIG_SUFFIX = /[/\\]convex\.config(\.[cm]?[jt]s)?$/;
 
 /**
- * Marks the resolution {@link resolveDeployed} asks esbuild for, so its own hook
- * leaves it to esbuild's resolver.
+ * Marks the resolution {@link deployedDefinition} asks esbuild for, so its own
+ * hook leaves it to esbuild's resolver.
  */
 const DEPLOY_RESOLVE = Symbol.for("@confect/cli/ConvexConfig/deployResolve");
 
 /**
- * The file Convex's deploy bundler resolves a component definition import to,
- * from the directory of the file that imports it. Convex 1.49 resolves it with
- * esbuild, trying the import as written, then `.ts` for a `.js` import, then
- * `.js` and `.ts` for an import with neither
- * (`src/cli/lib/components/definition/bundle.ts:158-185`), on the browser
- * platform with the `convex` and `module` conditions (`:236-273`). A deploy
- * passes `liveComponentSources: false` (`src/cli/deploy.ts:351`), so the
- * `@convex-dev/component-source` condition that `convex dev
- * --live-component-sources` adds is not among them. None when no candidate
- * resolves, where a deploy fails too.
+ * The esbuild Convex's deploy bundler runs.
+ */
+type Esbuild = Pick<typeof esbuild, "build">;
+
+const convexEsbuilds = new Map<string, Result.Result<Esbuild, string>>();
+
+const ConvexManifest = Schema.fromJsonString(
+  Schema.Struct({
+    dependencies: Schema.optionalKey(
+      Schema.Record(Schema.String, Schema.String),
+    ),
+  }),
+);
+
+/**
+ * The esbuild the installed `convex` bundles with, loaded from `convex`'s own
+ * package as its CLI loads it, rather than the CLI's own: `convex` 1.49 pins
+ * esbuild 0.27.0, and a newer esbuild resolves imports a deploy does not, such
+ * as a `#/` subpath import. `convex` is the one Node finds from `from`, the
+ * file whose bundle reads the definitions. Failure holds why it cannot be
+ * loaded.
  *
  * @internal
  */
-export const resolveDeployed = (
-  specifier: string,
-  resolveDir: string,
-): Effect.Effect<Option.Option<string>> => {
+export const convexEsbuild = (from: string): Result.Result<Esbuild, string> => {
+  const manifest = Option.liftThrowable(() =>
+    createRequire(from).resolve("convex/package.json"),
+  )();
+  if (Option.isNone(manifest)) {
+    return Result.fail(`Node finds no convex package from ${quote(from)}`);
+  }
+  const cached = convexEsbuilds.get(manifest.value);
+  if (cached !== undefined) return cached;
+  const directory = quote(
+    pipe(manifest.value, String.slice(0, -"/package.json".length)),
+  );
+  // Node's lookup walks up past convex's own directory, so a missing esbuild
+  // of convex's could find another; an exact pin tells them apart.
+  const pinned = pipe(
+    Option.liftThrowable(() => readFileSync(manifest.value, "utf8"))(),
+    Option.flatMap(Schema.decodeUnknownOption(ConvexManifest)),
+    Option.flatMap(({ dependencies }) =>
+      Option.fromNullishOr(dependencies?.["esbuild"]),
+    ),
+    Option.filter((version) => /^\d+\.\d+\.\d+$/.test(version)),
+  );
+  const loaded = pipe(
+    Option.liftThrowable(
+      () =>
+        createRequire(manifest.value)("esbuild") as Partial<
+          Esbuild & { readonly version: string }
+        >,
+    )(),
+    Option.filter((candidate) => Predicate.isFunction(candidate.build)),
+    Option.match({
+      onNone: () =>
+        Result.fail(
+          `the convex package at ${directory} cannot load the esbuild it bundles with`,
+        ),
+      onSome: (candidate) =>
+        Option.isSome(pinned) && candidate.version !== pinned.value
+          ? Result.fail(
+              `the convex package at ${directory} pins esbuild ${pinned.value}, and Node finds esbuild ${candidate.version ?? "(unknown)"} from it`,
+            )
+          : Result.succeed(candidate as Esbuild),
+    }),
+  );
+  convexEsbuilds.set(manifest.value, loaded);
+  return loaded;
+};
+
+/**
+ * The deploy bundler's esbuild options for definitions: the browser platform
+ * with the `convex` and `module` conditions
+ * (`src/cli/lib/components/definition/bundle.ts:236-273`). A deploy passes
+ * `liveComponentSources: false` (`src/cli/deploy.ts:351`), so the
+ * `@convex-dev/component-source` condition that `convex dev
+ * --live-component-sources` adds is not among them.
+ */
+const deployOptions = {
+  bundle: true,
+  write: false,
+  logLevel: "silent",
+  platform: "browser",
+  format: "esm",
+  conditions: ["convex", "module"],
+} as const satisfies esbuild.BuildOptions;
+
+/**
+ * The first candidate esbuild resolves for a component definition import, as
+ * the deploy bundler's component plugin tries them: the import as written, then
+ * `.ts` for a `.js` import, then `.js` and `.ts` for an import with neither
+ * (`bundle.ts:158-185`).
+ */
+const resolveCandidates = Effect.fnUntraced(function* (
+  build: esbuild.PluginBuild,
+  args: esbuild.OnResolveArgs,
+) {
   const extension = Option.getOrUndefined(
-    Option.flatMap(String.match(/\.[^./]+$/)(specifier), Array.head),
+    Option.flatMap(String.match(/\.[^./]+$/)(args.path), Array.head),
   );
   const candidates = [
-    specifier,
+    args.path,
     ...(extension === ".js"
-      ? [pipe(specifier, String.slice(0, -".js".length)) + ".ts"]
+      ? [pipe(args.path, String.slice(0, -".js".length)) + ".ts"]
       : []),
     ...(extension !== ".js" && extension !== ".ts"
-      ? [`${specifier}.js`, `${specifier}.ts`]
+      ? [`${args.path}.js`, `${args.path}.ts`]
       : []),
   ];
-  let resolved = Option.none<string>();
-  const resolveFirst = (
-    build: esbuild.PluginBuild,
-    args: esbuild.OnResolveArgs,
-  ) =>
-    Effect.gen(function* () {
-      for (const candidate of candidates) {
-        const result = yield* Effect.promise(() =>
-          build.resolve(candidate, {
-            kind: args.kind,
-            resolveDir: args.resolveDir,
-            pluginData: DEPLOY_RESOLVE,
-          }),
-        );
-        if (result.errors.length === 0 && result.path !== "") {
-          resolved = Option.some(result.path);
-          return;
-        }
-      }
-    });
-  return Effect.tryPromise({
-    try: () =>
-      esbuild.build({
-        stdin: {
-          contents: `import ${quote(specifier)};`,
-          resolveDir,
-          loader: "js",
-        },
-        bundle: true,
-        write: false,
-        logLevel: "silent",
-        platform: "browser",
-        format: "esm",
-        conditions: ["convex", "module"],
+  for (const candidate of candidates) {
+    const result = yield* Effect.promise(() =>
+      build.resolve(candidate, {
+        kind: args.kind,
+        resolveDir: args.resolveDir,
+        pluginData: DEPLOY_RESOLVE,
+      }),
+    );
+    if (result.errors.length === 0 && result.path !== "")
+      return Option.some(result.path);
+  }
+  return Option.none<string>();
+});
+
+/**
+ * Bundle `entry` with the deploy's options and give what each component
+ * definition import it reaches resolves to, in the order esbuild asks, marking
+ * each external, as the deploy bundler's discovery pass records them. None when
+ * the bundle fails.
+ */
+const reachConfigs = (
+  bundler: Esbuild,
+  entry: esbuild.StdinOptions | string,
+): Effect.Effect<Option.Option<ReadonlyArray<Option.Option<string>>>> => {
+  const reached: Array<Option.Option<string>> = [];
+  return Effect.promise(() =>
+    bundler
+      .build({
+        ...deployOptions,
+        ...(Predicate.isString(entry)
+          ? { entryPoints: [entry] }
+          : { stdin: entry }),
         plugins: [
           {
             name: "confect:convex-deploy-resolve",
             setup(build) {
-              build.onResolve({ filter: /.*/ }, (args) =>
-                args.pluginData === DEPLOY_RESOLVE
+              // The deploy plugin's filter (`bundle.ts:128`).
+              build.onResolve({ filter: /.*convex.config.*/ }, (args) =>
+                args.pluginData === DEPLOY_RESOLVE ||
+                args.kind === "entry-point"
                   ? undefined
-                  : resolveFirst(build, args).pipe(
-                      Effect.as({ path: args.path, external: true }),
+                  : resolveCandidates(build, args).pipe(
+                      Effect.map((resolved) => {
+                        reached.push(resolved);
+                        return { path: args.path, external: true };
+                      }),
                       Effect.runPromise,
                     ),
               );
             },
           },
         ],
-      }),
-    // A deploy that cannot bundle the import fails as no resolution does.
-    catch: () => undefined,
-  }).pipe(
-    Effect.map(() => resolved),
-    Effect.orElseSucceed(() => Option.none<string>()),
+      })
+      // A deploy that cannot bundle the import fails as no resolution does.
+      .then(
+        () => Option.some(reached),
+        () => Option.none(),
+      ),
   );
 };
+
+/**
+ * The definition Convex's deploy bundler deploys for a component definition
+ * import, from the directory of the file that imports it, with the esbuild the
+ * installed `convex` bundles with ({@link convexEsbuild}).
+ *
+ * Its discovery resolves the import (`bundle.ts:158-185`), then takes the
+ * component directory holding the file it resolved to and deploys that
+ * directory's `convex.config.ts`, or its `convex.config.js` when there is no
+ * `.ts` (`isComponentDirectory`, `directoryStructure.ts:77-131`). So a `.js`
+ * import beside a `.ts` deploys the `.ts`. Discovery reads the components the
+ * resolved file mounts, so where the deployed file mounts one that the resolved
+ * file does not, the deploy has no definition for it, and this refuses. A
+ * resolved file whose path has no `.config.` is never recorded as a component
+ * (`findComponentDependencies`, `bundle.ts:399-436`), so a deploy has no
+ * definition for it either.
+ *
+ * @internal
+ */
+export const deployedDefinition = (
+  bundler: Result.Result<Esbuild, string>,
+  specifier: string,
+  resolveDir: string,
+  path: Path.Path,
+): Effect.Effect<{
+  readonly deploy: Deploy;
+  readonly path: Option.Option<string>;
+}> =>
+  Effect.gen(function* () {
+    if (Result.isFailure(bundler)) {
+      return {
+        deploy: { kind: "bundlerUnavailable", reason: bundler.failure },
+        path: Option.none(),
+      } as const;
+    }
+    const refused = (reason: string) =>
+      ({ deploy: { kind: "refused", reason }, path: Option.none() }) as const;
+    const reached = yield* reachConfigs(bundler.success, {
+      contents: `import ${quote(specifier)};`,
+      resolveDir,
+      loader: "js",
+    });
+    const resolved = pipe(reached, Option.flatMap(Array.head), Option.flatten);
+    if (Option.isNone(resolved)) {
+      return refused(
+        `Convex's deploy bundler, which resolves on the browser platform under the convex and module conditions, finds no ${quote(specifier)}.`,
+      );
+    }
+    const discovered = resolved.value;
+    if (!pipe(discovered, String.includes(".config."))) {
+      return refused(
+        `Convex's deploy bundler resolves ${quote(specifier)} to ${quote(discovered)}, whose path has no ".config.", so it records no component for it.`,
+      );
+    }
+    const directory = path.dirname(discovered);
+    const canonical = Array.findFirst(
+      [
+        path.join(directory, "convex.config.ts"),
+        path.join(directory, "convex.config.js"),
+      ],
+      (file) => existsSync(file),
+    );
+    if (Option.isNone(canonical)) {
+      return refused(
+        `Convex's deploy bundler resolves ${quote(specifier)} to ${quote(discovered)} and deploys its directory's convex.config.ts or convex.config.js, which do not exist.`,
+      );
+    }
+    if (canonical.value !== discovered) {
+      // The directories of the components a file mounts.
+      const mountedBy = (file: string) =>
+        reachConfigs(bundler.success, file).pipe(
+          Effect.map(
+            Option.map((found) =>
+              Array.dedupe(
+                Array.map(Array.getSomes(found), (child) =>
+                  path.dirname(child),
+                ),
+              ),
+            ),
+          ),
+        );
+      const read = yield* mountedBy(discovered);
+      const deployed = yield* mountedBy(canonical.value);
+      const missing = Option.map(Option.all([read, deployed]), ([r, d]) =>
+        Array.filter(d, (child) => !Array.contains(r, child)),
+      );
+      if (Option.isNone(missing) || Array.isArrayNonEmpty(missing.value)) {
+        return refused(
+          `Convex's deploy bundler reads the components ${quote(discovered)} mounts but deploys ${quote(canonical.value)}${Option.isSome(missing) ? `, which also mounts ${Array.join(Array.map(missing.value, quote), ", ")}` : ", and one of them cannot be bundled"}, so the deploy has no definition for what it mounts.`,
+        );
+      }
+    }
+    return { deploy: { kind: "deployed" }, path: canonical } as const;
+  });
 
 /**
  * Resolve the same config spellings that Convex accepts, for configs and test
@@ -288,6 +491,16 @@ export const resolveDefinition = (
 export const componentConfigPlugin = (path: Path.Path): esbuild.Plugin => ({
   name: "confect:component-config",
   setup(build) {
+    // The convex installed beside the file whose bundle reads the definitions,
+    // whose CLI would deploy them.
+    const entry = Array.isArray(build.initialOptions.entryPoints)
+      ? build.initialOptions.entryPoints[0]
+      : undefined;
+    const bundler = convexEsbuild(
+      Predicate.isString(entry)
+        ? path.resolve(entry)
+        : path.join(process.cwd(), "_"),
+    );
     build.onResolve({ filter: /convex\.config/ }, (args) => {
       // The app's own `convex.config.ts` is the entry point; only imports of
       // *component* definitions get wrapped.
@@ -310,8 +523,8 @@ export const componentConfigPlugin = (path: Path.Path): esbuild.Plugin => ({
       // Component definitions are conventionally imported extensionless
       // (`.../convex.config`), which npm `exports` maps resolve but plain
       // file resolution may not, so both probe the same candidates.
-      return resolveDeployed(args.path, args.resolveDir).pipe(
-        Effect.map((deployed) =>
+      return deployedDefinition(bundler, args.path, args.resolveDir, path).pipe(
+        Effect.map(({ deploy, path: deployed }) =>
           pipe(
             Option.orElse(deployed, () =>
               resolveDefinition(args.path, importer, path),
@@ -321,10 +534,7 @@ export const componentConfigPlugin = (path: Path.Path): esbuild.Plugin => ({
               onSome: (resolved) => ({
                 path: resolved,
                 namespace: COMPONENT_CONFIG_NAMESPACE,
-                pluginData: {
-                  specifier: args.path,
-                  deployed: Option.isSome(deployed),
-                },
+                pluginData: { specifier: args.path, deploy },
               }),
             }),
           ),
@@ -337,9 +547,9 @@ export const componentConfigPlugin = (path: Path.Path): esbuild.Plugin => ({
       { filter: /.*/, namespace: COMPONENT_CONFIG_NAMESPACE },
       (args) =>
         Effect.gen(function* () {
-          const { specifier, deployed } = args.pluginData as {
+          const { specifier, deploy } = args.pluginData as {
             specifier: string;
-            deployed: boolean;
+            deploy: Deploy;
           };
           // The injected path is the definition's *directory*, matching the
           // Convex runtime's convention—so even if a future convex version
@@ -374,7 +584,7 @@ export const componentConfigPlugin = (path: Path.Path): esbuild.Plugin => ({
               [
                 `import real from ${modulePath};`,
                 // oxlint-disable-next-line effecttsgo/prefer-schema-over-json, effecttsgo/global-json-in-effect -- Emit an escaped JavaScript string and object literal into the virtual module, not a JSON payload.
-                `export default { ...real, componentDefinitionPath: ${definitionPath}, defaultName: real._name, [${JSON.stringify(COMPONENT_IMPORT_KEY)}]: ${JSON.stringify({ specifier, path: args.path, deployed })} };`,
+                `export default { ...real, componentDefinitionPath: ${definitionPath}, defaultName: real._name, [${JSON.stringify(COMPONENT_IMPORT_KEY)}]: ${JSON.stringify({ specifier, path: args.path, deploy })} };`,
               ],
               "\n",
             ),

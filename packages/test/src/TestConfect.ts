@@ -304,7 +304,17 @@ export type Registry<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> = {
    * kit's registration at that path. A runtime in `componentRuntimes` for the
    * path takes their place, and that path is not read.
    */
-  readonly packagedSources?: PackagedSources.PackagedSources;
+  readonly packagedSources?: PackagedSources.PackagedSources | undefined;
+};
+
+/**
+ * A registry that says it has no packaged mount, as generated `testing.ts` does
+ * with `packagedSources: undefined`. Only this shape builds a layer that cannot
+ * fail {@link PackagedComponentChanged}; a registry that leaves the key out,
+ * `Omit`-widened ones included, may hide a packaged mount.
+ */
+export type WithoutPackagedSources = {
+  readonly packagedSources: undefined;
 };
 
 /**
@@ -337,7 +347,7 @@ export type DeclaredApp<DatabaseSchema_ extends DatabaseSchema.AnyWithProps> =
  * convex-test, with the modules' `sources` beside it.
  */
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
-  app: DeclaredApp<DatabaseSchema_> & { readonly packagedSources?: undefined },
+  app: DeclaredApp<DatabaseSchema_> & WithoutPackagedSources,
   options?: TargetOptions & SourceOptions,
 ): Layer.Layer<TestConfect<DatabaseSchema_>>;
 export function layer<DatabaseSchema_ extends DatabaseSchema.AnyWithProps>(
@@ -352,9 +362,7 @@ export function layer<
   DatabaseSchema_ extends DatabaseSchema.AnyWithProps,
 >(
   app: A,
-  registry: AppRegistry<A, DatabaseSchema_> & {
-    readonly packagedSources?: undefined;
-  },
+  registry: AppRegistry<A, DatabaseSchema_> & WithoutPackagedSources,
   options?: TargetOptions & SourceOptions,
 ): Layer.Layer<TestConfect<DatabaseSchema_>>;
 export function layer<

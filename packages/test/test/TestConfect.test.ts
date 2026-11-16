@@ -7,7 +7,7 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 import { TestConfect } from "@confect/test";
 import { DatabaseSchema, MutationCtx } from "@confect/server";
 import * as Layer from "effect/Layer";
-import { beforeEach, expect, it } from "@effect/vitest";
+import { beforeEach, expect, expectTypeOf, it } from "@effect/vitest";
 import { vi } from "vitest";
 import * as Cause from "effect/Cause";
 import * as Effect from "effect/Effect";
@@ -763,6 +763,8 @@ it("takes a packaged read whose missing values the generated reader writes as un
       {
         package: "tool",
         version: undefined,
+        manifest: undefined,
+        manifestBytes: undefined,
         file: "convex.config.js",
         digest: "sha256:",
         from: "/",
@@ -777,6 +779,52 @@ it("takes a packaged read whose missing values the generated reader writes as un
     ],
   };
   expect(read.steps).toHaveLength(1);
+});
+
+it.effect(
+  "on the kernel target, registers no TypeScript module whose source has no import or export, as Convex's bundler does, whatever the glob loads",
+  () =>
+    Effect.gen(function* () {
+      const ran = yield* surfaceOn(
+        TestConfect.layer(
+          runtimeRegistry.schema,
+          runtimeRegistry.convexSchema,
+          import.meta.glob(
+            "./fixtures/runtime/{_generated/server,plainNode,unregistered}.ts",
+          ),
+          {
+            target: "kernel",
+            sources: import.meta.glob<string>(
+              "./fixtures/runtime/{_generated/server,plainNode,unregistered}.ts",
+              { query: "?raw", import: "default" },
+            ),
+          },
+        ),
+      );
+      expect(ran).toEqual(node);
+    }),
+);
+
+it("types only a registry that says it has no packaged mount as a layer that cannot fail PackagedComponentChanged", () => {
+  type App = TestConfect.DeclaredApp<typeof runtimeRegistry.schema>;
+  type Session = TestConfect.TestConfect<typeof runtimeRegistry.schema>;
+  // Never called: each one's return type is the overload it picks.
+  const widened = (declared: Omit<App, "packagedSources">) =>
+    TestConfect.layer(declared);
+  const generic = (declared: App) => TestConfect.layer(declared);
+  const marked = (declared: App & TestConfect.WithoutPackagedSources) =>
+    TestConfect.layer(declared);
+  expectTypeOf<ReturnType<typeof widened>>().toEqualTypeOf<
+    Layer.Layer<Session, TestConfect.PackagedComponentChanged>
+  >();
+  expectTypeOf<ReturnType<typeof generic>>().toEqualTypeOf<
+    Layer.Layer<Session, TestConfect.PackagedComponentChanged>
+  >();
+  expectTypeOf<ReturnType<typeof marked>>().toEqualTypeOf<
+    Layer.Layer<Session>
+  >();
+  // Generated `testing.ts` for an app without a packaged mount says so.
+  expectTypeOf(registry.packagedSources).toEqualTypeOf<undefined>();
 });
 
 it.effect(

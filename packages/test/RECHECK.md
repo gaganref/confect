@@ -2301,3 +2301,8 @@ the deterministic operations in every phase.
   hold a `Schema.Redacted` node, so the kernel's redaction (row 6) builds each
   schema only when it first needs it. A kit adds its component's policy at
   registration, keyed at the registered path.
+- The kernel registers a component's modules by `@confect/core/DeployedModule`,
+  the rule codegen applies too. Names decide first. As the world opens, a
+  TypeScript module whose source has no line starting with `import` or
+  `export` is dropped, so a kit's glob that loads one opens as a deploy does.
+  With no sources for the component, that half goes unread.

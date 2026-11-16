@@ -144,4 +144,4 @@ export default { httpMounts: [{ componentPath: "first", httpPrefix: "/first" },{
 "right/deep": left_deepKit("right/deep"),
 "right/deep/child": left_deep_childKit("right/deep/child"),
 "right/deep/child/child": firstKit("right/deep/child/child"),
-"second": firstKit("second"),} };
+"second": firstKit("second"),}, packagedSources: undefined };

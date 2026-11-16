@@ -1,4 +1,7 @@
-import { PackagedComponentUnreadableError } from "@confect/cli/CodegenError";
+import {
+  ConvexBundlerUnavailableError,
+  PackagedComponentUnreadableError,
+} from "@confect/cli/CodegenError";
 import { ConfectDirectory } from "@confect/cli/ConfectDirectory";
 import { ConvexDirectory } from "@confect/cli/ConvexDirectory";
 import { quote } from "@confect/cli/Json";
@@ -6,6 +9,7 @@ import { ProjectRoot } from "@confect/cli/ProjectRoot";
 import { codegenHandler } from "@confect/cli/confect/codegen";
 import { Ref } from "@confect/core";
 import type { DatabaseSchema } from "@confect/server";
+import { createRequire } from "node:module";
 import * as NodeFileSystem from "@effect/platform-node/NodeFileSystem";
 import * as NodePath from "@effect/platform-node/NodePath";
 import { expect, layer } from "@effect/vitest";
@@ -275,7 +279,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           expect(testing).not.toContain(".pnpm");
           expect(testing).not.toMatch(/node_modules[/\\]/);
           expect(testing).toMatch(
-            /\{ package: "@convex-dev\/workpool", version: "0\.4\.14", file: "dist\/component\/convex\.config\.js", digest: "sha256:[0-9a-f]{64}" \}/,
+            /\{ package: "@convex-dev\/workpool", version: "0\.4\.14", manifest: "sha256:[0-9a-f]{64}", file: "dist\/component\/convex\.config\.js", digest: "sha256:[0-9a-f]{64}" \}/,
           );
           const generated = yield* importTesting(project);
           const packagedSources = generated.default.packagedSources ?? {};
@@ -416,7 +420,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
     );
 
     it.effect(
-      "lists as modules only the regular files Convex deploys",
+      "reads every regular file whose name Convex registers, and nothing a link or a directory with a module's name holds",
       () =>
         Effect.gen(function* () {
           const fs = yield* FileSystem.FileSystem;
@@ -424,15 +428,21 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           yield* writePackage(project, "node-tool", plainExports, {
             ...toolComponent("component", true),
             "component/empty.ts": "const unused = 1;\n",
+            "shared/extra.js": "export const extra = 1;\n",
           });
           const component = `${project.root}/node_modules/node-tool/component`;
           yield* fs.makeDirectory(`${component}/folder.js`);
-          // Windows creates a file link only with a privilege CI lacks.
-          if (process.platform !== "win32")
+          // Windows creates a link only with a privilege CI lacks.
+          if (process.platform !== "win32") {
             yield* fs.symlink(
               `${component}/surface.js`,
               `${component}/linked.js`,
             );
+            yield* fs.symlink(
+              `${project.root}/node_modules/node-tool/shared`,
+              `${component}/linkedDirectory`,
+            );
+          }
           yield* project.run;
           const testing = yield* project.read("confect/_generated/testing.ts");
           const files = Array.map(
@@ -443,9 +453,147 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             ],
             ([, file]) => file,
           );
-          expect(files).toEqual(["schema.js", "surface.js"]);
+          // The kernel reads empty.ts's text and leaves it unregistered.
+          expect(files).toEqual(["empty.ts", "schema.js", "surface.js"]);
         }).pipe(Effect.scoped),
       { timeout: 60000 },
+    );
+
+    it.effect(
+      "registers no TypeScript file of a kit's glob without an import or export, as Convex does, so the session opens",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* packagedProject([tool]);
+          yield* writePackage(project, "node-tool", plainExports, {
+            ...toolComponent("component", false),
+            "component/empty.ts":
+              'const unused = 1;\nthrow new Error("Convex never registers empty.ts, so nothing loads it");\n',
+          });
+          // A kit that registers every module its glob finds, as official
+          // kits do, in TypeScript, which Vitest transforms below
+          // node_modules too.
+          const manifest = yield* Schema.encodeEffect(
+            Schema.fromJsonString(Schema.Unknown),
+          )({
+            name: "node-tool",
+            version: "1.0.0",
+            type: "module",
+            exports: { ...plainExports, "./test": "./test.ts" },
+          });
+          yield* project.write("node_modules/node-tool/package.json", manifest);
+          yield* project.write(
+            "node_modules/node-tool/test.ts",
+            `import schema from "./component/schema.js";
+const modules = import.meta.glob("./component/**/*.{js,ts}");
+export function register(t: any, name: string) {
+  t.registerComponent(name, schema, modules);
+}
+`,
+          );
+          yield* project.run;
+          const generated = yield* importTesting(project);
+          const surface = yield* surfaceIn(generated);
+          expect(surface).toBe("undefined");
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "refuses a session when package.json changed at the same version, as a link: rebuild that points the export at another directory does",
+      () =>
+        Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const project = yield* generatedTool;
+          // The rebuild keeps component/ and its files, unchanged.
+          for (const [file, source] of Rec.toEntries(
+            toolComponent("rebuilt", false),
+          )) {
+            const target = `${project.root}/node_modules/node-tool/${file}`;
+            yield* fs.makeDirectory(path.dirname(target), { recursive: true });
+            yield* fs.writeFileString(target, source);
+          }
+          const rebuilt = yield* Schema.encodeEffect(
+            Schema.fromJsonString(Schema.Unknown),
+          )({
+            name: "node-tool",
+            version: "1.0.0",
+            type: "module",
+            exports: {
+              ...plainExports,
+              "./convex.config": "./rebuilt/convex.config.js",
+            },
+          });
+          yield* project.write("node_modules/node-tool/package.json", rebuilt);
+          const generated = yield* importTesting(project);
+          const refused = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          expect(refused).toMatchObject({
+            _tag: "PackagedComponentChanged",
+            mount: "tool",
+            package: "node-tool",
+            file: "package.json",
+            reason: expect.stringContaining("its bytes differ"),
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
+      "refuses at codegen when the installed convex cannot load the esbuild it pins",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* packagedProject([tool]);
+          yield* writePackage(
+            project,
+            "node-tool",
+            plainExports,
+            toolComponent("component", true),
+          );
+          // A convex whose own esbuild is missing, so Node's lookup from it
+          // walks up to the CLI's newer one.
+          const fs = yield* FileSystem.FileSystem;
+          yield* fs.makeDirectory(`${project.root}/node_modules/convex`, {
+            recursive: true,
+          });
+          const path = yield* Path.Path;
+          const installed = path.dirname(
+            createRequire(import.meta.url).resolve("convex/package.json"),
+          );
+          const manifest = yield* Schema.encodeEffect(
+            Schema.fromJsonString(Schema.Unknown),
+          )({
+            name: "convex",
+            version: "1.49.0",
+            type: "module",
+            dependencies: { esbuild: "0.27.0" },
+            exports: {
+              "./package.json": "./package.json",
+              "./server": "./server.js",
+              "./values": "./values.js",
+            },
+          });
+          yield* project.write("node_modules/convex/package.json", manifest);
+          for (const entry of ["server", "values"])
+            yield* project.write(
+              `node_modules/convex/${entry}.js`,
+              `export * from ${quote(path.join(installed, "dist/esm", entry, "index.js"))};\n`,
+            );
+          const error = yield* Effect.flip(project.run);
+          expect(error).toBeInstanceOf(ConvexBundlerUnavailableError);
+          expect(error).toMatchObject({
+            mount: "tool",
+            reason: expect.stringMatching(
+              /pins esbuild 0\.27\.0.*esbuild 0\.28/,
+            ),
+          });
+          const written = yield* project.exists(
+            "confect/_generated/testing.ts",
+          );
+          expect(written).toBe(false);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
     );
 
     it.effect(

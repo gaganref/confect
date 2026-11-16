@@ -32,11 +32,15 @@ export class PackagedComponentChanged extends Schema.TaggedError<
 /**
  * One `convex.config` import codegen followed, and what the generated reader
  * found for it: the package directory and version Node's `node_modules` lookup
- * finds from `from`, and the definition's bytes.
+ * finds from `from`, its `package.json` bytes, and the definition's bytes.
+ * `manifest` is the digest of the `package.json` codegen read, whose `exports`,
+ * `imports`, `main` and `module` decide what a deploy resolves.
  */
 export interface StepRead {
   readonly package?: string | undefined;
   readonly version?: string | undefined;
+  readonly manifest?: string | undefined;
+  readonly manifestBytes?: Uint8Array | undefined;
   readonly file: string;
   readonly digest: string;
   readonly from: string;
@@ -114,6 +118,15 @@ const validate = Effect.fnUntraced(function* (
         return yield* changed(
           "package.json",
           `version ${step.installed ?? "(none)"} is installed at ${step.found}, and codegen read ${step.version ?? "(none)"}`,
+        );
+      if (
+        step.manifest !== undefined &&
+        (step.manifestBytes === undefined ||
+          digestOf(step.manifestBytes) !== step.manifest)
+      )
+        return yield* changed(
+          "package.json",
+          "its bytes differ from the ones codegen read, and they decide which files a deploy resolves",
         );
     }
     if (step.bytes === undefined)
