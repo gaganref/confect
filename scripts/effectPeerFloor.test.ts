@@ -15,6 +15,10 @@ import {
 
 const require = createRequire(import.meta.url);
 const repository = new URL("../", import.meta.url).pathname;
+// Use the npm range parser already installed for Changesets.
+const npmSemver: {
+  readonly satisfies: (version: string, range: string) => boolean;
+} = createRequire(require.resolve("@changesets/config"))("semver");
 
 const readManifest = (path: string): Manifest =>
   Schema.decodeUnknownEffect(Manifest)(require(path)).pipe(Effect.runSync);
@@ -119,5 +123,21 @@ test.each(Record.keys(profiles))(
       { onEmpty: () => undefined, onNonEmpty: Arr.max(semver) },
     );
     expect(consumerDependencies(profile, "baseline").effect).toBe(advertised!);
+  },
+);
+
+test.each([
+  ["2.0.0-beta.85", true],
+  ["2.0.0-beta.84", false],
+  ["2.0.0-beta.86", true],
+  ["2.0.0-beta.90", true],
+  ["2.0.0", false],
+  ["1.9.0", false],
+] as const)(
+  "the Alchemy peer checks %s with npm range semantics",
+  (version, supported) => {
+    const range =
+      byName.get("@confect/alchemy")!.manifest.peerDependencies!.alchemy!;
+    expect(npmSemver.satisfies(version, range)).toBe(supported);
   },
 );
