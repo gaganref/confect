@@ -158,6 +158,43 @@ Effect.gen(function* () {
 
 You can also declare `Convex.EnvironmentVariables` separately. A standalone code resource must depend on its outputs if those variables need to be applied first; declaring resources in source order alone does not establish a dependency. `Confect.Backend` handles this ordering for its `env` option.
 
+## Refuse unexpected environment changes
+
+To stop when live values change outside your stack, declare `Convex.EnvironmentVariables` separately and enable its safety options. In the provisioning example, replace `Backend.env` with this resource and make the backend depend on its outputs:
+
+```ts
+Effect.gen(function* () {
+  const environment = yield* Convex.EnvironmentVariables("Environment", {
+    url: deployment.url,
+    deployKey: key.deployKey,
+    variables: {
+      SERVICE_TOKEN: yield* Config.Redacted("SERVICE_TOKEN"),
+    },
+    driftPolicy: "error",
+    adopt: true,
+    unownedPolicy: "error",
+    lock: { deploymentName: deployment.name },
+    retry: { maxAttempts: 3, delay: "100 millis" },
+  });
+
+  const backend = yield* Confect.Backend("Backend", {
+    deployment: { name: deployment.name, url: environment.url },
+    deployKey: environment.deployKey,
+    cwd: "apps/backend",
+  });
+
+  return { url: backend.url };
+});
+```
+
+With these options, a plan refuses owned values that differ from the last managed snapshot, even when desired inputs remain unresolved. It also refuses live names that are neither owned nor desired. The errors name the variable without printing its value. Restore the last managed values or account for the unexpected names before applying again.
+
+`adopt: true` takes ownership of a desired live name only when its value matches. Adoption logs the name without the value. A different value still requires explicit Alchemy adoption. Matching originals remain available for restoration when ownership ends.
+
+`lock` uses the same deployment lock as code pushes. Each check and write, including deletion, holds that lock. A conflict retry rereads live values and repeats the safety checks while keeping the lock. `maxAttempts` includes the initial attempt and accepts integers from 1 to 10. `delay` accepts Effect durations from 1 to 10000 milliseconds. Only Convex's `OptimisticConcurrencyControlFailure` code retries. Another HTTP 503 fails immediately.
+
+All five options are opt-in. Their defaults are `driftPolicy: "overwrite"`, `adopt: false`, `unownedPolicy: "ignore"`, no lock, and one attempt with no retry. `Backend.env` keeps those defaults. For error handling, the Convex client's `serverCode` carries the server code separately from its existing `code` classification.
+
 ## Develop locally
 
 Run the same stack with `alchemy dev` to develop against a local Convex backend:

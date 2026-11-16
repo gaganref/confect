@@ -1,3 +1,5 @@
+import { inspect } from "node:util";
+import * as Exit from "effect/Exit";
 import * as NodeServices from "../fixtures/NodeTestServices";
 import { it } from "@effect/vitest";
 import { Confect, Convex } from "@confect/alchemy";
@@ -88,6 +90,7 @@ const makeHarness = (
   const state = inMemoryState();
   const deploy = <A, E, R extends Providers | Stack.StackServices>(
     program: Effect.Effect<A, E, R>,
+    planOnly = false,
   ) =>
     Effect.gen(function* () {
       const services3 = yield* Layer.build(context);
@@ -97,7 +100,12 @@ const makeHarness = (
           Stack.make({ name: "integration", providers, state }),
           Effect.flatMap((compiled) =>
             Plan.make(compiled).pipe(
-              Effect.flatMap(apply),
+              Effect.flatMap(
+                Effect.fnUntraced(function* (plan) {
+                  if (planOnly) return plan;
+                  return yield* apply(plan);
+                }),
+              ),
               Effect.provideContext(compiled.services),
             ),
           ),
@@ -113,6 +121,150 @@ const makeHarness = (
 };
 
 describe("cloud deployment lifecycle", () => {
+  it.effect(
+    "refuses drift in a real plan while desired environment inputs remain unresolved",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(
+          fixture.layer,
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () => Effect.void,
+          }),
+        );
+        const deployKey = Redacted.make("prod:happy-otter-123|test-secret");
+        const resources = Effect.gen(function* () {
+          const source = yield* Convex.Code("Source", {
+            deployment: {
+              name: "happy-otter-123",
+              url: "https://happy-otter-123.convex.cloud",
+            },
+            deployKey,
+            cwd: "nonexistent-plan-test-backend",
+          });
+          yield* Convex.EnvironmentVariables("Environment", {
+            url: "https://happy-otter-123.convex.cloud",
+            deployKey,
+            variables: {
+              MANAGED: source.url,
+              SECRET: Redacted.make("plan-secret-value"),
+            },
+            driftPolicy: "error",
+          });
+        });
+        yield* deploy(resources);
+        const unchanged = yield* deploy(resources, true);
+        expect(inspect(unchanged, { depth: null })).not.toContain(
+          "plan-secret-value",
+        );
+        expect(inspect(unchanged, { depth: null })).not.toContain(
+          "test-secret",
+        );
+        fixture.state.variables.MANAGED = Redacted.make("drift-secret-value");
+        const planned = yield* deploy(resources, true).pipe(Effect.exit);
+        expect(Exit.isFailure(planned)).toBe(true);
+        expect(inspect(planned, { depth: null })).toContain(
+          "EnvironmentVariableDrift",
+        );
+        for (const secret of [
+          "plan-secret-value",
+          "drift-secret-value",
+          "test-secret",
+        ])
+          expect(inspect(planned, { depth: null })).not.toContain(secret);
+        expect(fixture.client.updateEnvironmentVariables).toHaveBeenCalledTimes(
+          1,
+        );
+      }),
+  );
+
+  it.effect(
+    "adopts a matching environment value through the engine without a general adoption grant",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        fixture.state.variables = { MANAGED: Redacted.make("desired-secret") };
+        const deploy = makeHarness(
+          fixture.layer,
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () => Effect.void,
+          }),
+        );
+        const resources = Convex.EnvironmentVariables("Environment", {
+          url: "https://happy-otter-123.convex.cloud",
+          deployKey: Redacted.make("test-key"),
+          variables: { MANAGED: Redacted.make("desired-secret") },
+          driftPolicy: "error",
+          adopt: true,
+          unownedPolicy: "error",
+          lock: { deploymentName: "happy-otter-123" },
+          retry: { maxAttempts: 3, delay: "100 millis" },
+        }).pipe(Effect.asVoid);
+        yield* deploy(resources);
+        yield* deploy(resources);
+        yield* deploy(Effect.void);
+        expect(
+          fixture.client.updateEnvironmentVariables,
+        ).not.toHaveBeenCalled();
+        expect(Redacted.value(fixture.state.variables.MANAGED)).toBe(
+          "desired-secret",
+        );
+      }),
+  );
+
+  it.effect(
+    "keeps matching adoption separate from newly written names after a lost create response",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        fixture.state.variables = { MANAGED: Redacted.make("matching-secret") };
+        let loseResponse = true;
+        const deploy = makeHarness(
+          Layer.succeed(ConvexClient, {
+            ...fixture.client,
+            updateEnvironmentVariables: (...args) =>
+              fixture.client.updateEnvironmentVariables(...args).pipe(
+                Effect.andThen(
+                  Effect.suspend(() => {
+                    if (!loseResponse) return Effect.void;
+                    loseResponse = false;
+                    return Effect.fail(
+                      ConvexApiError.make({
+                        operation: "updateEnvironmentVariables",
+                        code: "TransportError",
+                      }),
+                    );
+                  }),
+                ),
+              ),
+          }),
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () => Effect.void,
+          }),
+        );
+        const resources = Convex.EnvironmentVariables("Environment", {
+          url: "https://happy-otter-123.convex.cloud",
+          deployKey: Redacted.make("test-key"),
+          variables: {
+            MANAGED: Redacted.make("matching-secret"),
+            NEW: Redacted.make("new-secret"),
+          },
+          adopt: true,
+        }).pipe(Effect.asVoid);
+        const failed = yield* deploy(resources).pipe(Effect.result);
+        expect(Result.isFailure(failed)).toBe(true);
+        yield* deploy(resources);
+        yield* deploy(Effect.void);
+        expect(Record.keys(fixture.state.variables)).toEqual(["MANAGED"]);
+        expect(Redacted.value(fixture.state.variables.MANAGED)).toBe(
+          "matching-secret",
+        );
+      }),
+  );
+
   it.effect.each([false, true])(
     "cleans an interrupted create with retry=%s",
     (retry) =>

@@ -12,6 +12,17 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Alchemy environment safety options
+
+`EnvironmentVariables` can stop on owned-value drift or unrelated live names,
+adopt matching desired values, share the deployment's push lock, and retry a
+bounded number of write conflicts. All five options default to prior behavior.
+Plan checks compare against the stored snapshot before unresolved desired inputs
+can skip the check. Errors and adoption logs identify names without values.
+The options let Frame manage environment values without silently overwriting
+external changes. Changeset: `alchemy-environment-safety.md`.
+Upstream: planned, through the maintainer.
+
 ## Alchemy Convex error codes
 
 The Convex client retains the server's error code separately from its HTTP
