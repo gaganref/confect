@@ -5,16 +5,22 @@ import {
   provider as codeProvider,
   type CodeProps,
 } from "@confect/alchemy/Code";
+import * as Cause from "effect/Cause";
+import * as Exit from "effect/Exit";
+import { inspect } from "node:util";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
 import * as Fiber from "effect/Fiber";
 import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
+import * as Sink from "effect/Sink";
+import * as Stream from "effect/Stream";
 import { ChildProcessSpawner } from "effect/process";
 import {
   deploy,
@@ -256,7 +262,231 @@ const project = Effect.gen(function* () {
   return cwd;
 });
 
+const commandSpawner = (
+  mock: Pick<ChildProcessSpawner.ChildProcessSpawner["Service"], "exitCode"> & {
+    readonly stdout?: Stream.Stream<Uint8Array>;
+    readonly stderr?: Stream.Stream<Uint8Array>;
+  },
+) =>
+  Layer.succeed(
+    ChildProcessSpawner.ChildProcessSpawner,
+    ChildProcessSpawner.make((command) =>
+      Effect.map(mock.exitCode(command), (exitCode) =>
+        ChildProcessSpawner.makeHandle({
+          pid: ChildProcessSpawner.ProcessId(1),
+          exitCode: Effect.succeed(exitCode),
+          isRunning: Effect.succeed(false),
+          kill: () => Effect.void,
+          stdin: Sink.drain,
+          stdout: mock.stdout ?? Stream.empty,
+          stderr: mock.stderr ?? Stream.empty,
+          all: Stream.empty,
+          getInputFd: () => Sink.drain,
+          getOutputFd: () => Stream.empty,
+          unref: Effect.succeed(Effect.void),
+        }),
+      ),
+    ),
+  );
+
 describe("Code command boundary", () => {
+  it.effect(
+    "reports failed pushes with useful diagnostics and redacted credentials",
+    () =>
+      Effect.gen(function* () {
+        const services = yield* Layer.build(NodeServices.layer);
+        return yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const cwd = yield* project;
+          const secret = "made-up-path-credential";
+          yield* fs.writeFileString(
+            path.join(cwd, "node_modules/convex/cli.js"),
+            `
+          process.stdout.write('Deploy validation started\\nprod:happy-otter-123|test-secret\\n');
+          process.stderr.write('Schema validation failed: missing index by_author\\n${secret}\\npreview:another:project|made-up-preview-token\\n');
+          process.exit(7);
+        `,
+          );
+          const logs: string[] = [];
+          const exit = yield* Effect.gen(function* () {
+            const provider = yield* codeProvider;
+            return yield* provider.reconcile({
+              ...lifecycle,
+              news: {
+                deployment: props.deployment,
+                deployKey: props.deployKey,
+                cwd,
+              },
+              olds: undefined,
+              output: undefined,
+            });
+          }).pipe(
+            Effect.tapCause((cause) => Effect.logError(cause)),
+            Effect.provide([
+              Logger.layer([
+                Logger.make((options) => {
+                  logs.push(Logger.formatSimple.log(options));
+                }),
+              ]),
+              runnerLayer,
+              unlocked,
+              ConfigProvider.layer(
+                ConfigProvider.fromUnknown({ PATH: secret }),
+              ),
+            ]),
+            Effect.exit,
+          );
+          assertIs(exit, Exit.isFailure);
+          const error = Cause.squash(exit.cause);
+          assertIs(error, Schema.is(CommandError));
+          expect(error).toMatchObject({
+            _tag: "CommandError",
+            operation: "deploy",
+            reason: "exit",
+            exitCode: 7,
+            stdout: "Deploy validation started\n<REDACTED>\n",
+            stderr:
+              "Schema validation failed: missing index by_author\n<REDACTED>\n<REDACTED>\n",
+          });
+          for (const representation of [
+            error.message,
+            ...logs,
+            error.toString(),
+            inspect(error),
+            yield* serialize(error),
+            Cause.pretty(exit.cause),
+            yield* serialize(exit.cause),
+          ]) {
+            expect(representation).toContain(
+              "Schema validation failed: missing index by_author",
+            );
+            for (const credential of [
+              "test-secret",
+              secret,
+              "made-up-preview-token",
+            ])
+              expect(representation).not.toContain(credential);
+          }
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect(
+    "bounds each failed push stream and redacts keys the runner did not supply",
+    () =>
+      Effect.gen(function* () {
+        const services = yield* Layer.build(NodeServices.layer);
+        return yield* Effect.gen(function* () {
+          const fs = yield* FileSystem.FileSystem;
+          const path = yield* Path.Path;
+          const cwd = yield* project;
+          yield* fs.writeFileString(
+            path.join(cwd, "node_modules/convex/cli.js"),
+            `
+          const keys = ['prod:other|made-up-prod', 'dev:other|made-up-dev', 'preview:team:project|made-up-preview', 'project:other|made-up-project'];
+          for (const output of [process.stdout, process.stderr]) {
+            output.write('discarded-start\\nprod:another|'+ 'sensitive'.repeat(25000) + '\\n');
+            output.write(keys.join('\\n') + '\\nSchema validation failed: index by_author\\n');
+          }
+          process.exitCode = 9;
+        `,
+          );
+          const exit = yield* Effect.gen(function* () {
+            const provider = yield* codeProvider;
+            return yield* provider.reconcile({
+              ...lifecycle,
+              news: {
+                deployment: props.deployment,
+                deployKey: props.deployKey,
+                cwd,
+              },
+              olds: undefined,
+              output: undefined,
+            });
+          }).pipe(Effect.provide([runnerLayer, unlocked]), Effect.exit);
+          assertIs(exit, Exit.isFailure);
+          const error = Cause.squash(exit.cause);
+          assertIs(error, Schema.is(CommandError));
+          const outputFields = yield* Schema.decodeUnknownEffect(
+            Schema.Struct({ stdout: Schema.String, stderr: Schema.String }),
+          )(error);
+          for (const output of [outputFields.stdout, outputFields.stderr]) {
+            expect(output.length).toBeLessThanOrEqual(8192);
+            expect(output).not.toContain("discarded-start");
+            expect(output).not.toContain("sensitive");
+            expect(output).toContain(
+              "Schema validation failed: index by_author",
+            );
+            expect(output).toContain(
+              "<REDACTED>\n<REDACTED>\n<REDACTED>\n<REDACTED>\n",
+            );
+          }
+          const representations = [
+            error.message,
+            inspect(error),
+            yield* serialize(error),
+            Cause.pretty(exit.cause),
+            yield* serialize(exit.cause),
+          ];
+          for (const representation of representations)
+            expect(representation).not.toContain("made-up-");
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect("redacts a self-hosted admin key across stream chunks", () =>
+    Effect.gen(function* () {
+      const spawner = commandSpawner({
+        exitCode: () => Effect.succeed(ChildProcessSpawner.ExitCode(7)),
+        stdout: Stream.make(
+          new TextEncoder().encode("local-test|0123"),
+          new TextEncoder().encode("456789abcdef\n"),
+        ),
+        stderr: Stream.make(
+          new TextEncoder().encode("local-test|01"),
+          new TextEncoder().encode("23456789abcdef\nuseful diagnostic"),
+        ),
+      });
+      const services = yield* Layer.build(
+        runnerLayer.pipe(
+          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, spawner)),
+        ),
+      );
+      return yield* Effect.gen(function* () {
+        const cwd = yield* project;
+        const runner = yield* CommandRunner;
+        const key = "local-test|0123456789abcdef";
+        const exit = yield* runner
+          .deploy(
+            {
+              _tag: "SelfHosted",
+              deploymentName: "local-test",
+              url: "http://127.0.0.1:3300",
+              adminKey: Redacted.make(key),
+            },
+            cwd,
+          )
+          .pipe(Effect.exit);
+        assertIs(exit, Exit.isFailure);
+        const error = Cause.squash(exit.cause);
+        assertIs(error, Schema.is(CommandError));
+        expect(error).toMatchObject({
+          stdout: "<REDACTED>\n",
+          stderr: "<REDACTED>\nuseful diagnostic",
+        });
+        for (const representation of [
+          error.message,
+          inspect(error),
+          yield* serialize(error),
+          Cause.pretty(exit.cause),
+          yield* serialize(exit.cause),
+        ])
+          expect(representation).not.toContain(key);
+      }).pipe(Effect.provideContext(services));
+    }).pipe(Effect.scoped),
+  );
+
   it.effect(
     "preserves Windows process prerequisites across environment casing",
     () =>
@@ -269,22 +499,19 @@ describe("Code command boundary", () => {
             { Path: "C:\\node", SystemRoot: "C:\\Windows" },
           ]) {
             const calls: string[] = [];
-            const spawner = Layer.mock(
-              ChildProcessSpawner.ChildProcessSpawner,
-              {
-                exitCode: (command) =>
-                  Effect.sync(() => {
-                    expect(command._tag).toBe("StandardCommand");
-                    if (command._tag !== "StandardCommand")
-                      return ChildProcessSpawner.ExitCode(1);
-                    calls.push(CommandArgs.plain(command.args)[1]);
-                    expect(command.options.env?.PATH).toBe("C:\\node");
-                    expect(command.options.env?.SystemRoot).toBe("C:\\Windows");
-                    expect(command.options.extendEnv).toBe(false);
-                    return ChildProcessSpawner.ExitCode(0);
-                  }),
-              },
-            );
+            const spawner = commandSpawner({
+              exitCode: (command) =>
+                Effect.sync(() => {
+                  expect(command._tag).toBe("StandardCommand");
+                  if (command._tag !== "StandardCommand")
+                    return ChildProcessSpawner.ExitCode(1);
+                  calls.push(CommandArgs.plain(command.args)[1]);
+                  expect(command.options.env?.PATH).toBe("C:\\node");
+                  expect(command.options.env?.SystemRoot).toBe("C:\\Windows");
+                  expect(command.options.extendEnv).toBe(false);
+                  return ChildProcessSpawner.ExitCode(0);
+                }),
+            });
             yield* deploy({ ...props, cwd }).pipe(
               Effect.provide([
                 runnerLayer.pipe(Layer.provide(spawner)),
@@ -355,7 +582,7 @@ describe("Code command boundary", () => {
           const cwd = yield* project;
           let envFile = "";
           const calls: string[] = [];
-          const spawner = Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {
+          const spawner = commandSpawner({
             exitCode: (command) =>
               Effect.gen(function* () {
                 expect(command._tag).toBe("StandardCommand");
@@ -366,8 +593,16 @@ describe("Code command boundary", () => {
                 expect(command.options.cwd).toBe(cwd);
                 expect(command.options.extendEnv).toBe(false);
                 expect(command.options.stdin).toBe("ignore");
-                expect(command.options.stdout).toBe("ignore");
-                expect(command.options.stderr).toBe("ignore");
+                expect(command.options.stdout).toBe(
+                  CommandArgs.plain(command.args)[1] === "deploy"
+                    ? "pipe"
+                    : "ignore",
+                );
+                expect(command.options.stderr).toBe(
+                  CommandArgs.plain(command.args)[1] === "deploy"
+                    ? "pipe"
+                    : "ignore",
+                );
                 const serializeResult = yield* serialize(command);
                 expect(serializeResult).not.toContain("test-secret");
                 expect(command.options.env).not.toHaveProperty(
@@ -426,51 +661,46 @@ describe("Code command boundary", () => {
       }),
   );
 
-  it.effect(
-    "cleans credentials on command failure without exposing output",
-    () =>
-      Effect.gen(function* () {
-        const services10 = yield* Layer.build(NodeServices.layer);
-        return yield* Effect.gen(function* () {
-          const fs = yield* FileSystem.FileSystem;
-          const cwd = yield* project;
-          let envFile = "";
-          const spawner = Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {
-            exitCode: (command) =>
-              Effect.sync(() => {
-                if (command._tag === "StandardCommand")
-                  envFile = CommandArgs.plain(command.args)[
-                    CommandArgs.plain(command.args).indexOf("--env-file") + 1
-                  ];
-                return ChildProcessSpawner.ExitCode(7);
-              }),
+  it.effect("cleans credentials on command failure", () =>
+    Effect.gen(function* () {
+      const services10 = yield* Layer.build(NodeServices.layer);
+      return yield* Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const cwd = yield* project;
+        let envFile = "";
+        const spawner = commandSpawner({
+          exitCode: (command) =>
+            Effect.sync(() => {
+              if (command._tag === "StandardCommand")
+                envFile = CommandArgs.plain(command.args)[
+                  CommandArgs.plain(command.args).indexOf("--env-file") + 1
+                ];
+              return ChildProcessSpawner.ExitCode(7);
+            }),
+        });
+        const result = yield* deploy({
+          deployment: props.deployment,
+          deployKey: props.deployKey,
+          cwd,
+        }).pipe(
+          Effect.provide([runnerLayer.pipe(Layer.provide(spawner)), unlocked]),
+          Effect.result,
+        );
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result))
+          expect(result.failure).toMatchObject({
+            operation: "deploy",
+            reason: "exit",
+            exitCode: 7,
+            stdout: "",
+            stderr: "",
           });
-          const result = yield* deploy({
-            deployment: props.deployment,
-            deployKey: props.deployKey,
-            cwd,
-          }).pipe(
-            Effect.provide([
-              runnerLayer.pipe(Layer.provide(spawner)),
-              unlocked,
-            ]),
-            Effect.result,
-          );
-          expect(Result.isFailure(result)).toBe(true);
-          if (Result.isFailure(result))
-            expect(result.failure).toEqual(
-              CommandError.make({
-                operation: "deploy",
-                reason: "exit",
-                exitCode: 7,
-              }),
-            );
-          const envFileExists = yield* fs.exists(envFile);
-          expect(envFileExists).toBe(false);
-          const serializeResult = yield* serialize(result);
-          expect(serializeResult).not.toContain("test-secret");
-        }).pipe(Effect.provideContext(services10));
-      }),
+        const envFileExists = yield* fs.exists(envFile);
+        expect(envFileExists).toBe(false);
+        const serializeResult = yield* serialize(result);
+        expect(serializeResult).not.toContain("test-secret");
+      }).pipe(Effect.provideContext(services10));
+    }),
   );
 
   it.effect("cleans credentials when deployment is interrupted", () =>
@@ -480,7 +710,7 @@ describe("Code command boundary", () => {
         const fs = yield* FileSystem.FileSystem;
         const cwd = yield* project;
         const started = yield* Deferred.make<string>();
-        const spawner = Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {
+        const spawner = commandSpawner({
           exitCode: (command) =>
             Effect.gen(function* () {
               if (command._tag === "StandardCommand")
@@ -527,7 +757,7 @@ describe("Code command boundary", () => {
           Effect.provide([
             runnerLayer.pipe(
               Layer.provide(
-                Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {
+                commandSpawner({
                   exitCode: (command) =>
                     Effect.sync(() => {
                       expect(command).toBeUndefined();
@@ -579,7 +809,7 @@ describe("Code command boundary", () => {
             Effect.provide([
               runnerLayer.pipe(
                 Layer.provide(
-                  Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {
+                  commandSpawner({
                     exitCode: (command) =>
                       Effect.sync(() => {
                         expect(command).toBeUndefined();
@@ -681,7 +911,7 @@ describe("Code local target", () => {
           const fs = yield* FileSystem.FileSystem;
           const cwd = yield* project;
           let selection = "";
-          const spawner = Layer.mock(ChildProcessSpawner.ChildProcessSpawner, {
+          const spawner = commandSpawner({
             exitCode: (command) =>
               Effect.gen(function* () {
                 if (command._tag !== "StandardCommand")

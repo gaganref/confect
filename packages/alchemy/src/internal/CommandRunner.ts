@@ -1,3 +1,6 @@
+import * as Arr from "effect/Array";
+import * as Rec from "effect/Record";
+import * as Str from "effect/String";
 import * as Config from "effect/Config";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
@@ -6,6 +9,7 @@ import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
 
 export interface PrepareCommand {
@@ -42,7 +46,15 @@ export class CommandError extends Schema.TaggedError<
   operation: Schema.Literals(["prepare", "deploy"]),
   reason: Schema.Literals(["configuration", "spawn", "exit"]),
   exitCode: Schema.optionalKey(Schema.Finite),
-}) {}
+  stdout: Schema.optionalKey(Schema.String),
+  stderr: Schema.optionalKey(Schema.String),
+}) {
+  override get message(): string {
+    const status =
+      this.exitCode === undefined ? this.reason : `exit code ${this.exitCode}`;
+    return `${this.operation} command failed (${status})${this.stdout === undefined ? "" : `\nstdout:\n${this.stdout}`}${this.stderr === undefined ? "" : `\nstderr:\n${this.stderr}`}`;
+  }
+}
 
 export class CommandRunner extends Context.Service<
   CommandRunner,
@@ -124,6 +136,65 @@ const packageBin = Effect.fn("CommandRunner.packageBin")(function* (
   }
 });
 
+const outputTailSize = 8192;
+const redaction = "<REDACTED>";
+
+const outputTail = <E>(
+  stream: Stream.Stream<Uint8Array, E>,
+  secrets: ReadonlyArray<string>,
+) => {
+  const credentials = Arr.filter(secrets, (value) => value !== "");
+  const longest = Math.max(0, ...Arr.map(credentials, (value) => value.length));
+  const capacity = outputTailSize + longest;
+  return stream.pipe(
+    Stream.decodeText(),
+    Stream.runFold(
+      () => ({ text: "", truncated: false }),
+      (tail, chunk) => {
+        const text = tail.text + chunk;
+        return {
+          text: Str.slice(-capacity)(text),
+          truncated: tail.truncated || text.length > capacity,
+        };
+      },
+    ),
+    Effect.map(({ text, truncated }) => {
+      if (truncated) {
+        // A clipped token may be an unrecognised deploy key. Drop it whole.
+        text = Str.replace(/^\S*/, "")(text);
+        // A known credential may contain whitespace and cross that boundary.
+        let clipped = 0;
+        for (const credential of credentials) {
+          for (
+            let size = Math.min(credential.length - 1, text.length);
+            size > clipped;
+            size--
+          ) {
+            if (Str.startsWith(Str.slice(-size)(credential))(text)) {
+              clipped = size;
+              break;
+            }
+          }
+        }
+        if (clipped > 0) text = redaction + Str.slice(clipped)(text);
+      }
+      const pattern = new RegExp(
+        Arr.join(
+          [
+            "(?:prod|dev|preview|project|custom):[^\\s|]+\\|[a-zA-Z0-9+/=_-]+",
+            ...Arr.map(credentials, (value) =>
+              Str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")(value),
+            ),
+          ],
+          "|",
+        ),
+        "g",
+      );
+      return Str.slice(-outputTailSize)(Str.replace(pattern, redaction)(text));
+    }),
+  );
+};
+
 /**
  * @internal
  */
@@ -139,7 +210,50 @@ export const layer = Layer.effect(
       args: ReadonlyArray<string>,
       cwd: string,
       env: Record<string, string | undefined>,
+      credentials: ReadonlyArray<string> = [],
     ) {
+      if (operation === "deploy") {
+        return yield* Effect.scoped(
+          Effect.gen(function* () {
+            const child = yield* spawner.spawn(
+              ChildProcess.make(command, args, {
+                cwd,
+                env,
+                extendEnv: false,
+                stdin: "ignore",
+                stdout: "pipe",
+                stderr: "pipe",
+              }),
+            );
+            const secrets = [
+              ...credentials,
+              ...Arr.filter(Rec.values(env), (value) => value !== undefined),
+            ];
+            const [code, stdout, stderr] = yield* Effect.all(
+              [
+                child.exitCode,
+                outputTail(child.stdout, secrets),
+                outputTail(child.stderr, secrets),
+              ],
+              { concurrency: "unbounded" },
+            );
+            if (code !== 0)
+              return yield* CommandError.make({
+                operation,
+                reason: "exit",
+                exitCode: Number(code),
+                stdout,
+                stderr,
+              });
+          }),
+        ).pipe(
+          Effect.mapError((error) =>
+            Schema.is(CommandError)(error)
+              ? error
+              : CommandError.make({ operation, reason: "spawn" }),
+          ),
+        );
+      }
       const code = yield* spawner
         .exitCode(
           ChildProcess.make(command, args, {
@@ -234,6 +348,11 @@ export const layer = Layer.effect(
                 LOCALAPPDATA: temp,
                 XDG_CONFIG_HOME: temp,
               },
+              [
+                Redacted.value(
+                  target._tag === "Cloud" ? target.deployKey : target.adminKey,
+                ),
+              ],
             );
           }).pipe(
             Effect.mapError((error) =>

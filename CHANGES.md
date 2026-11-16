@@ -1182,6 +1182,13 @@ Upstream: planned; no linked proposal verified.
 
 ## Alchemy deployment
 
+### Show failed code push diagnostics
+
+Include bounded stdout and stderr tails in failed code pushes so operators can
+see Convex validation errors. Redact child credentials and Convex deploy keys
+before constructing the error, including its message and serialized form.
+Changeset: `alchemy-push-diagnostics.md`. Upstream: planned; no proposal submitted.
+
 ### Deploy Convex through Alchemy
 
 Add the optional `@confect/alchemy` package for cloud projects, deployments, keys,
