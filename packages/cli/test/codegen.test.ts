@@ -4016,6 +4016,33 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       { timeout: 30000 },
     );
 
+    it.effect.each<{ keys: ReadonlyArray<"authz" | "audit"> }>([
+      { keys: ["authz"] },
+      { keys: ["authz", "audit"] },
+    ])(
+      "rewrites the crons.ts that @gaganref/confect-cli 10.6.0-fork.12 wrote over $keys to the current line",
+      ({ keys }) =>
+        Effect.gen(function* () {
+          const project = yield* cronsProject();
+          yield* project.wrap(keys);
+          yield* project.run;
+          yield* project.write(
+            "convex/crons.ts",
+            pipe(
+              wrappedCrons(keys),
+              String.replace(
+                "wraps.reduce<CronJobs.CronJobs>(",
+                "wraps.reduce(",
+              ),
+            ),
+          );
+          yield* project.run;
+          const rewritten = yield* project.read("convex/crons.ts");
+          expect(rewritten).toBe(wrappedCrons(keys));
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
     it.effect(
       "rewrites its own crons.ts after confect/_generated is deleted and the wrapping sections change",
       () =>

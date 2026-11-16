@@ -427,11 +427,41 @@ const wraps: ReadonlyArray<(crons: CronJobs.CronJobs) => CronJobs.CronJobs> = [$
 export default wraps.reduce<CronJobs.CronJobs>((jobs, wrap) => wrap(jobs), crons).convexCronJobs;
 `;
 
+  // What @gaganref/confect-cli 10.6.0-fork.12 wrote, before reduce named its type.
+  const wrappedByFork12 = (wraps: ReadonlyArray<string>) =>
+    Str.replace(
+      "wraps.reduce<CronJobs.CronJobs>(",
+      "wraps.reduce(",
+    )(wrapped(wraps));
+
   it.effect.each([
     {
       verdict: "accepts",
       case: "one wrapping section",
       source: wrapped(["authz"]),
+    },
+    {
+      verdict: "accepts",
+      case: "one wrapping section as fork.12 wrote it",
+      source: wrappedByFork12(["authz"]),
+    },
+    {
+      verdict: "accepts",
+      case: "two wrapping sections as fork.12 wrote them",
+      source: wrappedByFork12(["authz", "audit"]),
+    },
+    {
+      verdict: "refuses",
+      case: "a hand-edited body in the fork.12 shape",
+      source: pipe(
+        wrappedByFork12(["authz"]),
+        Str.replace("wraps.reduce((jobs, wrap) => wrap(jobs), crons)", "crons"),
+      ),
+    },
+    {
+      verdict: "refuses",
+      case: "an extra statement after the fork.12 shape",
+      source: `${wrappedByFork12(["authz"])}export const extra = 1;\n`,
     },
     {
       verdict: "accepts",
