@@ -1681,3 +1681,12 @@ out of components and signing out of query and action handlers.
 
 Changesets: `mutation-auth-sign-jwt.md`, `mutation-auth-upstream.md`.
 Upstream: superseded by upstream 10.6.0 for applications; the component wiring is fork only.
+
+## Alchemy usage limits
+
+`Convex.UsageLimit` lets a stack own cloud deployment usage limits. Warning
+limits and enabled enforcement are the defaults. Every config field updates
+under the same ID. Applies restore manual edits and recreate deleted limits.
+Local mode refuses the resource until backend support is verified. Account
+entitlement and disable behavior remain unproven. Changeset:
+`alchemy-usage-limit.md`. Upstream: planned for a maintainer proposal.

@@ -1,7 +1,7 @@
 import type { Input } from "alchemy/Input";
 import type * as Output from "alchemy/Output";
 import { Confect, Convex } from "@confect/alchemy";
-import { describe, expectTypeOf, it } from "@effect/vitest";
+import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import * as Alchemy from "alchemy";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
@@ -153,4 +153,25 @@ it("types Backend env from the manifest without executing resources", () => {
       manifest: optionalManifest,
     }),
   ).toExtend<Effect.Effect<unknown, unknown, unknown>>();
+});
+
+it("exports UsageLimit with literal metric, window and type inputs", () => {
+  expect(Convex.UsageLimit.Type).toBe("Convex.UsageLimit");
+  const deployment = { name: "notes", url: "https://notes.convex.cloud" };
+  const props = {
+    deployment,
+    metric: "functionCalls" as const,
+    window: "month" as const,
+    limit: 100000,
+  };
+  const resource = Convex.UsageLimit("Limit", props);
+  expectTypeOf<Effect.Success<typeof resource>["id"]>().toExtend<
+    Output.Output<string>
+  >();
+  // @ts-expect-error Unknown metrics are rejected at the constructor.
+  void Convex.UsageLimit("UnknownMetric", { ...props, metric: "requests" });
+  // @ts-expect-error Windows are calendar days or months.
+  void Convex.UsageLimit("UnknownWindow", { ...props, window: "week" });
+  // @ts-expect-error Disable must be an explicit supported literal.
+  void Convex.UsageLimit("UnknownType", { ...props, limitType: "stop" });
 });

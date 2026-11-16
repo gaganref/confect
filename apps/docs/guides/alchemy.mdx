@@ -141,6 +141,36 @@ Effect.gen(function* () {
 
 Required keys must be present. Unknown keys, plain strings for secret fields, and values outside a field's declared literals fail to typecheck. Each value also accepts an Alchemy `Input`. Optional fields can be omitted; `env` itself can be omitted when all fields are optional. Without `manifest`, the existing untyped env record remains available. Infra imports only the generated manifest, never backend implementation code.
 
+## Set a usage limit
+
+Declare a calendar-aligned daily or monthly limit for a cloud deployment. The
+provider uses `CONVEX_ACCESS_TOKEN`, including for a cloud dev deployment.
+
+```ts
+const usageLimit =
+  yield *
+  Convex.UsageLimit("FunctionCalls", {
+    deployment,
+    metric: "functionCalls",
+    window: "month",
+    limit: 1000000,
+  });
+```
+
+`limitType` defaults to `"warning"`, and `enabled` defaults to `true`. Set
+`limitType: "disable"` explicitly when your stack requires it. Choose the policy
+in your stack for each stage. The resource updates every limit field in place,
+restores manual edits on the next apply, and recreates a missing limit.
+Removing the resource deletes its limit. Changing the deployment replaces the
+resource. An existing matching limit without saved ownership is refused.
+
+Not proven on a real account:
+
+- Which Convex plans permit usage limits.
+- What a `"disable"` limit stops when reached.
+- Whether local backends serve the usage-limit endpoints. `alchemy dev` fails
+  with `UnsupportedLocalUsageLimit` for this resource.
+
 ## Use plain Convex
 
 `Convex.Code` runs the Convex deploy command without Confect codegen:
