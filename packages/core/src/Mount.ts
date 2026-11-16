@@ -92,23 +92,58 @@ type IsOptional<S> = S extends { readonly "~type.optionality": "optional" }
   ? true
   : false;
 
-type RequiredKeys<E> = {
-  [K in keyof E]: IsOptional<E[K]> extends true ? never : K;
-}[keyof E];
-
 type SlotValue<S> = Extract<Schema.Schema.Type<S & Schema.Top>, string>;
+
+type DescriptorValue<D> = D extends {
+  readonly kind: "literals";
+  readonly values: ReadonlyArray<infer V>;
+}
+  ? V
+  : string;
+
+interface SlotInfo {
+  readonly optional: boolean;
+  readonly value: string;
+}
+
+/**
+ * A component's env slots: from its generated manifest when it ships one,
+ * otherwise from the schemas its descriptor lists.
+ */
+type SlotsOf<C> = [C] extends [{ readonly manifest: { readonly env: infer D } }]
+  ? {
+      readonly [K in keyof D]: {
+        readonly optional: D[K] extends { readonly optional: true }
+          ? true
+          : false;
+        readonly value: DescriptorValue<D[K]>;
+      };
+    }
+  : [C] extends [{ readonly env: infer E }]
+    ? {
+        readonly [K in keyof E]: {
+          readonly optional: IsOptional<E[K]>;
+          readonly value: SlotValue<E[K]>;
+        };
+      }
+    : never;
+
+type RequiredKeys<E> = {
+  [K in keyof E]: E[K] extends { readonly optional: true } ? never : K;
+}[keyof E];
 
 /**
  * What one env slot accepts: a constant, or an entry of the host's env whose
  * value fits. A required slot takes only a required entry.
  */
-type Slot<S> =
-  IsOptional<S> extends true
-    ? SlotValue<S> | undefined | Env.Entry<string, any, SlotValue<S>, boolean>
-    : SlotValue<S> | Env.Entry<string, any, SlotValue<S>, false>;
+type Slot<S extends SlotInfo> = S["optional"] extends true
+  ? S["value"] | undefined | Env.Entry<string, any, S["value"], boolean>
+  : S["value"] | Env.Entry<string, any, S["value"], false>;
 
-type Bindings<E> = { readonly [K in RequiredKeys<E>]: Slot<E[K]> } & {
-  readonly [K in Exclude<keyof E, RequiredKeys<E>>]?: Slot<E[K]>;
+type Bindings<E> = {
+  readonly [K in RequiredKeys<E>]: Slot<E[K] & SlotInfo>;
+} & {
+  readonly [K in Exclude<keyof E, RequiredKeys<E>>]?: Slot<E[K] & SlotInfo>;
 };
 
 /**
@@ -116,11 +151,11 @@ type Bindings<E> = { readonly [K in RequiredKeys<E>]: Slot<E[K]> } & {
  * entries come from. `[C]` for the reason `ArgsField` gives: a bare `C` widens
  * an inline constant to `string`.
  */
-type EnvField<C, B> = [C] extends [{ readonly env: infer E }]
-  ? [RequiredKeys<E>] extends [never]
-    ? { readonly env?: B & Bindings<E> & NoExtra<B, E> }
-    : { readonly env: B & Bindings<E> & NoExtra<B, E> }
-  : { readonly env?: never };
+type EnvField<C, B> = [SlotsOf<C>] extends [never]
+  ? { readonly env?: never }
+  : [RequiredKeys<SlotsOf<C>>] extends [never]
+    ? { readonly env?: B & Bindings<SlotsOf<C>> & NoExtra<B, SlotsOf<C>> }
+    : { readonly env: B & Bindings<SlotsOf<C>> & NoExtra<B, SlotsOf<C>> };
 
 type NoExtra<B, E> = { readonly [K in Exclude<keyof B, keyof E>]: never };
 

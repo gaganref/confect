@@ -15,7 +15,10 @@ import * as Rec from "effect/Record";
 import { quote, stringify } from "./Json.js";
 
 const reserved = new Set(
-  pipe("name env http digest __proto__ constructor prototype", Str.split(" ")),
+  pipe(
+    "format name env http digest __proto__ constructor prototype",
+    Str.split(" "),
+  ),
 );
 export const sections = (manifest: Readonly<Record<string, unknown>>) =>
   Rec.fromEntries(

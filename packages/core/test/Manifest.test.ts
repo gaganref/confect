@@ -3,6 +3,7 @@ import type { Manifest } from "@confect/core";
 import * as Redacted from "effect/Redacted";
 
 const manifest = {
+  format: 1,
   name: "tenant",
   env: {
     EMAIL_FROM: { kind: "string", optional: false },
@@ -28,6 +29,13 @@ const required = {
 describe("Manifest", () => {
   it("accepts a generated manifest without a cast", () => {
     expectTypeOf(manifest).toExtend<Manifest.Manifest>();
+  });
+
+  it("refuses a manifest of another format", () => {
+    expectTypeOf({
+      ...manifest,
+      format: 2,
+    } as const).not.toExtend<Manifest.Manifest>();
   });
 
   it("types the values infra must supply", () => {

@@ -166,6 +166,36 @@ describe("Mount.make", () => {
     // @ts-expect-error RULE env-literal-value: a constant must be one of the slot's literals.
     void Mount.make(Transport, { ...n, env: { MODE: "smtp" } });
   });
+
+  it("takes a shipped manifest's env slots", () => {
+    const manifest = {
+      format: 1,
+      name: "relay",
+      env: {
+        MODE: { kind: "literals", values: ["live", "log"], optional: false },
+        LABEL: { kind: "string", optional: true },
+      },
+      http: { mounts: {} },
+      digest: "sha256:0",
+    } as const;
+    const Relay = Component.make("relay", {
+      manifest,
+      client: (native: Native) => native,
+    });
+    const n = { name: "relay" } as const;
+    void Mount.make(Relay, { ...n, env: { MODE: "log" } });
+    void Mount.make(Relay, { ...n, env: { MODE: "live", LABEL: "x" } });
+    // @ts-expect-error RULE manifest-literal: a constant must be one of the manifest's literals.
+    void Mount.make(Relay, { ...n, env: { MODE: "smtp" } });
+    // @ts-expect-error RULE manifest-unknown-slot: the manifest lists no SURPRISE slot.
+    void Mount.make(Relay, { ...n, env: { MODE: "log", SURPRISE: "x" } });
+    const Other = Component.make("relay", {
+      // @ts-expect-error RULE manifest-format: a manifest of another format is refused.
+      manifest: { ...manifest, format: 2 },
+      client: (native: Native) => native,
+    });
+    void Other;
+  });
 });
 
 const EventFields = {

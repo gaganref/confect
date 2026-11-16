@@ -40,7 +40,7 @@ import * as Rec from "effect/Record";
  * Bumped when the generated files change shape, so a manifest written by an
  * older generator never matches a current one.
  */
-const GENERATOR_FORMAT = "2";
+const GENERATOR_FORMAT = "3";
 
 const confectPath = Effect.fnUntraced(function* (file: string) {
   const path = yield* Path.Path;
@@ -292,12 +292,19 @@ export const syncManifestSections = Effect.fnUntraced(
     const sections = Rec.fromEntries(
       Arr.map([...registry], ([key, { data }]) => [key, data]),
     );
-    const { name, env, http } = current;
+    const { format, name, env, http } = current;
     const digest = sectionDigest(baseDigest, sections);
     const manifestPathValue = yield* manifestPath;
     yield* writeFileStringAndLog(
       manifestPathValue,
-      Declaration.renderManifest({ name, env, http, digest, ...sections }),
+      Declaration.renderManifest({
+        format,
+        name,
+        env,
+        http,
+        digest,
+        ...sections,
+      }),
     );
   },
   Effect.tapError(() => removeManifest),
@@ -369,26 +376,32 @@ const writeDeclaration = Effect.fnUntraced(function* (
   yield* assertOwned(convexConfigPath, "app.ts", []);
   yield* assertOwned(authConfigPath, "auth.ts", legacyAuthConfigs);
 
-  let digest: string | undefined;
-  if (target === "app") {
-    digest = Declaration.digest({
-      files: yield* declarationInputs([app, ...Option.toArray(auth)]),
-      versions: [
-        ["convex", yield* packageVersion("convex", projectRoot)],
-        ["@confect/cli generator format", GENERATOR_FORMAT],
-      ],
-    });
-    const sections = ManifestSections.sections(previous);
-    const manifestPathValue = yield* manifestPath;
-    yield* writeFileStringAndLog(
-      manifestPathValue,
-      Declaration.manifest(
-        declaration,
-        sectionDigest(digest, sections),
-        sections,
+  // A component writes its manifest too: it is the descriptor a host's
+  // codegen reads through the component's `Component.make({ manifest })`.
+  const digest = Declaration.digest({
+    files: [
+      ...(yield* declarationInputs([app, ...Option.toArray(auth)])),
+      ...Arr.flatMap(declaration.mounts, ({ name, descriptor }) =>
+        descriptor === undefined
+          ? []
+          : [[`mount:${name}`, descriptor.digest] as const],
       ),
-    );
-  }
+    ],
+    versions: [
+      ["convex", yield* packageVersion("convex", projectRoot)],
+      ["@confect/cli generator format", GENERATOR_FORMAT],
+    ],
+  });
+  const sections = target === "app" ? ManifestSections.sections(previous) : {};
+  const manifestPathValue = yield* manifestPath;
+  yield* writeFileStringAndLog(
+    manifestPathValue,
+    Declaration.manifest(
+      declaration,
+      sectionDigest(digest, sections),
+      sections,
+    ),
+  );
   yield* writeFileStringAndLog(
     convexConfigPath,
     Declaration.convexConfig(declaration),
@@ -421,7 +434,8 @@ const writeDeclaration = Effect.fnUntraced(function* (
       : { kind: "component", name: declaration.name };
   return {
     app: App.isApp(appValue) ? Option.some(appValue) : Option.none<App.Any>(),
-    digest,
+    // Sections describe an app's functions; a component's manifest has none.
+    digest: target === "app" ? digest : undefined,
     backend: Option.some<SectionFiles.Backend>({
       target: sectionTarget,
       sections: manifestSections,

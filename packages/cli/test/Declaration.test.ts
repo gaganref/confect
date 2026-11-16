@@ -42,6 +42,41 @@ const parseApp = (app: unknown) =>
   });
 
 describe("Declaration", () => {
+  it("reads a mounted component's shipped manifest and refuses another format", () => {
+    const shipped = {
+      format: 1,
+      name: "workpool",
+      env: {},
+      http: { mounts: {} },
+      digest: "sha256:child",
+    } as const;
+    const mountOf = (manifest: unknown) =>
+      Mount.make(
+        Component.make("workpool", {
+          manifest: manifest as typeof shipped,
+          client: (native: unknown) => native,
+        }),
+        { name: "pool" },
+      );
+    const app = (manifest: unknown) =>
+      App.make({
+        env: Env.make("tenant", {}),
+        components: [workpool],
+        mounts: [mountOf(manifest)],
+      });
+    const parsed = parseApp(app(shipped));
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.mounts[0]?.descriptor).toBe(shipped);
+    expect(parseApp(app({ ...shipped, format: 2 }))).toEqual(
+      Result.fail(
+        Declaration.UnsupportedDescriptorFormat.make({
+          mount: "pool",
+          format: 2,
+        }),
+      ),
+    );
+  });
+
   it("rejects foreign, optional and secret provider env values", () => {
     const env = Env.make("tenant", {
       OPTIONAL: Env.optional(Env.string()),

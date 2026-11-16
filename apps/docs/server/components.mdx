@@ -32,6 +32,20 @@ const component = defineComponent("counter");
 export default component;
 ```
 
+Codegen also writes `components/counter/confect/_generated/manifest.ts`, the format 1 descriptor a packaged component ships to its hosts. Import it in the package's client entry:
+
+```ts components/counter/client.ts
+import { Component } from "@confect/core";
+import manifest from "./confect/_generated/manifest";
+
+export default Component.make("counter", {
+  manifest,
+  client: (native: unknown) => native,
+});
+```
+
+Use your component's client constructor in place of this identity client. Include the generated manifest in the published package. Its env descriptors replace hand-written `env` metadata on `Component.make`. The host's `Mount.make` reads required, optional, and literal slots from the manifest. Another manifest format fails at the `manifest` property and during host codegen.
+
 With declared entries, codegen emits `defineComponent(name, { env: { ... } })` with their Convex validators. An empty env emits no options object. Keep a `name` in the enclosing `package.json`; the generated ID scope derives from the package name and the component directory's package-relative path.
 
 Declare the component's relative HTTP API and handlers:
@@ -226,13 +240,13 @@ A component package describes itself to hosts with `Component.make`, exported fr
 
 ```ts components/counter/client.ts
 import { Component } from "@confect/core";
-import * as Schema from "effect/Schema";
+import manifest from "./confect/_generated/manifest";
 import contract from "./confect/_generated/component";
 import type spec from "./confect/_generated/spec";
 
 export default Component.make("counter", {
   contract,
-  env: { COMPONENT_REQUIRED: Schema.String },
+  manifest,
   client: (native: Component.Api<typeof spec>) =>
     Component.bind(contract, native),
 });

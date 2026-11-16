@@ -72,6 +72,7 @@ describe("public API", () => {
 });
 
 const manifest = {
+  format: 1,
   name: "notes",
   env: {
     URL: { kind: "string", optional: false },

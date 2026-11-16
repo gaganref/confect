@@ -1,4 +1,4 @@
-import { App, Auth, Env } from "@confect/core";
+import { App, Auth, Env, Manifest } from "@confect/core";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
@@ -30,6 +30,10 @@ export interface Mount {
   readonly componentName: string;
   readonly httpPrefix: string | undefined;
   readonly env: ReadonlyArray<readonly [string, Binding]>;
+  /**
+   * The generated manifest the mounted component ships, when it ships one.
+   */
+  readonly descriptor: Manifest.Manifest | undefined;
 }
 
 export type Binding =
@@ -178,6 +182,18 @@ export class InvalidProviderEnv extends Schema.TaggedError<
   }
 }
 
+export class UnsupportedDescriptorFormat extends Schema.TaggedError<
+  UnsupportedDescriptorFormat,
+  { readonly brand: unique symbol }
+>()("UnsupportedDescriptorFormat", {
+  mount: Schema.String,
+  format: Schema.Unknown,
+}) {
+  override get message(): string {
+    return `The mount "${this.mount}" mounts a component whose manifest has format ${stringify(this.format)}; this codegen reads format ${Manifest.FORMAT}. Regenerate the component with a matching @confect/cli.`;
+  }
+}
+
 export type DeclarationError =
   | NotADeclaration
   | InvalidEnvKey
@@ -190,7 +206,8 @@ export type DeclarationError =
   | DuplicateMountName
   | DuplicateDefinitionName
   | AuthForAnotherBackend
-  | InvalidProviderEnv;
+  | InvalidProviderEnv
+  | UnsupportedDescriptorFormat;
 
 const ENV_KEY = /^[A-Za-z][A-Za-z0-9_]*$/;
 const MOUNT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -213,6 +230,10 @@ export interface ComponentImport {
   readonly importPath: string;
   readonly componentName: string;
 }
+
+const isCurrentFormat = (descriptor: {
+  readonly format: number;
+}): descriptor is Manifest.Manifest => descriptor.format === Manifest.FORMAT;
 
 /**
  * Parse the default exports of `confect/app.ts` and, when present,
@@ -317,12 +338,22 @@ export const parse = (input: {
         }
         bindings.push([slot, { kind: "env", key: origin.key }]);
       }
+      const descriptor = mount.component.manifest;
+      if (descriptor !== undefined && !isCurrentFormat(descriptor)) {
+        return yield* Result.fail(
+          UnsupportedDescriptorFormat.make({
+            mount: mount.name,
+            format: descriptor.format,
+          }),
+        );
+      }
       mounts.push({
         name: mount.name,
         importPath: component.importPath,
         componentName: component.componentName,
         httpPrefix: mount.httpPrefix,
         env: bindings,
+        descriptor,
       });
     }
     for (const [component, { importPath }] of definitions) {
@@ -631,6 +662,7 @@ export const manifest = (
   sections: Readonly<Record<string, unknown>> = {},
 ): string => {
   const data = {
+    format: Manifest.FORMAT,
     name: declaration.name,
     env: Rec.fromEntries(declaration.env),
     http: {

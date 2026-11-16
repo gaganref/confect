@@ -2,12 +2,20 @@ import type * as Redacted from "effect/Redacted";
 import type * as Env from "./Env.js";
 
 /**
+ * The manifest format this release writes and reads. A reader refuses any other
+ * number; a change to the shape ships as the next number.
+ */
+export const FORMAT = 1;
+
+/**
  * The shape of `confect/_generated/manifest.ts`: plain data with no imports,
- * which infra reads instead of backend code. `env` lists each variable with its
- * kind, `http.mounts` each mount's HTTP prefix, and `digest` identifies the
+ * which infra reads instead of backend code, and which a component ships so a
+ * host's codegen can read it. `env` lists each variable with its kind,
+ * `http.mounts` each mount's HTTP prefix, and `digest` identifies the
  * declaration inputs it was generated from.
  */
 export interface Manifest {
+  readonly format: typeof FORMAT;
   readonly name: string;
   readonly env: Readonly<Record<string, Env.Descriptor>>;
   readonly http: { readonly mounts: Readonly<Record<string, string>> };
