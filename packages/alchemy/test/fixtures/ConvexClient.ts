@@ -8,6 +8,11 @@ import { vi } from "vitest";
 import {
   ConvexClient,
   ConvexNotFound,
+  ConvexConflict,
+  type LogStreamConfig,
+  type CreateLogStreamInput,
+  type UpdateLogStreamInput,
+  type CreatedLogStream,
   type Deployment,
   type DeployKey,
   type Project,
@@ -65,11 +70,19 @@ export const key = (overrides: Partial<DeployKey> = {}): DeployKey => ({
 export const mockClient = (options: { readonly deployKey?: string } = {}) => {
   const issuedKeys = new Map<string, number>();
   const state: {
+    logStreams: Map<string, LogStreamConfig[]>;
     projects: Project[];
     deployments: Deployment[];
     keys: DeployKey[];
     variables: Record<string, Redacted.Redacted<string>>;
-  } = { projects: [], deployments: [], keys: [], variables: {} };
+  } = {
+    projects: [],
+    deployments: [],
+    keys: [],
+    variables: {},
+    logStreams: new Map(),
+  };
+  let nextStreamId = 1;
   const missing = () =>
     ConvexNotFound.make({ operation: "test", code: "HttpError", status: 404 });
   const client = {
@@ -188,6 +201,167 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
           state.keys = Array.filter(
             state.keys,
             (candidate) => candidate.id !== id,
+          );
+          return Effect.void;
+        }),
+    ),
+    listLogStreams: vi.fn((url: string) =>
+      Effect.sync(() => state.logStreams.get(url) ?? []),
+    ),
+    getLogStream: vi.fn(
+      (url: string, _key: Redacted.Redacted<string>, id: string) =>
+        Effect.suspend(() => {
+          const stream = Option.getOrUndefined(
+            Array.findFirst(
+              state.logStreams.get(url) ?? [],
+              (candidate) => Redacted.value(candidate).id === id,
+            ),
+          );
+          return stream === undefined
+            ? Effect.fail(missing())
+            : Effect.succeed(stream);
+        }),
+    ),
+    createLogStream: vi.fn(
+      (
+        url: string,
+        _key: Redacted.Redacted<string>,
+        input: CreateLogStreamInput,
+      ) =>
+        Effect.gen(function* (): Effect.fn.Return<
+          CreatedLogStream,
+          ConvexConflict
+        > {
+          const streams = state.logStreams.get(url) ?? [];
+          if (
+            Array.some(
+              streams,
+              (stream) =>
+                Redacted.value(stream).logStreamType === input.logStreamType,
+            )
+          )
+            return yield* ConvexConflict.make({
+              operation: "createLogStream",
+              status: 409,
+              code: "HttpError",
+            });
+          const id = `stream-${nextStreamId++}`;
+          const status = { type: "pending" } as const;
+          let config: LogStreamConfig;
+          switch (input.logStreamType) {
+            case "axiom":
+              config = Redacted.make({
+                id,
+                status,
+                logStreamType: "axiom",
+                datasetName: input.datasetName,
+                attributes: input.attributes,
+                ingestUrl: input.ingestUrl ?? null,
+                topics: input.topics ?? null,
+              });
+              break;
+            case "sentry":
+              config = Redacted.make({
+                id,
+                status,
+                logStreamType: "sentry",
+                tags: input.tags ?? null,
+              });
+              break;
+            case "webhook":
+              config = Redacted.make({
+                id,
+                status,
+                logStreamType: "webhook",
+                url: input.url,
+                format: input.format,
+                topics: input.topics ?? null,
+                hmacSecret: "made-up-hmac-secret",
+              });
+              break;
+            default:
+              return yield* Effect.die(
+                "The log stream fake supports axiom, sentry and webhook.",
+              );
+          }
+          state.logStreams.set(url, [...streams, config]);
+          const live = Redacted.value(config);
+          return Redacted.make(
+            live.logStreamType === "webhook"
+              ? { id, logStreamType: "webhook", hmacSecret: live.hmacSecret }
+              : { id, logStreamType: live.logStreamType },
+          );
+        }),
+    ),
+    updateLogStream: vi.fn(
+      (
+        url: string,
+        _key: Redacted.Redacted<string>,
+        id: string,
+        input: UpdateLogStreamInput,
+      ) =>
+        Effect.suspend(() => {
+          const streams = state.logStreams.get(url) ?? [];
+          if (
+            !Array.some(streams, (stream) => Redacted.value(stream).id === id)
+          )
+            return Effect.fail(missing());
+          state.logStreams.set(
+            url,
+            Array.map(streams, (stream) => {
+              const live = Redacted.value(stream);
+              if (live.id !== id) return stream;
+              switch (input.logStreamType) {
+                case "axiom":
+                  if (live.logStreamType === "axiom")
+                    return Redacted.make({
+                      ...live,
+                      datasetName: input.datasetName ?? live.datasetName,
+                      attributes: input.attributes ?? live.attributes,
+                      ...(input.ingestUrl === undefined
+                        ? {}
+                        : { ingestUrl: input.ingestUrl }),
+                      ...(input.topics === undefined
+                        ? {}
+                        : { topics: input.topics }),
+                    });
+                  break;
+                case "sentry":
+                  if (live.logStreamType === "sentry")
+                    return Redacted.make({
+                      ...live,
+                      ...(input.tags === undefined ? {} : { tags: input.tags }),
+                    });
+                  break;
+                case "webhook":
+                  if (live.logStreamType === "webhook")
+                    return Redacted.make({
+                      ...live,
+                      url: input.url ?? live.url,
+                      format: input.format ?? live.format,
+                      ...(input.topics === undefined
+                        ? {}
+                        : { topics: input.topics }),
+                    });
+                  break;
+              }
+              return stream;
+            }),
+          );
+          return Effect.void;
+        }),
+    ),
+    deleteLogStream: vi.fn(
+      (url: string, _key: Redacted.Redacted<string>, id: string) =>
+        Effect.suspend(() => {
+          const streams = state.logStreams.get(url) ?? [];
+          if (
+            !Array.some(streams, (stream) => Redacted.value(stream).id === id)
+          )
+            return Effect.fail(missing());
+          state.logStreams.set(
+            url,
+            Array.filter(streams, (stream) => Redacted.value(stream).id !== id),
           );
           return Effect.void;
         }),

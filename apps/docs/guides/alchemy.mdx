@@ -158,6 +158,52 @@ Effect.gen(function* () {
 
 You can also declare `Convex.EnvironmentVariables` separately. A standalone code resource must depend on its outputs if those variables need to be applied first; declaring resources in source order alone does not establish a dependency. `Confect.Backend` handles this ordering for its `env` option.
 
+## Send backend logs
+
+Declare one `Convex.LogStream` for each backend that sends logs to Axiom. Set the deployment URL and keys in your shell or CI secret store:
+
+```ts
+import { Convex } from "@confect/alchemy";
+import * as Alchemy from "alchemy";
+import * as Config from "effect/Config";
+import * as Effect from "effect/Effect";
+
+export default Alchemy.Stack(
+  "Observe",
+  { providers: Convex.providers(), state: Alchemy.localState() },
+  Effect.gen(function* () {
+    yield* Convex.LogStream("BackendLogs", {
+      kind: "axiom",
+      deploymentUrl: yield* Config.String("CONVEX_DEPLOYMENT_URL"),
+      deployKey: yield* Config.Redacted("CONVEX_DEPLOY_KEY"),
+      apiKey: yield* Config.Redacted("AXIOM_API_KEY"),
+      datasetName: "backend",
+      attributes: [{ key: "app", value: "notes" }],
+    });
+    return {};
+  }),
+);
+```
+
+For a deployment declared in the same stack, pass `deployment.url` and `key.deployKey` instead. The deploy key must authorize log stream operations. A supplied deployment key does not require a management token. Keep the Alchemy state and its backups protected, as with deploy keys.
+
+Use `kind: "sentry"` with a `Redacted` `dsn` and optional `tags` to opt an app into Sentry. Use `kind: "webhook"` with `url`, `format` (`"json"` or `"jsonl"`), and optional `topics` for a webhook. Its `hmacSecret` output is `Redacted`; keep it in protected configuration for the webhook receiver. Omit `topics` to subscribe to all topics.
+
+All seven kinds are typed. `axiom`, `sentry`, and `webhook` are switched on. `datadog`, `postHogLogs`, `postHogErrorTracking`, and `s3Export` fail with `LogStreamNotEnabled`, which names the kind. Every API key, DSN, S3 credential, and deploy key requires `Redacted`; plain strings fail to typecheck.
+
+Change a field or connector secret to update the stream in place. Removing an optional field clears it. A changed `kind` or `deploymentUrl` replaces the stream. Removing the resource deletes its stream; a stream already absent during removal is fine.
+
+Keep one resource per kind on a deployment. A readable field edited outside the stack stops the plan with `LogStreamDrift`. Restore that field manually before continuing. Status changes alone do not count as drift. Write-only credentials cannot be checked for external changes because Convex does not return them.
+
+A deleted stream, an existing stream without an ownership record, or a missing webhook HMAC stops the plan with `LogStreamRecoveryRequired`. Restore the protected state or resolve the remote stream manually before continuing. The resource never adopts an existing stream, even with Alchemy adoption enabled, and never silently recreates a deleted one. Reading a webhook HMAC from Convex does not recover a lost create-time secret in state.
+
+The lifecycle is tested against a fake Convex API through Alchemy plan and apply. The following remain unproven on a real account:
+
+- Delivery to Axiom or Sentry, and delivery to a webhook receiver.
+- The event envelope and webhook signature verification.
+- Delivery retries and backoff.
+- Cloud plan entitlements and permissions for log streams.
+
 ## Develop locally
 
 Run the same stack with `alchemy dev` to develop against a local Convex backend:
@@ -166,12 +212,13 @@ Run the same stack with `alchemy dev` to develop against a local Convex backend:
 pnpm alchemy dev
 ```
 
-Under `alchemy dev`, `Convex.providers()` resolves each `Convex` resource to a local implementation. Your stack definition does not change, and no access token or deploy key is used:
+Under `alchemy dev`, `Convex.providers()` resolves each `Convex` resource to a local implementation. Your stack definition does not change. Project and deployment provisioning need no account credentials:
 
 - `Convex.Deployment` downloads the Convex backend release `precompiled-2026-10-28-cccbade` into the Convex CLI's binary cache and runs it on `127.0.0.1`. The deployment's `url` points at the local backend.
 - `Convex.DeployKey` returns the local backend's admin key. It grants full access to that backend whatever `allowedActions` you request.
 - `Convex.Project` returns a local placeholder and does not contact Convex.
 - `Convex.EnvironmentVariables`, `Convex.Code`, and `Confect.Backend` set variables and push code to the local backend, in the same order as in the cloud.
+- `Convex.LogStream` uses the local deployment URL and admin key. Connector credentials still come from your stack configuration. Local mode does not substitute a local Axiom or Sentry service.
 
 An existing local deployment keeps its old backend and must be recreated to get Convex 1.49 support.
 

@@ -12,6 +12,19 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
+## Alchemy log streams
+
+`Convex.LogStream` lets a stack own an Axiom, Sentry, or webhook log stream on a
+Convex deployment. Connector secrets require `Redacted`, and secret changes
+update the existing stream. Kind or deployment changes replace it. Readable
+external edits, remote deletion, lost ownership, and a lost webhook HMAC stop
+instead of overwriting, adopting, or recreating. The other four Convex kinds
+remain typed and fail as not switched on. Fake API and Alchemy engine tests
+cover lifecycle and secret rendering; real-account delivery, event envelopes,
+retries, and cloud entitlements remain unproven. Changeset:
+`alchemy-log-stream.md`. Upstream: unrecorded; no proposal is submitted by this
+fork change.
+
 ## Test invocation services
 
 `runHandlerPromise` starts a query, mutation or action handler with the

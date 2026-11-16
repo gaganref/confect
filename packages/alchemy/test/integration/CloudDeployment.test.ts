@@ -6,6 +6,10 @@ import * as Deployment from "@confect/alchemy/Deployment";
 import * as DeployKey from "@confect/alchemy/DeployKey";
 import * as EnvironmentVariables from "@confect/alchemy/EnvironmentVariables";
 import * as Project from "@confect/alchemy/Project";
+import * as LogStream from "@confect/alchemy/LogStream";
+import type { ResourceState } from "alchemy/State/ResourceState";
+import { inspect } from "node:util";
+import * as Logger from "effect/Logger";
 import { ConvexClient, ConvexApiError } from "@confect/alchemy/ConvexClient";
 import { adopt } from "alchemy/AdoptPolicy";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
@@ -42,6 +46,10 @@ const makeHarness = (
   client: Layer.Layer<ConvexClient>,
   runner: Layer.Layer<CommandRunner>,
   allowAdoption = false,
+  initialState: Record<
+    string,
+    Record<string, Record<string, ResourceState>>
+  > = {},
 ) => {
   const context = Layer.mergeAll(
     Layer.mergeAll(
@@ -66,6 +74,7 @@ const makeHarness = (
       DeployKey.DeployKey,
       EnvironmentVariables.EnvironmentVariables,
       Code.Code,
+      LogStream.LogStream,
     ]),
   ).pipe(
     Layer.provide(
@@ -75,6 +84,7 @@ const makeHarness = (
         DeployKey.layer,
         EnvironmentVariables.layer,
         Code.layer,
+        LogStream.layer,
       ),
     ),
     Layer.provide(client),
@@ -85,7 +95,8 @@ const makeHarness = (
       }),
     ),
   );
-  const state = inMemoryState();
+  const state = inMemoryState(initialState);
+  const plans: Plan.Plan<unknown>[] = [];
   const deploy = <A, E, R extends Providers | Stack.StackServices>(
     program: Effect.Effect<A, E, R>,
   ) =>
@@ -97,6 +108,11 @@ const makeHarness = (
           Stack.make({ name: "integration", providers, state }),
           Effect.flatMap((compiled) =>
             Plan.make(compiled).pipe(
+              Effect.tap((plan) =>
+                Effect.sync(() => {
+                  plans.push(plan);
+                }),
+              ),
               Effect.flatMap(apply),
               Effect.provideContext(compiled.services),
             ),
@@ -109,7 +125,7 @@ const makeHarness = (
         Effect.provideContext(services3),
       );
     }).pipe(Effect.scoped, Effect.scoped);
-  return deploy;
+  return Object.assign(deploy, { plans });
 };
 
 describe("cloud deployment lifecycle", () => {
@@ -454,6 +470,247 @@ describe("cloud deployment lifecycle", () => {
           "preserve-me",
         );
         expect(operations).toHaveLength(6);
+      }),
+  );
+});
+
+const logTarget = {
+  deploymentUrl: "https://happy-otter-123.convex.cloud",
+  deployKey: Redacted.make("made-up-engine-deploy-key"),
+};
+const logConfigs = [
+  {
+    ...logTarget,
+    kind: "axiom",
+    apiKey: Redacted.make("made-up-engine-axiom-key"),
+    datasetName: "backend",
+    attributes: [],
+  },
+  {
+    ...logTarget,
+    kind: "sentry",
+    dsn: Redacted.make("made-up-engine-sentry-dsn"),
+    tags: { app: "notes" },
+  },
+  {
+    ...logTarget,
+    kind: "webhook",
+    url: "https://logs.example.test",
+    format: "jsonl",
+  },
+] as const;
+const noCommands = Layer.succeed(CommandRunner, {
+  prepare: () => Effect.void,
+  deploy: () => Effect.void,
+});
+const logResources = (props: LogStream.LogStreamProps) =>
+  Effect.gen(function* () {
+    const stream = yield* Convex.LogStream("Logs", props);
+    return { id: stream.id, hmacSecret: stream.hmacSecret };
+  });
+
+describe("log stream engine lifecycle", () => {
+  it.effect.each(logConfigs)(
+    "creates, keeps, updates and removes $kind through plan and apply",
+    (props) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(fixture.layer, noCommands);
+        const first = yield* deploy(logResources(props));
+        expect(first.id).toBe("stream-1");
+        yield* deploy(logResources(props));
+        expect(deploy.plans.at(-1)?.resources.Logs.action).toBe("noop");
+        const next =
+          props.kind === "axiom"
+            ? {
+                ...props,
+                apiKey: Redacted.make("made-up-engine-new-axiom-key"),
+                datasetName: "next",
+              }
+            : props.kind === "sentry"
+              ? {
+                  ...props,
+                  dsn: Redacted.make("made-up-engine-new-sentry-dsn"),
+                  tags: { app: "next" },
+                }
+              : { ...props, format: "json" as const };
+        const updated = yield* deploy(logResources(next));
+        expect(updated.id).toBe(first.id);
+        expect(deploy.plans.at(-1)?.resources.Logs.action).toBe("update");
+        yield* deploy(logResources(next));
+        expect(deploy.plans.at(-1)?.resources.Logs.action).toBe("noop");
+        expect(fixture.client.createLogStream).toHaveBeenCalledTimes(1);
+        expect(fixture.client.updateLogStream).toHaveBeenCalledTimes(1);
+        yield* deploy(Effect.succeed({}));
+        expect(fixture.state.logStreams.get(logTarget.deploymentUrl)).toEqual(
+          [],
+        );
+      }),
+  );
+
+  it.effect.each([
+    { ...logConfigs[1] },
+    { ...logConfigs[0], deploymentUrl: "https://other-backend.convex.cloud" },
+  ])("replaces a changed kind or deployment through the engine", (next) =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const deploy = makeHarness(fixture.layer, noCommands);
+      const first = yield* deploy(logResources(logConfigs[0]));
+      const replaced = yield* deploy(logResources(next));
+      expect(replaced.id).not.toBe(first.id);
+      expect(deploy.plans.at(-1)?.resources.Logs.action).toBe("replace");
+      const oldStreams =
+        fixture.state.logStreams.get(logTarget.deploymentUrl) ?? [];
+      expect(
+        Array.some(
+          oldStreams,
+          (stream) => Redacted.value(stream).id === first.id,
+        ),
+      ).toBe(false);
+      expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+    }),
+  );
+
+  it.effect.each(["drift", "deleted", "record", "hmac"] as const)(
+    "stops the plan on $0 without recreating or overwriting",
+    (fault) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const persisted: Record<
+          string,
+          Record<string, Record<string, ResourceState>>
+        > = {};
+        const deploy = makeHarness(fixture.layer, noCommands, true, persisted);
+        const props = logConfigs[2];
+        const first = yield* deploy(logResources(props));
+        const found = yield* fixture.client.getLogStream(
+          props.deploymentUrl,
+          props.deployKey,
+          first.id,
+        );
+        const live = Redacted.value(found);
+        if (fault === "drift" && live.logStreamType === "webhook")
+          fixture.state.logStreams.set(props.deploymentUrl, [
+            Redacted.make({ ...live, url: "https://hand-edit.example.test" }),
+          ]);
+        if (fault === "deleted")
+          fixture.state.logStreams.set(props.deploymentUrl, []);
+        if (fault === "record") delete persisted.integration.test.Logs;
+        if (fault === "hmac") {
+          const row = persisted.integration.test.Logs;
+          const { hmacSecret: _, ...attr } = row.attr ?? {};
+          row.attr = attr;
+        }
+        const result = yield* deploy(
+          logResources(props).pipe(adopt(true)),
+        ).pipe(Effect.result);
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag:
+              fault === "drift"
+                ? "LogStreamDrift"
+                : "LogStreamRecoveryRequired",
+          },
+        });
+        expect(fixture.client.createLogStream).toHaveBeenCalledTimes(1);
+        expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+        expect(fixture.client.deleteLogStream).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect.each(logConfigs)(
+    "keeps $kind secrets out of plan output, logs and drift errors",
+    (props) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(fixture.layer, noCommands);
+        const messages: string[] = [];
+        const capture = Logger.make(({ message, cause }) => {
+          messages.push(inspect([message, cause], { depth: null }));
+        });
+        const first = yield* deploy(logResources(props)).pipe(
+          Effect.provideService(Logger.CurrentLoggers, new Set([capture])),
+        );
+        const found = yield* fixture.client.getLogStream(
+          props.deploymentUrl,
+          props.deployKey,
+          first.id,
+        );
+        const live = Redacted.value(found);
+        const changed =
+          live.logStreamType === "axiom"
+            ? { ...live, datasetName: "edited" }
+            : live.logStreamType === "sentry"
+              ? { ...live, tags: { app: "edited" } }
+              : live.logStreamType === "webhook"
+                ? { ...live, format: "json" as const }
+                : live;
+        fixture.state.logStreams.set(props.deploymentUrl, [
+          Redacted.make({
+            ...changed,
+            status: { type: "failed", reason: "made-up-status-credential" },
+          }),
+        ]);
+        const result = yield* deploy(logResources(props)).pipe(
+          Effect.result,
+          Effect.provideService(Logger.CurrentLoggers, new Set([capture])),
+        );
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "LogStreamDrift" },
+        });
+        const shown = inspect([deploy.plans, first, result, messages], {
+          depth: null,
+        });
+        for (const secret of [
+          "made-up-engine-deploy-key",
+          "made-up-engine-axiom-key",
+          "made-up-engine-sentry-dsn",
+          "made-up-hmac-secret",
+          "made-up-status-credential",
+        ])
+          expect(shown).not.toContain(secret);
+      }),
+  );
+
+  it.effect(
+    "does not reissue after a create succeeds but its response is lost",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(
+          Layer.succeed(ConvexClient, {
+            ...fixture.client,
+            createLogStream: (url, key, input) =>
+              fixture.client.createLogStream(url, key, input).pipe(
+                Effect.andThen(
+                  Effect.fail(
+                    ConvexApiError.make({
+                      operation: "createLogStream",
+                      code: "TransportError",
+                    }),
+                  ),
+                ),
+              ),
+          }),
+          noCommands,
+        );
+        const first = yield* deploy(logResources(logConfigs[2])).pipe(
+          Effect.result,
+        );
+        expect(first).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "ConvexApiError" },
+        });
+        const retry = yield* deploy(logResources(logConfigs[2])).pipe(
+          Effect.result,
+        );
+        expect(retry).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "LogStreamRecoveryRequired" },
+        });
+        expect(fixture.client.createLogStream).toHaveBeenCalledTimes(1);
       }),
   );
 });
