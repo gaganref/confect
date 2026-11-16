@@ -1,8 +1,5 @@
 import type { ScopedPlanStatusSession } from "alchemy/Report";
-import type {
-  PlatformCreateDeploymentArgs,
-  PlatformUpdateDeploymentArgs,
-} from "@convex-dev/platform/managementApi";
+import type { PlatformUpdateDeploymentArgs } from "@convex-dev/platform/managementApi";
 import type * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -15,6 +12,7 @@ import {
   type Deployment,
   type DeployKey,
   type Project,
+  type CreateDeploymentInput,
   type UpdateProjectInput,
 } from "../../src/ConvexClient";
 import * as Option from "effect/Option";
@@ -130,10 +128,7 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
       }),
     ),
     createDeployment: vi.fn(
-      (
-        _projectId: number,
-        input: PlatformCreateDeploymentArgs & { readonly reference: string },
-      ) =>
+      (_projectId: number, input: CreateDeploymentInput) =>
         Effect.sync(() => {
           const created = deployment({
             deploymentType: input.type,

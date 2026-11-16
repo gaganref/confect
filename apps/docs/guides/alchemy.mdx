@@ -138,31 +138,40 @@ Convex's deployment class selection entitlement. Omitting it later leaves the
 current class unchanged. The cloud output's `class` reports the observed value.
 Local deployments under `alchemy dev` ignore `class` and have no class output.
 
-To expire a temporary cloud backend, set `expiresAt` to a Unix timestamp in
-milliseconds:
+To expire a temporary cloud backend, set `expiresAt` to a safe integer Unix
+timestamp in milliseconds. Read a fixed deadline from configuration:
 
 ```ts
-const deployment =
-  yield *
-  Convex.Deployment("Temporary", {
+import * as Config from "effect/Config";
+
+Effect.gen(function* () {
+  const expiresAt = yield* Config.Int("TEMPORARY_BACKEND_EXPIRES_AT");
+  const deployment = yield* Convex.Deployment("Temporary", {
     projectId: project.projectId,
     type: "dev",
     reference: "temporary-session",
-    expiresAt: Date.now() + 2 * 60 * 60 * 1000,
+    expiresAt,
   });
+});
 ```
 
-Changing the timestamp updates the existing deployment in place. Recomputing
-the timestamp on each run extends the deadline on each apply. Removing a
-previously set `expiresAt`, or setting it to `null`, clears the expiry. Omitting
-the prop from the start preserves Convex's default, including preview expiry.
-The cloud output reports `expiresAt` as a millisecond timestamp or `null`.
-Local deployments under `alchemy dev` ignore `expiresAt` and have no expiry output.
+Choose the deadline once when you create the temporary environment and keep
+`TEMPORARY_BACKEND_EXPIRES_AT` unchanged across plans and applies. Changing the
+timestamp updates the existing deployment in place. Computing it with
+`Date.now()` in the stack body instead moves the deadline on every plan and
+sends an update on every apply.
 
-Convex requires an expiry at least 30 minutes in the future and within your
-team's preview deployment retention limit. Production deployments cannot expire.
-The provider surfaces API refusals as `ConvexApiError` without replacing the
-deployment.
+Only `expiresAt: null` clears an expiry. Omitting the prop leaves the current
+expiry unchanged, even if this resource previously set it. Omitting it on
+creation preserves Convex's default, including preview expiry. Non-finite
+numbers, fractions, and unsafe integers fail with `InvalidDeploymentExpiry`
+before any cloud API call. The cloud output reports `expiresAt` as a millisecond
+timestamp or `null`. Local deployments under `alchemy dev` ignore `expiresAt`
+without restarting the backend and have no expiry output.
+
+The API may refuse an expiry for a deployment type or retention limit. It
+requires a deadline at least 30 minutes in the future. The provider surfaces
+API refusals as `ConvexApiError` without replacing the deployment.
 
 Convex deletes the deployment and its data at the deadline, even if Alchemy
 retains the resource. Clear the expiry before you keep data past its deadline.

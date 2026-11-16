@@ -1186,9 +1186,11 @@ Upstream: planned; no linked proposal verified.
 
 Add `expiresAt` to `Convex.Deployment` so Frame can create cloud dev backends
 with a deadline. Pass millisecond timestamps on create and update them in place.
-Clear an expiry when its prop is removed or set to null, and preserve Convex's
-default when the prop was never set. Surface API refusals without replacement.
-Document that expiry deletes data independently of Alchemy's retain policy.
+Clear an expiry only with explicit null; omission preserves the current expiry
+regardless of previous props. Refuse unsafe integer timestamps before cloud API
+calls. Ignore expiry changes in local mode without restarting the backend.
+Surface API refusals without replacement and document that expiry deletes data
+independently of Alchemy's retain policy. Show a configured, stable deadline.
 
 Changeset: `alchemy-deployment-expiry.md`.
 Upstream: planned; no proposal submitted.
