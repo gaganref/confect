@@ -282,7 +282,7 @@ export const provider = Effect.gen(function* () {
 
 interface LocalConfig {
   readonly name: string;
-  readonly props: Omit<DeploymentProps, "class">;
+  readonly props: Omit<DeploymentProps, "class" | "expiresAt">;
 }
 
 /**
@@ -309,7 +309,7 @@ export const localLayer = LocalProvider.make(
         instanceId,
         news,
       }) {
-        const { class: _class, ...props } = news;
+        const { class: _class, expiresAt: _expiresAt, ...props } = news;
         return {
           name: yield* resourceName("deployment", fqn, instanceId),
           props,
