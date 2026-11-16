@@ -1,4 +1,6 @@
-import { describe, expect, it } from "@effect/vitest";
+import type * as Config from "effect/Config";
+import * as ConfigProvider from "effect/ConfigProvider";
+import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import { App, Component, Env, Http, Mount } from "@confect/core";
 import { defineComponent } from "convex/server";
 import * as Effect from "effect/Effect";
@@ -102,6 +104,123 @@ describe("Http", () => {
       );
     },
   );
+
+  it.effect(
+    "builds an endpoint's URL from the site URL Convex gives the mount",
+    () =>
+      Effect.gen(function* () {
+        const Api = HttpApi.make("email").add(
+          HttpApiGroup.make("webhooks")
+            .add(
+              HttpApiEndpoint.post("resend", "/webhooks/resend", {
+                success: Schema.String,
+              }),
+            )
+            .add(
+              HttpApiEndpoint.get("byId", "/webhooks/:id", {
+                success: Schema.String,
+                params: { id: Schema.String },
+              }),
+            ),
+        );
+        const services = yield* ConfigProvider.fromUnknown({
+          CONVEX_SITE_URL: "https://happy-otter-123.convex.site/relay/email/",
+        }).pipe(ConfigProvider.layer, Layer.build);
+        const url = yield* Http.url(Api, "webhooks", "resend").pipe(
+          Effect.provideContext(services),
+        );
+        expect(url).toBe(
+          "https://happy-otter-123.convex.site/relay/email/webhooks/resend",
+        );
+        const refused = () => [
+          // @ts-expect-error An endpoint with a path parameter names no single URL.
+          Http.url(Api, "webhooks", "byId"),
+          // @ts-expect-error The api has no group named "hooks".
+          Http.url(Api, "hooks", "resend"),
+          // @ts-expect-error The group has no endpoint named "sent".
+          Http.url(Api, "webhooks", "sent"),
+        ];
+        void refused;
+      }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    [
+      "https://happy-otter-123.convex.site",
+      "https://happy-otter-123.convex.site/webhooks/resend",
+    ],
+    [
+      "https://happy-otter-123.convex.site/",
+      "https://happy-otter-123.convex.site/webhooks/resend",
+    ],
+    [
+      "https://happy-otter-123.convex.site/relay/email",
+      "https://happy-otter-123.convex.site/relay/email/webhooks/resend",
+    ],
+    [
+      "https://happy-otter-123.convex.site/relay/email/",
+      "https://happy-otter-123.convex.site/relay/email/webhooks/resend",
+    ],
+  ])("joins absolute and relative endpoint paths to %s", ([site, expected]) =>
+    Effect.gen(function* () {
+      const services = yield* ConfigProvider.fromUnknown({
+        CONVEX_SITE_URL: site,
+      }).pipe(ConfigProvider.layer, Layer.build);
+      for (const endpoint of [
+        HttpApiEndpoint.post("resend", "/webhooks/resend"),
+        // @ts-expect-error Effect constructors require absolute paths; exercise a relative path from an untyped caller.
+        HttpApiEndpoint.post("resend", "webhooks/resend"),
+      ]) {
+        const api = HttpApi.make("email").add(
+          HttpApiGroup.make("webhooks").add(endpoint),
+        );
+        const url = yield* Http.url(api, "webhooks", "resend").pipe(
+          Effect.provideContext(services),
+        );
+        expect(url).toBe(expected);
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("keeps API and group prefixes after the mount prefix", () =>
+    Effect.gen(function* () {
+      class Webhooks extends HttpApiGroup.make("webhooks")
+        .add(HttpApiEndpoint.post("resend", "/resend"))
+        .prefix("/webhooks") {}
+      class EmailApi extends HttpApi.make("email")
+        .add(Webhooks)
+        .prefix("/v1") {}
+      const services = yield* ConfigProvider.fromUnknown({
+        CONVEX_SITE_URL: "https://happy-otter-123.convex.site/relay/email",
+      }).pipe(ConfigProvider.layer, Layer.build);
+      const url = yield* Http.url(EmailApi, "webhooks", "resend").pipe(
+        Effect.provideContext(services),
+      );
+      expect(url).toBe(
+        "https://happy-otter-123.convex.site/relay/email/v1/webhooks/resend",
+      );
+    }).pipe(Effect.scoped),
+  );
+
+  it("types endpoint addresses against their own group", () => {
+    const api = HttpApi.make("email").add(
+      HttpApiGroup.make("webhooks").add(
+        HttpApiEndpoint.post("resend", "/webhooks/resend"),
+      ),
+      HttpApiGroup.make("admin").add(HttpApiEndpoint.get("status", "/status")),
+    );
+    expectTypeOf(Http.url(api, "webhooks", "resend")).toEqualTypeOf<
+      Config.Config<string>
+    >();
+    expectTypeOf(Http.url(api, "admin", "status")).toEqualTypeOf<
+      Config.Config<string>
+    >();
+    const refused = () => [
+      // @ts-expect-error The endpoint belongs to another group.
+      Http.url(api, "webhooks", "status"),
+    ];
+    void refused;
+  });
 
   it("lists the app's own routes and docs page", () => {
     expect(Http.routes(app, declare("/context-metadata", "/docs"))).toEqual(

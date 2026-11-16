@@ -1,3 +1,4 @@
+import * as Config from "effect/Config";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
@@ -76,6 +77,61 @@ export const make = <
     routes,
   };
   return http;
+};
+
+type GroupEndpoints<Groups, G extends string> = HttpApiGroup.Endpoints<
+  HttpApiGroup.WithIdentifier<Groups, G>
+>;
+
+/**
+ * The endpoints of group `G` whose path has no parameter, so it names one URL.
+ */
+type Addressable<Groups, G extends string> = {
+  [E in GroupEndpoints<Groups, G>["identifier"]]: Extract<
+    GroupEndpoints<Groups, G>,
+    { readonly identifier: E }
+  > extends { readonly path: infer P }
+    ? P extends `${string}:${string}`
+      ? never
+      : E
+    : never;
+}[GroupEndpoints<Groups, G>["identifier"]];
+
+/**
+ * The URL of one of the backend's own endpoints, from the site URL Convex gives
+ * it. Inside a mount that URL already ends in the mount's full prefix, nested
+ * mounts included, so a component reads its webhook or callback address without
+ * a slot. Only an endpoint whose path has no parameter has one URL.
+ *
+ * ```ts
+ * const callback = yield * Http.url(EmailApi, "webhooks", "resend");
+ * ```
+ *
+ * @stability unstable
+ */
+export const url = <
+  Id extends string,
+  Groups extends HttpApiGroup.Constraint,
+  const G extends Groups["identifier"],
+  const E extends Addressable<Groups, G>,
+>(
+  api: HttpApi.HttpApi<Id, Groups>,
+  group: G,
+  endpoint: E,
+): Config.Config<string> => {
+  const erased: App.Api = api;
+  const groups = Record.values<string, HttpApiGroup.Top>(erased.groups);
+  const path = Option.getOrThrow(
+    Option.flatMap(
+      Array.findFirst(groups, ({ identifier }) => identifier === group),
+      ({ endpoints }) => Record.get(endpoints, endpoint),
+    ),
+  ).path;
+  return Config.map(
+    Config.String("CONVEX_SITE_URL"),
+    (site) =>
+      `${trimSlash(site)}${pipe(path, Str.startsWith("/")) ? "" : "/"}${path}`,
+  );
 };
 
 export const isHttp = (u: unknown): u is Any =>
