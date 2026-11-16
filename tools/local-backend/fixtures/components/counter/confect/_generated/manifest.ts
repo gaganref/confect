@@ -23,7 +23,46 @@ export default {
   },
   "mounts": {},
   "http": {
-    "mounts": {}
+    "app": {
+      "health": {
+        "health": {
+          "method": "GET",
+          "path": "/health",
+          "owner": "app",
+          "group": "health",
+          "key": "health",
+          "digest": "sha256:f7f7926c53bf06c78f50d71c5417e45a5df9e310e813c1676248656ac256a6cf"
+        },
+        "echo": {
+          "method": "POST",
+          "path": "/echo",
+          "owner": "app",
+          "group": "health",
+          "key": "echo",
+          "digest": "sha256:f7f7926c53bf06c78f50d71c5417e45a5df9e310e813c1676248656ac256a6cf"
+        }
+      },
+      "authoring": {
+        "classProbe": {
+          "method": "GET",
+          "path": "/class-probe/:value",
+          "owner": "app",
+          "group": "authoring",
+          "key": "classProbe",
+          "digest": "sha256:f7f7926c53bf06c78f50d71c5417e45a5df9e310e813c1676248656ac256a6cf"
+        }
+      },
+      "users": {
+        "get": {
+          "method": "GET",
+          "path": "/members/:id",
+          "owner": "app",
+          "group": "users",
+          "key": "get",
+          "digest": "sha256:f7f7926c53bf06c78f50d71c5417e45a5df9e310e813c1676248656ac256a6cf"
+        }
+      }
+    }
   },
-  "digest": "sha256:1d5e9e570efb446b9fbd2e10e366e694e4f79f1c9383e727b86151e38918f257"
+  "digest": "sha256:f7f7926c53bf06c78f50d71c5417e45a5df9e310e813c1676248656ac256a6cf"
 } as const;

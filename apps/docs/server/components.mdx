@@ -78,6 +78,8 @@ export default Http.make({
 });
 ```
 
+The component's manifest lists these endpoints under `http.app`, keyed by group and endpoint. A host that mounts it with an HTTP prefix adds that prefix to each path and replaces owner `app` with the mount name. Nested owners become names such as `relay/child`, and every leaf carries the host's final digest. A mount without an HTTP prefix contributes no served routes to the host catalogue.
+
 Codegen writes the component's own HTTP entry point:
 
 ```ts components/counter/convex/http.ts

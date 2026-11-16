@@ -88,7 +88,7 @@ const manifest = {
       },
     },
   },
-  http: { mounts: {} },
+  http: {},
   digest: "type-test",
 } as const;
 

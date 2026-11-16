@@ -637,6 +637,17 @@ includes the mounted component's digest. Changeset:
 `packaged-component-manifest.md`. Upstream: not planned; declarations and
 packaged descriptors are fork concepts.
 
+### Catalogue HTTP endpoints by placement
+
+The format 1 manifest's `http` lists `HttpApi` endpoints by owner, group, and
+endpoint, including prefixed routes of nested packaged components. Each leaf
+carries its method, full path, owner, group, key, and final manifest digest.
+Route edits change that digest. No-prefix mounts and documentation pages do
+not contribute endpoint leaves. Generated source preserves special record keys
+without writing through inherited objects. Changeset:
+`manifest-route-catalogue.md`. Upstream: not planned; deployment catalogues and
+packaged descriptors are fork concepts.
+
 ### Declare sections on App.make
 
 A backend declares its manifest sections once, in `App.make({ manifestSections })`, for an app or a component. Codegen takes the manifest's sections and the `_generated` files it claims from that list only, and seeds each section before it visits a function. A function-less backend, such as an HTTP-only receiver, still gets its files and manifest entries, and every registered function joins a section whatever builder made it. A spec that carries `manifestSections` fails codegen and points at `App.make`, `FunctionSpec.extend` throws when its config carries the old `manifest` option, and attaching middleware to a spec that carries `manifestSections` throws rather than dropping it. An implementation that imports a `_generated` file no declared section writes fails at the import, naming the file and `App.make`. The profile `manifest` option, `FunctionSpec.manifestSections`, the owner and format reconciliation across specs and the note for a section without participants are gone. Before, a component built with Frame's `/component` kit got no `_generated/observe.ts` and failed codegen, and Docket's observe catalogue missed 14 of its 66 functions, because only one of Frame's builders attached sections. Frame is the only caller and drops its spec tags in the release that takes this build. Changeset: `app-manifest-sections.md`. Upstream: not planned; `App` and sections are fork concepts.

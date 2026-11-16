@@ -121,7 +121,7 @@ describe("Backend", () => {
               },
             },
           },
-          http: { mounts: {} },
+          http: {},
           digest: "sha256:0",
         } as const;
         const token = Redacted.make("token");

@@ -2,6 +2,7 @@ import {
   App,
   Auth,
   Env,
+  type Http,
   Manifest,
   type Mount as CoreMount,
 } from "@confect/core";
@@ -781,6 +782,7 @@ export const manifest = (
   declaration: Declaration,
   digest: string,
   sections: Readonly<Record<string, unknown>> = {},
+  leaves: ReadonlyArray<Leaf> = [],
 ): string => {
   const data = {
     format: Manifest.FORMAT,
@@ -799,23 +801,132 @@ export const manifest = (
         ],
       ),
     ),
-    http: {
-      mounts: Rec.fromEntries(
-        Arr.flatMap(declaration.mounts, ({ name, httpPrefix }) =>
-          httpPrefix === undefined ? [] : [[name, httpPrefix]],
-        ),
-      ),
-    },
+    http: routeCatalogue(leaves, digest),
     digest,
     ...sections,
   };
   return renderManifest(data);
 };
 
+type Leaf = Omit<Manifest.Route, "digest">;
+
+const joinPath = (prefix: string, path: string): string =>
+  `${pipe(prefix, String.replace(/\/$/, ""))}${path}`;
+
+/**
+ * Every route the backend serves: its own endpoints under `app`, and each
+ * prefixed mount's routes from the manifest its component ships, with the
+ * mount's prefix added and the owner placed under the mount's name. A mount
+ * without a prefix serves no routes.
+ */
+export const routeLeaves = (
+  own: ReadonlyArray<Http.Route>,
+  mounts: ReadonlyArray<CoreMount.Data>,
+): ReadonlyArray<Leaf> => [
+  ...Arr.flatMap(own, ({ method, path, group, key }) =>
+    group === undefined || key === undefined
+      ? []
+      : [{ method, path, owner: "app", group, key }],
+  ),
+  ...Arr.flatMap(mounts, ({ name, httpPrefix, component }) =>
+    httpPrefix === undefined || component.manifest === undefined
+      ? []
+      : Arr.flatMap(Rec.values(component.manifest.http), (groups) =>
+          Arr.flatMap(Rec.values(groups), (endpoints) =>
+            Arr.map(Rec.values(endpoints), (leaf) => ({
+              method: leaf.method,
+              path: joinPath(httpPrefix, leaf.path),
+              owner: leaf.owner === "app" ? name : `${name}/${leaf.owner}`,
+              group: leaf.group,
+              key: leaf.key,
+            })),
+          ),
+        ),
+  ),
+];
+
+/**
+ * The manifest's `http`: routes by owner, group and endpoint, each carrying the
+ * final digest.
+ */
+export const routeCatalogue = (
+  leaves: ReadonlyArray<Leaf>,
+  digest: string,
+): Manifest.Manifest["http"] => {
+  const http: Record<
+    string,
+    Record<string, Record<string, Manifest.Route>>
+  > = Object.create(null);
+  for (const leaf of leaves) {
+    const groups: Record<string, Record<string, Manifest.Route>> = (http[
+      leaf.owner
+    ] ??= Object.create(null));
+    const endpoints: Record<string, Manifest.Route> = (groups[leaf.group] ??=
+      Object.create(null));
+    endpoints[leaf.key] = { ...leaf, digest };
+  }
+  return http;
+};
+
+/**
+ * The route leaves of a manifest written earlier, so a rerun that serves the
+ * same routes writes the same manifest. Anything not shaped like a catalogue
+ * gives none.
+ */
+export const previousLeaves = (http: unknown): ReadonlyArray<Leaf> =>
+  !Predicate.isObject(http)
+    ? []
+    : Arr.flatMap(Rec.values(http as Record<string, unknown>), (groups) =>
+        !Predicate.isObject(groups)
+          ? []
+          : Arr.flatMap(
+              Rec.values(groups as Record<string, unknown>),
+              (endpoints) =>
+                !Predicate.isObject(endpoints)
+                  ? []
+                  : Arr.flatMap(
+                      Rec.values(endpoints as Record<string, unknown>),
+                      (leaf) =>
+                        Predicate.isObject(leaf) &&
+                        Predicate.isString(leaf.method) &&
+                        Predicate.isString(leaf.path) &&
+                        Predicate.isString(leaf.owner) &&
+                        Predicate.isString(leaf.group) &&
+                        Predicate.isString(leaf.key)
+                          ? [
+                              {
+                                method: leaf.method,
+                                path: leaf.path,
+                                owner: leaf.owner,
+                                group: leaf.group,
+                                key: leaf.key,
+                              },
+                            ]
+                          : [],
+                    ),
+            ),
+      );
+
+/**
+ * The manifest digest once its routes are known: the declaration and section
+ * digest, then the routes, so a changed route changes every leaf's digest.
+ */
+export const routedDigest = (
+  base: string,
+  leaves: ReadonlyArray<Leaf>,
+): string =>
+  leaves.length === 0
+    ? base
+    : digest({
+        files: [["declaration", base]],
+        versions: [],
+        sections: { http: leaves },
+      });
+
 export const renderManifest = (
   data: Readonly<Record<string, unknown>>,
 ): string =>
-  `${header("confect/env.ts and confect/app.ts")}\n\nexport default ${stringify(data, 2)} as const;\n`;
+  `${header("confect/env.ts and confect/app.ts")}\n\nexport default ${pipe(stringify(data, 2), String.replace(/^( *)"__proto__":/gm, '$1["__proto__"]:'))} as const;\n`;
 
 /**
  * A digest of the declaration's inputs: every first-party file its modules

@@ -82,12 +82,48 @@ export default {
     }
   },
   "http": {
-    "mounts": {
-      "first": "/first",
-      "second": "/second",
-      "left": "/left",
-      "right": "/right"
+    "app": {
+      "auth": {
+        "identity": {
+          "method": "GET",
+          "path": "/identity",
+          "owner": "app",
+          "group": "auth",
+          "key": "identity",
+          "digest": "sha256:6574a70de88b75dead8271cf9259273f0d2d2f0652a545144cc6e5d7bf9b31bb"
+        }
+      },
+      "componentAuthoring": {
+        "classProbe": {
+          "method": "GET",
+          "path": "/component-class-probe/:value",
+          "owner": "app",
+          "group": "componentAuthoring",
+          "key": "classProbe",
+          "digest": "sha256:6574a70de88b75dead8271cf9259273f0d2d2f0652a545144cc6e5d7bf9b31bb"
+        }
+      },
+      "users": {
+        "get": {
+          "method": "GET",
+          "path": "/users/:id",
+          "owner": "app",
+          "group": "users",
+          "key": "get",
+          "digest": "sha256:6574a70de88b75dead8271cf9259273f0d2d2f0652a545144cc6e5d7bf9b31bb"
+        }
+      },
+      "metadata": {
+        "contextMetadata": {
+          "method": "GET",
+          "path": "/context-metadata",
+          "owner": "app",
+          "group": "metadata",
+          "key": "contextMetadata",
+          "digest": "sha256:6574a70de88b75dead8271cf9259273f0d2d2f0652a545144cc6e5d7bf9b31bb"
+        }
+      }
     }
   },
-  "digest": "sha256:f0622cc079d88ccd4d2934a1e1cb19f16119a9eed4439dac66665693440e8b03"
+  "digest": "sha256:6574a70de88b75dead8271cf9259273f0d2d2f0652a545144cc6e5d7bf9b31bb"
 } as const;

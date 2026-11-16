@@ -293,7 +293,9 @@ export const syncManifestSections = Effect.fnUntraced(
       Arr.map([...registry], ([key, { data }]) => [key, data]),
     );
     const { format, name, env, mounts, http } = current;
-    const digest = sectionDigest(baseDigest, sections);
+    const base = sectionDigest(baseDigest, sections);
+    const routes = Declaration.previousLeaves(http);
+    const digest = Declaration.routedDigest(base, routes);
     const manifestPathValue = yield* manifestPath;
     yield* writeFileStringAndLog(
       manifestPathValue,
@@ -302,11 +304,12 @@ export const syncManifestSections = Effect.fnUntraced(
         name,
         env,
         mounts,
-        http,
+        http: Declaration.routeCatalogue(routes, digest),
         digest,
         ...sections,
       }),
     );
+    return base;
   },
   Effect.tapError(() => removeManifest),
 );
@@ -394,13 +397,15 @@ const writeDeclaration = Effect.fnUntraced(function* (
     ],
   });
   const sections = target === "app" ? ManifestSections.sections(previous) : {};
+  const leaves = Declaration.previousLeaves(previous.http);
   const manifestPathValue = yield* manifestPath;
   yield* writeFileStringAndLog(
     manifestPathValue,
     Declaration.manifest(
       declaration,
-      sectionDigest(digest, sections),
+      Declaration.routedDigest(sectionDigest(digest, sections), leaves),
       sections,
+      leaves,
     ),
   );
   yield* writeFileStringAndLog(
@@ -437,6 +442,7 @@ const writeDeclaration = Effect.fnUntraced(function* (
     app: App.isApp(appValue) ? Option.some(appValue) : Option.none<App.Any>(),
     // Sections describe an app's functions; a component's manifest has none.
     digest: target === "app" ? digest : undefined,
+    routeBase: digest,
     backend: Option.some<SectionFiles.Backend>({
       target: sectionTarget,
       sections: manifestSections,
@@ -461,6 +467,7 @@ export const syncDeclaration = Effect.fnUntraced(function* (
     return {
       app: Option.none<App.Any>(),
       digest: undefined,
+      routeBase: undefined,
       backend: Option.none<SectionFiles.Backend>(),
     };
   }
@@ -481,14 +488,65 @@ export const syncDeclaration = Effect.fnUntraced(function* (
 export const syncDeclaredHttp = (
   app: App.Any,
   sectionFiles: ReadonlyArray<string>,
+  base: string | undefined,
 ) =>
-  checkAndWriteHttp(app, sectionFiles).pipe(
+  checkAndWriteHttp(app, sectionFiles, base).pipe(
     Effect.tapError(() => removeManifest),
   );
+
+/**
+ * Write the manifest's route catalogue from the routes just checked, and the
+ * final digest, which covers them: a route that changes changes the digest
+ * every route leaf carries.
+ */
+const writeRoutes = Effect.fnUntraced(function* (
+  app: App.Any,
+  own: ReadonlyArray<Http.Route>,
+  base: string | undefined,
+) {
+  if (base === undefined) return;
+  const current = yield* readManifest;
+  const leaves = Declaration.routeLeaves(own, App.mounts(app));
+  const digest = Declaration.routedDigest(base, leaves);
+  const manifestPathValue = yield* manifestPath;
+  yield* writeFileString(
+    manifestPathValue,
+    Declaration.renderManifest({
+      ...current,
+      http: Declaration.routeCatalogue(leaves, digest),
+      digest,
+    }),
+  );
+});
+
+/**
+ * Check every route the backend serves and write them into the manifest,
+ * without rewriting `convex/http.ts`. Codegen's incremental update runs this
+ * when it leaves the router alone.
+ *
+ * @internal
+ */
+export const syncRoutes = (app: App.Any, base: string | undefined) =>
+  Effect.gen(function* () {
+    const httpPath = yield* confectPath("http.ts");
+    const fs = yield* FileSystem.FileSystem;
+    const http = (yield* fs.exists(httpPath))
+      ? (yield* bundleDeclaration("http.ts")).module.default
+      : undefined;
+    const own = yield* Http.routes(
+      app,
+      Http.isHttp(http) ? http : undefined,
+    ).pipe(
+      Result.mapError(invalid(http === undefined ? "app.ts" : "http.ts")),
+      Effect.fromResult,
+    );
+    yield* writeRoutes(app, own, base);
+  }).pipe(Effect.tapError(() => removeManifest));
 
 const checkAndWriteHttp = Effect.fnUntraced(function* (
   app: App.Any,
   sectionFiles: ReadonlyArray<string>,
+  base: string | undefined,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
@@ -498,10 +556,11 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
 
   const convexHttpPath = path.join(convexDirectory, "http.ts");
   if (!(yield* fs.exists(httpPath))) {
-    yield* Http.routes(app).pipe(
+    const own = yield* Http.routes(app).pipe(
       Result.mapError(invalid("app.ts")),
       Effect.fromResult,
     );
+    yield* writeRoutes(app, own, base);
     yield* removeGenerated(convexHttpPath, [
       yield* templates.http({
         httpImportPath: yield* toModuleImportPath(
@@ -519,10 +578,11 @@ const checkAndWriteHttp = Effect.fnUntraced(function* (
       reason: "it must default-export Http.make(...).",
     });
   }
-  yield* Http.routes(app, http).pipe(
+  const own = yield* Http.routes(app, http).pipe(
     Result.mapError(invalid("http.ts")),
     Effect.fromResult,
   );
+  yield* writeRoutes(app, own, base);
 
   const contents = yield* templates.declaredHttp({
     runtimeImportPath: (yield* fs.exists(

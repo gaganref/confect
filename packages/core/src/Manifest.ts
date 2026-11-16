@@ -27,20 +27,50 @@ export interface MountEntry {
 }
 
 /**
+ * One HTTP endpoint the backend serves, by its owner (`app`, a mount's name, or
+ * a nested placement such as `relay/child`), its `HttpApi` group and endpoint
+ * names, its full path, and the digest of the manifest that lists it.
+ */
+export interface Route {
+  readonly method: string;
+  readonly path: string;
+  readonly owner: string;
+  readonly group: string;
+  readonly key: string;
+  readonly digest: string;
+}
+
+/**
  * The shape of `confect/_generated/manifest.ts`: plain data with no imports,
  * which infra reads instead of backend code, and which a component ships so a
  * host's codegen can read it. `env` lists each variable with its kind, `mounts`
- * every mount with its open slots, `http.mounts` each mount's HTTP prefix, and
- * `digest` identifies the declaration inputs it was generated from.
+ * every mount with its open slots, `http` every `HttpApi` endpoint it serves,
+ * nested placements included, and `digest` identifies the declaration inputs
+ * and routes it was generated from.
  */
 export interface Manifest {
   readonly format: typeof FORMAT;
   readonly name: string;
   readonly env: Readonly<Record<string, Env.Descriptor>>;
   readonly mounts: Readonly<Record<string, MountEntry>>;
-  readonly http: { readonly mounts: Readonly<Record<string, string>> };
+  /**
+   * Routes by owner, then group, then endpoint.
+   */
+  readonly http: Readonly<
+    Record<string, Readonly<Record<string, Readonly<Record<string, Route>>>>>
+  >;
   readonly digest: string;
 }
+
+/**
+ * Every route a manifest lists. A route from another build carries another
+ * digest and is not one of these.
+ */
+export type RouteOf<M extends Manifest> = {
+  [O in keyof M["http"]]: {
+    [G in keyof M["http"][O]]: M["http"][O][G][keyof M["http"][O][G]];
+  }[keyof M["http"][O]];
+}[keyof M["http"]];
 
 type Value<D extends Env.Descriptor> = D extends { readonly kind: "secret" }
   ? Redacted.Redacted<string>

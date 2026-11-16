@@ -45,7 +45,7 @@ describe("Declaration", () => {
       name: "workpool",
       env: {},
       mounts: {},
-      http: { mounts: {} },
+      http: {},
       digest: "sha256:child",
     } as const;
     const mountOf = (manifest: unknown) =>
@@ -130,7 +130,7 @@ describe("Declaration", () => {
           },
         },
       },
-      http: { mounts: {} },
+      http: {},
       digest: "sha256:child",
     } as const;
     const Child = Component.make("ratelimiter", {
@@ -190,7 +190,7 @@ describe("Declaration", () => {
         name: "workpool",
         env: { RESEND_API_KEY: { kind: "secret", optional: false } },
         mounts: {},
-        http: { mounts: {} },
+        http: {},
         digest: "sha256:email",
       },
       client: (native: unknown) => native,
@@ -232,6 +232,97 @@ describe("Declaration", () => {
         }),
       ),
     );
+  });
+
+  it("keeps an owner named constructor without changing inherited objects", () => {
+    const leaf = {
+      method: "GET",
+      path: "/ready",
+      owner: "constructor",
+      group: "catalogueFixture",
+      key: "ready",
+    };
+    const before = Object.getOwnPropertyDescriptor(Object, "catalogueFixture");
+    try {
+      const catalogue = Declaration.routeCatalogue([leaf], "sha256:host");
+      expect(Declaration.previousLeaves(catalogue)).toEqual([leaf]);
+      expect(
+        Object.getOwnPropertyDescriptor(Object, "catalogueFixture"),
+      ).toEqual(before);
+    } finally {
+      if (before === undefined)
+        Reflect.deleteProperty(Object, "catalogueFixture");
+      else Object.defineProperty(Object, "catalogueFixture", before);
+    }
+  });
+
+  it("places a mounted component's routes under its prefix and name, nested owners included", () => {
+    const leaf = (owner: string, path: string) => ({
+      method: "POST",
+      path,
+      owner,
+      group: "hooks",
+      key: "received",
+      digest: "sha256:child",
+    });
+    const relay = Component.make("relay", {
+      manifest: {
+        format: 1,
+        name: "relay",
+        env: {},
+        mounts: {},
+        http: {
+          app: { hooks: { received: leaf("app", "/received") } },
+          child: { hooks: { received: leaf("child", "/child/received") } },
+        },
+        digest: "sha256:child",
+      },
+      client: (native: unknown) => native,
+    });
+    const leaves = Declaration.routeLeaves(
+      [
+        {
+          method: "GET",
+          path: "/status",
+          owner: { kind: "app" },
+          group: "meta",
+          key: "status",
+        },
+        { method: "GET", path: "/docs", owner: { kind: "docs" } },
+      ],
+      [
+        Mount.data(Mount.make(relay, { name: "relay", httpPrefix: "/relay/" })),
+        Mount.data(Mount.make(relay, { name: "hidden" })),
+      ],
+    );
+    expect(leaves).toEqual([
+      {
+        method: "GET",
+        path: "/status",
+        owner: "app",
+        group: "meta",
+        key: "status",
+      },
+      {
+        method: "POST",
+        path: "/relay/received",
+        owner: "relay",
+        group: "hooks",
+        key: "received",
+      },
+      {
+        method: "POST",
+        path: "/relay/child/received",
+        owner: "relay/child",
+        group: "hooks",
+        key: "received",
+      },
+    ]);
+    const catalogue = Declaration.routeCatalogue(leaves, "sha256:host");
+    expect(catalogue["relay/child"]?.hooks?.received?.digest).toBe(
+      "sha256:host",
+    );
+    expect(Declaration.previousLeaves(catalogue)).toEqual(leaves);
   });
 
   it("refuses env on a root app's mount when types were bypassed", () => {

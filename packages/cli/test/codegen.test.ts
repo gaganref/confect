@@ -2033,8 +2033,17 @@ export default {
     }
   },
   "http": {
-    "mounts": {
-      "first": "/first"
+    "app": {
+      "meta": {
+        "status": {
+          "method": "GET",
+          "path": "/status",
+          "owner": "app",
+          "group": "meta",
+          "key": "status",
+          "digest": "${digest}"
+        }
+      }
     }
   },
   "digest": "${digest}"

@@ -263,8 +263,33 @@ export default {
     },
     importsPool: { component: "workpool", env: {} },
   },
-  http: { mounts: { bulkEmail: "/bulk-email" } },
-  digest: "sha256:…",
+  http: {
+    app: {
+      health: {
+        ready: {
+          method: "GET",
+          path: "/health/ready",
+          owner: "app",
+          group: "health",
+          key: "ready",
+          digest: "sha256:...",
+        },
+      },
+    },
+    bulkEmail: {
+      webhooks: {
+        resend: {
+          method: "POST",
+          path: "/bulk-email/webhooks/resend",
+          owner: "bulkEmail",
+          group: "webhooks",
+          key: "resend",
+          digest: "sha256:...",
+        },
+      },
+    },
+  },
+  digest: "sha256:...",
 } as const;
 ```
 
@@ -286,7 +311,11 @@ const values: Manifest.Values<typeof manifest> = {
 
 `Manifest.Mounts<typeof manifest>` types the settings supplied under each mount's name. It includes only slots left open, with each slot's kind, optionality, and derived deployment variable in `manifest.mounts`. A mount with a required open slot must be supplied. Use [`Backend.mounts`](/guides/alchemy#supply-a-mounts-open-settings) to send those settings to their derived variables.
 
-`digest` changes whenever a file that `env.ts`, `app.ts` or `auth.ts` imports from your project changes, or the `convex` version or generator format does. Codegen writes the manifest before it validates anything else, and removes it when the declaration fails, so a stale manifest never outlives the declaration it came from.
+`http` lists `HttpApi` endpoints by owner, group, and endpoint key. An app's own endpoints use owner `app`. A mounted component's endpoints use its mount name, and nested owners include each placement, such as `relay/child`. Every leaf carries `method`, the full prefixed `path`, `owner`, `group`, `key`, and the final manifest `digest`. Mounts without an HTTP prefix contribute no served routes. Generated documentation pages have no endpoint key and are omitted.
+
+`Manifest.RouteOf<typeof manifest>` is the union of these leaves. When a manifest keeps its digest as a literal, a leaf from a different digest fails that type. Infrastructure can read `manifest.http.bulkEmail.webhooks.resend` without importing backend modules.
+
+`digest` covers the route catalogue as well as files that `env.ts`, `app.ts` or `auth.ts` imports from your project, the `convex` version, and the generator format. A route edit changes the digest on every leaf. Codegen writes the manifest before it validates anything else, and removes it when the declaration fails, so a stale manifest never outlives the declaration it came from.
 
 ## Manifest sections
 

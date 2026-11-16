@@ -28,15 +28,34 @@ test("installed codegen emits the declared backend and auth providers", () => {
   expect({
     name: manifest.name,
     env: manifest.env,
-    mounts: manifest.http.mounts,
+    counterPrefix: manifest.mounts.counter.httpPrefix,
     providers: auth.providers,
   }).toEqual({
     name: "consumer",
     env: { INSTALL_MARKER: { kind: "string", optional: true } },
-    mounts: { counter: "/counter" },
+    counterPrefix: "/counter",
     providers: [
       { domain: "https://login.example.edu", applicationID: "consumer" },
     ],
+  });
+});
+
+test("installed codegen lists host and component routes with the final manifest digest", () => {
+  expect(manifest.http.app.health.health).toEqual({
+    method: "GET",
+    path: "/health",
+    owner: "app",
+    group: "health",
+    key: "health",
+    digest: manifest.digest,
+  });
+  expect(manifest.http.counter.health.health).toEqual({
+    method: "GET",
+    path: "/counter/health",
+    owner: "counter",
+    group: "health",
+    key: "health",
+    digest: manifest.digest,
   });
 });
 
@@ -95,9 +114,14 @@ test("installed codegen discovers and executes the package test kit", () =>
   Effect.runPromise(
     Effect.gen(function* () {
       expect(
-        readFileSync(new URL("./confect/_generated/testing.ts", import.meta.url), "utf8"),
+        readFileSync(
+          new URL("./confect/_generated/testing.ts", import.meta.url),
+          "utf8",
+        ),
       ).toContain('from "counter-kit/testing"');
       const confect = yield* Test;
-      expect(yield* confect.query(kitted.counter.increment, { value: 7 })).toBe(8);
+      expect(yield* confect.query(kitted.counter.increment, { value: 7 })).toBe(
+        8,
+      );
     }).pipe(Effect.provide(layer)),
   ));

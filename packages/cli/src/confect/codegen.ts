@@ -68,6 +68,7 @@ import {
   syncDeclaration,
   syncDeployModule,
   syncDeclaredHttp,
+  syncRoutes,
 } from "./declaration.js";
 import * as String from "effect/String";
 import { quote } from "../Json.js";
@@ -178,6 +179,7 @@ const runCodegen = Effect.gen(function* () {
   const {
     app: declared,
     digest,
+    routeBase,
     backend,
   } = yield* syncDeclaration(previousManifest);
   const mounts = yield* generateComponents;
@@ -195,13 +197,14 @@ const runCodegen = Effect.gen(function* () {
   // Nothing above writes a Convex entrypoint. The check waits for this run's
   // section files, because the HTTP router may import any of them.
   yield* FunctionModule.assertOwnedEntrypoints;
-  yield* syncManifestSections(
+  const sectionBase = yield* syncManifestSections(
     declaredSections(backend),
     leaves,
     previousManifest,
     digest,
     sections.modules,
   );
+  const base = sectionBase ?? routeBase;
   yield* removeLegacyFiles;
   const snapshot = yield* Effect.fromResult(
     GenerationSnapshot.fromLoadedLeaves(leaves),
@@ -234,7 +237,7 @@ const runCodegen = Effect.gen(function* () {
       logGenerated(
         Option.match(declared, {
           onNone: () => generateHttp,
-          onSome: (app) => syncDeclaredHttp(app, sections.files),
+          onSome: (app) => syncDeclaredHttp(app, sections.files, base),
         }),
       ),
       logGenerated(
@@ -327,19 +330,22 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
         const {
           app: declared,
           digest,
+          routeBase,
           backend,
         } = yield* syncDeclaration(previousManifest);
         const all = Option.isSome(declared) ? yield* loadAll : [];
         const mounts = Option.isSome(backend) ? yield* installedMounts : [];
         const sections = yield* SectionFiles.sync(backend, all, mounts);
-        if (Option.isSome(declared))
-          yield* syncManifestSections(
-            declaredSections(backend),
-            all,
-            previousManifest,
-            digest,
-            sections.modules,
-          );
+        const sectionBase = Option.isSome(declared)
+          ? yield* syncManifestSections(
+              declaredSections(backend),
+              all,
+              previousManifest,
+              digest,
+              sections.modules,
+            )
+          : undefined;
+        const base = sectionBase ?? routeBase;
         const required = Option.isSome(declared)
           ? declared.value.requiresMiddleware
           : [];
@@ -352,7 +358,11 @@ export const updateDeclarations = Effect.fn("Cli.updateDeclarations")(
           sections.files,
         );
         if (sections.changed && Option.isSome(declared))
-          yield* logGenerated(syncDeclaredHttp(declared.value, sections.files));
+          yield* logGenerated(
+            syncDeclaredHttp(declared.value, sections.files, base),
+          );
+        else if (Option.isSome(declared))
+          yield* syncRoutes(declared.value, base);
         // Which sections wrap crons can change while the section files stay.
         if (Option.isSome(declared))
           yield* logGenerated(generateCrons(sections.crons));

@@ -106,7 +106,13 @@ describe("Http", () => {
   it("lists the app's own routes and docs page", () => {
     expect(Http.routes(app, declare("/context-metadata", "/docs"))).toEqual(
       Result.succeed([
-        { method: "GET", path: "/context-metadata", owner: { kind: "app" } },
+        {
+          method: "GET",
+          path: "/context-metadata",
+          owner: { kind: "app" },
+          group: "meta",
+          key: "route",
+        },
         { method: "GET", path: "/docs", owner: { kind: "docs" } },
       ]),
     );

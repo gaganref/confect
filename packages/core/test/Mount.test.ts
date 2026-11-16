@@ -184,7 +184,7 @@ describe("Mount.make", () => {
             },
           },
         },
-        http: { mounts: {} },
+        http: {},
         digest: "sha256:relay",
       },
       client: (native: Native) => native,
@@ -203,7 +203,7 @@ describe("Mount.make", () => {
         LABEL: { kind: "string", optional: true },
       },
       mounts: {},
-      http: { mounts: {} },
+      http: {},
       digest: "sha256:0",
     } as const;
     const Relay = Component.make("relay", {

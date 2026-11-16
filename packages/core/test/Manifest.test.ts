@@ -31,7 +31,32 @@ const manifest = {
     },
     pool: { component: "workpool", env: {} },
   },
-  http: { mounts: { email: "/email" } },
+  http: {
+    app: {
+      health: {
+        ready: {
+          method: "GET",
+          path: "/health/ready",
+          owner: "app",
+          group: "health",
+          key: "ready",
+          digest: "sha256:0000",
+        },
+      },
+    },
+    email: {
+      webhooks: {
+        resend: {
+          method: "POST",
+          path: "/email/webhooks/resend",
+          owner: "email",
+          group: "webhooks",
+          key: "resend",
+          digest: "sha256:0000",
+        },
+      },
+    },
+  },
   digest: "sha256:0000",
 } as const;
 
@@ -73,6 +98,18 @@ describe("Manifest", () => {
       sms: {},
     };
     void [mounts, absent, missing, plain, unknown];
+  });
+
+  it("lists every route, and a route from another build is none of them", () => {
+    const route: Manifest.RouteOf<typeof manifest> =
+      manifest.http.email.webhooks.resend;
+    const stale = {
+      ...manifest.http.email.webhooks.resend,
+      digest: "sha256:1111",
+    } as const;
+    // @ts-expect-error A route leaf from another build's digest is refused.
+    const refused: Manifest.RouteOf<typeof manifest> = stale;
+    void [route, refused];
   });
 
   it("types the values infra must supply", () => {
