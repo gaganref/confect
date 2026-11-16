@@ -481,7 +481,7 @@ it.effect.each(
       if (Result.isFailure(result))
         expect(result.failure).toMatchObject({
           _tag: "InvalidDeploymentExpiry",
-          expiresAt,
+          requested: String(expiresAt),
         });
       for (const method of Record.values(mock.client))
         expect(method).not.toHaveBeenCalled();

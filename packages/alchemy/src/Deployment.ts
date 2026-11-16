@@ -87,6 +87,26 @@ export class AmbiguousDeployment extends Schema.TaggedError<
   reference: Schema.String,
 }) {}
 
+export class InvalidDeploymentExpiry extends Schema.TaggedError<
+  InvalidDeploymentExpiry,
+  { readonly brand: unique symbol }
+>()("InvalidDeploymentExpiry", {
+  requested: Schema.String,
+}) {
+  override get message() {
+    return "Deployment expiresAt must be a safe integer timestamp in milliseconds, or null to clear the expiry.";
+  }
+}
+
+const validateExpiry = Effect.fn("Deployment.validateExpiry")(function* ({
+  expiresAt,
+}: DeploymentProps) {
+  if (expiresAt != null && !Number.isSafeInteger(expiresAt))
+    return yield* InvalidDeploymentExpiry.make({
+      requested: String(expiresAt),
+    });
+});
+
 const requestedExpiry = (
   news: DeploymentProps,
   olds: DeploymentProps | undefined,
@@ -145,7 +165,9 @@ export const provider = Effect.gen(function* () {
   });
   return {
     diff: Effect.fn("Deployment.diff")(function* ({ news, olds, output }) {
-      if (!isResolved(news) || output === undefined) return;
+      if (!isResolved(news)) return;
+      yield* validateExpiry(news);
+      if (output === undefined) return;
       const expiresAt = requestedExpiry(news, olds);
       yield* validate(output, news);
       const deployment = yield* client
@@ -191,6 +213,7 @@ export const provider = Effect.gen(function* () {
       olds,
       output,
     }) {
+      yield* validateExpiry(news);
       if (output === undefined) yield* checkpointCreate(fqn, instanceId, news);
       if (output !== undefined) yield* validate(output, news);
       let deployment =
