@@ -120,17 +120,18 @@ One stack should own each project and deployment. For a project shared by severa
 To choose a cloud backend's size, set `class` on `Convex.Deployment`:
 
 ```ts
-const deployment =
-  yield *
-  Convex.Deployment("Deployment", {
+Effect.gen(function* () {
+  const deployment = yield* Convex.Deployment("Deployment", {
     projectId: project.projectId,
     type: "prod",
     reference: "notes-production",
     class: "s256",
   });
+});
 ```
 
-The installed platform types accept `"s16"`, `"s256"`, `"d1024"`, and `"d2048"`.
+Accepted values come from `@convex-dev/platform`'s `DeploymentClass` type.
+For example, the current published type includes `"s16"`, `"s256"`, `"d1024"`, and `"d2048"`.
 Convex selects your team's default class when you omit `class` on creation.
 Changing `class` updates the existing cloud deployment in place and requires
 Convex's deployment class selection entitlement. Omitting it later leaves the

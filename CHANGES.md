@@ -1185,10 +1185,11 @@ Upstream: planned; no linked proposal verified.
 ### Choose a cloud deployment's class
 
 Add `class` to `Convex.Deployment` so Frame stacks can choose a backend's size.
-Use the installed platform package's four-class union and update class changes
+Use the platform package's `DeploymentClass` type and update class changes
 in place, preserving the deployment and its data. Omitting the prop preserves
 Convex's creation default and leaves an existing deployment's class unchanged.
 Keep project, type, and region changes refused, and retain deployments on removal.
+Ignore class changes in local mode without restarting the backend.
 
 Changeset: `alchemy-deployment-class.md`.
 Upstream: planned; no proposal submitted.
