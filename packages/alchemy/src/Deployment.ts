@@ -267,7 +267,7 @@ export const provider = Effect.gen(function* () {
 
 interface LocalConfig {
   readonly name: string;
-  readonly props: DeploymentProps;
+  readonly props: Omit<DeploymentProps, "class">;
 }
 
 /**
@@ -294,9 +294,10 @@ export const localLayer = LocalProvider.make(
         instanceId,
         news,
       }) {
+        const { class: _class, ...props } = news;
         return {
           name: yield* resourceName("deployment", fqn, instanceId),
-          props: news,
+          props,
         } satisfies LocalConfig;
       }),
       start: Effect.fn("Deployment.localStart")(function* ({
