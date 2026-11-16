@@ -299,11 +299,11 @@ describe("Code command boundary", () => {
           const fs = yield* FileSystem.FileSystem;
           const path = yield* Path.Path;
           const cwd = yield* project;
-          const secret = "made-up-path-credential";
+          const secret = Redacted.value(props.deployKey);
           yield* fs.writeFileString(
             path.join(cwd, "node_modules/convex/cli.js"),
             `
-          process.stdout.write('Deploy validation started\\nprod:happy-otter-123|test-secret\\n');
+          process.stdout.write('Deploy validation started\\nError at line 12: 1 error, verbose=true\\nprod:happy-otter-123|test-secret\\n');
           process.stderr.write('Schema validation failed: missing index by_author\\n${secret}\\npreview:another:project|made-up-preview-token\\n');
           process.exit(7);
         `,
@@ -331,9 +331,7 @@ describe("Code command boundary", () => {
               ]),
               runnerLayer,
               unlocked,
-              ConfigProvider.layer(
-                ConfigProvider.fromUnknown({ PATH: secret }),
-              ),
+              ConfigProvider.layer(ConfigProvider.fromEnv()),
             ]),
             Effect.exit,
           );
@@ -345,7 +343,8 @@ describe("Code command boundary", () => {
             operation: "deploy",
             reason: "exit",
             exitCode: 7,
-            stdout: "Deploy validation started\n<REDACTED>\n",
+            stdout:
+              "Deploy validation started\nError at line 12: 1 error, verbose=true\n<REDACTED>\n",
             stderr:
               "Schema validation failed: missing index by_author\n<REDACTED>\n<REDACTED>\n",
           });
@@ -485,6 +484,156 @@ describe("Code command boundary", () => {
           expect(representation).not.toContain(key);
       }).pipe(Effect.provideContext(services));
     }).pipe(Effect.scoped),
+  );
+
+  it.effect.each([
+    [
+      "URL-encoded credentials",
+      "local-test|0123456789abcdef",
+      "key=local-test%7C0123456789abcdef",
+      "key=<REDACTED>",
+    ],
+    [
+      "base64 credentials",
+      "local-test|0123456789abcdef",
+      "bG9jYWwtdGVzdHwwMTIzNDU2Nzg5YWJjZGVm",
+      "<REDACTED>",
+    ],
+    [
+      "ANSI-split credentials",
+      "local-test|0123456789abcdef",
+      "local-test|\u001b[1m0123456789abcdef\u001b[0m",
+      "<REDACTED>",
+    ],
+    [
+      "punctuated unknown deploy keys",
+      "local-test|0123456789abcdef",
+      "prod:x|abc.def%other~secret-tail",
+      "<REDACTED>",
+    ],
+    [
+      "credentials without a trailing newline",
+      "local-test|0123456789abcdef",
+      "local-test|0123456789abcdef",
+      "<REDACTED>",
+    ],
+    [
+      "JSON-escaped output",
+      "local-test|0123456789abcdef",
+      '{"message":"failed\\nlocal-test|0123456789abcdef"}',
+      '{"message":"failed\\n<REDACTED>"}',
+    ],
+    [
+      "Bearer credentials",
+      "local-test|0123456789abcdef",
+      "Bearer local-test|0123456789abcdef",
+      "Bearer <REDACTED>",
+    ],
+    [
+      "credentials in URL queries",
+      "local-test|0123456789abcdef",
+      "https://example.test/?key=local-test|0123456789abcdef&next=true",
+      "https://example.test/?key=<REDACTED>&next=true",
+    ],
+    [
+      "eight-character credentials",
+      "abcdefgh",
+      "key=abcdefgh",
+      "key=<REDACTED>",
+    ],
+    ...Arr.map(["", "1", "true", "abcdefg"], (shortKey) => [
+      `short credential of length ${shortKey.length}`,
+      shortKey,
+      "Error at line 12: 1 error, verbose=true abcdefg",
+      "Error at line 12: 1 error, verbose=true abcdefg",
+    ]),
+  ])("sanitizes %s without mangling diagnostics", ([, key, output, expected]) =>
+    Effect.gen(function* () {
+      const bytes = new TextEncoder().encode(output);
+      const spawner = commandSpawner({
+        exitCode: () => Effect.succeed(ChildProcessSpawner.ExitCode(7)),
+        stdout: Stream.make(bytes),
+        stderr: Stream.make(bytes),
+      });
+      const services = yield* Layer.build(
+        runnerLayer.pipe(
+          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, spawner)),
+        ),
+      );
+      return yield* Effect.gen(function* () {
+        const cwd = yield* project;
+        const runner = yield* CommandRunner;
+        const exit = yield* runner
+          .deploy(
+            {
+              _tag: "SelfHosted",
+              deploymentName: "local-test",
+              url: "http://127.0.0.1:3300",
+              adminKey: Redacted.make(key),
+            },
+            cwd,
+          )
+          .pipe(Effect.exit);
+        assertIs(exit, Exit.isFailure);
+        const error = Cause.squash(exit.cause);
+        assertIs(error, Schema.is(CommandError));
+        expect(error).toMatchObject({ stdout: expected, stderr: expected });
+        for (const representation of [
+          error.message,
+          inspect(error),
+          yield* serialize(error),
+          Cause.pretty(exit.cause),
+          yield* serialize(exit.cause),
+        ]) {
+          if (String.includes("<REDACTED>")(expected)) {
+            expect(representation).not.toContain(key);
+            expect(representation).not.toContain(output);
+          }
+        }
+      }).pipe(Effect.provideContext(services));
+    }).pipe(Effect.scoped),
+  );
+
+  it.live.each([0, 7])(
+    "bounds pipe draining after exit %s and retains diagnostics",
+    (code) =>
+      Effect.gen(function* () {
+        const spawner = commandSpawner({
+          exitCode: () => Effect.succeed(ChildProcessSpawner.ExitCode(code)),
+          stdout: Stream.make(
+            new TextEncoder().encode("useful diagnostic\n"),
+          ).pipe(Stream.concat(Stream.never)),
+          stderr: Stream.never,
+        });
+        const services = yield* Layer.build(
+          runnerLayer.pipe(
+            Layer.provideMerge(Layer.mergeAll(NodeServices.layer, spawner)),
+          ),
+        );
+        return yield* Effect.gen(function* () {
+          const cwd = yield* project;
+          const runner = yield* CommandRunner;
+          const result = yield* runner
+            .deploy(
+              {
+                _tag: "Cloud",
+                deploymentName: props.deployment.name,
+                deployKey: props.deployKey,
+              },
+              cwd,
+            )
+            .pipe(Effect.result, Effect.timeout("3 seconds"));
+          if (code === 0) expect(Result.isSuccess(result)).toBe(true);
+          else {
+            assertIs(result, Result.isFailure);
+            expect(result.failure).toMatchObject({
+              exitCode: code,
+              stdout: "useful diagnostic\n",
+              stderr: "",
+            });
+          }
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped),
   );
 
   it.effect(
