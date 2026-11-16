@@ -27,6 +27,10 @@ export interface DeploymentProps {
   readonly reference?: string;
   readonly region?: RegionName;
   readonly class?: DeploymentClass;
+  /**
+   * Milliseconds since the Unix epoch. Use null to clear a cloud expiry.
+   */
+  readonly expiresAt?: number | null;
 }
 
 export interface DeploymentAttributes {
@@ -43,6 +47,10 @@ export interface DeploymentAttributes {
    * Always set in the cloud; local deployments do not have a cloud class.
    */
   readonly class?: string;
+  /**
+   * Cloud expiry in milliseconds since the Unix epoch, or null when unset.
+   */
+  readonly expiresAt?: number | null;
 }
 
 export type Deployment = Resource<
@@ -79,6 +87,14 @@ export class AmbiguousDeployment extends Schema.TaggedError<
   reference: Schema.String,
 }) {}
 
+const requestedExpiry = (
+  news: DeploymentProps,
+  olds: DeploymentProps | undefined,
+) =>
+  news.expiresAt === undefined && olds?.expiresAt !== undefined
+    ? null
+    : news.expiresAt;
+
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient;
   const attributes = Effect.fn("Deployment.attributes")(function* (
@@ -96,6 +112,7 @@ export const provider = Effect.gen(function* () {
       url: deployment.deploymentUrl,
       region: deployment.region,
       class: deployment.class,
+      expiresAt: deployment.expiresAt ?? null,
     } satisfies DeploymentAttributes;
   });
   const find = Effect.fn("Deployment.find")(function* (
@@ -127,8 +144,9 @@ export const provider = Effect.gen(function* () {
     }
   });
   return {
-    diff: Effect.fn("Deployment.diff")(function* ({ news, output }) {
+    diff: Effect.fn("Deployment.diff")(function* ({ news, olds, output }) {
       if (!isResolved(news) || output === undefined) return;
+      const expiresAt = requestedExpiry(news, olds);
       yield* validate(output, news);
       const deployment = yield* client
         .getDeployment(output.name)
@@ -138,7 +156,8 @@ export const provider = Effect.gen(function* () {
       yield* validate(current, news);
       if (
         (news.reference ?? output.reference) !== current.reference ||
-        (news.class !== undefined && news.class !== current.class)
+        (news.class !== undefined && news.class !== current.class) ||
+        (expiresAt !== undefined && expiresAt !== (current.expiresAt ?? null))
       )
         return { action: "update" };
     }),
@@ -169,6 +188,7 @@ export const provider = Effect.gen(function* () {
       fqn,
       instanceId,
       news,
+      olds,
       output,
     }) {
       if (output === undefined) yield* checkpointCreate(fqn, instanceId, news);
@@ -183,6 +203,7 @@ export const provider = Effect.gen(function* () {
         news.reference ??
         output?.reference ??
         (yield* resourceName("deployment", fqn, instanceId));
+      const expiresAt = requestedExpiry(news, olds);
       if (deployment === undefined) {
         const existing = yield* find(news.projectId, reference);
         if (existing !== undefined && !(yield* shouldAdopt(fqn)))
@@ -202,6 +223,7 @@ export const provider = Effect.gen(function* () {
             reference,
             ...(news.region === undefined ? {} : { region: news.region }),
             ...(news.class === undefined ? {} : { class: news.class }),
+            ...(expiresAt === undefined ? {} : { expiresAt }),
           });
         }
       }
@@ -209,7 +231,8 @@ export const provider = Effect.gen(function* () {
       yield* validate(current, news);
       if (
         current.reference !== reference ||
-        (news.class !== undefined && news.class !== current.class)
+        (news.class !== undefined && news.class !== current.class) ||
+        (expiresAt !== undefined && expiresAt !== (current.expiresAt ?? null))
       ) {
         if (current.reference !== reference) {
           const existing = yield* find(news.projectId, reference);
@@ -225,6 +248,10 @@ export const provider = Effect.gen(function* () {
           ...(news.class === undefined || news.class === current.class
             ? {}
             : { class: news.class }),
+          ...(expiresAt === undefined ||
+          expiresAt === (current.expiresAt ?? null)
+            ? {}
+            : { expiresAt }),
         });
         deployment = yield* client.getDeployment(current.name);
       }

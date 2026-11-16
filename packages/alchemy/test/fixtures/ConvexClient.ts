@@ -1,5 +1,8 @@
 import type { ScopedPlanStatusSession } from "alchemy/Report";
-import type { PlatformUpdateDeploymentArgs } from "@convex-dev/platform/managementApi";
+import type {
+  PlatformCreateDeploymentArgs,
+  PlatformUpdateDeploymentArgs,
+} from "@convex-dev/platform/managementApi";
 import type * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -12,7 +15,6 @@ import {
   type Deployment,
   type DeployKey,
   type Project,
-  type CreateDeploymentInput,
   type UpdateProjectInput,
 } from "../../src/ConvexClient";
 import * as Option from "effect/Option";
@@ -128,13 +130,19 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
       }),
     ),
     createDeployment: vi.fn(
-      (_projectId: number, input: CreateDeploymentInput) =>
+      (
+        _projectId: number,
+        input: PlatformCreateDeploymentArgs & { readonly reference: string },
+      ) =>
         Effect.sync(() => {
           const created = deployment({
             deploymentType: input.type,
             reference: input.reference,
             region: input.region ?? "aws-us-east-1",
             class: input.class ?? "default",
+            ...(input.expiresAt === undefined
+              ? {}
+              : { expiresAt: input.expiresAt }),
           });
           state.deployments.push(created);
           return created;
@@ -149,6 +157,9 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
                   ...value,
                   reference: input.reference ?? value.reference,
                   class: input.class ?? value.class,
+                  ...(input.expiresAt === undefined
+                    ? {}
+                    : { expiresAt: input.expiresAt }),
                 }
               : value,
           );

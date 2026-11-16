@@ -20,6 +20,158 @@ const attrs: Deployment.DeploymentAttributes = {
   url: "https://happy-otter-123.convex.cloud",
 };
 
+it.effect(
+  "creates a cloud dev deployment with an expiry in milliseconds",
+  () => {
+    const mock = mockClient();
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(mock.layer);
+      const provider = yield* Deployment.provider.pipe(
+        Effect.provideContext(services),
+      );
+      const news = {
+        ...props,
+        type: "dev" as const,
+        expiresAt: 1_800_000_000_000,
+      };
+      const created = yield* provider.reconcile({
+        ...lifecycle,
+        news,
+        olds: undefined,
+        output: undefined,
+      });
+      expect(mock.client.createDeployment).toHaveBeenCalledWith(1, {
+        type: "dev",
+        reference: "example",
+        expiresAt: 1_800_000_000_000,
+      });
+      expect(created).toMatchObject({
+        name: attrs.name,
+        expiresAt: 1_800_000_000_000,
+      });
+    });
+  },
+);
+
+it.effect.each([{ expiresAt: null }, { expiresAt: 1_800_000_000_000 }])(
+  "sets or extends a dev expiry in place from $expiresAt and repairs live drift",
+  ({ expiresAt }) => {
+    const mock = mockClient();
+    mock.state.deployments = [deployment({ deploymentType: "dev", expiresAt })];
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(mock.layer);
+      const provider = yield* Deployment.provider.pipe(
+        Effect.provideContext(services),
+      );
+      const olds = { ...props, type: "dev" as const, expiresAt };
+      const news = { ...olds, expiresAt: 1_800_003_600_000 };
+      const input = {
+        ...lifecycle,
+        news,
+        olds,
+        output: { ...attrs, type: "dev" as const, expiresAt },
+        oldBindings: [],
+        newBindings: [],
+      };
+      const diff = yield* provider.diff(input);
+      expect(diff).toEqual({ action: "update" });
+      const updated = yield* provider.reconcile(input);
+      expect(updated).toMatchObject({
+        name: attrs.name,
+        expiresAt: 1_800_003_600_000,
+      });
+      expect(mock.client.updateDeployment).toHaveBeenCalledWith(attrs.name, {
+        reference: "example",
+        expiresAt: 1_800_003_600_000,
+      });
+      const unchanged = yield* provider.diff({ ...input, output: updated });
+      expect(unchanged).toBeUndefined();
+      mock.state.deployments = [
+        deployment({ deploymentType: "dev", expiresAt: 1_800_007_200_000 }),
+      ];
+      const drift = yield* provider.diff({ ...input, output: updated });
+      expect(drift).toEqual({ action: "update" });
+      const repaired = yield* provider.reconcile({ ...input, output: updated });
+      expect(repaired).toMatchObject({
+        name: attrs.name,
+        expiresAt: 1_800_003_600_000,
+      });
+      expect(mock.client.createDeployment).not.toHaveBeenCalled();
+      expect(mock.client.deleteDeployment).not.toHaveBeenCalled();
+    });
+  },
+);
+
+it.effect.each([
+  { change: "remove", expiry: {} },
+  { change: "clear", expiry: { expiresAt: null } },
+])("clears a managed expiry in place on $change", ({ expiry }) => {
+  const mock = mockClient();
+  mock.state.deployments = [
+    deployment({ deploymentType: "dev", expiresAt: 1_800_000_000_000 }),
+  ];
+  return Effect.gen(function* () {
+    const services = yield* Layer.build(mock.layer);
+    const provider = yield* Deployment.provider.pipe(
+      Effect.provideContext(services),
+    );
+    const news = { ...props, type: "dev" as const, ...expiry };
+    const input = {
+      ...lifecycle,
+      news,
+      olds: { ...props, type: "dev" as const, expiresAt: 1_800_000_000_000 },
+      output: { ...attrs, type: "dev" as const, expiresAt: 1_800_000_000_000 },
+      oldBindings: [],
+      newBindings: [],
+    };
+    const diff = yield* provider.diff(input);
+    expect(diff).toEqual({ action: "update" });
+    const cleared = yield* provider.reconcile(input);
+    expect(cleared).toMatchObject({ name: attrs.name, expiresAt: null });
+    expect(mock.client.updateDeployment).toHaveBeenCalledWith(attrs.name, {
+      reference: "example",
+      expiresAt: null,
+    });
+    const unchanged = yield* provider.diff({ ...input, output: cleared });
+    expect(unchanged).toBeUndefined();
+    expect(mock.client.createDeployment).not.toHaveBeenCalled();
+    expect(mock.client.deleteDeployment).not.toHaveBeenCalled();
+  });
+});
+
+it.effect(
+  "preserves a preview's default expiry when the prop was never managed",
+  () => {
+    const mock = mockClient();
+    mock.state.deployments = [
+      deployment({ deploymentType: "preview", expiresAt: 1_800_000_000_000 }),
+    ];
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(mock.layer);
+      const provider = yield* Deployment.provider.pipe(
+        Effect.provideContext(services),
+      );
+      const news = { ...props, type: "preview" as const };
+      const input = {
+        ...lifecycle,
+        news,
+        olds: news,
+        output: { ...attrs, type: "preview" as const },
+        oldBindings: [],
+        newBindings: [],
+      };
+      const diff = yield* provider.diff(input);
+      expect(diff).toBeUndefined();
+      const preserved = yield* provider.reconcile(input);
+      expect(preserved).toMatchObject({
+        name: attrs.name,
+        expiresAt: 1_800_000_000_000,
+      });
+      expect(mock.client.updateDeployment).not.toHaveBeenCalled();
+    });
+  },
+);
+
 it.effect("creates a deployment with the requested class", () => {
   const mock = mockClient();
   return Effect.gen(function* () {
