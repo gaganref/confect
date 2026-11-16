@@ -614,9 +614,14 @@ it.effect(
     }),
 );
 
-it.effect.each([false, true])(
-  "recovers an interrupted canonical update with retry=%s",
-  (retry) =>
+it.effect.each([
+  { retry: false, existing: false },
+  { retry: true, existing: false },
+  { retry: false, existing: true },
+  { retry: true, existing: true },
+])(
+  "recovers an interrupted canonical update with retry=$retry existing=$existing",
+  ({ retry, existing }) =>
     Effect.gen(function* () {
       const fixture = mockClient();
       let loseResponse = true;
@@ -649,22 +654,24 @@ it.effect.each([false, true])(
         name: "happy-otter-123",
         url: "https://happy-otter-123.convex.cloud",
       };
-      const resources = Effect.gen(function* () {
-        const domain = yield* Convex.CustomDomain("Domain", {
-          deployment,
-          domain: "api.example.com",
-          requestDestination: "convexCloud",
-          canonical: true,
+      const resources = (canonical: boolean) =>
+        Effect.gen(function* () {
+          const domain = yield* Convex.CustomDomain("Domain", {
+            deployment,
+            domain: "api.example.com",
+            requestDestination: "convexCloud",
+            canonical,
+          });
+          return { canonicalUrl: domain.canonicalUrl };
         });
-        return { canonicalUrl: domain.canonicalUrl };
-      });
-      const result = yield* deploy(resources).pipe(Effect.result);
+      if (existing) yield* deploy(resources(false));
+      const result = yield* deploy(resources(true)).pipe(Effect.result);
       expect(result).toMatchObject({
         _tag: "Failure",
         failure: { _tag: "ConvexApiError", code: "TransportError" },
       });
       if (retry) {
-        const output = yield* deploy(resources);
+        const output = yield* deploy(resources(true));
         expect(output).toEqual({ canonicalUrl: "https://api.example.com" });
       }
       yield* deploy(Effect.succeed({}));

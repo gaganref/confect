@@ -131,14 +131,17 @@ export const provider = Effect.gen(function* () {
           });
         return;
       }
+      // Alchemy saves attempted update props before invoking reconcile.
+      const canonical = output.canonical || olds.canonical === true;
       const current = yield* find(output);
-      if (current === undefined && !output.canonical) return;
+      if (current === undefined && !canonical) return;
       const urls = yield* client
         .getCanonicalUrls(output.deployment.url)
         .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
       if (urls === undefined) return;
       return {
         ...output,
+        canonical,
         verificationTime: current?.verificationTime ?? null,
         canonicalUrl: canonicalUrl(urls, output.requestDestination),
       };
@@ -209,8 +212,8 @@ export const provider = Effect.gen(function* () {
       yield* checkpointCreate(fqn, instanceId, news, result);
       return result;
     }),
-    delete: Effect.fn("CustomDomain.delete")(function* ({ output }) {
-      if (output.canonical)
+    delete: Effect.fn("CustomDomain.delete")(function* ({ olds, output }) {
+      if (output.canonical || olds.canonical === true)
         yield* client
           .updateCanonicalUrl(output.deployment.url, {
             requestDestination: output.requestDestination,
