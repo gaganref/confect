@@ -292,7 +292,7 @@ export const syncManifestSections = Effect.fnUntraced(
     const sections = Rec.fromEntries(
       Arr.map([...registry], ([key, { data }]) => [key, data]),
     );
-    const { format, name, env, http } = current;
+    const { format, name, env, mounts, http } = current;
     const digest = sectionDigest(baseDigest, sections);
     const manifestPathValue = yield* manifestPath;
     yield* writeFileStringAndLog(
@@ -301,6 +301,7 @@ export const syncManifestSections = Effect.fnUntraced(
         format,
         name,
         env,
+        mounts,
         http,
         digest,
         ...sections,

@@ -1,1 +1,6 @@
-export { Backend, type BackendProps } from "./Backend.js";
+export {
+  Backend,
+  type BackendProps,
+  InvalidMountSetting,
+  mountVariables,
+} from "./Backend.js";

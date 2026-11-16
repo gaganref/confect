@@ -141,6 +141,31 @@ Effect.gen(function* () {
 
 Required keys must be present. Unknown keys, plain strings for secret fields, and values outside a field's declared literals fail to typecheck. Each value also accepts an Alchemy `Input`. Optional fields can be omitted; `env` itself can be omitted when all fields are optional. Without `manifest`, the existing untyped env record remains available. Infra imports only the generated manifest, never backend implementation code.
 
+## Supply a mount's open settings
+
+A root app's mounts hold placement only. Pass settings per stage through `Backend.mounts`, keyed by mount name and then slot name:
+
+```ts
+const backend =
+  yield *
+  Confect.Backend("Backend", {
+    deployment,
+    deployKey,
+    manifest,
+    mounts: {
+      bulkEmail: {
+        RESEND_API_KEY: yield * Config.Redacted("RESEND_API_KEY"),
+      },
+    },
+  });
+```
+
+This example assumes the generated manifest declares only the `bulkEmail` mount's required `RESEND_API_KEY` slot. With that manifest, Alchemy writes `BULK_EMAIL_RESEND_API_KEY` before pushing code. The manifest's `variable` field supplies the actual deployment variable, including names for nested open slots. Supply the backend's own variables separately through `env`.
+
+A mount with required open slots must appear. Optional slots and mounts with only optional slots can be omitted. Secret slots require `Redacted`, and literal slots accept only their declared values. `Manifest.Mounts<typeof manifest>` describes these settings without Alchemy inputs.
+
+If JavaScript bypasses the types, `InvalidMountSetting` reports `UnknownMount`, `NotOpen`, `Missing`, or `PlainSecret`. `Backend` treats these configuration refusals as defects so the stack's typed error channel stays unchanged. The standalone `mountVariables` helper returns the tagged error in its Effect error channel.
+
 ## Use plain Convex
 
 `Convex.Code` runs the Convex deploy command without Confect codegen:

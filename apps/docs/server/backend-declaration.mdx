@@ -60,7 +60,7 @@ Reads resolve through Confect's [Convex-aware `ConfigProvider`](/server/environm
 
 ## `app.ts`
 
-List the `convex.config` definitions of the Convex components the backend mounts, then its mounts. Each mount is declared in its own `confect/<mount>.ts` with [`Mount.make`](/server/components#reach-a-mounts-client), which takes the component's descriptor and the env each mount receives:
+List the `convex.config` definitions of the Convex components the backend mounts, then its mounts. Each mount is declared in its own `confect/<mount>.ts` with [`Mount.make`](/server/components#reach-a-mounts-client), which takes the component's descriptor and its placement:
 
 ```ts confect/app.ts
 import { App } from "@confect/core";
@@ -80,16 +80,10 @@ export default App.make({
 ```ts confect/bulkEmail.ts
 import { Mount } from "@confect/core";
 import Email from "@acme/email/client";
-import env from "./env";
 
 export const BulkEmail = Mount.make(Email, {
   name: "bulkEmail",
   httpPrefix: "/bulk-email",
-  env: {
-    FROM: env.EMAIL_FROM,
-    RESEND_API_KEY: env.RESEND_API_KEY,
-    TRANSPORT: env.EMAIL_TRANSPORT,
-  },
 });
 ```
 
@@ -102,13 +96,17 @@ export default App.make({ env, requiresMiddleware: [Policy, Trace] });
 
 Each mount names itself. Codegen pairs it with the listed definition whose `defineComponent` name is its component's name, and writes one `app.use` per mount in list order. It fails, naming the mount or definition, when a mount's component has no listed definition, when a listed definition has no mount, when two mounts share a name, and when two listed definitions share a `defineComponent` name. `Mount.make` types `env` against the descriptor's env slots. These fail to typecheck:
 
-- leaving out a binding the component requires
+- binding env on a root app's mount, including a constant
 - binding an optional entry to a required slot
 - binding a value outside a literal slot's values
 - binding a slot the component does not declare
 - binding an entry from another backend's env (reported at `App.make`)
 
-A binding is an entry of your env, or a constant string. `httpPrefix` reserves the mounted Convex component's routes.
+A root app's mounts are placement only. Leave their slots open and supply each stage's values through the deployment stack. `App.make` refuses a root mount that binds env, and codegen reports `RootMountEnv` if types were bypassed.
+
+A component may bind its child's slot to a constant or a compatible entry of its own env. Any slot may remain open, even a required one. Codegen promotes each open slot to `<MOUNT>_<SLOT>`. It inserts an underscore before each capital after the mount name's first character, then uppercases the name. Mount `bulkEmail` with slot `RESEND_API_KEY` becomes `BULK_EMAIL_RESEND_API_KEY`. A child's open slot can pass through several parents as `BULK_EMAIL_CHILD_RESEND_API_KEY`.
+
+A derived name that duplicates a declared variable or another open slot fails with `DerivedSlotCollision`. For example, mounts `aB` and `a_b` both promote `TOKEN` to `A_B_TOKEN`. Rename a mount or slot to resolve the collision. `httpPrefix` reserves the mounted Convex component's routes.
 
 The [generated test registry](/guides/testing) discovers a mounted Convex component's test kit at `<package>/testing`, then `<package>/test`, unless the component's descriptor names one with `testing`. Mounts do not accept a `testing` option.
 
@@ -127,6 +125,9 @@ const app = defineApp({
     RESEND_API_KEY: v.string(),
     EMAIL_TRANSPORT: v.union(v.literal("resend"), v.literal("log")),
     PLATFORM_URL: v.optional(v.string()),
+    BULK_EMAIL_FROM: v.string(),
+    BULK_EMAIL_RESEND_API_KEY: v.string(),
+    BULK_EMAIL_TRANSPORT: v.union(v.literal("resend"), v.literal("log")),
   },
 });
 
@@ -134,9 +135,9 @@ app.use(email, {
   name: "bulkEmail",
   httpPrefix: "/bulk-email",
   env: {
-    FROM: app.env.EMAIL_FROM,
-    RESEND_API_KEY: app.env.RESEND_API_KEY,
-    TRANSPORT: app.env.EMAIL_TRANSPORT,
+    FROM: app.env.BULK_EMAIL_FROM,
+    RESEND_API_KEY: app.env.BULK_EMAIL_RESEND_API_KEY,
+    TRANSPORT: app.env.BULK_EMAIL_TRANSPORT,
   },
 });
 
@@ -241,6 +242,27 @@ export default {
     },
     PLATFORM_URL: { kind: "string", optional: true },
   },
+  mounts: {
+    bulkEmail: {
+      component: "email",
+      httpPrefix: "/bulk-email",
+      env: {
+        FROM: { kind: "string", optional: false, variable: "BULK_EMAIL_FROM" },
+        RESEND_API_KEY: {
+          kind: "secret",
+          optional: false,
+          variable: "BULK_EMAIL_RESEND_API_KEY",
+        },
+        TRANSPORT: {
+          kind: "literals",
+          values: ["resend", "log"],
+          optional: false,
+          variable: "BULK_EMAIL_TRANSPORT",
+        },
+      },
+    },
+    importsPool: { component: "workpool", env: {} },
+  },
   http: { mounts: { bulkEmail: "/bulk-email" } },
   digest: "sha256:…",
 } as const;
@@ -261,6 +283,8 @@ const values: Manifest.Values<typeof manifest> = {
   EMAIL_TRANSPORT: "resend",
 };
 ```
+
+`Manifest.Mounts<typeof manifest>` types the settings supplied under each mount's name. It includes only slots left open, with each slot's kind, optionality, and derived deployment variable in `manifest.mounts`. A mount with a required open slot must be supplied. Use [`Backend.mounts`](/guides/alchemy#supply-a-mounts-open-settings) to send those settings to their derived variables.
 
 `digest` changes whenever a file that `env.ts`, `app.ts` or `auth.ts` imports from your project changes, or the `convex` version or generator format does. Codegen writes the manifest before it validates anything else, and removes it when the declaration fails, so a stale manifest never outlives the declaration it came from.
 

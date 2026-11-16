@@ -1,5 +1,9 @@
 import { describe, expect, it } from "@effect/vitest";
-import { Backend } from "@confect/alchemy/Backend";
+import {
+  Backend,
+  InvalidMountSetting,
+  mountVariables,
+} from "@confect/alchemy/Backend";
 import { Providers } from "@confect/alchemy/Providers";
 import * as Output from "alchemy/Output";
 import { Stack } from "alchemy/Stack";
@@ -89,6 +93,85 @@ describe("Backend", () => {
       Effect.gen(function* () {
         const backend = yield* Backend("Backend", { ...props, env: {} });
         expect(backend.environment?.Props.variables).toEqual({});
+      }).pipe(Effect.provide([stack(), providers])),
+  );
+
+  it.effect(
+    "writes each mount's settings under the manifest's variable and refuses what it does not list",
+    () =>
+      Effect.gen(function* () {
+        const manifest = {
+          format: 1,
+          name: "host",
+          env: {},
+          mounts: {
+            relay: {
+              component: "relay",
+              env: {
+                TOKEN: {
+                  kind: "secret",
+                  optional: false,
+                  variable: "RELAY_TOKEN",
+                },
+                CHILD_LABEL: {
+                  kind: "string",
+                  optional: true,
+                  variable: "RELAY_CHILD_LABEL",
+                },
+              },
+            },
+          },
+          http: { mounts: {} },
+          digest: "sha256:0",
+        } as const;
+        const token = Redacted.make("token");
+        const variables = yield* mountVariables(manifest, {
+          relay: { TOKEN: token, CHILD_LABEL: "x" },
+        });
+        expect(variables).toEqual({
+          RELAY_TOKEN: token,
+          RELAY_CHILD_LABEL: "x",
+        });
+        const refused = (mounts: Parameters<typeof mountVariables>[1]) =>
+          Effect.flip(mountVariables(manifest, mounts));
+        const unknown = yield* refused({ relay: { TOKEN: token }, sms: {} });
+        expect(unknown).toEqual(
+          InvalidMountSetting.make({ mount: "sms", reason: "UnknownMount" }),
+        );
+        const missing = yield* refused({});
+        expect(missing).toEqual(
+          InvalidMountSetting.make({
+            mount: "relay",
+            slot: "TOKEN",
+            reason: "Missing",
+          }),
+        );
+        const plain = yield* refused({ relay: { TOKEN: "plain" } });
+        expect(plain).toEqual(
+          InvalidMountSetting.make({
+            mount: "relay",
+            slot: "TOKEN",
+            reason: "PlainSecret",
+          }),
+        );
+        const closed = yield* refused({
+          relay: { TOKEN: token, REGION: "eu" },
+        });
+        expect(closed).toEqual(
+          InvalidMountSetting.make({
+            mount: "relay",
+            slot: "REGION",
+            reason: "NotOpen",
+          }),
+        );
+        const backend = yield* Backend("Backend", {
+          ...props,
+          manifest,
+          mounts: { relay: { TOKEN: token } },
+        });
+        expect(backend.environment?.Props.variables).toEqual({
+          RELAY_TOKEN: token,
+        });
       }).pipe(Effect.provide([stack(), providers])),
   );
 });

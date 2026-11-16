@@ -178,7 +178,7 @@ describe("ManifestSections", () => {
   });
   it.each(
     pipe(
-      "format name env http digest __proto__ constructor prototype",
+      "format name env mounts http digest __proto__ constructor prototype",
       Str.split(" "),
     ),
   )("refuses the built-in key %s on App.make", (key) => {

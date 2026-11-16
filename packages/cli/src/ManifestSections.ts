@@ -16,7 +16,7 @@ import { quote, stringify } from "./Json.js";
 
 const reserved = new Set(
   pipe(
-    "format name env http digest __proto__ constructor prototype",
+    "format name env mounts http digest __proto__ constructor prototype",
     Str.split(" "),
   ),
 );

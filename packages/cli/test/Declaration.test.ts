@@ -21,10 +21,7 @@ const Ratelimiter = Component.make("ratelimiter", {
 const Workpool = Component.make("workpool", {
   client: (native: unknown) => native,
 });
-const Limiter = Mount.make(Ratelimiter, {
-  name: "limiter",
-  env: { LIMIT: "10" },
-});
+const Limiter = Mount.make(Ratelimiter, { name: "limiter" });
 const componentImport = (definition: unknown) =>
   Predicate.hasProperty(definition, "_name") &&
   Predicate.isString(definition._name)
@@ -47,6 +44,7 @@ describe("Declaration", () => {
       format: 1,
       name: "workpool",
       env: {},
+      mounts: {},
       http: { mounts: {} },
       digest: "sha256:child",
     } as const;
@@ -68,6 +66,14 @@ describe("Declaration", () => {
     assertIs(parsed, Result.isSuccess);
     expect(parsed.success.mounts[0]?.descriptor).toBe(shipped);
     expect(parseApp(app({ ...shipped, format: 2 }))).toEqual(
+      Result.fail(
+        Declaration.UnsupportedDescriptorFormat.make({
+          mount: "pool",
+          format: 2,
+        }),
+      ),
+    );
+    expect(parseApp(app({ format: 2 }))).toEqual(
       Result.fail(
         Declaration.UnsupportedDescriptorFormat.make({
           mount: "pool",
@@ -108,6 +114,140 @@ describe("Declaration", () => {
     }
   });
 
+  it("promotes a child's open slot, keeps a bound one closed, and refuses a promoted name taken twice", () => {
+    const child = {
+      format: 1,
+      name: "ratelimiter",
+      env: {
+        LIMIT: { kind: "string", optional: false },
+        TOKEN: { kind: "secret", optional: false },
+      },
+      mounts: {
+        inner: {
+          component: "inner",
+          env: {
+            KEY: { kind: "secret", optional: true, variable: "INNER_KEY" },
+          },
+        },
+      },
+      http: { mounts: {} },
+      digest: "sha256:child",
+    } as const;
+    const Child = Component.make("ratelimiter", {
+      manifest: child,
+      client: (native: unknown) => native,
+    });
+    const env = Env.make("relay", { LIMITER_TOKEN: Env.secret() });
+    const parsed = Declaration.parse({
+      target: "component",
+      app: App.make({
+        kind: "component",
+        env: Env.make("relay", {}),
+        components: [ratelimiter],
+        mounts: [Mount.make(Child, { name: "limiter", env: { LIMIT: "10" } })],
+      }),
+      auth: Option.none(),
+      componentImport,
+    });
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.promoted).toEqual([
+      ["LIMITER_TOKEN", { kind: "secret", optional: false }],
+      ["LIMITER_INNER_KEY", { kind: "secret", optional: true }],
+    ]);
+    expect(parsed.success.mounts[0]?.open).toEqual([
+      ["TOKEN", { kind: "secret", optional: false, variable: "LIMITER_TOKEN" }],
+      [
+        "INNER_KEY",
+        { kind: "secret", optional: true, variable: "LIMITER_INNER_KEY" },
+      ],
+    ]);
+    const taken = Declaration.parse({
+      target: "component",
+      app: App.make({
+        kind: "component",
+        env,
+        components: [ratelimiter],
+        mounts: [Mount.make(Child, { name: "limiter", env: { LIMIT: "10" } })],
+      }),
+      auth: Option.none(),
+      componentImport,
+    });
+    expect(taken).toEqual(
+      Result.fail(
+        Declaration.DerivedSlotCollision.make({
+          variable: "LIMITER_TOKEN",
+          first: "LIMITER_TOKEN",
+          second: "limiter.TOKEN",
+        }),
+      ),
+    );
+  });
+
+  it("splits camelCase mount names before promoting their open slots", () => {
+    const Email = Component.make("workpool", {
+      manifest: {
+        format: 1,
+        name: "workpool",
+        env: { RESEND_API_KEY: { kind: "secret", optional: false } },
+        mounts: {},
+        http: { mounts: {} },
+        digest: "sha256:email",
+      },
+      client: (native: unknown) => native,
+    });
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", {}),
+        components: [workpool],
+        mounts: [Mount.make(Email, { name: "bulkEmail" })],
+      }),
+    );
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.promoted).toEqual([
+      ["BULK_EMAIL_RESEND_API_KEY", { kind: "secret", optional: false }],
+    ]);
+    expect(Declaration.convexConfig(parsed.success)).toContain(
+      "RESEND_API_KEY: app.env.BULK_EMAIL_RESEND_API_KEY,",
+    );
+    expect(Declaration.promotedName("bulkEmail", "CHILD_RESEND_API_KEY")).toBe(
+      "BULK_EMAIL_CHILD_RESEND_API_KEY",
+    );
+  });
+
+  it("refuses a collision caused by splitting a camelCase mount name", () => {
+    const app = App.make({
+      env: Env.make("host", {}),
+      components: [ratelimiter],
+      mounts: [
+        Mount.make(Ratelimiter, { name: "aB" }),
+        Mount.make(Ratelimiter, { name: "a_b" }),
+      ],
+    });
+    expect(parseApp(app)).toEqual(
+      Result.fail(
+        Declaration.DerivedSlotCollision.make({
+          variable: "A_B_LIMIT",
+          first: "aB.LIMIT",
+          second: "a_b.LIMIT",
+        }),
+      ),
+    );
+  });
+
+  it("refuses env on a root app's mount when types were bypassed", () => {
+    const app: unknown = {
+      ...App.make({ env: Env.make("host", {}), components: [ratelimiter] }),
+      mounts: [
+        Mount.make(Ratelimiter, { name: "limiter", env: { LIMIT: "10" } }),
+      ],
+    };
+    expect(parseApp(app)).toEqual(
+      Result.fail(
+        Declaration.RootMountEnv.make({ mount: "limiter", slots: ["LIMIT"] }),
+      ),
+    );
+  });
+
   it("renders a Confect-authored component's own definition", () => {
     const env = Env.make("email", {
       FROM: Env.string(),
@@ -119,7 +259,9 @@ describe("Declaration", () => {
         kind: "component",
         env,
         components: [ratelimiter],
-        mounts: [Limiter],
+        mounts: [
+          Mount.make(Ratelimiter, { name: "limiter", env: { LIMIT: "10" } }),
+        ],
       }),
       auth: Option.none(),
       componentImport,
@@ -192,15 +334,20 @@ export default component;
     expect(Declaration.convexConfig(parsed.success)).toBe(
       `// Generated by \`confect codegen\` from confect/app.ts. Do not edit.
 import { defineApp } from "convex/server";
+import { v } from "convex/values";
 import ratelimiter from "@convex-dev/ratelimiter/convex.config.js";
 import workpool from "@convex-dev/workpool/convex.config.js";
 
-const app = defineApp();
+const app = defineApp({
+  env: {
+    LIMITER_LIMIT: v.string(),
+  },
+});
 
 app.use(ratelimiter, {
   name: "limiter",
   env: {
-    LIMIT: "10",
+    LIMIT: app.env.LIMITER_LIMIT,
   },
 });
 

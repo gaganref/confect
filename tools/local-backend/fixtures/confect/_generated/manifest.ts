@@ -17,6 +17,70 @@ export default {
       "optional": true
     }
   },
+  "mounts": {
+    "first": {
+      "component": "counter",
+      "httpPrefix": "/first",
+      "env": {
+        "COMPONENT_REQUIRED": {
+          "kind": "string",
+          "optional": false,
+          "variable": "FIRST_COMPONENT_REQUIRED"
+        },
+        "COMPONENT_OPTIONAL": {
+          "kind": "string",
+          "optional": true,
+          "variable": "FIRST_COMPONENT_OPTIONAL"
+        },
+        "COMPONENT_MARKER": {
+          "kind": "string",
+          "optional": true,
+          "variable": "FIRST_COMPONENT_MARKER"
+        },
+        "COMPONENT_UNBOUND": {
+          "kind": "string",
+          "optional": true,
+          "variable": "FIRST_COMPONENT_UNBOUND"
+        }
+      }
+    },
+    "second": {
+      "component": "counter",
+      "httpPrefix": "/second",
+      "env": {
+        "COMPONENT_REQUIRED": {
+          "kind": "string",
+          "optional": false,
+          "variable": "SECOND_COMPONENT_REQUIRED"
+        },
+        "COMPONENT_OPTIONAL": {
+          "kind": "string",
+          "optional": true,
+          "variable": "SECOND_COMPONENT_OPTIONAL"
+        },
+        "COMPONENT_MARKER": {
+          "kind": "string",
+          "optional": true,
+          "variable": "SECOND_COMPONENT_MARKER"
+        },
+        "COMPONENT_UNBOUND": {
+          "kind": "string",
+          "optional": true,
+          "variable": "SECOND_COMPONENT_UNBOUND"
+        }
+      }
+    },
+    "left": {
+      "component": "parent",
+      "httpPrefix": "/left",
+      "env": {}
+    },
+    "right": {
+      "component": "parent",
+      "httpPrefix": "/right",
+      "env": {}
+    }
+  },
   "http": {
     "mounts": {
       "first": "/first",
@@ -25,5 +89,5 @@ export default {
       "right": "/right"
     }
   },
-  "digest": "sha256:95dbf6180ae6d8fcd461ffe612e0b1bdc8717a8d682da883345ad6c3723205a7"
+  "digest": "sha256:f0622cc079d88ccd4d2934a1e1cb19f16119a9eed4439dac66665693440e8b03"
 } as const;

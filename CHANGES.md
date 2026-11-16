@@ -1118,6 +1118,18 @@ Upstream: planned; no proposal submitted.
 
 ## Backend declarations and HTTP routing
 
+### Leave root mount settings to the stack
+
+Root apps declare mount placement only. `App.make` refuses bindings in types,
+and codegen reports `RootMountEnv` when types are bypassed. Unbound slots,
+including required slots, promote through components to derived root variables.
+CamelCase mount names split at each capital, so `bulkEmail.RESEND_API_KEY`
+becomes `BULK_EMAIL_RESEND_API_KEY`. `DerivedSlotCollision` rejects ambiguous
+names, including `aB` and `a_b`. Components can still bind child slots, including
+promoted descendants, by constant or their own env entry. Changeset:
+`root-mount-placement.md`. Upstream: not planned; placement and derived settings
+are fork concepts.
+
 ### Require middleware on every registered function
 
 Add `App.make({ requiresMiddleware })` and emit the requirement in each group's
@@ -1191,6 +1203,16 @@ Changeset: `mount-no-api.md`.
 Upstream: planned; no linked proposal verified.
 
 ## Alchemy deployment
+
+### Supply open mount settings from the deployment
+
+`Backend.mounts` takes each mount's open settings from the generated manifest
+and writes them under the manifest's derived variables. Required settings,
+secret values, and optional mounts retain their types. `InvalidMountSetting`
+reports unknown mounts, closed slots, missing required slots, and plain
+secrets. `Backend` converts these refusals to defects to preserve the documented
+stack's typed error channel. Changeset: `root-mount-placement.md`.
+Upstream: not planned; manifest-driven mount settings are a fork concept.
 
 ### Deploy Convex through Alchemy
 

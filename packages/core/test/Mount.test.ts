@@ -143,13 +143,12 @@ describe("Mount.make", () => {
     void Mount.make(Workpool, { ...n, options: { initialBackoffMs: 100 } });
     // @ts-expect-error RULE required-options: Strict's client requires options.
     void Mount.make(Strict, n);
-    // @ts-expect-error RULE env-required: the email component declares required env.
+    // A required slot may be left open: the stack supplies it.
     void Mount.make(Email, n);
     // @ts-expect-error RULE env-unknown-slot: the email component has no SURPRISE slot.
     void Mount.make(Email, { ...o, env: { REGION: "eu", SURPRISE: "x" } });
     // @ts-expect-error RULE env-optional-entry: an optional entry cannot fill a required slot.
     void Mount.make(Email, { ...o, env: { REGION: hostEnv.MAYBE_REGION } });
-    // @ts-expect-error RULE env-not-prefix: an HTTP prefix does not stand in for required env.
     void Mount.make(Email, { ...n, httpPrefix: "/email" });
     // @ts-expect-error RULE no-testing: a component's test kit is found from its package.
     void Mount.make(Email, { ...o, testing: "email-kit/testing" });
@@ -159,12 +158,40 @@ describe("Mount.make", () => {
       env: { MODE: Schema.Literals(["resend", "log"]) },
       client: (native: Native) => native,
     });
-    // @ts-expect-error RULE env-missing-binding: a required slot cannot be left out.
     void Mount.make(Transport, { ...n, env: {} });
     // @ts-expect-error RULE env-literal-entry: a plain string entry cannot fill a literal slot.
     void Mount.make(Transport, { ...n, env: { MODE: hostEnv.BULK_REGION } });
     // @ts-expect-error RULE env-literal-value: a constant must be one of the slot's literals.
     void Mount.make(Transport, { ...n, env: { MODE: "smtp" } });
+  });
+
+  it("binds a packaged child's promoted slots with the same types as its own", () => {
+    const Relay = Component.make("relay", {
+      manifest: {
+        format: 1,
+        name: "relay",
+        env: {},
+        mounts: {
+          child: {
+            component: "child",
+            env: {
+              MODE: {
+                kind: "literals",
+                values: ["live", "log"],
+                optional: false,
+                variable: "CHILD_MODE",
+              },
+            },
+          },
+        },
+        http: { mounts: {} },
+        digest: "sha256:relay",
+      },
+      client: (native: Native) => native,
+    });
+    void Mount.make(Relay, { name: "relay", env: { CHILD_MODE: "log" } });
+    // @ts-expect-error A promoted child's slot retains its literal values.
+    void Mount.make(Relay, { name: "relay", env: { CHILD_MODE: "smtp" } });
   });
 
   it("takes a shipped manifest's env slots", () => {
@@ -175,6 +202,7 @@ describe("Mount.make", () => {
         MODE: { kind: "literals", values: ["live", "log"], optional: false },
         LABEL: { kind: "string", optional: true },
       },
+      mounts: {},
       http: { mounts: {} },
       digest: "sha256:0",
     } as const;

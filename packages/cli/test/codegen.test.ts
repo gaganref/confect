@@ -1865,13 +1865,13 @@ import counter from "../components/counter/convex/convex.config";
 import env from "./env";
 const client = (native: unknown) => native;
 const Counter = Component.make("counter", { env: { REQUIRED: Schema.String, MARKER: Schema.optionalKey(Schema.String) }, client });
-export const First = Mount.make(Counter, { name: "first", httpPrefix: "/first", env: { REQUIRED: "first-required", MARKER: env.MARKER } });
+export const First = Mount.make(Counter, { name: "first", httpPrefix: "/first" });
 export default App.make({
   env,
   components: [counter],
   mounts: [
     First,
-    Mount.make(Counter, { name: "second", env: { REQUIRED: env.API_KEY } }),
+    Mount.make(Counter, { name: "second" }),
   ],
 });
 `,
@@ -1927,6 +1927,10 @@ const app = defineApp({
     MARKER: v.optional(v.string()),
     API_KEY: v.string(),
     MODE: v.union(v.literal("live"), v.literal("test")),
+    FIRST_REQUIRED: v.string(),
+    FIRST_MARKER: v.optional(v.string()),
+    SECOND_REQUIRED: v.string(),
+    SECOND_MARKER: v.optional(v.string()),
   },
 });
 
@@ -1934,15 +1938,16 @@ app.use(counter, {
   name: "first",
   httpPrefix: "/first",
   env: {
-    REQUIRED: "first-required",
-    MARKER: app.env.MARKER,
+    REQUIRED: app.env.FIRST_REQUIRED,
+    MARKER: app.env.FIRST_MARKER,
   },
 });
 
 app.use(counter, {
   name: "second",
   env: {
-    REQUIRED: app.env.API_KEY,
+    REQUIRED: app.env.SECOND_REQUIRED,
+    MARKER: app.env.SECOND_MARKER,
   },
 });
 
@@ -1992,6 +1997,39 @@ export default {
         "test"
       ],
       "optional": false
+    }
+  },
+  "mounts": {
+    "first": {
+      "component": "counter",
+      "httpPrefix": "/first",
+      "env": {
+        "REQUIRED": {
+          "kind": "string",
+          "optional": false,
+          "variable": "FIRST_REQUIRED"
+        },
+        "MARKER": {
+          "kind": "string",
+          "optional": true,
+          "variable": "FIRST_MARKER"
+        }
+      }
+    },
+    "second": {
+      "component": "counter",
+      "env": {
+        "REQUIRED": {
+          "kind": "string",
+          "optional": false,
+          "variable": "SECOND_REQUIRED"
+        },
+        "MARKER": {
+          "kind": "string",
+          "optional": true,
+          "variable": "SECOND_MARKER"
+        }
+      }
     }
   },
   "http": {
@@ -2728,8 +2766,8 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             pipe(
               app,
               String.replace(
-                "env: { REQUIRED: env.API_KEY }",
-                'httpPrefix: "/first/nested", env: { REQUIRED: env.API_KEY }',
+                '{ name: "second" }',
+                '{ name: "second", httpPrefix: "/first/nested" }',
               ),
             ),
           );

@@ -165,7 +165,9 @@ app.use(counter, {
 export default app;
 ```
 
-The fixture's component has no env slots to bind. For a component with slots, pass `env` to `Mount.make`, as shown in [Backend Declaration](/server/backend-declaration#appts). A binding is a constant string or an entry from the host's env. Required slots need required entries; literal values must fit the slot; unknown slots and entries from another backend fail to typecheck. Codegen emits constant bindings directly and env entries as `app.env.KEY`.
+The fixture's component has no env slots. A root app leaves every component slot open and supplies its values from the deployment stack through [`Backend.mounts`](/guides/alchemy#supply-a-mounts-open-settings). Codegen derives each variable name from the mount and slot. For example, `bulkEmail` and `RESEND_API_KEY` become `BULK_EMAIL_RESEND_API_KEY`. Root mounts that bind env fail at `App.make` and during codegen.
+
+A component may bind its own child's slots to constants or entries from its own env. Required slots take required entries, and literal values must fit. Unknown slots and entries from another backend fail to typecheck. Unbound required slots stay open and pass through parents under derived names.
 
 Author the host's authentication providers:
 
@@ -252,7 +254,7 @@ export default Component.make("counter", {
 });
 ```
 
-A host declares each mount in its own `confect/<mount>.ts` with `Mount.make`, as Convex's `app.use` installs one. `env` is typed from the descriptor's slots, and takes a constant or an entry of the host's env. `options` is typed from the client constructor's parameters after the native mount: absent when it takes none, optional or required as the constructor declares it.
+A host declares each mount in its own `confect/<mount>.ts` with `Mount.make`, as Convex's `app.use` installs one. A component's child mount may bind `env`, typed from the descriptor's own and promoted slots. A root app's mount takes placement only. `options` is typed from the client constructor's parameters after the native mount: absent when it takes none, optional or required as the constructor declares it.
 
 ```ts confect/first.ts
 import { Mount } from "@confect/core";
@@ -261,7 +263,6 @@ import Counter from "../components/counter/client";
 export const First = Mount.make(Counter, {
   name: "first",
   httpPrefix: "/first",
-  env: { COMPONENT_REQUIRED: "first-required" },
 });
 ```
 

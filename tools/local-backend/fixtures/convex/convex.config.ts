@@ -9,6 +9,14 @@ const app = defineApp({
     TEST_AUTH_JWKS: v.string(),
     COMPONENT_MARKER: v.optional(v.string()),
     COMPONENT_HOST_ONLY: v.optional(v.string()),
+    FIRST_COMPONENT_REQUIRED: v.string(),
+    FIRST_COMPONENT_OPTIONAL: v.optional(v.string()),
+    FIRST_COMPONENT_MARKER: v.optional(v.string()),
+    FIRST_COMPONENT_UNBOUND: v.optional(v.string()),
+    SECOND_COMPONENT_REQUIRED: v.string(),
+    SECOND_COMPONENT_OPTIONAL: v.optional(v.string()),
+    SECOND_COMPONENT_MARKER: v.optional(v.string()),
+    SECOND_COMPONENT_UNBOUND: v.optional(v.string()),
   },
 });
 
@@ -16,9 +24,10 @@ app.use(counter, {
   name: "first",
   httpPrefix: "/first",
   env: {
-    COMPONENT_REQUIRED: "first-required",
-    COMPONENT_OPTIONAL: "first-optional",
-    COMPONENT_MARKER: app.env.COMPONENT_MARKER,
+    COMPONENT_REQUIRED: app.env.FIRST_COMPONENT_REQUIRED,
+    COMPONENT_OPTIONAL: app.env.FIRST_COMPONENT_OPTIONAL,
+    COMPONENT_MARKER: app.env.FIRST_COMPONENT_MARKER,
+    COMPONENT_UNBOUND: app.env.FIRST_COMPONENT_UNBOUND,
   },
 });
 
@@ -26,9 +35,10 @@ app.use(counter, {
   name: "second",
   httpPrefix: "/second",
   env: {
-    COMPONENT_REQUIRED: "second-required",
-    COMPONENT_OPTIONAL: app.env.COMPONENT_MARKER,
-    COMPONENT_MARKER: app.env.COMPONENT_MARKER,
+    COMPONENT_REQUIRED: app.env.SECOND_COMPONENT_REQUIRED,
+    COMPONENT_OPTIONAL: app.env.SECOND_COMPONENT_OPTIONAL,
+    COMPONENT_MARKER: app.env.SECOND_COMPONENT_MARKER,
+    COMPONENT_UNBOUND: app.env.SECOND_COMPONENT_UNBOUND,
   },
 });
 

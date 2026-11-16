@@ -21,6 +21,7 @@ export default {
       "optional": true
     }
   },
+  "mounts": {},
   "http": {
     "mounts": {}
   },

@@ -16,6 +16,21 @@ const manifest = {
     PLATFORM_URL: { kind: "string", optional: true },
     WEBHOOK_SECRET: { kind: "secret", optional: true },
   },
+  mounts: {
+    email: {
+      component: "email",
+      httpPrefix: "/email",
+      env: {
+        RESEND_KEY: {
+          kind: "secret",
+          optional: false,
+          variable: "EMAIL_RESEND_KEY",
+        },
+        LABEL: { kind: "string", optional: true, variable: "EMAIL_LABEL" },
+      },
+    },
+    pool: { component: "workpool", env: {} },
+  },
   http: { mounts: { email: "/email" } },
   digest: "sha256:0000",
 } as const;
@@ -36,6 +51,28 @@ describe("Manifest", () => {
       ...manifest,
       format: 2,
     } as const).not.toExtend<Manifest.Manifest>();
+  });
+
+  it("types each mount's open slots, refusing a missing value, a plain secret and an unknown mount", () => {
+    const mounts: Manifest.Mounts<typeof manifest> = {
+      email: { RESEND_KEY: Redacted.make("key") },
+    };
+    // @ts-expect-error A mount with a required open slot must be supplied.
+    const absent: Manifest.Mounts<typeof manifest> = {};
+    const missing: Manifest.Mounts<typeof manifest> = {
+      // @ts-expect-error The required open slot RESEND_KEY is missing.
+      email: { LABEL: "x" },
+    };
+    const plain: Manifest.Mounts<typeof manifest> = {
+      // @ts-expect-error An open secret slot takes Redacted, never a plain string.
+      email: { RESEND_KEY: "plain-text" },
+    };
+    const unknown: Manifest.Mounts<typeof manifest> = {
+      email: { RESEND_KEY: Redacted.make("key") },
+      // @ts-expect-error The manifest lists no mount named "sms".
+      sms: {},
+    };
+    void [mounts, absent, missing, plain, unknown];
   });
 
   it("types the values infra must supply", () => {

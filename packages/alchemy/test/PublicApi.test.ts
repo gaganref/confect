@@ -80,6 +80,14 @@ const manifest = {
     MODE: { kind: "literals", values: ["log", "send"], optional: false },
     LABEL: { kind: "string", optional: true },
   },
+  mounts: {
+    email: {
+      component: "email",
+      env: {
+        KEY: { kind: "secret", optional: false, variable: "EMAIL_KEY" },
+      },
+    },
+  },
   http: { mounts: {} },
   digest: "type-test",
 } as const;
@@ -99,12 +107,31 @@ it("types Backend env from the manifest without executing resources", () => {
     TOKEN: Redacted.make("fixture-token"),
     MODE: "log" as const,
   };
+  const mounts = { email: { KEY: Redacted.make("fixture-key") } };
   const backend = Confect.Backend("Notes", {
     deployment,
     deployKey,
     manifest,
     env,
+    mounts,
   });
+  expectTypeOf({ deployment, deployKey, manifest, env }).not.toExtend<Props>();
+  expectTypeOf({
+    deployment,
+    deployKey,
+    manifest,
+    env,
+    mounts: { email: { KEY: "plain" } },
+  }).not.toExtend<Props>();
+  const unknownMount = {
+    deployment,
+    deployKey,
+    manifest,
+    env,
+    mounts: { ...mounts, sms: {} },
+  };
+  // @ts-expect-error The manifest lists no mount named "sms".
+  void Confect.Backend("Notes", unknownMount);
   expectTypeOf<Effect.Success<typeof backend>["url"]>().toExtend<
     Output.Output<string>
   >();
@@ -146,7 +173,11 @@ it("types Backend env from the manifest without executing resources", () => {
   };
   // @ts-expect-error Required env keys cannot be omitted at the public constructor.
   void Confect.Backend("Notes", missingToken);
-  const optionalManifest = { ...manifest, env: { LABEL: manifest.env.LABEL } };
+  const optionalManifest = {
+    ...manifest,
+    env: { LABEL: manifest.env.LABEL },
+    mounts: {},
+  };
   expectTypeOf(
     Confect.Backend("Optional", {
       deployment,
@@ -154,4 +185,33 @@ it("types Backend env from the manifest without executing resources", () => {
       manifest: optionalManifest,
     }),
   ).toExtend<Effect.Effect<unknown, unknown, unknown>>();
+});
+
+it("checks secret types on a mount whose open slots are all optional", () => {
+  const optional = {
+    ...manifest,
+    env: {},
+    mounts: {
+      email: {
+        component: "email",
+        env: { KEY: { kind: "secret", optional: true, variable: "EMAIL_KEY" } },
+      },
+    },
+  } as const;
+  type Props = Confect.BackendProps<typeof optional>;
+  const deployment = { name: "notes", url: "https://example.convex.cloud" };
+  const deployKey = Redacted.make("type-test-placeholder");
+  expectTypeOf({ deployment, deployKey, manifest: optional }).toExtend<Props>();
+  expectTypeOf({
+    deployment,
+    deployKey,
+    manifest: optional,
+    mounts: { email: { KEY: "plain" } },
+  }).not.toExtend<Props>();
+  expectTypeOf({
+    deployment,
+    deployKey,
+    manifest: optional,
+    mounts: { email: { KEY: Redacted.make("fixture-key") } },
+  }).toExtend<Props>();
 });

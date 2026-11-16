@@ -1,6 +1,13 @@
-import { App, Auth, Env, Manifest } from "@confect/core";
+import {
+  App,
+  Auth,
+  Env,
+  Manifest,
+  type Mount as CoreMount,
+} from "@confect/core";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
+import * as SchemaAST from "effect/SchemaAST";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 // oxlint-disable-next-line effecttsgo/node-builtin-import -- a synchronous hash of in-memory strings in a pure function; Effect's Crypto is a service.
@@ -20,6 +27,12 @@ export interface Declaration {
   readonly target: "app" | "component";
   readonly name: string;
   readonly env: ReadonlyArray<readonly [string, Env.Descriptor]>;
+  /**
+   * The slots this backend's mounts leave open, under the names it declares
+   * them by, `<MOUNT>_<SLOT>`. Codegen adds them to the backend's own Convex
+   * env and binds each mount's slot to its promoted name.
+   */
+  readonly promoted: ReadonlyArray<readonly [string, Env.Descriptor]>;
   readonly mounts: ReadonlyArray<Mount>;
   readonly providers: Option.Option<ReadonlyArray<Provider>>;
 }
@@ -34,6 +47,11 @@ export interface Mount {
    * The generated manifest the mounted component ships, when it ships one.
    */
   readonly descriptor: Manifest.Manifest | undefined;
+  /**
+   * The component's slots this mount leaves unbound, each with its promoted
+   * name.
+   */
+  readonly open: ReadonlyArray<readonly [string, Manifest.OpenSlot]>;
 }
 
 export type Binding =
@@ -194,6 +212,31 @@ export class UnsupportedDescriptorFormat extends Schema.TaggedError<
   }
 }
 
+export class RootMountEnv extends Schema.TaggedError<
+  RootMountEnv,
+  { readonly brand: unique symbol }
+>()("RootMountEnv", {
+  mount: Schema.String,
+  slots: Schema.Array(Schema.String),
+}) {
+  override get message(): string {
+    return `The app's mount "${this.mount}" binds ${Arr.join(this.slots, ", ")}. A root app's mount is placement only; leave the slot open and supply it from the stack.`;
+  }
+}
+
+export class DerivedSlotCollision extends Schema.TaggedError<
+  DerivedSlotCollision,
+  { readonly brand: unique symbol }
+>()("DerivedSlotCollision", {
+  variable: Schema.String,
+  first: Schema.String,
+  second: Schema.String,
+}) {
+  override get message(): string {
+    return `${this.first} and ${this.second} both take the name ${this.variable}; rename a mount or a slot.`;
+  }
+}
+
 export type DeclarationError =
   | NotADeclaration
   | InvalidEnvKey
@@ -207,7 +250,9 @@ export type DeclarationError =
   | DuplicateDefinitionName
   | AuthForAnotherBackend
   | InvalidProviderEnv
-  | UnsupportedDescriptorFormat;
+  | UnsupportedDescriptorFormat
+  | RootMountEnv
+  | DerivedSlotCollision;
 
 const ENV_KEY = /^[A-Za-z][A-Za-z0-9_]*$/;
 const MOUNT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -234,6 +279,43 @@ export interface ComponentImport {
 const isCurrentFormat = (descriptor: {
   readonly format: number;
 }): descriptor is Manifest.Manifest => descriptor.format === Manifest.FORMAT;
+const plainDescriptor = (slot: Manifest.OpenSlot): Env.Descriptor =>
+  slot.kind === "literals"
+    ? { kind: slot.kind, values: slot.values, optional: slot.optional }
+    : { kind: slot.kind, optional: slot.optional };
+
+/**
+ * The env slots a mounted component declares. A component that ships its
+ * manifest declares its own slots and its mounts' open slots, under their
+ * promoted names. One that does not is read from its descriptor's schemas, each
+ * a string.
+ */
+const slotsOf = (
+  component: CoreMount.Data["component"],
+): ReadonlyArray<readonly [string, Env.Descriptor]> =>
+  component.manifest !== undefined
+    ? [
+        ...Rec.toEntries(component.manifest.env),
+        ...Arr.flatMap(Rec.values(component.manifest.mounts), ({ env }) =>
+          Arr.map(
+            Rec.values(env),
+            (slot) => [slot.variable, plainDescriptor(slot)] as const,
+          ),
+        ),
+      ]
+    : Arr.map(
+        Rec.toEntries(component.env ?? {}),
+        ([key, schema]) =>
+          [
+            key,
+            { kind: "string", optional: SchemaAST.isOptional(schema.ast) },
+          ] as const,
+      );
+
+export const promotedName = (mount: string, slot: string): string =>
+  String.toUpperCase(
+    `${pipe(mount, String.replace(/(?!^)([A-Z])/g, "_$1"))}_${slot}`,
+  );
 
 /**
  * Parse the default exports of `confect/app.ts` and, when present,
@@ -287,6 +369,7 @@ export const parse = (input: {
     }
 
     const mounts: Array<Mount> = [];
+    const promoted: Array<readonly [string, Env.Descriptor, string]> = [];
     for (const mount of App.mounts(input.app)) {
       if (!MOUNT_NAME.test(mount.name)) {
         return yield* Result.fail(InvalidMountName.make({ mount: mount.name }));
@@ -309,6 +392,15 @@ export const parse = (input: {
             mount: mount.name,
             first: named.componentName,
             second: component.componentName,
+          }),
+        );
+      }
+      const descriptor = mount.component.manifest;
+      if (descriptor !== undefined && !isCurrentFormat(descriptor)) {
+        return yield* Result.fail(
+          UnsupportedDescriptorFormat.make({
+            mount: mount.name,
+            format: descriptor.format,
           }),
         );
       }
@@ -338,14 +430,38 @@ export const parse = (input: {
         }
         bindings.push([slot, { kind: "env", key: origin.key }]);
       }
-      const descriptor = mount.component.manifest;
-      if (descriptor !== undefined && !isCurrentFormat(descriptor)) {
+      if (input.target === "app" && bindings.length > 0) {
         return yield* Result.fail(
-          UnsupportedDescriptorFormat.make({
+          RootMountEnv.make({
             mount: mount.name,
-            format: descriptor.format,
+            slots: Arr.map(bindings, ([slot]) => slot),
           }),
         );
+      }
+      const open: Array<readonly [string, Manifest.OpenSlot]> = [];
+      for (const [slot, slotDescriptor] of slotsOf(mount.component)) {
+        if (Arr.some(bindings, ([bound]) => bound === slot)) continue;
+        const variable = promotedName(mount.name, slot);
+        if (!ENV_KEY.test(variable))
+          return yield* Result.fail(InvalidEnvKey.make({ key: variable }));
+        const taken = Arr.some(descriptors, ([key]) => key === variable)
+          ? Option.some(variable)
+          : Option.map(
+              Arr.findFirst(promoted, ([key]) => key === variable),
+              ([, , from]) => from,
+            );
+        if (Option.isSome(taken)) {
+          return yield* Result.fail(
+            DerivedSlotCollision.make({
+              variable,
+              first: taken.value,
+              second: `${mount.name}.${slot}`,
+            }),
+          );
+        }
+        promoted.push([variable, slotDescriptor, `${mount.name}.${slot}`]);
+        open.push([slot, { ...slotDescriptor, variable }]);
+        bindings.push([slot, { kind: "env", key: variable }]);
       }
       mounts.push({
         name: mount.name,
@@ -354,6 +470,7 @@ export const parse = (input: {
         httpPrefix: mount.httpPrefix,
         env: bindings,
         descriptor,
+        open,
       });
     }
     for (const [component, { importPath }] of definitions) {
@@ -376,6 +493,10 @@ export const parse = (input: {
       target: input.target,
       name,
       env: descriptors,
+      promoted: Arr.map(
+        promoted,
+        ([key, descriptor]) => [key, descriptor] as const,
+      ),
       mounts,
       providers,
     };
@@ -514,20 +635,20 @@ export const convexConfig = (declaration: Declaration): string => {
       ? 'import { defineApp } from "convex/server";'
       : 'import { defineComponent } from "convex/server";',
   );
-  if (declaration.env.length > 0)
-    lines.push('import { v } from "convex/values";');
+  const env = [...declaration.env, ...declaration.promoted];
+  if (env.length > 0) lines.push('import { v } from "convex/values";');
   for (const [importPath, alias] of aliases) {
     lines.push(`import ${alias} from ${quote(importPath)};`);
   }
   lines.push("");
 
   const envBlock =
-    declaration.env.length === 0
+    env.length === 0
       ? []
       : [
           "  env: {",
           ...Arr.map(
-            declaration.env,
+            env,
             ([key, descriptor]) => `    ${key}: ${validator(descriptor)},`,
           ),
           "  },",
@@ -665,6 +786,19 @@ export const manifest = (
     format: Manifest.FORMAT,
     name: declaration.name,
     env: Rec.fromEntries(declaration.env),
+    mounts: Rec.fromEntries(
+      Arr.map(
+        declaration.mounts,
+        ({ name, componentName, httpPrefix, open }) => [
+          name,
+          {
+            component: componentName,
+            ...(httpPrefix === undefined ? {} : { httpPrefix }),
+            env: Rec.fromEntries(open),
+          },
+        ],
+      ),
+    ),
     http: {
       mounts: Rec.fromEntries(
         Arr.flatMap(declaration.mounts, ({ name, httpPrefix }) =>
