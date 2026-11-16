@@ -1,4 +1,4 @@
-/* oxlint-disable effecttsgo/async-function, effecttsgo/extends-native-error, effecttsgo/global-json, effecttsgo/node-builtin-import, effecttsgo/prefer-effect-array, effecttsgo/prefer-effect-record, effecttsgo/strict-boolean-expressions, no-await-in-loop -- This script runs in a child process outside Effect and drives convex's own Promise API, one step after another, as a deploy does. */
+/* oxlint-disable effecttsgo/async-function, effecttsgo/extends-native-error, effecttsgo/global-json, effecttsgo/node-builtin-import, effecttsgo/prefer-effect-array, effecttsgo/prefer-effect-record, effecttsgo/prefer-effect-string, effecttsgo/strict-boolean-expressions, no-await-in-loop -- This script runs in a child process outside Effect and drives convex's own Promise API, one step after another, as a deploy does. */
 // What `convex deploy` would deploy for the project in the working directory:
 // each mount's definition and modules, or why the deploy fails. It runs the
 // code a push runs (`src/cli/lib/components.ts:315-395` in convex 1.49):
