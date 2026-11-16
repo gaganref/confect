@@ -12,25 +12,6 @@ submission intent. Fork-specific publishing and branch automation stay **fork
 only**. Upstream submissions go through the maintainer. A backport remains listed
 until the fork adopts a release containing it.
 
-## Alchemy environment safety options
-
-`EnvironmentVariables` can stop on owned-value drift or unrelated live names,
-adopt matching desired values, share the deployment's push lock, and retry a
-bounded number of write conflicts. All five options default to prior behavior.
-Plan checks compare against the stored snapshot before unresolved desired inputs
-can skip the check. Errors and adoption logs identify names without values.
-The options let Frame manage environment values without silently overwriting
-external changes. Changeset: `alchemy-environment-safety.md`.
-Upstream: planned, through the maintainer.
-
-## Alchemy Convex error codes
-
-The Convex client retains the server's error code separately from its HTTP
-classification so callers can distinguish write conflicts from other failures.
-HTTP errors name the operation, status and code without retaining response body
-messages that could contain secrets. Changeset: `alchemy-convex-server-codes.md`.
-Upstream: planned, through the maintainer.
-
 ## Test invocation services
 
 `runHandlerPromise` starts a query, mutation or action handler with the
@@ -1200,6 +1181,23 @@ Changeset: `mount-no-api.md`.
 Upstream: planned; no linked proposal verified.
 
 ## Alchemy deployment
+
+`EnvironmentVariables` can stop on owned-value drift or unrelated live names,
+adopt matching desired values, share the deployment's push lock, and retry a
+bounded number of write conflicts. All five options default to prior behavior.
+Plan checks compare against the stored snapshot before unresolved desired inputs
+can skip the check. Errors and adoption logs identify names without values.
+The options let Frame manage environment values without silently overwriting
+external changes. Changeset: `alchemy-environment-safety.md`.
+Upstream: planned, through the maintainer.
+
+The Convex client retains validated server error identifiers separately from its
+HTTP classification so callers can distinguish write conflicts from other failures.
+Error messages name the operation, status and code without retaining response body
+messages. Codes must match `/^[A-Za-z][A-Za-z0-9]{0,63}$/`; error bodies are limited
+to 8 KiB before parsing, and larger bodies supply no server code.
+Changeset: `alchemy-convex-server-codes.md`.
+Upstream: planned, through the maintainer.
 
 ### Deploy Convex through Alchemy
 
