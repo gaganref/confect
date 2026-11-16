@@ -1,5 +1,6 @@
 import type {
   CreateDeploymentType,
+  DeploymentClass,
   PlatformDeploymentResponse,
   RegionName,
 } from "@convex-dev/platform/managementApi";
@@ -25,6 +26,7 @@ export interface DeploymentProps {
   readonly type: CreateDeploymentType;
   readonly reference?: string;
   readonly region?: RegionName;
+  readonly class?: DeploymentClass;
 }
 
 export interface DeploymentAttributes {
@@ -37,6 +39,10 @@ export interface DeploymentAttributes {
    * Always set in the cloud; a local deployment echoes the requested region.
    */
   readonly region?: RegionName;
+  /**
+   * Always set in the cloud; local deployments do not have a cloud class.
+   */
+  readonly class?: string;
 }
 
 export type Deployment = Resource<
@@ -89,6 +95,7 @@ export const provider = Effect.gen(function* () {
       type: deployment.deploymentType,
       url: deployment.deploymentUrl,
       region: deployment.region,
+      class: deployment.class,
     } satisfies DeploymentAttributes;
   });
   const find = Effect.fn("Deployment.find")(function* (
@@ -129,7 +136,10 @@ export const provider = Effect.gen(function* () {
       if (deployment === undefined) return { action: "update" };
       const current = yield* attributes(deployment);
       yield* validate(current, news);
-      if ((news.reference ?? output.reference) !== current.reference)
+      if (
+        (news.reference ?? output.reference) !== current.reference ||
+        (news.class !== undefined && news.class !== current.class)
+      )
         return { action: "update" };
     }),
     read: Effect.fn("Deployment.read")(function* ({
@@ -191,21 +201,30 @@ export const provider = Effect.gen(function* () {
             type: news.type,
             reference,
             ...(news.region === undefined ? {} : { region: news.region }),
+            ...(news.class === undefined ? {} : { class: news.class }),
           });
         }
       }
       const current = yield* attributes(deployment);
       yield* validate(current, news);
-      if (current.reference !== reference) {
-        const existing = yield* find(news.projectId, reference);
-        if (existing !== undefined && existing.name !== current.name)
-          return yield* new OwnedBySomeoneElse({
-            message: "The requested deployment reference is already in use.",
-            resourceType: Deployment.Type,
-            physicalName: reference,
-          });
+      if (
+        current.reference !== reference ||
+        (news.class !== undefined && news.class !== current.class)
+      ) {
+        if (current.reference !== reference) {
+          const existing = yield* find(news.projectId, reference);
+          if (existing !== undefined && existing.name !== current.name)
+            return yield* new OwnedBySomeoneElse({
+              message: "The requested deployment reference is already in use.",
+              resourceType: Deployment.Type,
+              physicalName: reference,
+            });
+        }
         yield* client.updateDeployment(current.name, {
           reference,
+          ...(news.class === undefined || news.class === current.class
+            ? {}
+            : { class: news.class }),
         });
         deployment = yield* client.getDeployment(current.name);
       }
