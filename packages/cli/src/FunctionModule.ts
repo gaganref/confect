@@ -163,6 +163,14 @@ const legacyRouter = String.replace(
   "HttpRouter.forSchema(schema)(http.routes, ",
 );
 
+// @gaganref/confect-cli 10.6.0-fork.12 wrote `wraps.reduce(` without the type
+// argument. Codegen owns that output so it can rewrite it. Drop this once no
+// consumer pins a release before the type argument.
+const legacyCrons = String.replace(
+  "wraps.reduce<CronJobs.CronJobs>(",
+  "wraps.reduce(",
+);
+
 /**
  * @internal
  */
@@ -219,14 +227,13 @@ export const assertOwnedEntrypoints = Effect.gen(function* () {
       return tokens[index - 1] === "from" && file !== undefined ? [file] : [];
     });
     if (new Set(wrapped).size !== wrapped.length) return [];
-    return [
-      yield* templates.crons({
-        cronsImportPath: yield* importFromConvex("crons.ts"),
-        sectionImportPaths: yield* Effect.forEach(wrapped, (file) =>
-          importFromConvex(`_generated/${file}`),
-        ),
-      }),
-    ];
+    const template = yield* templates.crons({
+      cronsImportPath: yield* importFromConvex("crons.ts"),
+      sectionImportPaths: yield* Effect.forEach(wrapped, (file) =>
+        importFromConvex(`_generated/${file}`),
+      ),
+    });
+    return [template, legacyCrons(template)];
   });
   const withoutSectionImports = (
     tokens: ReadonlyArray<string>,

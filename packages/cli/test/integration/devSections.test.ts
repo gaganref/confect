@@ -450,7 +450,7 @@ export default App.make({ env: Env.make("host", {}), manifestSections: [{ key: "
             )}import crons from "../confect/crons.js";\n\nconst wraps: ReadonlyArray<(crons: CronJobs.CronJobs) => CronJobs.CronJobs> = [${Arr.join(
               Arr.map(keys, (_, index) => `wrap${index}`),
               ", ",
-            )}];\n\nexport default wraps.reduce((jobs, wrap) => wrap(jobs), crons).convexCronJobs;\n`;
+            )}];\n\nexport default wraps.reduce<CronJobs.CronJobs>((jobs, wrap) => wrap(jobs), crons).convexCronJobs;\n`;
           const loosen = Effect.all([
             fs.makeDirectory(`${project.root}/confect/_generated`, {
               recursive: true,
