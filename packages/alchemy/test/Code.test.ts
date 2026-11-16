@@ -21,6 +21,7 @@ import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Sink from "effect/Sink";
 import * as Stream from "effect/Stream";
+import * as TestClock from "effect/testing/TestClock";
 import { ChildProcessSpawner } from "effect/process";
 import {
   deploy,
@@ -266,6 +267,7 @@ const commandSpawner = (
   mock: Pick<ChildProcessSpawner.ChildProcessSpawner["Service"], "exitCode"> & {
     readonly stdout?: Stream.Stream<Uint8Array>;
     readonly stderr?: Stream.Stream<Uint8Array>;
+    readonly waitForExit?: Effect.Effect<void>;
   },
 ) =>
   Layer.succeed(
@@ -274,7 +276,7 @@ const commandSpawner = (
       Effect.map(mock.exitCode(command), (exitCode) =>
         ChildProcessSpawner.makeHandle({
           pid: ChildProcessSpawner.ProcessId(1),
-          exitCode: Effect.succeed(exitCode),
+          exitCode: Effect.as(mock.waitForExit ?? Effect.void, exitCode),
           isRunning: Effect.succeed(false),
           kill: () => Effect.void,
           stdin: Sink.drain,
@@ -634,6 +636,53 @@ describe("Code command boundary", () => {
           }
         }).pipe(Effect.provideContext(services));
       }).pipe(Effect.scoped),
+  );
+
+  it.effect("allows pipe draining after a long-running CLI exits", () =>
+    Effect.gen(function* () {
+      const exited = yield* Deferred.make<void>();
+      const reading = yield* Deferred.make<void>();
+      const spawner = commandSpawner({
+        exitCode: () => Effect.succeed(ChildProcessSpawner.ExitCode(7)),
+        waitForExit: Deferred.await(exited),
+        stdout: Stream.fromEffect(
+          Deferred.succeed(reading, undefined).pipe(
+            Effect.andThen(Effect.sleep("2500 millis")),
+            Effect.as(new TextEncoder().encode("buffered diagnostic")),
+          ),
+        ),
+      });
+      const services = yield* Layer.build(
+        runnerLayer.pipe(
+          Layer.provideMerge(Layer.mergeAll(NodeServices.layer, spawner)),
+        ),
+      );
+      return yield* Effect.gen(function* () {
+        const cwd = yield* project;
+        const runner = yield* CommandRunner;
+        const fiber = yield* runner
+          .deploy(
+            {
+              _tag: "Cloud",
+              deploymentName: props.deployment.name,
+              deployKey: props.deployKey,
+            },
+            cwd,
+          )
+          .pipe(Effect.result, Effect.forkScoped);
+        yield* Deferred.await(reading);
+        yield* TestClock.adjust("2 seconds");
+        yield* Deferred.succeed(exited, undefined);
+        yield* TestClock.adjust("500 millis");
+        const result = yield* Fiber.join(fiber);
+        assertIs(result, Result.isFailure);
+        expect(result.failure).toMatchObject({
+          exitCode: 7,
+          stdout: "buffered diagnostic",
+          stderr: "",
+        });
+      }).pipe(Effect.provideContext(services));
+    }).pipe(Effect.scoped),
   );
 
   it.live(
