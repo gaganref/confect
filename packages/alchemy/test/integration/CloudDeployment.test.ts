@@ -683,6 +683,140 @@ const logResources = (props: LogStream.LogStreamProps) =>
   });
 
 describe("log stream engine lifecycle", () => {
+  it.effect.each(["rejected", "response lost"] as const)(
+    "finishes an interrupted update when the request was %s",
+    (failure) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        let attempts = 0;
+        const deploy = makeHarness(
+          Layer.succeed(ConvexClient, {
+            ...fixture.client,
+            updateLogStream: (url, key, id, input) =>
+              Effect.gen(function* () {
+                attempts++;
+                if (attempts !== 1 || failure === "response lost")
+                  yield* fixture.client.updateLogStream(url, key, id, input);
+                if (attempts === 1)
+                  return yield* ConvexApiError.make({
+                    operation: "updateLogStream",
+                    code:
+                      failure === "rejected" ? "HttpError" : "TransportError",
+                    ...(failure === "rejected" ? { status: 500 } : {}),
+                  });
+              }),
+          }),
+          noCommands,
+        );
+        const props = logConfigs[0];
+        const next = { ...props, datasetName: "next" };
+        const first = yield* deploy(logResources(props));
+        const interrupted = yield* deploy(logResources(next)).pipe(
+          Effect.result,
+        );
+        expect(interrupted).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "ConvexApiError" },
+        });
+        const retry = yield* deploy.plan(logResources(next));
+        expect(retry.resources.Logs.action).toBe("update");
+        const recovered = yield* deploy(logResources(next));
+        expect(recovered.id).toBe(first.id);
+        expect(attempts).toBe(failure === "rejected" ? 2 : 1);
+        const live = yield* fixture.client.getLogStream(
+          props.deploymentUrl,
+          props.deployKey,
+          first.id,
+        );
+        expect(Redacted.value(live)).toMatchObject({ datasetName: "next" });
+        const stable = yield* deploy.plan(logResources(next));
+        expect(stable.resources.Logs.action).toBe("noop");
+        expect(fixture.client.createLogStream).toHaveBeenCalledTimes(1);
+        expect(fixture.client.deleteLogStream).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect(
+    "explains recovery when a lost update is reverted before retry",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        let loseResponse = true;
+        const deploy = makeHarness(
+          Layer.succeed(ConvexClient, {
+            ...fixture.client,
+            updateLogStream: (url, key, id, input) =>
+              fixture.client.updateLogStream(url, key, id, input).pipe(
+                Effect.andThen(
+                  Effect.suspend(() => {
+                    if (!loseResponse) return Effect.void;
+                    loseResponse = false;
+                    return Effect.fail(
+                      ConvexApiError.make({
+                        operation: "updateLogStream",
+                        code: "TransportError",
+                      }),
+                    );
+                  }),
+                ),
+              ),
+          }),
+          noCommands,
+        );
+        const props = logConfigs[0];
+        const next = { ...props, datasetName: "next" };
+        const first = yield* deploy(logResources(props));
+        yield* deploy(logResources(next)).pipe(Effect.result);
+        const planned = yield* deploy.plan(logResources(props));
+        expect(planned.resources.Logs.action).toBe("update");
+        const reverted = yield* deploy(logResources(props)).pipe(Effect.result);
+        expect(reverted).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag: "LogStreamDrift",
+            message: expect.stringContaining("apply that same change again"),
+          },
+        });
+        expect(fixture.client.updateLogStream).toHaveBeenCalledTimes(1);
+        expect(fixture.client.deleteLogStream).not.toHaveBeenCalled();
+        const recovered = yield* deploy(logResources(next));
+        expect(recovered.id).toBe(first.id);
+        expect(fixture.client.updateLogStream).toHaveBeenCalledTimes(1);
+        yield* deploy(logResources(props));
+        expect(fixture.client.updateLogStream).toHaveBeenCalledTimes(2);
+      }),
+  );
+
+  it.effect(
+    "accepts a readable hand edit when the stack is changed to match",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(fixture.layer, noCommands);
+        const props = logConfigs[0];
+        const first = yield* deploy(logResources(props));
+        const found = yield* fixture.client.getLogStream(
+          props.deploymentUrl,
+          props.deployKey,
+          first.id,
+        );
+        const live = Redacted.value(found);
+        if (live.logStreamType !== "axiom")
+          return yield* Effect.die("Expected Axiom fixture");
+        fixture.state.logStreams.set(props.deploymentUrl, [
+          Redacted.make({ ...live, datasetName: "hand-edited" }),
+        ]);
+        const next = { ...props, datasetName: "hand-edited" };
+        const planned = yield* deploy.plan(logResources(next));
+        expect(planned.resources.Logs.action).toBe("update");
+        const matched = yield* deploy(logResources(next));
+        expect(matched.id).toBe(first.id);
+        expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+        const stable = yield* deploy.plan(logResources(next));
+        expect(stable.resources.Logs.action).toBe("noop");
+      }),
+  );
+
   it.effect(
     "refreshes a rotated HMAC through an update without writing to the stream",
     () =>
