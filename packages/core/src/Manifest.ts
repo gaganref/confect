@@ -89,7 +89,7 @@ type Slot = typeof Descriptor.Type & { readonly variable?: string };
 /**
  * The first rule a record of slots breaks: an automatic slot is required, a
  * provider tag's selector is a `providers` slot of the same record that offers
- * the tag's provider, and an open slot's variable is a valid, unreserved name.
+ * the tag's provider, and each variable is a valid, unreserved name.
  */
 const slotViolation = (
   at: string,
@@ -117,11 +117,12 @@ const slotViolation = (
       if (!chooser.values.includes(name))
         return `${at}.${key} names the provider ${name}, which ${at}.${selector} does not offer`;
     }
-    if (slot.variable !== undefined) {
-      if (!ENV_KEY.test(slot.variable))
-        return `${at}.${key} declares the variable "${slot.variable}", which does not use letters, digits and underscores, starting with a letter`;
-      if (Result.isFailure(Env.validateKey(slot.variable)))
-        return `${at}.${key} declares the variable "${slot.variable}", which is reserved for a Convex built-in address`;
+    const variable = at === "env" ? key : slot.variable;
+    if (variable !== undefined) {
+      if (!ENV_KEY.test(variable))
+        return `${at}.${key} declares the variable "${variable}", which does not use letters, digits and underscores, starting with a letter`;
+      if (Result.isFailure(Env.validateKey(variable)))
+        return `${at}.${key} declares the variable "${variable}", which is reserved for a Convex built-in address`;
     }
   }
   return undefined;
