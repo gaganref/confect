@@ -1863,6 +1863,20 @@ describe("Declaration provider selectors", () => {
     );
     assertIs(parsed, Result.isSuccess);
     expect(parsed.success.mounts[0]?.open).toEqual([]);
+    expect(parsed.success.adoptedProviderSettings).toEqual([
+      [
+        "INNER_SES_KEY",
+        { ...email.env.SES_KEY, provider: tag("CHOICE", "ses") },
+      ],
+      [
+        "INNER_SES_REGION",
+        { ...email.env.SES_REGION, provider: tag("CHOICE", "ses", false) },
+      ],
+      [
+        "INNER_RESEND_API_KEY",
+        { ...email.env.RESEND_API_KEY, provider: tag("CHOICE", "resend") },
+      ],
+    ]);
     const decoded = rendered(parsed.success);
     assertIs(decoded, Result.isSuccess);
     expect(decoded.success.env).toMatchObject({
