@@ -36,7 +36,10 @@ import {
 import { PushLock, layer as lockLayer } from "../src/internal/PushLock";
 import { ConvexClient, ConvexFunctionError } from "../src/ConvexClient";
 import { MountInitFailed } from "../src/internal/MountInit";
-import { HealthCheckFailed } from "../src/internal/CodeDeployment";
+import {
+  HealthCheckFailed,
+  StaleManifest,
+} from "../src/internal/CodeDeployment";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
@@ -197,12 +200,15 @@ describe("Code", () => {
         }).pipe(Effect.provideContext(services), Effect.result);
         expect(calls).toEqual(["lock", "prepare", "unlock"]);
         assertIs(result, Result.isFailure);
-        expect(result.failure).toMatchObject({
-          _tag: "StaleManifest",
-          expected: "sha256:built",
-          reason,
-          ...(reason === "DifferentDigest" ? { generated } : {}),
-        });
+        expect(result.failure).toEqual(
+          StaleManifest.make({
+            expected: "sha256:built",
+            reason,
+            ...(reason === "DifferentDigest" && generated !== undefined
+              ? { generated }
+              : {}),
+          }),
+        );
         expect(result.failure.message).toContain(
           reason === "DifferentDigest"
             ? "Run confect codegen, commit the generated files and deploy again."

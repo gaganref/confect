@@ -131,6 +131,36 @@ describe("Manifest", () => {
     },
   );
 
+  it.each([
+    "constructor",
+    "toString",
+    "hasOwnProperty",
+    "__proto__",
+    "valueOf",
+  ])("uses an own selector named %s", (name) => {
+    const setting = {
+      kind: "secret",
+      optional: true,
+      provider: { selector: name, name: "ses", required: true },
+    };
+    const absent = Manifest.decode(
+      { ...manifest, env: { KEY: setting } },
+      "fixture",
+    );
+    expect(Result.isFailure(absent)).toBe(true);
+    const present = Manifest.decode(
+      {
+        ...manifest,
+        env: {
+          [name]: { kind: "providers", values: ["ses"], optional: false },
+          KEY: setting,
+        },
+      },
+      "fixture",
+    );
+    expect(Result.isSuccess(present)).toBe(true);
+  });
+
   it("decodes without changing the imported value", () => {
     const decoded = Manifest.decode(manifest, "@tenant/backend/manifest");
     expect(Result.isSuccess(decoded)).toBe(true);

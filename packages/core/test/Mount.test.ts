@@ -756,10 +756,10 @@ it.effect.each([
           }),
         ),
       });
-      const args: { title: string } = ({
-	title: 'ok',
-	[key]: 'ignored'
-});
+      const args: { title: string } = {
+        title: "ok",
+        [key]: "ignored",
+      };
       const mount = Mount.make(component, { name: "plain", args });
       const result = yield* Mount.initCall(mount, () =>
         Effect.die("unexpected callback"),

@@ -1,3 +1,4 @@
+import * as Result from "effect/Result";
 import * as Option from "effect/Option";
 import * as Schema from "effect/Schema";
 import * as String from "effect/String";
@@ -15,7 +16,7 @@ import { v } from "convex/values";
 export const digest = internalQueryGeneric({
   args: {},
   returns: v.string(),
-  handler: () => ${Schema.encodeSync(Schema.fromJsonString(Schema.String))(digest)},
+  handler: () => ${Schema.encodeResult(Schema.fromJsonString(Schema.String))(digest).pipe(Result.getOrThrow)},
 });
 `;
 

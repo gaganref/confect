@@ -2188,3 +2188,51 @@ it.each(["constructor", "toString", "hasOwnProperty", "__proto__", "valueOf"])(
     expect(Declaration.previousLeaves(catalogue)).toEqual([route]);
   },
 );
+
+it.each(["constructor", "toString", "hasOwnProperty", "__proto__", "valueOf"])(
+  "flattens an own nested selector named %s",
+  (name) => {
+    const component = Component.make("ratelimiter", {
+      manifest: {
+        ...formatOne,
+        mounts: {
+          nested: {
+            component: "nested",
+            env: {
+              [name]: {
+                kind: "providers",
+                values: ["ses"],
+                optional: false,
+                variable: "NESTED_CHOICE",
+              },
+              KEY: {
+                kind: "secret",
+                optional: true,
+                variable: "NESTED_KEY",
+                provider: { selector: name, name: "ses", required: true },
+              },
+            },
+          },
+        },
+      },
+      client: (native: unknown) => native,
+    });
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", {}),
+        components: [ratelimiter],
+        mounts: [Mount.make(component, { name: "outer" })],
+      }),
+    );
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.mounts[0]?.open).toContainEqual([
+      "NESTED_KEY",
+      {
+        kind: "secret",
+        optional: true,
+        variable: "OUTER_NESTED_KEY",
+        provider: { selector: "NESTED_CHOICE", name: "ses", required: true },
+      },
+    ]);
+  },
+);
