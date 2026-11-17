@@ -1557,6 +1557,15 @@ Upstream: unrecorded; no linked proposal verified.
 
 ## Fork integration and publishing
 
+### Wait for published tarballs before the consumer install
+
+Keep each package pending until the registry lists the build and its tarball
+answers HTTP 200, so metadata propagation cannot trigger a false install failure.
+Retain the shared 15 minute deadline and 20 second polling pause.
+
+Changeset: none; fork release infrastructure only.
+Upstream: fork only.
+
 ### Gate fork publication and exercise a declared consumer
 
 Publish only after every check in the same commit's Packages workflow passes.
