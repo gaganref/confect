@@ -56,6 +56,54 @@ const create = (
 ) =>
   service.reconcile({ ...lifecycle, news, olds: undefined, output: undefined });
 
+it.effect.each([axiom, webhook])(
+  "makes the fake reject empty $kind topics like Convex",
+  (props) =>
+    withProvider((service, mock) =>
+      Effect.gen(function* () {
+        const invalid =
+          props.kind === "axiom"
+            ? { ...props, logStreamType: props.kind, topics: [] }
+            : { ...props, logStreamType: props.kind, topics: [] };
+        const created = yield* mock.client
+          .createLogStream(props.deploymentUrl, props.deployKey, invalid)
+          .pipe(Effect.result);
+        expect(created).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag: "ConvexApiError",
+            status: 400,
+            code: "EmptyLogTopics",
+          },
+        });
+        expect(mock.state.logStreams.size).toBe(0);
+        const output = yield* create(service, props);
+        const updated = yield* mock.client
+          .updateLogStream(
+            props.deploymentUrl,
+            props.deployKey,
+            output.id,
+            invalid,
+          )
+          .pipe(Effect.result);
+        expect(updated).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag: "ConvexApiError",
+            status: 400,
+            code: "EmptyLogTopics",
+          },
+        });
+        const live = yield* mock.client.getLogStream(
+          props.deploymentUrl,
+          props.deployKey,
+          output.id,
+        );
+        expect(Redacted.value(live)).toMatchObject({ topics: null });
+      }),
+    ),
+);
+
 it.effect.each([axiom, sentry, webhook])(
   "creates an owned $kind stream",
   (props) =>

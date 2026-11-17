@@ -1567,6 +1567,61 @@ const logResources = (props: LogStream.LogStreamProps) =>
   });
 
 describe("log stream engine lifecycle", () => {
+  it.effect.each(
+    Array.flatMap([logConfigs[0], logConfigs[2]], (props) =>
+      Array.flatMap(["create", "update"] as const, (operation) =>
+        Array.map(["resolved", "unresolved"] as const, (shape) => ({
+          props,
+          operation,
+          shape,
+        })),
+      ),
+    ),
+  )(
+    "refuses empty $props.kind topics at plan and apply ($operation, $shape)",
+    ({ props, operation, shape }) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(fixture.layer, noCommands);
+        if (operation === "update") yield* deploy(logResources(props));
+        // Exercise an untyped caller after the public prop becomes non-empty.
+        const invalid = {
+          ...props,
+          topics: [],
+        } as unknown as LogStream.LogStreamProps;
+        const resources =
+          shape === "resolved"
+            ? logResources(invalid)
+            : Effect.gen(function* () {
+                const project = yield* Convex.Project("TopicSource", {
+                  teamId: 10,
+                  name: "topic-source",
+                });
+                yield* Convex.LogStream("Logs", {
+                  ...invalid,
+                  deploymentUrl: project.projectId.pipe(
+                    Output.map(() => props.deploymentUrl),
+                  ),
+                });
+              });
+        for (const run of [
+          deploy.plan(resources).pipe(Effect.asVoid),
+          deploy(resources).pipe(Effect.asVoid),
+        ]) {
+          const result = yield* run.pipe(Effect.result);
+          expect(result._tag).toBe("Failure");
+          expect(result).toMatchObject({
+            _tag: "Failure",
+            failure: { _tag: "LogStreamEmptyTopics", kind: props.kind },
+          });
+        }
+        expect(fixture.client.createLogStream).toHaveBeenCalledTimes(
+          operation === "create" ? 0 : 1,
+        );
+        expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+      }),
+  );
+
   it.effect.each(["yielded", "effect", "computed redacted"] as const)(
     "preserves the %s log stream constructor with URL checks",
     (form) =>
