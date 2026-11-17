@@ -617,6 +617,141 @@ const defectOf = (exit: Exit.Exit<unknown, unknown>) => {
   return defect.success;
 };
 
+const prototypeNames = [
+  "constructor",
+  "toString",
+  "hasOwnProperty",
+  "__proto__",
+  "valueOf",
+] as const;
+
+describe("Backend own settings", () => {
+  it.effect.each(prototypeNames)(
+    "does not inherit the required provider setting %s",
+    (slot) =>
+      Effect.gen(function* () {
+        const manifest: Manifest.Manifest = {
+          ...formatOne,
+          env: { CHOICE: selector("ses"), [slot]: setting("CHOICE", "ses") },
+        };
+        const result = yield* Backend("Backend", {
+          ...props,
+          manifest,
+          env: { CHOICE: "ses" },
+        }).pipe(Effect.exit);
+        expect(defectOf(result)).toMatchObject({
+          _tag: "InvalidMountSetting",
+          slot,
+          reason: "Missing",
+        });
+      }).pipe(Effect.provide([stack(), providers])),
+  );
+  it.effect.each(prototypeNames)(
+    "does not inherit the required mount slot %s",
+    (slot) =>
+      Effect.gen(function* () {
+        const manifest: Manifest.Manifest = {
+          ...formatOne,
+          mounts: {
+            relay: {
+              component: "relay",
+              env: {
+                [slot]: {
+                  kind: "string",
+                  optional: false,
+                  variable: "RELAY_SLOT",
+                },
+              },
+            },
+          },
+        };
+        const result = yield* mountVariables(manifest, { relay: {} }).pipe(
+          Effect.result,
+        );
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "InvalidMountSetting", slot, reason: "Missing" },
+        });
+      }),
+  );
+  it.effect.each(prototypeNames)(
+    "does not inherit the automatic slot %s",
+    (slot) =>
+      Effect.gen(function* () {
+        const manifest: Manifest.Manifest = {
+          ...formatOne,
+          env: {
+            [slot]: {
+              kind: "string",
+              optional: false,
+              automatic: true as const,
+            },
+          },
+        };
+        const result = yield* Backend("Backend", {
+          ...props,
+          manifest,
+          automatic: {},
+        }).pipe(Effect.exit);
+        expect(defectOf(result)).toMatchObject({
+          _tag: "InvalidAutomaticSetting",
+          slot,
+          reason: "Missing",
+        });
+      }).pipe(Effect.provide([stack(), providers])),
+  );
+  it.effect.each(prototypeNames)("does not inherit the mount %s", (mount) =>
+    Effect.gen(function* () {
+      const manifest: Manifest.Manifest = {
+        ...formatOne,
+        mounts: {
+          [mount]: {
+            component: "relay",
+            env: {
+              TOKEN: {
+                kind: "string",
+                optional: false,
+                variable: "RELAY_TOKEN",
+              },
+            },
+          },
+        },
+      };
+      const inherited = Object.create({
+        [mount]: { TOKEN: "present" },
+      }) as Record<string, Record<string, string>>;
+      const result = yield* mountVariables(manifest, inherited).pipe(
+        Effect.result,
+      );
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          _tag: "InvalidMountSetting",
+          mount,
+          slot: "TOKEN",
+          reason: "Missing",
+        },
+      });
+    }),
+  );
+  it.effect.each(prototypeNames)("preserves an own value for slot %s", (slot) =>
+    Effect.gen(function* () {
+      const manifest = {
+        ...formatOne,
+        env: { [slot]: { kind: "string", optional: false } },
+      } as const;
+      const env: Record<string, string> = { [slot]: "present" };
+      const backend = yield* Backend("Backend", {
+        ...props,
+        manifest,
+        env,
+      });
+      expect(Record.has(backend.environment!.Props.variables, slot)).toBe(true);
+      expect(backend.environment!.Props.variables[slot]).toBe("present");
+    }).pipe(Effect.provide([stack(), providers])),
+  );
+});
+
 describe("Backend provider selectors", () => {
   const key = Redacted.make("key");
 

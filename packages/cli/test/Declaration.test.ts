@@ -1,3 +1,4 @@
+import * as Rec from "effect/Record";
 import { describe, expect, it } from "@effect/vitest";
 import { App, Auth, Component, Env, Manifest, Mount } from "@confect/core";
 import * as Declaration from "@confect/cli/Declaration";
@@ -2127,3 +2128,23 @@ describe("Declaration errors", () => {
     expect(String(error)).toBe(printed);
   });
 });
+
+it.each(["constructor", "toString", "hasOwnProperty", "__proto__", "valueOf"])(
+  "keeps route keys named %s as own data",
+  (name) => {
+    const route = {
+      owner: name,
+      group: name,
+      endpoint: name,
+      method: "GET",
+      path: "/route",
+    };
+    const catalogue = Result.getOrThrow(
+      Declaration.routeCatalogue([route], "sha256:fixture"),
+    );
+    expect(Rec.has(catalogue, name)).toBe(true);
+    expect(Rec.has(catalogue[name]!, name)).toBe(true);
+    expect(Rec.has(catalogue[name]![name]!, name)).toBe(true);
+    expect(Declaration.previousLeaves(catalogue)).toEqual([route]);
+  },
+);

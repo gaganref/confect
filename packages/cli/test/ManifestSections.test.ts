@@ -438,3 +438,30 @@ describe("ManifestSections", () => {
     ]);
   });
 });
+
+it.each(["constructor", "toString", "hasOwnProperty", "__proto__", "valueOf"])(
+  "reads only own section history for %s",
+  (key) => {
+    const seen: unknown[] = [];
+    const registry = Result.getOrThrow(
+      collect(
+        [
+          {
+            key,
+            section: {
+              ...section,
+              check: (_: unknown, previous: unknown) => {
+                seen.push(previous);
+                return { errors: [], notes: [] };
+              },
+            },
+          },
+        ],
+        [],
+      ),
+    );
+    check(registry, {});
+    check(registry, Record.fromEntries([[key, { format: 1 }]]));
+    expect(seen).toEqual([undefined, { format: 1 }]);
+  },
+);

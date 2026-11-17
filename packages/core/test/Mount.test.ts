@@ -734,3 +734,42 @@ describe("Mount.initCall", () => {
     }),
   );
 });
+
+it.effect.each([
+  "constructor",
+  "toString",
+  "hasOwnProperty",
+  "__proto__",
+  "valueOf",
+])(
+  "ignores an undeclared install argument named %s without reading schema fields from the prototype",
+  (key) =>
+    Effect.gen(function* () {
+      const component = Component.make("plain", {
+        client: (native: unknown) => native,
+        init: Ref.make(
+          "install",
+          FunctionSpec.internalMutation({
+            name: "init",
+            args: () => ({ title: Schema.String }),
+            returns: () => Schema.Null,
+          }),
+        ),
+      });
+      const args: { title: string } = ({
+	title: 'ok',
+	[key]: 'ignored'
+});
+      const mount = Mount.make(component, { name: "plain", args });
+      const result = yield* Mount.initCall(mount, () =>
+        Effect.die("unexpected callback"),
+      );
+      expect(result).toEqual(
+        Option.some({
+          componentPath: "plain",
+          functionName: "install:init",
+          args: { title: "ok" },
+        }),
+      );
+    }),
+);

@@ -431,3 +431,26 @@ describe("Env", () => {
     },
   );
 });
+
+it.effect.each([
+  "constructor",
+  "toString",
+  "hasOwnProperty",
+  "__proto__",
+  "valueOf",
+])("reads the own provider group named %s", (name) =>
+  Effect.gen(function* () {
+    const env = Env.make("example", {
+      CHOICE: Env.providers({ [name]: { REGION: Env.string() } }),
+    });
+    const configured = yield* read(env.CHOICE, {
+      CHOICE: name,
+      REGION: "fixture",
+    });
+    expect(configured.providers[name]).toEqual({ REGION: "fixture" });
+    const result = yield* read(env.CHOICE, { CHOICE: "not-offered" }).pipe(
+      Effect.result,
+    );
+    expect(result._tag).toBe("Failure");
+  }),
+);
