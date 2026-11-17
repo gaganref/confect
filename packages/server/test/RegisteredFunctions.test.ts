@@ -1,23 +1,34 @@
 import { recording } from "./internal/recording";
 import { scope } from "../src/internal/observability";
-import { FunctionSpec, GroupSpec, MiddlewareSpec } from "@confect/core";
+import { FunctionSpec, GroupSpec, MiddlewareSpec, Ref } from "@confect/core";
 import {
+  ActionCtx,
+  ActionRunner,
+  Auth,
   FunctionImpl,
   GroupImpl,
   MiddlewareImpl,
+  MutationRunner,
+  QueryRunner,
   RegisteredFunctions,
   RegisteredFunction,
+  Scheduler,
 } from "@confect/server";
-import { describe, expect, expectTypeOf, it } from "@effect/vitest";
+import { assert, describe, expect, expectTypeOf, it } from "@effect/vitest";
 import {
   makeFunctionReference as reference,
   type RegisteredQuery,
 } from "convex/server";
+import { ConvexError } from "convex/values";
 import { convexTest } from "convex-test";
 import { RegisteredNodeFunction } from "@confect/server/node";
+import * as Arr from "effect/Array";
+import * as Cause from "effect/Cause";
 import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
+import * as Exit from "effect/Exit";
 import * as Console from "effect/Console";
+import type * as Tracer from "effect/Tracer";
 import { vi } from "vitest";
 import * as Layer from "effect/Layer";
 import * as Schema from "effect/Schema";
@@ -221,3 +232,202 @@ it.each(["query", "mutation", "action", "node"] as const)(
     expect(console.info).not.toHaveBeenCalled();
   },
 );
+
+describe("a registered action", () => {
+  class Denied extends Schema.TaggedError<
+    Denied,
+    { readonly brand: unique symbol }
+  >()("Denied", { reason: Schema.String }) {}
+  class Outer extends MiddlewareSpec.MiddlewareSpec<Outer>()("Outer", {
+    functionTypes: { query: false, mutation: false, action: true },
+  }) {}
+  class Inner extends MiddlewareSpec.MiddlewareSpec<Inner>()("Inner", {
+    functionTypes: { query: false, mutation: false, action: true },
+  }) {}
+
+  const ping = FunctionSpec.publicQuery({
+    name: "ping",
+    returns: () => Schema.String,
+  });
+  const run = FunctionSpec.publicAction({
+    name: "run",
+    args: () => ({
+      mode: Schema.Literals(["ok", "fail", "die"]),
+      count: Schema.FiniteFromString,
+    }),
+    returns: () => Schema.FiniteFromString,
+    error: () => Denied,
+  }).middleware(Inner);
+  const pings = GroupSpec.make().addFunction(ping);
+  const group = GroupSpec.make().middleware(Outer).addFunction(run);
+
+  const invoke = (args: { mode: string; count: string }) => {
+    const { spans, observability } = recording();
+    const events: Array<unknown> = [];
+    const parents: Array<Tracer.AnySpan> = [];
+    const parent = Effect.orDie(Effect.currentParentSpan).pipe(
+      Effect.map((span) => parents.push(span)),
+    );
+    const marked =
+      (label: string) =>
+      <A, E, R>(
+        effect: Effect.Effect<A, E, R>,
+        { invocation }: { readonly invocation: unknown },
+      ) =>
+        Effect.gen(function* () {
+          events.push([label, invocation]);
+          yield* parent;
+          const result = yield* effect;
+          events.push(`${label}:after`);
+          return result;
+        });
+    const pingLayer = GroupImpl.make(databaseSchema, pings).pipe(
+      Layer.provide(
+        FunctionImpl.make(databaseSchema, pings, "ping", () =>
+          Effect.succeed("pong"),
+        ),
+      ),
+      GroupImpl.finalize,
+    );
+    const layer = GroupImpl.make(databaseSchema, group).pipe(
+      Layer.provide(
+        FunctionImpl.make(databaseSchema, group, "run", ({ mode, count }) =>
+          Effect.gen(function* () {
+            events.push("handler");
+            yield* parent;
+            if (mode === "fail")
+              return yield* Denied.make({ reason: "closed" });
+            if (mode === "die") return yield* Effect.die(new Error("broken"));
+            const services = yield* Effect.all([
+              Effect.serviceOption(ActionCtx.ActionCtx()),
+              Effect.serviceOption(QueryRunner.QueryRunner),
+              Effect.serviceOption(MutationRunner.MutationRunner),
+              Effect.serviceOption(ActionRunner.ActionRunner),
+              Effect.serviceOption(Scheduler.Scheduler),
+              Effect.serviceOption(Auth.Auth),
+            ]);
+            events.push([
+              "services",
+              Arr.every(services, (service) => service._tag === "Some"),
+            ]);
+            const runner = yield* QueryRunner.QueryRunner;
+            const pingRef = Ref.make("pings", ping);
+            events.push([
+              "pinged",
+              yield* Effect.all([
+                runner.runQuery(pingRef),
+                runner.runQuery(pingRef),
+              ]).pipe(Effect.orDie),
+            ]);
+            return count * 2;
+          }),
+        ),
+      ),
+      Layer.provide(
+        MiddlewareImpl.make(databaseSchema, Outer, marked("outer")),
+      ),
+      Layer.provide(
+        MiddlewareImpl.make(databaseSchema, Inner, marked("inner")),
+      ),
+      GroupImpl.finalize,
+      Layer.merge(
+        Layer.succeed(RegisteredFunction.Observability, observability),
+      ),
+    );
+    const t = convexTest(undefined, {
+      ...import.meta.glob("./mock-backend/fixtures/convex/_generated/*.js"),
+      "./mock-backend/fixtures/convex/test.ts": () =>
+        Promise.resolve(
+          RegisteredFunctions.buildForGroup<typeof group>(
+            databaseSchema,
+            layer,
+          ),
+        ),
+      "./mock-backend/fixtures/convex/pings.ts": () =>
+        Promise.resolve(
+          RegisteredFunctions.buildForGroup<typeof pings>(
+            databaseSchema,
+            pingLayer,
+          ),
+        ),
+    });
+    const result = t.action(reference<"action">("test:run"), args);
+    return { result, events, parents, spans };
+  };
+  const invocation = (mode: string) => ({
+    name: "run",
+    functionType: "action",
+    functionVisibility: "public",
+    args: { mode, count: 3 },
+  });
+
+  it(
+    "runs group then function middleware around the handler, with the action's services, under one root span",
+    // oxlint-disable-next-line effecttsgo/async-function -- convex-test exposes Promise boundaries for registered invocations.
+    async () => {
+      const { result, events, parents, spans } = invoke({
+        mode: "ok",
+        count: "3",
+      });
+      expect(await result).toBe("6");
+      expect(events).toEqual([
+        ["outer", invocation("ok")],
+        ["inner", invocation("ok")],
+        "handler",
+        ["services", true],
+        ["pinged", ["pong", "pong"]],
+        "inner:after",
+        "outer:after",
+      ]);
+      const roots = Arr.filter(spans, ({ name }) => name === "test:run");
+      expect(roots).toHaveLength(1);
+      const [root] = roots;
+      expect([root?.attributes.get("kind"), root?.parent._tag]).toEqual([
+        "action",
+        "None",
+      ]);
+      expect(parents).toEqual([root, root, root]);
+    },
+  );
+
+  it(
+    "encodes a declared failure into ConvexError data and ends the span with it",
+    // oxlint-disable-next-line effecttsgo/async-function -- convex-test exposes Promise boundaries for registered invocations.
+    async () => {
+      const { result, events, spans } = invoke({ mode: "fail", count: "3" });
+      const error: unknown = await result.catch((thrown: unknown) => thrown);
+      assert(error instanceof ConvexError);
+      expect(error.data).toEqual({ _tag: "Denied", reason: "closed" });
+      expect(events).toEqual([
+        ["outer", invocation("fail")],
+        ["inner", invocation("fail")],
+        "handler",
+      ]);
+      const status = spans[0]?.status;
+      assert(status?._tag === "Ended" && Exit.isFailure(status.exit));
+      expect(Cause.squash(status.exit.cause)).toBeInstanceOf(Denied);
+    },
+  );
+
+  it(
+    "rejects a defect as a plain error",
+    // oxlint-disable-next-line effecttsgo/async-function -- convex-test exposes Promise boundaries for registered invocations.
+    async () => {
+      const { result } = invoke({ mode: "die", count: "3" });
+      const error: unknown = await result.catch((thrown: unknown) => thrown);
+      assert(error instanceof Error && !(error instanceof ConvexError));
+      expect(error.message).toContain("broken");
+    },
+  );
+
+  it(
+    "dies on args that fail to decode before any middleware runs",
+    // oxlint-disable-next-line effecttsgo/async-function -- convex-test exposes Promise boundaries for registered invocations.
+    async () => {
+      const { result, events } = invoke({ mode: "ok", count: "three" });
+      const error: unknown = await result.catch((thrown: unknown) => thrown);
+      assert(error instanceof Error && !(error instanceof ConvexError));
+      expect(events).toEqual([]);
+    },
+  );
+});

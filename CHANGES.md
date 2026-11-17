@@ -1232,6 +1232,17 @@ at compile time. Join endpoint paths with or without a leading slash.
 Changeset: `http-endpoint-url.md`.
 Upstream: planned; no linked proposal verified.
 
+### One runner for the action path
+
+A registered action runs its decoded args through `runAction`, which applies
+`ActionCall`'s one-dispatch ctx, the middleware chain, the ctx services and the
+dispatch check. The registered handler keeps decoding, encoding and the Convex
+error boundary around it. Behavior is unchanged. A route spec will call the
+same runner from an HTTP endpoint, so an action and a route share one path.
+
+Changeset: none, as `runAction` is internal and nothing a caller sees changes.
+Upstream: fork only, as route specs are a fork addition.
+
 ## Alchemy deployment
 
 ### Declare custom domains and canonical URLs
