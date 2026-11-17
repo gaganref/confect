@@ -9,3 +9,5 @@ Verify manifest-backed `Confect.Backend` deployments twice. After prepare and be
 Run `confect codegen`, commit the generated files and deploy again when a deploy fails with `StaleManifest`. The health check does not roll back code or initialization that already completed.
 
 Core's `HealthModule.render` and `HealthModule.read` share the exact generated text contract. The pre-push reader accepts only that text, allowing LF or CRLF. A missing or edited file fails with `StaleManifest.reason` `NotGenerated`; another generated digest uses `DifferentDigest`. Both keep `expected` and optional `generated`. Do not format or edit `convex/confectHealth.ts`; prepare regenerates it on every deployment.
+
+Report the health file's actual `path` from the functions directory in `convex.json` when it can be resolved. For `NotGenerated`, do not edit or format that file and regenerate it. Keep the CLI that generates it and the Alchemy package that reads it on the same Confect release. Normalize CRLF to LF only; refuse a lone carriage return.
