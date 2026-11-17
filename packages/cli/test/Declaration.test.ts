@@ -81,11 +81,11 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
       format: 1,
       name: "workpool",
       env: {},
-      http: { mounts: {} },
+      http: { mounts: { pool: "/pool" } },
       digest: "sha256:child",
     },
   ],
-  ["PR 170 shape", { ...formatOne, http: { mounts: {} } }],
+  ["PR 170 shape", { ...formatOne, http: { mounts: { pool: "/pool" } } }],
 ];
 
 describe("Declaration", () => {

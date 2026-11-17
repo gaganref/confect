@@ -79,17 +79,17 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
       format: 1,
       name: "workpool",
       env: {},
-      http: { mounts: {} },
+      http: { mounts: { pool: "/pool" } },
       digest: "sha256:child",
     },
   ],
-  ["PR 170 shape", { ...formatOne, http: { mounts: {} } }],
+  ["PR 170 shape", { ...formatOne, http: { mounts: { pool: "/pool" } } }],
 ];
 
 describe("Backend", () => {
   it.effect.each(invalidManifests)(
     "refuses a malformed manifest at Backend entry (%s)",
-    (_, manifest) =>
+    ([_, manifest]) =>
       Effect.gen(function* () {
         const result = yield* Backend("Backend", {
           ...props,
