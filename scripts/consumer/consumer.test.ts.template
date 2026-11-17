@@ -46,7 +46,7 @@ test("installed codegen lists host and component routes with the final manifest 
     path: "/health",
     owner: "app",
     group: "health",
-    key: "health",
+    endpoint: "health",
     digest: manifest.digest,
   });
   expect(manifest.http.counter.health.health).toEqual({
@@ -54,7 +54,7 @@ test("installed codegen lists host and component routes with the final manifest 
     path: "/counter/health",
     owner: "counter",
     group: "health",
-    key: "health",
+    endpoint: "health",
     digest: manifest.digest,
   });
 });
