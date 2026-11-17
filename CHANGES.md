@@ -1223,6 +1223,61 @@ Upstream: planned; no linked proposal verified.
 
 Alchemy tests give loaded Windows runners time to interrupt a lock waiter before its longer lock timeout. The detached grandchild starts outside the scoped project folder so it cannot hold that folder open. No changeset for tests only. Upstream intent is to propose the fixes through the maintainer.
 
+### Send backend logs through Convex
+
+`Convex.LogStream` lets a stack own an Axiom, Sentry, or webhook log stream on a
+Convex deployment. Connector secrets require `Redacted`, and secret changes
+update the existing stream. Kind or deployment changes replace it. Readable
+external edits, remote deletion, and lost ownership stop the plan. An occupied
+replacement destination also stops the plan before any mutation. Validate
+response IDs before they enter errors. The other four Convex kinds do not
+type-check as resource props, while response decoding retains all seven kinds.
+Untyped callers fail before their first stream API call, possibly after other
+resources have been created. Fake API and Alchemy engine tests cover lifecycle
+and secret rendering. Real-account delivery, event envelopes,
+retries, and cloud entitlements remain unproven.
+Keep the published log stream declarations valid for NodeNext consumers with
+full declaration checks.
+
+Use previous props for drift checks and keep only stream identity and the live
+redacted webhook HMAC in attributes. Redacted webhook URLs protect embedded
+credentials across plans and state. Ignore streams still deleting after removal,
+and allow owned deletion despite readable drift. Check disabled kinds before
+unresolved props in diffs and explain that sibling resources can contend for
+one stream per kind. Add secret recovery and delete-race regressions.
+Detect a rotated HMAC as an output refresh update, then return its live redacted
+value without writing to the stream. The following plan is a no-op.
+A newer upstream platform snapshot deprecates these five endpoints in favour of
+`/integrations`, which the installed 0.1.11 does not have, so that move is a follow-up.
+
+Recover interrupted updates by accepting live readable fields equal to either
+the last completed props or the desired props before any write. Keep plan-time
+drift refusal for completed state rows. Incomplete rows plan an update with a
+warning that names fields without values. Normalize URL comparisons and topic
+sets, and record returned create ids before the follow-up read or comparison.
+The fake mirrors Convex URL and topic normalization and omitted optional keys.
+Refuse credentialed plain webhook URLs with a tagged error that requests
+`Redacted`. Explain when a deletion conflict needs another deploy. Engine
+regressions cover interrupted requests, response loss, post-create ownership,
+normalization, and credential refusal. The guide describes the lost-response
+case that requires reapplying an interrupted change before changing or reverting it.
+Check computed webhook URLs as they resolve, before Alchemy can checkpoint a
+plain credentialed value. Preserve the direct, yielded, and Effect-based
+constructors and permit computed redacted URLs.
+
+Rewrite Axiom and Sentry credentials on every reconciled update, including a
+retry that reverts a secret-only write after its response was lost. Force an
+update for unfinished rows of those kinds even when readable fields match.
+Keep the webhook HMAC refresh free of stream writes. Cover ownership instance
+ids, completed updates, and unresolved drift. Reject empty topic selections at
+plan with a tagged error and non-empty public props, and make the fake return
+Convex's `EmptyLogTopics` rejection. Document when changing or reverting an
+interrupted readable update is refused and how to recover a rejected update
+while replacement cleanup is unfinished.
+
+Changeset: `alchemy-log-stream.md`.
+Upstream: planned; no proposal submitted.
+
 ### Set usage limits from a stack
 
 `Convex.UsageLimit` lets a stack own cloud deployment usage limits. Warning

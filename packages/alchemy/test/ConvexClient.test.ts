@@ -1,3 +1,6 @@
+import type * as DeploymentApi from "@convex-dev/platform/deploymentApi";
+import { expectTypeOf } from "@effect/vitest";
+import type * as LogStreamDecoder from "../src/internal/LogStream";
 import * as ConvexClient from "@confect/alchemy/ConvexClient";
 import { describe, expect, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
@@ -932,6 +935,440 @@ describe("ConvexClient", () => {
       });
     },
   );
+});
+
+const webhookStream = {
+  id: "stream/+",
+  logStreamType: "webhook",
+  status: { type: "active" },
+  url: "https://logs.example.test",
+  format: "jsonl",
+  topics: null,
+  hmacSecret: "made-up-webhook-hmac",
+} as const;
+
+describe("log stream client", () => {
+  it.effect("unwraps a credential URL only in webhook HTTP requests", () => {
+    const url =
+      "https://user:made-up-webhook-password@logs.example.test/made-up-webhook-token";
+    const http = mockHttp([
+      Response.json({
+        id: "one",
+        logStreamType: "webhook",
+        hmacSecret: "made-up-webhook-hmac",
+      }),
+      new Response(null, { status: 200 }),
+      new Response(url, { status: 400 }),
+    ]);
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(http.layer)),
+      );
+      return yield* Effect.gen(function* () {
+        const client = yield* ConvexClient.ConvexClient;
+        const input = {
+          logStreamType: "webhook",
+          url: Redacted.make(url),
+          format: "jsonl",
+        } as const;
+        const created = yield* client.createLogStream(
+          deploymentUrl,
+          deployKey,
+          input,
+        );
+        yield* client.updateLogStream(deploymentUrl, deployKey, "one", input);
+        const rejected = yield* client
+          .createLogStream(deploymentUrl, deployKey, input)
+          .pipe(Effect.result);
+        expect(rejected).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "ConvexApiError", status: 400 },
+        });
+        for (const request of http.requests) {
+          const body = yield* requestBody(request);
+          expect(body).toEqual({
+            logStreamType: "webhook",
+            url,
+            format: "jsonl",
+          });
+        }
+        for (const secret of [
+          "made-up-webhook-password",
+          "made-up-webhook-token",
+          "made-up-webhook-hmac",
+        ])
+          yield* expectSecretSafe([created, rejected], secret);
+      }).pipe(Effect.provideContext(services));
+    });
+  });
+
+  it.effect.each([
+    "",
+    Str.repeat(129)("x"),
+    "made-up-response-secret\n",
+    "<private>",
+  ])("rejects an unsafe stream ID without exposing the response", (id) => {
+    const body = { ...webhookStream, id };
+    const http = mockHttp([
+      Response.json(body),
+      Response.json(body),
+      Response.json([body]),
+    ]);
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(http.layer)),
+      );
+      return yield* Effect.gen(function* () {
+        const client = yield* ConvexClient.ConvexClient;
+        const operations: readonly Effect.Effect<
+          unknown,
+          ConvexClient.ConvexClientError
+        >[] = [
+          client.createLogStream(deploymentUrl, deployKey, {
+            logStreamType: "webhook",
+            url: webhookStream.url,
+            format: "jsonl",
+          }),
+          client.getLogStream(deploymentUrl, deployKey, "stream-1"),
+          client.listLogStreams(deploymentUrl, deployKey),
+        ];
+        for (const operation of operations) {
+          const result = yield* operation.pipe(Effect.result);
+          expect(result).toMatchObject({
+            _tag: "Failure",
+            failure: { _tag: "ConvexApiError", code: "InvalidResponse" },
+          });
+          yield* expectSecretSafe(result, "made-up-response-secret");
+          yield* expectSecretSafe(result, webhookStream.hmacSecret);
+        }
+      }).pipe(Effect.provideContext(services));
+    });
+  });
+
+  it.effect(
+    "uses deployment log stream contracts and redacts returned secrets",
+    () => {
+      const http = mockHttp([
+        Response.json({
+          logStreamType: "webhook",
+          id: "stream/+",
+          hmacSecret: webhookStream.hmacSecret,
+        }),
+        Response.json(webhookStream),
+        Response.json([webhookStream]),
+        new Response(null, { status: 200 }),
+        new Response(null, { status: 200 }),
+      ]);
+      return Effect.gen(function* () {
+        const services = yield* Layer.build(
+          clientLayer.pipe(Layer.provide(http.layer)),
+        );
+        return yield* Effect.gen(function* () {
+          const client = yield* ConvexClient.ConvexClient;
+          const created = yield* client.createLogStream(
+            deploymentUrl,
+            deployKey,
+            {
+              logStreamType: "webhook",
+              url: webhookStream.url,
+              format: "jsonl",
+            },
+          );
+          expect(Redacted.value(created)).toEqual({
+            logStreamType: "webhook",
+            id: "stream/+",
+            hmacSecret: webhookStream.hmacSecret,
+          });
+          const found = yield* client.getLogStream(
+            deploymentUrl,
+            deployKey,
+            "stream/+",
+          );
+          expect(Redacted.value(found)).toEqual(webhookStream);
+          const listed = yield* client.listLogStreams(deploymentUrl, deployKey);
+          expect(Arr.map(listed, Redacted.value)).toEqual([webhookStream]);
+          yield* client.updateLogStream(deploymentUrl, deployKey, "stream/+", {
+            logStreamType: "webhook",
+            url: "https://new.example.test",
+            topics: null,
+          });
+          yield* client.deleteLogStream(deploymentUrl, deployKey, "stream/+");
+          expect(
+            Arr.map(http.requests, ({ method, url }) => [method, url]),
+          ).toEqual([
+            ["POST", `${deploymentUrl}/api/v1/create_log_stream`],
+            ["GET", `${deploymentUrl}/api/v1/get_log_stream/stream%2F%2B`],
+            ["GET", `${deploymentUrl}/api/v1/list_log_streams`],
+            ["POST", `${deploymentUrl}/api/v1/update_log_stream/stream%2F%2B`],
+            ["POST", `${deploymentUrl}/api/v1/delete_log_stream/stream%2F%2B`],
+          ]);
+          const createBody = yield* requestBody(http.requests[0]);
+          expect(createBody).toEqual({
+            logStreamType: "webhook",
+            url: webhookStream.url,
+            format: "jsonl",
+          });
+          const updateBody = yield* requestBody(http.requests[3]);
+          expect(updateBody).toEqual({
+            logStreamType: "webhook",
+            url: "https://new.example.test",
+            topics: null,
+          });
+          for (const request of http.requests)
+            expect(request.headers.authorization).toBe(
+              `Convex ${Redacted.value(deployKey)}`,
+            );
+          for (const result of [created, found, listed])
+            yield* expectSecretSafe(result, webhookStream.hmacSecret);
+        }).pipe(Effect.provideContext(services));
+      });
+    },
+  );
+
+  it.effect.each([
+    {
+      logStreamType: "axiom",
+      apiKey: Redacted.make("made-up-axiom-key"),
+      datasetName: "backend",
+      attributes: [{ key: "app", value: "notes" }],
+    },
+    {
+      logStreamType: "sentry",
+      dsn: Redacted.make("made-up-sentry-dsn"),
+      tags: { app: "notes" },
+    },
+  ] as const)(
+    "unwraps $logStreamType credentials only in requests",
+    (input) => {
+      const http = mockHttp([
+        Response.json({ id: "one", logStreamType: input.logStreamType }),
+        new Response(null, { status: 200 }),
+      ]);
+      return Effect.gen(function* () {
+        const services = yield* Layer.build(
+          clientLayer.pipe(Layer.provide(http.layer)),
+        );
+        return yield* Effect.gen(function* () {
+          const client = yield* ConvexClient.ConvexClient;
+          yield* client.createLogStream(deploymentUrl, deployKey, input);
+          yield* client.updateLogStream(deploymentUrl, deployKey, "one", input);
+          const expected =
+            input.logStreamType === "axiom"
+              ? {
+                  logStreamType: "axiom",
+                  apiKey: "made-up-axiom-key",
+                  datasetName: "backend",
+                  attributes: [{ key: "app", value: "notes" }],
+                }
+              : {
+                  logStreamType: "sentry",
+                  dsn: "made-up-sentry-dsn",
+                  tags: { app: "notes" },
+                };
+          for (const request of http.requests) {
+            const body = yield* requestBody(request);
+            expect(body).toEqual(expected);
+          }
+          expect(
+            Redacted.isRedacted(
+              input.logStreamType === "axiom" ? input.apiKey : input.dsn,
+            ),
+          ).toBe(true);
+        }).pipe(Effect.provideContext(services));
+      });
+    },
+  );
+
+  it.effect.each([401, 403, 404, 409, 500])(
+    "keeps HTTP %s distinct and discards secret response bodies",
+    (status) => {
+      const http = mockHttp([
+        new Response("made-up-api-error-secret", { status }),
+      ]);
+      return Effect.gen(function* () {
+        const services = yield* Layer.build(
+          clientLayer.pipe(Layer.provide(http.layer)),
+        );
+        return yield* Effect.gen(function* () {
+          const client = yield* ConvexClient.ConvexClient;
+          const error = yield* client
+            .getLogStream(deploymentUrl, deployKey, "one")
+            .pipe(Effect.flip);
+          expect(error).toMatchObject({
+            _tag:
+              status === 404
+                ? "ConvexNotFound"
+                : status === 409
+                  ? "ConvexConflict"
+                  : "ConvexApiError",
+            status,
+          });
+          yield* expectSecretSafe(error, "made-up-api-error-secret");
+          yield* expectSecretSafe(error, Redacted.value(deployKey));
+        }).pipe(Effect.provideContext(services));
+      });
+    },
+  );
+
+  it.effect.each([
+    { ...webhookStream, hmacSecret: undefined },
+    { ...webhookStream, status: { type: "unknown" } },
+    { ...webhookStream, status: { type: "failed" } },
+    { ...webhookStream, logStreamType: "unknown" },
+    { ...webhookStream, format: "xml" },
+    { ...webhookStream, topics: ["unknown"] },
+  ])("rejects malformed log stream responses without payloads", (body) => {
+    const http = mockHttp([Response.json(body)]);
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(http.layer)),
+      );
+      return yield* Effect.gen(function* () {
+        const client = yield* ConvexClient.ConvexClient;
+        const error = yield* client
+          .getLogStream(deploymentUrl, deployKey, "one")
+          .pipe(Effect.flip);
+        expect(error).toMatchObject({
+          _tag: "ConvexApiError",
+          code: "InvalidResponse",
+        });
+        yield* expectSecretSafe(error, webhookStream.hmacSecret);
+      }).pipe(Effect.provideContext(services));
+    });
+  });
+});
+
+const streamResponses = [
+  {
+    id: "datadog",
+    logStreamType: "datadog",
+    siteLocation: "US1",
+    ddTags: ["app:notes"],
+    service: null,
+    topics: ["console"],
+    status: { type: "pending" },
+  },
+  { ...webhookStream, status: { type: "restarting" } },
+  {
+    id: "axiom",
+    logStreamType: "axiom",
+    datasetName: "backend",
+    attributes: [{ key: "app", value: "notes" }],
+    ingestUrl: null,
+    topics: null,
+    status: { type: "active" },
+  },
+  {
+    id: "sentry",
+    logStreamType: "sentry",
+    tags: { app: "notes" },
+    status: { type: "failed", reason: "made-up-private-failure" },
+  },
+  {
+    id: "posthog-logs",
+    logStreamType: "postHogLogs",
+    host: null,
+    serviceName: "notes",
+    topics: null,
+    status: { type: "deleting" },
+  },
+  {
+    id: "posthog-errors",
+    logStreamType: "postHogErrorTracking",
+    host: null,
+    status: { type: "active" },
+  },
+  {
+    id: "s3",
+    logStreamType: "s3Export",
+    bucket: "example",
+    region: "us-east-1",
+    prefix: null,
+    accessKeyId: "made-up-access-key-id",
+    period: "hourly",
+    selection: {
+      _other: "excluded",
+      "": {
+        _other: "excluded",
+        notes: { _other: "included", private: "excluded" },
+      },
+    },
+    status: { type: "active" },
+  },
+];
+it.effect.each(streamResponses)(
+  "decodes and redacts the $logStreamType response",
+  (body) => {
+    const http = mockHttp([Response.json(body), Response.json([body])]);
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(http.layer)),
+      );
+      return yield* Effect.gen(function* () {
+        const client = yield* ConvexClient.ConvexClient;
+        const stream = yield* client.getLogStream(
+          deploymentUrl,
+          deployKey,
+          body.id,
+        );
+        const streams = yield* client.listLogStreams(deploymentUrl, deployKey);
+        expect(Redacted.value(stream)).toEqual(body);
+        expect(Arr.map(streams, Redacted.value)).toEqual([body]);
+        for (const secret of [
+          webhookStream.hmacSecret,
+          "made-up-private-failure",
+          "made-up-access-key-id",
+        ])
+          yield* expectSecretSafe([stream, streams], secret);
+      }).pipe(Effect.provideContext(services));
+    });
+  },
+);
+
+type Variant<A, K> = A extends { readonly logStreamType: infer Kind }
+  ? K extends Kind
+    ? A
+    : never
+  : never;
+type Fields<A extends { readonly logStreamType: string }> = {
+  [K in A["logStreamType"]]: keyof Variant<A, K>;
+};
+it("requires an explicit review when platform log stream fields change", () => {
+  expectTypeOf<Fields<DeploymentApi.CreateLogStreamArgs>>().toEqualTypeOf<{
+    datadog:
+      | "logStreamType"
+      | "siteLocation"
+      | "ddApiKey"
+      | "ddTags"
+      | "service"
+      | "topics";
+    webhook: "logStreamType" | "url" | "format" | "topics";
+    axiom:
+      | "logStreamType"
+      | "apiKey"
+      | "datasetName"
+      | "attributes"
+      | "ingestUrl"
+      | "topics";
+    sentry: "logStreamType" | "dsn" | "tags";
+    postHogLogs: "logStreamType" | "apiKey" | "host" | "serviceName" | "topics";
+    postHogErrorTracking: "logStreamType" | "apiKey" | "host";
+    s3Export:
+      | "logStreamType"
+      | "bucket"
+      | "region"
+      | "prefix"
+      | "accessKeyId"
+      | "secretAccessKey"
+      | "selection"
+      | "period";
+  }>();
+  expectTypeOf<Fields<typeof LogStreamDecoder.Config.Type>>().toEqualTypeOf<
+    Fields<DeploymentApi.LogStreamConfig>
+  >();
+  expectTypeOf<Fields<typeof LogStreamDecoder.Created.Type>>().toEqualTypeOf<
+    Fields<DeploymentApi.CreateLogStreamResponse>
+  >();
 });
 
 it.effect(

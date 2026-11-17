@@ -13,6 +13,7 @@ import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientRequest from "effect/http/HttpClientRequest";
 import type * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Loopback from "./internal/Loopback.js";
+import * as LogStream from "./internal/LogStream.js";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
@@ -65,6 +66,20 @@ export type EnvironmentVariables = Readonly<
     >
   >
 >;
+
+export type CreateLogStreamInput = LogStream.RedactInput<
+  LogStream.ReadonlyDeep<DeploymentApi.CreateLogStreamArgs>
+>;
+export type UpdateLogStreamInput = LogStream.RedactInput<
+  LogStream.ReadonlyDeep<DeploymentApi.UpdateLogStreamArgs>
+>;
+export type LogStreamConfig = Redacted.Redacted<typeof LogStream.Config.Type>;
+export type CreatedLogStream = Redacted.Redacted<typeof LogStream.Created.Type>;
+
+const logStreamBody = (input: Readonly<Record<string, unknown>>) =>
+  Rec.map(input, (value) =>
+    Redacted.isRedacted(value) ? Redacted.value(value) : value,
+  );
 
 export type UsageLimit = DeploymentApi.UsageLimitConfigResponse;
 export type UsageLimitInput = DeploymentApi.UsageLimitConfigRequest;
@@ -721,6 +736,83 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
           } satisfies ManagementApi.PlatformDeleteDeployKeyArgs,
         ),
     ),
+    createLogStream: Effect.fn("ConvexClient.createLogStream")(function* (
+      url: string,
+      key: Redacted.Redacted<string>,
+      input: CreateLogStreamInput,
+    ) {
+      const operation = "createLogStream";
+      const response = yield* send(
+        operation,
+        "POST",
+        `${yield* deploymentUrl(operation, url)}/create_log_stream`,
+        Redacted.make(`Convex ${Redacted.value(key)}`),
+        logStreamBody(input),
+      );
+      const created = yield* decode(operation, response, LogStream.Created);
+      return Redacted.make(created);
+    }),
+    getLogStream: Effect.fn("ConvexClient.getLogStream")(function* (
+      url: string,
+      key: Redacted.Redacted<string>,
+      id: string,
+    ): Effect.fn.Return<LogStreamConfig, ConvexClientError> {
+      const operation = "getLogStream";
+      const response = yield* send(
+        operation,
+        "GET",
+        `${yield* deploymentUrl(operation, url)}/get_log_stream/${encodeURIComponent(id)}`,
+        Redacted.make(`Convex ${Redacted.value(key)}`),
+      );
+      const config = yield* decode(operation, response, LogStream.Config);
+      return Redacted.make(config);
+    }),
+    listLogStreams: Effect.fn("ConvexClient.listLogStreams")(function* (
+      url: string,
+      key: Redacted.Redacted<string>,
+    ): Effect.fn.Return<LogStreamConfig[], ConvexClientError> {
+      const operation = "listLogStreams";
+      const response = yield* send(
+        operation,
+        "GET",
+        `${yield* deploymentUrl(operation, url)}/list_log_streams`,
+        Redacted.make(`Convex ${Redacted.value(key)}`),
+      );
+      const streams = yield* decode(
+        operation,
+        response,
+        Schema.Array(LogStream.Config),
+      );
+      return Array.map(streams, (stream) => Redacted.make(stream));
+    }),
+    updateLogStream: Effect.fn("ConvexClient.updateLogStream")(function* (
+      url: string,
+      key: Redacted.Redacted<string>,
+      id: string,
+      input: UpdateLogStreamInput,
+    ) {
+      const operation = "updateLogStream";
+      yield* send(
+        operation,
+        "POST",
+        `${yield* deploymentUrl(operation, url)}/update_log_stream/${encodeURIComponent(id)}`,
+        Redacted.make(`Convex ${Redacted.value(key)}`),
+        logStreamBody(input),
+      );
+    }),
+    deleteLogStream: Effect.fn("ConvexClient.deleteLogStream")(function* (
+      url: string,
+      key: Redacted.Redacted<string>,
+      id: string,
+    ) {
+      const operation = "deleteLogStream";
+      yield* send(
+        operation,
+        "POST",
+        `${yield* deploymentUrl(operation, url)}/delete_log_stream/${encodeURIComponent(id)}`,
+        Redacted.make(`Convex ${Redacted.value(key)}`),
+      );
+    }),
     listEnvironmentVariables: Effect.fn(
       "ConvexClient.listEnvironmentVariables",
     )(function* (
