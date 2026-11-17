@@ -1,3 +1,5 @@
+import * as Option from "effect/Option";
+import * as Str from "effect/String";
 import * as Config from "effect/Config";
 import * as HealthModule from "@confect/core/HealthModule";
 import * as Cause from "effect/Cause";
@@ -1061,12 +1063,17 @@ describe("Backend choices from outputs", () => {
         SES_KEY: key,
       },
     });
-  const apply = (inputs: Inputs) =>
+  interface ApplyOptions {
+    readonly preset?: Record<string, Redacted.Redacted<string>>;
+    readonly repeat?: boolean;
+    readonly probe?: boolean;
+  }
+  const apply = (inputs: Inputs, options: ApplyOptions = {}) =>
     Effect.gen(function* () {
       const node = yield* Layer.build(NodeServices.layer);
-      return yield* push(inputs).pipe(Effect.provideContext(node));
+      return yield* push(inputs, options).pipe(Effect.provideContext(node));
     }).pipe(Effect.scoped);
-  const push = (inputs: Inputs) =>
+  const push = (inputs: Inputs, options: ApplyOptions) =>
     Effect.gen(function* () {
       const fs = yield* FileSystem.FileSystem;
       const path = yield* Path.Path;
@@ -1075,6 +1082,7 @@ describe("Backend choices from outputs", () => {
       });
       const pushes: string[] = [];
       const fixture = mockClient();
+      Object.assign(fixture.state.variables, options.preset);
       const client = Layer.succeed(ConvexClient, {
         ...fixture.client,
         runFunction: () => Effect.succeed(formatOne.digest),
@@ -1117,24 +1125,166 @@ describe("Backend choices from outputs", () => {
           ),
         ),
       );
-      const result = yield* engine
-        .run(
-          Effect.gen(function* () {
-            const upstream = yield* UsageLimit.UsageLimit("Limit", limit);
-            // Outputs from untyped code reach the boundary unchecked.
-            const backend = yield* Backend("Backend", {
-              ...props,
-              cwd,
-              ...(inputs(upstream.id) as {
-                readonly manifest: typeof formatOne;
-              }),
-            });
-            return backend.url;
+      const program = Effect.gen(function* () {
+        const upstream = yield* UsageLimit.UsageLimit("Limit", limit);
+        // Outputs from untyped code reach the boundary unchecked.
+        const backend = yield* Backend("Backend", {
+          ...props,
+          cwd,
+          ...(inputs(upstream.id) as {
+            readonly manifest: typeof formatOne;
           }),
-        )
-        .pipe(Effect.exit);
-      return { result, fixture, pushes };
+        });
+        if (options.probe === true) {
+          const plain = backend.environment?.Props.variables["PLAIN"];
+          yield* UsageLimit.UsageLimit("Probe", {
+            ...limit,
+            window: "day",
+            limit: Output.map(Output.asOutput(plain), () => 2),
+          });
+        }
+        return backend.url;
+      });
+      const result = yield* engine.run(program).pipe(Effect.exit);
+      const callsAfterFirst = fixture.state.environmentUpdates.length;
+      const repeated =
+        options.repeat === true && Exit.isSuccess(result)
+          ? yield* engine.run(program).pipe(Effect.exit)
+          : undefined;
+      return {
+        result,
+        repeated,
+        callsAfterFirst,
+        fixture,
+        pushes,
+        plans: engine.plans,
+      };
     }).pipe(Effect.scoped);
+
+  const scopedManifest = {
+    ...manifest,
+    env: {
+      ...manifest.env,
+      PLAIN: { kind: "string", optional: false },
+      OPT: { kind: "string", optional: true },
+    },
+  } as const;
+
+  it.effect.each([
+    [false, false],
+    [false, true],
+    [true, false],
+    [true, true],
+  ] as const)(
+    "writes only supplied slots, deferred=%s, preset=%s",
+    ([deferred, preset]) =>
+      Effect.gen(function* () {
+        const { result, repeated, callsAfterFirst, fixture } = yield* apply(
+          (upstream) => ({
+            manifest: scopedManifest,
+            env: {
+              EMAIL_PROVIDER: deferred
+                ? Output.map(upstream, () => "ses")
+                : "ses",
+              SES_KEY: key,
+              PLAIN: "plain",
+              OPT: undefined,
+            },
+          }),
+          {
+            repeat: true,
+            ...(preset
+              ? {
+                  preset: {
+                    OPT: Redacted.make("manual"),
+                    RESEND_KEY: Redacted.make("manual-resend"),
+                  },
+                }
+              : {}),
+          },
+        );
+        expect(result).toEqual(Exit.succeed(props.deployment.url));
+        expect(repeated).toEqual(Exit.succeed(props.deployment.url));
+        expect(callsAfterFirst).toBe(1);
+        expect(fixture.state.environmentUpdates).toEqual([
+          [
+            { name: "EMAIL_PROVIDER", value: Redacted.make("ses") },
+            { name: "SES_KEY", value: key },
+            { name: "PLAIN", value: Redacted.make("plain") },
+          ],
+        ]);
+      }),
+  );
+
+  it.effect.each([1, 3, 6])(
+    "bounds one Effect's evaluations independently of %s slots",
+    (count) =>
+      Effect.gen(function* () {
+        let evaluations = 0;
+        const env = Record.fromEntries(
+          globalThis.Array.from({ length: count }, (_, i) => [
+            `SLOT_${i}`,
+            { kind: "string", optional: false } as const,
+          ]),
+        );
+        const values = Record.fromEntries(
+          globalThis.Array.from({ length: count }, (_, i) => [
+            `SLOT_${i}`,
+            i === 0
+              ? Effect.sync(() => {
+                  evaluations++;
+                  return "counted";
+                })
+              : "plain",
+          ]),
+        );
+        const { result, fixture } = yield* apply(() => ({
+          manifest: { ...formatOne, env },
+          env: values,
+        }));
+        expect(result).toEqual(Exit.succeed(props.deployment.url));
+        expect(fixture.state.environmentUpdates).toEqual([
+          Array.map(Record.toEntries(values), ([name], i) => ({
+            name,
+            value: Redacted.make(i === 0 ? "counted" : "plain"),
+          })),
+        ]);
+        expect(evaluations).toBe(2);
+      }),
+  );
+
+  it.effect(
+    "keeps an unrelated slot out of the deferred slot's plan dependency edges",
+    () =>
+      Effect.gen(function* () {
+        const { result, plans } = yield* apply(
+          (upstream) => ({
+            manifest: scopedManifest,
+            env: {
+              EMAIL_PROVIDER: Output.map(upstream, () => "ses"),
+              SES_KEY: key,
+              PLAIN: "plain",
+            },
+          }),
+          { probe: true },
+        );
+        expect(result).toEqual(Exit.succeed(props.deployment.url));
+        const plan = plans[0]!;
+        const source = Option.getOrThrow(
+          Array.findFirst(plan, (node) => Str.endsWith("Limit")(node.fqn)),
+        );
+        const probe = Option.getOrThrow(
+          Array.findFirst(plan, (node) => Str.endsWith("Probe")(node.fqn)),
+        );
+        const environment = Option.getOrThrow(
+          Array.findFirst(plan, (node) =>
+            Str.endsWith("Environment")(node.fqn),
+          ),
+        );
+        expect(source.downstream).toContain(environment.fqn);
+        expect(source.downstream).not.toContain(probe.fqn);
+      }),
+  );
 
   for (const scope of ["provider", "env", "mounts", "automatic"] as const) {
     it.effect.each([
