@@ -167,6 +167,15 @@ describe("Code", () => {
         const { cwd, prepare } = yield* generating(generated, contents).pipe(
           Effect.provideContext(node),
         );
+        const fs = yield* FileSystem.FileSystem.pipe(
+          Effect.provideContext(node),
+        );
+        const path = yield* Path.Path.pipe(Effect.provideContext(node));
+        yield* fs.makeDirectory(path.join(cwd, "convex"), { recursive: true });
+        yield* fs.writeFileString(
+          path.join(cwd, "convex", "confectDeploy.ts"),
+          "",
+        );
         const calls: string[] = [];
         const services = yield* Layer.build(
           Layer.mergeAll(
@@ -185,9 +194,19 @@ describe("Code", () => {
                 ),
             }),
             Layer.mock(ConvexClient, {
-              runFunction: (_url, _key, path) =>
-                Effect.sync(() => void calls.push(path)).pipe(
-                  Effect.as("sha256:built"),
+              runFunction: (_url, _key, functionPath) =>
+                Effect.sync(() => void calls.push(functionPath)).pipe(
+                  Effect.as(
+                    functionPath === "confectDeploy:steps"
+                      ? [
+                          {
+                            componentPath: "relay",
+                            nested: false,
+                            init: { functionName: "install:init", args: {} },
+                          },
+                        ]
+                      : "sha256:built",
+                  ),
                 ),
             }),
             NodeServices.layer,
