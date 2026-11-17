@@ -84,32 +84,52 @@ export interface ArgumentValidationFailure extends Error {
   readonly _tag: "ArgumentValidationFailure";
 }
 
-// Identity is membership, not shape or prototype, so neither a copy nor the
-// constructor of a marker product code caught makes a marker.
-const argumentValidationFailures = new WeakSet<object>();
+/**
+ * The markers a route request's nested calls raised. Each request makes its own
+ * and drops it when it ends. Identity is membership, not shape or prototype, so
+ * neither a copy, nor the constructor of a marker product code caught, nor a
+ * marker kept from another request makes a marker.
+ */
+type Refused = WeakSet<object>;
+
+const CurrentRefused = Context.Reference<Refused | undefined>(
+  "@confect/server/Routes/CurrentRefused",
+  { defaultValue: () => undefined },
+);
 
 const argumentValidationFailure = (
+  refused: Refused,
   message: string,
 ): ArgumentValidationFailure => {
   const failure = Object.assign(new Error(message), {
     _tag: "ArgumentValidationFailure" as const,
     name: "ArgumentValidationFailure",
   });
-  argumentValidationFailures.add(failure);
+  refused.add(failure);
   return failure;
 };
 
+const refusedBy = (
+  refused: Refused | undefined,
+  defect: unknown,
+): defect is ArgumentValidationFailure =>
+  refused !== undefined && Predicate.isObject(defect) && refused.has(defect);
+
 /**
- * Whether a defect is a route's nested call refused for its arguments. Only the
- * nested-call boundary makes one, so a product error never matches, whatever
- * its message or shape.
+ * Whether a defect is a nested call of the current route request that Convex
+ * refused for its arguments. Only that request's nested-call boundary makes
+ * one, so a product error never matches, whatever its message or shape, and
+ * neither does a marker another request raised. Outside a route request it is
+ * `false`.
  *
  * @stability unstable
  */
 export const isArgumentValidationFailure = (
   defect: unknown,
-): defect is ArgumentValidationFailure =>
-  Predicate.isObject(defect) && argumentValidationFailures.has(defect);
+): Effect.Effect<boolean> =>
+  Effect.map(Effect.service(CurrentRefused), (refused) =>
+    refusedBy(refused, defect),
+  );
 
 /* oxlint-disable effecttsgo/any-unknown-in-error-context -- A route's errors are erased across the api built at runtime; each endpoint's error schemas type them again at the wire. */
 
@@ -272,36 +292,43 @@ const serveRoute = (
     createLayer: (ctx) =>
       RegisteredFunction.actionLayer(databaseSchema, ctx as never),
   });
-  const handle = (request: RouteRequest) =>
-    Effect.flatMap(ActionCtx.ActionCtx<GenericDataModel>(), (ctx) =>
-      run(refusingNestedCalls(ctx), {
-        ...request.query,
-        ...request.payload,
-        ...request.params,
-      }),
-    ).pipe(
-      Effect.catchCause((cause) => {
-        const defect = Option.getOrUndefined(
-          Array.findFirst(cause.reasons, Cause.isDieReason),
-        )?.defect;
-        if (isArgumentValidationFailure(defect)) {
-          return Effect.die(
-            new HttpApiError.HttpApiSchemaError({
-              kind: HttpMethod.hasBody(method) ? "Payload" : "Query",
-              cause: new Schema.SchemaError(
-                new SchemaIssue.InvalidValue({ message: defect.message }),
-              ),
-            }),
-          );
-        }
-        const failure = Option.getOrUndefined(
-          Array.findFirst(cause.reasons, Cause.isFailReason),
-        );
-        return failure !== undefined && !declared(failure.error)
-          ? Effect.die(failure.error)
-          : Effect.failCause(cause);
-      }),
+  // A nested call's refusal of this request answers 400, and an undeclared
+  // failure dies, so it answers 500.
+  const translate = (refused: Refused, cause: Cause.Cause<unknown>) => {
+    const defect = Option.getOrUndefined(
+      Array.findFirst(cause.reasons, Cause.isDieReason),
+    )?.defect;
+    if (refusedBy(refused, defect)) {
+      return Effect.die(
+        new HttpApiError.HttpApiSchemaError({
+          kind: HttpMethod.hasBody(method) ? "Payload" : "Query",
+          cause: new Schema.SchemaError(
+            new SchemaIssue.InvalidValue({ message: defect.message }),
+          ),
+        }),
+      );
+    }
+    const failure = Option.getOrUndefined(
+      Array.findFirst(cause.reasons, Cause.isFailReason),
     );
+    return failure !== undefined && !declared(failure.error)
+      ? Effect.die(failure.error)
+      : Effect.failCause(cause);
+  };
+  const handle = (request: RouteRequest) =>
+    Effect.suspend(() => {
+      const refused: Refused = new WeakSet();
+      return Effect.flatMap(ActionCtx.ActionCtx<GenericDataModel>(), (ctx) =>
+        run(refusingNestedCalls(ctx, refused), {
+          ...request.query,
+          ...request.payload,
+          ...request.params,
+        }),
+      ).pipe(
+        Effect.provideService(CurrentRefused, refused),
+        Effect.catchCause((cause) => translate(refused, cause)),
+      );
+    });
   return { name: spec.name, endpoint, handle };
 };
 
@@ -309,11 +336,13 @@ const serveRoute = (
 
 /**
  * The route's ctx, whose nested calls reject Convex's argument refusal as an
- * `ArgumentValidationFailure`. Convex reports it only by its message, so it is
- * read here, where the error can only have come from Convex.
+ * `ArgumentValidationFailure` of the request's own. Convex reports it only by
+ * its message, so it is read here, where the error can only have come from
+ * Convex.
  */
 const refusingNestedCalls = (
   ctx: GenericActionCtx<GenericDataModel>,
+  refused: Refused,
 ): GenericActionCtx<GenericDataModel> => {
   const refusing =
     <Args extends ReadonlyArray<unknown>, A>(
@@ -322,7 +351,7 @@ const refusingNestedCalls = (
     (...args: Args): Promise<A> =>
       call(...args).catch((error: unknown) => {
         throw ArgumentRefusal.isRefusal(error)
-          ? argumentValidationFailure(error.message)
+          ? argumentValidationFailure(refused, error.message)
           : error;
       });
   return {

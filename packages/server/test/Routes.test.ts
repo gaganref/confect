@@ -455,6 +455,67 @@ describe("the argument validation marker", () => {
       expect(answer.status).toBe(status);
     }),
   );
+
+  // One request keeps the real marker its refused nested call raised; a later
+  // request, which makes no nested call, dies with it.
+  let kept: unknown;
+  let keptMatched = false;
+  const keeping = GroupSpec.make()
+    .addFunction(
+      FunctionSpec.httpAction({
+        name: "keep",
+        method: "GET",
+        path: "/keep",
+        returns: () => Schema.Null,
+      }),
+    )
+    .addFunction(
+      FunctionSpec.httpAction({
+        name: "replay",
+        method: "GET",
+        path: "/replay",
+        returns: () => Schema.Null,
+      }),
+    );
+  const keepingImpl = GroupImpl.make(schema, keeping).pipe(
+    Layer.provide(
+      FunctionImpl.make(schema, keeping, "keep", () =>
+        Effect.gen(function* () {
+          const { runMutation } = yield* MutationRunner.MutationRunner;
+          const refused = yield* Effect.exit(
+            runMutation(refs.public.groups.notes.delete_, {
+              noteId: "not an id" as never,
+            }),
+          );
+          kept = Exit.isFailure(refused)
+            ? Cause.squash(refused.cause)
+            : undefined;
+          keptMatched = yield* Routes.isArgumentValidationFailure(kept);
+          return null;
+        }),
+      ),
+    ),
+    Layer.provide(
+      FunctionImpl.make(schema, keeping, "replay", () => Effect.die(kept)),
+    ),
+    GroupImpl.finalize,
+  );
+  const keptRoutes = Routes.make(schema, { keeping: [keeping, keepingImpl] });
+  const sendKept = serve(
+    ConfectHttpRouter.make(schema, keptRoutes.routes, { api: keptRoutes.api }),
+  );
+
+  it.effect(
+    "a real marker kept from an earlier request answers 500 in a later one",
+    () =>
+      Effect.gen(function* () {
+        expect((yield* sendKept("/keep")).status).toBe(200);
+        expect(keptMatched).toBe(true);
+        const matchedLater = yield* Routes.isArgumentValidationFailure(kept);
+        expect(matchedLater).toBe(false);
+        expect((yield* sendKept("/replay")).status).toBe(500);
+      }),
+  );
 });
 
 describe("Routes.isArgumentValidationFailure", () => {
@@ -463,7 +524,9 @@ describe("Routes.isArgumentValidationFailure", () => {
     [new Error("Validator error: Missing required field `noteId`")],
     [undefined],
   ])("does not match %s by its message", (defect) => {
-    expect(Routes.isArgumentValidationFailure(defect)).toBe(false);
+    expect(Effect.runSync(Routes.isArgumentValidationFailure(defect))).toBe(
+      false,
+    );
   });
 });
 
