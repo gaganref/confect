@@ -224,16 +224,16 @@ export class DuplicateEnvValue extends Schema.TaggedError<
   }
 }
 
-type HasDuplicate<L extends ReadonlyArray<string>> = L extends readonly [
-  infer Head extends string,
-  ...infer Tail extends ReadonlyArray<string>,
-]
-  ? string extends Head
-    ? false
-    : Head extends Tail[number]
+type HasDuplicate<L extends ReadonlyArray<string>> = string extends L[number]
+  ? false
+  : L extends readonly [
+        infer Head extends string,
+        ...infer Tail extends ReadonlyArray<string>,
+      ]
+    ? Head extends Tail[number]
       ? true
       : HasDuplicate<Tail>
-  : false;
+    : false;
 
 /**
  * A variable that must be one of the distinct given strings.
