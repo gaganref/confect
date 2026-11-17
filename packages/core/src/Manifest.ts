@@ -53,7 +53,7 @@ export const Route = Schema.Struct({
   path: Schema.String,
   owner: Schema.String,
   group: Schema.String,
-  key: Schema.String,
+  endpoint: Schema.String,
   digest: Schema.String,
 });
 export type Route = typeof Route.Type;

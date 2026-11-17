@@ -136,8 +136,12 @@ export const deploy = Effect.fn("Code.deploy")(function* (
         props.deployKey,
         path.resolve(props.cwd ?? "."),
       );
-      if (props.digest !== undefined)
-        yield* checkHealth(props.deployment.url, props.deployKey, props.digest);
+      if (props.manifestDigest !== undefined)
+        yield* checkHealth(
+          props.deployment.url,
+          props.deployKey,
+          props.manifestDigest,
+        );
     }),
   );
   return { name: props.deployment.name, url: props.deployment.url };

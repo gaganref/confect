@@ -641,7 +641,7 @@ packaged descriptors are fork concepts.
 
 The format 1 manifest's `http` lists `HttpApi` endpoints by owner, group, and
 endpoint, including prefixed routes of nested packaged components. Each leaf
-carries its method, full path, owner, group, key, and final manifest digest.
+carries its method, full path, owner, group, endpoint, and final manifest digest.
 Route edits change that digest. No-prefix mounts and documentation pages do
 not contribute endpoint leaves. Generated source preserves special record keys
 without writing through inherited objects. Changeset:
@@ -1256,7 +1256,7 @@ query `confectHealth:digest` in `convex/confectHealth.ts`. A manifest-backed
 `Backend` passes the expected digest to `Code`, which calls the query after all
 mount initialization and before releasing the push lock. Missing, failed,
 non-string, or stale answers fail with `HealthCheckFailed`. Plain `Code` can
-opt in with `digest`; deployments without an expected digest keep their prior
+opt in with `manifestDigest`; deployments without an expected digest keep their prior
 behavior. The check compares manifests and does not roll back an already
 pushed deployment. Changeset: `deploy-manifest-health.md`.
 Upstream: not planned; the manifest handshake is a fork concept.

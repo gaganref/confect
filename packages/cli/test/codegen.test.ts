@@ -2038,7 +2038,7 @@ export default {
           "path": "/status",
           "owner": "app",
           "group": "meta",
-          "key": "status",
+          "endpoint": "status",
           "digest": "${digest}"
         }
       }

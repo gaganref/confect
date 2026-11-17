@@ -196,10 +196,10 @@ describe("Code", () => {
             NodeServices.layer,
           ),
         );
-        const result = yield* deploy({ ...props, digest: "sha256:built" }).pipe(
-          Effect.provideContext(services),
-          Effect.result,
-        );
+        const result = yield* deploy({
+          ...props,
+          manifestDigest: "sha256:built",
+        }).pipe(Effect.provideContext(services), Effect.result);
         expect(calls).toEqual([
           "lock",
           "prepare",
@@ -1522,7 +1522,7 @@ describe("Code mount init", () => {
   };
   const push = (options: {
     readonly failAt?: string;
-    readonly digest?: string;
+    readonly manifestDigest?: string;
     readonly steps?: Record<string, ReadonlyArray<unknown>>;
   }) =>
     Effect.gen(function* () {
@@ -1580,7 +1580,9 @@ describe("Code mount init", () => {
         const result = yield* deploy({
           ...props,
           cwd,
-          ...(options.digest === undefined ? {} : { digest: options.digest }),
+          ...(options.manifestDigest === undefined
+            ? {}
+            : { manifestDigest: options.manifestDigest }),
         }).pipe(Effect.provide([lock, runner, client]), Effect.result);
         return { events, result };
       }).pipe(Effect.scoped, Effect.provideContext(services17));
@@ -1611,7 +1613,9 @@ describe("Code mount init", () => {
     "checks the manifest digest after all nested mount init steps, before releasing the lock",
     () =>
       Effect.gen(function* () {
-        const { events, result } = yield* push({ digest: "sha256:built" });
+        const { events, result } = yield* push({
+          manifestDigest: "sha256:built",
+        });
         expect(result).toEqual(Result.succeed(props.deployment));
         expect(events).toEqual([
           "acquire",
@@ -1632,7 +1636,7 @@ describe("Code mount init", () => {
   it.effect("skips the health query when a mount's init fails", () =>
     Effect.gen(function* () {
       const { events, result } = yield* push({
-        digest: "sha256:built",
+        manifestDigest: "sha256:built",
         failAt: "relay",
       });
       expect(events).toEqual([

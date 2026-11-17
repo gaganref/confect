@@ -421,7 +421,7 @@ describe("Http", () => {
           path: "/context-metadata",
           owner: { kind: "app" },
           group: "meta",
-          key: "route",
+          endpoint: "route",
         },
         { method: "GET", path: "/docs", owner: { kind: "docs" } },
       ]),

@@ -273,7 +273,7 @@ describe("Backend", () => {
         expect(backend.environment?.Props.variables).toEqual({
           RELAY_TOKEN: token,
         });
-        expect(backend.code.Props.digest).toBe(manifest.digest);
+        expect(backend.code.Props.manifestDigest).toBe(manifest.digest);
       }).pipe(Effect.provide([stack(), providers])),
   );
 });

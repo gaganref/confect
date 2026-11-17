@@ -276,7 +276,7 @@ export default {
           path: "/health/ready",
           owner: "app",
           group: "health",
-          key: "ready",
+          endpoint: "ready",
           digest: "sha256:...",
         },
       },
@@ -288,7 +288,7 @@ export default {
           path: "/bulk-email/webhooks/resend",
           owner: "bulkEmail",
           group: "webhooks",
-          key: "resend",
+          endpoint: "resend",
           digest: "sha256:...",
         },
       },
@@ -316,7 +316,7 @@ const values: Manifest.Values<typeof manifest> = {
 
 `Manifest.Mounts<typeof manifest>` types the settings supplied under each mount's name. It includes only slots left open, with each slot's kind, optionality, and derived deployment variable in `manifest.mounts`. A mount with a required open slot must be supplied. Use [`Backend.mounts`](/guides/alchemy#supply-a-mounts-open-settings) to send those settings to their derived variables.
 
-`http` lists `HttpApi` endpoints by owner, group, and endpoint key. An app's own endpoints use owner `app`. A mounted component's endpoints use its mount name, and nested owners include each placement, such as `relay/child`. Every leaf carries `method`, the full prefixed `path`, `owner`, `group`, `key`, and the final manifest `digest`. Mounts without an HTTP prefix contribute no served routes. Generated documentation pages have no endpoint key and are omitted.
+`http` lists `HttpApi` endpoints by owner, group, and endpoint name. An app's own endpoints use owner `app`. A mounted component's endpoints use its mount name, and nested owners include each placement, such as `relay/child`. Every leaf carries `method`, the full prefixed `path`, `owner`, `group`, `endpoint`, and the final manifest `digest`. Mounts without an HTTP prefix contribute no served routes. Generated documentation pages have no endpoint name and are omitted.
 
 `Manifest.RouteOf<typeof manifest>` is the union of these leaves. When a manifest keeps its digest as a literal, a leaf from a different digest fails that type. Infrastructure can read `manifest.http.bulkEmail.webhooks.resend` without importing backend modules.
 

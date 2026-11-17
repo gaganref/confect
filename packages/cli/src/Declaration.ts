@@ -826,10 +826,12 @@ export const routeLeaves = (
   mounts: ReadonlyArray<CoreMount.Data>,
 ): Result.Result<ReadonlyArray<Leaf>, Manifest.UnsupportedManifestFormat> =>
   Result.gen(function* () {
-    const leaves: Leaf[] = Arr.flatMap(own, ({ method, path, group, key }) =>
-      group === undefined || key === undefined
-        ? []
-        : [{ method, path, owner: "app", group, key }],
+    const leaves: Leaf[] = Arr.flatMap(
+      own,
+      ({ method, path, group, endpoint }) =>
+        group === undefined || endpoint === undefined
+          ? []
+          : [{ method, path, owner: "app", group, endpoint }],
     );
     for (const { name, httpPrefix, component } of mounts) {
       if (component.manifest === undefined) continue;
@@ -846,7 +848,7 @@ export const routeLeaves = (
               path: joinPath(httpPrefix, leaf.path),
               owner: leaf.owner === "app" ? name : `${name}/${leaf.owner}`,
               group: leaf.group,
-              key: leaf.key,
+              endpoint: leaf.endpoint,
             });
         }
       }
@@ -872,7 +874,7 @@ export const routeCatalogue = (
     ] ??= Object.create(null));
     const endpoints: Record<string, Manifest.Route> = (groups[leaf.group] ??=
       Object.create(null));
-    endpoints[leaf.key] = { ...leaf, digest };
+    endpoints[leaf.endpoint] = { ...leaf, digest };
   }
   return http;
 };
@@ -901,14 +903,14 @@ export const previousLeaves = (http: unknown): ReadonlyArray<Leaf> =>
                         Predicate.isString(leaf.path) &&
                         Predicate.isString(leaf.owner) &&
                         Predicate.isString(leaf.group) &&
-                        Predicate.isString(leaf.key)
+                        Predicate.isString(leaf.endpoint)
                           ? [
                               {
                                 method: leaf.method,
                                 path: leaf.path,
                                 owner: leaf.owner,
                                 group: leaf.group,
-                                key: leaf.key,
+                                endpoint: leaf.endpoint,
                               },
                             ]
                           : [],

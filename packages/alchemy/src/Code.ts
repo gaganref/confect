@@ -26,7 +26,7 @@ export interface CodeProps {
    * still inside the push lock, the deploy asks the pushed code which digest it
    * was generated with and fails when it answers nothing or another one.
    */
-  readonly digest?: string;
+  readonly manifestDigest?: string;
 }
 
 export interface CodeAttributes {

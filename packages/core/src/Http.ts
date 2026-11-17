@@ -167,7 +167,7 @@ export interface Route {
    * neither.
    */
   readonly group?: string;
-  readonly key?: string;
+  readonly endpoint?: string;
 }
 
 export class RouteUnderMountPrefix extends Schema.TaggedError<
@@ -258,7 +258,7 @@ const apiRoutes = (api: App.Api, owner: Owner): ReadonlyArray<KeyedRoute> =>
         const path = endpoint.path;
         const declared = paramNames(endpoint.params);
         return {
-          route: { method: endpoint.method, path, owner, group, key },
+          route: { method: endpoint.method, path, owner, group, endpoint: key },
           // oxlint-disable-next-line effecttsgo/prefer-effect-string -- This replaceAll takes a callback, which effect/String.replaceAll does not accept.
           key: `${endpoint.method} ${path.replaceAll(/:(\w+)/g, (param, name: string) => (declared.has(name) ? ":" : param))}`,
         };

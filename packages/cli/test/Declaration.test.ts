@@ -465,7 +465,7 @@ describe("Declaration", () => {
       path: "/ready",
       owner: "constructor",
       group: "catalogueFixture",
-      key: "ready",
+      endpoint: "ready",
     };
     const before = Object.getOwnPropertyDescriptor(Object, "catalogueFixture");
     try {
@@ -487,7 +487,7 @@ describe("Declaration", () => {
       path,
       owner,
       group: "hooks",
-      key: "received",
+      endpoint: "received",
       digest: "sha256:child",
     });
     const relay = Component.make("relay", {
@@ -512,7 +512,7 @@ describe("Declaration", () => {
           path: "/status",
           owner: { kind: "app" },
           group: "meta",
-          key: "status",
+          endpoint: "status",
         },
         { method: "GET", path: "/docs", owner: { kind: "docs" } },
       ],
@@ -528,21 +528,21 @@ describe("Declaration", () => {
         path: "/status",
         owner: "app",
         group: "meta",
-        key: "status",
+        endpoint: "status",
       },
       {
         method: "POST",
         path: "/relay/received",
         owner: "relay",
         group: "hooks",
-        key: "received",
+        endpoint: "received",
       },
       {
         method: "POST",
         path: "/relay/child/received",
         owner: "relay/child",
         group: "hooks",
-        key: "received",
+        endpoint: "received",
       },
     ]);
     const catalogue = Declaration.routeCatalogue(leaves.success, "sha256:host");
