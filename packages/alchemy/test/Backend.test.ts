@@ -1,3 +1,4 @@
+import * as Array from "effect/Array";
 import { describe, expect, it } from "@effect/vitest";
 import {
   Backend,
