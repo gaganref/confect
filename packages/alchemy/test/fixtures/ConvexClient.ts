@@ -95,6 +95,7 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
   const issuedKeys = new Map<string, number>();
   const state: {
     logStreams: Map<string, LogStreamConfig[]>;
+    logStreamSecrets: Map<string, Redacted.Redacted<string>>;
     projects: Project[];
     deployments: Deployment[];
     keys: DeployKey[];
@@ -105,6 +106,7 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
     keys: [],
     variables: {},
     logStreams: new Map(),
+    logStreamSecrets: new Map(),
   };
   let nextStreamId = 1;
   const missing = () =>
@@ -329,6 +331,10 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
               );
           }
           state.logStreams.set(url, [...streams, config]);
+          if (input.logStreamType === "axiom")
+            state.logStreamSecrets.set(id, input.apiKey);
+          if (input.logStreamType === "sentry")
+            state.logStreamSecrets.set(id, input.dsn);
           const live = Redacted.value(config);
           return Redacted.make(
             live.logStreamType === "webhook"
@@ -350,6 +356,10 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
             !Array.some(streams, (stream) => Redacted.value(stream).id === id)
           )
             return Effect.fail(missing());
+          if (input.logStreamType === "axiom" && input.apiKey != null)
+            state.logStreamSecrets.set(id, input.apiKey);
+          if (input.logStreamType === "sentry" && input.dsn != null)
+            state.logStreamSecrets.set(id, input.dsn);
           state.logStreams.set(
             url,
             Array.map(streams, (stream) => {

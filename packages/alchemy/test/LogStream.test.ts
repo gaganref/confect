@@ -5,7 +5,12 @@ import {
   ConvexNotFound,
 } from "@confect/alchemy/ConvexClient";
 import { expect, it } from "@effect/vitest";
+import { Stack } from "alchemy/Stack";
+import { InMemoryService } from "alchemy/State/InMemoryState";
+import type { ResourceState } from "alchemy/State/ResourceState";
+import { State } from "alchemy/State/State";
 import * as Effect from "effect/Effect";
+import * as Array from "effect/Array";
 import * as Redacted from "effect/Redacted";
 import { lifecycle, mockClient } from "./fixtures/ConvexClient";
 
@@ -98,6 +103,73 @@ const diff = (
     oldBindings: [],
     newBindings: [],
   });
+
+const stack = {
+  name: "test",
+  stage: "test",
+  resources: {},
+  bindings: {},
+  actions: {},
+};
+const ownedRow = (
+  props: LogStream.LogStreamProps,
+  output: LogStream.LogStreamAttributes,
+): Extract<ResourceState, { status: "created" }> => ({
+  status: "created",
+  fqn: lifecycle.fqn,
+  logicalId: lifecycle.id,
+  instanceId: lifecycle.instanceId,
+  resourceType: "Convex.LogStream",
+  namespace: undefined,
+  providerVersion: 0,
+  downstream: [],
+  bindings: [],
+  props,
+  attr: output,
+});
+
+it.effect.each(
+  Array.flatMap([axiom, sentry], (props) =>
+    Array.map(
+      ["creating", "updating", "deleting", "replacing", "replaced"] as const,
+      (status) => ({ props, status }),
+    ),
+  ),
+)(
+  "plans an update for an unfinished $props.kind $status row with matching readable fields",
+  ({ props, status }) =>
+    withProvider((service) =>
+      Effect.gen(function* () {
+        const output = yield* create(service, props);
+        const clean = ownedRow(props, output);
+        const rows = {
+          creating: { ...clean, status: "creating" },
+          updating: { ...clean, status: "updating", old: clean },
+          deleting: { ...clean, status: "deleting" },
+          replacing: {
+            ...clean,
+            status: "replacing",
+            old: clean,
+            deleteFirst: false,
+          },
+          replaced: {
+            ...clean,
+            status: "replaced",
+            old: clean,
+            deleteFirst: false,
+          },
+        } satisfies Record<typeof status, ResourceState>;
+        const store = yield* InMemoryService({
+          test: { test: { test: rows[status] } },
+        });
+        const planned = yield* diff(service, output, props).pipe(
+          Effect.provideService(Stack, stack),
+          Effect.provideService(State, Effect.succeed(store)),
+        );
+        expect(planned).toEqual({ action: "update" });
+      }),
+    ),
+);
 
 it.effect.each([
   { before: axiom, after: { ...axiom, datasetName: "next" } },

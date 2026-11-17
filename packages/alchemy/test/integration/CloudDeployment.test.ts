@@ -1945,6 +1945,82 @@ describe("log stream engine lifecycle", () => {
       }),
   );
 
+  it.effect.each(
+    Array.flatMap([logConfigs[0], logConfigs[1]], (props) =>
+      Array.map(["revert", "same", "different"] as const, (retry) => ({
+        props,
+        retry,
+      })),
+    ),
+  )(
+    "converges a lost secret-only $props.kind update on $retry props",
+    ({ props, retry }) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        let loseResponse = true;
+        const deploy = makeHarness(
+          Layer.succeed(ConvexClient, {
+            ...fixture.client,
+            updateLogStream: (url, key, id, input) =>
+              fixture.client.updateLogStream(url, key, id, input).pipe(
+                Effect.andThen(
+                  Effect.suspend(() => {
+                    if (!loseResponse) return Effect.void;
+                    loseResponse = false;
+                    return ConvexApiError.make({
+                      operation: "updateLogStream",
+                      code: "TransportError",
+                    });
+                  }),
+                ),
+              ),
+          }),
+          noCommands,
+        );
+        const next =
+          props.kind === "axiom"
+            ? { ...props, apiKey: Redacted.make("made-up-lost-api-key") }
+            : { ...props, dsn: Redacted.make("made-up-lost-dsn") };
+        const desired =
+          retry === "revert"
+            ? props
+            : retry === "same"
+              ? next
+              : props.kind === "axiom"
+                ? {
+                    ...props,
+                    apiKey: Redacted.make("made-up-different-api-key"),
+                  }
+                : { ...props, dsn: Redacted.make("made-up-different-dsn") };
+        const first = yield* deploy(logResources(props));
+        const interrupted = yield* deploy(logResources(next)).pipe(
+          Effect.result,
+        );
+        expect(interrupted).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "ConvexApiError", code: "TransportError" },
+        });
+        const secret = (config: typeof desired) =>
+          config.kind === "axiom" ? config.apiKey : config.dsn;
+        expect(fixture.state.logStreamSecrets.get(first.id)).toEqual(
+          secret(next),
+        );
+        fixture.client.updateLogStream.mockClear();
+        const planned = yield* deploy.plan(logResources(desired));
+        expect(planned.resources.Logs.action).toBe("update");
+        const recovered = yield* deploy(logResources(desired));
+        expect(recovered.id).toBe(first.id);
+        expect(fixture.client.updateLogStream).toHaveBeenCalledTimes(1);
+        expect(fixture.state.logStreamSecrets.get(first.id)).toEqual(
+          secret(desired),
+        );
+        const stable = yield* deploy.plan(logResources(desired));
+        expect(stable.resources.Logs.action).toBe("noop");
+        expect(fixture.client.createLogStream).toHaveBeenCalledTimes(1);
+        expect(fixture.client.deleteLogStream).not.toHaveBeenCalled();
+      }),
+  );
+
   it.effect.each(["rejected", "response lost"] as const)(
     "finishes an interrupted update when the request was %s",
     (failure) =>
