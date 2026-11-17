@@ -357,7 +357,8 @@ it.effect("ignores status transitions and is idempotent on removal", () =>
   ),
 );
 
-const disabled: ReadonlyArray<LogStream.LogStreamProps> = [
+// Exercise untyped callers that bypass the public props contract.
+const disabled = [
   {
     ...target,
     kind: "datadog",
@@ -384,7 +385,7 @@ const disabled: ReadonlyArray<LogStream.LogStreamProps> = [
     secretAccessKey: Redacted.make("made-up-s3-key"),
     period: "hourly",
   },
-];
+] as unknown as ReadonlyArray<LogStream.LogStreamProps>;
 it.effect.each(disabled)("refuses $kind before any network mutation", (props) =>
   withProvider((service, mock) =>
     Effect.gen(function* () {

@@ -225,15 +225,15 @@ it("types enabled log streams and rejects disabled kinds, plain secrets and fore
   });
   void Convex.LogStream("DisabledPostHogLogs", {
     ...target,
-    apiKey: secret,
     // @ts-expect-error Disabled kinds are rejected on the kind property.
     kind: "postHogLogs",
+    apiKey: secret,
   });
   void Convex.LogStream("DisabledPostHogErrors", {
     ...target,
-    apiKey: secret,
     // @ts-expect-error Disabled kinds are rejected on the kind property.
     kind: "postHogErrorTracking",
+    apiKey: secret,
   });
   void Convex.LogStream("EnabledSentry", sentry);
   void Convex.LogStream("EnabledWebhook", webhook);

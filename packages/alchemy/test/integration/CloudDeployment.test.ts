@@ -7,6 +7,7 @@ import * as DeployKey from "@confect/alchemy/DeployKey";
 import * as EnvironmentVariables from "@confect/alchemy/EnvironmentVariables";
 import * as Project from "@confect/alchemy/Project";
 import * as LogStream from "@confect/alchemy/LogStream";
+import type { PropsInput } from "alchemy/Input";
 import type { ResourceState } from "alchemy/State/ResourceState";
 import { inspect } from "node:util";
 import * as Logger from "effect/Logger";
@@ -772,7 +773,7 @@ describe("log stream engine lifecycle", () => {
       }),
   );
 
-  it.effect("deploys and destroys after a webhook HMAC rotation", () =>
+  it.effect("destroys immediately after a webhook HMAC rotation", () =>
     Effect.gen(function* () {
       const fixture = mockClient();
       const deploy = makeHarness(fixture.layer, noCommands);
@@ -892,14 +893,16 @@ describe("log stream engine lifecycle", () => {
             const key = yield* Convex.DeployKey("Key", {
               deploymentName: deployment.name,
             });
-            yield* Convex.LogStream("Logs", {
+            // Simulate an untyped caller while retaining unresolved deployment outputs.
+            const props = {
               kind: "datadog",
               deploymentUrl: deployment.url,
               deployKey: key.deployKey,
               ddApiKey: Redacted.make("made-up-disabled-token"),
               siteLocation: "US1",
               ddTags: [],
-            });
+            } as unknown as PropsInput<LogStream.LogStreamProps>;
+            yield* Convex.LogStream("Logs", props);
           }),
         ).pipe(Effect.result);
         expect(Result.isFailure(planned)).toBe(true);
@@ -1156,13 +1159,25 @@ describe("log stream engine lifecycle", () => {
           first.id,
         );
         const live = Redacted.value(found);
+        if (live.logStreamType === "webhook") {
+          fixture.state.logStreams.set(props.deploymentUrl, [
+            Redacted.make({ ...live, hmacSecret: "made-up-rotated-hmac" }),
+          ]);
+          yield* deploy(logResources(props)).pipe(
+            Effect.provideService(Logger.CurrentLoggers, new Set([capture])),
+          );
+        }
         const changed =
           live.logStreamType === "axiom"
             ? { ...live, datasetName: "edited" }
             : live.logStreamType === "sentry"
               ? { ...live, tags: { app: "edited" } }
               : live.logStreamType === "webhook"
-                ? { ...live, format: "json" as const }
+                ? {
+                    ...live,
+                    hmacSecret: "made-up-rotated-hmac",
+                    format: "json" as const,
+                  }
                 : live;
         fixture.state.logStreams.set(props.deploymentUrl, [
           Redacted.make({
@@ -1215,6 +1230,7 @@ describe("log stream engine lifecycle", () => {
           "made-up-engine-axiom-key",
           "made-up-engine-sentry-dsn",
           "made-up-hmac-secret",
+          "made-up-rotated-hmac",
           "made-up-status-credential",
           "made-up-webhook-password",
           "made-up-webhook-token",

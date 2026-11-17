@@ -23,7 +23,9 @@ type StrictUnion<A, All = A> = A extends unknown
   ? A & { readonly [K in Exclude<Keys<All>, keyof A>]?: never }
   : never;
 
-export type LogStreamProps = StrictUnion<Config> & {
+export type LogStreamProps = StrictUnion<
+  Extract<Config, { readonly kind: "axiom" | "sentry" | "webhook" }>
+> & {
   readonly deploymentUrl: string;
   readonly deployKey: Redacted.Redacted<string>;
 };
@@ -69,7 +71,7 @@ export class LogStreamDrift extends Schema.TaggedError<
   message: Schema.String,
 }) {}
 
-const input = (props: LogStreamProps) => {
+const input = (props: Config) => {
   switch (props.kind) {
     case "axiom":
       return Effect.succeed({
@@ -217,7 +219,7 @@ export const provider = Effect.gen(function* () {
   });
   return {
     diff: Effect.fn("LogStream.diff")(function* ({ olds, news, output }) {
-      const kind = "kind" in news ? news.kind : undefined;
+      const kind: unknown = "kind" in news ? news.kind : undefined;
       switch (kind) {
         case "datadog":
         case "postHogLogs":
@@ -228,7 +230,8 @@ export const provider = Effect.gen(function* () {
             message: "This log stream kind is not switched on.",
           });
       }
-      if (output !== undefined) yield* observe(olds, output);
+      const live =
+        output === undefined ? undefined : yield* observe(olds, output);
       if (!isResolved(news)) return;
       yield* input(news);
       if (output === undefined) {
@@ -242,7 +245,12 @@ export const provider = Effect.gen(function* () {
         yield* cold(news);
         return { action: "replace" };
       }
-      if (!deepEqual(news, olds)) return { action: "update" };
+      if (
+        !deepEqual(news, olds) ||
+        (live !== undefined &&
+          !deepEqual(attributes(live).hmacSecret, output.hmacSecret))
+      )
+        return { action: "update" };
     }),
     read: Effect.fn("LogStream.read")(function* ({ olds, output }) {
       if (output !== undefined) {
@@ -267,7 +275,7 @@ export const provider = Effect.gen(function* () {
             [output.id],
             "The prior ownership props are missing.",
           );
-        yield* observe(olds, output);
+        const observed = yield* observe(olds, output);
         if (
           news.kind !== output.kind ||
           news.deploymentUrl !== olds.deploymentUrl
@@ -277,6 +285,8 @@ export const provider = Effect.gen(function* () {
             [output.id],
             "A kind or deployment change needs replacement.",
           );
+        if (deepEqual(news, olds))
+          return { id: output.id, kind: output.kind, ...attributes(observed) };
         yield* client.updateLogStream(
           news.deploymentUrl,
           news.deployKey,
