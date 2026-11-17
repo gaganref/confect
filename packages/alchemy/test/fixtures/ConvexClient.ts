@@ -22,6 +22,29 @@ import {
 } from "../../src/ConvexClient";
 import * as Option from "effect/Option";
 import * as Array from "effect/Array";
+import * as Struct from "effect/Struct";
+
+const topicOrder = [
+  "verification",
+  "console",
+  "function_execution",
+  "exception",
+  "audit_log",
+  "scheduler_stats",
+  "scheduled_job_lag",
+  "current_storage_usage",
+  "concurrency_stats",
+  "storage_api_bandwidth",
+  "ai_gateway_usage",
+  "log_stream_egress",
+  "custom_audit",
+] as const;
+const normalizeTopics = (
+  topics: readonly (typeof topicOrder)[number][] | null | undefined,
+) =>
+  topics == null
+    ? null
+    : Array.filter(topicOrder, (topic) => Array.contains(topics, topic));
 
 export const lifecycle = {
   id: "test",
@@ -271,8 +294,10 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
                 logStreamType: "axiom",
                 datasetName: input.datasetName,
                 attributes: input.attributes,
-                ingestUrl: input.ingestUrl ?? null,
-                topics: input.topics ?? null,
+                ...(input.ingestUrl == null
+                  ? {}
+                  : { ingestUrl: input.ingestUrl }),
+                topics: normalizeTopics(input.topics),
               });
               break;
             case "sentry":
@@ -280,7 +305,7 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
                 id,
                 status,
                 logStreamType: "sentry",
-                tags: input.tags ?? null,
+                ...(input.tags == null ? {} : { tags: input.tags }),
               });
               break;
             case "webhook":
@@ -288,11 +313,13 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
                 id,
                 status,
                 logStreamType: "webhook",
-                url: Redacted.isRedacted(input.url)
-                  ? Redacted.value(input.url)
-                  : input.url,
+                url: new URL(
+                  Redacted.isRedacted(input.url)
+                    ? Redacted.value(input.url)
+                    : input.url,
+                ).href,
                 format: input.format,
-                topics: input.topics ?? null,
+                topics: normalizeTopics(input.topics),
                 hmacSecret: "made-up-hmac-secret",
               });
               break;
@@ -332,35 +359,50 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
                 case "axiom":
                   if (live.logStreamType === "axiom")
                     return Redacted.make({
-                      ...live,
+                      ...Struct.omit(live, ["ingestUrl"]),
                       datasetName: input.datasetName ?? live.datasetName,
                       attributes: input.attributes ?? live.attributes,
-                      ...(input.ingestUrl === undefined
+                      ...((input.ingestUrl === undefined
+                        ? live.ingestUrl
+                        : input.ingestUrl) == null
                         ? {}
-                        : { ingestUrl: input.ingestUrl }),
+                        : {
+                            ingestUrl:
+                              input.ingestUrl === undefined
+                                ? live.ingestUrl
+                                : input.ingestUrl,
+                          }),
                       ...(input.topics === undefined
                         ? {}
-                        : { topics: input.topics }),
+                        : { topics: normalizeTopics(input.topics) }),
                     });
                   break;
                 case "sentry":
                   if (live.logStreamType === "sentry")
                     return Redacted.make({
-                      ...live,
-                      ...(input.tags === undefined ? {} : { tags: input.tags }),
+                      ...Struct.omit(live, ["tags"]),
+                      ...((input.tags === undefined ? live.tags : input.tags) ==
+                      null
+                        ? {}
+                        : {
+                            tags:
+                              input.tags === undefined ? live.tags : input.tags,
+                          }),
                     });
                   break;
                 case "webhook":
                   if (live.logStreamType === "webhook")
                     return Redacted.make({
                       ...live,
-                      url: Redacted.isRedacted(input.url)
-                        ? Redacted.value(input.url)
-                        : (input.url ?? live.url),
+                      url: new URL(
+                        Redacted.isRedacted(input.url)
+                          ? Redacted.value(input.url)
+                          : (input.url ?? live.url),
+                      ).href,
                       format: input.format ?? live.format,
                       ...(input.topics === undefined
                         ? {}
-                        : { topics: input.topics }),
+                        : { topics: normalizeTopics(input.topics) }),
                     });
                   break;
               }

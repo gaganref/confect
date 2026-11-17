@@ -683,6 +683,102 @@ const logResources = (props: LogStream.LogStreamProps) =>
   });
 
 describe("log stream engine lifecycle", () => {
+  it.effect.each([
+    { ...logConfigs[2], url: "http://127.0.0.1:9876" },
+    { ...logConfigs[2], url: Redacted.make("http://127.0.0.1:9876") },
+    { ...logConfigs[2], url: "http://127.0.0.1:9876/a/../b" },
+    { ...logConfigs[2], url: "HTTP://LOCALHOST:80/a/../b" },
+    { ...logConfigs[2], topics: ["audit_log", "console", "console"] },
+    { ...logConfigs[0], topics: ["audit_log", "console", "console"] },
+    { ...logConfigs[0], ingestUrl: "https://api.axiom.co" },
+    { ...logConfigs[1], tags: null },
+  ] as const)("converges on Convex-normalized $kind configuration", (props) =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const deploy = makeHarness(fixture.layer, noCommands);
+      const first = yield* deploy(logResources(props));
+      const stable = yield* deploy.plan(logResources(props));
+      expect(stable.resources.Logs.action).toBe("noop");
+      expect(fixture.client.createLogStream).toHaveBeenCalledTimes(1);
+      expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+      const found = yield* fixture.client.getLogStream(
+        props.deploymentUrl,
+        props.deployKey,
+        first.id,
+      );
+      const live = Redacted.value(found);
+      if ("topics" in props) {
+        expect(live).toMatchObject({ topics: ["console", "audit_log"] });
+        expect(props.topics).toEqual(["audit_log", "console", "console"]);
+      }
+      if (live.logStreamType === "webhook" && props.kind === "webhook")
+        expect(live.url).toBe(
+          new URL(
+            Redacted.isRedacted(props.url)
+              ? Redacted.value(props.url)
+              : props.url,
+          ).href,
+        );
+      if (live.logStreamType === "axiom" && !("ingestUrl" in props))
+        expect(live).not.toHaveProperty("ingestUrl");
+      if (live.logStreamType === "sentry")
+        expect(live).not.toHaveProperty("tags");
+    }),
+  );
+
+  it.effect.each(["deploy", "destroy"] as const)(
+    "keeps ownership after a post-create mismatch for the next %s",
+    (next) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const persisted: Record<
+          string,
+          Record<string, Record<string, ResourceState>>
+        > = {};
+        const deploy = makeHarness(fixture.layer, noCommands, false, persisted);
+        const props = logConfigs[0];
+        const original = fixture.client.getLogStream.getMockImplementation();
+        if (original === undefined)
+          return yield* Effect.die("Missing fake get implementation");
+        fixture.client.getLogStream.mockImplementationOnce((url, key, id) =>
+          original(url, key, id).pipe(
+            Effect.map((stream) => {
+              const live = Redacted.value(stream);
+              return Redacted.make(
+                live.logStreamType === "axiom"
+                  ? { ...live, datasetName: "post-create-mismatch" }
+                  : live,
+              );
+            }),
+          ),
+        );
+        const first = yield* deploy(logResources(props)).pipe(Effect.result);
+        expect(first).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "LogStreamDrift", id: "stream-1" },
+        });
+        expect(persisted.integration.test.Logs.attr).toEqual({
+          id: "stream-1",
+          kind: "axiom",
+        });
+        if (next === "deploy") {
+          const recovered = yield* deploy(logResources(props));
+          expect(recovered.id).toBe("stream-1");
+          const stable = yield* deploy.plan(logResources(props));
+          expect(stable.resources.Logs.action).toBe("noop");
+          expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+        } else {
+          yield* deploy(Effect.succeed({}));
+          expect(fixture.client.deleteLogStream).toHaveBeenCalledWith(
+            props.deploymentUrl,
+            props.deployKey,
+            "stream-1",
+          );
+        }
+        expect(fixture.client.createLogStream).toHaveBeenCalledTimes(1);
+      }),
+  );
+
   it.effect("refuses a hand edit between plan and apply before writing", () =>
     Effect.gen(function* () {
       const fixture = mockClient();
