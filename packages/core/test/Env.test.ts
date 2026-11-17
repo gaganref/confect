@@ -110,6 +110,33 @@ it.each([
   },
 );
 
+it.each([false, true])(
+  "refuses a top-level tagged field at Env.make, automatic=%s",
+  (automatic) => {
+    const field: Env.AnyField = {
+      ...Env.string(),
+      descriptor: {
+        kind: "string",
+        optional: true,
+        ...(automatic ? { automatic: true } : {}),
+        provider: { selector: "C", name: "ses", required: true },
+      },
+    };
+    expect(() =>
+      Env.make("host", {
+        C: Env.providers({ resend: {} }),
+        SETTING: field,
+      }),
+    ).toThrowError(
+      expect.objectContaining({
+        _tag: "InvalidEnvProviders",
+        reason: "TaggedField",
+        key: "SETTING",
+      }),
+    );
+  },
+);
+
 it("refuses nested provider selectors in typed declarations", () => {
   expect(() =>
     Env.providers({
