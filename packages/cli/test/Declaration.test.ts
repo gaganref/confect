@@ -553,6 +553,51 @@ describe("Declaration", () => {
     expect(parsed.failure.message).toContain("_bulk");
   });
 
+  it("preserves literal and secret slot kinds without a shipped manifest", () => {
+    const component = Component.make("workpool", {
+      env: {
+        MODE: Schema.Literals(["live", "test"]),
+        OPTIONAL_MODE: Schema.optionalKey(Schema.Literals(["log", "send"])),
+        SINGLE: Schema.Literal("only"),
+        TOKEN: Schema.Redacted(Schema.String),
+        OPTIONAL_TOKEN: Schema.String.pipe(Schema.Redacted, Schema.optionalKey),
+        FROM_VALUE: Schema.RedactedFromValue(Schema.String),
+        NUMBER: Schema.Finite,
+        MIXED: Schema.Union([Schema.String, Schema.Finite]),
+      },
+      client: (native: unknown) => native,
+    });
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", {}),
+        components: [workpool],
+        mounts: [Mount.make(component, { name: "pool" })],
+      }),
+    );
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.promoted).toEqual([
+      [
+        "POOL_MODE",
+        { kind: "literals", optional: false, values: ["live", "test"] },
+      ],
+      [
+        "POOL_OPTIONAL_MODE",
+        { kind: "literals", optional: true, values: ["log", "send"] },
+      ],
+      ["POOL_SINGLE", { kind: "literals", optional: false, values: ["only"] }],
+      ["POOL_TOKEN", { kind: "secret", optional: false }],
+      ["POOL_OPTIONAL_TOKEN", { kind: "secret", optional: true }],
+      ["POOL_FROM_VALUE", { kind: "secret", optional: false }],
+      ["POOL_NUMBER", { kind: "string", optional: false }],
+      ["POOL_MIXED", { kind: "string", optional: false }],
+    ]);
+    const config = Declaration.convexConfig(parsed.success);
+    expect(config).toContain(
+      'POOL_MODE: v.union(v.literal("live"), v.literal("test")),',
+    );
+    expect(config).toContain("POOL_TOKEN: v.string(),");
+  });
+
   it("splits camelCase mount names before promoting their open slots", () => {
     const Email = Component.make("workpool", {
       manifest: {
