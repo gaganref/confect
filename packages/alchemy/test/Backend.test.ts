@@ -1264,6 +1264,116 @@ describe("Backend choices from outputs", () => {
       }),
   );
 
+  it.effect.each(["shared", "tagged"] as const)(
+    "evaluates an Effect at each use in plan and apply, %s",
+    (use) =>
+      Effect.gen(function* () {
+        let evaluations = 0;
+        const value = Effect.sync(() => {
+          evaluations++;
+          return "counted";
+        });
+        const { result, fixture } = yield* apply(() =>
+          use === "shared"
+            ? {
+                manifest: {
+                  ...formatOne,
+                  env: {
+                    FIRST: { kind: "string", optional: false },
+                    SECOND: { kind: "string", optional: false },
+                  },
+                },
+                env: { FIRST: value, SECOND: value },
+              }
+            : {
+                manifest: {
+                  ...formatOne,
+                  env: {
+                    CHOICE: selector("ses"),
+                    TOKEN: {
+                      kind: "string",
+                      optional: true,
+                      provider: {
+                        selector: "CHOICE",
+                        name: "ses",
+                        required: true,
+                      },
+                    },
+                  },
+                },
+                env: { CHOICE: "ses", TOKEN: value },
+              },
+        );
+        expect(result).toEqual(Exit.succeed(props.deployment.url));
+        expect(evaluations).toBe(4);
+        expect(fixture.state.environmentUpdates).toEqual([
+          use === "shared"
+            ? [
+                { name: "FIRST", value: Redacted.make("counted") },
+                { name: "SECOND", value: Redacted.make("counted") },
+              ]
+            : [
+                { name: "CHOICE", value: Redacted.make("ses") },
+                { name: "TOKEN", value: Redacted.make("counted") },
+              ],
+        ]);
+      }),
+  );
+  for (const scope of ["env", "mounts"] as const) {
+    it.effect.each(["Effect", "Config"] as const)(
+      `checks a tagged setting's own evaluation before writing in ${scope}, %s`,
+      (form) =>
+        Effect.gen(function* () {
+          let evaluations = 0;
+          const value = Effect.sync(() =>
+            ++evaluations % 2 === 1 ? "present" : undefined,
+          );
+          const input =
+            form === "Config"
+              ? Config.succeed(undefined).pipe(Config.mapEffect(() => value))
+              : value;
+          const slots = {
+            CHOICE: selector("ses"),
+            TOKEN: {
+              kind: "string",
+              optional: true,
+              provider: { selector: "CHOICE", name: "ses", required: true },
+            },
+          } as const;
+          const { result, fixture, pushes } = yield* apply(() => ({
+            manifest: {
+              ...formatOne,
+              ...(scope === "env"
+                ? { env: slots }
+                : {
+                    mounts: {
+                      relay: {
+                        component: "relay",
+                        env: {
+                          CHOICE: variable(slots.CHOICE, "RELAY_CHOICE"),
+                          TOKEN: variable(slots.TOKEN, "RELAY_TOKEN"),
+                        },
+                      },
+                    },
+                  }),
+            },
+            [scope]:
+              scope === "env"
+                ? { CHOICE: "ses", TOKEN: input }
+                : { relay: { CHOICE: "ses", TOKEN: input } },
+          }));
+          expect(defectOf(result)).toMatchObject({
+            _tag: "InvalidMountSetting",
+            mount: scope === "env" ? "app" : "relay",
+            slot: "TOKEN",
+            reason: "Missing",
+          });
+          expect(fixture.state.environmentUpdates).toEqual([]);
+          expect(pushes).toEqual([]);
+        }),
+    );
+  }
+
   it.effect(
     "keeps an unrelated slot out of the deferred slot's plan dependency edges",
     () =>
