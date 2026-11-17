@@ -1195,3 +1195,48 @@ it.effect.each([undefined, null])(
     });
   },
 );
+
+it.effect.each([
+  ["read", null],
+  ["read", undefined],
+  ["delete", null],
+  ["delete", undefined],
+] as const)(
+  "refuses a manually added nullish name during %s, %s",
+  ([operation, value]) => {
+    const mock = mockClient();
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(mock.layer);
+      return yield* Effect.gen(function* () {
+        const provider = yield* EnvironmentVariables.provider;
+        const news = {
+          ...props,
+          unownedPolicy: "error",
+          variables: { A: "a", N: value },
+        } as unknown as EnvironmentVariables.EnvironmentVariablesProps;
+        const output = yield* provider.reconcile({
+          ...lifecycle,
+          news,
+          olds: undefined,
+          output: undefined,
+        });
+        expect(output.ownedNames).toEqual(["A"]);
+        mock.state.variables.N = Redacted.make("hand");
+        const input = { ...lifecycle, olds: news, output };
+        const result = yield* operation === "read"
+          ? provider.read(input).pipe(Effect.asVoid, Effect.result)
+          : provider.delete(input).pipe(Effect.result);
+        expect(result).toEqual(
+          Result.fail(
+            EnvironmentVariables.EnvironmentVariableUnowned.make({
+              variableName: "N",
+            }),
+          ),
+        );
+        expect(mock.state.environmentUpdates).toEqual([
+          [{ name: "A", value: Redacted.make("a") }],
+        ]);
+      }).pipe(Effect.provideContext(services));
+    });
+  },
+);
