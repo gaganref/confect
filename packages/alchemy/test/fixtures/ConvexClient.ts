@@ -214,7 +214,9 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
           const stream = Option.getOrUndefined(
             Array.findFirst(
               state.logStreams.get(url) ?? [],
-              (candidate) => Redacted.value(candidate).id === id,
+              (candidate) =>
+                Redacted.value(candidate).id === id &&
+                Redacted.value(candidate).status.type !== "deleting",
             ),
           );
           return stream === undefined
@@ -237,7 +239,8 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
             Array.some(
               streams,
               (stream) =>
-                Redacted.value(stream).logStreamType === input.logStreamType,
+                Redacted.value(stream).logStreamType === input.logStreamType &&
+                Redacted.value(stream).status.type !== "deleting",
             )
           )
             return yield* ConvexConflict.make({
@@ -361,7 +364,15 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
             return Effect.fail(missing());
           state.logStreams.set(
             url,
-            Array.filter(streams, (stream) => Redacted.value(stream).id !== id),
+            Array.map(streams, (stream) => {
+              const live = Redacted.value(stream);
+              return live.id === id
+                ? Redacted.make({
+                    ...live,
+                    status: { type: "deleting" } as const,
+                  })
+                : stream;
+            }),
           );
           return Effect.void;
         }),

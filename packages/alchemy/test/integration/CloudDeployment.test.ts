@@ -10,7 +10,11 @@ import * as LogStream from "@confect/alchemy/LogStream";
 import type { ResourceState } from "alchemy/State/ResourceState";
 import { inspect } from "node:util";
 import * as Logger from "effect/Logger";
-import { ConvexClient, ConvexApiError } from "@confect/alchemy/ConvexClient";
+import {
+  ConvexClient,
+  ConvexApiError,
+  ConvexNotFound,
+} from "@confect/alchemy/ConvexClient";
 import { adopt } from "alchemy/AdoptPolicy";
 import * as RemovalPolicy from "alchemy/RemovalPolicy";
 import * as Result from "effect/Result";
@@ -97,8 +101,9 @@ const makeHarness = (
   );
   const state = inMemoryState(initialState);
   const plans: Plan.Plan<unknown>[] = [];
-  const deploy = <A, E, R extends Providers | Stack.StackServices>(
+  const run = <A, E, R extends Providers | Stack.StackServices, B, E2, R2>(
     program: Effect.Effect<A, E, R>,
+    consume: (plan: Plan.Plan<A>) => Effect.Effect<B, E2, R2>,
   ) =>
     Effect.gen(function* () {
       const services3 = yield* Layer.build(context);
@@ -113,7 +118,7 @@ const makeHarness = (
                   plans.push(plan);
                 }),
               ),
-              Effect.flatMap(apply),
+              Effect.flatMap(consume),
               Effect.provideContext(compiled.services),
             ),
           ),
@@ -125,7 +130,13 @@ const makeHarness = (
         Effect.provideContext(services3),
       );
     }).pipe(Effect.scoped, Effect.scoped);
-  return Object.assign(deploy, { plans });
+  const deploy = <A, E, R extends Providers | Stack.StackServices>(
+    program: Effect.Effect<A, E, R>,
+  ) => run(program, apply);
+  const plan = <A, E, R extends Providers | Stack.StackServices>(
+    program: Effect.Effect<A, E, R>,
+  ) => run(program, Effect.succeed);
+  return Object.assign(deploy, { plans, plan });
 };
 
 describe("cloud deployment lifecycle", () => {
@@ -495,10 +506,12 @@ const logConfigs = [
   {
     ...logTarget,
     kind: "webhook",
-    url: "https://logs.example.test",
+    url: Redacted.make(
+      "https://user:made-up-webhook-password@logs.example.test/made-up-webhook-token",
+    ),
     format: "jsonl",
   },
-] as const;
+] as const satisfies readonly LogStream.LogStreamProps[];
 const noCommands = Layer.succeed(CommandRunner, {
   prepare: () => Effect.void,
   deploy: () => Effect.void,
@@ -543,6 +556,148 @@ describe("log stream engine lifecycle", () => {
           first.id,
         );
       }),
+  );
+
+  it.effect(
+    "redeploys immediately after destroy while deletion is listed",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(fixture.layer, noCommands);
+        const props = logConfigs[0];
+        const first = yield* deploy(logResources(props));
+        yield* deploy(Effect.succeed({}));
+        const listed = yield* fixture.client.listLogStreams(
+          props.deploymentUrl,
+        );
+        expect(Array.map(listed, Redacted.value)).toContainEqual(
+          expect.objectContaining({
+            id: first.id,
+            status: { type: "deleting" },
+          }),
+        );
+        const next = yield* deploy(logResources(props));
+        expect(next.id).not.toBe(first.id);
+        yield* deploy(logResources(props));
+        expect(deploy.plans.at(-1)?.resources.Logs.action).toBe("noop");
+      }),
+  );
+
+  it.effect("converges on removal after a hand delete and can redeploy", () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const deploy = makeHarness(fixture.layer, noCommands);
+      const props = logConfigs[0];
+      const first = yield* deploy(logResources(props));
+      yield* fixture.client.deleteLogStream(
+        props.deploymentUrl,
+        props.deployKey,
+        first.id,
+      );
+      const missing = yield* fixture.client
+        .getLogStream(props.deploymentUrl, props.deployKey, first.id)
+        .pipe(Effect.result);
+      expect(missing).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "ConvexNotFound" },
+      });
+      yield* deploy(Effect.succeed({}));
+      const next = yield* deploy(logResources(props));
+      expect(next.id).not.toBe(first.id);
+    }),
+  );
+
+  it.effect("destroys an owned stream despite a readable hand edit", () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const deploy = makeHarness(fixture.layer, noCommands);
+      const props = logConfigs[0];
+      const first = yield* deploy(logResources(props));
+      const found = yield* fixture.client.getLogStream(
+        props.deploymentUrl,
+        props.deployKey,
+        first.id,
+      );
+      const live = Redacted.value(found);
+      if (live.logStreamType !== "axiom")
+        return yield* Effect.die("Expected Axiom fixture");
+      fixture.state.logStreams.set(props.deploymentUrl, [
+        Redacted.make({ ...live, datasetName: "hand-edited" }),
+      ]);
+      yield* deploy(Effect.succeed({}));
+      expect(fixture.client.deleteLogStream).toHaveBeenCalledWith(
+        props.deploymentUrl,
+        props.deployKey,
+        first.id,
+      );
+    }),
+  );
+
+  it.effect(
+    "rejects a disabled kind during plan with unresolved deployment outputs",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(fixture.layer, noCommands);
+        const planned = yield* deploy
+          .plan(
+            Effect.gen(function* () {
+              const project = yield* Convex.Project("Project", {
+                teamId: 10,
+                name: "example",
+              });
+              const deployment = yield* Convex.Deployment("Deployment", {
+                projectId: project.projectId,
+                type: "prod",
+              });
+              const key = yield* Convex.DeployKey("Key", {
+                deploymentName: deployment.name,
+              });
+              yield* Convex.LogStream("Logs", {
+                kind: "datadog",
+                deploymentUrl: deployment.url,
+                deployKey: key.deployKey,
+                ddApiKey: Redacted.make("made-up-disabled-token"),
+                siteLocation: "US1",
+                ddTags: [],
+              });
+            }),
+          )
+          .pipe(Effect.result);
+        expect(planned).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "LogStreamNotEnabled", kind: "datadog" },
+        });
+        expect(fixture.client.createProject).not.toHaveBeenCalled();
+        expect(fixture.client.createDeployment).not.toHaveBeenCalled();
+        expect(fixture.client.createDeployKey).not.toHaveBeenCalled();
+        expect(fixture.client.createLogStream).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect("treats a delete race returning 404 as successful removal", () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const deploy = makeHarness(fixture.layer, noCommands);
+      const props = logConfigs[0];
+      const first = yield* deploy(logResources(props));
+      fixture.client.deleteLogStream.mockReturnValueOnce(
+        Effect.fail(
+          ConvexNotFound.make({
+            operation: "deleteLogStream",
+            code: "HttpError",
+            status: 404,
+          }),
+        ),
+      );
+      yield* deploy(Effect.succeed({}));
+      expect(deploy.plans.at(-1)?.deletions.Logs).toBeDefined();
+      expect(fixture.client.deleteLogStream).toHaveBeenCalledWith(
+        props.deploymentUrl,
+        props.deployKey,
+        first.id,
+      );
+    }),
   );
 
   it.effect.each([
@@ -638,7 +793,7 @@ describe("log stream engine lifecycle", () => {
     }),
   );
 
-  it.effect.each(["drift", "deleted", "record", "hmac"] as const)(
+  it.effect.each(["drift", "deleted", "record"] as const)(
     "stops the plan on $0 without recreating or overwriting",
     (fault) =>
       Effect.gen(function* () {
@@ -663,11 +818,6 @@ describe("log stream engine lifecycle", () => {
         if (fault === "deleted")
           fixture.state.logStreams.set(props.deploymentUrl, []);
         if (fault === "record") delete persisted.integration.test.Logs;
-        if (fault === "hmac") {
-          const row = persisted.integration.test.Logs;
-          const { hmacSecret: _, ...attr } = row.attr ?? {};
-          row.attr = attr;
-        }
         const result = yield* deploy(
           logResources(props).pipe(adopt(true)),
         ).pipe(Effect.result);
@@ -686,12 +836,20 @@ describe("log stream engine lifecycle", () => {
       }),
   );
 
-  it.effect.each(logConfigs)(
-    "keeps $kind secrets out of plan output, logs and drift errors",
-    (props) =>
+  it.effect.each(
+    Array.flatMap(logConfigs, (props) =>
+      Array.map(["drift", "record"] as const, (fault) => ({ props, fault })),
+    ),
+  )(
+    "keeps $props.kind secrets out of plan forms, state, logs and $fault errors",
+    ({ props, fault }) =>
       Effect.gen(function* () {
         const fixture = mockClient();
-        const deploy = makeHarness(fixture.layer, noCommands);
+        const persisted: Record<
+          string,
+          Record<string, Record<string, ResourceState>>
+        > = {};
+        const deploy = makeHarness(fixture.layer, noCommands, true, persisted);
         const messages: string[] = [];
         const capture = Logger.make(({ message, cause }) => {
           messages.push(inspect([message, cause], { depth: null }));
@@ -719,23 +877,41 @@ describe("log stream engine lifecycle", () => {
             status: { type: "failed", reason: "made-up-status-credential" },
           }),
         ]);
-        const result = yield* deploy(logResources(props)).pipe(
+        if (fault === "record") delete persisted.integration.test.Logs;
+        const result = yield* deploy(
+          logResources(props).pipe(adopt(true)),
+        ).pipe(
           Effect.result,
           Effect.provideService(Logger.CurrentLoggers, new Set([capture])),
         );
         expect(result).toMatchObject({
           _tag: "Failure",
-          failure: { _tag: "LogStreamDrift" },
+          failure: {
+            _tag:
+              fault === "drift"
+                ? "LogStreamDrift"
+                : "LogStreamRecoveryRequired",
+          },
         });
-        const shown = inspect([deploy.plans, first, result, messages], {
-          depth: null,
-        });
+        const shown = Array.join(
+          [
+            inspect([deploy.plans, first, result, messages, persisted], {
+              depth: null,
+            }),
+            // oxlint-disable-next-line effecttsgo/global-json-in-effect, effecttsgo/prefer-schema-over-json -- Exercise the public JSON.stringify rendering exactly.
+            JSON.stringify([deploy.plans, first, result, messages, persisted]),
+            ...Array.map(deploy.plans, Plan.printPlan),
+          ],
+          "\n",
+        );
         for (const secret of [
           "made-up-engine-deploy-key",
           "made-up-engine-axiom-key",
           "made-up-engine-sentry-dsn",
           "made-up-hmac-secret",
           "made-up-status-credential",
+          "made-up-webhook-password",
+          "made-up-webhook-token",
         ])
           expect(shown).not.toContain(secret);
       }),

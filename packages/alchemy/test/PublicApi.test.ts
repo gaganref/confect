@@ -195,6 +195,12 @@ it("types all log stream kinds and rejects plain secrets and foreign fields", ()
     axiom,
     sentry,
     webhook,
+    {
+      ...webhook,
+      url: Redacted.make(
+        "https://user:made-up-password@logs.example.test/made-up-token",
+      ),
+    },
     datadog,
     s3,
     { ...target, kind: "postHogLogs" as const, apiKey: secret },
