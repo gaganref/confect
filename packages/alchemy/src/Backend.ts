@@ -129,13 +129,18 @@ const automaticVariables = (
         );
     }
     for (const [slot, descriptor] of Rec.toEntries(manifest.env)) {
-      if (descriptor.automatic === true && supplied[slot] === undefined)
+      if (descriptor.automatic === true && missing(supplied[slot]))
         return yield* Result.fail(
           InvalidAutomaticSetting.make({ slot, reason: "Missing" }),
         );
     }
     return supplied;
   });
+
+const missing = (value: unknown): boolean =>
+  value === undefined ||
+  value === "" ||
+  (Redacted.isRedacted(value) && Redacted.value(value) === "");
 
 /**
  * A provider choice validated and encoded with the schema the handler decodes
@@ -166,7 +171,7 @@ const settleChoice = (
         other.provider?.selector === key &&
         other.provider.required &&
         named.includes(other.provider.name) &&
-        supplied[slot] === undefined
+        missing(supplied[slot])
       )
         return yield* InvalidMountSetting.make({
           mount: at,
@@ -185,9 +190,10 @@ const settleChoice = (
  */
 const normalize = (value: unknown): unknown => {
   if (Output.isOutput(value)) return value;
-  // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Input admits Effects with arbitrary errors and requirements; this boundary preserves requirements on the Output and converts failures to defects.
-  if (Effect.isEffect(value))
+  if (Effect.isEffect(value)) {
+    // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Input admits Effects with arbitrary errors and requirements; this boundary preserves requirements on the Output and converts failures to defects.
     return value.pipe(Effect.orDie, Output.fromEffect);
+  }
   if (value === null || typeof value !== "object" || Redacted.isRedacted(value))
     return value;
   const entries = Arr.map(
@@ -213,10 +219,11 @@ const normalize = (value: unknown): unknown => {
  * Validate and encode one resolved record before the environment resource sees
  * any values. Deferred records keep every upstream edge on each written value.
  */
-const supplySettings = (
+const supplySettings = <E>(
   at: string,
   slots: Readonly<Record<string, Env.Descriptor>>,
   values: Readonly<Record<string, unknown>>,
+  onMissing: (slot: string) => E,
 ) =>
   Effect.gen(function* () {
     const settle = (resolved: Readonly<Record<string, unknown>>) =>
@@ -224,13 +231,8 @@ const supplySettings = (
         const written: Record<string, unknown> = {};
         for (const [key, descriptor] of Rec.toEntries(slots)) {
           const value = resolved[key];
-          if (value === undefined) {
-            if (!descriptor.optional)
-              return yield* InvalidMountSetting.make({
-                mount: at,
-                slot: key,
-                reason: "Missing",
-              });
+          if (missing(value)) {
+            if (!descriptor.optional) return yield* Effect.fail(onMissing(key));
             continue;
           }
           if (descriptor.kind === "secret" && typeof value === "string")
@@ -329,7 +331,12 @@ export const mountVariables = (
             reason: "NotOpen",
           });
       }
-      const settings = yield* supplySettings(mount, entry.env, supplied);
+      const settings = yield* supplySettings(
+        mount,
+        entry.env,
+        supplied,
+        (slot) => InvalidMountSetting.make({ mount, slot, reason: "Missing" }),
+      );
       for (const [slot, open] of Rec.toEntries(entry.env)) {
         const value = settings[slot];
         if (value !== undefined) variables[open.variable] = value;
@@ -375,17 +382,9 @@ const backend = (
               "app",
               Rec.filter(manifest.env, (slot) => slot.automatic === true),
               automaticInput,
-            ).pipe(
-              Effect.mapError((error) =>
-                error.reason === "Missing"
-                  ? InvalidAutomaticSetting.make({
-                      slot: error.slot!,
-                      reason: "Missing",
-                    })
-                  : error,
-              ),
-              Effect.orDie,
-            );
+              (slot) =>
+                InvalidAutomaticSetting.make({ slot, reason: "Missing" }),
+            ).pipe(Effect.orDie);
       const env =
         manifest === undefined
           ? props.env
@@ -393,6 +392,12 @@ const backend = (
               "app",
               Rec.filter(manifest.env, (slot) => slot.automatic !== true),
               props.env ?? {},
+              (slot) =>
+                InvalidMountSetting.make({
+                  mount: "app",
+                  slot,
+                  reason: "Missing",
+                }),
             ).pipe(Effect.orDie);
       const variables =
         Rec.keys(promoted).length === 0 && props.automatic === undefined
