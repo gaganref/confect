@@ -665,7 +665,7 @@ sibling mount that declares the other shape, or is absent when the backend
 itself does. The schema refuses an optional automatic slot, an automatic providers selector, and an automatic provider setting. `Env.automatic` refuses a provider selector at compile time and throws `InvalidEnvProviders` at runtime, with `AutomaticSelector` or `AutomaticSetting` as its reason. `Manifest.Values` omits
 these values and `Manifest.Automatic` types `Backend.automatic`. Backend
 refuses undeclared and missing automatic values at runtime, including the
-empty-type case that TypeScript accepts. The closed format 1 schema and its
+empty-type case that TypeScript accepts. A plain string for an automatic secret fails with `InvalidAutomaticSetting` and reason `PlainSecret`, pointing to `Backend.automatic`. The closed format 1 schema and its
 digest include the flag before the stack lands.
 
 Changeset: `automatic-environment-slots.md`.

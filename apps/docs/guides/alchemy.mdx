@@ -225,7 +225,7 @@ Effect.gen(function* () {
 
 This example assumes `STAGE` is the manifest's only required slot. Use `Manifest.Automatic<typeof manifest>` to type the framework's values without Alchemy inputs. Each `automatic` value also accepts an Alchemy `Input`. Automatic slots are absent from `Manifest.Values` and `Backend.env`, and they never appear in `mounts`.
 
-`Backend` refuses an undeclared automatic name or a missing automatic value with `InvalidAutomaticSetting`, before environment writes or code pushes. Plain missing or invalid values fail before resource declaration. A present value of the wrong kind fails with reason `InvalidValue`. The error names the slot and points to `manifest.env` and `Backend.automatic`. This check also covers manifests with no automatic slots, whose empty automatic type cannot enforce excess properties.
+`Backend` refuses an undeclared automatic name or a missing automatic value with `InvalidAutomaticSetting`, before environment writes or code pushes. Plain missing or invalid values fail before resource declaration. A present value of the wrong kind fails with reason `InvalidValue`, while a plain string for an automatic secret uses `PlainSecret`. The error names the slot and points to `manifest.env` and `Backend.automatic`. This check also covers manifests with no automatic slots, whose empty automatic type cannot enforce excess properties.
 
 ### Write a provider choice
 

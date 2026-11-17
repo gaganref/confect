@@ -105,9 +105,16 @@ export class InvalidAutomaticSetting extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("InvalidAutomaticSetting", {
   slot: Schema.String,
-  reason: Schema.Literals(["NotAutomatic", "Missing", "InvalidValue"]),
+  reason: Schema.Literals([
+    "NotAutomatic",
+    "Missing",
+    "InvalidValue",
+    "PlainSecret",
+  ]),
 }) {
   override get message(): string {
+    if (this.reason === "PlainSecret")
+      return `${this.slot} is a plain string. Wrap this secret with Redacted.make before passing it in Backend.automatic.`;
     if (this.reason === "InvalidValue")
       return `${this.slot} has a value that does not match its manifest slot. Supply a string of the declared kind in Backend.automatic; secret slots require a Redacted string and literals slots require one of their values.`;
     return this.reason === "NotAutomatic"
@@ -231,7 +238,10 @@ const supplySettings = <E>(
   at: string,
   slots: Readonly<Record<string, Env.Descriptor>>,
   supplied: Readonly<Record<string, unknown>>,
-  invalid: (slot: string, reason: "Missing" | "InvalidValue") => E,
+  invalid: (
+    slot: string,
+    reason: "Missing" | "InvalidValue" | "PlainSecret",
+  ) => E,
 ) =>
   Effect.gen(function* () {
     const normalized = Rec.map(supplied, normalize);
@@ -244,11 +254,7 @@ const supplySettings = <E>(
           return undefined;
         }
         if (descriptor.kind === "secret" && typeof value === "string")
-          return yield* InvalidMountSetting.make({
-            mount: at,
-            slot: key,
-            reason: "PlainSecret",
-          });
+          return yield* Effect.fail(invalid(key, "PlainSecret"));
         const valid =
           descriptor.kind === "secret"
             ? Redacted.isRedacted(value) &&
@@ -316,12 +322,7 @@ export class InvalidMountSetting extends Schema.TaggedError<
   override get message() {
     const at =
       this.slot === undefined ? this.mount : `${this.mount}.${this.slot}`;
-    const location =
-      this.mount === "app"
-        ? "Backend.env"
-        : this.mount === "automatic"
-          ? "Backend.automatic"
-          : "Backend.mounts";
+    const location = this.mount === "app" ? "Backend.env" : "Backend.mounts";
     const remedy = {
       UnknownMount:
         "This mount is not listed. Use a mount name from manifest.mounts.",
@@ -422,7 +423,7 @@ const backend = (
         manifest === undefined || automaticInput === undefined
           ? undefined
           : yield* supplySettings(
-              "automatic",
+              "app",
               Rec.filter(manifest.env, (slot) => slot.automatic === true),
               automaticInput,
               (slot, reason) => InvalidAutomaticSetting.make({ slot, reason }),
