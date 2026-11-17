@@ -2510,6 +2510,18 @@ describe("log stream engine lifecycle", () => {
         if (fault === "deleted")
           fixture.state.logStreams.set(props.deploymentUrl, []);
         if (fault === "record") delete persisted.integration.test.Logs;
+        const planned = yield* deploy
+          .plan(logResources(props).pipe(adopt(true)))
+          .pipe(Effect.result);
+        expect(planned).toMatchObject({
+          _tag: "Failure",
+          failure: {
+            _tag:
+              fault === "drift"
+                ? "LogStreamDrift"
+                : "LogStreamRecoveryRequired",
+          },
+        });
         const result = yield* deploy(
           logResources(props).pipe(adopt(true)),
         ).pipe(Effect.result);
