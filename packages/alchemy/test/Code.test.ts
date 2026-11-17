@@ -116,6 +116,43 @@ const generating = (digest: string | undefined, contents?: string) =>
   });
 
 describe("Code", () => {
+  it.effect.each(["functions", "nested/functions"])(
+    "names the health file read from %s and both remedies",
+    (functions) =>
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const path = yield* Path.Path;
+        const cwd = yield* fs.makeTempDirectoryScoped({
+          prefix: "confect-health-path-",
+        });
+        yield* fs.writeFileString(
+          path.join(cwd, "convex.json"),
+          JSON.stringify({ functions }),
+        );
+        const calls: string[] = [];
+        const result = yield* deploy({
+          ...props,
+          cwd,
+          manifestDigest: "sha256:built",
+        }).pipe(Effect.provide(recorder(calls)), Effect.result);
+        assertIs(result, Result.isFailure);
+        expect(result.failure).toMatchObject({
+          _tag: "StaleManifest",
+          reason: "NotGenerated",
+          path: path.join(cwd, functions, "confectHealth.ts"),
+        });
+        expect(result.failure.message).toContain(
+          path.join(cwd, functions, "confectHealth.ts"),
+        );
+        expect(result.failure.message).toContain("Do not edit or format");
+        expect(result.failure.message).toContain("regenerate");
+        expect(result.failure.message).toContain("CLI");
+        expect(result.failure.message).toContain("Alchemy");
+        expect(result.failure.message).toContain("same Confect release");
+        expect(calls).toEqual(["prepare"]);
+      }).pipe(Effect.provide(NodeServices.layer), Effect.scoped),
+  );
+
   it.effect.each([
     ["another digest", "sha256:fresh", undefined, "DifferentDigest"],
     ["no health module", undefined, undefined, "NotGenerated"],
