@@ -283,7 +283,7 @@ const ownershipConflict = (variableName: string) =>
     physicalName: variableName,
   });
 
-const presentVariables = <A>(variables: Readonly<Record<string, A>>) =>
+const definedVariables = <A>(variables: Readonly<Record<string, A>>) =>
   Rec.filter(variables, (value) => value !== null && value !== undefined);
 
 const optionsForDiff = (
@@ -309,7 +309,7 @@ const optionsForDiff = (
       !Output.isExpr(news.variables) &&
       !Effect.isEffect(news.variables) &&
       Predicate.isReadonlyObject(news.variables)
-        ? Rec.keys(presentVariables<unknown>(news.variables))
+        ? Rec.keys(definedVariables<unknown>(news.variables))
         : undefined,
   };
 };
@@ -481,7 +481,7 @@ export const provider = Effect.gen(function* () {
         return yield* EnvironmentTargetChange.make({
           url: output.url,
         });
-      const desired = presentVariables(news.variables);
+      const desired = definedVariables(news.variables);
       const names = Rec.keys(desired);
       if (
         names.length !== output.ownedNames.length ||
@@ -512,11 +512,11 @@ export const provider = Effect.gen(function* () {
       yield* checkUnowned(
         olds.unownedPolicy,
         output,
-        Rec.keys(presentVariables(olds.variables)),
+        Rec.keys(definedVariables(olds.variables)),
         observed,
       );
       const ownedNames =
-        output?.ownedNames ?? Rec.keys(presentVariables(olds.variables));
+        output?.ownedNames ?? Rec.keys(definedVariables(olds.variables));
       const variables = select(observed, ownedNames);
       if (output !== undefined)
         return { ...output, deployKey: olds.deployKey, variables };
@@ -545,7 +545,7 @@ export const provider = Effect.gen(function* () {
       news,
       output,
     }) {
-      news = { ...news, variables: presentVariables(news.variables) };
+      news = { ...news, variables: definedVariables(news.variables) };
       if (output === undefined) yield* checkpointCreate(fqn, instanceId, news);
       if (output !== undefined && output.url !== news.url)
         return yield* EnvironmentTargetChange.make({
@@ -660,7 +660,7 @@ export const provider = Effect.gen(function* () {
       yield* checkUnowned(
         olds.unownedPolicy,
         output,
-        Rec.keys(presentVariables(olds.variables)),
+        Rec.keys(definedVariables(olds.variables)),
         observed,
       );
       const changes: Array<{
