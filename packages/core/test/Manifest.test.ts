@@ -120,10 +120,11 @@ describe("Manifest", () => {
       {
         ...manifest,
         env: {
+          CHOICE: { kind: "providers", values: ["ses"], optional: false },
           KEY: {
             kind: "secret",
             optional: true,
-            provider: { name: "ses", required: true },
+            provider: { selector: "CHOICE", name: "ses", required: true },
             extra: true,
           },
         },
@@ -134,10 +135,16 @@ describe("Manifest", () => {
       {
         ...manifest,
         env: {
+          CHOICE: { kind: "providers", values: ["ses"], optional: false },
           KEY: {
             kind: "secret",
             optional: true,
-            provider: { name: "ses", required: true, extra: true },
+            provider: {
+              selector: "CHOICE",
+              name: "ses",
+              required: true,
+              extra: true,
+            },
           },
         },
       },
@@ -345,5 +352,221 @@ describe("Manifest", () => {
       WEBHOOK_SECRET: "plain-text",
     };
     void [values, withOptional, missing, plain, literal, optionalSecret];
+  });
+
+  const refusal = (input: unknown) => {
+    const decoded = Manifest.decode(input, "@tenant/backend/manifest");
+    expect(Result.isFailure(decoded)).toBe(true);
+    if (Result.isSuccess(decoded)) throw new Error("decoded");
+    expect(decoded.failure._tag).toBe("UnsupportedManifestFormat");
+    return decoded.failure;
+  };
+  const choice = {
+    kind: "providers",
+    values: ["ses", "resend"],
+    optional: false,
+  } as const;
+  const tagged = (selector: string, name = "ses") =>
+    ({
+      kind: "secret",
+      optional: true,
+      provider: { selector, name, required: true },
+    }) as const;
+  const opened = (variable: string) => ({ variable });
+
+  it("accepts a provider tag whose selector is a providers slot of its own record", () => {
+    const decoded = Manifest.decode(
+      {
+        ...manifest,
+        env: { ...manifest.env, SES_KEY: tagged("EMAIL_PROVIDER") },
+        mounts: {
+          email: {
+            component: "email",
+            env: {
+              CHOICE: { ...choice, ...opened("EMAIL_CHOICE") },
+              KEY: { ...tagged("CHOICE", "resend"), ...opened("EMAIL_KEY") },
+            },
+          },
+        },
+      },
+      "@tenant/backend/manifest",
+    );
+    expect(Result.isSuccess(decoded)).toBe(true);
+  });
+
+  it.each([
+    [
+      "a tag without its selector",
+      {
+        ...manifest,
+        env: {
+          ...manifest.env,
+          SES_KEY: {
+            kind: "secret",
+            optional: true,
+            provider: { name: "ses", required: true },
+          },
+        },
+      },
+      "selector",
+    ],
+    [
+      "a selector that names no slot",
+      { ...manifest, env: { ...manifest.env, SES_KEY: tagged("MISSING") } },
+      "env.SES_KEY names the provider selector MISSING, which is not a providers slot of env",
+    ],
+    [
+      "a selector that names a slot of another kind",
+      {
+        ...manifest,
+        env: { ...manifest.env, SES_KEY: tagged("EMAIL_TRANSPORT") },
+      },
+      "env.SES_KEY names the provider selector EMAIL_TRANSPORT, which is not a providers slot of env",
+    ],
+    [
+      "a selector that names a slot of another record",
+      {
+        ...manifest,
+        mounts: {
+          email: {
+            component: "email",
+            env: {
+              KEY: { ...tagged("EMAIL_PROVIDER"), ...opened("EMAIL_KEY") },
+            },
+          },
+        },
+      },
+      "mounts.email.env.KEY names the provider selector EMAIL_PROVIDER, which is not a providers slot of mounts.email.env",
+    ],
+    [
+      "a provider its selector does not offer",
+      {
+        ...manifest,
+        env: { ...manifest.env, SMS_KEY: tagged("EMAIL_PROVIDER", "sms") },
+      },
+      "env.SMS_KEY names the provider sms, which env.EMAIL_PROVIDER does not offer",
+    ],
+    [
+      "an optional automatic slot",
+      {
+        ...manifest,
+        env: {
+          ...manifest.env,
+          STAGE: { kind: "string", optional: true, automatic: true },
+        },
+      },
+      "env.STAGE is automatic and optional; an automatic slot is required",
+    ],
+    ...Arr.map(
+      ["1BAD", "HAS-DASH", "", "CONVEX_SITE_URL", "CONVEX_CLOUD_URL"],
+      (variable) =>
+        [
+          `the variable "${variable}"`,
+          {
+            ...manifest,
+            mounts: {
+              email: {
+                component: "email",
+                env: {
+                  KEY: {
+                    kind: "string",
+                    optional: false,
+                    ...opened(variable),
+                  },
+                },
+              },
+            },
+          },
+          `mounts.email.env.KEY declares the variable "${variable}", which`,
+        ] as const,
+    ),
+    ...Arr.map(["owner", "group", "endpoint"] as const, (field) => [
+      `a route leaf whose ${field} differs from its key`,
+      {
+        ...manifest,
+        http: {
+          ...manifest.http,
+          app: {
+            health: {
+              ready: { ...manifest.http.app.health.ready, [field]: "other" },
+            },
+          },
+        },
+      },
+      `http.app.health.ready has ${field} "other", not the key it sits under`,
+    ]),
+    [
+      "a route leaf from another build",
+      {
+        ...manifest,
+        http: {
+          ...manifest.http,
+          app: {
+            health: {
+              ready: {
+                ...manifest.http.app.health.ready,
+                digest: "sha256:1111",
+              },
+            },
+          },
+        },
+      },
+      "http.app.health.ready carries digest sha256:1111, not the manifest's sha256:0000",
+    ],
+  ] satisfies ReadonlyArray<readonly [string, unknown, string]>)(
+    "refuses %s, naming the rule",
+    (_, input, rule) => {
+      const failure = refusal(input);
+      expect(failure.reason).toContain(rule);
+      expect(failure.remedy).toBe("Regenerate");
+    },
+  );
+
+  it("names the variable rule a reserved and a malformed variable break", () => {
+    const at = (variable: string) =>
+      refusal({
+        ...manifest,
+        mounts: {
+          email: {
+            component: "email",
+            env: {
+              KEY: { kind: "string", optional: false, variable },
+            },
+          },
+        },
+      }).reason;
+    expect(at("CONVEX_SITE_URL")).toContain("reserved");
+    expect(at("1BAD")).toContain(
+      "letters, digits and underscores, starting with a letter",
+    );
+  });
+
+  it.each([
+    [2, "Upgrade"],
+    [7, "Upgrade"],
+    [0, "Regenerate"],
+    ["1", "Regenerate"],
+    [undefined, "Regenerate"],
+  ] as const)("gives format %s the %s remedy", (format, remedy) => {
+    const { format: _, ...rest } = manifest;
+    const failure = refusal(
+      format === undefined ? rest : { ...manifest, format },
+    );
+    expect(failure.remedy).toBe(remedy);
+    if (remedy === "Upgrade") {
+      expect(failure.message).toContain(
+        "Upgrade the Confect packages that read it",
+      );
+      expect(failure.message).not.toContain("same release");
+    } else {
+      expect(failure.message).toContain("confect codegen");
+      expect(failure.message).toContain("same release");
+    }
+  });
+
+  it("tells a malformed shape at the current format to regenerate", () => {
+    const failure = refusal({ ...manifest, env: { KEY: { kind: "new" } } });
+    expect(failure.remedy).toBe("Regenerate");
+    expect(failure.message).toContain("same release");
   });
 });
