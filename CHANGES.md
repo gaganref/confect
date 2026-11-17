@@ -1198,10 +1198,12 @@ Upstream: planned; no linked proposal verified.
 ### Declare custom domains and canonical URLs
 
 Add `Convex.CustomDomain` so stacks can own backend addresses and optionally set
-one as a destination's canonical URL. Refuse domains outside saved state, report
-verification without waiting for DNS, and reset managed canonical URLs on opt-out
-or removal. Domain, destination, and deployment changes replace the old domain
-before creating the new one. Account entitlement, DNS, certificates, propagation,
+one as a destination's canonical URL after verification. Refresh verification on
+later applies. Create changed hostnames before removing the old domain. Warn
+when a same-hostname move requires deletion first. Recover lost create responses
+through explicit adoption, including during replacement. Reset a canonical URL
+only while it still points to this domain, and refuse conflicting canonical
+owners during planning. Account entitlement, DNS, certificates, propagation,
 and sign-in behavior remain unproven.
 
 Changeset: `alchemy-custom-domain.md`.
