@@ -581,3 +581,244 @@ describe("Backend", () => {
       }).pipe(Effect.provide([stack(), providers])),
   );
 });
+
+const selector = (...values: readonly [string, ...Array<string>]) =>
+  ({ kind: "providers", values, optional: false }) as const;
+const setting = (chooser: string, name: string) =>
+  ({
+    kind: "secret",
+    optional: true,
+    provider: { selector: chooser, name, required: true },
+  }) as const;
+const variable = <D extends object>(descriptor: D, name: string) => ({
+  ...descriptor,
+  variable: name,
+});
+const defectOf = (exit: Exit.Exit<unknown, unknown>) => {
+  if (Exit.isSuccess(exit)) throw new Error("Backend succeeded");
+  const defect = Cause.findDefect(exit.cause);
+  if (Result.isFailure(defect))
+    throw new Error("Backend failed without a defect");
+  return defect.success;
+};
+
+describe("Backend provider selectors", () => {
+  const key = Redacted.make("key");
+
+  it.effect(
+    "matches root settings to the selector that tags them, not to a provider name another selector shares",
+    () =>
+      Effect.gen(function* () {
+        const manifest = {
+          ...formatOne,
+          env: {
+            EMAIL_PROVIDER: selector("ses", "resend"),
+            EMAIL_SES_KEY: setting("EMAIL_PROVIDER", "ses"),
+            RESEND_KEY: setting("EMAIL_PROVIDER", "resend"),
+            SMS_PROVIDER: selector("ses", "twilio"),
+            SMS_SES_KEY: setting("SMS_PROVIDER", "ses"),
+            TWILIO_KEY: setting("SMS_PROVIDER", "twilio"),
+          },
+        } as const;
+        const env = {
+          EMAIL_PROVIDER: "resend",
+          RESEND_KEY: key,
+          SMS_PROVIDER: "ses",
+          SMS_SES_KEY: key,
+        } as const;
+        const backend = yield* Backend("Backend", { ...props, manifest, env });
+        expect(backend.environment?.Props.variables).toEqual(env);
+        const { SMS_SES_KEY: _, ...withoutKey } = env;
+        const exit = yield* Backend("Missing", {
+          ...props,
+          manifest,
+          env: withoutKey,
+        }).pipe(Effect.exit);
+        const missing = defectOf(exit);
+        expect(missing).toEqual(
+          InvalidMountSetting.make({
+            mount: "app",
+            slot: "SMS_SES_KEY",
+            reason: "Missing",
+          }),
+        );
+      }).pipe(Effect.provide([stack(), providers])),
+  );
+
+  it.effect(
+    "keeps the selectors of two components under one host and of three nested levels apart",
+    () =>
+      Effect.gen(function* () {
+        const email = {
+          EMAIL_PROVIDER: variable(
+            selector("ses", "resend"),
+            "A_EMAIL_PROVIDER",
+          ),
+          SES_KEY: variable(setting("EMAIL_PROVIDER", "ses"), "A_SES_KEY"),
+        };
+        const manifest = {
+          ...formatOne,
+          mounts: {
+            a: { component: "email", env: email },
+            b: {
+              component: "email",
+              env: {
+                EMAIL_PROVIDER: variable(
+                  selector("ses", "resend"),
+                  "B_EMAIL_PROVIDER",
+                ),
+                SES_KEY: variable(
+                  setting("EMAIL_PROVIDER", "ses"),
+                  "B_SES_KEY",
+                ),
+              },
+            },
+            relay: {
+              component: "relay",
+              env: {
+                EMAIL_PROVIDER: variable(
+                  selector("ses", "resend"),
+                  "RELAY_EMAIL_PROVIDER",
+                ),
+                SES_KEY: variable(
+                  setting("EMAIL_PROVIDER", "ses"),
+                  "RELAY_SES_KEY",
+                ),
+                INNER_EMAIL_PROVIDER: variable(
+                  selector("ses", "resend"),
+                  "RELAY_INNER_EMAIL_PROVIDER",
+                ),
+                INNER_SES_KEY: variable(
+                  setting("INNER_EMAIL_PROVIDER", "ses"),
+                  "RELAY_INNER_SES_KEY",
+                ),
+                INNER_DEEP_EMAIL_PROVIDER: variable(
+                  selector("ses", "resend"),
+                  "RELAY_INNER_DEEP_EMAIL_PROVIDER",
+                ),
+                INNER_DEEP_SES_KEY: variable(
+                  setting("INNER_DEEP_EMAIL_PROVIDER", "ses"),
+                  "RELAY_INNER_DEEP_SES_KEY",
+                ),
+              },
+            },
+          },
+        } as const;
+        const variables = yield* mountVariables(manifest, {
+          a: { EMAIL_PROVIDER: "resend" },
+          b: { EMAIL_PROVIDER: "ses", SES_KEY: key },
+          relay: {
+            EMAIL_PROVIDER: "resend",
+            INNER_EMAIL_PROVIDER: "resend",
+            INNER_DEEP_EMAIL_PROVIDER: "ses",
+            INNER_DEEP_SES_KEY: key,
+          },
+        });
+        expect(variables).toEqual({
+          A_EMAIL_PROVIDER: "resend",
+          B_EMAIL_PROVIDER: "ses",
+          B_SES_KEY: key,
+          RELAY_EMAIL_PROVIDER: "resend",
+          RELAY_INNER_EMAIL_PROVIDER: "resend",
+          RELAY_INNER_DEEP_EMAIL_PROVIDER: "ses",
+          RELAY_INNER_DEEP_SES_KEY: key,
+        });
+        const missing = yield* Effect.flip(
+          mountVariables(manifest, {
+            a: { EMAIL_PROVIDER: "resend" },
+            b: { EMAIL_PROVIDER: "resend" },
+            relay: {
+              EMAIL_PROVIDER: "resend",
+              INNER_EMAIL_PROVIDER: "ses",
+              INNER_DEEP_EMAIL_PROVIDER: "resend",
+            },
+          }),
+        );
+        expect(missing).toEqual(
+          InvalidMountSetting.make({
+            mount: "relay",
+            slot: "INNER_SES_KEY",
+            reason: "Missing",
+          }),
+        );
+      }),
+  );
+
+  it.effect.each([
+    ["an unknown provider", "sms"],
+    ["an empty pool", { pool: [] }],
+    [
+      "an active provider repeated in standby",
+      { active: "ses", standby: ["ses"] },
+    ],
+    ["an unknown standby", { active: "ses", standby: ["sms"] }],
+    ["a raw object", { name: "ses" }],
+    ["a choice already written as JSON", '{"pool":["ses"]}'],
+  ] as const)(
+    "refuses %s with the handler's schema before declaring any resource",
+    ([_, choice]) =>
+      Effect.gen(function* () {
+        const manifest = {
+          ...formatOne,
+          env: {
+            EMAIL_PROVIDER: selector("ses", "resend"),
+            SES_KEY: setting("EMAIL_PROVIDER", "ses"),
+          },
+        } as const;
+        const declared = {
+          name: "test",
+          stage: "test",
+          resources: {},
+          bindings: {},
+          actions: {},
+        };
+        const exit = yield* Backend("Backend", {
+          ...props,
+          manifest,
+          // A choice from untyped code reaches the boundary unchecked.
+          env: { EMAIL_PROVIDER: choice as "ses", SES_KEY: key },
+        }).pipe(Effect.provideService(Stack, declared), Effect.exit);
+        expect(defectOf(exit)).toEqual(
+          InvalidMountSetting.make({
+            mount: "app",
+            slot: "EMAIL_PROVIDER",
+            reason: "InvalidChoice",
+          }),
+        );
+        expect(Record.keys(declared.resources)).toEqual([]);
+        const accepted = yield* Backend("Accepted", {
+          ...props,
+          manifest,
+          env: { EMAIL_PROVIDER: "ses", SES_KEY: key },
+        }).pipe(Effect.provideService(Stack, declared));
+        expect(accepted.environment).toBeDefined();
+        expect(Record.keys(declared.resources)).not.toEqual([]);
+      }).pipe(Effect.provide([providers])),
+  );
+
+  it("explains how to fix InvalidChoice", () => {
+    const error = InvalidMountSetting.make({
+      mount: "email",
+      slot: "EMAIL_PROVIDER",
+      reason: "InvalidChoice",
+    });
+    expect(error.message).toContain("email.EMAIL_PROVIDER");
+    expect(error.message).toContain(
+      "Name one of the providers this selector offers, or a failover or pool of them",
+    );
+  });
+
+  it.effect.each(invalidManifests)(
+    "refuses a malformed manifest passed to mountVariables (%s)",
+    ([_, manifest]) =>
+      Effect.gen(function* () {
+        const failure = yield* Effect.flip(
+          mountVariables(manifest as typeof formatOne, {}),
+        );
+        expect(failure).toMatchObject({
+          _tag: "UnsupportedManifestFormat",
+          source: "confect/_generated/manifest.ts",
+        });
+      }),
+  );
+});
