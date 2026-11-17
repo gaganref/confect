@@ -415,6 +415,7 @@ it("exports the health check failure a deploy fails with", () => {
 it("exports the stale manifest failure a deploy fails with before the push", () => {
   expect(Convex.StaleManifest).toBe(Stale);
   const failure = Convex.StaleManifest.make({
+    reason: "DifferentDigest",
     expected: "sha256:imported",
     generated: "sha256:generated",
   });

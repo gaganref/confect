@@ -3,6 +3,7 @@ import {
   Http,
   Mount,
   Manifest,
+  HealthModule,
   type ManifestSection,
 } from "@confect/core";
 import * as Effect from "effect/Effect";
@@ -653,7 +654,7 @@ export const syncHealthModule = Effect.gen(function* () {
   const current = yield* readManifest;
   if (target !== "app" || !Predicate.isString(current.digest))
     return yield* removeGenerated(healthPath, []);
-  yield* writeFileString(healthPath, Declaration.healthModule(current.digest));
+  yield* writeFileString(healthPath, HealthModule.render(current.digest));
 });
 
 /**

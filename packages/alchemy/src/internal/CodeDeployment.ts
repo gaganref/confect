@@ -1,3 +1,4 @@
+import * as HealthModule from "@confect/core/HealthModule";
 import type { ProviderMode } from "alchemy/ProviderMode";
 import * as Effect from "effect/Effect";
 import * as FileSystem from "effect/FileSystem";
@@ -45,20 +46,17 @@ export class StaleManifest extends Schema.TaggedError<
   { readonly brand: unique symbol }
 >()("StaleManifest", {
   expected: Schema.String,
+  reason: Schema.Literals(["DifferentDigest", "NotGenerated"]),
   generated: Schema.optionalKey(Schema.String),
 }) {
   override get message() {
-    const generated =
-      this.generated === undefined
-        ? "prepare wrote no manifest digest"
-        : `prepare generated manifest ${this.generated}`;
-    return `${generated}, but the stack imported manifest ${this.expected}, so nothing was pushed. Run confect codegen, commit the generated files and deploy again.`;
+    return this.reason === "NotGenerated"
+      ? `The health module is not as codegen writes it, so nothing was pushed. Do not edit or format convex/confectHealth.ts; regenerate it with confect codegen.`
+      : `prepare generated manifest ${this.generated}, but the stack imported manifest ${this.expected}, so nothing was pushed. Run confect codegen, commit the generated files and deploy again.`;
   }
 }
 
 const HEALTH = "confectHealth:digest";
-
-const handler = /^\s*handler: \(\) => ("(?:[^"\\]|\\.)*"),$/m;
 
 /**
  * The digest prepare wrote into the health module, which is what the push would
@@ -72,10 +70,7 @@ const generatedDigest = Effect.fn("Code.generatedDigest")(
     const file = path.join(cwd, functions, "confectHealth.ts");
     if (!(yield* fs.exists(file))) return Option.none<string>();
     const contents = yield* fs.readFileString(file);
-    const found = handler.exec(contents);
-    return found === null
-      ? Option.none<string>()
-      : Schema.decodeOption(Schema.fromJsonString(Schema.String))(found[1]!);
+    return HealthModule.read(contents);
   },
   Effect.orElseSucceed(Option.none<string>),
 );
@@ -179,6 +174,9 @@ export const deploy = Effect.fn("Code.deploy")(function* (
         if (Option.getOrUndefined(generated) !== props.manifestDigest)
           return yield* StaleManifest.make({
             expected: props.manifestDigest,
+            reason: Option.isNone(generated)
+              ? "NotGenerated"
+              : "DifferentDigest",
             ...Option.match(generated, {
               onNone: () => ({}),
               onSome: (digest) => ({ generated: digest }),

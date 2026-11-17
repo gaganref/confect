@@ -1,3 +1,4 @@
+import * as HealthModule from "@confect/core/HealthModule";
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
 import * as Predicate from "effect/Predicate";
@@ -899,7 +900,7 @@ describe("Backend choices from outputs", () => {
             });
             yield* fs.writeFileString(
               path.join(cwd, "convex", "confectHealth.ts"),
-              `export const digest = internalQueryGeneric({\n  handler: () => "${formatOne.digest}",\n});\n`,
+              HealthModule.render(formatOne.digest),
             );
           }).pipe(Effect.orDie),
         deploy: () => Effect.sync(() => void pushes.push("deploy")),

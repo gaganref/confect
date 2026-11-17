@@ -1263,27 +1263,6 @@ export const manifestDigest = (
 ): string =>
   digest({ files: [["declaration", source]], versions: [], manifest: data });
 
-/**
- * `convex/confectHealth.ts`: the internal query a deploy calls to learn which
- * manifest the pushed code was generated with.
- */
-export const healthModule = (digest: string): string =>
-  Arr.join(
-    [
-      header("confect/app.ts"),
-      'import { internalQueryGeneric } from "convex/server";',
-      'import { v } from "convex/values";',
-      "",
-      "export const digest = internalQueryGeneric({",
-      "  args: {},",
-      "  returns: v.string(),",
-      `  handler: () => ${quote(digest)},`,
-      "});",
-      "",
-    ],
-    "\n",
-  );
-
 export const renderManifest = (
   data: Readonly<Record<string, unknown>>,
 ): string =>
