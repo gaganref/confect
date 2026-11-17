@@ -17,9 +17,7 @@ export class PushLockError extends Schema.TaggedError<
 >()("PushLockError", {
   deploymentName: Schema.String,
   reason: Schema.Literals(["configuration", "timeout", "filesystem"]),
-  missing: Schema.Literals(["homeDirectory", "PushLock"]).pipe(
-    Schema.optionalKey,
-  ),
+  missing: Schema.Literals(["PushLock"]).pipe(Schema.optionalKey),
 }) {
   override get message() {
     switch (this.reason) {

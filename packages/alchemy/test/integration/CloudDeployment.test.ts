@@ -48,6 +48,7 @@ const makeHarness = (
   runner: Layer.Layer<CommandRunner>,
   allowAdoption = false,
   savedState: Parameters<typeof inMemoryState>[0] = {},
+  lockTaken = (_deploymentName: string) => {},
 ) => {
   const context = Layer.mergeAll(
     Layer.mergeAll(
@@ -87,7 +88,11 @@ const makeHarness = (
     Layer.provide(runner),
     Layer.provide(
       Layer.succeed(PushLock, {
-        withLock: (_deploymentName, effect) => effect,
+        withLock: (_deploymentName, effect) =>
+          Effect.suspend(() => {
+            lockTaken(_deploymentName);
+            return effect;
+          }),
       }),
     ),
   );
@@ -333,6 +338,70 @@ describe("cloud deployment lifecycle", () => {
         expect(fixture.client.updateEnvironmentVariables).toHaveBeenCalledTimes(
           writes,
         );
+      }),
+  );
+
+  it.effect(
+    "refuses an invalid Output lock at apply before taking the lock or writing variables",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const locks: string[] = [];
+        let pushes = 0;
+        const deploy = makeHarness(
+          fixture.layer,
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () =>
+              Effect.sync(() => {
+                pushes++;
+              }),
+          }),
+          false,
+          {},
+          (name) => {
+            locks.push(name);
+          },
+        );
+        const resources = Effect.gen(function* () {
+          const source = yield* Convex.Code("Source", {
+            deployment: {
+              name: "happy-otter-123",
+              url: "https://happy-otter-123.convex.cloud",
+            },
+            deployKey: Redacted.make(
+              "prod:happy-otter-123|output-lock-key-secret",
+            ),
+          });
+          yield* Convex.EnvironmentVariables("Environment", {
+            url: "https://happy-otter-123.convex.cloud",
+            deployKey: Redacted.make("output-lock-key-secret"),
+            variables: { MANAGED: Redacted.make("output-lock-value-secret") },
+            lock: {
+              deploymentName: Output.map(source.url, () => "../../escape"),
+            },
+          });
+        });
+        const plan = yield* deploy(resources, true).pipe(Effect.exit);
+        expect(Exit.isSuccess(plan)).toBe(true);
+        expect(pushes).toBe(0);
+        const applied = yield* deploy(resources).pipe(Effect.exit);
+        expect(Exit.isFailure(applied)).toBe(true);
+        const detail = inspect(applied, { depth: null });
+        expect(detail).toContain("EnvironmentVariablesInvalidOption");
+        expect(detail).toContain("deploymentName");
+        expect(pushes).toBe(1);
+        expect(locks).toEqual(["happy-otter-123"]);
+        expect(
+          fixture.client.updateEnvironmentVariables,
+        ).not.toHaveBeenCalled();
+        for (const secret of [
+          "output-lock-key-secret",
+          "output-lock-value-secret",
+        ]) {
+          expect(detail).not.toContain(secret);
+          expect(inspect(plan, { depth: null })).not.toContain(secret);
+        }
       }),
   );
 
@@ -640,6 +709,7 @@ describe("cloud deployment lifecycle", () => {
               }),
           }),
         );
+        const wantedSecret = Redacted.make("wanted-drift-secret");
         const resources = (safe: boolean) =>
           Effect.gen(function* () {
             const source = yield* Convex.Code("Source", {
@@ -649,9 +719,7 @@ describe("cloud deployment lifecycle", () => {
               },
               deployKey: Redacted.make("prod:happy-otter-123|drift-key-secret"),
             });
-            const wanted = Output.map(source.url, () =>
-              Redacted.make("wanted-drift-secret"),
-            );
+            const wanted = Output.map(source.url, () => wantedSecret);
             yield* Convex.EnvironmentVariables("Environment", {
               url: "https://happy-otter-123.convex.cloud",
               deployKey: Redacted.make("prod:happy-otter-123|drift-key-secret"),

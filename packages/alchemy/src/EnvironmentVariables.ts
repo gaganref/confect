@@ -246,7 +246,6 @@ const checkedInput = <A>(
   const check = (value: A) =>
     Effect.fromResult(validate(value)).pipe(Effect.orDie, Effect.as(value));
   if (Config.isConfig(input)) return input.pipe(Config.mapEffect(check));
-  if (Output.isExpr(input)) return input.pipe(Output.mapEffect(check));
   return input;
 };
 
@@ -368,18 +367,25 @@ export const provider = Effect.gen(function* () {
     policy: EnvironmentVariablesProps["driftPolicy"],
     output: EnvironmentVariablesAttributes | undefined,
     observed: ConvexClient.EnvironmentVariables,
-    desired?: Input<EnvironmentVariablesProps["variables"]>,
+    desired: Input<EnvironmentVariablesProps["variables"]> | undefined,
   ) => {
     if (policy !== "error" || output === undefined) return Effect.void;
+    const desiredVariables =
+      Predicate.isReadonlyObject(desired) &&
+      !Output.isExpr(desired) &&
+      !Effect.isEffect(desired)
+        ? desired
+        : undefined;
     for (const name of output.ownedNames) {
       const previous = valueAt(output.variables, name);
       const current = valueAt(observed, name);
-      const wanted =
-        Predicate.isReadonlyObject(desired) &&
-        !Output.isExpr(desired) &&
-        !Effect.isEffect(desired)
-          ? desired[name]
-          : undefined;
+      const wanted = desiredVariables?.[name];
+      if (
+        current !== undefined &&
+        (desiredVariables === undefined ||
+          (wanted !== undefined && !isResolved(wanted)))
+      )
+        continue;
       if (
         current !== undefined &&
         (typeof wanted === "string" || Redacted.isRedacted(wanted)) &&
@@ -644,7 +650,7 @@ export const provider = Effect.gen(function* () {
         .listEnvironmentVariables(output.url, output.deployKey)
         .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
       if (observed === undefined) return;
-      yield* checkDrift(olds.driftPolicy, output, observed);
+      yield* checkDrift(olds.driftPolicy, output, observed, {});
       yield* checkUnowned(
         olds.unownedPolicy,
         output,

@@ -1212,11 +1212,15 @@ Upstream: planned; no linked proposal verified.
 adopt matching desired values with `adoptMatching` even under a general adoption
 grant, share the deployment's push lock, and retry a bounded number of write
 conflicts. All five options default to prior behavior.
-Plan checks compare against the stored snapshot before unresolved desired inputs
-can skip the check. Resolved safety settings apply even when desired values are
-unresolved; unowned-name checks wait if the desired names themselves are unknown.
-A rerun converges after a lost write response when live values already match the
-declaration. Invalid retry settings and deployment lock names fail with
+Resolved desired values are checked for drift during planning. Value comparisons
+for unresolved values or an unresolved desired map wait until apply, after
+upstream resources such as a code push and before any environment write.
+A live value equal to the resolved desired value permits recovery after a lost
+write response without another write. A value differing from both the stored
+snapshot and the desired value is refused. A previously present owned name
+deleted outside the stack is still refused during planning, even when its
+desired value or map is unresolved. Resolved safety settings retain their
+plan-time checks; unowned-name checks wait if the desired names are unknown. Invalid retry settings and deployment lock names fail with
 `EnvironmentVariablesInvalidOption` before apply when those settings are known.
 Errors and adoption logs identify names without values.
 The options let Frame manage environment values without silently overwriting
