@@ -170,34 +170,54 @@ describe("Manifest", () => {
     },
   );
 
+  it.each(["constructor", "toString", "hasOwnProperty", "valueOf"])(
+    "uses an own selector named %s",
+    (name) => {
+      const setting = {
+        kind: "secret",
+        optional: true,
+        provider: { selector: name, name: "ses", required: true },
+      };
+      const absent = Manifest.decode(
+        { ...manifest, env: { KEY: setting } },
+        "fixture",
+      );
+      expect(Result.isFailure(absent)).toBe(true);
+      const present = Manifest.decode(
+        {
+          ...manifest,
+          env: {
+            [name]: { kind: "providers", values: ["ses"], optional: false },
+            KEY: setting,
+          },
+        },
+        "fixture",
+      );
+      expect(Result.isSuccess(present)).toBe(true);
+    },
+  );
+
   it.each([
-    "constructor",
-    "toString",
-    "hasOwnProperty",
-    "__proto__",
-    "valueOf",
-  ])("uses an own selector named %s", (name) => {
-    const setting = {
-      kind: "secret",
-      optional: true,
-      provider: { selector: name, name: "ses", required: true },
-    };
-    const absent = Manifest.decode(
-      { ...manifest, env: { KEY: setting } },
-      "fixture",
-    );
-    expect(Result.isFailure(absent)).toBe(true);
-    const present = Manifest.decode(
+    ["bad-key", "letters, digits and underscores, starting with a letter"],
+    ["__proto__", "letters, digits and underscores, starting with a letter"],
+    ["CONVEX_SITE_URL", "reserved for a Convex built-in address"],
+    ["CONVEX_CLOUD_URL", "reserved for a Convex built-in address"],
+  ])("refuses the root env key %s, naming the variable rule", (key, rule) => {
+    const decoded = Manifest.decode(
       {
         ...manifest,
-        env: {
-          [name]: { kind: "providers", values: ["ses"], optional: false },
-          KEY: setting,
-        },
+        env: { [key]: { kind: "string", optional: false } },
       },
       "fixture",
     );
-    expect(Result.isSuccess(present)).toBe(true);
+    expect(Result.isFailure(decoded)).toBe(true);
+    if (Result.isFailure(decoded)) {
+      expect(decoded.failure._tag).toBe("UnsupportedManifestFormat");
+      expect(decoded.failure.reason).toContain(
+        `env.${key} declares the variable "${key}"`,
+      );
+      expect(decoded.failure.reason).toContain(rule);
+    }
   });
 
   it("decodes without changing the imported value", () => {
