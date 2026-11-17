@@ -257,6 +257,63 @@ describe("Http", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect.each([
+    ["missing", "receive"],
+    ["webhooks", "missing"],
+  ] as const)("reports unknown %s.%s through Config", ([group, endpoint]) =>
+    Effect.gen(function* () {
+      const api = HttpApi.make("shared").add(
+        HttpApiGroup.make("webhooks").add(
+          HttpApiEndpoint.post("receive", "/hooks"),
+        ),
+      );
+      const services = yield* ConfigProvider.fromUnknown({
+        CONVEX_SITE_URL: "https://happy-otter-123.convex.site",
+      }).pipe(ConfigProvider.layer, Layer.build);
+      // @ts-expect-error Exercise invalid names supplied by an untyped caller.
+      const config = Http.url(api, group, endpoint);
+      expectTypeOf(config).toEqualTypeOf<Config.Config<string>>();
+      const result = yield* config.pipe(
+        Effect.result,
+        Effect.provideContext(services),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure).toBeInstanceOf(Config.ConfigError);
+        expect(result.failure.message).toContain(group);
+        expect(result.failure.message).toContain(endpoint);
+      }
+    }).pipe(Effect.scoped),
+  );
+
+  it.effect("reports an endpoint absent from a group selected by a union", () =>
+    Effect.gen(function* () {
+      const api = HttpApi.make("shared").add(
+        HttpApiGroup.make("webhooks").add(
+          HttpApiEndpoint.post("receive", "/hooks"),
+        ),
+        HttpApiGroup.make("files").add(
+          HttpApiEndpoint.post("upload", "/uploads"),
+        ),
+      );
+      const selectGroup = (): "webhooks" | "files" => "files";
+      const config = Http.url(api, selectGroup(), "receive");
+      const services = yield* ConfigProvider.fromUnknown({
+        CONVEX_SITE_URL: "https://happy-otter-123.convex.site",
+      }).pipe(ConfigProvider.layer, Layer.build);
+      const result = yield* config.pipe(
+        Effect.result,
+        Effect.provideContext(services),
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result)) {
+        expect(result.failure).toBeInstanceOf(Config.ConfigError);
+        expect(result.failure.message).toContain("files");
+        expect(result.failure.message).toContain("receive");
+      }
+    }).pipe(Effect.scoped),
+  );
+
   it("types endpoint addresses against their own group", () => {
     const api = HttpApi.make("email").add(
       HttpApiGroup.make("webhooks").add(
