@@ -658,6 +658,66 @@ process.exit(7);`,
     }).pipe(Effect.scoped),
   );
 
+  describe.skipIf(process.platform === "win32")(
+    "POSIX signal termination",
+    () => {
+      it.live("retains redacted diagnostics when a CLI dies on SIGKILL", () =>
+        Effect.gen(function* () {
+          const services = yield* Layer.build(
+            runnerLayer.pipe(Layer.provideMerge(NodeServices.layer)),
+          );
+          return yield* Effect.gen(function* () {
+            const fs = yield* FileSystem.FileSystem;
+            const path = yield* Path.Path;
+            const cwd = yield* project;
+            yield* fs.writeFileString(
+              path.join(cwd, "node_modules/convex/cli.js"),
+              `const { writeSync } = require('node:fs');
+writeSync(1, 'Push started\\n${Redacted.value(props.deployKey)}\\n');
+writeSync(2, 'Schema validation failed\\n${Redacted.value(props.deployKey)}\\n');
+process.kill(process.pid, 'SIGKILL');`,
+            );
+            const runner = yield* CommandRunner;
+            const exit = yield* runner
+              .deploy(
+                {
+                  _tag: "Cloud",
+                  deploymentName: props.deployment.name,
+                  deployKey: props.deployKey,
+                },
+                cwd,
+              )
+              .pipe(Effect.exit, Effect.timeout("3 seconds"));
+            assertIs(exit, Exit.isFailure);
+            const error = Cause.squash(exit.cause);
+            assertIs(error, Schema.is(CommandError));
+            expect(error).toMatchObject({
+              operation: "deploy",
+              reason: "exit",
+              signal: "SIGKILL",
+              stdout: "Push started\n<REDACTED>\n",
+              stderr: "Schema validation failed\n<REDACTED>\n",
+            });
+            expect(error.exitCode).toBeUndefined();
+            expect(error.message).toContain("signal SIGKILL");
+            for (const representation of [
+              error.message,
+              inspect(error),
+              yield* serialize(error),
+              Cause.pretty(exit.cause),
+              yield* serialize(exit.cause),
+            ]) {
+              expect(representation).toContain("Schema validation failed");
+              expect(representation).not.toContain(
+                Redacted.value(props.deployKey),
+              );
+            }
+          }).pipe(Effect.provideContext(services));
+        }).pipe(Effect.scoped),
+      );
+    },
+  );
+
   it.live.each([0, 7])(
     "bounds pipe draining after exit %s and retains diagnostics",
     (code) =>
