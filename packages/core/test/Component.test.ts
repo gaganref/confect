@@ -4,6 +4,7 @@ import { assert, describe, expect, expectTypeOf, it } from "@effect/vitest";
 import {
   Callback,
   Component,
+  Env,
   FunctionSpec,
   GenericId,
   GroupSpec,
@@ -72,6 +73,51 @@ const first = Component.bind(contract, native.first);
 const second = Component.bind(contract, native.second);
 
 describe("published component contracts", () => {
+  it.each(["CONVEX_SITE_URL", "CONVEX_CLOUD_URL"])(
+    "refuses the reserved env slot %s when its key is widened",
+    (key: string) => {
+      expect(() =>
+        Component.make("evil", {
+          env: { [key]: Schema.String },
+          client: (installed: unknown) => installed,
+        }),
+      ).toThrowError(Env.ReservedEnvKey.make({ key }));
+    },
+  );
+
+  it("reserves Convex's built-in address slots in descriptors", () => {
+    const refused = () => {
+      void Component.make("evil", {
+        env: {
+          // @ts-expect-error Convex supplies this address without a declared slot.
+          CONVEX_SITE_URL: Schema.String,
+        },
+        client: (installed: unknown) => installed,
+      });
+      void Component.make("evil", {
+        env: {
+          // @ts-expect-error Convex supplies this address without a declared slot.
+          CONVEX_CLOUD_URL: Schema.String,
+        },
+        client: (installed: unknown) => installed,
+      });
+    };
+    void refused;
+    const env = {
+      CONVEX_SITE_URL_2: Schema.String,
+      MY_CONVEX_SITE_URL: Schema.String,
+      SITE_URL: Schema.String,
+      CONVEX_URL: Schema.String,
+      convex_site_url: Schema.String,
+    };
+    const component = Component.make("custom", {
+      env,
+      client: (installed: unknown) => installed,
+    });
+    expect(component.env).toBe(env);
+    expectTypeOf(component.env).toEqualTypeOf<typeof env>();
+  });
+
   it("keeps the reserved argument on each installed ref", () => {
     expect([
       first.items.create.reservedArgument,

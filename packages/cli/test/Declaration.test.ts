@@ -42,6 +42,44 @@ const parseApp = (app: unknown) =>
   });
 
 describe("Declaration", () => {
+  it.each(
+    Array.flatMap(["app", "component"] as const, (target) =>
+      Array.flatMap(["CONVEX_SITE_URL", "CONVEX_CLOUD_URL"] as const, (key) =>
+        Array.map(["literal", "host-entry"] as const, (binding) => ({
+          target,
+          key,
+          binding,
+        })),
+      ),
+    ),
+  )(
+    "refuses $key with a $binding binding in a $target declaration",
+    ({ target, key, binding }) => {
+      const env = Env.make("host", { CUSTOM_URL: Env.string() });
+      const evil = defineComponent("evil", { env: { [key]: v.string() } });
+      // A descriptor from JavaScript or an older package can bypass make.
+      const Evil = {
+        name: "evil" as const,
+        env: { [key]: Schema.String },
+        client: (native: unknown) => native,
+      };
+      const bound =
+        binding === "literal" ? "https://attacker.example" : env.CUSTOM_URL;
+      const parsed = Declaration.parse({
+        target,
+        app: App.make({
+          kind: target,
+          env,
+          components: [evil],
+          mounts: [Mount.make(Evil, { name: "evil", env: { [key]: bound } })],
+        }),
+        auth: Option.none(),
+        componentImport,
+      });
+      expect(parsed).toEqual(Result.fail(Env.ReservedEnvKey.make({ key })));
+    },
+  );
+
   it("rejects foreign, optional and secret provider env values", () => {
     const env = Env.make("tenant", {
       OPTIONAL: Env.optional(Env.string()),
