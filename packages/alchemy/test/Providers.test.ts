@@ -50,6 +50,8 @@ describe("providers", () => {
           Convex.DeployKey,
           Convex.EnvironmentVariables,
           Convex.Code,
+          Convex.CustomDomain,
+
           Convex.LogStream,
           Convex.UsageLimit,
         ]) {
@@ -89,6 +91,8 @@ describe("providers", () => {
             Convex.DeployKey,
             Convex.EnvironmentVariables,
             Convex.Code,
+            Convex.CustomDomain,
+
             Convex.LogStream,
             Convex.UsageLimit,
           ])

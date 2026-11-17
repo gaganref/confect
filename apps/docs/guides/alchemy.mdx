@@ -204,6 +204,122 @@ Effect.gen(function* () {
 
 Required keys must be present. Unknown keys, plain strings for secret fields, and values outside a field's declared literals fail to typecheck. Each value also accepts an Alchemy `Input`. Optional fields can be omitted; `env` itself can be omitted when all fields are optional. Without `manifest`, the existing untyped env record remains available. Infra imports only the generated manifest, never backend implementation code.
 
+## Use a custom domain
+
+Declare a custom address for a cloud deployment. Use `"convexCloud"` for client
+connections or `"convexSite"` for HTTP actions. The provider uses
+`CONVEX_ACCESS_TOKEN`.
+
+```ts
+const domain =
+  yield *
+  Convex.CustomDomain("ApiDomain", {
+    deployment,
+    domain: "api.example.com",
+    requestDestination: "convexCloud",
+    canonical: true,
+  });
+
+return {
+  url: domain.url,
+  canonicalUrl: domain.canonicalUrl,
+  verificationTime: domain.verificationTime,
+};
+```
+
+With `canonical: true`, the resource creates the domain and logs that the
+canonical URL is pending verification. It leaves the current canonical URL in
+place. After Convex verifies the domain, run another apply to set the canonical
+URL. An unverified domain does not fail the apply.
+
+`url` is the domain's HTTPS address. `verificationTime` is `null` until Convex
+reports verification. Later applies refresh that value. The resource returns
+without waiting for DNS. Configure DNS from Convex's instructions for your
+deployment. The API does not describe a verification record, so this resource
+does not create or infer one.
+
+`canonical` defaults to `false`. `canonicalUrl` reports the destination's value
+as of this resource's last change. Another resource can change the live value
+later in the same apply. Run one more apply after a handover to settle the saved
+outputs.
+Turning the option off resets the URL to Convex's default only if this resource
+managed it and it still equals this domain's URL. Removing the resource deletes
+its domain and resets a matching canonical URL even when the domain became
+canonical outside the stack. If another declared `Convex.CustomDomain` keeps the
+same deployment name, hostname, and destination, removal preserves the domain
+and leaves the canonical URL unchanged if the survivor is canonical.
+If the removed declaration was canonical and the survivor is not, removal resets
+this domain's matching canonical URL to the deployment default.
+The survivor's saved `canonicalUrl` refreshes on the next apply, so anything that
+reads that output sees the new value one apply later.
+A different address set outside the stack is preserved. Declare one canonical
+owner for each
+deployment destination. Planning refuses conflicting resolved declarations with
+`ConflictingCanonicalDomains`. If a new deployment has no saved output,
+Alchemy defers the check until apply resolves its attributes, before creating
+either domain.
+
+### Moving to a new hostname
+
+To keep the old address live while you configure the new one:
+
+1. Declare a second `Convex.CustomDomain` beside the old resource with the new
+   hostname and `canonical: false`. Deploy. Point DNS at the new domain.
+2. Once the new resource's `verificationTime` is set, move `canonical: true`
+   from the old resource to the new one. Deploy.
+3. Remove the old resource. Deploy.
+
+Moving `canonical: true` before the new domain verifies resets the old canonical
+URL to Convex's default, even while the old domain still exists.
+You can combine steps 2 and 3 in one deploy. Removing the old resource before
+verification deletes its domain and resets a matching canonical URL to Convex's
+default until an apply after the new domain verifies.
+
+Changing the domain, destination, or deployment name of an existing resource
+fails with `CustomDomainIdentityChange` before API calls because its identity is
+fixed. The error names both identities and explains the move. Changing only the
+deployment URL updates the resource in place.
+
+To rename only the logical resource ID, use Alchemy's `renamedFrom` with the old
+ID. Keep the deployment name, hostname, destination, and canonical setting the
+same. Alchemy moves the saved state and plans an update without domain or
+canonical URL mutations. For example, rename `ApiDomain` to `PublicApiDomain`:
+
+```ts
+import { renamedFrom } from "alchemy/Rename";
+
+const domain =
+  yield *
+  Convex.CustomDomain("PublicApiDomain", {
+    deployment,
+    domain: "api.example.com",
+    requestDestination: "convexCloud",
+    canonical: true,
+  }).pipe(renamedFrom("ApiDomain"));
+```
+
+For a same-hostname move to another deployment, remove the resource from the old
+deployment and deploy before declaring it on the new one. Alchemy creates before
+it deletes removed resources, so an attachment conflict blocks a combined deploy
+and its reruns until you deploy the removal separately.
+
+Repeated applies reuse a domain recorded in this resource's state. If a create
+succeeds but its response is lost, inspect the
+deployment and domain. Rerun with `--adopt` or wrap the resource in `adopt(true)`
+to take over that matching domain. Without adoption, the provider refuses it.
+Once a successful create response is checkpointed, a later canonical request or
+state-write failure resumes the create without adoption.
+Declare this resource only for cloud stages. `alchemy dev` fails with
+`UnsupportedLocalCustomDomain`.
+
+Not proven on a real account:
+
+- Which plans permit custom domains.
+- DNS verification records, timing, certificate issuance, and propagation.
+- Whether an unverified domain can become canonical on every supported plan.
+- How canonical URLs affect clients and sign-in redirects after propagation.
+- Local backend support. `alchemy dev` fails with `UnsupportedLocalCustomDomain`.
+
 ## Set a usage limit
 
 Declare a calendar-aligned daily or monthly limit for a cloud deployment. The

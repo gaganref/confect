@@ -27,6 +27,12 @@ export {
 } from "./LogStream.js";
 
 export {
+  CustomDomain,
+  type CustomDomainProps,
+  type CustomDomainAttributes,
+} from "./CustomDomain.js";
+
+export {
   UsageLimit,
   type UsageLimitProps,
   type UsageLimitAttributes,
