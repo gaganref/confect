@@ -10,6 +10,7 @@ import { expect, it } from "@effect/vitest";
 import * as Provider from "alchemy/Provider";
 import { StateStoreError } from "alchemy/State/State";
 import * as Output from "alchemy/Output";
+import { renamedFrom } from "alchemy/Rename";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Array from "effect/Array";
@@ -1085,5 +1086,254 @@ it.effect(
       expect(fixture.state.domains).toHaveLength(2);
       const urls = yield* fixture.client.getCanonicalUrls(props.deployment.url);
       expect(urls.convexCloudUrl).toBe(props.deployment.url);
+    }),
+);
+
+it.effect.each([
+  { canonical: false, unresolved: false },
+  { canonical: true, unresolved: false },
+  { canonical: false, unresolved: true },
+  { canonical: true, unresolved: true },
+])(
+  "keeps a renamed domain through adoption with canonical=$canonical unresolved=$unresolved",
+  ({ canonical, unresolved }) =>
+    Effect.gen(function* () {
+      const token = "MadeUpRenameDomainToken";
+      const fixture = mockClient({ verificationTime: 200, deployKey: token });
+      const collection = Layer.effect(
+        Providers,
+        Provider.collection([CustomDomain.CustomDomain, Deployment.Deployment]),
+      ).pipe(
+        Layer.provide(Layer.mergeAll(CustomDomain.layer, Deployment.layer)),
+        Layer.provide(checkedClient(fixture)),
+      );
+      const engine = yield* makeEngine(collection);
+      const declarations = (id: string) =>
+        Effect.gen(function* () {
+          const deployment = unresolved
+            ? yield* Deployment.Deployment("Deployment", {
+                projectId: 1,
+                type: "prod",
+                reference: "example",
+              })
+            : props.deployment;
+          yield* CustomDomain.CustomDomain(id, {
+            ...props,
+            deployment,
+            canonical,
+          });
+          return {};
+        });
+      yield* engine.run(declarations("Old"));
+      const expectedUrl = canonical ? oldUrl : props.deployment.url;
+      const refused = yield* engine
+        .run(declarations("New"))
+        .pipe(Effect.result);
+      expect(refused).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          _tag: "OwnedBySomeoneElse",
+          message: expect.stringContaining("--adopt"),
+        },
+      });
+      expect(fixture.state.domains).toHaveLength(1);
+      yield* engine.run(declarations("New"), { adopt: true });
+      expect(fixture.state.domains).toMatchObject([
+        { domain: props.domain, verificationTime: 200 },
+      ]);
+      expect(fixture.state.domains).toHaveLength(1);
+      expect(fixture.client.deleteCustomDomain).not.toHaveBeenCalled();
+      expect(
+        (yield* fixture.client.getCanonicalUrls(props.deployment.url))
+          .convexCloudUrl,
+      ).toBe(expectedUrl);
+      expect(Array.join(engine.logs, "\n")).toContain(
+        `Skipping delete of ${props.domain}; New keeps it.`,
+      );
+      yield* engine.run(declarations("New"));
+      expect(
+        Array.every(
+          engine.plans.at(-1) ?? [],
+          (node) => node.action === "noop",
+        ),
+      ).toBe(true);
+      const rows = yield* engine.rows();
+      expect(
+        inspect([rows, engine.logs, engine.planOutputs], { depth: null }),
+      ).not.toContain(token);
+      yield* engine.run(Effect.succeed({}));
+      expect(fixture.state.domains).toEqual([]);
+      expect(
+        (yield* fixture.client.getCanonicalUrls(props.deployment.url))
+          .convexCloudUrl,
+      ).toBe(props.deployment.url);
+    }),
+);
+
+it.effect(
+  "keeps a domain adopted by a second declaration until both are removed",
+  () =>
+    Effect.gen(function* () {
+      const fixture = mockClient({ verificationTime: 200 });
+      const engine = yield* makeEngine(checkedClient(fixture).pipe(providers));
+      const declarations = (old: boolean) =>
+        Effect.gen(function* () {
+          if (old) yield* CustomDomain.CustomDomain("Old", props);
+          yield* CustomDomain.CustomDomain("New", props);
+          return {};
+        });
+      yield* engine.run(
+        CustomDomain.CustomDomain("Old", props).pipe(Effect.as({})),
+      );
+      yield* fixture.client.updateCanonicalUrl(props.deployment.url, {
+        requestDestination: props.requestDestination,
+        url: oldUrl,
+      });
+      yield* engine.run(declarations(true), { adopt: true });
+      yield* engine.run(declarations(false));
+      expect(fixture.state.domains).toHaveLength(1);
+      expect(fixture.client.deleteCustomDomain).not.toHaveBeenCalled();
+      expect(
+        (yield* fixture.client.getCanonicalUrls(props.deployment.url))
+          .convexCloudUrl,
+      ).toBe(oldUrl);
+      yield* engine.run(declarations(false));
+      expect(engine.plans.at(-1)).toEqual([
+        { fqn: "New", action: "noop", deleteFirst: false },
+      ]);
+      yield* engine.run(Effect.succeed({}));
+      expect(fixture.state.domains).toEqual([]);
+      expect(
+        (yield* fixture.client.getCanonicalUrls(props.deployment.url))
+          .convexCloudUrl,
+      ).toBe(props.deployment.url);
+    }),
+);
+
+it.effect(
+  "deletes a shared domain when all its declarations are removed together",
+  () =>
+    Effect.gen(function* () {
+      const fixture = mockClient({ verificationTime: 200 });
+      const engine = yield* makeEngine(checkedClient(fixture).pipe(providers));
+      yield* engine.run(
+        CustomDomain.CustomDomain("Old", props).pipe(Effect.as({})),
+      );
+      yield* engine.run(
+        Effect.gen(function* () {
+          yield* CustomDomain.CustomDomain("Old", props);
+          yield* CustomDomain.CustomDomain("New", props);
+          return {};
+        }),
+        { adopt: true },
+      );
+      yield* fixture.client.updateCanonicalUrl(props.deployment.url, {
+        requestDestination: props.requestDestination,
+        url: oldUrl,
+      });
+      yield* engine.run(Effect.succeed({}));
+      expect(fixture.state.domains).toEqual([]);
+      expect(
+        (yield* fixture.client.getCanonicalUrls(props.deployment.url))
+          .convexCloudUrl,
+      ).toBe(props.deployment.url);
+      const removedRows = yield* engine.rows();
+      expect(removedRows).toEqual([]);
+    }),
+);
+
+it.effect.each(["deployment", "destination"] as const)(
+  "deletes a domain when the surviving hostname belongs to another %s",
+  (difference) =>
+    Effect.gen(function* () {
+      const fixture = mockClient({ verificationTime: 200 });
+      const engine = yield* makeEngine(fixture.layer.pipe(providers));
+      const other =
+        difference === "deployment"
+          ? {
+              ...props,
+              deployment: { name: "other", url: "https://other.convex.cloud" },
+            }
+          : { ...props, requestDestination: "convexSite" as const };
+      const declarations = (old: boolean) =>
+        Effect.gen(function* () {
+          if (old) yield* CustomDomain.CustomDomain("Old", props);
+          yield* CustomDomain.CustomDomain("Other", other);
+          return {};
+        });
+      // Model two existing attachments so deletion matching is independent of create conflicts.
+      fixture.state.domains = Array.map([props, other], (entry) => ({
+        deploymentName: entry.deployment.name,
+        domain: entry.domain,
+        requestDestination: entry.requestDestination,
+        creationTime: 100,
+        verificationTime: 200,
+      }));
+      yield* engine.run(declarations(true), { adopt: true });
+      yield* fixture.client.updateCanonicalUrl(props.deployment.url, {
+        requestDestination: props.requestDestination,
+        url: oldUrl,
+      });
+      yield* engine.run(declarations(false));
+      expect(fixture.state.domains).toEqual([
+        {
+          deploymentName: other.deployment.name,
+          domain: other.domain,
+          requestDestination: other.requestDestination,
+          creationTime: 100,
+          verificationTime: 200,
+        },
+      ]);
+      expect(fixture.client.deleteCustomDomain.mock.calls).toEqual([
+        [
+          props.deployment.name,
+          {
+            domain: props.domain,
+            requestDestination: props.requestDestination,
+          },
+        ],
+      ]);
+      expect(
+        (yield* fixture.client.getCanonicalUrls(props.deployment.url))
+          .convexCloudUrl,
+      ).toBe(props.deployment.url);
+    }),
+);
+
+it.effect(
+  "renames a logical id with renamedFrom without domain mutations",
+  () =>
+    Effect.gen(function* () {
+      const fixture = mockClient({ verificationTime: 200 });
+      const engine = yield* makeEngine(fixture.layer.pipe(providers));
+      const news = { ...props, canonical: true };
+      yield* engine.run(
+        CustomDomain.CustomDomain("ApiDomain", news).pipe(Effect.as({})),
+      );
+      fixture.client.createCustomDomain.mockClear();
+      fixture.client.deleteCustomDomain.mockClear();
+      fixture.client.updateCanonicalUrl.mockClear();
+      const declarations = CustomDomain.CustomDomain(
+        "PublicApiDomain",
+        news,
+      ).pipe(renamedFrom("ApiDomain"), Effect.as({}));
+      yield* engine.run(declarations);
+      expect(engine.plans.at(-1)).toEqual([
+        { fqn: "PublicApiDomain", action: "update", deleteFirst: false },
+      ]);
+      expect(fixture.client.createCustomDomain).not.toHaveBeenCalled();
+      expect(fixture.client.deleteCustomDomain).not.toHaveBeenCalled();
+      expect(fixture.client.updateCanonicalUrl).not.toHaveBeenCalled();
+      expect(fixture.state.domains).toHaveLength(1);
+      expect(
+        (yield* fixture.client.getCanonicalUrls(props.deployment.url))
+          .convexCloudUrl,
+      ).toBe(oldUrl);
+      const renamedRows = yield* engine.rows();
+      expect(renamedRows).toMatchObject([
+        { fqn: "PublicApiDomain", attr: { verificationTime: 200 } },
+      ]);
+      yield* engine.run(declarations);
+      expect(engine.plans.at(-1)?.[0]?.action).toBe("noop");
     }),
 );
