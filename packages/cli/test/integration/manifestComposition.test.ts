@@ -1,3 +1,4 @@
+import * as HealthModule from "@confect/core/HealthModule";
 import { expect, layer } from "@effect/vitest";
 import * as Config from "effect/Config";
 import * as NodeServices from "@effect/platform-node/NodeServices";
@@ -175,6 +176,15 @@ export default App.make({
 
         const manifest = yield* fs.readFileString(
           path.join(root, "host/confect/_generated/manifest.ts"),
+        );
+        const generatedHealth = yield* fs.readFileString(
+          path.join(root, "host/convex/confectHealth.ts"),
+        );
+        const built = (yield* Bundler.bundle(
+          path.join(root, "host/confect/_generated/manifest.ts"),
+        )).module.default as { digest: string };
+        expect(HealthModule.read(generatedHealth)).toEqual(
+          Option.some(built.digest),
         );
         const relayConfig = yield* fs.readFileString(
           path.join(root, "relay/convex/convex.config.ts"),

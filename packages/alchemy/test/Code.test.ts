@@ -36,10 +36,7 @@ import {
 import { PushLock, layer as lockLayer } from "../src/internal/PushLock";
 import { ConvexClient, ConvexFunctionError } from "../src/ConvexClient";
 import { MountInitFailed } from "../src/internal/MountInit";
-import {
-  HealthCheckFailed,
-  StaleManifest,
-} from "../src/internal/CodeDeployment";
+import { HealthCheckFailed } from "../src/internal/CodeDeployment";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Arr from "effect/Array";
@@ -114,7 +111,7 @@ export const digest = internalQueryGeneric({
  * A scratch backend directory and a prepare step that writes the health module
  * there, as codegen does, or writes nothing when `digest` is absent.
  */
-const generating = (digest: string | undefined) =>
+const generating = (digest: string | undefined, contents?: string) =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const path = yield* Path.Path;
@@ -124,7 +121,7 @@ const generating = (digest: string | undefined) =>
       yield* fs.makeDirectory(path.join(cwd, "convex"), { recursive: true });
       yield* fs.writeFileString(
         path.join(cwd, "convex", "confectHealth.ts"),
-        healthModule(digest),
+        contents ?? healthModule(digest),
       );
     }).pipe(Effect.orDie);
     return { cwd, prepare };
@@ -132,14 +129,39 @@ const generating = (digest: string | undefined) =>
 
 describe("Code", () => {
   it.effect.each([
-    ["another digest", "sha256:fresh"],
-    ["no health module", undefined],
+    ["another digest", "sha256:fresh", undefined, "DifferentDigest"],
+    ["no health module", undefined, undefined, "NotGenerated"],
+    [
+      "a block-comment decoy",
+      "sha256:built",
+      `/*\n  handler: () => "sha256:built",\n*/\n${healthModule("sha256:other")}`,
+      "NotGenerated",
+    ],
+    [
+      "a single-quoted module",
+      "sha256:built",
+      pipe(healthModule("sha256:built"), String.replaceAll('"', "'")),
+      "NotGenerated",
+    ],
+    [
+      "a rewrapped module",
+      "sha256:built",
+      pipe(
+        healthModule("sha256:built"),
+        String.replace(
+          '  handler: () => "sha256:built",',
+          '  handler: () =>\n    "sha256:built",',
+        ),
+      ),
+      "NotGenerated",
+    ],
+    ["only a digest", "sha256:built", "sha256:built", "NotGenerated"],
   ] as const)(
     "fails before the push when prepare generates %s",
-    ([_, generated]) =>
+    ([_, generated, contents, reason]) =>
       Effect.gen(function* () {
         const node = yield* Layer.build(NodeServices.layer);
-        const { cwd, prepare } = yield* generating(generated).pipe(
+        const { cwd, prepare } = yield* generating(generated, contents).pipe(
           Effect.provideContext(node),
         );
         const calls: string[] = [];
@@ -175,14 +197,16 @@ describe("Code", () => {
         }).pipe(Effect.provideContext(services), Effect.result);
         expect(calls).toEqual(["lock", "prepare", "unlock"]);
         assertIs(result, Result.isFailure);
-        expect(result.failure).toEqual(
-          StaleManifest.make({
-            expected: "sha256:built",
-            ...(generated === undefined ? {} : { generated }),
-          }),
-        );
+        expect(result.failure).toMatchObject({
+          _tag: "StaleManifest",
+          expected: "sha256:built",
+          reason,
+          ...(reason === "DifferentDigest" ? { generated } : {}),
+        });
         expect(result.failure.message).toContain(
-          "Run confect codegen, commit the generated files and deploy again.",
+          reason === "DifferentDigest"
+            ? "Run confect codegen, commit the generated files and deploy again."
+            : "Do not edit or format convex/confectHealth.ts; regenerate it with confect codegen.",
         );
       }).pipe(Effect.scoped),
   );
