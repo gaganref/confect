@@ -686,18 +686,31 @@ in standby, empty pools, and missing required settings fail to decode.
 `Manifest.Values` types the choice. Backend matches settings to a choice by
 selector and validates and encodes each choice with the handler's schema,
 `Env.providerChoice`. It refuses a choice the handler would refuse with
-`InvalidChoice` and a named provider's missing required slot before environment writes or code pushes. A settings record with no deferred inputs fails before resource declaration. All Alchemy Input forms, including nested choices, Outputs, Effects and Configs, retain per-slot dependencies and validate each supplied value against its slot. Selectors also depend only on their own tagged settings for required-setting checks. Each supplied tagged setting checks its own evaluation against its selector's input. An input `Effect` or `Config` runs once per place it is used, in plan and again in apply, and must return the same value each time. `Backend` validates each evaluation it writes. Omitted or statically undefined slots never gain ownership because another input is deferred. An optional value resolving to undefined, null, an empty string or an empty Redacted value is neither written nor owned. A value the stack previously wrote is removed and its ownership released; a value set by hand remains untouched. Plain and deferred values follow the same rule. Optional selectors that resolve to nothing bypass choice decoding and leave their tagged settings as for an absent selector. Present values of the wrong kind or outside a literals list fail with `InvalidValue` on `InvalidMountSetting` or `InvalidAutomaticSetting`. Whitespace-only strings remain valid. Required values in env, mounts and automatic treat undefined, null, empty strings and empty Redacted values as missing. Supplied records and schema field readers use own keys, and generated records preserve own special names. Promoted slots keep acronym-aware names and
+`InvalidChoice` and a named provider's missing required slot before environment writes or code pushes. A settings record with no deferred inputs fails before resource declaration. All Alchemy Input forms, including nested choices, Outputs, Effects and Configs, retain per-slot dependencies and validate each supplied value against its slot. Selectors also depend only on their own tagged settings for required-setting checks. Each supplied tagged setting checks its own evaluation against its selector's input. An input `Effect` or `Config` may be evaluated several times in plan and again in apply, more often for a provider selector and its settings. It must be free of side effects and return the same value every time. Otherwise, a choice can be written without a setting it requires. Omitted or statically undefined slots never gain ownership because another input is deferred. An optional value resolving to undefined, null, an empty string or an empty Redacted value is neither written nor owned. A value the stack previously wrote is removed and its ownership released; a value set by hand remains untouched only if the stack never owned its name. If someone edits a name the stack wrote, the stack still removes it when its input resolves to nothing. Plain and deferred values follow the same rule. Optional selectors that resolve to nothing bypass choice decoding and leave their tagged settings as for an absent selector. Present values of the wrong kind or outside a literals list fail with `InvalidValue` on `InvalidMountSetting` or `InvalidAutomaticSetting`. Whitespace-only strings remain valid. Required values in env, mounts and automatic treat undefined, null, empty strings and empty Redacted values as missing. Supplied records and schema field readers use own keys, and generated records preserve own special names. Promoted slots keep acronym-aware names and
 collision checks, and their tags name the selector by its promoted name. A
 component that binds a child's selector to its own selector adopts the child's
 settings under its selector, when both offer the same providers. A constant
 choice promotes only the named providers' settings, as ordinary slots.
 `InvalidSelectorBinding` refuses any other binding. Format 1 closes over the
-selector kind and tags, and the digest covers both. A named provider's required settings are required in every role in which it is named. A setting cannot be required only for a failover role or for one of several roles. Nested provider selectors are type errors and runtime `InvalidEnvProviders` refusals with reason `NestedSelector`. Group refusals carry the provider name and setting key. `Env.make` validates hand-built fields at the same boundary, refusing automatic selectors, automatic provider settings and nested selectors. The schema refuses a providers slot with a provider tag. Standby settings are checked at runtime, not in types.
+selector kind and tags, and the digest covers both. A named provider's required settings are required in every role in which it is named. A setting cannot be required only for a failover role or for one of several roles. Nested provider selectors are type errors and runtime `InvalidEnvProviders` refusals with reason `NestedSelector`. Group refusals carry the provider name and setting key. `Env.make` validates hand-built fields at the same boundary, refusing automatic selectors, automatic provider settings and nested selectors. `Env.make` also refuses a directly supplied field whose own descriptor carries a provider tag, including an automatic field, with `InvalidEnvProviders`, reason `TaggedField`, and its `key`. Declare provider settings inside `Env.providers` groups so expansion assigns their tags. The schema refuses a providers slot with a provider tag. Standby settings are checked at runtime, not in types.
 
 Changeset: `provider-environment-choices.md`.
 
 Upstream: not planned; declarations and
 generated deployment manifests are fork concepts.
+
+### Release nullish environment names consistently
+
+For direct `EnvironmentVariables` callers, an entry that resolves to null or
+undefined is no longer owned or sent as an unset. A name the resource previously
+wrote is removed and released, including when someone edited its value by hand.
+A name the resource never owned remains untouched. A plain or Redacted empty
+string stays a value. With `unownedPolicy: "error"`, live nullish names are
+unowned and refused during plan, read, apply, and delete.
+
+Changeset: `defined-environment-ownership.md`.
+
+Upstream: not planned; Alchemy environment ownership is a fork concept.
 
 ### Ship a component manifest
 

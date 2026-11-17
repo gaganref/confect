@@ -40,9 +40,11 @@ type AutomaticValues<M extends Manifest.Manifest> = {
 };
 
 /**
- * Inputs for a backend deployment. An input Effect or Config runs once per
- * place it is used, in plan and again in apply, and must return the same value
- * each time. Backend validates each evaluation it writes.
+ * Inputs for a backend deployment. An input Effect or Config may be evaluated
+ * several times in plan and again in apply, more often for a provider selector
+ * and its settings. It must be free of side effects and return the same value
+ * every time. Otherwise, a choice can be written without a setting it
+ * requires.
  */
 export type BackendProps<M extends Manifest.Manifest | undefined = undefined> =
   CommonProps &
