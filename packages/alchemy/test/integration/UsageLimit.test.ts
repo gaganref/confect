@@ -2,6 +2,7 @@ import * as UsageLimit from "@confect/alchemy/UsageLimit";
 import {
   ConvexApiError,
   ConvexClient,
+  layer as clientLayer,
   type UsageLimit as Limit,
 } from "@confect/alchemy/ConvexClient";
 import { Providers } from "@confect/alchemy/Providers";
@@ -11,6 +12,9 @@ import { StateStoreError } from "alchemy/State/State";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Result from "effect/Result";
+import * as Redacted from "effect/Redacted";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import * as Array from "effect/Array";
 import { inspect } from "node:util";
 import { makeEngine } from "../fixtures/Engine";
@@ -186,5 +190,67 @@ it.effect.each([0, -5, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
       });
       expect(fixture.client.listUsageLimits).not.toHaveBeenCalled();
       expect(fixture.client.createUsageLimit).not.toHaveBeenCalled();
+    }),
+);
+
+it.effect(
+  "keeps the authenticated HTTP token out of errors, logs, plans and state",
+  () =>
+    Effect.gen(function* () {
+      const token = "made-up-usage-http-token";
+      const authorizations: (string | undefined)[] = [];
+      const http = HttpClient.make((request) => {
+        authorizations.push(request.headers.authorization);
+        const response =
+          request.method === "GET"
+            ? Response.json({ usageLimits: [] })
+            : new Response(token, { status: 403 });
+        return Effect.succeed(HttpClientResponse.fromWeb(request, response));
+      });
+      const client = clientLayer({ token: Redacted.make(token) }).pipe(
+        Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
+      );
+      const engine = yield* makeEngine(client.pipe(providers));
+      const result = yield* engine.run(resource()).pipe(Effect.result);
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "ConvexApiError", status: 403 },
+      });
+      expect(
+        Array.some(authorizations, (value) => value === `Convex ${token}`),
+      ).toBe(true);
+      const rows = yield* engine.rows();
+      expect(
+        inspect([result, engine.logs, engine.planOutputs, rows], {
+          depth: null,
+        }),
+      ).not.toContain(token);
+    }),
+);
+
+it.effect(
+  "names the conflicting metric, window and type when a second resource is refused",
+  () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const engine = yield* makeEngine(fixture.layer.pipe(providers));
+      yield* engine.run(resource());
+      const declarations = Effect.gen(function* () {
+        yield* UsageLimit.UsageLimit("Limit", props);
+        yield* UsageLimit.UsageLimit("Other", props);
+        return {};
+      });
+      const refused = yield* engine.run(declarations).pipe(Effect.result);
+      expect(refused).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          _tag: "OwnedBySomeoneElse",
+          message: expect.stringContaining("--adopt"),
+        },
+      });
+      expect(Array.join(engine.logs, "\n")).toContain(
+        "functionCalls/month/warning",
+      );
+      expect(fixture.client.createUsageLimit).toHaveBeenCalledTimes(1);
     }),
 );
