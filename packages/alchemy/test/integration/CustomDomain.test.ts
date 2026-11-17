@@ -1620,3 +1620,60 @@ it.effect.each([false, true])(
       expect(engine.plans.at(-1)?.[0]?.action).toBe("noop");
     }),
 );
+
+it.effect("deletes a shared domain despite a failed deletion state write", () =>
+  Effect.gen(function* () {
+    const fixture = mockClient({ verificationTime: 200 });
+    let injected = false;
+    const engine = yield* makeEngine(
+      checkedClient(fixture).pipe(providers),
+      (store) => ({
+        ...store,
+        delete: (request) =>
+          Effect.suspend(() => {
+            if (request.fqn === "Old" && !injected) {
+              injected = true;
+              return Effect.fail(
+                new StateStoreError({
+                  message: "Injected deletion state failure",
+                }),
+              );
+            }
+            return store.delete(request);
+          }),
+      }),
+    );
+    yield* engine.run(
+      CustomDomain.CustomDomain("Old", props).pipe(Effect.as({})),
+    );
+    yield* engine.run(
+      Effect.gen(function* () {
+        yield* CustomDomain.CustomDomain("Old", props);
+        yield* CustomDomain.CustomDomain("New", props);
+        return {};
+      }),
+      { adopt: true },
+    );
+    yield* fixture.client.updateCanonicalUrl(props.deployment.url, {
+      requestDestination: props.requestDestination,
+      url: oldUrl,
+    });
+    const failed = yield* engine.run(Effect.succeed({})).pipe(Effect.result);
+    expect(failed).toMatchObject({
+      _tag: "Failure",
+      failure: { _tag: "DestroyError" },
+    });
+    expect(injected).toBe(true);
+    expect(fixture.state.domains).toEqual([]);
+    expect(
+      (yield* fixture.client.getCanonicalUrls(props.deployment.url))
+        .convexCloudUrl,
+    ).toBe(props.deployment.url);
+    const interruptedRows = yield* engine.rows();
+    expect(interruptedRows).toMatchObject([{ fqn: "Old", status: "deleting" }]);
+    yield* engine.run(Effect.succeed({}));
+    const rows = yield* engine.rows();
+    expect(rows).toEqual([]);
+    expect(fixture.state.domains).toEqual([]);
+  }),
+);
