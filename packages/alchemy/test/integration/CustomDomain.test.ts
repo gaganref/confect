@@ -920,3 +920,61 @@ it.effect.each([false, true])(
       ]);
     }),
 );
+
+it.effect(
+  "refuses competing canonical updates after a new deployment output resolves",
+  () =>
+    Effect.gen(function* () {
+      const fixture = mockClient({ verificationTime: 200 });
+      const collection = Layer.effect(
+        Providers,
+        Provider.collection([CustomDomain.CustomDomain, Deployment.Deployment]),
+      ).pipe(
+        Layer.provide(Layer.mergeAll(CustomDomain.layer, Deployment.layer)),
+        Layer.provide(fixture.layer),
+      );
+      const engine = yield* makeEngine(collection);
+      yield* engine.run(
+        Effect.gen(function* () {
+          yield* CustomDomain.CustomDomain("One", props);
+          yield* CustomDomain.CustomDomain("Two", {
+            ...props,
+            domain: "other.example.com",
+          });
+          return {};
+        }),
+      );
+      const updates = Effect.gen(function* () {
+        const target = yield* Deployment.Deployment("Deployment", {
+          projectId: 1,
+          type: "prod",
+          reference: "example",
+        });
+        yield* CustomDomain.CustomDomain("One", {
+          ...props,
+          deployment: target,
+          canonical: true,
+        });
+        yield* CustomDomain.CustomDomain("Two", {
+          ...props,
+          deployment: target,
+          domain: "other.example.com",
+          canonical: true,
+        });
+        return {};
+      });
+      const refused = yield* engine.run(updates).pipe(Effect.result);
+      expect(refused).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          _tag: "ConflictingCanonicalDomains",
+          deploymentName: props.deployment.name,
+          requestDestination: "convexCloud",
+          domains: expect.arrayContaining([props.domain, "other.example.com"]),
+        },
+      });
+      expect(fixture.state.domains).toHaveLength(2);
+      const urls = yield* fixture.client.getCanonicalUrls(props.deployment.url);
+      expect(urls.convexCloudUrl).toBe(props.deployment.url);
+    }),
+);
