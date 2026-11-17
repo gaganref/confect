@@ -129,7 +129,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
       {
         kind: "secret",
         optional: true,
-        provider: { name: "ses", required: true },
+        provider: { selector: "CHOICE", name: "ses", required: true },
       },
     ])(
       "refuses an unknown field beside a new descriptor in previous manifest history ($kind)",
@@ -140,10 +140,15 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           yield* fs.makeDirectory(`${project.root}/confect/_generated`, {
             recursive: true,
           });
+          const choice = {
+            kind: "providers",
+            optional: false,
+            values: ["ses"],
+          } as const;
           const previous = {
             format: 1,
             name: "host",
-            env: { KEY: descriptor },
+            env: { CHOICE: choice, KEY: descriptor },
             mounts: {},
             http: {},
             digest: "sha256:previous",
@@ -157,7 +162,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           expect(accepted).toEqual(previous);
           yield* project.write(
             "confect/_generated/manifest.ts",
-            `export default ${stringify({ ...previous, env: { KEY: { ...descriptor, unknown: true } } })} as const;`,
+            `export default ${stringify({ ...previous, env: { CHOICE: choice, KEY: { ...descriptor, unknown: true } } })} as const;`,
           );
           const refused = yield* project.provide(readPrevious);
           expect(refused).toEqual({});

@@ -1,5 +1,6 @@
 import * as Cause from "effect/Cause";
 import * as Exit from "effect/Exit";
+import * as Predicate from "effect/Predicate";
 import * as Array from "effect/Array";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -84,10 +85,11 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
     {
       ...formatOne,
       env: {
+        CHOICE: { kind: "providers", values: ["ses"], optional: false },
         KEY: {
           kind: "secret",
           optional: true,
-          provider: { name: "ses", required: true },
+          provider: { selector: "CHOICE", name: "ses", required: true },
           extra: true,
         },
       },
@@ -98,10 +100,16 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
     {
       ...formatOne,
       env: {
+        CHOICE: { kind: "providers", values: ["ses"], optional: false },
         KEY: {
           kind: "secret",
           optional: true,
-          provider: { name: "ses", required: true, extra: true },
+          provider: {
+            selector: "CHOICE",
+            name: "ses",
+            required: true,
+            extra: true,
+          },
         },
       },
     },
@@ -274,8 +282,14 @@ describe("Backend", () => {
             _tag: "UnsupportedManifestFormat",
             source: "confect/_generated/manifest.ts",
           });
-          expect(String(defect.success)).toContain("confect codegen");
-          expect(String(defect.success)).toContain("same release");
+          const later =
+            Predicate.hasProperty(manifest, "format") && manifest.format === 2;
+          expect(String(defect.success)).toContain(
+            later
+              ? "Upgrade the Confect packages that read it"
+              : "confect codegen",
+          );
+          if (!later) expect(String(defect.success)).toContain("same release");
         }
       }).pipe(Effect.provide([stack(), providers])),
   );
@@ -449,12 +463,16 @@ describe("Backend", () => {
             SES_KEY: {
               kind: "secret",
               optional: true,
-              provider: { name: "ses", required: true },
+              provider: { selector: "PROVIDER", name: "ses", required: true },
             },
             RESEND_KEY: {
               kind: "secret",
               optional: true,
-              provider: { name: "resend", required: true },
+              provider: {
+                selector: "PROVIDER",
+                name: "resend",
+                required: true,
+              },
             },
           },
         } as const;
@@ -511,13 +529,21 @@ describe("Backend", () => {
                 RESEND_API_KEY: {
                   kind: "secret",
                   optional: true,
-                  provider: { name: "resend", required: true },
+                  provider: {
+                    selector: "EMAIL_PROVIDER",
+                    name: "resend",
+                    required: true,
+                  },
                   variable: "EMAIL_RESEND_API_KEY",
                 },
                 SES_KEY: {
                   kind: "secret",
                   optional: true,
-                  provider: { name: "ses", required: true },
+                  provider: {
+                    selector: "EMAIL_PROVIDER",
+                    name: "ses",
+                    required: true,
+                  },
                   variable: "EMAIL_SES_KEY",
                 },
               },

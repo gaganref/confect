@@ -249,19 +249,23 @@ export default App.make({
               SES_REGION: {
                 kind: "string",
                 optional: true,
-                provider: { name: "ses", required: true },
+                provider: { selector: "EMAIL_PROVIDER", name: "ses", required: true },
                 variable: "RELAY_SES_REGION",
               },
               SES_KEY: {
                 kind: "secret",
                 optional: true,
-                provider: { name: "ses", required: true },
+                provider: { selector: "EMAIL_PROVIDER", name: "ses", required: true },
                 variable: "RELAY_SES_KEY",
               },
               RESEND_API_KEY: {
                 kind: "secret",
                 optional: true,
-                provider: { name: "resend", required: true },
+                provider: {
+                  selector: "EMAIL_PROVIDER",
+                  name: "resend",
+                  required: true,
+                },
                 variable: "RELAY_RESEND_API_KEY",
               },
               CHILD_OPEN_SECRET: {
