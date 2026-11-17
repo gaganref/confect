@@ -121,9 +121,9 @@ const makeHarness = (
 };
 
 describe("cloud deployment lifecycle", () => {
-  it.effect(
-    "refuses drift in a real plan while desired environment inputs remain unresolved",
-    () =>
+  it.effect.each([false, true])(
+    "refuses drift in a real plan with unresolved inputs and previously enabled safety=%s",
+    (previouslyEnabled) =>
       Effect.gen(function* () {
         const fixture = mockClient();
         const deploy = makeHarness(
@@ -134,27 +134,28 @@ describe("cloud deployment lifecycle", () => {
           }),
         );
         const deployKey = Redacted.make("prod:happy-otter-123|test-secret");
-        const resources = Effect.gen(function* () {
-          const source = yield* Convex.Code("Source", {
-            deployment: {
-              name: "happy-otter-123",
+        const resources = (enableSafety: boolean) =>
+          Effect.gen(function* () {
+            const source = yield* Convex.Code("Source", {
+              deployment: {
+                name: "happy-otter-123",
+                url: "https://happy-otter-123.convex.cloud",
+              },
+              deployKey,
+              cwd: "nonexistent-plan-test-backend",
+            });
+            yield* Convex.EnvironmentVariables("Environment", {
               url: "https://happy-otter-123.convex.cloud",
-            },
-            deployKey,
-            cwd: "nonexistent-plan-test-backend",
+              deployKey,
+              variables: {
+                MANAGED: source.url,
+                SECRET: Redacted.make("plan-secret-value"),
+              },
+              ...(enableSafety ? { driftPolicy: "error" as const } : {}),
+            });
           });
-          yield* Convex.EnvironmentVariables("Environment", {
-            url: "https://happy-otter-123.convex.cloud",
-            deployKey,
-            variables: {
-              MANAGED: source.url,
-              SECRET: Redacted.make("plan-secret-value"),
-            },
-            driftPolicy: "error",
-          });
-        });
-        yield* deploy(resources);
-        const unchanged = yield* deploy(resources, true);
+        yield* deploy(resources(previouslyEnabled));
+        const unchanged = yield* deploy(resources(previouslyEnabled), true);
         expect(inspect(unchanged, { depth: null })).not.toContain(
           "plan-secret-value",
         );
@@ -162,7 +163,7 @@ describe("cloud deployment lifecycle", () => {
           "test-secret",
         );
         fixture.state.variables.MANAGED = Redacted.make("drift-secret-value");
-        const planned = yield* deploy(resources, true).pipe(Effect.exit);
+        const planned = yield* deploy(resources(true), true).pipe(Effect.exit);
         expect(Exit.isFailure(planned)).toBe(true);
         expect(inspect(planned, { depth: null })).toContain(
           "EnvironmentVariableDrift",

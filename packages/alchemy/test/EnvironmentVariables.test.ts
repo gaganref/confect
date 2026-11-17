@@ -932,6 +932,50 @@ it.effect(
   },
 );
 
+it.effect(
+  "defers unowned-name checks until an unresolved desired map exposes its names",
+  () => {
+    const mock = mockClient();
+    mock.state.variables = {
+      ...snapshot.variables,
+      NEW: Redacted.make("new-secret"),
+    };
+    return Effect.gen(function* () {
+      const provider = yield* EnvironmentVariables.provider;
+      const safe = { ...props, unownedPolicy: "error" as const };
+      yield* provider.diff({
+        ...lifecycle,
+        olds: safe,
+        output: snapshot,
+        news: {
+          ...safe,
+          variables: Effect.succeed({
+            MANAGED: "desired-secret",
+            NEW: "new-secret",
+          }),
+        },
+        oldBindings: [],
+        newBindings: [],
+      });
+      const error = yield* provider
+        .diff({
+          ...lifecycle,
+          olds: safe,
+          output: snapshot,
+          news: safe,
+          oldBindings: [],
+          newBindings: [],
+        })
+        .pipe(Effect.flip);
+      expect(error).toMatchObject({
+        _tag: "EnvironmentVariableUnowned",
+        variableName: "NEW",
+      });
+      expect(mock.client.updateEnvironmentVariables).not.toHaveBeenCalled();
+    }).pipe(Effect.provideService(ConvexClient, mock.client));
+  },
+);
+
 it.effect.each([
   { code: "OptimisticConcurrencyControlFailure", expected: 3 },
   { code: "OtherFailure", expected: 1 },
