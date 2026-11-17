@@ -24,7 +24,12 @@ type RegisteredFunctionsHelper<Groups extends GroupSpec.AnyWithProps> = {
  */
 type RegisteredFunctionsOf<Group extends GroupSpec.AnyWithProps> = {
   [
-    FunctionName in FunctionSpec.Name<GroupSpec.Functions<Group>>
+    FunctionName in FunctionSpec.Name<
+      Exclude<
+        GroupSpec.Functions<Group>,
+        { readonly functionVisibility: "http" }
+      >
+    >
   ]: FunctionSpec.WithName<
     GroupSpec.Functions<Group>,
     FunctionName

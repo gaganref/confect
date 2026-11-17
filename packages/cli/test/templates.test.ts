@@ -156,6 +156,41 @@ it.effect.each([
     }),
 );
 
+it.effect("binds no route, which is served over HTTP", () =>
+  Effect.gen(function* () {
+    const route = FunctionSpec.httpAction({
+      name: "receive",
+      method: "POST",
+      path: "/hooks",
+      returns: () => Schema.String,
+    });
+    const [mixed, routeOnly] = yield* Effect.forEach(
+      [
+        GroupSpec.make()
+          .addFunction(
+            FunctionSpec.publicQuery({
+              name: "get",
+              returns: () => Schema.String,
+            }),
+          )
+          .addFunction(route),
+        GroupSpec.make().addFunction(route),
+      ],
+      (spec) =>
+        templates.registeredFunctionsForGroup({
+          spec,
+          schemaImportPath: "../schema",
+          specImportPath: "../../notes.spec",
+          implImportPath: "../../notes.impl",
+        }),
+    );
+    expect(mixed).toContain('definitions["get"]');
+    expect(mixed).not.toContain('"receive"');
+    expect(routeOnly).toContain("RegisteredFunctions.buildForGroup<");
+    expect(routeOnly).not.toContain("const forward");
+  }),
+);
+
 layer(NodeServices.layer)("registeredFunctionsForGroup", (test) => {
   test.effect.each([
     {

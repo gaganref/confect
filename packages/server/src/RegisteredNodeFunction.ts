@@ -27,9 +27,9 @@ export const buildForGroup = <Group extends GroupSpec.AnyWithProps>(
   const { functionRegistryItems, middlewareRegistryItems, observability } =
     GroupRegistry.make(groupLayer);
   return mapLeaves<FunctionRegistryItem.AnyWithProps, RegisteredFunction.Any>(
-    functionRegistryItems as {
-      [key: string]: FunctionRegistryItem.AnyWithProps;
-    },
+    FunctionRegistryItem.convexFunctions(
+      functionRegistryItems as FunctionRegistryItem.Items,
+    ),
     FunctionRegistryItem.isFunctionRegistryItem,
     (item) =>
       Match.value(item).pipe(
@@ -53,7 +53,8 @@ export const make = (
   resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware> = [],
   observability?: Layer.Layer<never>,
 ): RegisteredFunction.Any => {
-  const genericFunction = Match.value(item.functionVisibility).pipe(
+  const visibility = FunctionRegistryItem.convexVisibility(item);
+  const genericFunction = Match.value(visibility).pipe(
     Match.when("public", () => actionGeneric),
     Match.when("internal", () => internalActionGeneric),
     Match.exhaustive,
@@ -66,7 +67,7 @@ export const make = (
           name: item.name,
           reservedArgument: item.reservedArgument,
           observability,
-          functionVisibility: item.functionVisibility,
+          functionVisibility: visibility,
           args: item.args,
           returns: item.returns,
           error: item.error,

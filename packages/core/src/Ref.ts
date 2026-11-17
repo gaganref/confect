@@ -361,22 +361,27 @@ export type FromFunctionSpec<
   FunctionSpec_ extends FunctionSpec.AnyWithProps,
   MiddlewareError = never,
   MiddlewareEncodedError = never,
-> = FromFunctionSpecHelper<
-  FunctionSpec_,
-  FunctionSpec.GetRuntimeAndFunctionType<FunctionSpec_>,
-  FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
-  FunctionSpec.ArgsFields<FunctionSpec_>,
-  FunctionSpec.Args<FunctionSpec_>,
-  FunctionSpec.Returns<FunctionSpec_>,
-  | FunctionSpec.Error<FunctionSpec_>
-  | MiddlewareSpec.Error<FunctionSpec.MiddlewareSpecs<FunctionSpec_>>
-  | MiddlewareError,
-  FunctionSpec.ReturnsSchema<FunctionSpec_>,
-  FunctionSpec.ErrorSchema<FunctionSpec_>,
-  | FunctionSpec.EncodedError<FunctionSpec_>
-  | MiddlewareSpec.EncodedError<FunctionSpec.MiddlewareSpecs<FunctionSpec_>>
-  | MiddlewareEncodedError
->;
+> =
+  FunctionSpec.GetFunctionVisibility<FunctionSpec_> extends "http"
+    ? never
+    : FromFunctionSpecHelper<
+        FunctionSpec_,
+        FunctionSpec.GetRuntimeAndFunctionType<FunctionSpec_>,
+        Exclude<FunctionSpec.GetFunctionVisibility<FunctionSpec_>, "http">,
+        FunctionSpec.ArgsFields<FunctionSpec_>,
+        FunctionSpec.Args<FunctionSpec_>,
+        FunctionSpec.Returns<FunctionSpec_>,
+        | FunctionSpec.Error<FunctionSpec_>
+        | MiddlewareSpec.Error<FunctionSpec.MiddlewareSpecs<FunctionSpec_>>
+        | MiddlewareError,
+        FunctionSpec.ReturnsSchema<FunctionSpec_>,
+        FunctionSpec.ErrorSchema<FunctionSpec_>,
+        | FunctionSpec.EncodedError<FunctionSpec_>
+        | MiddlewareSpec.EncodedError<
+            FunctionSpec.MiddlewareSpecs<FunctionSpec_>
+          >
+        | MiddlewareEncodedError
+      >;
 
 type FromFunctionSpecHelper<
   FunctionSpec_ extends FunctionSpec.AnyWithProps,
@@ -443,6 +448,11 @@ export const make = <
   MiddlewareSpec.Error<GroupMiddlewareSpec_>,
   MiddlewareSpec.EncodedError<GroupMiddlewareSpec_>
 > => {
+  if (functionSpec.functionVisibility === "http") {
+    throw new Error(
+      `Route "${functionSpec.name}" is served over HTTP and has no Convex function reference`,
+    );
+  }
   const convexFunctionName = `${convexFunctionNamespace}:${functionSpec.name}`;
 
   return Match.value(functionSpec.functionProvenance).pipe(

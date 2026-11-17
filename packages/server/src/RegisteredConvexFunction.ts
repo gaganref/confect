@@ -43,7 +43,7 @@ import * as QueryCtx from "./QueryCtx.js";
 import * as QueryRunner from "./QueryRunner.js";
 import * as QueryTransactionContext from "./QueryTransactionContext.js";
 import * as RegisteredFunction from "./RegisteredFunction.js";
-import type * as FunctionRegistryItem from "./FunctionRegistryItem.js";
+import * as FunctionRegistryItem from "./FunctionRegistryItem.js";
 import type * as ResolvedMiddleware from "./ResolvedMiddleware.js";
 import * as Scheduler from "./Scheduler.js";
 import { StorageActionWriter } from "./StorageActionWriter.js";
@@ -66,21 +66,22 @@ export const prepare = (
   item: FunctionRegistryItem.ConfectFunctionRegistryItem,
   resolvedMiddlewares: ReadonlyArray<ResolvedMiddleware.ResolvedMiddleware> = [],
   observability?: Layer.Layer<never>,
-) =>
-  Match.value(item.functionType).pipe(
+) => {
+  const visibility = FunctionRegistryItem.convexVisibility(item);
+  return Match.value(item.functionType).pipe(
     Match.when("query", () => {
       const definition = queryFunction({
         databaseSchema,
         name: item.name,
         observability,
-        functionVisibility: item.functionVisibility,
+        functionVisibility: visibility,
         args: item.args,
         returns: item.returns,
         error: item.error,
         handler: item.handler,
         resolvedMiddlewares,
       });
-      return Match.value(item.functionVisibility).pipe(
+      return Match.value(visibility).pipe(
         Match.when("public", () => Definition.PublicQuery(definition)),
         Match.when("internal", () => Definition.InternalQuery(definition)),
         Match.exhaustive,
@@ -92,14 +93,14 @@ export const prepare = (
         name: item.name,
         reservedArgument: item.reservedArgument,
         observability,
-        functionVisibility: item.functionVisibility,
+        functionVisibility: visibility,
         args: item.args,
         returns: item.returns,
         error: item.error,
         handler: item.handler,
         resolvedMiddlewares,
       });
-      return Match.value(item.functionVisibility).pipe(
+      return Match.value(visibility).pipe(
         Match.when("public", () => Definition.PublicMutation(definition)),
         Match.when("internal", () => Definition.InternalMutation(definition)),
         Match.exhaustive,
@@ -110,14 +111,14 @@ export const prepare = (
         name: item.name,
         reservedArgument: item.reservedArgument,
         observability,
-        functionVisibility: item.functionVisibility,
+        functionVisibility: visibility,
         args: item.args,
         returns: item.returns,
         error: item.error,
         handler: item.handler,
         resolvedMiddlewares,
       });
-      return Match.value(item.functionVisibility).pipe(
+      return Match.value(visibility).pipe(
         Match.when("public", () => Definition.PublicAction(definition)),
         Match.when("internal", () => Definition.InternalAction(definition)),
         Match.exhaustive,
@@ -125,6 +126,7 @@ export const prepare = (
     }),
     Match.exhaustive,
   );
+};
 
 export const make = (
   databaseSchema: DatabaseSchema.AnyWithProps,

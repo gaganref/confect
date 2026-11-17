@@ -4,10 +4,20 @@ import * as MiddlewareAttachment from "./MiddlewareAttachment.js";
 import * as Predicate from "effect/Predicate";
 import * as Record from "effect/Record";
 import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import type * as FunctionSpec from "./FunctionSpec.js";
 import type * as MiddlewareSpec from "./MiddlewareSpec.js";
 import type * as RuntimeAndFunctionType from "./RuntimeAndFunctionType.js";
 import { validateConfectFunctionIdentifier } from "./Identifier.js";
+
+export class RouteInNodeGroup extends Schema.TaggedError<
+  RouteInNodeGroup,
+  { readonly brand: unique symbol }
+>()("RouteInNodeGroup", { functionName: Schema.String }) {
+  override get message(): string {
+    return `Route "${this.functionName}" cannot join a Node group: routes run in the Convex runtime`;
+  }
+}
 
 export const TypeId = "~@confect/core/GroupSpec";
 export type TypeId = typeof TypeId;
@@ -150,6 +160,10 @@ const Proto = {
     function_: Function,
   ) {
     const this_ = this as AnyWithProps;
+
+    if (this_.runtime === "Node" && function_.functionVisibility === "http") {
+      throw RouteInNodeGroup.make({ functionName: function_.name });
+    }
 
     const overlapping = Array.findFirst(
       function_.middlewareAttachments,

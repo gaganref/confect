@@ -4,7 +4,7 @@ import * as Array from "effect/Array";
 import * as Effect from "effect/Effect";
 import * as Schema from "effect/Schema";
 import type * as GroupSpec from "@confect/core/GroupSpec";
-import type * as FunctionSpec from "@confect/core/FunctionSpec";
+import * as FunctionSpec from "@confect/core/FunctionSpec";
 import { CodeBlockWriter } from "./CodeBlockWriter.js";
 import {
   render as renderSpecAssembly,
@@ -637,9 +637,15 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
   }
   const useNode = spec.runtime === "Node";
 
+  // A route is served over HTTP, so Convex registers nothing for it.
+  const convexFunctions = (group: GroupSpec.AnyWithProps) =>
+    Record.filter(
+      group.functions,
+      (functionSpec) => !FunctionSpec.isHttpAction(functionSpec),
+    );
   const hasConfectFunctions = (group: GroupSpec.AnyWithProps): boolean =>
     Array.some(
-      Record.values(group.functions),
+      Record.values(convexFunctions(group)),
       (functionSpec) => functionSpec.functionProvenance._tag === "Confect",
     ) || Array.some(Record.values(group.groups), hasConfectFunctions);
   const forwarding = !useNode && hasConfectFunctions(spec);
@@ -695,7 +701,7 @@ const registeredFunctionsForGroupEffect = Effect.fnUntraced(function* ({
     ): Effect.Effect<string> =>
       Effect.gen(function* () {
         const functions = yield* Effect.forEach(
-          Record.toEntries(group.functions),
+          Record.toEntries(convexFunctions(group)),
           Effect.fnUntraced(function* ([name, functionSpec]: readonly [
             string,
             FunctionSpec.AnyWithProps,

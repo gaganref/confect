@@ -124,7 +124,7 @@ type ConfectRegisteredFunction<
         FunctionSpec_["runtimeAndFunctionType"]
       > extends "query"
       ? RegisteredQuery<
-          FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+          Exclude<FunctionSpec.GetFunctionVisibility<FunctionSpec_>, "http">,
           Args_,
           Promise<FunctionSpec.EncodedReturns<FunctionSpec_>>
         >
@@ -132,7 +132,7 @@ type ConfectRegisteredFunction<
             FunctionSpec_["runtimeAndFunctionType"]
           > extends "mutation"
         ? RegisteredMutation<
-            FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+            Exclude<FunctionSpec.GetFunctionVisibility<FunctionSpec_>, "http">,
             Args_,
             Promise<FunctionSpec.EncodedReturns<FunctionSpec_>>
           >
@@ -140,7 +140,10 @@ type ConfectRegisteredFunction<
               FunctionSpec_["runtimeAndFunctionType"]
             > extends "action"
           ? RegisteredAction<
-              FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+              Exclude<
+                FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+                "http"
+              >,
               Args_,
               Promise<FunctionSpec.EncodedReturns<FunctionSpec_>>
             >
@@ -158,7 +161,7 @@ export type ConvexRegisteredFunction<
         FunctionSpec_["runtimeAndFunctionType"]
       > extends "query"
       ? RegisteredQuery<
-          FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+          Exclude<FunctionSpec.GetFunctionVisibility<FunctionSpec_>, "http">,
           Args_,
           Returns_
         >
@@ -166,7 +169,7 @@ export type ConvexRegisteredFunction<
             FunctionSpec_["runtimeAndFunctionType"]
           > extends "mutation"
         ? RegisteredMutation<
-            FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+            Exclude<FunctionSpec.GetFunctionVisibility<FunctionSpec_>, "http">,
             Args_,
             Returns_
           >
@@ -174,7 +177,10 @@ export type ConvexRegisteredFunction<
               FunctionSpec_["runtimeAndFunctionType"]
             > extends "action"
           ? RegisteredAction<
-              FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+              Exclude<
+                FunctionSpec.GetFunctionVisibility<FunctionSpec_>,
+                "http"
+              >,
               Args_,
               Returns_
             >

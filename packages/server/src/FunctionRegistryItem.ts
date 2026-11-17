@@ -1,9 +1,11 @@
 import type * as MiddlewareAttachment from "@confect/core/MiddlewareAttachment";
 import type * as FunctionSpec from "@confect/core/FunctionSpec";
 import * as Lazy from "@confect/core/Lazy";
-import type { FunctionType, FunctionVisibility } from "convex/server";
+import type { FunctionType } from "convex/server";
 import * as Match from "effect/Match";
 import * as Predicate from "effect/Predicate";
+import * as Record from "effect/Record";
+import * as Result from "effect/Result";
 import type * as Schema from "effect/Schema";
 import type * as Handler from "./Handler.js";
 
@@ -30,7 +32,7 @@ export interface ConfectFunctionRegistryItem {
   readonly _tag: "Confect";
   readonly name: string;
   readonly reservedArgument?: string;
-  readonly functionVisibility: FunctionVisibility;
+  readonly functionVisibility: FunctionSpec.FunctionVisibility;
   readonly functionType: FunctionType;
   readonly args: Schema.Codec<any, any>;
   readonly returns: Schema.Codec<any, any>;
@@ -44,6 +46,37 @@ export interface ConvexFunctionRegistryItem {
   readonly _tag: "Convex";
   readonly handler: Handler.AnyConvexProvenance;
 }
+
+export interface Items {
+  readonly [key: string]: AnyWithProps | Items;
+}
+
+/**
+ * The items Convex registers: all but routes, which are served over HTTP.
+ */
+export const convexFunctions = (items: Items): Items =>
+  Record.filterMap(items, (value): Result.Result<AnyWithProps | Items, void> =>
+    !isFunctionRegistryItem(value)
+      ? Result.succeed(convexFunctions(value))
+      : value._tag === "Confect" && value.functionVisibility === "http"
+        ? Result.failVoid
+        : Result.succeed(value),
+  );
+
+/**
+ * The visibility Convex registers an item under. A route has none.
+ */
+export const convexVisibility = (
+  item: ConfectFunctionRegistryItem,
+): FunctionSpec.ConvexVisibility => {
+  const visibility = item.functionVisibility;
+  if (visibility === "http") {
+    throw new Error(
+      `Route "${item.name}" is served over HTTP and is not registered with Convex`,
+    );
+  }
+  return visibility;
+};
 
 export const make = ({
   functionSpec,

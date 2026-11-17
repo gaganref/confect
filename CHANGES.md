@@ -608,6 +608,27 @@ internal ref through `refs.public` by a cast loses it. This keeps a later
 `"http"` visibility out of both trees. Changeset: `refs-runtime-visibility.md`.
 Upstream: planned; no proposal submitted.
 
+## Route specs are a function kind
+
+`FunctionSpec.httpAction({ name, method, path, args, returns, error })` declares
+a route in a module's spec, beside its queries and mutations. A route is an
+action with visibility `"http"`: every middleware's action path runs for it,
+and Convex never registers it. `FunctionVisibility` becomes Confect's own
+`"public" | "internal" | "http"`, while refs keep Convex's two. The spec keeps
+`route: { method, path, params }` for the server and codegen units that serve
+it. The path uses Effect's `:name` syntax, and the maker refuses every form
+whose reading could differ between Effect's router and a person: wildcards,
+regexes, optional and partial-segment parameters, empty segments, repeated
+parameters and literal characters outside letters, digits and `. _ ~ -`. A
+parameter that names no own argument field fails at the path in the types, and at runtime
+when the args are first read, so the args stay lazy. Each refusal is a tagged error with its fields: `UnroutableMethod`, `InvalidRoutePath`, `UndeclaredPathParam` and `RouteInNodeGroup`. A route takes no headers,
+so no header becomes an argument. A profile's `httpAction` drops its reserved
+argument. Routes are in neither ref tree, no component exports one, `Ref.make`
+and Node groups refuse one, and the definition builders and the generated
+registration module skip one. Serving, codegen of the HTTP files and the
+watcher follow in later units of the same stack. Changeset:
+`route-spec-kind.md`. Upstream: fork only, as route specs are a fork addition.
+
 ## Native function reference conversion
 
 Move `Ref.getFunctionReference` to `@confect/core/RefInternal`. The `Ref` module
