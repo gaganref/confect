@@ -1585,11 +1585,14 @@ describe("httpAction", () => {
     );
   });
 
+  const empty: FunctionProvenance.ArgsFields = {};
+  const withId: FunctionProvenance.ArgsFields = { id: Schema.String };
+
   it.each([
-    ["constructor", {}],
-    ["constructor", { id: Schema.String }],
-    ["toString", {}],
-    ["toString", { id: Schema.String }],
+    ["constructor", empty],
+    ["constructor", withId],
+    ["toString", empty],
+    ["toString", withId],
   ])(
     "refuses :%s, which only the prototype declares, given %o",
     (param, fields) => {
@@ -1597,7 +1600,7 @@ describe("httpAction", () => {
         name: "inherited",
         method: "GET",
         path: `/notes/:${param}`,
-        args: (): FunctionProvenance.ArgsFields => fields,
+        args: () => fields,
         returns,
       });
       expect(() => inherited.functionProvenance.args).toThrowError(
@@ -1606,7 +1609,7 @@ describe("httpAction", () => {
     },
   );
 
-  it.each([{}, { id: Schema.String }])(
+  it.each([empty, withId])(
     "refuses :__proto__ as an invalid parameter given %o",
     (fields) => {
       expect(() =>
@@ -1614,7 +1617,7 @@ describe("httpAction", () => {
           name: "proto",
           method: "GET",
           path: "/notes/:__proto__",
-          args: (): FunctionProvenance.ArgsFields => fields,
+          args: () => fields,
           returns,
         }),
       ).toThrowError(
