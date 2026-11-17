@@ -1,3 +1,4 @@
+import * as Arr from "effect/Array";
 import * as Env from "@confect/core/Env";
 import * as Manifest from "@confect/core/Manifest";
 import type { Input } from "alchemy/Input";
@@ -5,7 +6,7 @@ import * as Namespace from "alchemy/Namespace";
 import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";
 import * as Rec from "effect/Record";
-import type * as Redacted from "effect/Redacted";
+import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import * as Result from "effect/Result";
 import { Code } from "./Code.js";
@@ -179,29 +180,86 @@ const settleChoice = (
   });
 
 /**
- * Each provider choice in `values` as the string Convex stores. A choice given
- * as an output is settled when it resolves, so a refusal fails the apply before
- * the environment is written and the output keeps its upstream.
+ * Normalize all accepted Input forms without resolving resource dependencies.
+ * Redacted values remain opaque; arrays and choice records retain their shape.
  */
-const supplyProviders = (
+const normalize = (value: unknown): unknown => {
+  if (Output.isOutput(value)) return value;
+  // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- Input admits Effects with arbitrary errors and requirements; this boundary preserves requirements on the Output and converts failures to defects.
+  if (Effect.isEffect(value))
+    return value.pipe(Effect.orDie, Output.fromEffect);
+  if (value === null || typeof value !== "object" || Redacted.isRedacted(value))
+    return value;
+  const entries = Arr.map(
+    Rec.toEntries(value),
+    ([key, input]) => [key, normalize(input)] as const,
+  );
+  const assemble = (resolved: ReadonlyArray<unknown>) =>
+    Arr.isArray(value)
+      ? resolved
+      : Rec.fromEntries(
+          Arr.map(entries, ([key], index) => [key, resolved[index]]),
+        );
+  const inputs = Arr.map(entries, ([, input]) => input);
+  return Arr.some(inputs, Output.isOutput)
+    ? Output.map(
+        Output.all(...Arr.map(inputs, (input) => Output.asOutput(input))),
+        assemble,
+      )
+    : assemble(inputs);
+};
+
+/**
+ * Validate and encode one resolved record before the environment resource sees
+ * any values. Deferred records keep every upstream edge on each written value.
+ */
+const supplySettings = (
   at: string,
   slots: Readonly<Record<string, Env.Descriptor>>,
   values: Readonly<Record<string, unknown>>,
 ) =>
   Effect.gen(function* () {
-    const written: Record<string, unknown> = { ...values };
-    for (const [key, descriptor] of Rec.toEntries(slots)) {
-      const value = values[key];
-      if (descriptor.kind !== "providers" || value === undefined) continue;
-      const settle = (resolved: unknown) =>
-        settleChoice(at, key, descriptor, slots, values, resolved);
-      written[key] = Output.isOutput(value)
-        ? value.pipe(
-            Output.mapEffect((resolved) => settle(resolved).pipe(Effect.orDie)),
-          )
-        : yield* settle(value);
-    }
-    return written as Variables;
+    const settle = (resolved: Readonly<Record<string, unknown>>) =>
+      Effect.gen(function* () {
+        const written: Record<string, unknown> = {};
+        for (const [key, descriptor] of Rec.toEntries(slots)) {
+          const value = resolved[key];
+          if (value === undefined) {
+            if (!descriptor.optional)
+              return yield* InvalidMountSetting.make({
+                mount: at,
+                slot: key,
+                reason: "Missing",
+              });
+            continue;
+          }
+          if (descriptor.kind === "secret" && typeof value === "string")
+            return yield* InvalidMountSetting.make({
+              mount: at,
+              slot: key,
+              reason: "PlainSecret",
+            });
+          written[key] =
+            descriptor.kind === "providers"
+              ? yield* settleChoice(at, key, descriptor, slots, resolved, value)
+              : value;
+        }
+        return written as Record<string, string | Redacted.Redacted<string>>;
+      });
+    const normalized = normalize(values);
+    if (!Output.isOutput(normalized))
+      return yield* settle(normalized as Readonly<Record<string, unknown>>);
+    const checked = normalized.pipe(
+      Output.mapEffect((resolved: Readonly<Record<string, unknown>>) =>
+        settle(resolved).pipe(Effect.orDie),
+      ),
+    );
+    return Rec.fromEntries(
+      Arr.map(Rec.keys(slots), (key) => [
+        key,
+        Output.map(checked, (resolved) => resolved[key]),
+      ]),
+    );
   });
 
 export class InvalidMountSetting extends Schema.TaggedError<
@@ -271,33 +329,10 @@ export const mountVariables = (
             reason: "NotOpen",
           });
       }
-      const settings = yield* supplyProviders(mount, entry.env, supplied);
+      const settings = yield* supplySettings(mount, entry.env, supplied);
       for (const [slot, open] of Rec.toEntries(entry.env)) {
         const value = settings[slot];
-        if (value === undefined) {
-          if (!open.optional)
-            return yield* InvalidMountSetting.make({
-              mount,
-              slot,
-              reason: "Missing",
-            });
-          continue;
-        }
-        const plain = InvalidMountSetting.make({
-          mount,
-          slot,
-          reason: "PlainSecret",
-        });
-        if (open.kind === "secret" && typeof value === "string")
-          return yield* plain;
-        variables[open.variable] =
-          open.kind === "secret" && Output.isOutput(value)
-            ? Output.mapEffect((resolved: string | Redacted.Redacted<string>) =>
-                typeof resolved === "string"
-                  ? Effect.die(plain)
-                  : Effect.succeed(resolved),
-              )(value as Output.Output<string | Redacted.Redacted<string>>)
-            : value;
+        if (value !== undefined) variables[open.variable] = value;
       }
     }
     return variables;
@@ -327,18 +362,38 @@ const backend = (
           : yield* mountVariables(manifest, props.mounts ?? {}).pipe(
               Effect.orDie,
             );
-      const automatic =
+      const automaticInput =
         manifest === undefined
           ? undefined
           : yield* Effect.fromResult(
               automaticVariables(manifest, props.automatic ?? {}),
             ).pipe(Effect.orDie);
-      const env =
-        manifest === undefined || props.env === undefined
-          ? props.env
-          : yield* supplyProviders("app", manifest.env, props.env).pipe(
+      const automatic =
+        manifest === undefined || automaticInput === undefined
+          ? undefined
+          : yield* supplySettings(
+              "app",
+              Rec.filter(manifest.env, (slot) => slot.automatic === true),
+              automaticInput,
+            ).pipe(
+              Effect.mapError((error) =>
+                error.reason === "Missing"
+                  ? InvalidAutomaticSetting.make({
+                      slot: error.slot!,
+                      reason: "Missing",
+                    })
+                  : error,
+              ),
               Effect.orDie,
             );
+      const env =
+        manifest === undefined
+          ? props.env
+          : yield* supplySettings(
+              "app",
+              Rec.filter(manifest.env, (slot) => slot.automatic !== true),
+              props.env ?? {},
+            ).pipe(Effect.orDie);
       const variables =
         Rec.keys(promoted).length === 0 && props.automatic === undefined
           ? env
