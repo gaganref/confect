@@ -394,7 +394,7 @@ describe("Manifest", () => {
     expect(Result.isSuccess(decoded)).toBe(true);
   });
 
-  it.each([
+  const rules: ReadonlyArray<readonly [string, unknown, string]> = [
     [
       "a tag without its selector",
       {
@@ -480,21 +480,28 @@ describe("Manifest", () => {
           `mounts.email.env.KEY declares the variable "${variable}", which`,
         ] as const,
     ),
-    ...Arr.map(["owner", "group", "endpoint"] as const, (field) => [
-      `a route leaf whose ${field} differs from its key`,
-      {
-        ...manifest,
-        http: {
-          ...manifest.http,
-          app: {
-            health: {
-              ready: { ...manifest.http.app.health.ready, [field]: "other" },
+    ...Arr.map(
+      ["owner", "group", "endpoint"] as const,
+      (field) =>
+        [
+          `a route leaf whose ${field} differs from its key`,
+          {
+            ...manifest,
+            http: {
+              ...manifest.http,
+              app: {
+                health: {
+                  ready: {
+                    ...manifest.http.app.health.ready,
+                    [field]: "other",
+                  },
+                },
+              },
             },
           },
-        },
-      },
-      `http.app.health.ready has ${field} "other", not the key it sits under`,
-    ]),
+          `http.app.health.ready has ${field} "other", not the key it sits under`,
+        ] as const,
+    ),
     [
       "a route leaf from another build",
       {
@@ -513,14 +520,12 @@ describe("Manifest", () => {
       },
       "http.app.health.ready carries digest sha256:1111, not the manifest's sha256:0000",
     ],
-  ] satisfies ReadonlyArray<readonly [string, unknown, string]>)(
-    "refuses %s, naming the rule",
-    (_, input, rule) => {
-      const failure = refusal(input);
-      expect(failure.reason).toContain(rule);
-      expect(failure.remedy).toBe("Regenerate");
-    },
-  );
+  ];
+  it.each(rules)("refuses %s, naming the rule", (_, input, rule) => {
+    const failure = refusal(input);
+    expect(failure.reason).toContain(rule);
+    expect(failure.remedy).toBe("Regenerate");
+  });
 
   it("names the variable rule a reserved and a malformed variable break", () => {
     const at = (variable: string) =>

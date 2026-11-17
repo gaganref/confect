@@ -1,7 +1,9 @@
+import * as Predicate from "effect/Predicate";
+import * as Rec from "effect/Record";
 import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import type * as Redacted from "effect/Redacted";
-import type * as Env from "./Env.js";
+import * as Env from "./Env.js";
 
 /**
  * The manifest format this release writes and reads. A reader refuses any other
@@ -19,7 +21,11 @@ const descriptorFields = {
   optional: Schema.Boolean,
   automatic: Schema.optionalKey(Schema.Literal(true)),
   provider: Schema.optionalKey(
-    Schema.Struct({ name: Schema.String, required: Schema.Boolean }),
+    Schema.Struct({
+      selector: Schema.String,
+      name: Schema.String,
+      required: Schema.Boolean,
+    }),
   ),
 };
 const slotSchema = <const Fields extends Schema.Struct.Fields>(
@@ -76,9 +82,80 @@ export const Route = Schema.Struct({
 });
 export type Route = typeof Route.Type;
 
+const ENV_KEY = /^[A-Za-z][A-Za-z0-9_]*$/;
+
+type Slot = typeof Descriptor.Type & { readonly variable?: string };
+
+/**
+ * The first rule a record of slots breaks: an automatic slot is required, a
+ * provider tag's selector is a `providers` slot of the same record that offers
+ * the tag's provider, and an open slot's variable is a valid, unreserved name.
+ */
+const slotViolation = (
+  at: string,
+  slots: Readonly<Record<string, Slot>>,
+): string | undefined => {
+  for (const [key, slot] of Rec.toEntries(slots)) {
+    if (slot.automatic === true && slot.optional)
+      return `${at}.${key} is automatic and optional; an automatic slot is required`;
+    if (slot.provider !== undefined) {
+      const { selector, name } = slot.provider;
+      const chooser = Rec.has(slots, selector) ? slots[selector] : undefined;
+      if (chooser?.kind !== "providers")
+        return `${at}.${key} names the provider selector ${selector}, which is not a providers slot of ${at}`;
+      if (!chooser.values.includes(name))
+        return `${at}.${key} names the provider ${name}, which ${at}.${selector} does not offer`;
+    }
+    if (slot.variable !== undefined) {
+      if (!ENV_KEY.test(slot.variable))
+        return `${at}.${key} declares the variable "${slot.variable}", which does not use letters, digits and underscores, starting with a letter`;
+      if (Result.isFailure(Env.validateKey(slot.variable)))
+        return `${at}.${key} declares the variable "${slot.variable}", which is reserved for a Convex built-in address`;
+    }
+  }
+  return undefined;
+};
+
+/**
+ * The first rule the manifest's cross-references break: each slot record's
+ * rules, and each route leaf naming the owner, group and endpoint it sits under
+ * and carrying the manifest's own digest.
+ */
+const violation = (manifest: {
+  readonly env: Readonly<Record<string, Slot>>;
+  readonly mounts: Readonly<
+    Record<string, { readonly env: Readonly<Record<string, Slot>> }>
+  >;
+  readonly http: Readonly<
+    Record<string, Record<string, Record<string, Route>>>
+  >;
+  readonly digest: string;
+}): string | undefined => {
+  const env = slotViolation("env", manifest.env);
+  if (env !== undefined) return env;
+  for (const [mount, entry] of Rec.toEntries(manifest.mounts)) {
+    const found = slotViolation(`mounts.${mount}.env`, entry.env);
+    if (found !== undefined) return found;
+  }
+  for (const [owner, groups] of Rec.toEntries(manifest.http))
+    for (const [group, endpoints] of Rec.toEntries(groups))
+      for (const [endpoint, leaf] of Rec.toEntries(endpoints)) {
+        const at = `http.${owner}.${group}.${endpoint}`;
+        const keys = { owner, group, endpoint };
+        for (const field of ["owner", "group", "endpoint"] as const)
+          if (leaf[field] !== keys[field])
+            return `${at} has ${field} "${leaf[field]}", not the key it sits under`;
+        if (leaf.digest !== manifest.digest)
+          return `${at} carries digest ${leaf.digest}, not the manifest's ${manifest.digest}`;
+      }
+  return undefined;
+};
+
 /**
  * The complete format 1 contract. Decode at every manifest import boundary.
- * Unknown fields are refused, including within slots, mounts and routes.
+ * Unknown fields are refused, including within slots, mounts and routes, and so
+ * is a manifest whose provider tags, variables or route leaves do not agree
+ * with the keys and digest they sit under.
  */
 export const Manifest = Schema.Struct({
   format: Schema.Literal(FORMAT),
@@ -91,7 +168,7 @@ export const Manifest = Schema.Struct({
   ),
   digest: Schema.String,
   sections: Schema.Record(Schema.String, Schema.Json),
-});
+}).check(Schema.makeFilter(violation));
 export type Manifest = typeof Manifest.Type;
 
 export class UnsupportedManifestFormat extends Schema.TaggedError<
@@ -100,9 +177,16 @@ export class UnsupportedManifestFormat extends Schema.TaggedError<
 >()("UnsupportedManifestFormat", {
   source: Schema.String,
   reason: Schema.String,
+  /**
+   * `Upgrade` when the manifest names a later format than this release reads;
+   * `Regenerate` for an earlier or missing format, or a malformed shape.
+   */
+  remedy: Schema.Literals(["Upgrade", "Regenerate"]),
 }) {
   override get message(): string {
-    return `The manifest at ${this.source} does not match format ${FORMAT}: ${this.reason}. Regenerate it with confect codegen and keep the component and host generators on the same release as the reader.`;
+    return this.remedy === "Upgrade"
+      ? `The manifest at ${this.source} is a later format than ${FORMAT}: ${this.reason}. Upgrade the Confect packages that read it to the release that generated it.`
+      : `The manifest at ${this.source} does not match format ${FORMAT}: ${this.reason}. Regenerate it with confect codegen and keep the component and host generators on the same release as the reader.`;
   }
 }
 
@@ -119,7 +203,16 @@ export const decode = (
     // Validation has established this type. Keep the imported value's identity.
     Result.map(() => input as Manifest),
     Result.mapError((error) =>
-      UnsupportedManifestFormat.make({ source, reason: error.message }),
+      UnsupportedManifestFormat.make({
+        source,
+        reason: error.message,
+        remedy:
+          Predicate.hasProperty(input, "format") &&
+          Predicate.isNumber(input.format) &&
+          input.format > FORMAT
+            ? "Upgrade"
+            : "Regenerate",
+      }),
     ),
   );
 
