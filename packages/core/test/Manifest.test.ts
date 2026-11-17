@@ -77,6 +77,44 @@ const required = {
 } as const;
 
 describe("Manifest", () => {
+  it.each(["selector", "setting"] as const)(
+    "refuses an automatic provider %s with an explicit reason",
+    (kind) => {
+      const selector = {
+        kind: "providers",
+        values: ["ses"],
+        optional: false,
+      } as const;
+      const input = {
+        ...manifest,
+        env: {
+          CHOICE: {
+            ...selector,
+            ...(kind === "selector" ? { automatic: true as const } : {}),
+          },
+          ...(kind === "setting"
+            ? {
+                KEY: {
+                  kind: "secret",
+                  optional: false,
+                  automatic: true,
+                  provider: { selector: "CHOICE", name: "ses", required: true },
+                },
+              }
+            : {}),
+        },
+      };
+      const result = Manifest.decode(input, "fixture");
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result))
+        expect(result.failure.reason).toContain(
+          kind === "selector"
+            ? "providers slot cannot be automatic"
+            : "provider setting cannot be automatic",
+        );
+    },
+  );
+
   it("decodes without changing the imported value", () => {
     const decoded = Manifest.decode(manifest, "@tenant/backend/manifest");
     expect(Result.isSuccess(decoded)).toBe(true);

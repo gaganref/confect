@@ -24,6 +24,31 @@ const read = <A>(config: Config.Config<A>, values: Record<string, string>) =>
     return yield* config.pipe(Effect.provideContext(services));
   }).pipe(Effect.scoped);
 
+it("refuses automatic provider selectors at compile time and runtime", () => {
+  expect(() => {
+    // @ts-expect-error A provider selector cannot be automatic.
+    Env.automatic(Env.providers({ ses: {} }));
+  }).toThrowError(
+    expect.objectContaining({
+      _tag: "InvalidAutomaticField",
+      reason: "ProviderSelector",
+    }),
+  );
+});
+
+it("refuses automatic provider settings", () => {
+  expect(() =>
+    Env.make("email", {
+      CHOICE: Env.providers({ ses: { KEY: Env.automatic(Env.secret()) } }),
+    }),
+  ).toThrowError(
+    expect.objectContaining({
+      _tag: "InvalidAutomaticField",
+      reason: "ProviderSetting",
+    }),
+  );
+});
+
 describe("Env", () => {
   it.effect(
     "marks an automatic field without changing how a handler reads it",
