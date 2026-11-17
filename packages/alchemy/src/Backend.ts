@@ -100,7 +100,17 @@ export class InvalidMountSetting extends Schema.TaggedError<
   override get message() {
     const at =
       this.slot === undefined ? this.mount : `${this.mount}.${this.slot}`;
-    return `${at}: ${this.reason}`;
+    const remedy = {
+      UnknownMount:
+        "This mount is not listed. Use a mount name from manifest.mounts.",
+      NotOpen:
+        "This slot is not open. Supply only slots listed in this mount's manifest env.",
+      Missing:
+        "This required slot is missing. Supply this required slot in Backend.mounts.",
+      PlainSecret:
+        "This secret is a plain string. Wrap this secret with Redacted.make before passing it in Backend.mounts.",
+    };
+    return `${at}: ${remedy[this.reason]}`;
   }
 }
 
