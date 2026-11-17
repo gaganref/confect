@@ -178,7 +178,10 @@ describe("Declaration", () => {
       );
       expect(routes).toMatchObject({
         _tag: "Failure",
-        failure: { _tag: "UnsupportedManifestFormat" },
+        failure: {
+          _tag: "UnsupportedManifestFormat",
+          source: "confect/app.ts (mount pool, component workpool)",
+        },
       });
     },
   );
