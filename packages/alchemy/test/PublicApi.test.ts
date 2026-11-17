@@ -1,5 +1,5 @@
 import type { Input } from "alchemy/Input";
-import type * as Output from "alchemy/Output";
+import * as Output from "alchemy/Output";
 import { Confect, Convex } from "@confect/alchemy";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
 import * as Alchemy from "alchemy";
@@ -153,6 +153,116 @@ it("types Backend env from the manifest without executing resources", () => {
       manifest: optionalManifest,
     }),
   ).toExtend<Effect.Effect<unknown, unknown, unknown>>();
+});
+
+it("types enabled log streams and rejects disabled kinds, plain secrets and foreign fields", () => {
+  const target = {
+    deploymentUrl: "https://happy-otter-123.convex.cloud",
+    deployKey: Redacted.make("made-up-deploy-key"),
+  };
+  const secret = Redacted.make("made-up-connector-key");
+  const axiom = {
+    ...target,
+    kind: "axiom" as const,
+    apiKey: secret,
+    datasetName: "backend",
+    attributes: [],
+  };
+  const sentry = { ...target, kind: "sentry" as const, dsn: secret };
+  const webhook = {
+    ...target,
+    kind: "webhook" as const,
+    url: "https://logs.example.test",
+    format: "jsonl" as const,
+  };
+  const datadog = {
+    ...target,
+    kind: "datadog" as const,
+    siteLocation: "US1" as const,
+    ddApiKey: secret,
+    ddTags: [],
+  };
+  const s3 = {
+    ...target,
+    kind: "s3Export" as const,
+    bucket: "example",
+    region: "us-east-1",
+    accessKeyId: secret,
+    secretAccessKey: secret,
+    period: "hourly" as const,
+  };
+  for (const props of [
+    axiom,
+    sentry,
+    webhook,
+    {
+      ...webhook,
+      url: Redacted.make(
+        "https://user:made-up-password@logs.example.test/made-up-token",
+      ),
+    },
+  ])
+    expectTypeOf(props).toExtend<Convex.LogStreamProps>();
+  const stream = Convex.LogStream("Logs", axiom);
+  expectTypeOf<Effect.Success<typeof stream>["hmacSecret"]>().toExtend<
+    Output.Output<Redacted.Redacted<string> | undefined>
+  >();
+  // @ts-expect-error Deploy keys must be Redacted at the constructor.
+  void Convex.LogStream("PlainDeployKey", { ...axiom, deployKey: "plain" });
+  // @ts-expect-error Axiom API keys must be Redacted.
+  void Convex.LogStream("PlainAxiom", { ...axiom, apiKey: "plain" });
+  // @ts-expect-error Sentry DSNs must be Redacted.
+  void Convex.LogStream("PlainSentry", { ...sentry, dsn: "plain" });
+  void Convex.LogStream("DisabledDatadog", {
+    ...datadog,
+    // @ts-expect-error Disabled kinds are rejected on the kind property.
+    kind: "datadog",
+  });
+  void Convex.LogStream("DisabledS3", {
+    ...s3,
+    // @ts-expect-error Disabled kinds are rejected on the kind property.
+    kind: "s3Export",
+  });
+  void Convex.LogStream("DisabledPostHogLogs", {
+    ...target,
+    // @ts-expect-error Disabled kinds are rejected on the kind property.
+    kind: "postHogLogs",
+    apiKey: secret,
+  });
+  void Convex.LogStream("DisabledPostHogErrors", {
+    ...target,
+    // @ts-expect-error Disabled kinds are rejected on the kind property.
+    kind: "postHogErrorTracking",
+    apiKey: secret,
+  });
+  void Convex.LogStream("EnabledSentry", sentry);
+  void Convex.LogStream("EnabledWebhook", webhook);
+  void Convex.LogStream("AxiomTopics", { ...axiom, topics: ["console"] });
+  void Convex.LogStream("WebhookTopics", { ...webhook, topics: ["console"] });
+  void Convex.LogStream("AllTopics", { ...webhook, topics: null });
+  const topicSource = Convex.Project("TopicSource", {
+    teamId: 10,
+    name: "topics",
+  });
+  void Convex.LogStream(
+    "ComputedTopics",
+    Effect.gen(function* () {
+      const project = yield* topicSource;
+      return {
+        ...axiom,
+        topics: project.projectId.pipe(Output.map(() => ["console"] as const)),
+      };
+    }),
+  );
+  // @ts-expect-error Empty topic selections are rejected at the constructor.
+  void Convex.LogStream("EmptyAxiomTopics", { ...axiom, topics: [] });
+  // @ts-expect-error Empty topic selections are rejected at the constructor.
+  void Convex.LogStream("EmptyWebhookTopics", { ...webhook, topics: [] });
+  const foreign = { ...axiom, dsn: secret };
+  // @ts-expect-error Foreign fields fail even when passed through a variable.
+  void Convex.LogStream("Foreign", foreign);
+  // @ts-expect-error A webhook cannot take Axiom attributes.
+  void Convex.LogStream("ForeignWebhook", { ...webhook, attributes: [] });
 });
 
 it("exports UsageLimit with literal metric, window and type inputs", () => {

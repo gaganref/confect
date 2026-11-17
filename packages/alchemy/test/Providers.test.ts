@@ -50,6 +50,7 @@ describe("providers", () => {
           Convex.DeployKey,
           Convex.EnvironmentVariables,
           Convex.Code,
+          Convex.LogStream,
           Convex.UsageLimit,
         ]) {
           const provider = collection.get(resource.Type);
@@ -88,6 +89,7 @@ describe("providers", () => {
             Convex.DeployKey,
             Convex.EnvironmentVariables,
             Convex.Code,
+            Convex.LogStream,
             Convex.UsageLimit,
           ])
             expect(collection.get(resource.Type)?.mode).toBe(mode);
