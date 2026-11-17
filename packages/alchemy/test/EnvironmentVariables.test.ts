@@ -5,6 +5,9 @@ import * as Fiber from "effect/Fiber";
 import * as TestClock from "effect/testing/TestClock";
 import { PushLock } from "../src/internal/PushLock";
 import * as Layer from "effect/Layer";
+import * as ConvexClientModule from "@confect/alchemy/ConvexClient";
+import * as HttpClient from "effect/http/HttpClient";
+import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { Unowned } from "alchemy/AdoptPolicy";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
@@ -19,6 +22,7 @@ import {
 } from "@confect/alchemy/ConvexClient";
 import { lifecycle, mockClient } from "./fixtures/ConvexClient";
 import * as Record from "effect/Record";
+import * as Str from "effect/String";
 
 const props: EnvironmentVariables.EnvironmentVariablesProps = {
   url: "https://happy-otter-123.convex.cloud",
@@ -818,5 +822,156 @@ it.effect(
       });
       expect(mock.client.listEnvironmentVariables).not.toHaveBeenCalled();
     }).pipe(Effect.provideService(ConvexClient, mock.client));
+  },
+);
+
+it.effect.each(["drift", "unowned", "lock"] as const)(
+  "honors a newly enabled %s option when desired values remain unresolved",
+  (option) => {
+    const mock = mockClient();
+    mock.state.variables = {
+      MANAGED: Redacted.make(
+        option === "drift" ? "live-secret" : "last-written-secret",
+      ),
+      FOREIGN: Redacted.make("foreign-secret"),
+    };
+    let held = false;
+    let locks = 0;
+    const client = {
+      ...mock.client,
+      listEnvironmentVariables: () =>
+        Effect.suspend(() => {
+          if (option === "lock") expect(held).toBe(true);
+          return mock.client.listEnvironmentVariables();
+        }),
+    };
+    return Effect.gen(function* () {
+      const provider = yield* EnvironmentVariables.provider;
+      const result = yield* provider
+        .diff({
+          ...lifecycle,
+          olds: props,
+          output: snapshot,
+          news: {
+            ...props,
+            variables: { MANAGED: Effect.succeed("unresolved-secret") },
+            ...(option === "drift" ? { driftPolicy: "error" as const } : {}),
+            ...(option === "unowned"
+              ? { unownedPolicy: "error" as const }
+              : {}),
+            ...(option === "lock"
+              ? { lock: { deploymentName: "happy-otter-123" } }
+              : {}),
+          },
+          oldBindings: [],
+          newBindings: [],
+        })
+        .pipe(Effect.result);
+      if (option === "lock") {
+        expect(Result.isSuccess(result)).toBe(true);
+        expect(locks).toBe(1);
+      } else {
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result))
+          expect(result.failure).toMatchObject({
+            _tag:
+              option === "drift"
+                ? "EnvironmentVariableDrift"
+                : "EnvironmentVariableUnowned",
+            variableName: option === "drift" ? "MANAGED" : "FOREIGN",
+          });
+      }
+      expect(mock.client.updateEnvironmentVariables).not.toHaveBeenCalled();
+    }).pipe(
+      Effect.provideService(ConvexClient, client),
+      Effect.provideService(PushLock, {
+        withLock: (_name, effect) =>
+          Effect.acquireUseRelease(
+            Effect.sync(() => {
+              held = true;
+              locks++;
+            }),
+            () => effect,
+            () =>
+              Effect.sync(() => {
+                held = false;
+              }),
+          ),
+      }),
+    );
+  },
+);
+
+it.effect(
+  "recognizes new desired names while their values remain unresolved",
+  () => {
+    const mock = mockClient();
+    mock.state.variables = {
+      ...snapshot.variables,
+      NEW: Redacted.make("new-secret"),
+    };
+    return Effect.gen(function* () {
+      const provider = yield* EnvironmentVariables.provider;
+      const safe = { ...props, unownedPolicy: "error" as const };
+      yield* provider.diff({
+        ...lifecycle,
+        olds: safe,
+        output: snapshot,
+        news: {
+          ...safe,
+          variables: {
+            MANAGED: Effect.succeed("unresolved-secret"),
+            NEW: Effect.succeed("new-secret"),
+          },
+        },
+        oldBindings: [],
+        newBindings: [],
+      });
+      expect(mock.client.updateEnvironmentVariables).not.toHaveBeenCalled();
+    }).pipe(Effect.provideService(ConvexClient, mock.client));
+  },
+);
+
+it.effect.each([
+  { code: "OptimisticConcurrencyControlFailure", expected: 3 },
+  { code: "OtherFailure", expected: 1 },
+  { code: "prod:happy-otter-123|planted-secret", expected: 1 },
+])(
+  "retries only a validated HTTP conflict identifier ($expected attempts)",
+  ({ code, expected }) => {
+    let attempts = 0;
+    const http = HttpClient.make((request) =>
+      Effect.sync(() => {
+        const isRead = Str.endsWith("list_environment_variables")(request.url);
+        if (!isRead) attempts++;
+        const response = isRead
+          ? Response.json({ environmentVariables: {} })
+          : Response.json({ code, message: "planted-secret" }, { status: 503 });
+        return HttpClientResponse.fromWeb(request, response);
+      }),
+    );
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        ConvexClientModule.layer().pipe(
+          Layer.provide(Layer.succeed(HttpClient.HttpClient, http)),
+        ),
+      );
+      return yield* Effect.gen(function* () {
+        const provider = yield* EnvironmentVariables.provider;
+        const fiber = yield* provider
+          .reconcile({
+            ...lifecycle,
+            olds: undefined,
+            output: undefined,
+            news: { ...props, retry: { maxAttempts: 3, delay: "100 millis" } },
+          })
+          .pipe(Effect.result, Effect.forkScoped);
+        yield* TestClock.adjust("1 second");
+        const result = yield* Fiber.join(fiber);
+        expect(Result.isFailure(result)).toBe(true);
+        expect(attempts).toBe(expected);
+        expect(inspect(result)).not.toContain("planted-secret");
+      }).pipe(Effect.provideContext(services));
+    });
   },
 );
