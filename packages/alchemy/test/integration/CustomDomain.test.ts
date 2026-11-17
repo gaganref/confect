@@ -1,4 +1,5 @@
 import * as CustomDomain from "@confect/alchemy/CustomDomain";
+import * as Deployment from "@confect/alchemy/Deployment";
 import {
   ConvexApiError,
   ConvexConflict,
@@ -484,5 +485,51 @@ it.effect(
         failure: { _tag: "ConflictingCanonicalDomains" },
       });
       expect(fixture.client.createCustomDomain).not.toHaveBeenCalled();
+    }),
+);
+
+it.effect.each([false, true])(
+  "checks canonical owners that share a deployment output with existing=%s",
+  (existing) =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const collection = Layer.effect(
+        Providers,
+        Provider.collection([CustomDomain.CustomDomain, Deployment.Deployment]),
+      ).pipe(
+        Layer.provide(Layer.mergeAll(CustomDomain.layer, Deployment.layer)),
+        Layer.provide(fixture.layer),
+      );
+      const engine = yield* makeEngine(collection);
+      const deployment = Deployment.Deployment("Deployment", {
+        projectId: 1,
+        type: "prod",
+        reference: "example",
+      });
+      if (existing) yield* engine.run(deployment.pipe(Effect.as({})));
+      const declarations = Effect.gen(function* () {
+        const target = yield* deployment;
+        yield* CustomDomain.CustomDomain("One", {
+          ...props,
+          deployment: target,
+          canonical: true,
+        });
+        yield* CustomDomain.CustomDomain("Two", {
+          ...props,
+          deployment: target,
+          domain: "other.example.com",
+          canonical: true,
+        });
+        return {};
+      });
+      const result = yield* engine
+        .run(declarations, { apply: !existing })
+        .pipe(Effect.result);
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "ConflictingCanonicalDomains" },
+      });
+      expect(fixture.client.createCustomDomain).not.toHaveBeenCalled();
+      expect(fixture.client.updateCanonicalUrl).not.toHaveBeenCalled();
     }),
 );
