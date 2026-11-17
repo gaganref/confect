@@ -56,13 +56,13 @@ export class DuplicateEnvKey extends Schema.TaggedError<
   }
 }
 
-export class InvalidAutomaticField extends Schema.TaggedError<
-  InvalidAutomaticField,
+export class InvalidEnvProviders extends Schema.TaggedError<
+  InvalidEnvProviders,
   { readonly brand: unique symbol }
->()("InvalidAutomaticField", {
+>()("InvalidEnvProviders", {
   reason: Schema.Literals([
-    "ProviderSelector",
-    "ProviderSetting",
+    "AutomaticSelector",
+    "AutomaticSetting",
     "NestedSelector",
   ]),
   provider: Schema.optional(Schema.String),
@@ -71,7 +71,7 @@ export class InvalidAutomaticField extends Schema.TaggedError<
   override get message(): string {
     if (this.reason === "NestedSelector")
       return `Provider ${this.provider} setting ${this.key} cannot be a providers selector; declare each selector as a top-level slot.`;
-    return this.reason === "ProviderSelector"
+    return this.reason === "AutomaticSelector"
       ? "A providers selector cannot be automatic; supply its choice from the deployment."
       : "A provider setting cannot be automatic; declare a value shared by providers as an ordinary slot.";
   }
@@ -287,9 +287,9 @@ export const automatic = <A, Value extends string>(
       : unknown),
 ): Field<A, Value, false> => {
   if (field.descriptor.kind === "providers")
-    throw InvalidAutomaticField.make({ reason: "ProviderSelector" });
+    throw InvalidEnvProviders.make({ reason: "AutomaticSelector" });
   if (field.descriptor.provider !== undefined)
-    throw InvalidAutomaticField.make({ reason: "ProviderSetting" });
+    throw InvalidEnvProviders.make({ reason: "AutomaticSetting" });
   return {
     ...field,
     descriptor: { ...field.descriptor, automatic: true },
@@ -400,13 +400,17 @@ export const providers = <
   for (const [provider, slots] of Rec.toEntries(groups)) {
     for (const [key, field] of Rec.toEntries(slots)) {
       if (field.descriptor.kind === "providers")
-        throw InvalidAutomaticField.make({
+        throw InvalidEnvProviders.make({
           reason: "NestedSelector",
           provider,
           key,
         });
       if (field.descriptor.automatic === true)
-        throw InvalidAutomaticField.make({ reason: "ProviderSetting" });
+        throw InvalidEnvProviders.make({
+          reason: "AutomaticSetting",
+          provider,
+          key,
+        });
     }
   }
   const names = Rec.keys(groups) as unknown as readonly [

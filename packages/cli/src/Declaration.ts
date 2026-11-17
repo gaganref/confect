@@ -445,7 +445,9 @@ const slotsOf = (
  * them.
  */
 const sameShape = (a: Env.Descriptor, b: Env.Descriptor): boolean =>
-  a.kind === b.kind && a.optional === b.optional && sameValues(a, b);
+  a.kind === b.kind &&
+  a.optional === b.optional &&
+  (a.kind !== "literals" || sameValues(a, b));
 
 const valuesOf = (descriptor: Env.Descriptor): ReadonlyArray<string> =>
   descriptor.kind === "literals" || descriptor.kind === "providers"
