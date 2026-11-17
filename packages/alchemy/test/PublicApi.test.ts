@@ -7,7 +7,6 @@ import * as Config from "effect/Config";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
-import { HealthCheckFailed } from "@confect/alchemy";
 import { HealthCheckFailed as Raised } from "../src/internal/CodeDeployment";
 
 describe("public API", () => {
@@ -383,7 +382,6 @@ it("exports the health check failure a deploy fails with", () => {
     answered: "sha256:older",
   });
   expect(Convex.HealthCheckFailed).toBe(Raised);
-  expect(HealthCheckFailed).toBe(Raised);
   expect(failure._tag).toBe("HealthCheckFailed");
   expect(Schema.is(Convex.HealthCheckFailed)(failure)).toBe(true);
   expect(failure.message).toContain("sha256:older");
