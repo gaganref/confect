@@ -248,7 +248,12 @@ export const check = (
   const notes: string[] = [];
   for (const [key, { section, data }] of registry) {
     try {
-      const checked = section.check?.(data, previous[key]);
+      // A section named like an Object.prototype member has history only when
+      // the previous manifest wrote it.
+      const checked = section.check?.(
+        data,
+        Rec.has(previous, key) ? previous[key] : undefined,
+      );
       if (checked === undefined) continue;
       notes.push(...checked.notes);
       if (checked.errors.length > 0)

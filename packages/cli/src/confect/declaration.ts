@@ -252,10 +252,17 @@ const readManifest = Effect.gen(function* () {
 });
 
 /**
+ * The manifest an earlier codegen wrote, for section history and route leaves.
+ * One that no longer decodes is reported once and treated as absent.
+ *
  * @internal
  */
 export const readPrevious = readManifest.pipe(
-  Effect.orElseSucceed(() => ({}) as Record<string, unknown>),
+  Effect.catch((error) =>
+    logWarn(
+      `confect/_generated/manifest.ts does not decode, so manifest history starts fresh: ${error._tag === "UnsupportedManifestFormat" ? error.reason : error.message}`,
+    ).pipe(Effect.as({} as Record<string, unknown>)),
+  ),
 );
 
 /**
