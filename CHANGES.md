@@ -1550,6 +1550,19 @@ exits, including when it is killed without cleanup.
 Changeset: `faster-dev-saves.md`.
 Upstream: planned; no proposal submitted.
 
+### Refuse an HTTP action registered in an impl
+
+Convex skips any module export that is not exactly a query, a mutation or an
+action when it pushes, so an HTTP action registered in an impl through
+`as never` never deployed and never failed. Codegen now refuses a
+Convex-provenance impl function whose handler is not exactly one of the three,
+and says to declare a route spec instead. Confect-provenance functions carry no
+such flag and are unchanged. A hand-written `httpAction` in `convex/` was already
+refused as an unowned entrypoint, and a test now covers it.
+
+Changeset: `refuse-raw-http-in-impl.md`.
+Upstream: unrecorded; the route spec it points to is fork only.
+
 ## Testing and documentation
 
 ### Declared apps drive tests and Backend env
