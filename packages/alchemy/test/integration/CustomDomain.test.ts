@@ -1621,7 +1621,7 @@ it.effect.each([false, true])(
     }),
 );
 
-it.effect("deletes a shared domain despite a failed deletion state write", () =>
+it.effect("retries both removals after a deletion state failure", () =>
   Effect.gen(function* () {
     const fixture = mockClient({ verificationTime: 200 });
     let injected = false;
@@ -1676,4 +1676,190 @@ it.effect("deletes a shared domain despite a failed deletion state write", () =>
     expect(rows).toEqual([]);
     expect(fixture.state.domains).toEqual([]);
   }),
+);
+
+it.effect.each(["canonical-response", "state-write"] as const)(
+  "recovers a canonical enable after %s failure by rerun, opt-out, or removal",
+  (fault) =>
+    Effect.gen(function* () {
+      for (const recovery of ["plain", "rerun", "opt-out", "remove"] as const) {
+        const fixture = mockClient({ verificationTime: 200 });
+        let injected = recovery === "plain";
+        const client = Layer.succeed(ConvexClient, {
+          ...fixture.client,
+          updateCanonicalUrl: (url, input) =>
+            Effect.gen(function* () {
+              yield* fixture.client.updateCanonicalUrl(url, input);
+              if (!injected && fault === "canonical-response") {
+                injected = true;
+                return yield* transportError("updateCanonicalUrl");
+              }
+            }),
+        });
+        const engine = yield* makeEngine(client.pipe(providers), (store) => ({
+          ...store,
+          set: (request) =>
+            Effect.suspend(() => {
+              if (
+                !injected &&
+                fault === "state-write" &&
+                request.value.status === "updated"
+              ) {
+                injected = true;
+                return Effect.fail(
+                  new StateStoreError({
+                    message: "Injected update state failure",
+                  }),
+                );
+              }
+              return store.set(request);
+            }),
+        }));
+        const enabled = resource({ ...props, canonical: true });
+        const disabled = resource({ ...props, canonical: false });
+        yield* engine.run(disabled);
+        expect(fixture.client.updateCanonicalUrl).not.toHaveBeenCalled();
+        const attempt = yield* engine.run(enabled).pipe(Effect.result);
+        expect(attempt._tag).toBe(recovery === "plain" ? "Success" : "Failure");
+        expect(injected).toBe(true);
+        expect(
+          (yield* fixture.client.getCanonicalUrls(props.deployment.url))
+            .convexCloudUrl,
+        ).toBe(oldUrl);
+        expect(fixture.client.updateCanonicalUrl).toHaveBeenCalledTimes(1);
+        if (recovery !== "plain") {
+          const rows = yield* engine.rows();
+          expect(rows).toMatchObject([
+            { status: "updating", props: { canonical: true } },
+          ]);
+        }
+        const corrected =
+          recovery === "remove"
+            ? Effect.succeed({})
+            : recovery === "opt-out"
+              ? disabled
+              : enabled;
+        yield* engine.run(corrected);
+        expect(
+          (yield* fixture.client.getCanonicalUrls(props.deployment.url))
+            .convexCloudUrl,
+        ).toBe(
+          recovery === "opt-out" || recovery === "remove"
+            ? props.deployment.url
+            : oldUrl,
+        );
+        expect(fixture.state.domains).toHaveLength(
+          recovery === "remove" ? 0 : 1,
+        );
+        expect(fixture.client.updateCanonicalUrl).toHaveBeenCalledTimes(
+          recovery === "opt-out" || recovery === "remove" ? 2 : 1,
+        );
+        yield* engine.run(corrected);
+        expect(
+          Array.every(
+            engine.plans.at(-1) ?? [],
+            (node) => node.action === "noop",
+          ),
+        ).toBe(true);
+      }
+    }),
+);
+
+it.effect(
+  "follows the surviving declaration's canonical setting on shared-domain removal",
+  () =>
+    Effect.gen(function* () {
+      for (const scenario of [
+        "canonical",
+        "external",
+        "noncanonical",
+      ] as const) {
+        const fixture = mockClient({ verificationTime: 200 });
+        const engine = yield* makeEngine(fixture.layer.pipe(providers));
+        const declarations = (old: boolean) =>
+          Effect.gen(function* () {
+            if (old)
+              yield* CustomDomain.CustomDomain("Old", {
+                ...props,
+                canonical: true,
+              });
+            yield* CustomDomain.CustomDomain("New", {
+              ...props,
+              canonical: !old && scenario === "canonical",
+            });
+            return {};
+          });
+        yield* engine.run(
+          CustomDomain.CustomDomain("Old", { ...props, canonical: true }).pipe(
+            Effect.as({}),
+          ),
+        );
+        yield* engine.run(declarations(true), { adopt: true });
+        const externalUrl = "https://external.example.com";
+        if (scenario === "external")
+          yield* fixture.client.updateCanonicalUrl(props.deployment.url, {
+            requestDestination: props.requestDestination,
+            url: externalUrl,
+          });
+        fixture.client.updateCanonicalUrl.mockClear();
+        yield* engine.run(declarations(false));
+        expect(fixture.state.domains).toMatchObject([
+          { domain: props.domain, verificationTime: 200 },
+        ]);
+        expect(fixture.state.domains).toHaveLength(1);
+        expect(fixture.client.deleteCustomDomain).not.toHaveBeenCalled();
+        expect(
+          (yield* fixture.client.getCanonicalUrls(props.deployment.url))
+            .convexCloudUrl,
+        ).toBe(
+          scenario === "canonical"
+            ? oldUrl
+            : scenario === "external"
+              ? externalUrl
+              : props.deployment.url,
+        );
+        expect(fixture.client.updateCanonicalUrl).toHaveBeenCalledTimes(
+          scenario === "noncanonical" ? 1 : 0,
+        );
+        yield* engine.run(declarations(false));
+        expect(engine.plans.at(-1)).toEqual([
+          { fqn: "New", action: "noop", deleteFirst: false },
+        ]);
+      }
+    }),
+);
+
+it.effect(
+  "turns canonical off during a logical rename with or without renamedFrom",
+  () =>
+    Effect.gen(function* () {
+      for (const rename of [true, false]) {
+        const fixture = mockClient({ verificationTime: 200 });
+        const engine = yield* makeEngine(fixture.layer.pipe(providers));
+        yield* engine.run(
+          CustomDomain.CustomDomain("Old", { ...props, canonical: true }).pipe(
+            Effect.as({}),
+          ),
+        );
+        const domain = CustomDomain.CustomDomain("New", {
+          ...props,
+          canonical: false,
+        });
+        const declarations = (
+          rename ? domain.pipe(renamedFrom("Old")) : domain
+        ).pipe(Effect.as({}));
+        yield* engine.run(declarations, { adopt: !rename });
+        expect(fixture.state.domains).toHaveLength(1);
+        expect(fixture.client.createCustomDomain).toHaveBeenCalledTimes(1);
+        expect(fixture.client.deleteCustomDomain).not.toHaveBeenCalled();
+        expect(
+          (yield* fixture.client.getCanonicalUrls(props.deployment.url))
+            .convexCloudUrl,
+        ).toBe(props.deployment.url);
+        yield* engine.run(declarations);
+        expect(engine.plans.at(-1)).toEqual([
+          { fqn: "New", action: "noop", deleteFirst: false },
+        ]);
+      }
+    }),
 );
