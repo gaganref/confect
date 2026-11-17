@@ -216,13 +216,15 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
 ];
 
 describe("Backend", () => {
-  it.effect.each([
-    {},
-    { TOKEN: { kind: "string" as const, optional: true as const } },
-  ])(
-    "does not declare environment ownership when env is omitted and no value is required (%j)",
-    (env) =>
+  it.effect.each([false, true])(
+    "does not declare environment ownership when env is omitted and no value is required, optional slot=%s",
+    (withOptionalSlot) =>
       Effect.gen(function* () {
+        const env: Readonly<
+          Record<string, { readonly kind: "string"; readonly optional: true }>
+        > = withOptionalSlot
+          ? { TOKEN: { kind: "string", optional: true } }
+          : {};
         const backend = yield* Backend("Backend", {
           ...props,
           manifest: { ...formatOne, env },
