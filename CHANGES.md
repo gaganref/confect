@@ -1368,6 +1368,17 @@ pushed deployment.
 Changeset: `deploy-manifest-health.md`.
 Upstream: not planned; the manifest handshake is a fork concept.
 
+### Recover environment removals after a lost state write
+
+With `driftPolicy: "error"`, an owned variable that is already absent and no
+longer desired does not block planning or apply. A rerun releases its ownership
+without another environment write. Deleting the resource also tolerates already
+absent names while removing the remaining names. Missing desired names and
+external edits to present names still cause drift.
+
+Changeset: `alchemy-env-removal-recovery.md`.
+Upstream: planned; no proposal submitted.
+
 ### Declare custom domains and canonical URLs
 
 Add `Convex.CustomDomain` so stacks can own backend addresses and optionally set
