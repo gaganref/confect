@@ -1552,6 +1552,17 @@ Upstream: planned; no proposal submitted.
 
 ## Testing and documentation
 
+### Isolate Alchemy's home in tests
+
+Give every Alchemy test suite a fresh temporary `ALCHEMY_HOME` and remove it
+afterwards. Before tests run, check that Alchemy resolves a dedicated directory
+under the system temporary folder. The cloud and local lifecycle suites and
+the shared real-backend helper can build their profile layers without reading
+or changing the developer's real Alchemy profiles.
+
+Changeset: none; tests only.
+Upstream: planned; no proposal submitted.
+
 ### Declared apps drive tests and Backend env
 
 Generate a test-only app registry from the backend declaration so
