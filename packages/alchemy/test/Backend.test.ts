@@ -137,6 +137,21 @@ describe("Backend", () => {
       }).pipe(Effect.provide([stack(), providers])),
   );
 
+  it.each([
+    ["UnknownMount", "Use a mount name from manifest.mounts"],
+    ["NotOpen", "Supply only slots listed in this mount's manifest env"],
+    ["Missing", "Supply this required slot in Backend.mounts"],
+    ["PlainSecret", "Wrap this secret with Redacted.make"],
+  ] as const)("explains how to fix %s", (reason, remedy) => {
+    const error = InvalidMountSetting.make({
+      mount: "pool",
+      slot: "KEY",
+      reason,
+    });
+    expect(error.message).toContain("pool.KEY");
+    expect(error.message).toContain(remedy);
+  });
+
   it.effect(
     "namespaces Code and defaults to the locally installed Confect code generator",
     () =>
