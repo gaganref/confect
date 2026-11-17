@@ -196,7 +196,7 @@ const readIdentity = Effect.fn("LocalBackend.readIdentity")(function* (
 /**
  * The admin key of a local deployment, for its deploy key resource.
  *
- * @internal
+ * @stability unstable
  */
 export const adminKey = Effect.fn("LocalBackend.adminKey")(function* (
   deploymentName: string,

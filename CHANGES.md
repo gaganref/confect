@@ -1171,6 +1171,21 @@ Upstream: planned; no proposal submitted.
 
 ## Backend declarations and HTTP routing
 
+### Reserve Convex's built-in address names
+
+Reject declared env slots named `CONVEX_SITE_URL` or `CONVEX_CLOUD_URL` in
+`Env.make` and `Component.make` types, at runtime, and during declaration codegen.
+Codegen also rejects mount bindings with either name in apps and components. A mount binding
+could otherwise replace the component's own built-in address. Keep undeclared
+reads through `Config.String` and `process.env` unchanged. Rename custom slots
+and their bindings, or remove them and read the built-in directly. A third-party
+component that requires either slot cannot be mounted until its author removes
+or renames the slot. Type diagnostics name `reservedForConvexBuiltIn` on the
+offending property.
+
+Changeset: `reserve-convex-address-env-slots.md` (major for core and CLI).
+Upstream: fork only; backend environment declarations are a fork addition.
+
 ### Require middleware on every registered function
 
 Add `App.make({ requiresMiddleware })` and emit the requirement in each group's
@@ -1268,6 +1283,156 @@ Changeset: `http-endpoint-url.md`.
 Upstream: planned; no linked proposal verified.
 
 ## Alchemy deployment
+
+### Declare custom domains and canonical URLs
+
+Add `Convex.CustomDomain` so stacks can own backend addresses and optionally set
+one as a destination's canonical URL after verification. Refresh verification on
+later applies. Refuse changes to the deployment name, domain or destination of
+an existing resource before API calls. Move hostnames with two declarations,
+then transfer canonical ownership after verification and remove the old domain.
+Keep plain create and delete lifecycles instead of replacement generations.
+A same-hostname move across deployments requires a separate removal deploy when
+an attachment conflict prevents creation. Report canonical URLs as of each
+resource's last change and refresh changed live values on later applies.
+Serialize canonical read and write operations per deployment and destination
+within an apply. Reset a deleted domain's matching canonical URL even if it
+became canonical outside the stack. Recover lost create responses through
+explicit adoption. Preserve a domain when a surviving same-stack declaration
+keeps the same deployment, hostname, and destination, including logical ID
+renames recovered with adoption. Follow the survivor's canonical setting when
+removing a canonical declaration. Keep its canonical URL if the survivor is
+canonical, or reset a matching URL to the deployment default otherwise. Refresh
+the survivor's saved `canonicalUrl` on the next apply without Convex mutations.
+Checkpoint canonical ownership on this resource's updating row before enabling
+it, so opt-out and removal recover after a lost response or final state write.
+Document `renamedFrom` for state-only logical ID renames. Judge canonical ownership from current
+declarations so operators can opt out, remove failed creates, or revert failed
+renames without resetting the live canonical URL. Resume checkpointed creates
+after later canonical or state failures without adoption. Refuse conflicting
+canonical owners. Account
+entitlement, DNS, certificates, propagation, and sign-in behavior remain unproven.
+
+Changeset: `alchemy-custom-domain.md`.
+Upstream: planned; no linked proposal verified.
+
+### Keep two Alchemy tests steady on Windows runners
+
+The push lock's interruption test no longer asserts a 500 ms wall-clock bound.
+It finishes inside a 5-second test deadline against a 30-second lock timeout, so
+an ignored interruption still fails it. The push diagnostics fixture starts its
+detached grandchild outside the scoped project folder, so Windows can remove
+that folder while the grandchild still runs.
+
+Changeset: none; tests only.
+Upstream: planned, through the maintainer; no proposal submitted.
+
+### Send backend logs through Convex
+
+`Convex.LogStream` lets a stack own an Axiom, Sentry, or webhook log stream on a
+Convex deployment. Connector secrets require `Redacted`, and secret changes
+update the existing stream. Kind or deployment changes replace it. Readable
+external edits, remote deletion, and lost ownership stop the plan. An occupied
+replacement destination also stops the plan before any mutation. Validate
+response IDs before they enter errors. The other four Convex kinds do not
+type-check as resource props, while response decoding retains all seven kinds.
+Untyped callers fail before their first stream API call, possibly after other
+resources have been created. Fake API and Alchemy engine tests cover lifecycle
+and secret rendering. Real-account delivery, event envelopes,
+retries, and cloud entitlements remain unproven.
+Keep the published log stream declarations valid for NodeNext consumers with
+full declaration checks.
+
+Use previous props for drift checks and keep only stream identity and the live
+redacted webhook HMAC in attributes. Redacted webhook URLs protect embedded
+credentials across plans and state. Ignore streams still deleting after removal,
+and allow owned deletion despite readable drift. Check disabled kinds before
+unresolved props in diffs and explain that sibling resources can contend for
+one stream per kind. Add secret recovery and delete-race regressions.
+Detect a rotated HMAC as an output refresh update, then return its live redacted
+value without writing to the stream. The following plan is a no-op.
+A newer upstream platform snapshot deprecates these five endpoints in favour of
+`/integrations`, which the installed 0.1.11 does not have, so that move is a follow-up.
+
+Recover interrupted updates by accepting live readable fields equal to either
+the last completed props or the desired props before any write. Keep plan-time
+drift refusal for completed state rows. Incomplete rows plan an update with a
+warning that names fields without values. Normalize URL comparisons and topic
+sets, and record returned create ids before the follow-up read or comparison.
+The fake mirrors Convex URL and topic normalization and omitted optional keys.
+Refuse credentialed plain webhook URLs with a tagged error that requests
+`Redacted`. Explain when a deletion conflict needs another deploy. Engine
+regressions cover interrupted requests, response loss, post-create ownership,
+normalization, and credential refusal. The guide describes the lost-response
+case that requires reapplying an interrupted change before changing or reverting it.
+Check computed webhook URLs as they resolve, before Alchemy can checkpoint a
+plain credentialed value. Preserve the direct, yielded, and Effect-based
+constructors and permit computed redacted URLs.
+
+Rewrite Axiom and Sentry credentials on every reconciled update, including a
+retry that reverts a secret-only write after its response was lost. Force an
+update for unfinished rows of those kinds even when readable fields match.
+Keep the webhook HMAC refresh free of stream writes. Cover ownership instance
+ids, completed updates, and unresolved drift. Reject empty topic selections at
+plan with a tagged error and non-empty public props, and make the fake return
+Convex's `EmptyLogTopics` rejection. Document when changing or reverting an
+interrupted readable update is refused and how to recover a rejected update
+while replacement cleanup is unfinished.
+
+Changeset: `alchemy-log-stream.md`.
+Upstream: planned; no proposal submitted.
+
+### Set usage limits from a stack
+
+`Convex.UsageLimit` lets a stack own cloud deployment usage limits. Warning
+limits and enabled enforcement are the defaults. Every config field updates
+under the same ID. Applies restore manual edits and recreate deleted limits.
+Local mode refuses the resource until backend support is verified. Account
+entitlement and disable behavior remain unproven. Interrupted creates recover
+with explicit adoption. Reject invalid limit values before API calls and keep
+one limit per metric, window and type on a deployment. Refuse ambiguous
+adoption with the matching IDs. Replace only when the deployment name changes
+and update URL-only changes in place, listing limits at the new URL even when
+the saved URL returns 404. The spec lists units without mapping each
+metric to one. Concurrent first declarations can still create duplicate triples. Save create
+outputs for replacing generations too, so a failed final state write resumes
+without adoption.
+
+Changeset: `alchemy-usage-limit.md`.
+Upstream: planned; no linked proposal verified.
+
+### Opt into environment variable safety
+
+`EnvironmentVariables` can stop on owned-value drift or unrelated live names,
+adopt matching desired values with `adoptMatching` even under a general adoption
+grant, share the deployment's push lock, and retry a bounded number of write
+conflicts. All five options default to prior behavior.
+Resolved desired values are checked for drift during planning. Value comparisons
+for unresolved values or an unresolved desired map wait until apply, after
+upstream resources such as a code push and before any environment write.
+A live value equal to the resolved desired value permits recovery after a lost
+write response without another write. A value differing from both the stored
+snapshot and the desired value is refused. A previously present owned name
+deleted outside the stack is still refused during planning, even when its
+desired value or map is unresolved. Resolved safety settings retain their
+plan-time checks; unowned-name checks wait if the desired names are unknown. Invalid retry settings and deployment lock names fail with
+`EnvironmentVariablesInvalidOption` before apply when those settings are known.
+Errors and adoption logs identify names without values.
+The options let Frame manage environment values without silently overwriting
+external changes. Changeset: `alchemy-environment-safety.md`.
+Upstream: planned, through the maintainer.
+
+### Retain safe Convex server error codes
+
+The Convex client retains validated server error identifiers separately from its
+HTTP classification so callers can distinguish write conflicts from other failures.
+Error messages name the operation, status and code without retaining response body
+messages. Codes must match `/^[A-Za-z][A-Za-z0-9]{0,63}$/`; error bodies are limited
+to 8 KiB and five seconds before parsing. Larger or stalled bodies supply no
+server code. Drop a server code that equals a credential sent with the request,
+even when that credential looks like an identifier.
+Changeset: `alchemy-convex-server-codes.md`.
+Upstream: planned, through the maintainer.
 
 ### Show failed code push diagnostics
 
@@ -1604,6 +1769,15 @@ Changeset: none; test fixtures only.
 Upstream: unrecorded; no linked proposal verified.
 
 ## Fork integration and publishing
+
+### Wait for published tarballs before the consumer install
+
+Keep each package pending until the registry lists the build and its tarball
+answers HTTP 200, so metadata propagation cannot trigger a false install failure.
+Retain the shared 15 minute deadline and 20 second polling pause.
+
+Changeset: none; fork release infrastructure only.
+Upstream: fork only.
 
 ### Gate fork publication and exercise a declared consumer
 

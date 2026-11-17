@@ -4,11 +4,14 @@ import type * as Redacted from "effect/Redacted";
 import * as Layer from "effect/Layer";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as Code from "./Code.js";
+import * as CustomDomain from "./CustomDomain.js";
 import * as ConvexClient from "./ConvexClient.js";
 import * as Deployment from "./Deployment.js";
 import * as DeployKey from "./DeployKey.js";
 import * as EnvironmentVariables from "./EnvironmentVariables.js";
 import * as Project from "./Project.js";
+import * as LogStream from "./LogStream.js";
+import * as UsageLimit from "./UsageLimit.js";
 import * as CommandRunner from "./internal/CommandRunner.js";
 import * as PushLock from "./internal/PushLock.js";
 
@@ -35,6 +38,9 @@ export const providers = (options?: {
       DeployKey.DeployKey,
       EnvironmentVariables.EnvironmentVariables,
       Code.Code,
+      CustomDomain.CustomDomain,
+      LogStream.LogStream,
+      UsageLimit.UsageLimit,
     ]),
   ).pipe(
     Layer.provide(
@@ -55,9 +61,21 @@ export const providers = (options?: {
           live: () => EnvironmentVariables.layer,
           local: () => EnvironmentVariables.localLayer,
         }),
+        ProviderLayer.dual(CustomDomain.CustomDomain, {
+          live: () => CustomDomain.layer,
+          local: () => CustomDomain.localLayer,
+        }),
+        ProviderLayer.dual(UsageLimit.UsageLimit, {
+          live: () => UsageLimit.layer,
+          local: () => UsageLimit.localLayer,
+        }),
         ProviderLayer.dual(Code.Code, {
           live: () => Code.layer,
           local: () => Code.localLayer,
+        }),
+        ProviderLayer.dual(LogStream.LogStream, {
+          live: () => LogStream.layer,
+          local: () => LogStream.localLayer,
         }),
       ),
     ),

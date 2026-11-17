@@ -1,7 +1,14 @@
+import * as Code from "@confect/alchemy/Code";
+import * as EnvironmentVariables from "@confect/alchemy/EnvironmentVariables";
+import * as Redacted from "effect/Redacted";
+import { ConvexClient } from "@confect/alchemy/ConvexClient";
+import { CommandRunner } from "../src/internal/CommandRunner";
+import { lifecycle, mockClient } from "./fixtures/ConvexClient";
 import * as NodeServices from "./fixtures/NodeTestServices";
 import { describe, expect, it } from "@effect/vitest";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import * as Clock from "effect/Clock";
+import type * as Duration from "effect/Duration";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Deferred from "effect/Deferred";
 import * as Effect from "effect/Effect";
@@ -59,17 +66,155 @@ const withHome = <A, E, R>(
     }).pipe(Effect.scoped);
   });
 
-const provide = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+const provide = <A, E, R>(
+  effect: Effect.Effect<A, E, R>,
+  timeout: Duration.Input = "2 seconds",
+) =>
   Effect.gen(function* () {
     const services2 = yield* Layer.build(
-      lockLayer({ timeout: "2 seconds" }).pipe(
-        Layer.provideMerge(NodeServices.layer),
-      ),
+      lockLayer({ timeout }).pipe(Layer.provideMerge(NodeServices.layer)),
     );
     return yield* effect.pipe(Effect.provideContext(services2));
   }).pipe(Effect.scoped);
 
 describe("PushLock", () => {
+  it.live(
+    "an environment apply waits for a code push that holds the same deployment lock",
+    () => {
+      const mock = mockClient();
+      return withHome(({ home }) =>
+        Effect.gen(function* () {
+          const started = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          const events: string[] = [];
+          const code = yield* Code.provider.pipe(
+            Effect.provideService(CommandRunner, {
+              prepare: () => Effect.void,
+              deploy: () =>
+                Effect.gen(function* () {
+                  events.push("push");
+                  yield* Deferred.succeed(started, undefined);
+                  yield* Deferred.await(release);
+                  events.push("pushed");
+                }),
+            }),
+          );
+          const environment = yield* EnvironmentVariables.provider;
+          const deployKey = Redacted.make("prod:happy-otter-123|test-secret");
+          const push = yield* code
+            .reconcile({
+              ...lifecycle,
+              olds: undefined,
+              output: undefined,
+              news: {
+                deployment: {
+                  name: "happy-otter-123",
+                  url: "https://happy-otter-123.convex.cloud",
+                },
+                deployKey,
+                cwd: home,
+              },
+            })
+            .pipe(Effect.forkScoped);
+          yield* Deferred.await(started);
+          const env = yield* environment
+            .reconcile({
+              ...lifecycle,
+              olds: undefined,
+              output: undefined,
+              news: {
+                url: "https://happy-otter-123.convex.cloud",
+                deployKey,
+                variables: { MANAGED: Redacted.make("env-secret") },
+                lock: { deploymentName: "happy-otter-123" },
+              },
+            })
+            .pipe(
+              Effect.tap(() =>
+                Effect.sync(() => {
+                  events.push("env");
+                }),
+              ),
+              Effect.forkScoped,
+            );
+          yield* Effect.sleep("100 millis");
+          expect(mock.client.listEnvironmentVariables).not.toHaveBeenCalled();
+          yield* Deferred.succeed(release, undefined);
+          yield* Fiber.join(push);
+          yield* Fiber.join(env);
+          expect(events).toEqual(["push", "pushed", "env"]);
+          expect(Redacted.value(mock.state.variables.MANAGED)).toBe(
+            "env-secret",
+          );
+        }),
+      ).pipe(Effect.provideService(ConvexClient, mock.client), provide);
+    },
+  );
+
+  it.live(
+    "concurrent environment applies write once and adopt the matching result",
+    () =>
+      withHome(() =>
+        Effect.gen(function* () {
+          const mock = mockClient();
+          const started = yield* Deferred.make<void>();
+          const release = yield* Deferred.make<void>();
+          let writes = 0;
+          const client = {
+            ...mock.client,
+            updateEnvironmentVariables: (
+              ...args: Parameters<typeof mock.client.updateEnvironmentVariables>
+            ) =>
+              Effect.gen(function* () {
+                writes++;
+                if (writes === 1) {
+                  yield* Deferred.succeed(started, undefined);
+                  yield* Deferred.await(release);
+                }
+                return yield* mock.client.updateEnvironmentVariables(...args);
+              }),
+          };
+          const environment = yield* EnvironmentVariables.provider.pipe(
+            Effect.provideService(ConvexClient, client),
+          );
+          const news = {
+            url: "https://happy-otter-123.convex.cloud",
+            deployKey: Redacted.make("test-key"),
+            variables: { MANAGED: Redacted.make("desired-secret") },
+            driftPolicy: "error" as const,
+            adoptMatching: true,
+            unownedPolicy: "error" as const,
+            lock: { deploymentName: "happy-otter-123" },
+            retry: { maxAttempts: 3, delay: "100 millis" as const },
+          };
+          const reconcile = environment.reconcile({
+            ...lifecycle,
+            olds: undefined,
+            output: undefined,
+            news,
+          });
+          const first = yield* reconcile.pipe(Effect.forkScoped);
+          yield* Deferred.await(started);
+          const second = yield* reconcile.pipe(Effect.forkScoped);
+          yield* Effect.sleep("100 millis");
+          expect(writes).toBe(1);
+          yield* Deferred.succeed(release, undefined);
+          const outputs = yield* Effect.all([
+            Fiber.join(first),
+            Fiber.join(second),
+          ]);
+          expect(writes).toBe(1);
+          expect(Array.map(outputs, (output) => output.ownedNames)).toEqual([
+            ["MANAGED"],
+            ["MANAGED"],
+          ]);
+          expect(Redacted.value(mock.state.variables.MANAGED)).toBe(
+            "desired-secret",
+          );
+        }),
+      ).pipe(provide),
+  );
+
   it.live(
     "waits for a lock another process holds and takes it once that process exits without releasing it",
     () =>
@@ -221,13 +366,16 @@ setTimeout(() => process.exit(0), 600);`,
             .withLock("happy-otter-123", Effect.void)
             .pipe(Effect.forkScoped);
           yield* Effect.sleep("200 millis");
-          const before = yield* Clock.currentTimeMillis;
           yield* Fiber.interrupt(waiting);
-          expect((yield* Clock.currentTimeMillis) - before).toBeLessThan(500);
           const lockFileContents = yield* fs.readFileString(lockFile);
           expect(lockFileContents).toBe(holder);
         }),
-      ).pipe(Effect.scoped, provide),
+      ).pipe(
+        Effect.scoped,
+        // The test must finish before an uninterrupted waiter can time out.
+        (effect) => provide(effect, "30 seconds"),
+      ),
+    5000,
   );
 
   it.live(
