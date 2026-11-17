@@ -1425,6 +1425,21 @@ describe("Backend choices from outputs", () => {
     }
   }
 
+  it.effect("directs a plain automatic secret to Backend.automatic", () =>
+    Effect.gen(function* () {
+      const { result, fixture, pushes } = yield* apply(() => ({
+        manifest: {
+          ...formatOne,
+          env: { TOKEN: { kind: "secret", optional: false, automatic: true } },
+        },
+        automatic: { TOKEN: "plain" },
+      }));
+      expect(String(defectOf(result))).toContain("Backend.automatic");
+      expect(fixture.state.environmentUpdates).toEqual([]);
+      expect(pushes).toEqual([]);
+    }),
+  );
+
   it.effect.each([false, true])(
     "refuses a selected provider's null setting, deferred=%s",
     (deferred) =>
