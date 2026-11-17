@@ -565,7 +565,9 @@ with its package and reason, and the layers fail with the typed
 `PackagedLayoutUnsupported` until the test declares the mount's
 `componentRuntimes`. Each layer build reads the recorded files again, finding
 each package by Node's `node_modules` lookup; a changed version, manifest or
-file, or a sibling that appeared, fails `TestBackend.layer` and
+file, or a file that appeared where codegen found none (another candidate of a
+relative import, a `package.json`, a sibling of the other extension), fails
+`TestBackend.layer` and
 `TestConfect.layer` with the typed `PackagedComponentChanged`. A package the
 deploy bundler cannot resolve fails codegen with
 `PackagedComponentUnreadableError`, and a `convex` that cannot load its pinned
@@ -591,7 +593,10 @@ component loads its own copy of the component's modules, as a deployment
 evaluates each mount apart, and the new `@confect/test/Vite` plugin gives
 every script and JSON file they import a copy per mount too, wherever it
 sits; packages under `node_modules`, assets and WASM stay one copy; without it, a second mount
-of one component refuses to load. This is row 8 of Frame's backend testing kernel (Frame
+of one component refuses to load. Breaking: `@confect/test` exports its public
+modules by name only (`.`, `./Sources`, `./TestBackend`, `./TestConfect`,
+`./Vite`, `./setup`), so no other path, one under `internal/` included,
+resolves. This is row 8 of Frame's backend testing kernel (Frame
 ADR 0012). Changeset: `generated-test-backend.md`. Upstream: fork only, as the
 kernel is fork-specific.
 
