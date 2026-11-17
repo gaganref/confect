@@ -389,7 +389,7 @@ const validateField = (
 ): Result.Result<void, InvalidEnvProviders> => {
   if (field.descriptor.provider !== undefined)
     return Result.fail(
-      InvalidEnvProviders.make({ reason: "TaggedField", key }),
+      InvalidEnvProviders.make({ reason: "TaggedField", provider, key }),
     );
   if (field.descriptor.kind === "providers") {
     if (provider !== undefined)
