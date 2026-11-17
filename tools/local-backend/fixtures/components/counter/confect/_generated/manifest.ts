@@ -30,16 +30,16 @@ export default {
           "path": "/health",
           "owner": "app",
           "group": "health",
-          "key": "health",
-          "digest": "sha256:f7f7926c53bf06c78f50d71c5417e45a5df9e310e813c1676248656ac256a6cf"
+          "endpoint": "health",
+          "digest": "sha256:dafc81e6b151ed52142ba3006a682afdac9860937f563c05c4486d4ef512ebf7"
         },
         "echo": {
           "method": "POST",
           "path": "/echo",
           "owner": "app",
           "group": "health",
-          "key": "echo",
-          "digest": "sha256:f7f7926c53bf06c78f50d71c5417e45a5df9e310e813c1676248656ac256a6cf"
+          "endpoint": "echo",
+          "digest": "sha256:dafc81e6b151ed52142ba3006a682afdac9860937f563c05c4486d4ef512ebf7"
         }
       },
       "authoring": {
@@ -48,8 +48,8 @@ export default {
           "path": "/class-probe/:value",
           "owner": "app",
           "group": "authoring",
-          "key": "classProbe",
-          "digest": "sha256:f7f7926c53bf06c78f50d71c5417e45a5df9e310e813c1676248656ac256a6cf"
+          "endpoint": "classProbe",
+          "digest": "sha256:dafc81e6b151ed52142ba3006a682afdac9860937f563c05c4486d4ef512ebf7"
         }
       },
       "users": {
@@ -58,11 +58,12 @@ export default {
           "path": "/members/:id",
           "owner": "app",
           "group": "users",
-          "key": "get",
-          "digest": "sha256:f7f7926c53bf06c78f50d71c5417e45a5df9e310e813c1676248656ac256a6cf"
+          "endpoint": "get",
+          "digest": "sha256:dafc81e6b151ed52142ba3006a682afdac9860937f563c05c4486d4ef512ebf7"
         }
       }
     }
   },
-  "digest": "sha256:f7f7926c53bf06c78f50d71c5417e45a5df9e310e813c1676248656ac256a6cf"
+  "digest": "sha256:dafc81e6b151ed52142ba3006a682afdac9860937f563c05c4486d4ef512ebf7",
+  "sections": {}
 } as const;
