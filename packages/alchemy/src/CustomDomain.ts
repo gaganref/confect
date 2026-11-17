@@ -40,7 +40,7 @@ export interface CustomDomainAttributes {
    */
   readonly url: string;
   /**
-   * The current canonical URL for this destination.
+   * The canonical URL observed when this resource last changed.
    */
   readonly canonicalUrl: string;
 }
@@ -62,13 +62,31 @@ export class CustomDomainNotVisible extends Schema.TaggedError<
   domain: Schema.String,
 }) {}
 
+const identitySchema = Schema.Struct({
+  deploymentName: Schema.String,
+  domain: Schema.String,
+  requestDestination: Schema.Literals(["convexCloud", "convexSite"]),
+});
+
+const identity = (props: CustomDomainProps) => ({
+  deploymentName: props.deployment.name,
+  domain: props.domain,
+  requestDestination: props.requestDestination,
+});
+
 export class CustomDomainIdentityChange extends Schema.TaggedError<
   CustomDomainIdentityChange,
   { readonly brand: unique symbol }
 >()("CustomDomainIdentityChange", {
-  deploymentName: Schema.String,
-  domain: Schema.String,
-}) {}
+  oldIdentity: identitySchema,
+  newIdentity: identitySchema,
+}) {
+  override get message() {
+    const old = this.oldIdentity;
+    const next = this.newIdentity;
+    return `Cannot change custom domain identity from ${old.deploymentName}/${old.domain}/${old.requestDestination} to ${next.deploymentName}/${next.domain}/${next.requestDestination}. Declare a second Convex.CustomDomain with canonical: false, deploy and configure DNS, then move canonical: true after verification and remove the old resource. For the same hostname, remove it from the old deployment before declaring it on the new one.`;
+  }
+}
 
 export class ConflictingCanonicalDomains extends Schema.TaggedError<
   ConflictingCanonicalDomains,
@@ -126,7 +144,7 @@ const validateCanonicalOwner = Effect.fn("CustomDomain.validateCanonicalOwner")(
       if (
         isResolved(other) &&
         other.canonical === true &&
-        other.deployment.url === props.deployment.url &&
+        other.deployment.name === props.deployment.name &&
         other.requestDestination === props.requestDestination
       )
         return yield* ConflictingCanonicalDomains.make({
@@ -143,9 +161,19 @@ const sameIdentity = (
   props: CustomDomainProps,
 ) =>
   current.deployment.name === props.deployment.name &&
-  current.deployment.url === props.deployment.url &&
   current.domain === props.domain &&
   current.requestDestination === props.requestDestination;
+
+const validateIdentity = Effect.fn("CustomDomain.validateIdentity")(function* (
+  current: CustomDomainAttributes,
+  props: CustomDomainProps,
+) {
+  if (!sameIdentity(current, props))
+    return yield* CustomDomainIdentityChange.make({
+      oldIdentity: identity(current),
+      newIdentity: identity(props),
+    });
+});
 
 const canonicalUrl = (urls: CanonicalUrls, destination: RequestDestination) =>
   destination === "convexCloud" ? urls.convexCloudUrl : urls.convexSiteUrl;
@@ -185,18 +213,12 @@ export const provider = Effect.gen(function* () {
   return {
     diff: Effect.fn("CustomDomain.diff")(function* ({ fqn, news, output }) {
       if (!isResolved(news)) return;
+      if (output !== undefined) yield* validateIdentity(output, news);
       yield* validateCanonicalOwner(fqn, news);
       if (output === undefined) return;
-      if (!sameIdentity(output, news)) {
-        const deleteFirst = output.domain === news.domain;
-        if (deleteFirst)
-          yield* Effect.logWarning(
-            `Moving custom domain ${news.domain} deletes its current address before recreation. The address goes away until DNS verifies again.`,
-          );
-        return { action: "replace", deleteFirst };
-      }
       const current = yield* find(news);
       if (
+        output.deployment.url !== news.deployment.url ||
         current === undefined ||
         (current.verificationTime ?? null) !== output.verificationTime ||
         output.canonical !== (news.canonical ?? false)
@@ -212,12 +234,7 @@ export const provider = Effect.gen(function* () {
       )
         return { action: "update" };
     }),
-    read: Effect.fn("CustomDomain.read")(function* ({
-      fqn,
-      olds,
-      output,
-      previous,
-    }) {
+    read: Effect.fn("CustomDomain.read")(function* ({ fqn, olds, output }) {
       if (output === undefined) {
         yield* validateCanonicalOwner(fqn, olds);
         if (
@@ -242,12 +259,7 @@ export const provider = Effect.gen(function* () {
           url: `https://${current.domain}`,
           canonicalUrl: canonicalUrl(urls, current.requestDestination),
         };
-        return previous !== undefined &&
-          previous.deployment.name === olds.deployment.name &&
-          previous.domain === current.domain &&
-          previous.requestDestination === current.requestDestination
-          ? attributes
-          : Unowned(attributes);
+        return Unowned(attributes);
       }
       // Alchemy saves attempted update props before invoking reconcile.
       const canonical = output.canonical || olds.canonical === true;
@@ -270,13 +282,9 @@ export const provider = Effect.gen(function* () {
       news,
       output,
     }) {
+      if (output !== undefined) yield* validateIdentity(output, news);
       yield* validateCanonicalOwner(fqn, news);
       if (output === undefined) yield* checkpointCreate(fqn, instanceId, news);
-      if (output !== undefined && !sameIdentity(output, news))
-        return yield* CustomDomainIdentityChange.make({
-          deploymentName: output.deployment.name,
-          domain: output.domain,
-        });
       let current = yield* find(news);
       if (
         current !== undefined &&
@@ -353,40 +361,7 @@ export const provider = Effect.gen(function* () {
       yield* checkpointCreate(fqn, instanceId, news, result);
       return result;
     }),
-    delete: Effect.fn("CustomDomain.delete")(function* ({
-      fqn,
-      instanceId,
-      output,
-    }) {
-      const stack = yield* Effect.serviceOption(Stack);
-      const state = yield* Effect.serviceOption(State);
-      if (
-        Option.isSome(stack) &&
-        Option.isSome(state) &&
-        stack.value.resources[fqn]?.Type === CustomDomain.Type
-      ) {
-        const store = yield* state.value;
-        const row = yield* store.get({
-          stack: stack.value.name,
-          stage: stack.value.stage,
-          fqn,
-        });
-        if (
-          row !== undefined &&
-          row.kind !== "action" &&
-          row.resourceType === CustomDomain.Type &&
-          row.status === "replaced" &&
-          !row.deleteFirst &&
-          row.instanceId !== instanceId
-        ) {
-          const replacement = row.attr as CustomDomainAttributes;
-          const current = yield* find(replacement);
-          if (current?.verificationTime == null)
-            return yield* new Provider.DeleteInProgress({
-              message: `Keeping ${output.domain} until ${replacement.domain} verifies.`,
-            });
-        }
-      }
+    delete: Effect.fn("CustomDomain.delete")(function* ({ output }) {
       yield* withCanonicalLock(
         output.deployment,
         output.requestDestination,

@@ -1225,18 +1225,19 @@ Upstream: planned; no linked proposal verified.
 
 Add `Convex.CustomDomain` so stacks can own backend addresses and optionally set
 one as a destination's canonical URL after verification. Refresh verification on
-later applies. Keep old hostnames and their canonical URLs live until the
-replacement verifies, using Alchemy's deferred old-generation cleanup. Refresh
-changed live canonical values in saved outputs. Serialize canonical read and
-write operations per deployment and destination within an apply. Reset a deleted
-domain's matching canonical URL even if it became canonical outside the stack.
-Checkpoint replacement creates before later canonical work, so retries resume
-without adoption after canonical or state-write failures. Warn
-when a same-hostname move requires deletion first. Recover lost create responses
-through explicit adoption, including during replacement. Reset a canonical URL
-only while it still points to this domain, and refuse conflicting canonical
-owners during planning. Account entitlement, DNS, certificates, propagation,
-and sign-in behavior remain unproven.
+later applies. Refuse changes to the deployment name, domain or destination of
+an existing resource before API calls. Move hostnames with two declarations,
+then transfer canonical ownership after verification and remove the old domain.
+Keep plain create and delete lifecycles instead of replacement generations.
+A same-hostname move across deployments requires a separate removal deploy when
+an attachment conflict prevents creation. Report canonical URLs as of each
+resource's last change and refresh changed live values on later applies.
+Serialize canonical read and write operations per deployment and destination
+within an apply. Reset a deleted domain's matching canonical URL even if it
+became canonical outside the stack. Recover lost create responses through
+explicit adoption. Resume checkpointed creates after later canonical or state
+failures without adoption. Refuse conflicting canonical owners. Account
+entitlement, DNS, certificates, propagation, and sign-in behavior remain unproven.
 
 Changeset: `alchemy-custom-domain.md`.
 Upstream: planned; no linked proposal verified.

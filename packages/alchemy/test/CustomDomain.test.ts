@@ -172,11 +172,12 @@ it.effect.each([
   { domain: "other.example.com" },
   { requestDestination: "convexSite" as const },
   { deployment: { name: "other", url: "https://other.convex.cloud" } },
+  { deployment: { ...props.deployment, name: "other" } },
 ])(
-  "replaces a changed identity $domain $requestDestination $deployment",
-  (change) => {
-    const mock = mockClient();
-    return Effect.gen(function* () {
+  "refuses a changed identity in diff and reconcile before API calls $domain $requestDestination $deployment",
+  (change) =>
+    Effect.gen(function* () {
+      const mock = mockClient();
       const services = yield* Layer.build(mock.layer);
       const provider = yield* CustomDomain.provider.pipe(
         Effect.provideContext(services),
@@ -188,32 +189,110 @@ it.effect.each([
         output: undefined,
       });
       const news = { ...props, ...change };
-      const same = yield* provider.diff({
+      mock.client.listCustomDomains.mockClear();
+      mock.client.getCanonicalUrls.mockClear();
+      mock.client.createCustomDomain.mockClear();
+      const expected = {
+        _tag: "Failure",
+        failure: {
+          _tag: "CustomDomainIdentityChange",
+          oldIdentity: {
+            deploymentName: props.deployment.name,
+            domain: props.domain,
+            requestDestination: props.requestDestination,
+          },
+          newIdentity: {
+            deploymentName: news.deployment.name,
+            domain: news.domain,
+            requestDestination: news.requestDestination,
+          },
+        },
+      };
+      const diff = yield* provider
+        .diff({
+          ...lifecycle,
+          oldBindings: [],
+          newBindings: [],
+          news,
+          olds: props,
+          output,
+        })
+        .pipe(Effect.result);
+      const reconcile = yield* provider
+        .reconcile({ ...lifecycle, news, olds: props, output })
+        .pipe(Effect.result);
+      expect(diff).toMatchObject(expected);
+      expect(reconcile).toMatchObject(expected);
+      if (diff._tag === "Failure") {
+        expect(diff.failure.message).toContain(props.domain);
+        expect(diff.failure.message).toContain(news.domain);
+        expect(diff.failure.message).toContain(props.deployment.name);
+        expect(diff.failure.message).toContain(news.deployment.name);
+        expect(diff.failure.message).toContain(props.requestDestination);
+        expect(diff.failure.message).toContain(news.requestDestination);
+        expect(diff.failure.message).toContain("second Convex.CustomDomain");
+        expect(diff.failure.message).toContain("canonical: false");
+        expect(diff.failure.message).toContain("verification");
+      }
+      expect(mock.client.listCustomDomains).not.toHaveBeenCalled();
+      expect(mock.client.getCanonicalUrls).not.toHaveBeenCalled();
+      expect(mock.client.createCustomDomain).not.toHaveBeenCalled();
+      expect(mock.client.updateCanonicalUrl).not.toHaveBeenCalled();
+      expect(mock.client.deleteCustomDomain).not.toHaveBeenCalled();
+    }),
+);
+
+it.effect.each([false, true])(
+  "updates only the deployment URL in place with canonical=%s",
+  (canonical) =>
+    Effect.gen(function* () {
+      const mock = mockClient({ verificationTime: 200 });
+      const services = yield* Layer.build(mock.layer);
+      const provider = yield* CustomDomain.provider.pipe(
+        Effect.provideContext(services),
+      );
+      const olds = { ...props, canonical };
+      const output = yield* provider.reconcile({
         ...lifecycle,
-        oldBindings: [],
-        newBindings: [],
-        news: props,
-        olds: props,
-        output,
+        news: olds,
+        olds: undefined,
+        output: undefined,
       });
-      const changed = yield* provider.diff({
+      const news = {
+        ...olds,
+        deployment: {
+          ...props.deployment,
+          url: "https://happy-otter-123.eu-west-1.convex.cloud",
+        },
+      };
+      if (canonical)
+        yield* mock.client.updateCanonicalUrl(news.deployment.url, {
+          requestDestination: news.requestDestination,
+          url: output.url,
+        });
+      const diff = yield* provider.diff({
         ...lifecycle,
         oldBindings: [],
         newBindings: [],
         news,
-        olds: props,
+        olds,
         output,
       });
-      const error = yield* provider
-        .reconcile({ ...lifecycle, news, olds: props, output })
-        .pipe(Effect.flip);
-      expect({ same, changed, error: error._tag }).toEqual({
-        same: undefined,
-        changed: { action: "replace", deleteFirst: !("domain" in change) },
-        error: "CustomDomainIdentityChange",
+      const updated = yield* provider.reconcile({
+        ...lifecycle,
+        news,
+        olds,
+        output,
       });
-    });
-  },
+      expect(diff).toEqual({ action: "update" });
+      expect(updated).toEqual({
+        ...output,
+        deployment: news.deployment,
+        canonicalUrl: canonical ? output.url : news.deployment.url,
+      });
+      expect(mock.client.createCustomDomain).toHaveBeenCalledTimes(1);
+      expect(mock.client.deleteCustomDomain).not.toHaveBeenCalled();
+    }),
 );
 
 it.effect(
