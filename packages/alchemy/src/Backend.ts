@@ -199,16 +199,18 @@ const normalize = (value: unknown): unknown => {
   }
   if (value === null || typeof value !== "object" || Redacted.isRedacted(value))
     return value;
+  if (Arr.isArray(value)) {
+    const inputs = Arr.map(value, normalize);
+    return Arr.some(inputs, Output.isOutput)
+      ? Output.all(...Arr.map(inputs, (input) => Output.asOutput(input)))
+      : inputs;
+  }
   const entries = Arr.map(
     Rec.toEntries(value),
     ([key, input]) => [key, normalize(input)] as const,
   );
   const assemble = (resolved: ReadonlyArray<unknown>) =>
-    Arr.isArray(value)
-      ? resolved
-      : Rec.fromEntries(
-          Arr.map(entries, ([key], index) => [key, resolved[index]]),
-        );
+    Rec.fromEntries(Arr.map(entries, ([key], index) => [key, resolved[index]]));
   const inputs = Arr.map(entries, ([, input]) => input);
   return Arr.some(inputs, Output.isOutput)
     ? Output.map(
@@ -325,7 +327,8 @@ export const mountVariables = (
         });
     }
     for (const [mount, entry] of Rec.toEntries(manifest.mounts)) {
-      const supplied = Rec.has(mounts, mount) ? mounts[mount]! : {};
+      const supplied =
+        (Rec.has(mounts, mount) ? mounts[mount] : undefined) ?? {};
       for (const slot of Rec.keys(supplied)) {
         if (!Rec.has(entry.env, slot))
           return yield* InvalidMountSetting.make({
