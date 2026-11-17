@@ -217,7 +217,7 @@ const outputTail = <E>(
       const pattern = new RegExp(
         Arr.join(
           [
-            "(?:prod|dev|preview|project|custom):[^\\s|]+\\|[^\\s\"'&]+",
+            "(?:prod|dev|preview|project|custom):[^\\s|]+\\|[^\\s\\\\\"'&)]+",
             ...percentEncoded,
             ...Arr.map(credentials, (value) =>
               Str.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")(value),
