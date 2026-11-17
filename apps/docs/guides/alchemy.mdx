@@ -210,16 +210,17 @@ If the manifest declares automatic slots, pass their values through `Backend.aut
 
 ```ts
 import { Confect } from "@confect/alchemy";
+import * as Effect from "effect/Effect";
 import manifest from "../backend/confect/_generated/manifest";
 
-const backend =
-  yield *
-  Confect.Backend("Backend", {
+Effect.gen(function* () {
+  return yield* Confect.Backend("Backend", {
     deployment,
     deployKey,
     manifest,
     automatic: { STAGE: "production" },
   });
+});
 ```
 
 This example assumes `STAGE` is the manifest's only required slot. Use `Manifest.Automatic<typeof manifest>` to type the framework's values without Alchemy inputs. Each `automatic` value also accepts an Alchemy `Input`. Automatic slots are absent from `Manifest.Values` and `Backend.env`, and they never appear in `mounts`.
@@ -233,11 +234,11 @@ For an [`Env.providers`](/server/environment-variables#provider-choices) selecto
 ```ts
 import { Confect } from "@confect/alchemy";
 import * as Config from "effect/Config";
+import * as Effect from "effect/Effect";
 import manifest from "../backend/confect/_generated/manifest";
 
-const backend =
-  yield *
-  Confect.Backend("Backend", {
+Effect.gen(function* () {
+  return yield* Confect.Backend("Backend", {
     deployment,
     deployKey,
     manifest,
@@ -245,11 +246,12 @@ const backend =
       bulkEmail: {
         EMAIL_PROVIDER: { active: "ses", standby: ["resend"] },
         SES_REGION: "eu-west-1",
-        SES_KEY: yield * Config.Redacted("SES_KEY"),
-        RESEND_API_KEY: yield * Config.Redacted("RESEND_API_KEY"),
+        SES_KEY: yield* Config.Redacted("SES_KEY"),
+        RESEND_API_KEY: yield* Config.Redacted("RESEND_API_KEY"),
       },
     },
   });
+});
 ```
 
 The example assumes the host has only this mount's required slots. For a pool, replace the choice with `{ pool: ["ses", "resend"] }`. For a single provider, use `"resend"`. A selector declared by the root backend goes in `env` instead of `mounts`.
