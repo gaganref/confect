@@ -137,9 +137,51 @@ const automaticVariables = (
   });
 
 /**
- * Each provider choice in `values` validated and encoded with the schema the
- * handler decodes it with, after refusing a choice that names a provider whose
- * required setting is unset. A setting belongs to the selector its tag names.
+ * A provider choice validated and encoded with the schema the handler decodes
+ * it with, after refusing a choice that names a provider whose required setting
+ * is unset. A setting belongs to the selector its tag names.
+ */
+const settleChoice = (
+  at: string,
+  key: string,
+  values: Env.Descriptor & { readonly kind: "providers" },
+  slots: Readonly<Record<string, Env.Descriptor>>,
+  supplied: Readonly<Record<string, unknown>>,
+  value: unknown,
+) =>
+  Effect.gen(function* () {
+    const invalid = InvalidMountSetting.make({
+      mount: at,
+      slot: key,
+      reason: "InvalidChoice",
+    });
+    const schema = Env.providerChoice(values.values);
+    const choice = yield* Schema.decodeUnknownEffect(Schema.toType(schema))(
+      value,
+    ).pipe(Effect.mapError(() => invalid));
+    const named = Env.chosen(choice);
+    for (const [slot, other] of Rec.toEntries(slots)) {
+      if (
+        other.provider?.selector === key &&
+        other.provider.required &&
+        named.includes(other.provider.name) &&
+        supplied[slot] === undefined
+      )
+        return yield* InvalidMountSetting.make({
+          mount: at,
+          slot,
+          reason: "Missing",
+        });
+    }
+    return yield* Schema.encodeUnknownEffect(schema)(choice).pipe(
+      Effect.mapError(() => invalid),
+    );
+  });
+
+/**
+ * Each provider choice in `values` as the string Convex stores. A choice given
+ * as an output is settled when it resolves, so a refusal fails the apply before
+ * the environment is written and the output keeps its upstream.
  */
 const supplyProviders = (
   at: string,
@@ -150,38 +192,14 @@ const supplyProviders = (
     const written: Record<string, unknown> = { ...values };
     for (const [key, descriptor] of Rec.toEntries(slots)) {
       const value = values[key];
-      if (
-        descriptor.kind !== "providers" ||
-        value === undefined ||
-        Output.isOutput(value)
-      )
-        continue;
-      const invalid = InvalidMountSetting.make({
-        mount: at,
-        slot: key,
-        reason: "InvalidChoice",
-      });
-      const schema = Env.providerChoice(descriptor.values);
-      const choice = yield* Schema.decodeUnknownEffect(Schema.toType(schema))(
-        value,
-      ).pipe(Effect.mapError(() => invalid));
-      const named = Env.chosen(choice);
-      for (const [slot, other] of Rec.toEntries(slots)) {
-        if (
-          other.provider?.selector === key &&
-          other.provider.required &&
-          named.includes(other.provider.name) &&
-          values[slot] === undefined
-        )
-          return yield* InvalidMountSetting.make({
-            mount: at,
-            slot,
-            reason: "Missing",
-          });
-      }
-      written[key] = yield* Schema.encodeUnknownEffect(schema)(choice).pipe(
-        Effect.mapError(() => invalid),
-      );
+      if (descriptor.kind !== "providers" || value === undefined) continue;
+      const settle = (resolved: unknown) =>
+        settleChoice(at, key, descriptor, slots, values, resolved);
+      written[key] = Output.isOutput(value)
+        ? value.pipe(
+            Output.mapEffect((resolved) => settle(resolved).pipe(Effect.orDie)),
+          )
+        : yield* settle(value);
     }
     return written as Variables;
   });

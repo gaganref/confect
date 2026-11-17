@@ -938,16 +938,13 @@ describe("Backend choices from outputs", () => {
     "encodes a choice output when it resolves, after the resource it depends on",
     () =>
       Effect.gen(function* () {
-        const { result, fixture, pushes } = yield* apply({
-          active: "ses",
-          standby: ["resend"],
-        });
+        const { result, fixture, pushes } = yield* apply({ pool: ["ses"] });
         expect(result).toEqual(Exit.succeed(props.deployment.url));
         expect(fixture.client.createUsageLimit).toHaveBeenCalledTimes(1);
         expect(
           Record.map(fixture.state.variables, (value) => Redacted.value(value)),
         ).toEqual({
-          EMAIL_PROVIDER: '{"active":"ses","standby":["resend"]}',
+          EMAIL_PROVIDER: '{"pool":["ses"]}',
           SES_KEY: "output-test-key",
         });
         expect(pushes).toEqual(["prepare", "deploy"]);
