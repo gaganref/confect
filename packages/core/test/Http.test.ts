@@ -233,6 +233,30 @@ describe("Http", () => {
     }).pipe(Effect.scoped),
   );
 
+  it.effect("resolves a shared endpoint name within its own group", () =>
+    Effect.gen(function* () {
+      const api = HttpApi.make("shared").add(
+        HttpApiGroup.make("webhooks").add(
+          HttpApiEndpoint.post("receive", "/hooks"),
+        ),
+        HttpApiGroup.make("files").add(
+          HttpApiEndpoint.post("receive", "/uploads"),
+        ),
+      );
+      const services = yield* ConfigProvider.fromUnknown({
+        CONVEX_SITE_URL: "https://happy-otter-123.convex.site/relay",
+      }).pipe(ConfigProvider.layer, Layer.build);
+      const hooks = yield* Http.url(api, "webhooks", "receive").pipe(
+        Effect.provideContext(services),
+      );
+      const files = yield* Http.url(api, "files", "receive").pipe(
+        Effect.provideContext(services),
+      );
+      expect(hooks).toBe("https://happy-otter-123.convex.site/relay/hooks");
+      expect(files).toBe("https://happy-otter-123.convex.site/relay/uploads");
+    }).pipe(Effect.scoped),
+  );
+
   it("types endpoint addresses against their own group", () => {
     const api = HttpApi.make("email").add(
       HttpApiGroup.make("webhooks").add(
