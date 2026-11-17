@@ -1,10 +1,6 @@
 import * as Record from "effect/Record";
 import { GroupSpec, MiddlewareAttachment } from "@confect/core";
-import {
-  FunctionRegistryItem,
-  Registry,
-  RegistryItems,
-} from "@confect/server";
+import { FunctionRegistryItem, Registry, RegistryItems } from "@confect/server";
 import * as GroupImpl from "@confect/server/GroupImpl";
 import * as FileSystem from "effect/FileSystem";
 import * as Path from "effect/Path";
