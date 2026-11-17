@@ -242,8 +242,9 @@ does not create or infer one.
 as of this resource's last change. Another resource can change the live value
 later in the same apply. The next apply refreshes the saved output.
 Turning the option off resets the URL to Convex's default only if this resource
-managed it and it still equals this domain's URL. Removing the resource resets a
-matching canonical URL even when the domain became canonical outside the stack.
+managed it and it still equals this domain's URL. Removing the resource deletes
+its domain and resets a matching canonical URL even when the domain became
+canonical outside the stack.
 A different address
 set outside the stack is preserved. Declare one canonical owner for each
 deployment destination. Planning refuses conflicting resolved declarations with
