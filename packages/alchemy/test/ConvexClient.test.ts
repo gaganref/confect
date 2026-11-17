@@ -2,6 +2,8 @@ import * as ConvexClient from "@confect/alchemy/ConvexClient";
 import { describe, expect, it } from "@effect/vitest";
 import * as ConfigProvider from "effect/ConfigProvider";
 import * as Effect from "effect/Effect";
+import * as Fiber from "effect/Fiber";
+import * as TestClock from "effect/testing/TestClock";
 import * as Schema from "effect/Schema";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
@@ -704,6 +706,40 @@ describe("ConvexClient", () => {
       }).pipe(Effect.provideContext(services));
     });
   });
+
+  it.effect(
+    "times out an error body that never finishes after five seconds",
+    () => {
+      const secret = "unfinished-body-secret";
+      let cancelled = false;
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(
+            new TextEncoder().encode(`{"message":"${secret}"`),
+          );
+        },
+        cancel() {
+          cancelled = true;
+        },
+      });
+      const http = mockHttp([new Response(body, { status: 503 })]);
+      return Effect.gen(function* () {
+        const client = yield* ConvexClient.ConvexClient;
+        const fiber = yield* client
+          .updateEnvironmentVariables(deploymentUrl, deployKey, [])
+          .pipe(Effect.flip, Effect.forkScoped);
+        yield* TestClock.adjust("4999 millis");
+        expect(fiber.pollUnsafe()).toBeUndefined();
+        yield* TestClock.adjust("1 millis");
+        expect(fiber.pollUnsafe()).toBeDefined();
+        const error = yield* Fiber.join(fiber);
+        expect(error).toMatchObject({ code: "HttpError", status: 503 });
+        expect(error.serverCode).toBeUndefined();
+        expect(cancelled).toBe(true);
+        yield* expectSecretSafe(error, secret);
+      }).pipe(Effect.provide(clientLayer.pipe(Layer.provide(http.layer))));
+    },
+  );
 
   it.effect("ignores non-JSON error bodies", () => {
     const http = mockHttp([new Response("body-secret", { status: 503 })]);
