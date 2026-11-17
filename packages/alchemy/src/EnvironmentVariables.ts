@@ -1,9 +1,12 @@
 import { OwnedBySomeoneElse, Unowned } from "alchemy/AdoptPolicy";
 import { isResolved } from "alchemy/Diff";
+import type { Input } from "alchemy/Input";
+import * as Output from "alchemy/Output";
 import * as Provider from "alchemy/Provider";
 import { Resource } from "alchemy/Resource";
 import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
+import * as Predicate from "effect/Predicate";
 import * as Schedule from "effect/Schedule";
 import { PushLock, PushLockError } from "./internal/PushLock.js";
 import * as Effect from "effect/Effect";
@@ -107,6 +110,37 @@ export class EnvironmentVariablesInvalidRetry extends Schema.TaggedError<
   }
 }
 
+const ownershipConflict = (variableName: string) =>
+  new OwnedBySomeoneElse({
+    message:
+      "An existing environment variable requires explicit adoption in a separate resource.",
+    resourceType: EnvironmentVariables.Type,
+    physicalName: variableName,
+  });
+
+const optionsForDiff = (
+  olds: EnvironmentVariablesProps,
+  news: Input<EnvironmentVariablesProps>,
+) => {
+  if (!("variables" in news)) return { ...olds, desiredNames: undefined };
+  return {
+    driftPolicy: isResolved(news.driftPolicy)
+      ? news.driftPolicy
+      : olds.driftPolicy,
+    unownedPolicy: isResolved(news.unownedPolicy)
+      ? news.unownedPolicy
+      : olds.unownedPolicy,
+    lock: isResolved(news.lock) ? news.lock : olds.lock,
+    retry: isResolved(news.retry) ? news.retry : olds.retry,
+    desiredNames:
+      !Output.isExpr(news.variables) &&
+      !Effect.isEffect(news.variables) &&
+      Predicate.isReadonlyObject(news.variables)
+        ? Rec.keys<string, unknown>(news.variables)
+        : undefined,
+  };
+};
+
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient.ConvexClient;
   const lock = yield* Effect.serviceOption(PushLock);
@@ -114,7 +148,13 @@ export const provider = Effect.gen(function* () {
     A,
     E,
     R,
-  >(options: EnvironmentVariablesProps, effect: Effect.Effect<A, E, R>) {
+  >(
+    options: {
+      readonly lock?: EnvironmentVariablesProps["lock"];
+      readonly retry?: EnvironmentVariablesProps["retry"];
+    },
+    effect: Effect.Effect<A, E, R>,
+  ) {
     let attempt = effect;
     if (options.retry !== undefined) {
       const { maxAttempts, delay } = options.retry;
@@ -186,15 +226,16 @@ export const provider = Effect.gen(function* () {
     return Effect.void;
   };
   const checkUnowned = (
-    props: EnvironmentVariablesProps,
+    policy: EnvironmentVariablesProps["unownedPolicy"],
     output: EnvironmentVariablesAttributes | undefined,
+    desiredNames: ReadonlyArray<string> | undefined,
     observed: ConvexClient.EnvironmentVariables,
   ) => {
-    if (props.unownedPolicy !== "error") return Effect.void;
+    if (policy !== "error" || desiredNames === undefined) return Effect.void;
     for (const name of Rec.keys(observed)) {
       if (
         output?.ownedNames.includes(name) !== true &&
-        !Rec.has(props.variables, name)
+        !desiredNames.includes(name)
       )
         return Effect.fail(
           EnvironmentVariableUnowned.make({ variableName: name }),
@@ -208,7 +249,7 @@ export const provider = Effect.gen(function* () {
       news,
       output,
     }) {
-      const options = isResolved(news) ? news : olds;
+      const options = optionsForDiff(olds, news);
       if (
         output !== undefined &&
         (options.driftPolicy === "error" || options.unownedPolicy === "error")
@@ -218,7 +259,12 @@ export const provider = Effect.gen(function* () {
           output.deployKey,
         );
         yield* checkDrift(options.driftPolicy, output, observed);
-        yield* checkUnowned(options, output, observed);
+        yield* checkUnowned(
+          options.unownedPolicy,
+          output,
+          options.desiredNames,
+          observed,
+        );
       }
       if (!isResolved(news) || output === undefined) return;
       if (news.url !== output.url)
@@ -252,22 +298,27 @@ export const provider = Effect.gen(function* () {
         olds.deployKey,
       );
       yield* checkDrift(olds.driftPolicy, output, observed);
-      yield* checkUnowned(olds, output, observed);
+      yield* checkUnowned(
+        olds.unownedPolicy,
+        output,
+        Rec.keys(olds.variables),
+        observed,
+      );
       const ownedNames = output?.ownedNames ?? Rec.keys(olds.variables);
       const variables = select(observed, ownedNames);
       if (output !== undefined)
         return { ...output, deployKey: olds.deployKey, variables };
       if (Rec.keys(variables).length === 0) return undefined;
-      if (
-        olds.adopt === true &&
-        Arr.every(
-          Rec.toEntries(variables),
-          ([name, value]) =>
-            Redacted.value(value) ===
-            Redacted.value(redacted(olds.variables[name])),
-        )
-      )
+      if (olds.adopt === true) {
+        for (const [name, value] of Rec.toEntries(variables)) {
+          if (
+            Redacted.value(value) !==
+            Redacted.value(redacted(olds.variables[name]))
+          )
+            return yield* ownershipConflict(name);
+        }
         return undefined;
+      }
       return Unowned({
         url,
         deployKey: olds.deployKey,
@@ -292,9 +343,18 @@ export const provider = Effect.gen(function* () {
         news.deployKey,
       );
       yield* checkDrift(news.driftPolicy, output, observed);
-      yield* checkUnowned(news, output, observed);
+      yield* checkUnowned(
+        news.unownedPolicy,
+        output,
+        Rec.keys(news.variables),
+        observed,
+      );
       const ownedNames = Rec.keys(news.variables);
-      if (output === undefined && (yield* shouldAdopt(fqn))) {
+      if (
+        output === undefined &&
+        news.adopt !== true &&
+        (yield* shouldAdopt(fqn))
+      ) {
         const variables = select(observed, ownedNames);
         output = {
           url: news.url,
@@ -318,12 +378,7 @@ export const provider = Effect.gen(function* () {
           originals = Rec.set(originals, name, current);
           yield* Effect.logInfo(`Adopted environment variable ${name}`);
         } else {
-          return yield* new OwnedBySomeoneElse({
-            message:
-              "An existing environment variable requires explicit adoption in a separate resource.",
-            resourceType: EnvironmentVariables.Type,
-            physicalName: name,
-          });
+          return yield* ownershipConflict(name);
         }
       }
       if (output === undefined && news.adopt === true) {
@@ -389,7 +444,12 @@ export const provider = Effect.gen(function* () {
         .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
       if (observed === undefined) return;
       yield* checkDrift(olds.driftPolicy, output, observed);
-      yield* checkUnowned(olds, output, observed);
+      yield* checkUnowned(
+        olds.unownedPolicy,
+        output,
+        Rec.keys(olds.variables),
+        observed,
+      );
       const changes: Array<{
         name: string;
         value?: Redacted.Redacted<string>;
@@ -413,10 +473,7 @@ export const provider = Effect.gen(function* () {
   } satisfies Provider.ProviderServiceInput<EnvironmentVariables>;
   return {
     diff: (input) =>
-      withSafety(
-        isResolved(input.news) ? input.news : input.olds,
-        service.diff(input),
-      ),
+      withSafety(optionsForDiff(input.olds, input.news), service.diff(input)),
     read: (input) => withSafety(input.olds, service.read(input)),
     reconcile: (input) => withSafety(input.news, service.reconcile(input)),
     delete: (input) => withSafety(input.olds, service.delete(input)),

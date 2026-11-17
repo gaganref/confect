@@ -1183,10 +1183,13 @@ Upstream: planned; no linked proposal verified.
 ## Alchemy deployment
 
 `EnvironmentVariables` can stop on owned-value drift or unrelated live names,
-adopt matching desired values, share the deployment's push lock, and retry a
+adopt matching desired values even under a general adoption grant, share the
+deployment's push lock, and retry a
 bounded number of write conflicts. All five options default to prior behavior.
 Plan checks compare against the stored snapshot before unresolved desired inputs
-can skip the check. Errors and adoption logs identify names without values.
+can skip the check. Resolved safety settings apply even when desired values are
+unresolved; unowned-name checks wait if the desired names themselves are unknown.
+Errors and adoption logs identify names without values.
 The options let Frame manage environment values without silently overwriting
 external changes. Changeset: `alchemy-environment-safety.md`.
 Upstream: planned, through the maintainer.
