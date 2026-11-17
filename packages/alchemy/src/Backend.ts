@@ -382,9 +382,8 @@ export const mountVariables = (
         supplied,
         (slot, reason) => InvalidMountSetting.make({ mount, slot, reason }),
       );
-      for (const [slot, open] of Rec.toEntries(entry.env)) {
-        const value = settings[slot];
-        if (value !== undefined) variables[open.variable] = value;
+      for (const [slot, value] of Rec.toEntries(settings)) {
+        variables[entry.env[slot]!.variable] = value;
       }
     }
     return variables;
