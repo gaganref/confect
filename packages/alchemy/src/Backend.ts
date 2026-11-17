@@ -283,13 +283,21 @@ export const mountVariables = (
             });
           continue;
         }
+        const plain = InvalidMountSetting.make({
+          mount,
+          slot,
+          reason: "PlainSecret",
+        });
         if (open.kind === "secret" && typeof value === "string")
-          return yield* InvalidMountSetting.make({
-            mount,
-            slot,
-            reason: "PlainSecret",
-          });
-        variables[open.variable] = value;
+          return yield* plain;
+        variables[open.variable] =
+          open.kind === "secret" && Output.isOutput(value)
+            ? Output.mapEffect((resolved: string | Redacted.Redacted<string>) =>
+                typeof resolved === "string"
+                  ? Effect.die(plain)
+                  : Effect.succeed(resolved),
+              )(value as Output.Output<string | Redacted.Redacted<string>>)
+            : value;
       }
     }
     return variables;
