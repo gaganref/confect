@@ -141,7 +141,7 @@ describe("Code", () => {
         expect(result.failure).toMatchObject({
           _tag: "StaleManifest",
           reason: "NotGenerated",
-          path: path.join(cwd, functions, "confectHealth.ts"),
+          healthModulePath: path.join(cwd, functions, "confectHealth.ts"),
         });
         expect(result.failure.message).toContain(
           path.join(cwd, functions, "confectHealth.ts"),
@@ -245,7 +245,7 @@ describe("Code", () => {
         assertIs(result, Result.isFailure);
         expect(result.failure).toEqual(
           StaleManifest.make({
-            path: path.join(cwd, "convex", "confectHealth.ts"),
+            healthModulePath: path.join(cwd, "convex", "confectHealth.ts"),
             expected: "sha256:built",
             reason,
             ...(reason === "DifferentDigest" && generated !== undefined
