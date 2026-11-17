@@ -410,7 +410,10 @@ const backend = (
           ? env
           : { ...env, ...automatic, ...promoted };
       const environment =
-        variables === undefined
+        variables === undefined ||
+        (props.env === undefined &&
+          props.automatic === undefined &&
+          Rec.keys(variables).length === 0)
           ? undefined
           : yield* EnvironmentVariables("Environment", {
               url: props.deployment.url,

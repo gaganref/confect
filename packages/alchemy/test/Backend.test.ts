@@ -216,7 +216,10 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
 ];
 
 describe("Backend", () => {
-  it.effect.each([{}, { TOKEN: { kind: "string" as const, optional: true } }])(
+  it.effect.each([
+    {},
+    { TOKEN: { kind: "string" as const, optional: true as const } },
+  ])(
     "does not declare environment ownership when env is omitted and no value is required (%j)",
     (env) =>
       Effect.gen(function* () {
