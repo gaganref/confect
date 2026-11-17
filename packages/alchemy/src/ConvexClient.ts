@@ -37,11 +37,11 @@ export type UpdateProjectInput = Pick<
 >;
 export type CreateDeploymentInput = Pick<
   ManagementApi.PlatformCreateDeploymentArgs,
-  "type" | "region" | "class"
+  "type" | "region" | "class" | "expiresAt"
 > & { readonly reference: string };
 export type UpdateDeploymentInput = Pick<
   ManagementApi.PlatformUpdateDeploymentArgs,
-  "reference" | "expiresAt" | "sendLogsToClient"
+  "reference" | "expiresAt" | "sendLogsToClient" | "class"
 >;
 export type CreateDeployKeyInput = ManagementApi.PlatformCreateDeployKeyArgs;
 export type CreatedDeployKey = {

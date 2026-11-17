@@ -62,6 +62,24 @@ export const layer = HttpApiBuilder.layer(Api).pipe(Layer.provide(ApiLive));
 
 `HttpApiBuilder.layer(Api)` registers the API's routes; `Layer.provide(ApiLive)` supplies its group handlers. Forgetting a group causes a compile-time error where you mount the layer.
 
+## Get an endpoint's public URL
+
+Use `Http.url` with your backend's own API declaration to get an endpoint's public address, for example when you register a webhook or OAuth callback.
+
+```ts
+import { Http } from "@confect/core";
+import * as Effect from "effect/Effect";
+import { Api } from "./http/NotesApi";
+
+export const firstNoteUrl = Effect.gen(function* () {
+  return yield* Http.url(Api, "notes", "getFirst");
+});
+```
+
+`Http.url` returns a `Config<string>` that you can yield in an Effect workflow. It reads Convex's built-in `CONVEX_SITE_URL`. Inside a mounted component, that URL already includes the full mount prefix, including nested mounts, so you do not need a separate URL setting.
+
+The group and endpoint names must exist in the API. TypeScript rejects an endpoint whose path contains a parameter or wildcard because it has no single address.
+
 ## OPTIONS requests
 
 A declared path accepts OPTIONS through the route's existing middleware and
