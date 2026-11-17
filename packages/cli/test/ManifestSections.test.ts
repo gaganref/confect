@@ -181,15 +181,8 @@ describe("ManifestSections", () => {
       "format name env mounts http digest __proto__ constructor prototype",
       Str.split(" "),
     ),
-  )("refuses the built-in key %s on App.make", (key) => {
-    expect(declared([{ key, section }])).toMatchObject({
-      _tag: "Failure",
-      failure: {
-        _tag: "InvalidDeclarationError",
-        declarationPath: "confect/app.ts",
-        reason: `Manifest section "${key}" shadows a built-in key.`,
-      },
-    });
+  )("accepts the section key %s independently of built-in fields", (key) => {
+    expect(Result.isSuccess(declared([{ key, section }]))).toBe(true);
   });
   it("refuses a key App.make declares twice", () => {
     expect(declared([...tags(), ...tags()])).toMatchObject({

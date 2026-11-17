@@ -72,6 +72,7 @@ export const Manifest = Schema.Struct({
     Schema.Record(Schema.String, Schema.Record(Schema.String, Route)),
   ),
   digest: Schema.String,
+  sections: Schema.Record(Schema.String, Schema.Json),
 });
 export type Manifest = typeof Manifest.Type;
 

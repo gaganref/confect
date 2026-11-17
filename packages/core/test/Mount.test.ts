@@ -254,6 +254,7 @@ describe("Mount.make", () => {
     const Relay = Component.make("relay", {
       manifest: {
         format: 1,
+        sections: {},
         name: "relay",
         env: {},
         mounts: {
@@ -282,6 +283,7 @@ describe("Mount.make", () => {
   it("takes a shipped manifest's env slots", () => {
     const manifest = {
       format: 1,
+      sections: {},
       name: "relay",
       env: {
         MODE: { kind: "literals", values: ["live", "log"], optional: false },

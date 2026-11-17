@@ -126,7 +126,7 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           const project = yield* manifestProject;
           const { snapshot } = yield* project.provide(generateWithSnapshot);
           const before = yield* project.manifest;
-          expect(before.tags).toEqual({
+          expect(before.sections.tags).toEqual({
             format: 1,
             functions: { "notes:list": "first" },
           });
@@ -160,14 +160,14 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
           );
           expect(manifestWrites(writes)).toEqual([manifest]);
           const after = yield* project.manifest;
-          expect(after.tags).toEqual({
+          expect(after.sections.tags).toEqual({
             format: 1,
             functions: { "notes:list": "second" },
           });
           expect(after.digest).not.toBe(before.digest);
           yield* project.undeclare;
           yield* project.provide(updateDeclarations(snapshot, changes, []));
-          expect((yield* project.manifest).tags).toBeUndefined();
+          expect((yield* project.manifest).sections.tags).toBeUndefined();
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -242,7 +242,7 @@ export default App.make({ env: Env.make("other", {}), manifestSections: [{ key: 
         );
         yield* project.provide(generateWithSnapshot);
         expect((yield* project.manifest).name).toBe("other");
-        expect((yield* project.manifest).tags).toEqual({
+        expect((yield* project.manifest).sections.tags).toEqual({
           format: 1,
           functions: { "notes:list": "first" },
         });
@@ -257,7 +257,7 @@ export default App.make({ env: Env.make("other", {}), manifestSections: [{ key: 
           yield* project.write("confect/stock.spec.ts", stockSpec);
           yield* project.write("confect/stock.impl.ts", stockImpl);
           yield* project.provide(generateWithSnapshot);
-          expect((yield* project.manifest).tags).toEqual({
+          expect((yield* project.manifest).sections.tags).toEqual({
             format: 1,
             functions: {
               "notes:list": "first",
@@ -291,11 +291,9 @@ export default App.make({ env: Env.make("other", {}), manifestSections: [{ key: 
           yield* project.declare('{ key: "tags", section: tags }');
           const described = yield* runDigest;
           expect([declared, undeclared]).not.toContain(described);
-          expect(Rec.keys((yield* project.manifest).tags.functions)).toEqual([
-            "notes:list",
-            "stock:profiled",
-            "stock:raw",
-          ]);
+          expect(
+            Rec.keys((yield* project.manifest).sections.tags.functions),
+          ).toEqual(["notes:list", "stock:profiled", "stock:raw"]);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
@@ -352,7 +350,7 @@ export default App.make({ env: Env.make("other", {}), manifestSections: [{ key: 
           const reversed = yield* generated(true);
           expect(reversed.manifest.digest).toBe(forward.manifest.digest);
           expect(reversed.files).toEqual(forward.files);
-          expect(Rec.keys(forward.manifest.tags.functions)).toEqual([
+          expect(Rec.keys(forward.manifest.sections.tags.functions)).toEqual([
             "items/flows:profiled",
             "items/flows:raw",
             "landing/sweep:profiled",
@@ -376,7 +374,7 @@ export default App.make({ env: Env.make("other", {}), manifestSections: [{ key: 
           for (const file of ["notes.spec.ts", "notes.impl.ts"])
             yield* fs.remove(`${project.root}/confect/${file}`);
           yield* project.provide(generateWithSnapshot);
-          expect((yield* project.manifest).tags).toEqual({
+          expect((yield* project.manifest).sections.tags).toEqual({
             format: 1,
             functions: {},
           });
@@ -556,7 +554,7 @@ export class Observe extends MiddlewareSpec.MiddlewareSpec<Observe>()("Observe",
           yield* project.write("confect/_generated/manifest.ts", contents);
           yield* project.provide(generateWithSnapshot);
           expect((yield* project.manifest).name).toBe("host");
-          expect((yield* project.manifest).tags).toEqual(
+          expect((yield* project.manifest).sections.tags).toEqual(
             sectioned
               ? {
                   format: 1,
@@ -2046,7 +2044,8 @@ export default {
       }
     }
   },
-  "digest": "${digest}"
+  "digest": "${digest}",
+  "sections": {}
 } as const;
 `;
 
@@ -3123,7 +3122,7 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
           );
           const observe = Bundler.bundle(
             `${project.root}/confect/_generated/manifest.ts`,
-          ).pipe(Effect.map(({ module }) => module.default.observe));
+          ).pipe(Effect.map(({ module }) => module.default.sections.observe));
           const owner = (module: string) =>
             project.write(
               "confect/billing/log.ts",
@@ -3465,7 +3464,10 @@ check: (next) => ({ errors: next.owners.includes("stale") ? ["stale owner"] : []
           const { module } = yield* Bundler.bundle(
             `${project.root}/confect/_generated/manifest.ts`,
           );
-          expect(module.default.observe).toEqual({ format: 1, functions: {} });
+          expect(module.default.sections.observe).toEqual({
+            format: 1,
+            functions: {},
+          });
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );

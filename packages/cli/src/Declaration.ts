@@ -805,7 +805,7 @@ export const manifest = (
     ),
     http: routeCatalogue(leaves, digest),
     digest,
-    ...sections,
+    sections,
   };
   return renderManifest(data);
 };

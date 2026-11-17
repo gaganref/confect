@@ -290,7 +290,10 @@ export const syncManifestSections = Effect.fnUntraced(
         ),
       ),
     );
-    const checked = ManifestSections.check(registry, previous);
+    const checked = ManifestSections.check(
+      registry,
+      ManifestSections.sections(previous),
+    );
     for (const note of checked.notes) yield* logWarn(note);
     const [error, ...more] = checked.errors;
     for (const other of more) yield* logCodegenError(other);
@@ -312,7 +315,7 @@ export const syncManifestSections = Effect.fnUntraced(
         mounts,
         http: Declaration.routeCatalogue(routes, digest),
         digest,
-        ...sections,
+        sections,
       }),
     );
     return base;

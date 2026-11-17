@@ -235,6 +235,7 @@ Codegen fails when an app route or the docs page is at or under a mount's prefix
 ```ts confect/_generated/manifest.ts
 export default {
   format: 1,
+  sections: {},
   name: "tenant",
   env: {
     EMAIL_FROM: { kind: "string", optional: false },
@@ -343,7 +344,7 @@ export default App.make({
 });
 ```
 
-Declared app codegen writes `tags: { format: 1, functions: { "notes:list": "notes:list" } }` in `confect/_generated/manifest.ts`. `describe` runs on every registered function, whether a profile, a raw builder or a library's own builder made it. It receives the registered `path`, the `spec` and its group and function `middleware`. A backend with no functions still writes each declared section, with no functions. Callbacks run after specs load, including in `confect dev`, where spec edits update section data and the digest. Importing a spec never runs them. A component writes its descriptor without function sections, so it runs no `describe`, `summarize` or `check`; only `generate` and `verify` run for it.
+Declared app codegen writes `sections: { tags: { format: 1, functions: { "notes:list": "notes:list" } } }` in `confect/_generated/manifest.ts`. `describe` runs on every registered function, whether a profile, a raw builder or a library's own builder made it. It receives the registered `path`, the `spec` and its group and function `middleware`. A backend with no functions still writes each declared section, with no functions. Callbacks run after specs load, including in `confect dev`, where spec edits update section data and the digest. Importing a spec never runs them. A component writes its descriptor without function sections, so it runs no `describe`, `summarize` or `check`; only `generate` and `verify` run for it.
 
 Section data contributes to the digest, so declaring, removing or changing a section changes it, and so does a function joining or leaving a section. Each section declares a stable `owner` string. Codegen refuses a key `App.make` declares twice and the keys `name`, `env`, `http`, `digest`, `__proto__`, `constructor` and `prototype`. Callbacks must preserve their inputs.
 
@@ -391,7 +392,7 @@ Codegen refuses a name codegen writes itself, such as `spec.ts` or `manifest.ts`
 
 ### Summarize a section's data
 
-An optional `summarize` replaces the section's `{ format, functions }` with data it builds. Added to the `observe` section above, it writes `observe: { format: 1, modules: ["billing/log.ts"] }` into the manifest.
+An optional `summarize` replaces the section's `{ format, functions }` with data it builds. Added to the `observe` section above, it writes `sections: { observe: { format: 1, modules: ["billing/log.ts"] } }` into the manifest.
 
 ```ts
 const observe: ManifestSection.ManifestSection<

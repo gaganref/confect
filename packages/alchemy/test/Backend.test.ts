@@ -41,6 +41,7 @@ const providers = Layer.succeed(Providers, {
 
 const formatOne = {
   format: 1,
+  sections: {},
   name: "workpool",
   env: {},
   mounts: {},
@@ -50,7 +51,14 @@ const formatOne = {
 const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
   [
     "missing format",
-    { name: "workpool", env: {}, mounts: {}, http: {}, digest: "sha256:child" },
+    {
+      name: "workpool",
+      sections: {},
+      env: {},
+      mounts: {},
+      http: {},
+      digest: "sha256:child",
+    },
   ],
   ...Array.map(
     [0, 2, "1"],
@@ -66,11 +74,25 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
   ],
   [
     "missing mounts",
-    { format: 1, name: "workpool", env: {}, http: {}, digest: "sha256:child" },
+    {
+      format: 1,
+      name: "workpool",
+      sections: {},
+      env: {},
+      http: {},
+      digest: "sha256:child",
+    },
   ],
   [
     "missing digest",
-    { format: 1, name: "workpool", env: {}, mounts: {}, http: {} },
+    {
+      format: 1,
+      name: "workpool",
+      sections: {},
+      env: {},
+      mounts: {},
+      http: {},
+    },
   ],
   ["null", null],
   [
@@ -81,6 +103,7 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
     "PR 168 shape",
     {
       format: 1,
+      sections: {},
       name: "workpool",
       env: {},
       http: { mounts: { pool: "/pool" } },
@@ -179,6 +202,7 @@ describe("Backend", () => {
       Effect.gen(function* () {
         const manifest = {
           format: 1,
+          sections: {},
           name: "host",
           env: {},
           mounts: {

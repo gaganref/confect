@@ -7,6 +7,7 @@ import * as Redacted from "effect/Redacted";
 
 const manifest = {
   format: 1,
+  sections: {},
   name: "tenant",
   env: {
     EMAIL_FROM: { kind: "string", optional: false },
@@ -78,7 +79,15 @@ describe("Manifest", () => {
 
   it.each([
     ...Arr.map(
-      ["format", "name", "env", "mounts", "http", "digest"] as const,
+      [
+        "format",
+        "name",
+        "env",
+        "mounts",
+        "http",
+        "digest",
+        "sections",
+      ] as const,
       (field) =>
         [
           `missing ${field}`,

@@ -40,6 +40,7 @@ const parseApp = (app: unknown) =>
 
 const formatOne = {
   format: 1,
+  sections: {},
   name: "workpool",
   env: {},
   mounts: {},
@@ -49,7 +50,14 @@ const formatOne = {
 const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
   [
     "missing format",
-    { name: "workpool", env: {}, mounts: {}, http: {}, digest: "sha256:child" },
+    {
+      name: "workpool",
+      sections: {},
+      env: {},
+      mounts: {},
+      http: {},
+      digest: "sha256:child",
+    },
   ],
   ...Array.map(
     [0, 2, "1"],
@@ -65,11 +73,25 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
   ],
   [
     "missing mounts",
-    { format: 1, name: "workpool", env: {}, http: {}, digest: "sha256:child" },
+    {
+      format: 1,
+      name: "workpool",
+      sections: {},
+      env: {},
+      http: {},
+      digest: "sha256:child",
+    },
   ],
   [
     "missing digest",
-    { format: 1, name: "workpool", env: {}, mounts: {}, http: {} },
+    {
+      format: 1,
+      name: "workpool",
+      sections: {},
+      env: {},
+      mounts: {},
+      http: {},
+    },
   ],
   ["null", null],
   [
@@ -80,6 +102,7 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
     "PR 168 shape",
     {
       format: 1,
+      sections: {},
       name: "workpool",
       env: {},
       http: { mounts: { pool: "/pool" } },
@@ -139,6 +162,7 @@ describe("Declaration", () => {
   it("reads a mounted component's shipped manifest and refuses another format", () => {
     const shipped = {
       format: 1,
+      sections: {},
       name: "workpool",
       env: {},
       mounts: {},
@@ -316,6 +340,7 @@ describe("Declaration", () => {
   it("promotes a child's open slot, keeps a bound one closed, and refuses a promoted name taken twice", () => {
     const child = {
       format: 1,
+      sections: {},
       name: "ratelimiter",
       env: {
         LIMIT: { kind: "string", optional: false },
@@ -386,6 +411,7 @@ describe("Declaration", () => {
     const Email = Component.make("workpool", {
       manifest: {
         format: 1,
+        sections: {},
         name: "workpool",
         env: { RESEND_API_KEY: { kind: "secret", optional: false } },
         mounts: {},
@@ -467,6 +493,7 @@ describe("Declaration", () => {
     const relay = Component.make("relay", {
       manifest: {
         format: 1,
+        sections: {},
         name: "relay",
         env: {},
         mounts: {},
