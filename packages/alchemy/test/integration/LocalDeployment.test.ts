@@ -1,6 +1,10 @@
 import * as NodeServices from "../fixtures/NodeTestServices";
 import { describe, expect, it } from "@effect/vitest";
 import { Convex } from "@confect/alchemy";
+import * as Deployment from "@confect/alchemy/Deployment";
+import * as Provider from "alchemy/Provider";
+import { ArtifactStore } from "alchemy/Artifacts";
+import { lifecycle } from "../fixtures/ConvexClient";
 import { AlchemyContext } from "alchemy/AlchemyContext";
 import { apply } from "alchemy/Apply";
 import { provideFreshArtifactStore } from "alchemy/Artifacts";
@@ -194,3 +198,95 @@ describe("local deployment lifecycle", () => {
     }),
   );
 });
+
+it.live.each([
+  { field: "class", previous: { class: "s16" }, requested: { class: "s256" } },
+  {
+    field: "expiresAt",
+    previous: { expiresAt: 1_800_000_000_000 },
+    requested: { expiresAt: 1_800_003_600_000 },
+  },
+  {
+    field: "expiry clearing",
+    previous: { expiresAt: 1_800_000_000_000 },
+    requested: { expiresAt: null },
+  },
+] as const)(
+  "keeps identical local config and the running backend when $field changes",
+  ({ previous, requested }) =>
+    Effect.gen(function* () {
+      const node = yield* Layer.build(NodeServices.layer);
+      return yield* Effect.gen(function* () {
+        const paths = yield* workspace;
+        const fake = fakeBackend();
+        const services = yield* Layer.build(
+          Deployment.localLayer.pipe(
+            Layer.provide(fake.layer),
+            Layer.provide([
+              Layer.succeed(ArtifactStore, new Map()),
+              Layer.succeed(Stack.Stack, {
+                name: "test",
+                stage: "dev",
+                resources: {},
+                bindings: {},
+                actions: {},
+              }),
+              Layer.succeed(AlchemyContext, {
+                dotAlchemy: paths.dotAlchemy,
+                dev: true,
+                adopt: false,
+              }),
+              ConfigProvider.layer(
+                ConfigProvider.fromUnknown({
+                  HOME: paths.home,
+                  LOCALAPPDATA: paths.home,
+                  CONFECT_LOCAL_BACKEND_PORTS: "3360-3369",
+                }),
+              ),
+            ]),
+          ),
+        );
+        return yield* Effect.gen(function* () {
+          const provider =
+            yield* Provider.Provider<Deployment.Deployment>(
+              "Convex.Deployment",
+            );
+          const news: Deployment.DeploymentProps = {
+            projectId: 1,
+            type: "dev",
+            reference: "example",
+            ...previous,
+          };
+          const first = yield* provider.reconcile({
+            ...lifecycle,
+            news,
+            olds: undefined,
+            output: undefined,
+          });
+          const changed = { ...news, ...requested };
+          if (provider.diff === undefined)
+            return yield* Effect.die("Missing local diff");
+          const diff = yield* provider.diff({
+            ...lifecycle,
+            news: changed,
+            olds: news,
+            output: first,
+            oldBindings: [],
+            newBindings: [],
+          });
+          expect(diff).toEqual({ action: "noop" });
+          const again = yield* provider.reconcile({
+            ...lifecycle,
+            news: changed,
+            olds: news,
+            output: first,
+          });
+          expect(again).toEqual(first);
+          expect(again).not.toHaveProperty("class");
+          expect(again).not.toHaveProperty("expiresAt");
+          expect(fake.served).toHaveLength(1);
+          expect(fake.served[0]?.running()).toBe(true);
+        }).pipe(Effect.provideContext(services));
+      }).pipe(Effect.scoped, Effect.provideContext(node));
+    }),
+);
