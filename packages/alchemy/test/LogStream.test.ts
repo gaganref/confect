@@ -60,7 +60,13 @@ it.effect.each([axiom, sentry, webhook])(
         expect(output).toMatchObject({
           id: "stream-1",
           kind: props.kind,
-          lastWrite: props,
+        });
+        expect(output).toEqual({
+          id: "stream-1",
+          kind: props.kind,
+          ...(props.kind === "webhook"
+            ? { hmacSecret: Redacted.make("made-up-hmac-secret") }
+            : {}),
         });
         const live = yield* mock.client.getLogStream(
           props.deploymentUrl,
@@ -81,13 +87,14 @@ it.effect.each([axiom, sentry, webhook])(
 const diff = (
   service: Effect.Success<typeof LogStream.provider>,
   output: LogStream.LogStreamAttributes,
-  news: LogStream.LogStreamProps = output.lastWrite,
+  news: LogStream.LogStreamProps = axiom,
+  olds: LogStream.LogStreamProps = news,
 ) =>
   service.diff({
     ...lifecycle,
     output,
     news,
-    olds: output.lastWrite,
+    olds,
     oldBindings: [],
     newBindings: [],
   });
@@ -111,7 +118,7 @@ it.effect.each([
     withProvider((service, mock) =>
       Effect.gen(function* () {
         const first = yield* create(service, before);
-        const planned = yield* diff(service, first, after);
+        const planned = yield* diff(service, first, after, before);
         expect(planned).toEqual({ action: "update" });
         const updated = yield* service.reconcile({
           ...lifecycle,
@@ -122,7 +129,6 @@ it.effect.each([
         expect(updated).toMatchObject({
           id: first.id,
           kind: first.kind,
-          lastWrite: after,
         });
         const stable = yield* diff(service, updated, after);
         expect(stable).toBeUndefined();
@@ -198,52 +204,57 @@ const observe = (
   service: Effect.Success<typeof LogStream.provider>,
   phase: (typeof phases)[number],
   output: LogStream.LogStreamAttributes,
+  props: LogStream.LogStreamProps = axiom,
 ) => {
   switch (phase) {
     case "diff":
-      return diff(service, output).pipe(Effect.asVoid);
+      return diff(service, output, props).pipe(Effect.asVoid);
     case "read":
       return service
-        .read({ ...lifecycle, olds: output.lastWrite, output })
+        .read({ ...lifecycle, olds: props, output })
         .pipe(Effect.asVoid);
     case "reconcile":
       return service
         .reconcile({
           ...lifecycle,
-          olds: output.lastWrite,
-          news: output.lastWrite,
+          olds: props,
+          news: props,
           output,
         })
         .pipe(Effect.asVoid);
     case "delete":
-      return service.delete({ ...lifecycle, olds: output.lastWrite, output });
+      return service.delete({ ...lifecycle, olds: props, output });
   }
 };
 
-it.effect.each(phases)("stops %s on a readable hand edit", (phase) =>
-  withProvider((service, mock) =>
-    Effect.gen(function* () {
-      const output = yield* create(service);
-      const found = yield* mock.client.getLogStream(
-        target.deploymentUrl,
-        target.deployKey,
-        output.id,
-      );
-      const live = Redacted.value(found);
-      if (live.logStreamType !== "axiom")
-        return yield* Effect.die("Expected Axiom fixture");
-      mock.state.logStreams.set(target.deploymentUrl, [
-        Redacted.make({ ...live, datasetName: "hand-edited" }),
-      ]);
-      const result = yield* observe(service, phase, output).pipe(Effect.result);
-      expect(result).toMatchObject({
-        _tag: "Failure",
-        failure: { _tag: "LogStreamDrift", id: output.id, kind: "axiom" },
-      });
-      expect(mock.client.updateLogStream).not.toHaveBeenCalled();
-      expect(mock.client.deleteLogStream).not.toHaveBeenCalled();
-    }),
-  ),
+it.effect.each(["diff", "read", "reconcile"] as const)(
+  "stops %s on a readable hand edit",
+  (phase) =>
+    withProvider((service, mock) =>
+      Effect.gen(function* () {
+        const output = yield* create(service);
+        const found = yield* mock.client.getLogStream(
+          target.deploymentUrl,
+          target.deployKey,
+          output.id,
+        );
+        const live = Redacted.value(found);
+        if (live.logStreamType !== "axiom")
+          return yield* Effect.die("Expected Axiom fixture");
+        mock.state.logStreams.set(target.deploymentUrl, [
+          Redacted.make({ ...live, datasetName: "hand-edited" }),
+        ]);
+        const result = yield* observe(service, phase, output).pipe(
+          Effect.result,
+        );
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "LogStreamDrift", id: output.id, kind: "axiom" },
+        });
+        expect(mock.client.updateLogStream).not.toHaveBeenCalled();
+        expect(mock.client.deleteLogStream).not.toHaveBeenCalled();
+      }),
+    ),
 );
 
 it.effect.each(["diff", "read", "reconcile"] as const)(
@@ -293,29 +304,6 @@ it.effect.each(["read", "reconcile"] as const)(
     ),
 );
 
-it.effect.each(phases)(
-  "stops %s when a webhook HMAC is missing from state",
-  (phase) =>
-    withProvider((service, mock) =>
-      Effect.gen(function* () {
-        const first = yield* create(service, webhook);
-        const { hmacSecret: _, ...lost } = first;
-        const result = yield* observe(service, phase, lost).pipe(Effect.result);
-        expect(result).toMatchObject({
-          _tag: "Failure",
-          failure: {
-            _tag: "LogStreamRecoveryRequired",
-            kind: "webhook",
-            ids: [first.id],
-          },
-        });
-        expect(mock.client.createLogStream).toHaveBeenCalledTimes(1);
-        expect(mock.client.updateLogStream).not.toHaveBeenCalled();
-        expect(mock.client.deleteLogStream).not.toHaveBeenCalled();
-      }),
-    ),
-);
-
 it.effect.each([
   sentry,
   { ...axiom, deploymentUrl: "https://another-otter.convex.cloud" },
@@ -323,7 +311,7 @@ it.effect.each([
   withProvider((service) =>
     Effect.gen(function* () {
       const output = yield* create(service);
-      const planned = yield* diff(service, output, news);
+      const planned = yield* diff(service, output, news, axiom);
       expect(planned).toEqual({ action: "replace" });
       const result = yield* service
         .reconcile({ ...lifecycle, olds: axiom, news, output })
@@ -352,13 +340,19 @@ it.effect("ignores status transitions and is idempotent on removal", () =>
           status: { type: "failed", reason: "made-up-status-secret" },
         }),
       ]);
-      const planned = yield* diff(service, output);
+      const planned = yield* diff(service, output, webhook);
       expect(planned).toBeUndefined();
       const read = yield* service.read({ ...lifecycle, olds: webhook, output });
       expect(read).toEqual(output);
       yield* service.delete({ ...lifecycle, olds: webhook, output });
       yield* service.delete({ ...lifecycle, olds: webhook, output });
-      expect(mock.state.logStreams.get(target.deploymentUrl)).toEqual([]);
+      const absent = yield* mock.client
+        .getLogStream(target.deploymentUrl, target.deployKey, output.id)
+        .pipe(Effect.result);
+      expect(absent).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "ConvexNotFound" },
+      });
     }),
   ),
 );
@@ -427,6 +421,32 @@ it.effect.each(disabled)("refuses $kind before any network mutation", (props) =>
   ),
 );
 
+it.effect("rejects a disabled kind before unresolved props during diff", () =>
+  withProvider((service, mock) =>
+    Effect.gen(function* () {
+      const result = yield* service
+        .diff({
+          ...lifecycle,
+          olds: disabled[0],
+          news: {
+            ...disabled[0],
+            deploymentUrl: Effect.succeed(target.deploymentUrl),
+          },
+          output: undefined,
+          oldBindings: [],
+          newBindings: [],
+        })
+        .pipe(Effect.result);
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "LogStreamNotEnabled", kind: "datadog" },
+      });
+      expect(mock.client.createLogStream).not.toHaveBeenCalled();
+      expect(mock.client.listLogStreams).not.toHaveBeenCalled();
+    }),
+  ),
+);
+
 it.effect(
   "refuses a create response whose read identifies another stream",
   () =>
@@ -455,31 +475,119 @@ it.effect(
     ),
 );
 
-it.effect("stops when the webhook secret changed between create and read", () =>
-  withProvider((service, mock) =>
-    Effect.gen(function* () {
-      const original = mock.client.getLogStream.getMockImplementation();
-      if (original === undefined)
-        return yield* Effect.die("Missing fake get implementation");
-      mock.client.getLogStream.mockImplementationOnce((url, key, id) =>
-        original(url, key, id).pipe(
-          Effect.map((stream) => {
-            const live = Redacted.value(stream);
-            return Redacted.make(
-              live.logStreamType === "webhook"
-                ? { ...live, hmacSecret: "made-up-rotated-hmac" }
-                : live,
-            );
-          }),
-        ),
-      );
-      const result = yield* create(service, webhook).pipe(Effect.result);
-      expect(result).toMatchObject({
-        _tag: "Failure",
-        failure: { _tag: "LogStreamDrift", id: "stream-1", kind: "webhook" },
-      });
-    }),
-  ),
+it.effect(
+  "returns the live webhook secret when it changed between create and read",
+  () =>
+    withProvider((service, mock) =>
+      Effect.gen(function* () {
+        const original = mock.client.getLogStream.getMockImplementation();
+        if (original === undefined)
+          return yield* Effect.die("Missing fake get implementation");
+        mock.client.getLogStream.mockImplementationOnce((url, key, id) =>
+          original(url, key, id).pipe(
+            Effect.map((stream) => {
+              const live = Redacted.value(stream);
+              return Redacted.make(
+                live.logStreamType === "webhook"
+                  ? { ...live, hmacSecret: "made-up-rotated-hmac" }
+                  : live,
+              );
+            }),
+          ),
+        );
+        const output = yield* create(service, webhook);
+        expect(output.hmacSecret && Redacted.value(output.hmacSecret)).toBe(
+          "made-up-rotated-hmac",
+        );
+      }),
+    ),
+);
+
+it.effect(
+  "refreshes the live HMAC on read and reconcile without mutating inputs",
+  () =>
+    withProvider((service, mock) =>
+      Effect.gen(function* () {
+        const output = yield* create(service, webhook);
+        const found = yield* mock.client.getLogStream(
+          target.deploymentUrl,
+          target.deployKey,
+          output.id,
+        );
+        const live = Redacted.value(found);
+        if (live.logStreamType !== "webhook")
+          return yield* Effect.die("Expected webhook fixture");
+        mock.state.logStreams.set(target.deploymentUrl, [
+          Redacted.make({ ...live, hmacSecret: "made-up-rotated-hmac" }),
+        ]);
+        const planned = yield* diff(service, output, webhook);
+        expect(planned).toBeUndefined();
+        const read = yield* service.read({
+          ...lifecycle,
+          olds: webhook,
+          output,
+        });
+        const reconciled = yield* service.reconcile({
+          ...lifecycle,
+          olds: webhook,
+          news: webhook,
+          output,
+        });
+        for (const refreshed of [read, reconciled]) {
+          expect(Redacted.isRedacted(refreshed?.hmacSecret)).toBe(true);
+          expect(
+            refreshed?.hmacSecret && Redacted.value(refreshed.hmacSecret),
+          ).toBe("made-up-rotated-hmac");
+          expect(refreshed).toEqual({
+            id: output.id,
+            kind: "webhook",
+            hmacSecret: Redacted.make("made-up-rotated-hmac"),
+          });
+        }
+        expect(output.hmacSecret && Redacted.value(output.hmacSecret)).toBe(
+          "made-up-hmac-secret",
+        );
+      }),
+    ),
+);
+
+it.effect.each(["id", "kind"] as const)(
+  "never deletes a response with a different %s",
+  (field) =>
+    withProvider((service, mock) =>
+      Effect.gen(function* () {
+        const output = yield* create(service, webhook);
+        mock.client.getLogStream.mockReturnValueOnce(
+          Effect.succeed(
+            Redacted.make(
+              field === "id"
+                ? {
+                    ...Redacted.value(
+                      (
+                        mock.state.logStreams.get(target.deploymentUrl) ?? []
+                      )[0],
+                    ),
+                    id: "foreign-stream",
+                  }
+                : {
+                    id: output.id,
+                    logStreamType: "sentry",
+                    tags: null,
+                    status: { type: "active" },
+                  },
+            ),
+          ),
+        );
+        const result = yield* service
+          .delete({ ...lifecycle, olds: webhook, output })
+          .pipe(Effect.result);
+        expect(result).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "LogStreamRecoveryRequired" },
+        });
+        expect(mock.client.deleteLogStream).not.toHaveBeenCalled();
+      }),
+    ),
 );
 
 it.effect.each([401, 403])(

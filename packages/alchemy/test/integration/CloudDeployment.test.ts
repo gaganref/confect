@@ -27,6 +27,11 @@ import { ProfileStoreLive } from "alchemy/Auth/Profile";
 import { provideFreshArtifactStore } from "alchemy/Artifacts";
 import { layerNonInteractive } from "alchemy/Interaction";
 import * as Plan from "alchemy/Plan";
+import * as Output from "alchemy/Output";
+import {
+  formatYamlLines,
+  formatDeclaredPropertyYaml,
+} from "alchemy/Cli/PropertyDiff";
 import * as Provider from "alchemy/Provider";
 import * as Stack from "alchemy/Stack";
 import { Stage } from "alchemy/Stage";
@@ -664,10 +669,12 @@ describe("log stream engine lifecycle", () => {
             }),
           )
           .pipe(Effect.result);
-        expect(planned).toMatchObject({
-          _tag: "Failure",
-          failure: { _tag: "LogStreamNotEnabled", kind: "datadog" },
-        });
+        expect(Result.isFailure(planned)).toBe(true);
+        if (Result.isFailure(planned))
+          expect(planned.failure).toMatchObject({
+            _tag: "LogStreamNotEnabled",
+            kind: "datadog",
+          });
         expect(fixture.client.createProject).not.toHaveBeenCalled();
         expect(fixture.client.createDeployment).not.toHaveBeenCalled();
         expect(fixture.client.createDeployKey).not.toHaveBeenCalled();
@@ -698,6 +705,49 @@ describe("log stream engine lifecycle", () => {
         first.id,
       );
     }),
+  );
+
+  it.effect(
+    "explains when another resource in the same stack manages the kind",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(fixture.layer, noCommands, true);
+        const planned = yield* deploy.plan(
+          Effect.gen(function* () {
+            yield* Convex.LogStream("First", logConfigs[0]);
+            yield* Convex.LogStream("Second", logConfigs[0]);
+          }),
+        );
+        expect(planned.resources.First.action).toBe("create");
+        expect(planned.resources.Second.action).toBe("create");
+        const result = yield* deploy(
+          Effect.gen(function* () {
+            const first = yield* Convex.LogStream("First", logConfigs[0]);
+            yield* Convex.LogStream("Second", {
+              ...logConfigs[0],
+              deploymentUrl: first.id.pipe(
+                Output.map(() => logTarget.deploymentUrl),
+              ),
+            });
+          }),
+        ).pipe(Effect.result);
+        expect(Result.isFailure(result)).toBe(true);
+        if (Result.isFailure(result)) {
+          expect(result.failure).toMatchObject({
+            _tag: "LogStreamRecoveryRequired",
+          });
+          expect(result.failure.message).toContain(
+            "Another resource in this stack may already manage this kind",
+          );
+          expect(result.failure.message).toContain(
+            "A backend holds one stream per kind",
+          );
+        }
+        expect(fixture.client.createLogStream).toHaveBeenCalledTimes(1);
+        expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+        expect(fixture.client.deleteLogStream).not.toHaveBeenCalled();
+      }),
   );
 
   it.effect.each([
@@ -764,9 +814,13 @@ describe("log stream engine lifecycle", () => {
         expect(fixture.client.createLogStream).toHaveBeenCalledTimes(1);
         expect(fixture.client.updateLogStream).toHaveBeenCalledTimes(1);
         yield* deploy(Effect.succeed({}));
-        expect(fixture.state.logStreams.get(logTarget.deploymentUrl)).toEqual(
-          [],
-        );
+        const absent = yield* fixture.client
+          .getLogStream(props.deploymentUrl, props.deployKey, first.id)
+          .pipe(Effect.result);
+        expect(absent).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "ConvexNotFound" },
+        });
       }),
   );
 
@@ -786,7 +840,9 @@ describe("log stream engine lifecycle", () => {
       expect(
         Array.some(
           oldStreams,
-          (stream) => Redacted.value(stream).id === first.id,
+          (stream) =>
+            Redacted.value(stream).id === first.id &&
+            Redacted.value(stream).status.type !== "deleting",
         ),
       ).toBe(false);
       expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
@@ -900,7 +956,20 @@ describe("log stream engine lifecycle", () => {
             }),
             // oxlint-disable-next-line effecttsgo/global-json-in-effect, effecttsgo/prefer-schema-over-json -- Exercise the public JSON.stringify rendering exactly.
             JSON.stringify([deploy.plans, first, result, messages, persisted]),
-            ...Array.map(deploy.plans, Plan.printPlan),
+            ...Array.flatMap(deploy.plans, (plan) => [
+              ...formatYamlLines(plan),
+              ...Array.flatMap(Record.values(plan.resources), (node) =>
+                node.action === "create" ||
+                node.action === "update" ||
+                node.action === "replace"
+                  ? (formatDeclaredPropertyYaml(
+                      node.state?.props,
+                      node.props,
+                      node.action,
+                    )?.lines ?? [])
+                  : formatYamlLines(node.state?.attr),
+              ),
+            ]),
           ],
           "\n",
         );

@@ -759,6 +759,60 @@ const webhookStream = {
 } as const;
 
 describe("log stream client", () => {
+  it.effect("unwraps a credential URL only in webhook HTTP requests", () => {
+    const url =
+      "https://user:made-up-webhook-password@logs.example.test/made-up-webhook-token";
+    const http = mockHttp([
+      Response.json({
+        id: "one",
+        logStreamType: "webhook",
+        hmacSecret: "made-up-webhook-hmac",
+      }),
+      new Response(null, { status: 200 }),
+      new Response(url, { status: 400 }),
+    ]);
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(http.layer)),
+      );
+      return yield* Effect.gen(function* () {
+        const client = yield* ConvexClient.ConvexClient;
+        const input = {
+          logStreamType: "webhook",
+          url: Redacted.make(url),
+          format: "jsonl",
+        } as const;
+        const created = yield* client.createLogStream(
+          deploymentUrl,
+          deployKey,
+          input,
+        );
+        yield* client.updateLogStream(deploymentUrl, deployKey, "one", input);
+        const rejected = yield* client
+          .createLogStream(deploymentUrl, deployKey, input)
+          .pipe(Effect.result);
+        expect(rejected).toMatchObject({
+          _tag: "Failure",
+          failure: { _tag: "ConvexApiError", status: 400 },
+        });
+        for (const request of http.requests) {
+          const body = yield* requestBody(request);
+          expect(body).toEqual({
+            logStreamType: "webhook",
+            url,
+            format: "jsonl",
+          });
+        }
+        for (const secret of [
+          "made-up-webhook-password",
+          "made-up-webhook-token",
+          "made-up-webhook-hmac",
+        ])
+          yield* expectSecretSafe([created, rejected], secret);
+      }).pipe(Effect.provideContext(services));
+    });
+  });
+
   it.effect.each([
     "",
     Str.repeat(129)("x"),
