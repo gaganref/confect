@@ -77,6 +77,45 @@ const required = {
 } as const;
 
 describe("Manifest", () => {
+  it.each(["env", "mount"] as const)(
+    "refuses a tagged providers slot in %s",
+    (at) => {
+      const slots = {
+        OUTER: { kind: "providers", values: ["outer"], optional: false },
+        INNER: {
+          kind: "providers",
+          values: ["inner"],
+          optional: true,
+          provider: { selector: "OUTER", name: "outer", required: true },
+        },
+      } as const;
+      const result = Manifest.decode(
+        {
+          ...manifest,
+          ...(at === "env"
+            ? { env: slots }
+            : {
+                mounts: {
+                  relay: {
+                    component: "relay",
+                    env: Rec.map(slots, (slot, key) => ({
+                      ...slot,
+                      variable: `RELAY_${key}`,
+                    })),
+                  },
+                },
+              }),
+        },
+        "fixture",
+      );
+      expect(Result.isFailure(result)).toBe(true);
+      if (Result.isFailure(result))
+        expect(result.failure.reason).toContain(
+          "providers slot cannot be a provider setting",
+        );
+    },
+  );
+
   it.each(["selector", "setting"] as const)(
     "refuses an automatic provider %s with an explicit reason",
     (kind) => {

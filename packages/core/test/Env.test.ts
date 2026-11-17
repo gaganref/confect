@@ -50,6 +50,41 @@ it("refuses automatic provider settings", () => {
   );
 });
 
+it.each([false, true])(
+  "refuses a nested provider selector, optional=%s",
+  (optional) => {
+    const nested: Env.AnyField = optional
+      ? Env.optional(Env.providers({ inner: { INNER_KEY: Env.secret() } }))
+      : Env.providers({ inner: { INNER_KEY: Env.secret() } });
+    expect(() => Env.providers({ outer: { NESTED: nested } })).toThrowError(
+      expect.objectContaining({
+        reason: "NestedSelector",
+        provider: "outer",
+        key: "NESTED",
+      }),
+    );
+  },
+);
+
+it("refuses nested provider selectors in typed declarations", () => {
+  expect(() =>
+    Env.providers({
+      outer: {
+        // @ts-expect-error A provider setting cannot itself be a selector.
+        NESTED: Env.providers({ inner: {} }),
+      },
+    }),
+  ).toThrow();
+  expect(() =>
+    Env.providers({
+      outer: {
+        // @ts-expect-error An optional selector is still a selector.
+        NESTED: Env.optional(Env.providers({ inner: {} })),
+      },
+    }),
+  ).toThrow();
+});
+
 describe("Env", () => {
   it.effect(
     "marks an automatic field without changing how a handler reads it",
