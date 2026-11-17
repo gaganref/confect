@@ -512,9 +512,15 @@ export const parse = (input: {
         mount.component,
         descriptor,
       )) {
-        yield* Env.validateKey(slot);
-        if (!ENV_KEY.test(slot))
-          return yield* Result.fail(InvalidEnvKey.make({ key: slot }));
+        if (
+          slotDescriptor.automatic === true ||
+          slotDescriptor.kind === "providers" ||
+          slotDescriptor.provider !== undefined
+        ) {
+          yield* Env.validateKey(slot);
+          if (!ENV_KEY.test(slot))
+            return yield* Result.fail(InvalidEnvKey.make({ key: slot }));
+        }
         if (slotDescriptor.automatic === true) {
           const declared = Arr.findFirst(
             [...descriptors, ...automatic],
