@@ -26,3 +26,9 @@ export {
   type CustomDomainProps,
   type CustomDomainAttributes,
 } from "./CustomDomain.js";
+
+export {
+  UsageLimit,
+  type UsageLimitProps,
+  type UsageLimitAttributes,
+} from "./UsageLimit.js";

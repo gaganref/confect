@@ -82,6 +82,27 @@ const CanonicalUrlsSchema = Schema.Struct({
   convexCloudUrl: Schema.String,
   convexSiteUrl: Schema.String,
 }) satisfies Schema.Schema<CanonicalUrls>;
+export type UsageLimit = DeploymentApi.UsageLimitConfigResponse;
+export type UsageLimitInput = DeploymentApi.UsageLimitConfigRequest;
+
+const UsageLimitSchema = Schema.Struct({
+  id: Schema.String,
+  metric: Schema.Literals([
+    "functionCalls",
+    "databaseIoGb",
+    "dataEgressGb",
+    "searchQueryGb",
+    "queryMutationComputeGbHours",
+    "actionComputeConvexGbHours",
+    "actionComputeNodeJsGbHours",
+    "actionComputeCpuGbHours",
+    "aiGatewayCostDollars",
+  ]),
+  window: Schema.Literals(["day", "month"]),
+  limitType: Schema.Literals(["warning", "disable"]),
+  limit: Schema.Finite,
+  enabled: Schema.Boolean,
+}) satisfies Schema.Schema<UsageLimit>;
 
 const errorFields = {
   operation: Schema.String,
@@ -236,6 +257,16 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       ));
     return Redacted.make(`Bearer ${Redacted.value(token)}`);
   });
+  const deploymentAuthorization = managementAuthorization.pipe(
+    Effect.map((authorization) =>
+      pipe(
+        authorization,
+        Redacted.value,
+        String.replace(/^Bearer /, "Convex "),
+        Redacted.make,
+      ),
+    ),
+  );
   const baseUrl = "https://api.convex.dev/v1";
 
   const send = Effect.fn("ConvexClient.request")(function* (
@@ -466,17 +497,12 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       url: string,
     ) {
       const origin = yield* deploymentUrl("getCanonicalUrls", url);
-      const authorization = yield* managementAuthorization;
+      const authorization = yield* deploymentAuthorization;
       const response = yield* send(
         "getCanonicalUrls",
         "GET",
         `${origin}/get_canonical_urls`,
-        pipe(
-          authorization,
-          Redacted.value,
-          String.replace(/^Bearer /, "Convex "),
-          Redacted.make,
-        ),
+        authorization,
       );
       return yield* decode("getCanonicalUrls", response, CanonicalUrlsSchema);
     }),
@@ -485,18 +511,85 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       input: UpdateCanonicalUrlInput,
     ) {
       const origin = yield* deploymentUrl("updateCanonicalUrl", url);
-      const authorization = yield* managementAuthorization;
+      const authorization = yield* deploymentAuthorization;
       yield* send(
         "updateCanonicalUrl",
         "POST",
         `${origin}/update_canonical_url`,
-        pipe(
-          authorization,
-          Redacted.value,
-          String.replace(/^Bearer /, "Convex "),
-          Redacted.make,
-        ),
+        authorization,
         input,
+      );
+    }),
+    listUsageLimits: Effect.fn("ConvexClient.listUsageLimits")(function* (
+      url: string,
+    ) {
+      const origin = yield* deploymentUrl("listUsageLimits", url);
+      const authorization = yield* deploymentAuthorization;
+      const response = yield* send(
+        "listUsageLimits",
+        "GET",
+        `${origin}/list_usage_limits`,
+        authorization,
+      );
+      const result = yield* decode(
+        "listUsageLimits",
+        response,
+        Schema.Struct({ usageLimits: Schema.Array(UsageLimitSchema) }),
+      );
+      return result.usageLimits;
+    }),
+    createUsageLimit: Effect.fn("ConvexClient.createUsageLimit")(function* (
+      url: string,
+      input: UsageLimitInput,
+    ) {
+      const origin = yield* deploymentUrl("createUsageLimit", url);
+      const authorization = yield* deploymentAuthorization;
+      const response = yield* send(
+        "createUsageLimit",
+        "POST",
+        `${origin}/create_usage_limit`,
+        authorization,
+        input,
+      );
+      const result = yield* decode(
+        "createUsageLimit",
+        response,
+        Schema.Struct({ usageLimit: UsageLimitSchema }),
+      );
+      return result.usageLimit;
+    }),
+    updateUsageLimit: Effect.fn("ConvexClient.updateUsageLimit")(function* (
+      url: string,
+      id: string,
+      input: UsageLimitInput,
+    ) {
+      const origin = yield* deploymentUrl("updateUsageLimit", url);
+      const authorization = yield* deploymentAuthorization;
+      const response = yield* send(
+        "updateUsageLimit",
+        "POST",
+        `${origin}/update_usage_limit/${encodeURIComponent(id)}`,
+        authorization,
+        input,
+      );
+      const result = yield* decode(
+        "updateUsageLimit",
+        response,
+        Schema.Struct({ usageLimit: UsageLimitSchema }),
+      );
+      return result.usageLimit;
+    }),
+    deleteUsageLimit: Effect.fn("ConvexClient.deleteUsageLimit")(function* (
+      url: string,
+      id: string,
+    ) {
+      const origin = yield* deploymentUrl("deleteUsageLimit", url);
+      const authorization = yield* deploymentAuthorization;
+      yield* send(
+        "deleteUsageLimit",
+        "POST",
+        `${origin}/delete_usage_limit/${encodeURIComponent(id)}`,
+        authorization,
       );
     }),
     listProjects: Effect.fn("ConvexClient.listProjects")(function* (

@@ -176,3 +176,24 @@ it("exports CustomDomain with typed destinations and canonical URL outputs", () 
   // @ts-expect-error Only Convex destinations are accepted.
   void Convex.CustomDomain("Invalid", { ...props, requestDestination: "web" });
 });
+
+it("exports UsageLimit with literal metric, window and type inputs", () => {
+  expect(Convex.UsageLimit.Type).toBe("Convex.UsageLimit");
+  const deployment = { name: "notes", url: "https://notes.convex.cloud" };
+  const props = {
+    deployment,
+    metric: "functionCalls" as const,
+    window: "month" as const,
+    limit: 100000,
+  };
+  const resource = Convex.UsageLimit("Limit", props);
+  expectTypeOf<Effect.Success<typeof resource>["id"]>().toExtend<
+    Output.Output<string>
+  >();
+  // @ts-expect-error Unknown metrics are rejected at the constructor.
+  void Convex.UsageLimit("UnknownMetric", { ...props, metric: "requests" });
+  // @ts-expect-error Windows are calendar days or months.
+  void Convex.UsageLimit("UnknownWindow", { ...props, window: "week" });
+  // @ts-expect-error Disable must be an explicit supported literal.
+  void Convex.UsageLimit("UnknownType", { ...props, limitType: "stop" });
+});

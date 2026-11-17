@@ -16,6 +16,8 @@ import {
   type Deployment,
   type DeployKey,
   type Project,
+  type UsageLimit,
+  type UsageLimitInput,
   type CreateDeploymentInput,
   type UpdateProjectInput,
 } from "../../src/ConvexClient";
@@ -74,12 +76,14 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
   const state: {
     domains: CustomDomain[];
     canonicalUrls: Record<string, CanonicalUrls>;
+    limits: UsageLimit[];
     projects: Project[];
     deployments: Deployment[];
     keys: DeployKey[];
     variables: Record<string, Redacted.Redacted<string>>;
   } = {
     domains: [],
+    limits: [],
     canonicalUrls: {},
     projects: [],
     deployments: [],
@@ -163,6 +167,34 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
           ...(state.canonicalUrls[url] ?? defaults),
           [field]: input.url ?? defaults[field],
         };
+      }),
+    ),
+    listUsageLimits: vi.fn(() => Effect.sync(() => state.limits)),
+    createUsageLimit: vi.fn((_url: string, input: UsageLimitInput) =>
+      Effect.sync(() => {
+        const created = { ...input, id: `limit-${state.limits.length + 1}` };
+        state.limits.push(created);
+        return created;
+      }),
+    ),
+    updateUsageLimit: vi.fn(
+      (_url: string, id: string, input: UsageLimitInput) =>
+        Effect.suspend(() => {
+          if (!Array.some(state.limits, (limit) => limit.id === id))
+            return Effect.fail(missing());
+          const updated = { ...input, id };
+          state.limits = Array.map(state.limits, (limit) =>
+            limit.id === id ? updated : limit,
+          );
+          return Effect.succeed(updated);
+        }),
+    ),
+    deleteUsageLimit: vi.fn((_url: string, id: string) =>
+      Effect.suspend(() => {
+        if (!Array.some(state.limits, (limit) => limit.id === id))
+          return Effect.fail(missing());
+        state.limits = Array.filter(state.limits, (limit) => limit.id !== id);
+        return Effect.void;
       }),
     ),
     runFunction: vi.fn(() => Effect.die("runFunction is not faked")),

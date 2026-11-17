@@ -42,6 +42,115 @@ const parseApp = (app: unknown) =>
   });
 
 describe("Declaration", () => {
+  it.each([
+    [
+      "app",
+      App.make({
+        env: Env.make("host", {}),
+        components: [workpool],
+        mounts: [Mount.make(Workpool, { name: "app" })],
+      }),
+    ],
+    [
+      "docs",
+      App.make({
+        env: Env.make("host", {}),
+        components: [workpool],
+        mounts: [Mount.make(Workpool, { name: "docs" })],
+      }),
+    ],
+  ] as const)("refuses the inline literal mount name %s", (name, app) => {
+    expect(parseApp(app)).toEqual(
+      Result.fail(Declaration.ReservedMountName.make({ mount: name })),
+    );
+  });
+
+  it("refuses reserved literals typed as Mount.Any or ReadonlyArray<Mount.Any>", () => {
+    const app: Mount.Any = Mount.make(Workpool, { name: "app" });
+    const docs: Mount.Any = Mount.make(Workpool, { name: "docs" });
+    const mounts: ReadonlyArray<Mount.Any> = [
+      Mount.make(Workpool, { name: "app" }),
+      Mount.make(Workpool, { name: "docs" }),
+    ];
+    for (const mount of [app, docs, ...mounts]) {
+      expect(
+        parseApp(
+          App.make({
+            env: Env.make("host", {}),
+            components: [workpool],
+            mounts: [mount],
+          }),
+        ),
+      ).toEqual(
+        Result.fail(
+          Declaration.ReservedMountName.make({ mount: Mount.data(mount).name }),
+        ),
+      );
+    }
+  });
+
+  it.each(["app", "docs"])(
+    "refuses the reserved child mount name %s inside a component",
+    (name: string) => {
+      expect(
+        Declaration.parse({
+          target: "component",
+          app: App.make({
+            kind: "component",
+            env: Env.make("relay", {}),
+            components: [workpool],
+            mounts: [Mount.make(Workpool, { name })],
+          }),
+          auth: Option.none(),
+          componentImport,
+        }),
+      ).toEqual(
+        Result.fail(Declaration.ReservedMountName.make({ mount: name })),
+      );
+    },
+  );
+
+  it.each(["app", "docs"])(
+    "refuses the reserved mount name %s after widening",
+    (name: string) => {
+      const parsed = parseApp(
+        App.make({
+          env: Env.make("host", {}),
+          components: [workpool],
+          mounts: [Mount.make(Workpool, { name })],
+        }),
+      );
+      assertIs(parsed, Result.isFailure);
+      expect(parsed.failure).toMatchObject({
+        _tag: "ReservedMountName",
+        mount: name,
+        message: `The mount name "${name}" is reserved for the root app or docs page; choose another mount name.`,
+      });
+    },
+  );
+
+  it.each([
+    "application",
+    "docsWorker",
+    "App",
+    "Docs",
+    "DOCS",
+    "_worker",
+    "worker2",
+  ])("accepts the mount name %s", (name: string) => {
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", {}),
+        components: [workpool],
+        mounts: [Mount.make(Workpool, { name })],
+      }),
+    );
+    assertIs(parsed, Result.isSuccess);
+    expect(Array.map(parsed.success.mounts, (mount) => mount.name)).toEqual([
+      name,
+    ]);
+  });
+
   it("rejects foreign, optional and secret provider env values", () => {
     const env = Env.make("tenant", {
       OPTIONAL: Env.optional(Env.string()),
