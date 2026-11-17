@@ -25,3 +25,9 @@ export {
   type LogStreamProps,
   type LogStreamAttributes,
 } from "./LogStream.js";
+
+export {
+  UsageLimit,
+  type UsageLimitProps,
+  type UsageLimitAttributes,
+} from "./UsageLimit.js";

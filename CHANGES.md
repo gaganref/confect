@@ -1276,6 +1276,25 @@ while replacement cleanup is unfinished.
 Changeset: `alchemy-log-stream.md`.
 Upstream: planned; no proposal submitted.
 
+### Set usage limits from a stack
+
+`Convex.UsageLimit` lets a stack own cloud deployment usage limits. Warning
+limits and enabled enforcement are the defaults. Every config field updates
+under the same ID. Applies restore manual edits and recreate deleted limits.
+Local mode refuses the resource until backend support is verified. Account
+entitlement and disable behavior remain unproven. Interrupted creates recover
+with explicit adoption. Reject invalid limit values before API calls and keep
+one limit per metric, window and type on a deployment. Refuse ambiguous
+adoption with the matching IDs. Replace only when the deployment name changes
+and update URL-only changes in place, listing limits at the new URL even when
+the saved URL returns 404. The spec lists units without mapping each
+metric to one. Concurrent first declarations can still create duplicate triples. Save create
+outputs for replacing generations too, so a failed final state write resumes
+without adoption.
+
+Changeset: `alchemy-usage-limit.md`.
+Upstream: planned; no linked proposal verified.
+
 ### Opt into environment variable safety
 
 `EnvironmentVariables` can stop on owned-value drift or unrelated live names,
@@ -1304,7 +1323,8 @@ HTTP classification so callers can distinguish write conflicts from other failur
 Error messages name the operation, status and code without retaining response body
 messages. Codes must match `/^[A-Za-z][A-Za-z0-9]{0,63}$/`; error bodies are limited
 to 8 KiB and five seconds before parsing. Larger or stalled bodies supply no
-server code.
+server code. Drop a server code that equals a credential sent with the request,
+even when that credential looks like an identifier.
 Changeset: `alchemy-convex-server-codes.md`.
 Upstream: planned, through the maintainer.
 
