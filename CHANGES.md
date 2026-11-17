@@ -1235,10 +1235,15 @@ resource's last change and refresh changed live values on later applies.
 Serialize canonical read and write operations per deployment and destination
 within an apply. Reset a deleted domain's matching canonical URL even if it
 became canonical outside the stack. Recover lost create responses through
-explicit adoption. Preserve a domain and its canonical URL when a surviving
-same-stack declaration keeps the same deployment, hostname, and destination,
-including logical ID renames recovered with adoption. Document `renamedFrom`
-for state-only logical ID renames. Judge canonical ownership from current
+explicit adoption. Preserve a domain when a surviving same-stack declaration
+keeps the same deployment, hostname, and destination, including logical ID
+renames recovered with adoption. Follow the survivor's canonical setting when
+removing a canonical declaration. Keep its canonical URL if the survivor is
+canonical, or reset a matching URL to the deployment default otherwise. Refresh
+the survivor's saved `canonicalUrl` on the next apply without Convex mutations.
+Checkpoint canonical ownership on this resource's updating row before enabling
+it, so opt-out and removal recover after a lost response or final state write.
+Document `renamedFrom` for state-only logical ID renames. Judge canonical ownership from current
 declarations so operators can opt out, remove failed creates, or revert failed
 renames without resetting the live canonical URL. Resume checkpointed creates
 after later canonical or state failures without adoption. Refuse conflicting

@@ -247,9 +247,13 @@ managed it and it still equals this domain's URL. Removing the resource deletes
 its domain and resets a matching canonical URL even when the domain became
 canonical outside the stack. If another declared `Convex.CustomDomain` keeps the
 same deployment name, hostname, and destination, removal preserves the domain
-and canonical URL.
-A different address
-set outside the stack is preserved. Declare one canonical owner for each
+and leaves the canonical URL unchanged if the survivor is canonical.
+If the removed declaration was canonical and the survivor is not, removal resets
+this domain's matching canonical URL to the deployment default.
+The survivor's saved `canonicalUrl` refreshes on the next apply, so anything that
+reads that output sees the new value one apply later.
+A different address set outside the stack is preserved. Declare one canonical
+owner for each
 deployment destination. Planning refuses conflicting resolved declarations with
 `ConflictingCanonicalDomains`. If a new deployment has no saved output,
 Alchemy defers the check until apply resolves its attributes, before creating

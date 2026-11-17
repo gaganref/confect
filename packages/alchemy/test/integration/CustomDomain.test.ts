@@ -1821,7 +1821,45 @@ it.effect(
         expect(fixture.client.updateCanonicalUrl).toHaveBeenCalledTimes(
           scenario === "noncanonical" ? 1 : 0,
         );
+        const expectedUrl =
+          scenario === "canonical"
+            ? oldUrl
+            : scenario === "external"
+              ? externalUrl
+              : props.deployment.url;
+        const beforeRefresh = yield* engine.rows();
+        expect(beforeRefresh).toMatchObject([
+          {
+            fqn: "New",
+            attr: {
+              canonicalUrl: scenario === "noncanonical" ? oldUrl : expectedUrl,
+            },
+          },
+        ]);
+        yield* engine.run(declarations(false), { apply: false });
+        expect(engine.plans.at(-1)).toEqual([
+          {
+            fqn: "New",
+            action: scenario === "noncanonical" ? "update" : "noop",
+            deleteFirst: false,
+          },
+        ]);
+        fixture.client.createCustomDomain.mockClear();
+        fixture.client.deleteCustomDomain.mockClear();
+        fixture.client.updateCanonicalUrl.mockClear();
+        fixture.client.listCustomDomains.mockClear();
+        fixture.client.getCanonicalUrls.mockClear();
         yield* engine.run(declarations(false));
+        expect(fixture.client.createCustomDomain).not.toHaveBeenCalled();
+        expect(fixture.client.deleteCustomDomain).not.toHaveBeenCalled();
+        expect(fixture.client.updateCanonicalUrl).not.toHaveBeenCalled();
+        expect(fixture.client.listCustomDomains).toHaveBeenCalled();
+        expect(fixture.client.getCanonicalUrls).toHaveBeenCalled();
+        const refreshed = yield* engine.rows();
+        expect(refreshed).toMatchObject([
+          { fqn: "New", attr: { canonicalUrl: expectedUrl } },
+        ]);
+        yield* engine.run(declarations(false), { apply: false });
         expect(engine.plans.at(-1)).toEqual([
           { fqn: "New", action: "noop", deleteFirst: false },
         ]);
@@ -1856,7 +1894,37 @@ it.effect(
           (yield* fixture.client.getCanonicalUrls(props.deployment.url))
             .convexCloudUrl,
         ).toBe(props.deployment.url);
+        const beforeRefresh = yield* engine.rows();
+        expect(beforeRefresh).toMatchObject([
+          {
+            fqn: "New",
+            attr: { canonicalUrl: rename ? props.deployment.url : oldUrl },
+          },
+        ]);
+        yield* engine.run(declarations, { apply: false });
+        expect(engine.plans.at(-1)).toEqual([
+          {
+            fqn: "New",
+            action: rename ? "noop" : "update",
+            deleteFirst: false,
+          },
+        ]);
+        fixture.client.createCustomDomain.mockClear();
+        fixture.client.deleteCustomDomain.mockClear();
+        fixture.client.updateCanonicalUrl.mockClear();
+        fixture.client.listCustomDomains.mockClear();
+        fixture.client.getCanonicalUrls.mockClear();
         yield* engine.run(declarations);
+        expect(fixture.client.createCustomDomain).not.toHaveBeenCalled();
+        expect(fixture.client.deleteCustomDomain).not.toHaveBeenCalled();
+        expect(fixture.client.updateCanonicalUrl).not.toHaveBeenCalled();
+        expect(fixture.client.listCustomDomains).toHaveBeenCalled();
+        expect(fixture.client.getCanonicalUrls).toHaveBeenCalled();
+        const refreshed = yield* engine.rows();
+        expect(refreshed).toMatchObject([
+          { fqn: "New", attr: { canonicalUrl: props.deployment.url } },
+        ]);
+        yield* engine.run(declarations, { apply: false });
         expect(engine.plans.at(-1)).toEqual([
           { fqn: "New", action: "noop", deleteFirst: false },
         ]);

@@ -38,6 +38,26 @@ export const checkpointCreate = Effect.fn("Lifecycle.checkpointCreate")(
   },
 );
 
+export const checkpointUpdate = Effect.fn("Lifecycle.checkpointUpdate")(
+  function* (fqn: string, instanceId: string, output: object) {
+    const stack = yield* Effect.serviceOption(Stack);
+    if (Option.isNone(stack)) return;
+    const state = yield* Effect.serviceOption(State);
+    if (Option.isNone(state)) return yield* LifecycleStateError.make({ fqn });
+    const store = yield* state.value;
+    const key = { stack: stack.value.name, stage: stack.value.stage, fqn };
+    const row = yield* store.get(key);
+    if (
+      row === undefined ||
+      row.kind === "action" ||
+      row.instanceId !== instanceId
+    )
+      return yield* LifecycleStateError.make({ fqn });
+    if (row.status !== "updating") return;
+    yield* store.set({ ...key, value: { ...row, attr: output } });
+  },
+);
+
 export const shouldAdopt = Effect.fn("Lifecycle.shouldAdopt")(function* (
   fqn: string,
 ) {

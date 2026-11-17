@@ -16,7 +16,11 @@ import * as Semaphore from "effect/Semaphore";
 
 import { ConvexClient, type CanonicalUrls } from "./ConvexClient.js";
 import type { Providers } from "./Providers.js";
-import { checkpointCreate, shouldAdopt } from "./internal/Lifecycle.js";
+import {
+  checkpointCreate,
+  checkpointUpdate,
+  shouldAdopt,
+} from "./internal/Lifecycle.js";
 
 export interface CustomDomainProps {
   readonly deployment: { readonly name: string; readonly url: string };
@@ -217,6 +221,25 @@ export const provider = Effect.gen(function* () {
       ),
     );
   });
+  const resetCanonical = (output: CustomDomainAttributes) =>
+    withCanonicalLock(
+      output.deployment,
+      output.requestDestination,
+      Effect.gen(function* () {
+        const urls = yield* client
+          .getCanonicalUrls(output.deployment.url)
+          .pipe(Effect.catchTag("ConvexNotFound", () => Effect.undefined));
+        if (
+          urls !== undefined &&
+          canonicalUrl(urls, output.requestDestination) === output.url
+        )
+          yield* client
+            .updateCanonicalUrl(output.deployment.url, {
+              requestDestination: output.requestDestination,
+            })
+            .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
+      }),
+    );
   return {
     diff: Effect.fn("CustomDomain.diff")(function* ({ fqn, news, output }) {
       if (!isResolved(news)) return;
@@ -325,6 +348,11 @@ export const provider = Effect.gen(function* () {
           domain: news.domain,
         });
       yield* checkpointCreate(fqn, instanceId, news, attributes);
+      if (output !== undefined && canonical && !output.canonical)
+        yield* checkpointUpdate(fqn, instanceId, {
+          ...output,
+          canonical: true,
+        });
       const urls = yield* withCanonicalLock(
         news.deployment,
         news.requestDestination,
@@ -381,12 +409,13 @@ export const provider = Effect.gen(function* () {
           if (
             row !== undefined &&
             row.kind !== "action" &&
-            row.status !== "deleting" &&
             row.resourceType === CustomDomain.Type &&
             row.attr?.deployment?.name === output.deployment.name &&
             row.attr?.domain === output.domain &&
             row.attr?.requestDestination === output.requestDestination
           ) {
+            if (output.canonical && row.attr.canonical !== true)
+              yield* resetCanonical(output);
             yield* Effect.logInfo(
               `Skipping delete of ${output.domain}; ${resource.FQN} keeps it.`,
             );
@@ -394,24 +423,7 @@ export const provider = Effect.gen(function* () {
           }
         }
       }
-      yield* withCanonicalLock(
-        output.deployment,
-        output.requestDestination,
-        Effect.gen(function* () {
-          const urls = yield* client
-            .getCanonicalUrls(output.deployment.url)
-            .pipe(Effect.catchTag("ConvexNotFound", () => Effect.undefined));
-          if (
-            urls !== undefined &&
-            canonicalUrl(urls, output.requestDestination) === output.url
-          )
-            yield* client
-              .updateCanonicalUrl(output.deployment.url, {
-                requestDestination: output.requestDestination,
-              })
-              .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
-        }),
-      );
+      yield* resetCanonical(output);
       yield* client
         .deleteCustomDomain(output.deployment.name, {
           domain: output.domain,
