@@ -215,6 +215,49 @@ describe("cloud deployment lifecycle", () => {
       }),
   );
 
+  it.effect.each([false, true])(
+    "refuses a different live value with matching-only adoption and general adoption=%s",
+    (generalAdoption) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        fixture.state.variables = {
+          MANAGED: Redacted.make("different-secret"),
+        };
+        const deploy = makeHarness(
+          fixture.layer,
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () => Effect.void,
+          }),
+          generalAdoption,
+        );
+        const result = yield* deploy(
+          Convex.EnvironmentVariables("Environment", {
+            url: "https://happy-otter-123.convex.cloud",
+            deployKey: Redacted.make("test-key"),
+            variables: { MANAGED: Redacted.make("desired-secret") },
+            adopt: true,
+          }),
+        ).pipe(Effect.exit);
+        expect(Exit.isFailure(result)).toBe(true);
+        expect(inspect(result, { depth: null })).toContain(
+          "OwnedBySomeoneElse",
+        );
+        expect(inspect(result, { depth: null })).not.toContain(
+          "different-secret",
+        );
+        expect(inspect(result, { depth: null })).not.toContain(
+          "desired-secret",
+        );
+        expect(
+          fixture.client.updateEnvironmentVariables,
+        ).not.toHaveBeenCalled();
+        expect(Redacted.value(fixture.state.variables.MANAGED)).toBe(
+          "different-secret",
+        );
+      }),
+  );
+
   it.effect(
     "keeps matching adoption separate from newly written names after a lost create response",
     () =>

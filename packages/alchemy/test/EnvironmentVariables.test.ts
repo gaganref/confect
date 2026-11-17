@@ -8,7 +8,7 @@ import * as Layer from "effect/Layer";
 import * as ConvexClientModule from "@confect/alchemy/ConvexClient";
 import * as HttpClient from "effect/http/HttpClient";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
-import { Unowned } from "alchemy/AdoptPolicy";
+import { adopt, Unowned } from "alchemy/AdoptPolicy";
 import * as Effect from "effect/Effect";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
@@ -467,44 +467,50 @@ it.effect(
   },
 );
 
-it.effect("adopts matching live names and logs only their names", () => {
-  const mock = mockClient();
-  mock.state.variables = { MANAGED: Redacted.make("desired-secret") };
-  const logs: unknown[] = [];
-  return Effect.gen(function* () {
-    const logging = yield* Layer.build(
-      Logger.layer([
-        Logger.make((event) => {
-          logs.push(event.message);
-        }),
-      ]),
-    );
-    return yield* Effect.gen(function* () {
-      const provider = yield* EnvironmentVariables.provider;
-      const news = { ...props, adopt: true };
-      const found = yield* provider.read({
-        ...lifecycle,
-        olds: news,
-        output: undefined,
-      });
-      expect(found).toBeUndefined();
-      const output = yield* provider.reconcile({
-        ...lifecycle,
-        news,
-        olds: undefined,
-        output: undefined,
-      });
-      expect(output.ownedNames).toEqual(["MANAGED"]);
-      expect(mock.client.updateEnvironmentVariables).not.toHaveBeenCalled();
-      expect(inspect(logs)).toContain("Adopted environment variable MANAGED");
-      expect(inspect(logs)).not.toContain("desired-secret");
-      yield* provider.delete({ ...lifecycle, olds: news, output });
-      expect(Redacted.value(mock.state.variables.MANAGED)).toBe(
-        "desired-secret",
+it.effect.each([false, true])(
+  "adopts matching live names and logs only their names with general adoption=%s",
+  (generalAdoption) => {
+    const mock = mockClient();
+    mock.state.variables = { MANAGED: Redacted.make("desired-secret") };
+    const logs: unknown[] = [];
+    return Effect.gen(function* () {
+      const logging = yield* Layer.build(
+        Logger.layer([
+          Logger.make((event) => {
+            logs.push(event.message);
+          }),
+        ]),
       );
-    }).pipe(Effect.provideContext(logging));
-  }).pipe(Effect.provideService(ConvexClient, mock.client));
-});
+      return yield* Effect.gen(function* () {
+        const provider = yield* EnvironmentVariables.provider;
+        const news = { ...props, adopt: true };
+        const found = yield* provider.read({
+          ...lifecycle,
+          olds: news,
+          output: undefined,
+        });
+        expect(found).toBeUndefined();
+        const output = yield* provider.reconcile({
+          ...lifecycle,
+          news,
+          olds: undefined,
+          output: undefined,
+        });
+        expect(output.ownedNames).toEqual(["MANAGED"]);
+        expect(mock.client.updateEnvironmentVariables).not.toHaveBeenCalled();
+        expect(inspect(logs)).toContain("Adopted environment variable MANAGED");
+        expect(inspect(logs)).not.toContain("desired-secret");
+        yield* provider.delete({ ...lifecycle, olds: news, output });
+        expect(Redacted.value(mock.state.variables.MANAGED)).toBe(
+          "desired-secret",
+        );
+      }).pipe(Effect.provideContext(logging));
+    }).pipe(
+      Effect.provideService(ConvexClient, mock.client),
+      adopt(generalAdoption),
+    );
+  },
+);
 
 it.effect("does not adopt a live name with a different value", () => {
   const mock = mockClient();
