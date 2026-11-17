@@ -1598,6 +1598,75 @@ describe("Backend choices from outputs", () => {
       }),
   );
 
+  for (const scope of ["env", "mounts", "automatic"] as const) {
+    it.effect.each(
+      Array.flatMap(
+        ["constructor", "toString", "hasOwnProperty", "valueOf"],
+        (slot) => Array.map([false, true], (supplied) => ({ slot, supplied })),
+      ),
+    )(
+      `declares only own supplied settings in ${scope} ($slot, supplied=$supplied)`,
+      ({ slot, supplied }) =>
+        Effect.gen(function* () {
+          const descriptor = {
+            kind: "string",
+            optional: scope !== "automatic",
+          } as const;
+          const { result, fixture } = yield* apply(() => ({
+            manifest: {
+              ...formatOne,
+              ...(scope === "mounts"
+                ? {
+                    mounts: {
+                      relay: {
+                        component: "relay",
+                        env: {
+                          [slot]: { ...descriptor, variable: "RELAY_SLOT" },
+                        },
+                      },
+                    },
+                  }
+                : {
+                    env: {
+                      [slot]: {
+                        ...descriptor,
+                        ...(scope === "automatic"
+                          ? { automatic: true as const }
+                          : {}),
+                      },
+                    },
+                  }),
+            },
+            [scope]:
+              scope === "mounts"
+                ? { relay: supplied ? { [slot]: "present" } : {} }
+                : supplied
+                  ? { [slot]: "present" }
+                  : {},
+          }));
+          if (scope === "automatic" && !supplied)
+            expect(defectOf(result)).toMatchObject({
+              _tag: "InvalidAutomaticSetting",
+              slot,
+              reason: "Missing",
+            });
+          else expect(result).toEqual(Exit.succeed(props.deployment.url));
+          expect(fixture.state.environmentUpdates).toEqual(
+            supplied
+              ? [
+                  [
+                    {
+                      name: scope === "mounts" ? "RELAY_SLOT" : slot,
+                      value: Redacted.make("present"),
+                    },
+                  ],
+                ]
+              : [],
+          );
+        }),
+    );
+  }
+
   const forms = [
     "plain",
     "Output",
