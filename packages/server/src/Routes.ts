@@ -76,26 +76,40 @@ export class RouteErrorWithoutStatus extends Schema.TaggedError<
 /**
  * A route's nested `runQuery`, `runMutation` or `runAction` that Convex refused
  * for its arguments, raised as a defect with Convex's message. It answers
- * Effect's empty 400.
+ * Effect's empty 400. Only the nested-call boundary makes one.
  *
  * @stability unstable
  */
-export class ArgumentValidationFailure extends Schema.TaggedError<
-  ArgumentValidationFailure,
-  { readonly brand: unique symbol }
->()("ArgumentValidationFailure", { message: Schema.String }) {}
+export interface ArgumentValidationFailure extends Error {
+  readonly _tag: "ArgumentValidationFailure";
+}
+
+// Identity is membership, not shape or prototype, so neither a copy nor the
+// constructor of a marker product code caught makes a marker.
+const argumentValidationFailures = new WeakSet<object>();
+
+const argumentValidationFailure = (
+  message: string,
+): ArgumentValidationFailure => {
+  const failure = Object.assign(new Error(message), {
+    _tag: "ArgumentValidationFailure" as const,
+    name: "ArgumentValidationFailure",
+  });
+  argumentValidationFailures.add(failure);
+  return failure;
+};
 
 /**
  * Whether a defect is a route's nested call refused for its arguments. Only the
- * nested-call boundary raises one, so a product error never matches by its
- * message.
+ * nested-call boundary makes one, so a product error never matches, whatever
+ * its message or shape.
  *
  * @stability unstable
  */
 export const isArgumentValidationFailure = (
   defect: unknown,
 ): defect is ArgumentValidationFailure =>
-  Schema.is(ArgumentValidationFailure)(defect);
+  Predicate.isObject(defect) && argumentValidationFailures.has(defect);
 
 /* oxlint-disable effecttsgo/any-unknown-in-error-context -- A route's errors are erased across the api built at runtime; each endpoint's error schemas type them again at the wire. */
 
@@ -308,7 +322,7 @@ const refusingNestedCalls = (
     (...args: Args): Promise<A> =>
       call(...args).catch((error: unknown) => {
         throw ArgumentRefusal.isRefusal(error)
-          ? ArgumentValidationFailure.make({ message: error.message })
+          ? argumentValidationFailure(error.message)
           : error;
       });
   return {

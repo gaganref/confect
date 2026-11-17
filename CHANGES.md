@@ -646,10 +646,12 @@ instead, so the router refuses it before serving. An undeclared failure dies,
 so it answers 500 like a defect. Convex reports a nested call's argument
 validation failure only by its message, `ArgumentValidationError: ` on the real
 backend and `Validator error:` under convex-test. The route's ctx reads it at
-its nested `runQuery`, `runMutation` and `runAction` and dies with
+its nested `runQuery`, `runMutation` and `runAction` and dies with a
 `Routes.ArgumentValidationFailure` there, which answers Effect's empty 400 and
-which `Routes.isArgumentValidationFailure` checks for. A product error raised
-anywhere else answers 500 whatever its message. A local-backend lane case pins
+which `Routes.isArgumentValidationFailure` checks for. Only that boundary can
+make one. Its type is exported and its constructor is not, and the check is by
+identity, so a product error answers 500 whatever its message, shape or
+prototype. A local-backend lane case pins
 the real prefix.
 `HttpRouter.make`'s `api` takes one api or a list, and today's generated
 `convex/http.ts` is unchanged. Changeset: `route-specs-serve.md`. Upstream:

@@ -9,6 +9,7 @@ import {
 } from "@confect/server";
 import { describe, expect, it } from "@effect/vitest";
 import { convexTest } from "convex-test";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
@@ -377,17 +378,86 @@ describe("Routes.make", () => {
   );
 });
 
-describe("Routes.isArgumentValidationFailure", () => {
-  it("matches the failure a route's nested call is refused with", () => {
-    expect(
-      Routes.isArgumentValidationFailure(
-        Routes.ArgumentValidationFailure.make({
-          message: 'ArgumentValidationError: Found ID "x"',
+describe("the argument validation marker", () => {
+  // Each way product code could make a marker of its own, given the real one
+  // a refused nested call raised.
+  const forgeries: Record<string, (real: unknown) => unknown> = {
+    "the real marker, rethrown": (real) => real,
+    "the exported constructor": (real) => {
+      const exported = Reflect.get(Routes, "ArgumentValidationFailure") as
+        | { make: (fields: { message: string }) => unknown }
+        | undefined;
+      return exported === undefined
+        ? new Error("no exported constructor")
+        : exported.make({
+            message: String(Reflect.get(Object(real), "message")),
+          });
+    },
+    "the real marker's constructor": (real) => {
+      const Constructor = Reflect.get(Object(real), "constructor") as new (
+        ...args: ReadonlyArray<unknown>
+      ) => unknown;
+      return new Constructor({ message: "product bug" });
+    },
+    "a copy with the real marker's prototype": (real) =>
+      Object.assign(Object.create(Object.getPrototypeOf(real)), real, {
+        message: "product bug",
+      }),
+    "a plain copy of the real marker's fields": (real) => ({
+      ...Object(real),
+      _tag: "ArgumentValidationFailure",
+      name: "ArgumentValidationFailure",
+      message: "product bug",
+    }),
+  };
+
+  const forge = FunctionSpec.httpAction({
+    name: "forge",
+    method: "GET",
+    path: "/forge",
+    args: () => ({ how: Schema.String }),
+    returns: () => Schema.Null,
+  });
+  const forging = GroupSpec.make().addFunction(forge);
+  const forgingImpl = GroupImpl.make(schema, forging).pipe(
+    Layer.provide(
+      FunctionImpl.make(schema, forging, "forge", ({ how }) =>
+        Effect.gen(function* () {
+          const { runMutation } = yield* MutationRunner.MutationRunner;
+          const refused = yield* Effect.exit(
+            runMutation(refs.public.groups.notes.delete_, {
+              noteId: "not an id" as never,
+            }),
+          );
+          const real = Exit.isFailure(refused)
+            ? Cause.squash(refused.cause)
+            : undefined;
+          return yield* Effect.die(forgeries[how]!(real));
         }),
       ),
-    ).toBe(true);
-  });
+    ),
+    GroupImpl.finalize,
+  );
+  const forged = Routes.make(schema, { forging: [forging, forgingImpl] });
+  const sendForged = serve(
+    ConfectHttpRouter.make(schema, forged.routes, { api: forged.api }),
+  );
 
+  it.effect.each([
+    ["the real marker, rethrown", 400],
+    ["the exported constructor", 500],
+    ["the real marker's constructor", 500],
+    ["a copy with the real marker's prototype", 500],
+    ["a plain copy of the real marker's fields", 500],
+  ] as const)("product code that dies with %s answers %i", ([how, status]) =>
+    Effect.gen(function* () {
+      const answer = yield* sendForged(`/forge?how=${encodeURIComponent(how)}`);
+      expect(answer.status).toBe(status);
+    }),
+  );
+});
+
+describe("Routes.isArgumentValidationFailure", () => {
   it.each([
     [new Error('ArgumentValidationError: Found ID "x"')],
     [new Error("Validator error: Missing required field `noteId`")],
