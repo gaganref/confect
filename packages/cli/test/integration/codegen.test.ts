@@ -656,6 +656,12 @@ export default App.make({ env: Env.make("host", {}), requiresMiddleware: [Policy
         'import { queryGeneric } from "convex/server";\nexport const raw = queryGeneric({ handler: () => null });\n',
     },
     {
+      name: "raw HTTP action",
+      file: "webhook.ts",
+      source:
+        'import { httpActionGeneric } from "convex/server";\nexport const webhook = httpActionGeneric(async () => new Response());\n',
+    },
+    {
       name: "alias",
       file: "alias.js",
       source:

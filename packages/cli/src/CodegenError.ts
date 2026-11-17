@@ -122,6 +122,14 @@ export class ImplMissingMiddlewareError extends Schema.TaggedError<
   missingMiddlewareKeys: Schema.Array(Schema.String),
 }) {}
 
+export class ImplUndeployableHandlerError extends Schema.TaggedError<
+  ImplUndeployableHandlerError,
+  { readonly brand: unique symbol }
+>()("ImplUndeployableHandlerError", {
+  implPath: Schema.String,
+  functionNames: Schema.Array(Schema.String),
+}) {}
+
 export class RequiredMiddlewareError extends Schema.TaggedError<
   RequiredMiddlewareError,
   { readonly brand: unique symbol }
@@ -267,6 +275,7 @@ export const CodegenError = Schema.Union([
   ImplNotFinalizedError,
   ImplMissingFunctionsError,
   ImplMissingMiddlewareError,
+  ImplUndeployableHandlerError,
   RequiredMiddlewareError,
   ParentChildNameCollisionError,
   InvalidTableDefaultExportError,
@@ -484,6 +493,13 @@ export const renderCodegenError = (error: CodegenError): string => {
   if (error._tag === "ComponentNodeGroupError") {
     return singleLine(
       `Group "${error.groupPath}" in ${error.specPath} uses the Node runtime. Convex components do not support Node.js functions.`,
+    );
+  }
+  if (error._tag === "ImplUndeployableHandlerError") {
+    return singleLine(
+      "Impl ",
+      formatPath(error.implPath),
+      ` registers ${Array.join(error.functionNames, ", ")} with a handler that is not a query, mutation or action, such as an HTTP action. Convex skips such an export when it pushes, so it never deploys. Declare a route spec instead.`,
     );
   }
   if (error._tag === "RequiredMiddlewareError") {
