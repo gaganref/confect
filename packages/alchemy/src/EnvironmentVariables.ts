@@ -30,8 +30,8 @@ import * as Rec from "effect/Record";
 
 export interface EnvironmentVariablesProps {
   /**
-   * Refuse changes to owned values since the last write. Defaults to
-   * `overwrite`.
+   * Refuse live owned values that differ from both the last write and the
+   * desired value. Defaults to `overwrite`.
    */
   readonly driftPolicy?: "overwrite" | "error";
   /**
