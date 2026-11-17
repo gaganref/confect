@@ -674,15 +674,38 @@ and the guard owns OPTIONS on a route spec's path with or without
 `Access-Control-Request-Method`. The guard reads `Routes.Route` and
 `Guard.Preflight`, and its inner effect never fails, since `causeResponse` has
 already turned a failure into Effect's response, or into Effect's empty 500
-when the failure's own response cannot be built. Effect runs pre-response
-handlers after every middleware, so they would run after the guard. Product
-code inside the guard runs on a fiber of its own with a handler slot of its
-own. A handler registered by the time it answers, a product global
-`HttpMiddleware.cors` included, becomes Effect's 500 before the guard sees the
-response, and one registered later never runs, so only transport conversion
-runs after the guard. CORS on a route path is the guard's. Confect reads
-Effect's unexported request state by its key, and without it every route
-request answers 500; a test fails if an Effect upgrade moves it. Each product global
+when the failure's own response cannot be built. A 5xx inside the guard is
+logged at error level with its cause, the request id and the route's function
+path, and nothing else of the request.
+
+`inner` owns the whole product lifecycle: what product code creates is created
+by `inner` and finished before it answers, so nothing product code holds can
+change the status, headers or body the guard settles. Product code runs on a
+fiber of its own, in a scope of its own that closes before `inner` answers,
+against a request state of its own whose pre-response handler slot is its own
+and which takes no writes once `inner` answers. Its failures become their
+response on that fiber, and the response's body is read there and rebuilt as
+bytes. A pre-response handler registered by then, from a finalizer, a child
+fiber or a response conversion included, answers Effect's 500, since Effect
+runs those handlers after every middleware, the guard included. CORS on a
+route path is the guard's. Confect reads Effect's unexported request state by
+its key, and without it every route request answers 500; a test fails if an
+Effect upgrade moves it. One table-driven test checks every channel the census
+below found, with the client receiving what the guard settled, CORS included.
+
+| Channel past `inner` at Effect 4.1.4                                                                      | Before                                                                         | Now                 |
+| --------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ | ------------------- |
+| Pre-response handler appended inside `inner`, product `cors`, `compression`, `securitySetCookie` included | Refused                                                                        | Refused, 500        |
+| Handler appended later through a kept context, kept fiber or detached fiber                               | Never ran                                                                      | Never runs          |
+| Scope finalizer, or `Effect.addFinalizer`, appending a handler                                            | Changed the response                                                           | Refused, 500        |
+| Fiber forked into the request scope, or a child fiber, appending as it ends                               | Never ran                                                                      | Refused, 500        |
+| Failure whose response conversion appends a handler                                                       | Changed the response                                                           | Refused, 500        |
+| Byte or form body changed later; stream or web-stream body read at send                                   | Changed the body                                                               | Read inside `inner` |
+| Web `Response` body with a status of its own                                                              | Changed the status                                                             | Read inside `inner` |
+| Later write to the request state's logger and redaction fields                                            | Reached the request                                                            | Dropped             |
+| Request mutation                                                                                          | `method`, `url` and `headers` are getters; `modify` is checked before dispatch | Unchanged           |
+
+Each product global
 middleware's output request is classified again, so a rewrite into or out of
 a route spec dies before dispatch. Every `Routes.make` registration carries its
 own identity, independent of the api list. `HttpRouter.make` throws

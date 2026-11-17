@@ -1,11 +1,16 @@
 import * as Arr from "effect/Array";
+import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
 import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
+import * as Stream from "effect/Stream";
+import * as Cookies from "effect/http/Cookies";
 import * as FindMyWay from "effect/http/FindMyWay";
+import * as Headers from "effect/http/Headers";
+import * as HttpBody from "effect/http/HttpBody";
 import * as HttpRouter from "effect/http/HttpRouter";
 import * as HttpServerError from "effect/http/HttpServerError";
 import * as HttpServerRequest from "effect/http/HttpServerRequest";
@@ -13,6 +18,8 @@ import type * as HttpEffect from "effect/http/HttpEffect";
 import * as HttpServerResponse from "effect/http/HttpServerResponse";
 import * as String from "effect/String";
 import { pipe } from "effect/Function";
+import type { GenericDataModel } from "convex/server";
+import * as ActionCtx from "../ActionCtx.js";
 import * as Guard from "../Guard.js";
 import * as Routes from "../Routes.js";
 import { identities, type RouteIdentity } from "./routeIdentity.js";
@@ -90,18 +97,98 @@ const Admitted = Context.Reference<RouteIdentity | null>(
 );
 
 // Effect's own answer when a failure's response cannot be built.
-const unconvertible = HttpServerResponse.empty({ status: 500 });
+const internalError = HttpServerResponse.empty({ status: 500 });
 
-// Every failure, a response conversion that throws included, as a response.
+// Convex's id for the request, where its ctx can give one.
+const currentRequestId = Effect.serviceOption(
+  ActionCtx.ActionCtx<GenericDataModel>(),
+).pipe(
+  Effect.flatMap(
+    Option.match({
+      onNone: () => Effect.undefined,
+      onSome: (ctx) =>
+        Effect.map(
+          Effect.promise(() => ctx.meta.getRequestMetadata()),
+          ({ requestId }): string | undefined => requestId,
+        ),
+    }),
+  ),
+  Effect.catchCause(() => Effect.undefined),
+);
+
+/**
+ * Logs a route request's server failure at error level, annotated with the
+ * request id and the route's function path and nothing else of the request,
+ * since no response carries its cause.
+ */
+const report = (route: RouteIdentity, cause: Cause.Cause<unknown>) =>
+  Effect.gen(function* () {
+    const requestId = yield* currentRequestId;
+    yield* Effect.logError(cause).pipe(
+      Effect.annotateLogs({
+        ...(requestId === undefined ? {} : { requestId }),
+        functionPath: route.functionPath,
+      }),
+    );
+  });
+
+const failed = (route: RouteIdentity, cause: Cause.Cause<unknown>) =>
+  Effect.as(report(route, cause), internalError);
+
+// Every failure as its response, logged when it answers 5xx. A conversion that
+// throws or fails ends the product's fiber, which answers Effect's 500.
 const respond = <E, R>(
   effect: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+  route: RouteIdentity,
 ) =>
   Effect.catchCause(effect, (cause) =>
     Effect.suspend(() => HttpServerError.causeResponse(cause)).pipe(
       Effect.map(([response]) => response),
-      Effect.catchCause(() => Effect.succeed(unconvertible)),
+      Effect.tap((response) =>
+        response.status >= 500 ? report(route, cause) : Effect.void,
+      ),
     ),
   );
+
+/**
+ * The response as Effect will send it, read in full and rebuilt from what was
+ * read, so nothing product code holds produces or changes it later. A stream
+ * body runs here, on the product's fiber and in its scope.
+ */
+const materialize = (response: HttpServerResponse.HttpServerResponse) =>
+  Effect.gen(function* () {
+    const { body } = response;
+    const read =
+      body._tag === "Stream"
+        ? yield* Effect.map(Stream.mkUint8Array(body.stream), (bytes) =>
+            HttpServerResponse.setBody(
+              response,
+              HttpBody.uint8Array(bytes, body.contentType),
+            ),
+          )
+        : response;
+    const sent = HttpServerResponse.toWeb(read);
+    const empty = sent.body === null;
+    const bytes = yield* Effect.promise(() => sent.arrayBuffer());
+    const headers = new globalThis.Headers(sent.headers);
+    const cookies = Cookies.fromSetCookie(headers.getSetCookie());
+    headers.delete("set-cookie");
+    const owned = HttpServerResponse.empty({
+      status: sent.status,
+      statusText: sent.statusText,
+      headers: Headers.fromInput(headers),
+      cookies,
+    });
+    return empty
+      ? owned
+      : HttpServerResponse.setBody(
+          owned,
+          HttpBody.uint8Array(
+            new Uint8Array(bytes),
+            headers.get("content-type") ?? undefined,
+          ),
+        );
+  });
 
 // WORKAROUND: Effect 4.1.4 keeps a request's pre-response handlers on its
 // request state, which it does not export, and runs them after every
@@ -118,54 +205,91 @@ export class RequestState extends Context.Service<
 >()("effect/http/HttpEffect/CurrentRequestState") {}
 
 /**
- * `inner` as the response the guard sees. Product code inside it runs on a
- * fiber of its own and registers pre-response handlers on a slot of its own;
- * the request state's other fields stay the request's. A handler registered by
- * the time `inner` answers turns the response into Effect's 500, and one
- * registered later never runs, so nothing after the guard changes the response
- * but transport conversion. Without the request state at Effect's key, a route
- * request answers 500.
+ * The request state product code sees: a pre-response handler slot of its own
+ * and the request's other fields, taking no writes once closed.
+ */
+const ownRequestState = (state: RequestState["Service"]) => {
+  let registered: HttpEffect.PreResponseHandler | undefined;
+  let open = true;
+  return {
+    state: new Proxy(state, {
+      get: (target, key) =>
+        key === "preResponseHandler" ? registered : Reflect.get(target, key),
+      set: (target, key, value) => {
+        if (!open) return true;
+        if (key === "preResponseHandler") registered = value;
+        else Reflect.set(target, key, value);
+        return true;
+      },
+    }),
+    registered: () => registered !== undefined,
+    close: () => {
+      open = false;
+    },
+  };
+};
+
+// Product code runs on a fiber of its own, so a fiber it captures never
+// becomes the guard's.
+const own = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  Effect.flatMap(
+    Effect.forkChild(effect, {
+      startImmediately: true,
+      uninterruptible: "inherit",
+    }),
+    Fiber.await,
+  );
+
+/**
+ * `inner` as the response the guard sees, with the whole product lifecycle
+ * inside it. Product code runs on a fiber of its own, in a scope of its own
+ * that closes before `inner` answers, against a request state of its own. Its
+ * failures become their response there and the response's body is read there,
+ * so what the guard gets is a value nothing product code holds can change. A
+ * pre-response handler registered by then, a finalizer's included, answers
+ * Effect's 500; once `inner` answers, the request state takes no writes.
+ * Without the request state at Effect's key, a route request answers 500.
  */
 const settle = <E, R>(
   inner: Effect.Effect<HttpServerResponse.HttpServerResponse, E, R>,
+  route: RouteIdentity,
 ) =>
   Effect.withFiber((fiber) => {
     const state = Context.getOrUndefined(fiber.context, RequestState);
     if (state === undefined) {
-      return respond(
-        Effect.die(
+      return failed(
+        route,
+        Cause.die(
           new Error(
             "@confect/server: Effect's request state is not where Confect reads it, so a route request cannot be guarded",
           ),
         ),
       );
     }
-    let registered: HttpEffect.PreResponseHandler | undefined;
-    const own = new Proxy(state, {
-      get: (target, key) =>
-        key === "preResponseHandler" ? registered : Reflect.get(target, key),
-      set: (target, key, value) => {
-        if (key === "preResponseHandler") registered = value;
-        else Reflect.set(target, key, value);
-        return true;
+    const product = ownRequestState(state);
+    return Effect.flatMap(
+      own(
+        respond(inner, route).pipe(
+          Effect.flatMap(materialize),
+          Effect.scoped,
+          Effect.provideService(RequestState, product.state),
+        ),
+      ),
+      (exit) => {
+        product.close();
+        if (Exit.isFailure(exit)) return failed(route, exit.cause);
+        if (product.registered()) {
+          return failed(
+            route,
+            Cause.die(
+              new Error(
+                "@confect/server: product code registered a pre-response handler on a route path, where the guard owns the response",
+              ),
+            ),
+          );
+        }
+        return Effect.succeed(exit.value);
       },
-    });
-    return respond(
-      Effect.gen(function* () {
-        // On a fiber of its own, so even a product fiber that reads this
-        // fiber's context after `inner` answers finds only its own slot.
-        const product = yield* Effect.forkChild(inner, {
-          startImmediately: true,
-          uninterruptible: "inherit",
-        }).pipe(Effect.provideService(RequestState, own));
-        const response = yield* Fiber.join(product);
-        if (registered === undefined) return response;
-        return yield* Effect.die(
-          new Error(
-            "@confect/server: product code registered a pre-response handler on a route path, where the guard owns the response",
-          ),
-        );
-      }),
     );
   });
 
@@ -353,7 +477,7 @@ export const withOptions = <A, E, R>(
             const route = classify(request);
             return route === null
               ? inner
-              : guard(settle(inner)).pipe(
+              : guard(settle(inner, route)).pipe(
                   Effect.provideService(Routes.Route, route),
                   Effect.provideService(
                     Guard.Preflight,

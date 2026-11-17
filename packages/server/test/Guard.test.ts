@@ -17,16 +17,23 @@ import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
 import * as Exit from "effect/Exit";
+import * as Fiber from "effect/Fiber";
 import * as Layer from "effect/Layer";
+import * as Logger from "effect/Logger";
 import * as Option from "effect/Option";
 import { pipe } from "effect/Function";
+import * as Rec from "effect/Record";
+import * as References from "effect/References";
 import * as Schema from "effect/Schema";
+import * as Scope from "effect/Scope";
+import * as Stream from "effect/Stream";
 import * as Str from "effect/String";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as HttpApiMiddleware from "effect/http-api/HttpApiMiddleware";
+import * as HttpApiSecurity from "effect/http-api/HttpApiSecurity";
 import * as HttpEffect from "effect/http/HttpEffect";
 import * as HttpMiddleware from "effect/http/HttpMiddleware";
 import * as HttpRouter from "effect/http/HttpRouter";
@@ -295,6 +302,7 @@ const serve = (router: Router) => {
       return {
         status: response.status,
         cors: response.headers.get("access-control-allow-origin"),
+        headers: Rec.fromEntries([...response.headers]),
         body,
         log: [...log],
       };
@@ -351,7 +359,7 @@ describe("the guard encloses every request middleware on a route path", () => {
           headers: { ...json, authorization: "Bearer good" },
           body: '{"n":1}',
         });
-        expect(answer).toEqual({
+        expect(answer).toMatchObject({
           status: 200,
           cors: "https://app.test",
           body: '"n=1"',
@@ -1065,6 +1073,471 @@ describe("a product pre-response handler on a route path answers 500", () => {
         expect(answer.status).toBe(500);
         expect(answer.log.at(-1)).toBe("settle:500");
       }),
+  );
+});
+
+describe("after inner answers, nothing product code holds changes the response", () => {
+  interface Settled {
+    readonly status: number;
+    readonly body: string;
+    readonly headers: Readonly<Record<string, string>>;
+  }
+  // What the guard settled, read as Frame stores it. A body it cannot read
+  // without running product code is recorded as such, so it never matches.
+  let settled: Settled | undefined;
+  // Resolved once `inner` answers, so product code can act after it.
+  let answered = Promise.withResolvers<void>();
+  // Resolved once product code has acted late, or at once for a channel that
+  // acts only inside `inner`.
+  let acted = Promise.withResolvers<void>();
+
+  const decoder = new TextDecoder();
+  const encoder = new TextEncoder();
+  const bodyOf = ({ body }: HttpServerResponse.HttpServerResponse) =>
+    body._tag === "Uint8Array"
+      ? decoder.decode(body.body)
+      : body._tag === "Empty"
+        ? ""
+        : `unread ${body._tag} body`;
+
+  // An ordinary guard: `inner` in a scope of its own and CORS on every
+  // response. It settles asynchronously, as Frame's mutation does, while
+  // product work still running acts.
+  const settling = Guard.make("settling", (inner) =>
+    Effect.gen(function* () {
+      const answer = yield* Effect.scoped(inner);
+      const response = cors(answer);
+      settled = {
+        status: response.status,
+        body: bodyOf(response),
+        headers: { ...response.headers },
+      };
+      answered.resolve();
+      yield* Effect.promise(() => acted.promise);
+      log.push(`settle:${response.status}`);
+      return response;
+    }),
+  );
+
+  const lateHandler: HttpEffect.PreResponseHandler = () =>
+    Effect.sync(() => {
+      log.push("late");
+      return HttpServerResponse.text("late", { status: 419 });
+    });
+  const afterAnswer = (act: () => void) =>
+    void answered.promise.then(() => {
+      act();
+      return acted.resolve();
+    });
+  const global = (middleware: HttpMiddleware.HttpMiddleware) =>
+    HttpRouter.middleware(middleware, { global: true });
+  // A product global middleware that answers with a body of its own.
+  const answering = (body: () => HttpServerResponse.HttpServerResponse) =>
+    global((inner) => Effect.as(inner, body()));
+  const appendLate = (context: Context.Context<never>) =>
+    HttpEffect.appendPreResponseHandlerUnsafe(context, lateHandler);
+
+  // Every channel from product code to the response, or to anything that runs
+  // after `inner`, with the status the guard settles once each is closed and
+  // whether product code acts after `inner` answers.
+  const channels = [
+    [
+      "a pre-response handler appended inside inner",
+      global((inner) =>
+        Effect.andThen(HttpEffect.appendPreResponseHandler(lateHandler), inner),
+      ),
+      500,
+      "inner",
+    ],
+    [
+      "a pre-response handler appended later through a kept context",
+      global((inner) =>
+        Effect.withFiber((fiber) => {
+          const { context } = fiber;
+          afterAnswer(() => appendLate(context));
+          return inner;
+        }),
+      ),
+      200,
+      "late",
+    ],
+    [
+      "a pre-response handler appended later through a kept fiber",
+      global((inner) =>
+        Effect.withFiber((fiber) => {
+          afterAnswer(() => appendLate(fiber.context));
+          return inner;
+        }),
+      ),
+      200,
+      "late",
+    ],
+    [
+      "a scope finalizer that appends a handler",
+      global((inner) =>
+        Effect.gen(function* () {
+          const scope = yield* Effect.scope;
+          yield* Scope.addFinalizer(
+            scope,
+            Effect.withFiber((fiber) => {
+              appendLate(fiber.context);
+              return Effect.void;
+            }),
+          );
+          return yield* inner;
+        }),
+      ),
+      500,
+      "inner",
+    ],
+    [
+      "a finalizer that appends a handler through the current fiber",
+      global((inner) =>
+        Effect.andThen(
+          Effect.addFinalizer(() => {
+            const fiber = Fiber.getCurrent();
+            if (fiber !== undefined) appendLate(fiber.context);
+            return Effect.void;
+          }),
+          inner,
+        ),
+      ),
+      500,
+      "inner",
+    ],
+    [
+      "a fiber forked into the request's scope",
+      global((inner) =>
+        Effect.gen(function* () {
+          const scope = yield* Effect.scope;
+          yield* Effect.forkIn(
+            Effect.never.pipe(
+              Effect.onInterrupt(() =>
+                HttpEffect.appendPreResponseHandler(lateHandler),
+              ),
+            ),
+            scope,
+            { startImmediately: true },
+          );
+          return yield* inner;
+        }),
+      ),
+      500,
+      "inner",
+    ],
+    [
+      "a child fiber",
+      global((inner) =>
+        Effect.andThen(
+          Effect.forkChild(
+            Effect.never.pipe(
+              Effect.onInterrupt(() =>
+                HttpEffect.appendPreResponseHandler(lateHandler),
+              ),
+            ),
+            { startImmediately: true },
+          ),
+          inner,
+        ),
+      ),
+      500,
+      "inner",
+    ],
+    [
+      "a detached fiber that appends a handler later",
+      global((inner) =>
+        Effect.andThen(
+          Effect.forkDetach(
+            Effect.promise(() => answered.promise).pipe(
+              Effect.andThen(HttpEffect.appendPreResponseHandler(lateHandler)),
+              Effect.andThen(Effect.sync(() => acted.resolve())),
+            ),
+            { startImmediately: true },
+          ),
+          inner,
+        ),
+      ),
+      200,
+      "late",
+    ],
+    [
+      "a failure whose response conversion appends a handler",
+      global((inner) =>
+        Effect.andThen(
+          inner,
+          Effect.die({
+            [HttpServerRespondable.symbol]: () =>
+              Effect.withFiber((fiber) => {
+                appendLate(fiber.context);
+                return Effect.succeed(
+                  HttpServerResponse.text("converted", { status: 418 }),
+                );
+              }),
+          }),
+        ),
+      ),
+      500,
+      "inner",
+    ],
+    [
+      "a byte body changed later",
+      answering(() => {
+        const bytes = encoder.encode("early");
+        afterAnswer(() => bytes.set(encoder.encode("late!")));
+        return HttpServerResponse.uint8Array(bytes, {
+          contentType: "text/plain",
+        });
+      }),
+      200,
+      "late",
+    ],
+    [
+      "a stream body produced as it is sent",
+      answering(() => {
+        let word = "early";
+        afterAnswer(() => {
+          word = "late";
+        });
+        return HttpServerResponse.stream(
+          Stream.suspend(() => Stream.make(encoder.encode(word))),
+          { contentType: "text/plain" },
+        );
+      }),
+      200,
+      "late",
+    ],
+    [
+      "a web stream body read as it is sent",
+      answering(() => {
+        let word = "early";
+        afterAnswer(() => {
+          word = "late";
+        });
+        return HttpServerResponse.raw(
+          new ReadableStream<Uint8Array>({
+            pull: (controller) => {
+              controller.enqueue(encoder.encode(word));
+              controller.close();
+            },
+          }),
+          { contentType: "text/plain" },
+        );
+      }),
+      200,
+      "late",
+    ],
+    [
+      "a form body changed later",
+      answering(() => {
+        const form = new FormData();
+        form.set("word", "early");
+        afterAnswer(() => form.set("word", "late"));
+        return HttpServerResponse.formData(form);
+      }),
+      200,
+      "late",
+    ],
+    [
+      "a web Response body with a status of its own",
+      answering(() =>
+        HttpServerResponse.raw(new Response("its own", { status: 419 })),
+      ),
+      419,
+      "inner",
+    ],
+    [
+      "Effect's HttpMiddleware.cors",
+      global(HttpMiddleware.cors()),
+      500,
+      "inner",
+    ],
+    [
+      "Effect's HttpMiddleware.compression",
+      global(HttpMiddleware.compression()),
+      500,
+      "inner",
+    ],
+    [
+      "HttpApiBuilder.securitySetCookie",
+      global((inner) =>
+        Effect.andThen(
+          HttpApiBuilder.securitySetCookie(
+            HttpApiSecurity.apiKey({ key: "session", in: "cookie" }),
+            "value",
+          ),
+          inner,
+        ),
+      ),
+      500,
+      "inner",
+    ],
+  ] as const;
+
+  it.effect.each(channels)(
+    "%s: the client receives what the guard settled",
+    ([, channel, settles, acts]) =>
+      Effect.gen(function* () {
+        settled = undefined;
+        answered = Promise.withResolvers();
+        acted = Promise.withResolvers();
+        if (acts === "inner") acted.resolve();
+        const answer = yield* serve(
+          make(Layer.merge(app, channel as never), {
+            api: apis,
+            guard: settling,
+          }),
+        )("/notes/1");
+        expect(settled).toBeDefined();
+        const { status, body, headers } = settled!;
+        expect({ status: answer.status, body: answer.body }).toEqual({
+          status,
+          body,
+        });
+        for (const [name, value] of Rec.toEntries(headers)) {
+          expect([name, answer.headers[name]]).toEqual([name, value]);
+        }
+        expect(answer.cors).toBe("https://app.test");
+        expect(status).toBe(settles);
+        expect(answer.log).not.toContain("late");
+      }),
+  );
+
+  it.effect("a later public write to the request state lands nowhere", () =>
+    Effect.gen(function* () {
+      answered = Promise.withResolvers();
+      acted = Promise.withResolvers();
+      let loggerDisabled: boolean | undefined;
+      const reading = Guard.make("reading", (inner) =>
+        Effect.withFiber((fiber) => {
+          const state = Context.getUnsafe(fiber.context, RequestState);
+          // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- An HttpMiddleware's result channels are Effect's own erased any.
+          return settling(inner).pipe(
+            Effect.tap(() =>
+              Effect.sync(() => {
+                loggerDisabled = Reflect.get(state, "loggerDisabled");
+              }),
+            ),
+          );
+        }),
+      );
+      const disabling = global((inner) =>
+        Effect.andThen(
+          Effect.forkDetach(
+            Effect.promise(() => answered.promise).pipe(
+              Effect.andThen(
+                HttpMiddleware.withLoggerDisabled(
+                  Effect.sync(() => acted.resolve()),
+                ),
+              ),
+            ),
+            { startImmediately: true },
+          ),
+          inner,
+        ),
+      );
+      const answer = yield* serve(
+        make(Layer.merge(app, disabling), { api: apis, guard: reading }),
+      )("/notes/1");
+      expect(answer.status).toBe(200);
+      expect(loggerDisabled).toBe(false);
+    }),
+  );
+});
+
+describe("a server failure inside the guard", () => {
+  interface Event {
+    readonly level: string;
+    readonly annotations: Readonly<Record<string, unknown>>;
+    readonly cause: Cause.Cause<unknown>;
+  }
+  const observed = (events: Array<Event>) =>
+    Guard.make("observing", (inner) =>
+      // oxlint-disable-next-line effecttsgo/any-unknown-in-error-context -- An HttpMiddleware's result channels are Effect's own erased any.
+      frame(
+        Effect.provideService(
+          inner,
+          Logger.CurrentLoggers,
+          new Set([
+            Logger.make(({ logLevel, cause, fiber }) => {
+              events.push({
+                level: logLevel,
+                annotations: {
+                  ...Context.get(
+                    fiber.context,
+                    References.CurrentLogAnnotations,
+                  ),
+                },
+                cause,
+              });
+            }),
+          ]),
+        ),
+      ),
+    );
+
+  it.effect(
+    "is logged at error level with the request id and function path alone",
+    () =>
+      Effect.gen(function* () {
+        const events: Array<Event> = [];
+        const broken = HttpRouter.middleware(
+          (inner) =>
+            Effect.andThen(inner, Effect.die(new Error("product bug"))),
+          { global: true },
+        );
+        const answer = yield* serve(
+          make(Layer.merge(app, broken), {
+            api: apis,
+            guard: observed(events),
+          }),
+        )("/notes/1");
+        expect(answer.status).toBe(500);
+        expect(Arr.map(events, ({ level }) => level)).toEqual(["Error"]);
+        const [{ annotations, cause }] = events as [Event];
+        expect(Rec.keys(annotations).sort()).toEqual([
+          "functionPath",
+          "requestId",
+        ]);
+        expect(annotations["functionPath"]).toBe("notes:read");
+        expect(annotations["requestId"]).toEqual(expect.any(String));
+        expect(Cause.squash(cause)).toMatchObject({ message: "product bug" });
+      }),
+  );
+
+  it.effect("a declared error's response is not logged", () =>
+    Effect.gen(function* () {
+      const events: Array<Event> = [];
+      const answer = yield* serve(
+        make(app, { api: apis, guard: observed(events) }),
+      )("/nope");
+      expect(answer.status).toBe(422);
+      expect(events).toEqual([]);
+    }),
+  );
+});
+
+describe("the HTTP guide's CORS setup", () => {
+  it.effect("gives route and hand-written paths CORS", () =>
+    Effect.gen(function* () {
+      const allowing = HttpMiddleware.cors();
+      const exceptRoutes = HttpRouter.middleware(
+        (inner) =>
+          Effect.flatMap(Effect.serviceOption(Routes.Route), (onRoute) =>
+            Option.isSome(onRoute) ? inner : allowing(inner),
+          ),
+        { global: true },
+      );
+      const sendBoth = serve(
+        make(Layer.merge(app, exceptRoutes), {
+          api: apis,
+          guard: Guard.make("cors", allowing),
+        }),
+      );
+      const routed = yield* sendBoth("/notes/1");
+      const plain = yield* sendBoth("/plain");
+      expect(routed).toMatchObject({ status: 200, cors: "*" });
+      expect(plain).toMatchObject({ status: 200, cors: "*" });
+    }),
   );
 });
 

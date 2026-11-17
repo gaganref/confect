@@ -93,7 +93,7 @@ preflight. An absent header selects the first registered method. An undeclared
 method or path returns 404. A matching explicit OPTIONS route takes precedence.
 Router middleware sees OPTIONS on every declared route. Endpoint middleware sees
 it when the router receives `{ api }`, as generated backends do.
-Confect does not add CORS response headers. Configure those in middleware.
+Confect does not add CORS response headers. Configure those in middleware, and on a route spec's path in its guard, as [Route specs and their guard](#route-specs-and-their-guard) shows.
 
 ## Count and share a request body
 
@@ -185,6 +185,56 @@ export default ConfectHttpRouter.make(
     }),
   ),
   { api: NotesApi.Api },
+);
+```
+
+## Route specs and their guard
+
+A router that serves route specs from `Routes.make` needs a guard. Pass `guard` to `HttpRouter.make`, or `Guard.none` to serve route specs with no admission. Without one, `HttpRouter.make` throws `Guard.MissingGuard`.
+
+The guard runs first on every route path and owns the response there, so what it returns is what the client receives. On a route path, CORS goes in the guard. Product code there may not register an Effect pre-response handler, because Effect runs those after every middleware, the guard included. A product global middleware that registers one makes every route request answer 500. `HttpMiddleware.cors()`, `HttpMiddleware.compression()` and `HttpApiBuilder.securitySetCookie` all register one. Hand-written endpoints keep them.
+
+The router above, with route specs added and its global CORS left as it is, answers 500 on every route path:
+
+```ts
+HttpRouter.middleware(flow(HttpMiddleware.cors(), HttpMiddleware.logger), {
+  global: true,
+}),
+```
+
+Give route paths their CORS from the guard, and skip them in the global middleware. `Routes.Route` is provided only on a route path:
+
+```ts confect/http.ts
+import {
+  HttpRouter as ConfectHttpRouter,
+  Guard,
+  Routes,
+} from "@confect/server";
+import * as Effect from "effect/Effect";
+import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
+import * as HttpMiddleware from "effect/http/HttpMiddleware";
+import * as HttpRouter from "effect/http/HttpRouter";
+import databaseSchema from "./_generated/schema";
+import * as NotesApi from "./http/NotesApi";
+import { routes } from "./http/routes"; // Routes.make(databaseSchema, { ... })
+
+const cors = HttpMiddleware.cors();
+
+export default ConfectHttpRouter.make(
+  databaseSchema,
+  Layer.mergeAll(
+    NotesApi.layer,
+    routes.routes,
+    HttpRouter.middleware(
+      (inner) =>
+        Effect.flatMap(Effect.serviceOption(Routes.Route), (route) =>
+          Option.isSome(route) ? inner : cors(inner),
+        ),
+      { global: true },
+    ),
+  ),
+  { api: [NotesApi.Api, routes.api], guard: Guard.make("cors", cors) },
 );
 ```
 
