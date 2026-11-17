@@ -114,6 +114,28 @@ describe("Declaration", () => {
     },
   );
 
+  it.each(invalidManifests)(
+    "refuses a malformed manifest before reading mounted routes (%s)",
+    (_, manifest) => {
+      const component = Component.make("workpool", {
+        manifest: manifest as typeof formatOne,
+        client: (native: unknown) => native,
+      });
+      const routes = Declaration.routeLeaves(
+        [],
+        [
+          Mount.data(
+            Mount.make(component, { name: "pool", httpPrefix: "/pool" }),
+          ),
+        ],
+      );
+      expect(routes).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "UnsupportedManifestFormat" },
+      });
+    },
+  );
+
   it("reads a mounted component's shipped manifest and refuses another format", () => {
     const shipped = {
       format: 1,
