@@ -843,6 +843,21 @@ it.effect.each([
       expect(Result.isFailure(failed)).toBe(true);
       expect(injected).toBe(true);
       assertCanonicalExists();
+      expect(
+        Array.map(fixture.state.domains, (domain) => domain.domain),
+      ).toEqual(
+        fault === "delete-response"
+          ? [next.domain]
+          : [props.domain, next.domain],
+      );
+      const interruptedUrls = yield* fixture.client.getCanonicalUrls(
+        props.deployment.url,
+      );
+      expect(interruptedUrls.convexCloudUrl).toBe(
+        fault === "canonical-before"
+          ? "https://api.example.com"
+          : "https://new.example.com",
+      );
       const output = yield* engine.run(resource(next));
       expect(output).toEqual({
         url: "https://new.example.com",

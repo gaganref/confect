@@ -1225,7 +1225,13 @@ Upstream: planned; no linked proposal verified.
 
 Add `Convex.CustomDomain` so stacks can own backend addresses and optionally set
 one as a destination's canonical URL after verification. Refresh verification on
-later applies. Create changed hostnames before removing the old domain. Warn
+later applies. Keep old hostnames and their canonical URLs live until the
+replacement verifies, using Alchemy's deferred old-generation cleanup. Refresh
+changed live canonical values in saved outputs. Serialize canonical read and
+write operations per deployment and destination within an apply. Reset a deleted
+domain's matching canonical URL even if it became canonical outside the stack.
+Checkpoint replacement creates before later canonical work, so retries resume
+without adoption after canonical or state-write failures. Warn
 when a same-hostname move requires deletion first. Recover lost create responses
 through explicit adoption, including during replacement. Reset a canonical URL
 only while it still points to this domain, and refuse conflicting canonical

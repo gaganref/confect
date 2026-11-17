@@ -12,6 +12,7 @@ import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
 import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
+import * as Semaphore from "effect/Semaphore";
 
 import { ConvexClient, type CanonicalUrls } from "./ConvexClient.js";
 import type { Providers } from "./Providers.js";
@@ -151,6 +152,21 @@ const canonicalUrl = (urls: CanonicalUrls, destination: RequestDestination) =>
 
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient;
+  const canonicalLocks = new Map<string, Semaphore.Semaphore>();
+  const withCanonicalLock = <A, E, R>(
+    deployment: CustomDomainProps["deployment"],
+    destination: RequestDestination,
+    effect: Effect.Effect<A, E, R>,
+  ) =>
+    Effect.suspend(() => {
+      const key = `${deployment.name}/${destination}`;
+      let lock = canonicalLocks.get(key);
+      if (lock === undefined) {
+        lock = Semaphore.makeUnsafe(1);
+        canonicalLocks.set(key, lock);
+      }
+      return lock.withPermit(effect);
+    });
   const find = Effect.fn("CustomDomain.find")(function* (
     props: CustomDomainProps,
   ) {
@@ -188,9 +204,11 @@ export const provider = Effect.gen(function* () {
         return { action: "update" };
       const urls = yield* client.getCanonicalUrls(news.deployment.url);
       if (
-        news.canonical === true &&
-        current.verificationTime != null &&
-        canonicalUrl(urls, news.requestDestination) !== `https://${news.domain}`
+        canonicalUrl(urls, news.requestDestination) !== output.canonicalUrl ||
+        (news.canonical === true &&
+          current.verificationTime != null &&
+          canonicalUrl(urls, news.requestDestination) !==
+            `https://${news.domain}`)
       )
         return { action: "update" };
     }),
@@ -295,30 +313,37 @@ export const provider = Effect.gen(function* () {
           domain: news.domain,
         });
       yield* checkpointCreate(fqn, instanceId, news, attributes);
-      let urls = yield* client.getCanonicalUrls(news.deployment.url);
-      if (canonical && current.verificationTime == null) {
-        yield* Effect.logInfo(
-          `Canonical URL for ${news.domain} is pending verification.`,
-        );
-      } else if (
-        canonical &&
-        canonicalUrl(urls, news.requestDestination) !== url
-      ) {
-        yield* client.updateCanonicalUrl(news.deployment.url, {
-          requestDestination: news.requestDestination,
-          url,
-        });
-        urls = yield* client.getCanonicalUrls(news.deployment.url);
-      } else if (
-        !canonical &&
-        output?.canonical === true &&
-        canonicalUrl(urls, news.requestDestination) === url
-      ) {
-        yield* client.updateCanonicalUrl(news.deployment.url, {
-          requestDestination: news.requestDestination,
-        });
-        urls = yield* client.getCanonicalUrls(news.deployment.url);
-      }
+      const urls = yield* withCanonicalLock(
+        news.deployment,
+        news.requestDestination,
+        Effect.gen(function* () {
+          let currentUrls = yield* client.getCanonicalUrls(news.deployment.url);
+          if (canonical && current.verificationTime == null) {
+            yield* Effect.logInfo(
+              `Canonical URL for ${news.domain} is pending verification.`,
+            );
+          } else if (
+            canonical &&
+            canonicalUrl(currentUrls, news.requestDestination) !== url
+          ) {
+            yield* client.updateCanonicalUrl(news.deployment.url, {
+              requestDestination: news.requestDestination,
+              url,
+            });
+            currentUrls = yield* client.getCanonicalUrls(news.deployment.url);
+          } else if (
+            !canonical &&
+            output?.canonical === true &&
+            canonicalUrl(currentUrls, news.requestDestination) === url
+          ) {
+            yield* client.updateCanonicalUrl(news.deployment.url, {
+              requestDestination: news.requestDestination,
+            });
+            currentUrls = yield* client.getCanonicalUrls(news.deployment.url);
+          }
+          return currentUrls;
+        }),
+      );
       const result = {
         ...attributes,
         canonical,
@@ -328,21 +353,58 @@ export const provider = Effect.gen(function* () {
       yield* checkpointCreate(fqn, instanceId, news, result);
       return result;
     }),
-    delete: Effect.fn("CustomDomain.delete")(function* ({ olds, output }) {
-      if (output.canonical || olds.canonical === true) {
-        const urls = yield* client
-          .getCanonicalUrls(output.deployment.url)
-          .pipe(Effect.catchTag("ConvexNotFound", () => Effect.undefined));
+    delete: Effect.fn("CustomDomain.delete")(function* ({
+      fqn,
+      instanceId,
+      output,
+    }) {
+      const stack = yield* Effect.serviceOption(Stack);
+      const state = yield* Effect.serviceOption(State);
+      if (
+        Option.isSome(stack) &&
+        Option.isSome(state) &&
+        stack.value.resources[fqn]?.Type === CustomDomain.Type
+      ) {
+        const store = yield* state.value;
+        const row = yield* store.get({
+          stack: stack.value.name,
+          stage: stack.value.stage,
+          fqn,
+        });
         if (
-          urls !== undefined &&
-          canonicalUrl(urls, output.requestDestination) === output.url
-        )
-          yield* client
-            .updateCanonicalUrl(output.deployment.url, {
-              requestDestination: output.requestDestination,
-            })
-            .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
+          row !== undefined &&
+          row.kind !== "action" &&
+          row.resourceType === CustomDomain.Type &&
+          row.status === "replaced" &&
+          !row.deleteFirst &&
+          row.instanceId !== instanceId
+        ) {
+          const replacement = row.attr as CustomDomainAttributes;
+          const current = yield* find(replacement);
+          if (current?.verificationTime == null)
+            return yield* new Provider.DeleteInProgress({
+              message: `Keeping ${output.domain} until ${replacement.domain} verifies.`,
+            });
+        }
       }
+      yield* withCanonicalLock(
+        output.deployment,
+        output.requestDestination,
+        Effect.gen(function* () {
+          const urls = yield* client
+            .getCanonicalUrls(output.deployment.url)
+            .pipe(Effect.catchTag("ConvexNotFound", () => Effect.undefined));
+          if (
+            urls !== undefined &&
+            canonicalUrl(urls, output.requestDestination) === output.url
+          )
+            yield* client
+              .updateCanonicalUrl(output.deployment.url, {
+                requestDestination: output.requestDestination,
+              })
+              .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
+        }),
+      );
       yield* client
         .deleteCustomDomain(output.deployment.name, {
           domain: output.domain,

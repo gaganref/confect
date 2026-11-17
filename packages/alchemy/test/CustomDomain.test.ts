@@ -473,7 +473,12 @@ it.effect.each([401, 403])(
           deleteCustomDomain: fail,
         }),
       );
-      for (const operation of [
+      const operations: readonly Effect.Effect<
+        void,
+        | Effect.Error<ReturnType<typeof denied.read>>
+        | Effect.Error<ReturnType<typeof denied.reconcile>>
+        | Effect.Error<ReturnType<typeof denied.delete>>
+      >[] = [
         denied.read({ ...lifecycle, olds: news, output }).pipe(Effect.asVoid),
         denied
           .diff({
@@ -489,7 +494,8 @@ it.effect.each([401, 403])(
           .reconcile({ ...lifecycle, news, olds: news, output })
           .pipe(Effect.asVoid),
         denied.delete({ ...lifecycle, olds: news, output }),
-      ]) {
+      ];
+      for (const operation of operations) {
         const error = yield* operation.pipe(Effect.flip);
         expect(error).toMatchObject({ _tag: "ConvexApiError", status });
       }
