@@ -8,6 +8,7 @@ import * as FileSystem from "effect/FileSystem";
 import * as Layer from "effect/Layer";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
+import * as Result from "effect/Result";
 import * as Schema from "effect/Schema";
 import * as Stream from "effect/Stream";
 import { ChildProcess, ChildProcessSpawner } from "effect/process";
@@ -48,12 +49,17 @@ export class CommandError extends Schema.TaggedError<
   operation: Schema.Literals(["prepare", "deploy"]),
   reason: Schema.Literals(["configuration", "spawn", "exit"]),
   exitCode: Schema.optionalKey(Schema.Finite),
+  signal: Schema.optionalKey(Schema.String),
   stdout: Schema.optionalKey(Schema.String),
   stderr: Schema.optionalKey(Schema.String),
 }) {
   override get message(): string {
     const status =
-      this.exitCode === undefined ? this.reason : `exit code ${this.exitCode}`;
+      this.signal === undefined
+        ? this.exitCode === undefined
+          ? this.reason
+          : `exit code ${this.exitCode}`
+        : `signal ${this.signal}`;
     return `${this.operation} command failed (${status})${this.stdout === undefined ? "" : `\nstdout:\n${this.stdout}`}${this.stderr === undefined ? "" : `\nstderr:\n${this.stderr}`}`;
   }
 }
@@ -264,6 +270,7 @@ export const layer = Layer.effect(
             const [code, stdout, stderr] = yield* Effect.all(
               [
                 child.exitCode.pipe(
+                  Effect.result,
                   Effect.tap(() => Deferred.succeed(exited, undefined)),
                 ),
                 outputTail(
@@ -277,11 +284,28 @@ export const layer = Layer.effect(
               ],
               { concurrency: "unbounded" },
             );
-            if (code !== 0)
+            if (Result.isFailure(code)) {
+              // The spawner exposes a terminating signal only in its cause message.
+              const cause = code.failure.cause;
+              const signal =
+                cause instanceof Error
+                  ? /^Process interrupted due to receipt of signal: '(SIG[A-Z0-9]+)'$/.exec(
+                      cause.message,
+                    )?.[1]
+                  : undefined;
               return yield* CommandError.make({
                 operation,
                 reason: "exit",
-                exitCode: Number(code),
+                ...(signal === undefined ? {} : { signal }),
+                stdout,
+                stderr,
+              });
+            }
+            if (code.success !== 0)
+              return yield* CommandError.make({
+                operation,
+                reason: "exit",
+                exitCode: Number(code.success),
                 stdout,
                 stderr,
               });
