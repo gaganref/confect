@@ -1337,3 +1337,168 @@ it.effect(
       expect(engine.plans.at(-1)?.[0]?.action).toBe("noop");
     }),
 );
+
+it.effect.each([
+  { recovery: "opt-out", adopt: false },
+  { recovery: "opt-out", adopt: true },
+  { recovery: "remove", adopt: false },
+  { recovery: "remove", adopt: true },
+])(
+  "recovers an apply-time canonical conflict by $recovery with adoption=$adopt",
+  ({ recovery, adopt }) =>
+    Effect.gen(function* () {
+      const fixture = mockClient({ verificationTime: 200 });
+      const collection = Layer.effect(
+        Providers,
+        Provider.collection([CustomDomain.CustomDomain, Deployment.Deployment]),
+      ).pipe(
+        Layer.provide(Layer.mergeAll(CustomDomain.layer, Deployment.layer)),
+        Layer.provide(checkedClient(fixture)),
+      );
+      const engine = yield* makeEngine(collection);
+      const declarations = (canonical: boolean | undefined) =>
+        Effect.gen(function* () {
+          yield* CustomDomain.CustomDomain("Old", {
+            ...props,
+            canonical: true,
+          });
+          const deployment = yield* Deployment.Deployment("Deployment", {
+            projectId: 1,
+            type: "prod",
+            reference: "example",
+          });
+          if (canonical !== undefined)
+            yield* CustomDomain.CustomDomain("New", {
+              ...props,
+              deployment,
+              domain: nextDomain,
+              canonical,
+            });
+          return {};
+        });
+      yield* engine.run(
+        CustomDomain.CustomDomain("Old", { ...props, canonical: true }).pipe(
+          Effect.as({}),
+        ),
+      );
+      const refused = yield* engine.run(declarations(true)).pipe(Effect.result);
+      expect(refused).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "ConflictingCanonicalDomains" },
+      });
+      const failedRows = yield* engine.rows();
+      expect(failedRows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            fqn: "New",
+            status: "creating",
+            props: expect.objectContaining({ canonical: true }),
+          }),
+        ]),
+      );
+      expect(fixture.client.createCustomDomain).toHaveBeenCalledTimes(1);
+      const corrected = declarations(
+        recovery === "opt-out" ? false : undefined,
+      );
+      yield* engine.run(corrected, { adopt });
+      expect(
+        (yield* fixture.client.getCanonicalUrls(props.deployment.url))
+          .convexCloudUrl,
+      ).toBe(oldUrl);
+      expect(fixture.client.updateCanonicalUrl).toHaveBeenCalledTimes(1);
+      expect(fixture.state.domains).toHaveLength(
+        recovery === "opt-out" ? 2 : 1,
+      );
+      yield* engine.run(corrected);
+      expect(
+        Array.every(
+          engine.plans.at(-1) ?? [],
+          (node) => node.action === "noop",
+        ),
+      ).toBe(true);
+    }),
+);
+
+it.effect.each([false, true])(
+  "reverts a failed logical rename in one apply with adoption=%s",
+  (adopt) =>
+    Effect.gen(function* () {
+      const token = "MadeUpFailedRenameToken";
+      const fixture = mockClient({ verificationTime: 200, deployKey: token });
+      const collection = Layer.effect(
+        Providers,
+        Provider.collection([CustomDomain.CustomDomain, Deployment.Deployment]),
+      ).pipe(
+        Layer.provide(Layer.mergeAll(CustomDomain.layer, Deployment.layer)),
+        Layer.provide(checkedClient(fixture)),
+      );
+      const engine = yield* makeEngine(collection);
+      const declarations = (id: string, fromOutput = false) =>
+        Effect.gen(function* () {
+          const deployment = fromOutput
+            ? yield* Deployment.Deployment("Deployment", {
+                projectId: 1,
+                type: "prod",
+                reference: "example",
+              })
+            : props.deployment;
+          yield* CustomDomain.CustomDomain(id, {
+            ...props,
+            deployment,
+            canonical: true,
+          });
+          return {};
+        });
+      yield* engine.run(declarations("Old"));
+      const refused = yield* engine
+        .run(declarations("New", true))
+        .pipe(Effect.result);
+      expect(refused).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "OwnedBySomeoneElse" },
+      });
+      const failedRows = yield* engine.rows();
+      expect(failedRows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            fqn: "New",
+            status: "creating",
+            props: expect.objectContaining({ canonical: true }),
+          }),
+        ]),
+      );
+      yield* engine.run(declarations("Old", true), { adopt });
+      expect(fixture.state.domains).toHaveLength(1);
+      expect(fixture.client.deleteCustomDomain).not.toHaveBeenCalled();
+      expect(fixture.client.updateCanonicalUrl).toHaveBeenCalledTimes(1);
+      expect(
+        (yield* fixture.client.getCanonicalUrls(props.deployment.url))
+          .convexCloudUrl,
+      ).toBe(oldUrl);
+      const recoveredRows = yield* engine.rows();
+      expect(recoveredRows).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            fqn: "Old",
+            status: "created",
+            attr: expect.objectContaining({ canonicalUrl: oldUrl }),
+          }),
+          expect.objectContaining({ fqn: "Deployment", status: "created" }),
+        ]),
+      );
+      expect(recoveredRows).toHaveLength(2);
+      expect(
+        inspect(
+          [refused, failedRows, recoveredRows, engine.logs, engine.planOutputs],
+          { depth: null },
+        ),
+      ).not.toContain(token);
+      yield* engine.run(declarations("Old", true));
+      expect(
+        Array.every(
+          engine.plans.at(-1) ?? [],
+          (node) => node.action === "noop",
+        ),
+      ).toBe(true);
+    }),
+);
