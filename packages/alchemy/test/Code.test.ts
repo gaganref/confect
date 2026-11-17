@@ -569,6 +569,24 @@ describe("Code command boundary", () => {
       "<REDACTED>",
     ],
     [
+      "JSON-escaped unknown deploy keys",
+      "local-test|0123456789abcdef",
+      '{"message":"failed\\nprod:x|abc\\nSchema error at line 3"}',
+      '{"message":"failed\\n<REDACTED>\\nSchema error at line 3"}',
+    ],
+    [
+      "parenthesized unknown deploy keys",
+      "local-test|0123456789abcdef",
+      "(prod:x|abc), see docs.",
+      "(<REDACTED>), see docs.",
+    ],
+    [
+      "parenthesized punctuated unknown deploy keys",
+      "local-test|0123456789abcdef",
+      "(prod:x|abc.def%other~secret-tail), see docs.",
+      "(<REDACTED>), see docs.",
+    ],
+    [
       "punctuated unknown deploy keys",
       "local-test|0123456789abcdef",
       "prod:x|abc.def%other~secret-tail",
