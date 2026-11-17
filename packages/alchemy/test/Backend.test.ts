@@ -734,6 +734,40 @@ describe("Backend own settings", () => {
       });
     }),
   );
+  it.effect.each([false, true])(
+    "keeps the empty-record fallback for an undefined mount, optional=%s",
+    (optional) =>
+      Effect.gen(function* () {
+        const manifest: Manifest.Manifest = {
+          ...formatOne,
+          mounts: {
+            relay: {
+              component: "relay",
+              env: {
+                TOKEN: { kind: "string", optional, variable: "RELAY_TOKEN" },
+              },
+            },
+          },
+        };
+        const mounts = { relay: undefined } as unknown as Parameters<
+          typeof mountVariables
+        >[1];
+        const result = yield* mountVariables(manifest, mounts).pipe(
+          Effect.result,
+        );
+        if (optional) expect(result).toEqual(Result.succeed({}));
+        else
+          expect(result).toEqual(
+            Result.fail(
+              InvalidMountSetting.make({
+                mount: "relay",
+                slot: "TOKEN",
+                reason: "Missing",
+              }),
+            ),
+          );
+      }),
+  );
   it.effect.each(prototypeNames)("preserves an own value for slot %s", (slot) =>
     Effect.gen(function* () {
       const manifest = {
@@ -1147,6 +1181,30 @@ describe("Backend choices from outputs", () => {
         }),
     );
   }
+
+  it.effect(
+    "refuses a sparse choice array without dropping its missing position",
+    () =>
+      Effect.gen(function* () {
+        const pool = ["ses"];
+        pool.length = 2;
+        const { result, fixture, pushes } = yield* apply(() => ({
+          manifest,
+          env: { EMAIL_PROVIDER: { pool }, SES_KEY: key },
+        }));
+        expect(defectOf(result)).toMatchObject({
+          _tag: "InvalidMountSetting",
+          slot: "EMAIL_PROVIDER",
+          reason: "InvalidChoice",
+        });
+        expect(
+          fixture.client.updateEnvironmentVariables,
+        ).not.toHaveBeenCalled();
+        expect(pushes).toEqual([]);
+        expect(pool).toHaveLength(2);
+        expect(1 in pool).toBe(false);
+      }),
+  );
 
   const forms = [
     "plain",
