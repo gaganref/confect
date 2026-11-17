@@ -1,3 +1,8 @@
+import * as NodeServices from "@effect/platform-node/NodeServices";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
+import * as Str from "effect/String";
+import { pipe } from "effect/Function";
 import * as Config from "effect/Config";
 import * as ConfigProvider from "effect/ConfigProvider";
 import { describe, expect, expectTypeOf, it } from "@effect/vitest";
@@ -103,6 +108,31 @@ describe("Http", () => {
         (web) => Effect.promise(web.dispose),
       );
     },
+  );
+
+  it.effect.each([
+    {
+      file: "../src/Http.ts",
+      block: /\* The URL of one[\s\S]*?```ts\n([\s\S]*?)```/,
+    },
+    {
+      file: "../../../apps/docs/server/http-api.mdx",
+      block: /## Get an endpoint's public URL[\s\S]*?```ts\n([\s\S]*?)```/,
+    },
+  ])("documents URL yielding inside a generator in $file", ({ file, block }) =>
+    Effect.gen(function* () {
+      const services = yield* Layer.build(NodeServices.layer);
+      const fs = yield* FileSystem.FileSystem.pipe(
+        Effect.provideContext(services),
+      );
+      const source = yield* fs.readFileString(
+        new URL(file, import.meta.url).pathname,
+      );
+      const example = pipe(source, Str.match(block), Option.getOrThrow)[1];
+      expect(example).toContain("Effect.gen(function* () {");
+      expect(example).toContain("yield* Http.url(");
+      expect(example).not.toContain("yield *");
+    }).pipe(Effect.scoped),
   );
 
   it.effect(
