@@ -102,6 +102,10 @@ import { Policy, Trace } from "./middleware";
 export default App.make({ env, requiresMiddleware: [Policy, Trace] });
 ```
 
+Mount names `app` and `docs` are reserved for the root app and docs page. This is deliberately one rule for every mount, including a component's child mounts. Names are case-sensitive, so `App` and `DOCS` are accepted.
+
+A standalone `Mount.make` call rejects either reserved literal at compile time. A call written inline in `App.make`, typed as `Mount.Any`, or placed in a `ReadonlyArray<Mount.Any>` literal widens the name to `string` and compiles. Codegen catches these names with `ReservedMountName`. It also catches a name supplied as a widened `string`. Rename an existing mount, for example to `application` or `docsWorker`, and update references to its name.
+
 Each mount names itself. Codegen pairs it with the listed definition whose `defineComponent` name is its component's name, and writes one `app.use` per mount in list order. It fails, naming the mount or definition, when a mount's component has no listed definition, when a listed definition has no mount, when two mounts share a name, and when two listed definitions share a `defineComponent` name. `Mount.make` types `env` against the descriptor's env slots. These fail to typecheck:
 
 - leaving out a binding the component requires

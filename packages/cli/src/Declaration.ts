@@ -70,6 +70,15 @@ export class InvalidMountName extends Schema.TaggedError<
   }
 }
 
+export class ReservedMountName extends Schema.TaggedError<
+  ReservedMountName,
+  { readonly brand: unique symbol }
+>()("ReservedMountName", { mount: Schema.String }) {
+  override get message(): string {
+    return `The mount name "${this.mount}" is reserved for the root app or docs page; choose another mount name.`;
+  }
+}
+
 export class ForeignEnvBinding extends Schema.TaggedError<
   ForeignEnvBinding,
   { readonly brand: unique symbol }
@@ -182,6 +191,7 @@ export type DeclarationError =
   | NotADeclaration
   | InvalidEnvKey
   | InvalidMountName
+  | ReservedMountName
   | ForeignEnvBinding
   | InvalidBinding
   | InvalidComponentDefinition
@@ -269,6 +279,11 @@ export const parse = (input: {
 
     const mounts: Array<Mount> = [];
     for (const mount of App.mounts(input.app)) {
+      if (mount.name === "app" || mount.name === "docs") {
+        return yield* Result.fail(
+          ReservedMountName.make({ mount: mount.name }),
+        );
+      }
       if (!MOUNT_NAME.test(mount.name)) {
         return yield* Result.fail(InvalidMountName.make({ mount: mount.name }));
       }
