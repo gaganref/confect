@@ -2210,6 +2210,52 @@ const digestOf = (manifest: string) =>
 layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
   "codegenHandler with a backend declaration",
   (it) => {
+    it.effect(
+      "notes each prefixed legacy mount once when its routes are absent",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* declarationProject;
+          const app = yield* project.read("confect/app.ts");
+          yield* project.write(
+            "confect/app.ts",
+            pipe(
+              app,
+              String.replace(
+                'name: "second"',
+                'name: "second", httpPrefix: "/second"',
+              ),
+            ),
+          );
+          const messages: string[] = [];
+          yield* project.run.pipe(
+            Effect.provideService(
+              Console.Console,
+              Object.assign(Object.create(console), {
+                log: (...args: readonly string[]) => messages.push(...args),
+              }),
+            ),
+          );
+          const notes = Array.filter(
+            messages,
+            String.includes("ships no manifest"),
+          );
+          expect(notes).toHaveLength(2);
+          expect(Array.filter(notes, String.includes('"first"'))).toHaveLength(
+            1,
+          );
+          expect(Array.filter(notes, String.includes('"second"'))).toHaveLength(
+            1,
+          );
+          expect(
+            Array.every(
+              notes,
+              String.includes("omitted from the route catalogue"),
+            ),
+          ).toBe(true);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
     it.effect.each(["legacy slots", "child digest"] as const)(
       "changes the host digest when a package changes its %s",
       (kind) =>
