@@ -9,6 +9,7 @@ import {
   type ResourceConstructor,
 } from "alchemy/Resource";
 import * as Effectable from "effect/Effectable";
+import * as Config from "effect/Config";
 import * as Result from "effect/Result";
 import * as Duration from "effect/Duration";
 import * as Option from "effect/Option";
@@ -106,8 +107,19 @@ export const EnvironmentVariables: ResourceClass<EnvironmentVariables> =
         return target(
           id,
           (Effect.isEffect(props) ? props : Effect.succeed(props)).pipe(
-            Effect.tap((options) =>
-              Effect.fromResult(validateSafety(options)).pipe(Effect.orDie),
+            Effect.flatMap((options) =>
+              Effect.fromResult(validateSafety(options)).pipe(
+                Effect.orDie,
+                Effect.as({
+                  ...options,
+                  ...(options.retry === undefined
+                    ? {}
+                    : { retry: checkedSafetyInput("retry", options.retry) }),
+                  ...(options.lock === undefined
+                    ? {}
+                    : { lock: checkedSafetyInput("lock", options.lock) }),
+                }),
+              ),
             ),
           ),
         );
@@ -205,6 +217,20 @@ const validateSafety = (
       EnvironmentVariablesInvalidOption.make({ option: "deploymentName" }),
     );
   return Result.succeed(duration);
+};
+
+const checkedSafetyInput = <K extends keyof SafetyOptions>(
+  key: K,
+  input: Exclude<Input<SafetyOptions[K]>, undefined>,
+): Exclude<Input<SafetyOptions[K]>, undefined> => {
+  const check = (value: SafetyOptions[K]) =>
+    Effect.fromResult(validateSafety({ [key]: value })).pipe(
+      Effect.orDie,
+      Effect.as(value),
+    );
+  if (Config.isConfig(input)) return input.pipe(Config.mapEffect(check));
+  if (Output.isExpr(input)) return input.pipe(Output.mapEffect(check));
+  return input;
 };
 
 const ownershipConflict = (variableName: string) =>
