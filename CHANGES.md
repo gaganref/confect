@@ -620,8 +620,8 @@ it. The path uses Effect's `:name` syntax, and the maker refuses every form
 whose reading could differ between Effect's router and a person: wildcards,
 regexes, optional and partial-segment parameters, empty segments, repeated
 parameters and literal characters outside letters, digits and `. _ ~ -`. A
-parameter that names no argument fails at the path in the types, and at runtime
-when the args are first read, so the args stay lazy. A route takes no headers,
+parameter that names no own argument field fails at the path in the types, and at runtime
+when the args are first read, so the args stay lazy. Each refusal is a tagged error with its fields: `UnroutableMethod`, `InvalidRoutePath`, `UndeclaredPathParam` and `RouteInNodeGroup`. A route takes no headers,
 so no header becomes an argument. A profile's `httpAction` drops its reserved
 argument. Routes are in neither ref tree, no component exports one, `Ref.make`
 and Node groups refuse one, and the definition builders and the generated

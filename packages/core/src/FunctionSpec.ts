@@ -1,5 +1,7 @@
 import * as Array from "effect/Array";
 import { pipe } from "effect/Function";
+import * as Rec from "effect/Record";
+import * as Result from "effect/Result";
 import * as Str from "effect/String";
 import type * as MiddlewareAttachment from "./MiddlewareAttachment.js";
 import {
@@ -770,6 +772,76 @@ type DeclaredPath<Path extends string, ArgsFields_> = [
       >;
     };
 
+export class UnroutableMethod extends Schema.TaggedError<
+  UnroutableMethod,
+  { readonly brand: unique symbol }
+>()("UnroutableMethod", {
+  functionName: Schema.String,
+  method: Schema.String,
+}) {
+  override get message(): string {
+    return `Route "${this.functionName}" has method "${this.method}"; Convex routes ${Array.join(ROUTABLE_HTTP_METHODS, ", ")}`;
+  }
+}
+
+const pathProblems = [
+  "wildcard",
+  "relative",
+  "emptySegment",
+  "regex",
+  "optionalParam",
+  "invalidParam",
+  "repeatedParam",
+  "colonInSegment",
+  "literalSegment",
+] as const;
+
+export type PathProblem = (typeof pathProblems)[number];
+
+const describePathProblem: Record<PathProblem, (segment: string) => string> = {
+  wildcard: () => "uses a wildcard",
+  relative: () => "must start with /",
+  emptySegment: () => "has an empty segment",
+  regex: () => "uses a regex",
+  optionalParam: () => "is optional",
+  invalidParam: () => "names an invalid parameter",
+  repeatedParam: (segment: string) =>
+    `repeats the parameter ${Str.slice(1)(segment)}`,
+  colonInSegment: () => "has a colon inside a segment",
+  literalSegment: (segment: string) =>
+    `has the literal segment "${segment}"; a literal segment holds only letters, digits and . _ ~ -`,
+};
+
+export class InvalidRoutePath extends Schema.TaggedError<
+  InvalidRoutePath,
+  { readonly brand: unique symbol }
+>()("InvalidRoutePath", {
+  functionName: Schema.String,
+  path: Schema.String,
+  problem: Schema.Literals(pathProblems),
+  /**
+   * The segment at fault, or the whole path for a wildcard or a relative path.
+   */
+  segment: Schema.String,
+}) {
+  override get message(): string {
+    return `Route "${this.functionName}" path "${this.path}" ${describePathProblem[this.problem](this.segment)}`;
+  }
+}
+
+export class UndeclaredPathParam extends Schema.TaggedError<
+  UndeclaredPathParam,
+  { readonly brand: unique symbol }
+>()("UndeclaredPathParam", {
+  functionName: Schema.String,
+  path: Schema.String,
+  param: Schema.String,
+}) {
+  override get message(): string {
+    return `Route "${this.functionName}" path "${this.path}" names :${this.param}, which is not an argument`;
+  }
+}
+
 const literalSegment = /^[A-Za-z0-9._~-]+$/;
 const paramName = /^[A-Za-z][A-Za-z0-9_]*$/;
 
@@ -778,37 +850,56 @@ const paramName = /^[A-Za-z][A-Za-z0-9_]*$/;
  * whose meaning differs between Effect's router and a plain reading: wildcards,
  * regexes, optional and partial-segment parameters, and odd slashes.
  */
-const parsePath = (name: string, path: string): ReadonlyArray<string> => {
-  const refuse = (reason: string) =>
-    new Error(`Route "${name}" path "${path}" ${reason}`);
-  if (Str.includes("*")(path)) throw refuse("uses a wildcard");
-  if (!Str.startsWith("/")(path)) throw refuse("must start with /");
-  if (path === "/") return [];
+const parsePath = (
+  name: string,
+  path: string,
+): Result.Result<ReadonlyArray<string>, InvalidRoutePath> => {
+  const refuse = (problem: PathProblem, segment: string) =>
+    Result.fail(
+      InvalidRoutePath.make({ functionName: name, path, problem, segment }),
+    );
+  if (Str.includes("*")(path)) return refuse("wildcard", path);
+  if (!Str.startsWith("/")(path)) return refuse("relative", path);
+  if (path === "/") return Result.succeed([]);
   const params: Array<string> = [];
   for (const segment of pipe(path, Str.slice(1), Str.split("/"))) {
-    if (segment === "") throw refuse("has an empty segment");
+    if (segment === "") return refuse("emptySegment", segment);
     if (Str.includes("(")(segment) || Str.includes(")")(segment)) {
-      throw refuse("uses a regex");
+      return refuse("regex", segment);
     }
     if (Str.startsWith(":")(segment)) {
       const param = Str.slice(1)(segment);
-      if (Str.endsWith("?")(param)) throw refuse("is optional");
-      if (!paramName.test(param)) {
-        throw refuse("names an invalid parameter");
-      }
-      if (params.includes(param)) {
-        throw refuse(`repeats the parameter ${param}`);
-      }
+      if (Str.endsWith("?")(param)) return refuse("optionalParam", segment);
+      if (!paramName.test(param)) return refuse("invalidParam", segment);
+      if (params.includes(param)) return refuse("repeatedParam", segment);
       params.push(param);
     } else if (Str.includes(":")(segment)) {
-      throw refuse("has a colon inside a segment");
+      return refuse("colonInSegment", segment);
     } else if (!literalSegment.test(segment)) {
-      throw refuse(
-        `has the literal segment "${segment}"; a literal segment holds only letters, digits and . _ ~ -`,
+      return refuse("literalSegment", segment);
+    }
+  }
+  return Result.succeed(params);
+};
+
+/**
+ * Refuses a path parameter that no field of `fields` declares as its own, so a
+ * name such as `constructor` that only the prototype carries is refused.
+ */
+const checkPathParams = (
+  name: string,
+  path: string,
+  params: ReadonlyArray<string>,
+  fields: FunctionProvenance.ArgsFields,
+): Result.Result<void, UndeclaredPathParam> => {
+  for (const param of params) {
+    if (!Rec.has(fields, param)) {
+      return Result.fail(
+        UndeclaredPathParam.make({ functionName: name, path, param }),
       );
     }
   }
-  return params;
+  return Result.succeed(undefined);
 };
 
 /**
@@ -844,21 +935,13 @@ export const httpAction = <
 > & { readonly route: Route } => {
   validateConfectFunctionIdentifier(name);
   if (!(ROUTABLE_HTTP_METHODS as ReadonlyArray<string>).includes(method)) {
-    throw new Error(
-      `Route "${name}" has method "${method}"; Convex routes ${Array.join(ROUTABLE_HTTP_METHODS, ", ")}`,
-    );
+    throw UnroutableMethod.make({ functionName: name, method });
   }
-  const params = parsePath(name, path);
+  const params = Result.getOrThrow(parsePath(name, path));
   // Checked when the args are first read, so the args stay lazy.
   const declaredArgs = () => {
     const fields = args === undefined ? {} : args();
-    for (const param of params) {
-      if (!Predicate.hasProperty(fields, param)) {
-        throw new Error(
-          `Route "${name}" path "${path}" names :${param}, which is not an argument`,
-        );
-      }
-    }
+    Result.getOrThrow(checkPathParams(name, path, params, fields));
     return fields;
   };
 

@@ -1516,22 +1516,35 @@ describe("httpAction", () => {
         path: "/",
         returns,
       }),
-    ).toThrow('Route "head" has method "HEAD"');
+    ).toThrowError(
+      expect.objectContaining({
+        _tag: "UnroutableMethod",
+        functionName: "head",
+        method: "HEAD",
+        message:
+          'Route "head" has method "HEAD"; Convex routes GET, POST, PUT, DELETE, OPTIONS, PATCH',
+      }),
+    );
   });
 
   it.each([
-    ["notes", "must start with /"],
-    ["/notes/", "has an empty segment"],
-    ["/notes//x", "has an empty segment"],
-    ["/files/*", "uses a wildcard"],
-    ["*", "uses a wildcard"],
-    ["/notes/:id(\\d+)", "uses a regex"],
-    ["/notes/:id?", "is optional"],
-    ["/notes/a:b", "has a colon inside a segment"],
-    ["/notes/:a-:b", "names an invalid parameter"],
-    ["/notes/:id/:id", "repeats the parameter id"],
-    ["/notes/a%20b", 'has the literal segment "a%20b"'],
-  ])("refuses the path %s", (path, reason) => {
+    ["notes", "relative", "notes", "must start with /"],
+    ["/notes/", "emptySegment", "", "has an empty segment"],
+    ["/notes//x", "emptySegment", "", "has an empty segment"],
+    ["/files/*", "wildcard", "/files/*", "uses a wildcard"],
+    ["*", "wildcard", "*", "uses a wildcard"],
+    ["/notes/:id(\\d+)", "regex", ":id(\\d+)", "uses a regex"],
+    ["/notes/:id?", "optionalParam", ":id?", "is optional"],
+    ["/notes/a:b", "colonInSegment", "a:b", "has a colon inside a segment"],
+    ["/notes/:a-:b", "invalidParam", ":a-:b", "names an invalid parameter"],
+    ["/notes/:id/:id", "repeatedParam", ":id", "repeats the parameter id"],
+    [
+      "/notes/a%20b",
+      "literalSegment",
+      "a%20b",
+      'has the literal segment "a%20b"; a literal segment holds only letters, digits and . _ ~ -',
+    ],
+  ])("refuses the path %s", (path, problem, segment, reason) => {
     expect(() =>
       FunctionSpec.httpAction({
         name: "bad",
@@ -1539,7 +1552,16 @@ describe("httpAction", () => {
         path: path as "/",
         returns,
       }),
-    ).toThrow(`Route "bad" path "${path}" ${reason}`);
+    ).toThrowError(
+      expect.objectContaining({
+        _tag: "InvalidRoutePath",
+        functionName: "bad",
+        path,
+        problem,
+        segment,
+        message: `Route "bad" path "${path}" ${reason}`,
+      }),
+    );
   });
 
   it("refuses a path parameter that names no argument", () => {
@@ -1551,9 +1573,71 @@ describe("httpAction", () => {
       args: () => ({ id: Schema.String }),
       returns,
     });
-    expect(() => undeclared.functionProvenance.args).toThrow(
-      'Route "undeclared" path "/notes/:note" names :note, which is not an argument',
+    expect(() => undeclared.functionProvenance.args).toThrowError(
+      expect.objectContaining({
+        _tag: "UndeclaredPathParam",
+        functionName: "undeclared",
+        path: "/notes/:note",
+        param: "note",
+        message:
+          'Route "undeclared" path "/notes/:note" names :note, which is not an argument',
+      }),
     );
+  });
+
+  it.each([
+    ["constructor", {}],
+    ["constructor", { id: Schema.String }],
+    ["toString", {}],
+    ["toString", { id: Schema.String }],
+  ])(
+    "refuses :%s, which only the prototype declares, given %o",
+    (param, fields) => {
+      const inherited = FunctionSpec.httpAction({
+        name: "inherited",
+        method: "GET",
+        path: `/notes/:${param}`,
+        args: (): FunctionProvenance.ArgsFields => fields,
+        returns,
+      });
+      expect(() => inherited.functionProvenance.args).toThrowError(
+        expect.objectContaining({ _tag: "UndeclaredPathParam", param }),
+      );
+    },
+  );
+
+  it.each([{}, { id: Schema.String }])(
+    "refuses :__proto__ as an invalid parameter given %o",
+    (fields) => {
+      expect(() =>
+        FunctionSpec.httpAction({
+          name: "proto",
+          method: "GET",
+          path: "/notes/:__proto__",
+          args: (): FunctionProvenance.ArgsFields => fields,
+          returns,
+        }),
+      ).toThrowError(
+        expect.objectContaining({
+          _tag: "InvalidRoutePath",
+          problem: "invalidParam",
+          segment: ":__proto__",
+        }),
+      );
+    },
+  );
+
+  it("accepts a parameter its own field declares, whatever its name", () => {
+    const own = FunctionSpec.httpAction({
+      name: "own",
+      method: "GET",
+      path: "/notes/:constructor",
+      args: () => ({ constructor: Schema.String }),
+      returns,
+    });
+    expect(Record.keys(own.functionProvenance.args.fields)).toEqual([
+      "constructor",
+    ]);
   });
 
   it("has no headers slot", () => {

@@ -492,8 +492,13 @@ describe("routes", () => {
     expect(() =>
       // @ts-expect-error A route runs in the Convex runtime, never in Node.
       GroupSpec.makeNode().addFunction(route),
-    ).toThrow(
-      'Route "receive" cannot join a Node group: routes run in the Convex runtime',
+    ).toThrowError(
+      expect.objectContaining({
+        _tag: "RouteInNodeGroup",
+        functionName: "receive",
+        message:
+          'Route "receive" cannot join a Node group: routes run in the Convex runtime',
+      }),
     );
   });
 });
