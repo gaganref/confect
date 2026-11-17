@@ -480,3 +480,12 @@ it("provider records have one own entry per name before declaration", () => {
     optional: false,
   });
 });
+
+it("accepts distinct values with a dynamic tuple member", () => {
+  const values: readonly ["a", string] = ["a", "b"];
+  expect(Env.literals(values).descriptor).toEqual({
+    kind: "literals",
+    values: ["a", "b"],
+    optional: false,
+  });
+});
