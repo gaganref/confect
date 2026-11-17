@@ -361,7 +361,35 @@ export const provider = Effect.gen(function* () {
       yield* checkpointCreate(fqn, instanceId, news, result);
       return result;
     }),
-    delete: Effect.fn("CustomDomain.delete")(function* ({ output }) {
+    delete: Effect.fn("CustomDomain.delete")(function* ({ fqn, output }) {
+      const stack = yield* Effect.serviceOption(Stack);
+      const state = yield* Effect.serviceOption(State);
+      if (Option.isSome(stack) && Option.isSome(state)) {
+        const store = yield* state.value;
+        for (const resource of Record.values(stack.value.resources)) {
+          if (resource.Type !== CustomDomain.Type || resource.FQN === fqn)
+            continue;
+          const row = yield* store.get({
+            stack: stack.value.name,
+            stage: stack.value.stage,
+            fqn: resource.FQN,
+          });
+          if (
+            row !== undefined &&
+            row.kind !== "action" &&
+            row.status !== "deleting" &&
+            row.resourceType === CustomDomain.Type &&
+            row.attr?.deployment?.name === output.deployment.name &&
+            row.attr?.domain === output.domain &&
+            row.attr?.requestDestination === output.requestDestination
+          ) {
+            yield* Effect.logInfo(
+              `Skipping delete of ${output.domain}; ${resource.FQN} keeps it.`,
+            );
+            return;
+          }
+        }
+      }
       yield* withCanonicalLock(
         output.deployment,
         output.requestDestination,
