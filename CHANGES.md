@@ -1288,6 +1288,17 @@ Upstream: planned; no linked proposal verified.
 
 ## Alchemy deployment
 
+### Recover environment removals after a lost state write
+
+With `driftPolicy: "error"`, an owned variable that is already absent and no
+longer desired does not block planning or apply. A rerun releases its ownership
+without another environment write. Deleting the resource also tolerates already
+absent names while removing the remaining names. Missing desired names and
+external edits to present names still cause drift.
+
+Changeset: `alchemy-env-removal-recovery.md`.
+Upstream: planned; no proposal submitted.
+
 ### Declare custom domains and canonical URLs
 
 Add `Convex.CustomDomain` so stacks can own backend addresses and optionally set
@@ -1618,6 +1629,17 @@ Changeset: `faster-dev-saves.md`.
 Upstream: planned; no proposal submitted.
 
 ## Testing and documentation
+
+### Isolate Alchemy's home in tests
+
+Give every Alchemy test suite a fresh temporary `ALCHEMY_HOME` and remove it
+afterwards. Before tests run, check that Alchemy resolves a dedicated directory
+under the system temporary folder. The cloud and local lifecycle suites and
+the shared real-backend helper can build their profile layers without reading
+or changing the developer's real Alchemy profiles.
+
+Changeset: none; tests only.
+Upstream: planned; no proposal submitted.
 
 ### Declared apps drive tests and Backend env
 
