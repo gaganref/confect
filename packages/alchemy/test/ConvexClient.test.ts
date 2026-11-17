@@ -724,20 +724,25 @@ describe("ConvexClient", () => {
       });
       const http = mockHttp([new Response(body, { status: 503 })]);
       return Effect.gen(function* () {
-        const client = yield* ConvexClient.ConvexClient;
-        const fiber = yield* client
-          .updateEnvironmentVariables(deploymentUrl, deployKey, [])
-          .pipe(Effect.flip, Effect.forkScoped);
-        yield* TestClock.adjust("4999 millis");
-        expect(fiber.pollUnsafe()).toBeUndefined();
-        yield* TestClock.adjust("1 millis");
-        expect(fiber.pollUnsafe()).toBeDefined();
-        const error = yield* Fiber.join(fiber);
-        expect(error).toMatchObject({ code: "HttpError", status: 503 });
-        expect(error.serverCode).toBeUndefined();
-        expect(cancelled).toBe(true);
-        yield* expectSecretSafe(error, secret);
-      }).pipe(Effect.provide(clientLayer.pipe(Layer.provide(http.layer))));
+        const services = yield* Layer.build(
+          clientLayer.pipe(Layer.provide(http.layer)),
+        );
+        return yield* Effect.gen(function* () {
+          const client = yield* ConvexClient.ConvexClient;
+          const fiber = yield* client
+            .updateEnvironmentVariables(deploymentUrl, deployKey, [])
+            .pipe(Effect.flip, Effect.forkScoped);
+          yield* TestClock.adjust("4999 millis");
+          expect(fiber.pollUnsafe()).toBeUndefined();
+          yield* TestClock.adjust("1 millis");
+          expect(fiber.pollUnsafe()).toBeDefined();
+          const error = yield* Fiber.join(fiber);
+          expect(error).toMatchObject({ code: "HttpError", status: 503 });
+          expect(error.serverCode).toBeUndefined();
+          expect(cancelled).toBe(true);
+          yield* expectSecretSafe(error, secret);
+        }).pipe(Effect.provideContext(services));
+      });
     },
   );
 
