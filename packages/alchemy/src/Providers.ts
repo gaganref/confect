@@ -9,6 +9,8 @@ import * as Deployment from "./Deployment.js";
 import * as DeployKey from "./DeployKey.js";
 import * as EnvironmentVariables from "./EnvironmentVariables.js";
 import * as Project from "./Project.js";
+import * as LogStream from "./LogStream.js";
+import * as UsageLimit from "./UsageLimit.js";
 import * as CommandRunner from "./internal/CommandRunner.js";
 import * as PushLock from "./internal/PushLock.js";
 
@@ -35,6 +37,8 @@ export const providers = (options?: {
       DeployKey.DeployKey,
       EnvironmentVariables.EnvironmentVariables,
       Code.Code,
+      LogStream.LogStream,
+      UsageLimit.UsageLimit,
     ]),
   ).pipe(
     Layer.provide(
@@ -55,9 +59,17 @@ export const providers = (options?: {
           live: () => EnvironmentVariables.layer,
           local: () => EnvironmentVariables.localLayer,
         }),
+        ProviderLayer.dual(UsageLimit.UsageLimit, {
+          live: () => UsageLimit.layer,
+          local: () => UsageLimit.localLayer,
+        }),
         ProviderLayer.dual(Code.Code, {
           live: () => Code.layer,
           local: () => Code.localLayer,
+        }),
+        ProviderLayer.dual(LogStream.LogStream, {
+          live: () => LogStream.layer,
+          local: () => LogStream.localLayer,
         }),
       ),
     ),
