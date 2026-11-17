@@ -137,6 +137,67 @@ describe("Code", () => {
       }),
   );
 
+  it.effect(
+    "fails a health check after 30 seconds and releases the push lock",
+    () =>
+      Effect.gen(function* () {
+        const started = yield* Deferred.make<void>();
+        const events: string[] = [];
+        const services = yield* Layer.build(
+          Layer.mergeAll(
+            NodeServices.layer,
+            Layer.succeed(CommandRunner, {
+              prepare: () => Effect.void,
+              deploy: () => Effect.void,
+            }),
+            Layer.succeed(PushLock, {
+              withLock: (_name, effect) =>
+                effect.pipe(
+                  Effect.ensuring(
+                    Effect.sync(() => void events.push("unlock")),
+                  ),
+                ),
+            }),
+            Layer.mock(ConvexClient, {
+              runFunction: () =>
+                Effect.gen(function* () {
+                  events.push("health");
+                  yield* Deferred.succeed(started, undefined);
+                  return yield* Effect.never.pipe(
+                    Effect.ensuring(
+                      Effect.sync(() => void events.push("interrupted")),
+                    ),
+                  );
+                }),
+            }),
+          ),
+        );
+        const fiber = yield* deploy({
+          ...props,
+          manifestDigest: "sha256:built",
+        }).pipe(
+          Effect.provideContext(services),
+          Effect.result,
+          Effect.forkScoped,
+        );
+        yield* Deferred.await(started);
+        yield* TestClock.adjust("29999 millis");
+        expect(events).toEqual(["health"]);
+        yield* TestClock.adjust("1 millis");
+        const result = yield* Fiber.join(fiber);
+        expect(result).toEqual(
+          Result.fail(
+            HealthCheckFailed.make({
+              expected: "sha256:built",
+              detail: "timeout",
+            }),
+          ),
+        );
+        expect(events).toEqual(["health", "interrupted", "unlock"]);
+      }).pipe(Effect.scoped),
+    { timeout: 5000 },
+  );
+
   const healthCases: ReadonlyArray<{
     readonly answer: Effect.Effect<unknown, ConvexFunctionError>;
     readonly failure: HealthCheckFailed | undefined;
