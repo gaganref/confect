@@ -1,12 +1,11 @@
 import * as FunctionSpec from "@confect/core/FunctionSpec";
 import type * as GroupSpec from "@confect/core/GroupSpec";
 import * as MiddlewareSpec from "@confect/core/MiddlewareSpec";
-import type { GenericDataModel } from "convex/server";
+import type { GenericActionCtx, GenericDataModel } from "convex/server";
 import * as Array from "effect/Array";
 import * as Cause from "effect/Cause";
 import * as Context from "effect/Context";
 import * as Effect from "effect/Effect";
-import { pipe } from "effect/Function";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Predicate from "effect/Predicate";
@@ -14,7 +13,6 @@ import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import type * as SchemaAST from "effect/SchemaAST";
 import * as SchemaIssue from "effect/SchemaIssue";
-import * as Str from "effect/String";
 import * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import * as HttpApiEndpoint from "effect/http-api/HttpApiEndpoint";
@@ -22,6 +20,7 @@ import * as HttpApiError from "effect/http-api/HttpApiError";
 import * as HttpApiGroup from "effect/http-api/HttpApiGroup";
 import * as HttpMethod from "effect/http/HttpMethod";
 import * as ActionCtx from "./ActionCtx.js";
+import * as ArgumentRefusal from "./internal/argumentRefusal.js";
 import type * as DatabaseSchema from "./DatabaseSchema.js";
 import * as FunctionRegistryItem from "./FunctionRegistryItem.js";
 import type * as GroupImpl from "./GroupImpl.js";
@@ -75,16 +74,28 @@ export class RouteErrorWithoutStatus extends Schema.TaggedError<
 }
 
 /**
- * Whether a defect is Convex refusing a nested call's arguments: the real
- * backend's `ArgumentValidationError: ` message, or convex-test's `Validator
- * error:`. Neither carries a class, name or code.
+ * A route's nested `runQuery`, `runMutation` or `runAction` that Convex refused
+ * for its arguments, raised as a defect with Convex's message. It answers
+ * Effect's empty 400.
  *
  * @stability unstable
  */
-export const isArgumentValidationFailure = (defect: unknown): boolean =>
-  defect instanceof Error &&
-  (pipe(defect.message, Str.startsWith("ArgumentValidationError: ")) ||
-    pipe(defect.message, Str.startsWith("Validator error:")));
+export class ArgumentValidationFailure extends Schema.TaggedError<
+  ArgumentValidationFailure,
+  { readonly brand: unique symbol }
+>()("ArgumentValidationFailure", { message: Schema.String }) {}
+
+/**
+ * Whether a defect is a route's nested call refused for its arguments. Only the
+ * nested-call boundary raises one, so a product error never matches by its
+ * message.
+ *
+ * @stability unstable
+ */
+export const isArgumentValidationFailure = (
+  defect: unknown,
+): defect is ArgumentValidationFailure =>
+  Schema.is(ArgumentValidationFailure)(defect);
 
 /* oxlint-disable effecttsgo/any-unknown-in-error-context -- A route's errors are erased across the api built at runtime; each endpoint's error schemas type them again at the wire. */
 
@@ -109,6 +120,21 @@ export const make = <Schema_ extends DatabaseSchema.AnyWithProps>(
   readonly api: HttpApi.HttpApi<"routes", HttpApiGroup.Top>;
   readonly routes: HttpRouter.Routes<Schema_>;
 } => {
+  // Built on first read, so assembling the routes evaluates no schema.
+  let built: ReturnType<typeof serve> | undefined;
+  const served = () => (built ??= serve(schema, leaves));
+  return {
+    get api() {
+      return served().api;
+    },
+    routes: Layer.suspend(() => served().routes) as never,
+  };
+};
+
+const serve = (
+  schema: DatabaseSchema.AnyWithProps,
+  leaves: { readonly [modulePath: string]: Leaf },
+) => {
   const served = Array.filter(
     Array.map(Record.toEntries(leaves), ([modulePath, [spec, impl]]) =>
       serveLeaf(schema, modulePath, spec, impl),
@@ -137,9 +163,7 @@ export const make = <Schema_ extends DatabaseSchema.AnyWithProps>(
   );
   return {
     api,
-    routes: HttpApiBuilder.layer(api).pipe(
-      Layer.provide(groups as never),
-    ) as never,
+    routes: HttpApiBuilder.layer(api).pipe(Layer.provide(groups as never)),
   };
 };
 
@@ -236,7 +260,11 @@ const serveRoute = (
   });
   const handle = (request: RouteRequest) =>
     Effect.flatMap(ActionCtx.ActionCtx<GenericDataModel>(), (ctx) =>
-      run(ctx, { ...request.query, ...request.payload, ...request.params }),
+      run(refusingNestedCalls(ctx), {
+        ...request.query,
+        ...request.payload,
+        ...request.params,
+      }),
     ).pipe(
       Effect.catchCause((cause) => {
         const defect = Option.getOrUndefined(
@@ -247,9 +275,7 @@ const serveRoute = (
             new HttpApiError.HttpApiSchemaError({
               kind: HttpMethod.hasBody(method) ? "Payload" : "Query",
               cause: new Schema.SchemaError(
-                new SchemaIssue.InvalidValue({
-                  message: (defect as Error).message,
-                }),
+                new SchemaIssue.InvalidValue({ message: defect.message }),
               ),
             }),
           );
@@ -266,6 +292,32 @@ const serveRoute = (
 };
 
 /* oxlint-enable effecttsgo/any-unknown-in-error-context */
+
+/**
+ * The route's ctx, whose nested calls reject Convex's argument refusal as an
+ * `ArgumentValidationFailure`. Convex reports it only by its message, so it is
+ * read here, where the error can only have come from Convex.
+ */
+const refusingNestedCalls = (
+  ctx: GenericActionCtx<GenericDataModel>,
+): GenericActionCtx<GenericDataModel> => {
+  const refusing =
+    <Args extends ReadonlyArray<unknown>, A>(
+      call: (...args: Args) => Promise<A>,
+    ) =>
+    (...args: Args): Promise<A> =>
+      call(...args).catch((error: unknown) => {
+        throw ArgumentRefusal.isRefusal(error)
+          ? ArgumentValidationFailure.make({ message: error.message })
+          : error;
+      });
+  return {
+    ...ctx,
+    runQuery: refusing(ctx.runQuery.bind(ctx)) as typeof ctx.runQuery,
+    runMutation: refusing(ctx.runMutation.bind(ctx)) as typeof ctx.runMutation,
+    runAction: refusing(ctx.runAction.bind(ctx)) as typeof ctx.runAction,
+  };
+};
 
 /**
  * The route's error schemas, one per union member, each with its status.

@@ -16,6 +16,7 @@ import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Array from "effect/Array";
+import * as ArgumentRefusal from "../../src/internal/argumentRefusal";
 import * as SignedEnvelope from "../signedEnvelope";
 
 const encodeJson = (value: unknown) =>
@@ -67,10 +68,11 @@ layer(
         expect(response.status).toBe(200);
         const seen = (yield* response.json) as {
           readonly message: string | null;
-          readonly recognised: boolean;
+          readonly tagged: boolean;
         };
         expect(seen.message).toMatch(/^ArgumentValidationError: /);
-        expect(seen.recognised).toBe(true);
+        expect(ArgumentRefusal.isRefusal(new Error(seen.message!))).toBe(true);
+        expect(seen.tagged).toBe(false);
       }),
   );
 

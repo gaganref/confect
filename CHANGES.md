@@ -638,14 +638,19 @@ guard that follows in the same stack, and runs the impl through the extracted
 `runAction` with an `http` invocation named by its function path, so every
 action middleware runs for a route. Path parameters merge into the args with
 the query on GET and OPTIONS and the JSON body otherwise. `returns` encodes as
-a JSON 200. Every error a route can fail with, its own or a covering
+a JSON 200. `Routes.make` evaluates no schema; its `api` and `routes` build
+on first read. Every error a route can fail with, its own or a covering
 middleware's, needs an `HttpApiSchema.status`, because Effect would answer an
-unannotated one 500; `Routes.make` throws `RouteErrorWithoutStatus` instead.
-An undeclared failure dies, so it answers 500 like a defect. Convex reports a
-nested call's argument validation failure only by its message, so
-`Routes.isArgumentValidationFailure` matches `ArgumentValidationError: ` (the
-real backend) and `Validator error:` (convex-test), and a matching defect
-answers Effect's empty 400. A local-backend lane case pins the real prefix.
+unannotated one 500; reading the routes throws `RouteErrorWithoutStatus`
+instead, so the router refuses it before serving. An undeclared failure dies,
+so it answers 500 like a defect. Convex reports a nested call's argument
+validation failure only by its message, `ArgumentValidationError: ` on the real
+backend and `Validator error:` under convex-test. The route's ctx reads it at
+its nested `runQuery`, `runMutation` and `runAction` and dies with
+`Routes.ArgumentValidationFailure` there, which answers Effect's empty 400 and
+which `Routes.isArgumentValidationFailure` checks for. A product error raised
+anywhere else answers 500 whatever its message. A local-backend lane case pins
+the real prefix.
 `HttpRouter.make`'s `api` takes one api or a list, and today's generated
 `convex/http.ts` is unchanged. Changeset: `route-specs-serve.md`. Upstream:
 fork only, as route specs are a fork addition.

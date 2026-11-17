@@ -139,8 +139,9 @@ const tokenReview = HttpRouter.add(
   }).pipe(Effect.orDie),
 );
 
-// A nested call the binary refuses for its arguments, and whether
-// `Routes.isArgumentValidationFailure` recognises what reached the caller.
+// A nested call the binary refuses for its arguments, from a plain route, and
+// whether `Routes.isArgumentValidationFailure` matches what reached it. Only a
+// route spec's nested calls raise that failure.
 const argumentValidation = HttpRouter.add(
   "GET",
   "/argument-validation",
@@ -154,7 +155,7 @@ const argumentValidation = HttpRouter.add(
     const defect = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined;
     return yield* HttpServerResponse.json({
       message: defect instanceof Error ? defect.message : null,
-      recognised: Routes.isArgumentValidationFailure(defect),
+      tagged: Routes.isArgumentValidationFailure(defect),
     });
   }).pipe(Effect.orDie),
 );
