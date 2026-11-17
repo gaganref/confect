@@ -10,6 +10,7 @@ import * as Deployment from "./Deployment.js";
 import * as DeployKey from "./DeployKey.js";
 import * as EnvironmentVariables from "./EnvironmentVariables.js";
 import * as Project from "./Project.js";
+import * as LogStream from "./LogStream.js";
 import * as UsageLimit from "./UsageLimit.js";
 import * as CommandRunner from "./internal/CommandRunner.js";
 import * as PushLock from "./internal/PushLock.js";
@@ -38,6 +39,7 @@ export const providers = (options?: {
       EnvironmentVariables.EnvironmentVariables,
       Code.Code,
       CustomDomain.CustomDomain,
+      LogStream.LogStream,
       UsageLimit.UsageLimit,
     ]),
   ).pipe(
@@ -70,6 +72,10 @@ export const providers = (options?: {
         ProviderLayer.dual(Code.Code, {
           live: () => Code.layer,
           local: () => Code.localLayer,
+        }),
+        ProviderLayer.dual(LogStream.LogStream, {
+          live: () => LogStream.layer,
+          local: () => LogStream.localLayer,
         }),
       ),
     ),

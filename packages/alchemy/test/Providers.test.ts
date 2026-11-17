@@ -51,6 +51,8 @@ describe("providers", () => {
           Convex.EnvironmentVariables,
           Convex.Code,
           Convex.CustomDomain,
+
+          Convex.LogStream,
           Convex.UsageLimit,
         ]) {
           const provider = collection.get(resource.Type);
@@ -90,6 +92,8 @@ describe("providers", () => {
             Convex.EnvironmentVariables,
             Convex.Code,
             Convex.CustomDomain,
+
+            Convex.LogStream,
             Convex.UsageLimit,
           ])
             expect(collection.get(resource.Type)?.mode).toBe(mode);
