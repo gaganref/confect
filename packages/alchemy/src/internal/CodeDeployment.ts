@@ -48,11 +48,11 @@ export class StaleManifest extends Schema.TaggedError<
   expected: Schema.String,
   reason: Schema.Literals(["DifferentDigest", "NotGenerated"]),
   generated: Schema.optionalKey(Schema.String),
-  path: Schema.optionalKey(Schema.String),
+  healthModulePath: Schema.optionalKey(Schema.String),
 }) {
   override get message() {
     return this.reason === "NotGenerated"
-      ? `The health module ${this.path ?? "at the configured functions directory"} is not as codegen writes it, so nothing was pushed. Do not edit or format the file; regenerate it with confect codegen. The CLI that generates it and the Alchemy package that reads it must be on the same Confect release.`
+      ? `The health module ${this.healthModulePath ?? "at the configured functions directory"} is not as codegen writes it, so nothing was pushed. Do not edit or format the file; regenerate it with confect codegen. The CLI that generates it and the Alchemy package that reads it must be on the same Confect release.`
       : `prepare generated manifest ${this.generated}, but the stack imported manifest ${this.expected}, so nothing was pushed. Run confect codegen, commit the generated files and deploy again.`;
   }
 }
@@ -182,7 +182,7 @@ export const deploy = Effect.fn("Code.deploy")(function* (
         if (Option.getOrUndefined(generated) !== props.manifestDigest)
           return yield* StaleManifest.make({
             expected: props.manifestDigest,
-            ...(file === undefined ? {} : { path: file }),
+            ...(file === undefined ? {} : { healthModulePath: file }),
             reason: Option.isNone(generated)
               ? "NotGenerated"
               : "DifferentDigest",

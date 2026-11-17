@@ -470,10 +470,10 @@ const sameValues = (a: Env.Descriptor, b: Env.Descriptor): boolean => {
 const untagged = (
   descriptor: Env.Descriptor,
   optional: boolean,
-): Env.Descriptor =>
-  descriptor.kind === "literals" || descriptor.kind === "providers"
-    ? { kind: descriptor.kind, values: descriptor.values, optional }
-    : { kind: descriptor.kind, optional };
+): Env.Descriptor => {
+  const { provider: _, ...ordinary } = descriptor;
+  return { ...ordinary, optional };
+};
 
 /**
  * How this backend fills a mounted child's provider selector: with one of its
