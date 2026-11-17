@@ -323,6 +323,11 @@ layer(NodeServices.layer)(
             fixture.confect === "reads" ? {} : fixture.confect.unsupported;
           expect(recorded.unsupported).toEqual(expected);
           const unread = Rec.keys(expected);
+          if (bundled.bundles)
+            for (const mount of fixture.deploys ?? [])
+              expect(Rec.keys(bundled.mounts), "convex deploys it").toContain(
+                mount,
+              );
           if (bundled.bundles) {
             // Every mount Convex bundles that Confect reads matches it.
             expect({ app: recorded.app, mounts: recorded.mounts }).toEqual({

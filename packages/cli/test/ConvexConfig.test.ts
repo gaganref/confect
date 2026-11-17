@@ -333,6 +333,80 @@ export default { exports, inner };
     },
   );
 
+  unit.each([
+    {
+      form: "a declared variable",
+      source:
+        'declare const require: any;\nconst loader = require;\nloader("./hidden.js");\nexport {};\n',
+      name: "require",
+    },
+    {
+      form: "an exported declared variable",
+      source: "export declare let module: any;\nexport default module.id;\n",
+      name: "module",
+    },
+    {
+      form: "a declared function",
+      source:
+        "declare function require(id: string): unknown;\nconst loader = require;\nexport default loader;\n",
+      name: "require",
+    },
+    {
+      form: "a declared class",
+      source: "declare class module {}\nexport default module;\n",
+      name: "module",
+    },
+    {
+      form: "a declared enum",
+      source: "declare enum exports { A }\nexport default exports;\n",
+      name: "exports",
+    },
+    {
+      form: "a declared module",
+      source: "declare module require {}\nexport default require;\n",
+      name: "require",
+    },
+    {
+      form: "a global augmentation",
+      source:
+        "declare global { var require: unknown; }\nexport default require;\n",
+      name: "require",
+    },
+    {
+      form: "a namespace that holds only types",
+      source:
+        "namespace exports { export type T = 1; }\nexport default exports;\n",
+      name: "exports",
+    },
+    {
+      form: "a type-only import",
+      source: 'import type require from "./types";\nexport default require;\n',
+      name: "require",
+    },
+    {
+      form: "a type-only import specifier",
+      source:
+        'import { type module } from "./types";\nexport default module;\n',
+      name: "module",
+    },
+    {
+      form: "an interface",
+      source: "interface exports {}\nexport default exports;\n",
+      name: "exports",
+    },
+    {
+      form: "a type alias",
+      source: "type module = 1;\nexport default module;\n",
+      name: "module",
+    },
+  ])(
+    "reads a free $name as an edge when $form, which TypeScript erases, is its only binding",
+    ({ source, name }) => {
+      const imports = Option.getOrUndefined(configImports(source));
+      expect(imports).toContainEqual({ specifier: name, dynamic: true });
+    },
+  );
+
   unit(
     "reads import.meta and a require it does not call as runtime edges",
     () => {

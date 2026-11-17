@@ -643,10 +643,15 @@ const nonReferenceKeys = (node: AstNode): ReadonlySet<string> => {
 };
 
 /**
- * The names a program binds at module level, which a reference anywhere in it
- * resolves to: its imports, variables, functions, classes, enums and
- * namespaces. A binding in an inner scope is not among them, so a reference the
- * walker cannot place stays free.
+ * The names a program binds at module level at run time, which a reference
+ * anywhere in it resolves to: its value imports, variables, functions, classes
+ * and enums. TypeScript erases the rest, so none of it binds a name a deploy's
+ * code can reach: a `declare` declaration of any kind, a type-only import or
+ * import specifier, an interface or type alias, and a namespace, whether
+ * `declare module`, `declare global` or a plain one, which binds only when it
+ * holds values and is left out either way, so a reference it would shadow stays
+ * free. A binding in an inner scope is not among them either, so a reference
+ * the walker cannot place stays free.
  */
 const moduleBindings = (program: unknown): ReadonlySet<string> => {
   const names = new Set<string>();
@@ -682,13 +687,15 @@ const moduleBindings = (program: unknown): ReadonlySet<string> => {
     }
   };
   const addStatement = (statement: unknown): void => {
-    if (!isNode(statement)) return;
+    if (!isNode(statement) || statement["declare"] === true) return;
     switch (statement.type) {
       case "ImportDeclaration":
+        if (statement["importKind"] === "type") return;
         for (const specifier of (statement[
           "specifiers"
         ] as ReadonlyArray<unknown>) ?? [])
-          if (isNode(specifier)) addPattern(specifier["local"]);
+          if (isNode(specifier) && specifier["importKind"] !== "type")
+            addPattern(specifier["local"]);
         return;
       case "VariableDeclaration":
         for (const declarator of (statement[
@@ -699,7 +706,6 @@ const moduleBindings = (program: unknown): ReadonlySet<string> => {
       case "FunctionDeclaration":
       case "ClassDeclaration":
       case "TSEnumDeclaration":
-      case "TSModuleDeclaration":
         addPattern(statement["id"]);
         return;
       case "ExportNamedDeclaration":

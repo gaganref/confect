@@ -39,6 +39,8 @@ export const cases = [
   "a browser field redirecting a relative helper",
   "a directory import through a manifest",
   "an import-equals alias of require",
+  "a require bound only by a TypeScript declaration",
+  "a .jsx and a .js candidate inside node_modules",
 ] as const;
 
 export type Case = (typeof cases)[number];
@@ -107,6 +109,11 @@ export interface Fixture {
    * its registry fails with.
    */
   readonly failsToOpen?: { readonly code: string; readonly message: RegExp };
+  /**
+   * Mount paths Convex's definition bundling must give, for a fixture whose
+   * layout Confect does not read because a read would miss one of them.
+   */
+  readonly deploys?: ReadonlyArray<string>;
   readonly mounts: ReadonlyArray<FixtureMount>;
   /**
    * Files below the project's `node_modules`, by path: a file's text, or a
@@ -773,6 +780,83 @@ export const corpus: ReadonlyArray<Fixture> = [
       },
       "flags/on.js": "export const enabled = true;\n",
       "flags/off.js": "export const enabled = false;\n",
+      ...innerPackage,
+    },
+  },
+  {
+    name: "a TypeScript definition whose only require binding is a declaration TypeScript erases, loading a helper with conditional exports",
+    covers: ["a require bound only by a TypeScript declaration"],
+    bundles: true,
+    confect: { unsupported: { tool: unread("config-imports") } },
+    mounts: [tool],
+    files: {
+      ...pkg("tool", toolExports("./component/convex.config.ts"), {
+        ...Rec.remove(
+          component("component", "tool"),
+          "component/convex.config.js",
+        ),
+        "component/convex.config.ts": Array.join(
+          [
+            'import { defineComponent } from "convex/server";',
+            'import inner from "inner/convex.config";',
+            "declare const require: any;",
+            "const loader = require;",
+            "const flags = (() => {",
+            '  try { return loader("flags"); } catch { return { enabled: false }; }',
+            "})();",
+            'const component = defineComponent("tool");',
+            "if (flags.enabled) component.use(inner);",
+            "export default component;",
+            "",
+          ],
+          "\n",
+        ),
+      }),
+      "flags/package.json": {
+        name: "flags",
+        version: "1.0.0",
+        type: "module",
+        exports: { ".": { convex: "./on.js", default: "./off.js" } },
+      },
+      "flags/on.js": "export const enabled = true;\n",
+      "flags/off.js": "export const enabled = false;\n",
+      ...innerPackage,
+    },
+  },
+  {
+    // Inside node_modules, esbuild tries .jsx before .js, so Convex deploys
+    // the .jsx helper, which mounts a child the .js one does not.
+    name: "a config importing a relative helper with a .jsx and a .js candidate inside node_modules",
+    covers: ["a .jsx and a .js candidate inside node_modules"],
+    bundles: true,
+    // Codegen's own load of the definition picks the .jsx helper too, so the
+    // child is recorded below the unread mount.
+    confect: {
+      unsupported: {
+        tool: unread("config-imports"),
+        "tool/inner": unread("inside-unsupported", "inner"),
+      },
+    },
+    deploys: ["tool/inner"],
+    mounts: [tool],
+    files: {
+      ...pkg("tool", toolExports("./component/convex.config.js"), {
+        ...component("component", "tool"),
+        "component/convex.config.js": Array.join(
+          [
+            'import { defineComponent } from "convex/server";',
+            'import { install } from "./logging";',
+            'const component = defineComponent("tool");',
+            "install(component);",
+            "export default component;",
+            "",
+          ],
+          "\n",
+        ),
+        "component/logging.js": "export const install = () => {};\n",
+        "component/logging.jsx":
+          'import inner from "inner/convex.config";\nexport const install = (component) => component.use(inner);\n',
+      }),
       ...innerPackage,
     },
   },
