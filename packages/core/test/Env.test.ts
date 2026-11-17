@@ -137,6 +137,35 @@ it.each([false, true])(
   },
 );
 
+it.each(["providers", "make"] as const)(
+  "names the provider of a tagged group field at Env.%s",
+  (boundary) => {
+    const field: Env.AnyField = {
+      ...Env.string(),
+      descriptor: {
+        kind: "string",
+        optional: true,
+        provider: { selector: "OTHER", name: "resend", required: true },
+      },
+    };
+    const groups = { ses: { SETTING: field } };
+    expect(() =>
+      boundary === "providers"
+        ? Env.providers(groups)
+        : Env.make("host", {
+            CHOICE: { ...Env.providers({ ses: {} }), groups },
+          }),
+    ).toThrowError(
+      expect.objectContaining({
+        _tag: "InvalidEnvProviders",
+        reason: "TaggedField",
+        provider: "ses",
+        key: "SETTING",
+      }),
+    );
+  },
+);
+
 it("refuses nested provider selectors in typed declarations", () => {
   expect(() =>
     Env.providers({
