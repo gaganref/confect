@@ -650,6 +650,34 @@ answers Effect's empty 400. A local-backend lane case pins the real prefix.
 `convex/http.ts` is unchanged. Changeset: `route-specs-serve.md`. Upstream:
 fork only, as route specs are a fork addition.
 
+## A guard runs first on every route path
+
+`HttpRouter.make` takes `guard`, a plain Effect `HttpMiddleware` named with
+`Guard.make(name, middleware)`; the name is for codegen to check which guard
+a backend declares. `Guard.none` is the explicit opt-out, never a default.
+Confect adds the guard as the router's first global middleware, so it encloses
+every product global, router-scoped, api and endpoint middleware, and runs it
+only when dispatch would select a route spec. Classification uses the full
+registration set, the router's configuration, the same prefix and wildcard
+expansion, HEAD precedence with GET fallback and the synthesized OPTIONS chain,
+and the guard owns OPTIONS on a route spec's path with or without
+`Access-Control-Request-Method`. The guard reads `Routes.Route` and
+`Guard.Preflight`, and its inner effect never fails, since `causeResponse` has
+already turned a failure into Effect's response. Each product global
+middleware's output request is classified again, so a rewrite into or out of
+a route spec dies before dispatch. Every `Routes.make` registration carries its
+own identity, independent of the api list. `HttpRouter.make` throws
+`MissingGuard` when the api list reflects a route spec and no guard is given,
+and before serving it refuses a route spec registration without a guard, one
+the api list does not reflect as itself or that sits under a product prefix
+(`UnreflectedRoute`), an api route spec nothing registers, and an explicit
+OPTIONS or any-method route that could match a route spec's request
+(`RouteShadowed`). A plain Convex route is refused when added if its effective
+method and exact path or prefix could match a route spec's request, comparing
+path languages loosely enough that an uncertain overlap is refused. Changeset:
+`route-specs-guard.md`. Upstream: fork only, as route specs are a fork
+addition.
+
 ## Native function reference conversion
 
 Move `Ref.getFunctionReference` to `@confect/core/RefInternal`. The `Ref` module

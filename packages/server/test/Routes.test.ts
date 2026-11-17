@@ -2,6 +2,7 @@ import { FunctionSpec, GroupSpec, MiddlewareSpec } from "@confect/core";
 import {
   FunctionImpl,
   GroupImpl,
+  Guard,
   HttpRouter as ConfectHttpRouter,
   MiddlewareImpl,
   MutationRunner,
@@ -179,7 +180,12 @@ const serve = (router: ReturnType<typeof ConfectHttpRouter.make>) => {
     });
 };
 
-const send = serve(ConfectHttpRouter.make(schema, routes.routes));
+const send = serve(
+  ConfectHttpRouter.make(schema, routes.routes, {
+    api: routes.api,
+    guard: Guard.none,
+  }),
+);
 
 describe("Routes.make", () => {
   it("annotates each route's endpoint with its function path and spec", () => {
@@ -341,7 +347,7 @@ describe("HttpRouter.make's api option", () => {
     const router = ConfectHttpRouter.make(
       schema,
       Layer.merge(other, routes.routes),
-      { api: [OtherApi, routes.api] },
+      { api: [OtherApi, routes.api], guard: Guard.none },
     );
     expect(labels(router)).toEqual([
       "GET /dies",
