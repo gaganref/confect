@@ -169,6 +169,7 @@ const settleChoice = (
   value: unknown,
 ) =>
   Effect.gen(function* () {
+    if (selector.optional && missing(value)) return undefined;
     const invalid = InvalidMountSetting.make({
       mount: at,
       slot: key,
