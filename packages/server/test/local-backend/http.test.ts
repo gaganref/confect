@@ -16,6 +16,7 @@ import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Option from "effect/Option";
 import * as Array from "effect/Array";
+import * as ArgumentRefusal from "../../src/internal/argumentRefusal";
 import * as SignedEnvelope from "../signedEnvelope";
 
 const encodeJson = (value: unknown) =>
@@ -55,6 +56,24 @@ layer(
       );
       expect(bytes).toBe(100 * 1024 * 1024);
     }),
+  );
+
+  it.effect(
+    "recognises the binary's argument validation refusal of a nested call",
+    () =>
+      Effect.gen(function* () {
+        const response = yield* HttpClient.get(
+          LocalBackend.siteUrl("/argument-validation"),
+        );
+        expect(response.status).toBe(200);
+        const seen = (yield* response.json) as {
+          readonly message: string | null;
+          readonly tagged: boolean;
+        };
+        expect(seen.message).toMatch(/^ArgumentValidationError: /);
+        expect(ArgumentRefusal.isRefusal(new Error(seen.message!))).toBe(true);
+        expect(seen.tagged).toBe(false);
+      }),
   );
 
   it.effect(

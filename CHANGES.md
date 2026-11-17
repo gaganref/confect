@@ -629,6 +629,37 @@ registration module skip one. Serving, codegen of the HTTP files and the
 watcher follow in later units of the same stack. Changeset:
 `route-spec-kind.md`. Upstream: fork only, as route specs are a fork addition.
 
+## Route specs serve through Routes.make
+
+`Routes.make(schema, leaves)` takes each leaf's spec and finalized impl by
+module path and returns `{ api, routes }`, one `HttpApiGroup` per leaf. Each
+endpoint is annotated with `Routes.Route`, `{ functionPath, spec }`, for the
+guard that follows in the same stack, and runs the impl through the extracted
+`runAction` with an `http` invocation named by its function path, so every
+action middleware runs for a route. Path parameters merge into the args with
+the query on GET and OPTIONS and the JSON body otherwise. `returns` encodes as
+a JSON 200. `Routes.make` evaluates no schema; its `api` and `routes` build
+on first read. Every error a route can fail with, its own or a covering
+middleware's, needs an `HttpApiSchema.status`, because Effect would answer an
+unannotated one 500; reading the routes throws `RouteErrorWithoutStatus`
+instead, so the router refuses it before serving. An undeclared failure dies,
+so it answers 500 like a defect. Convex reports a nested call's argument
+validation failure only by its message, `ArgumentValidationError: ` on the real
+backend and `Validator error:` under convex-test. The route's ctx reads it at
+its nested `runQuery`, `runMutation` and `runAction` and dies with a
+`Routes.ArgumentValidationFailure` there, which answers Effect's empty 400 and
+which `Routes.isArgumentValidationFailure` checks for as an effect. Only that
+boundary can make one. Its type is exported and its constructor is not, and
+the check is by membership in the request's own set of refusals, made and
+dropped with the request, so a product error answers 500 whatever its
+message, shape or prototype, and so does a marker kept from another request.
+A local-backend lane case pins the real prefix. Under convex-test, whose
+validator errors are plain `Error`s, a called function's own error that starts
+`Validator error:` cannot be told from a refusal and also answers 400.
+`HttpRouter.make`'s `api` takes one api or a list, and today's generated
+`convex/http.ts` is unchanged. Changeset: `route-specs-serve.md`. Upstream:
+fork only, as route specs are a fork addition.
+
 ## Native function reference conversion
 
 Move `Ref.getFunctionReference` to `@confect/core/RefInternal`. The `Ref` module
