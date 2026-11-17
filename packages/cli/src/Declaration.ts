@@ -44,7 +44,9 @@ export interface Declaration {
    * its own selectors, under their promoted names and tagged with that
    * selector. The manifest lists them in its own env, where the selector is.
    */
-  readonly adopted: ReadonlyArray<readonly [string, Env.Descriptor]>;
+  readonly adoptedProviderSettings: ReadonlyArray<
+    readonly [string, Env.Descriptor]
+  >;
   readonly mounts: ReadonlyArray<Mount>;
   readonly providers: Option.Option<ReadonlyArray<Provider>>;
 }
@@ -568,7 +570,8 @@ export const parse = (input: {
 
     const automatic: Array<readonly [string, Env.Descriptor]> = [];
     const automaticFrom = new Map<string, string>();
-    const adopted: Array<readonly [string, Env.Descriptor]> = [];
+    const adoptedProviderSettings: Array<readonly [string, Env.Descriptor]> =
+      [];
     const mounts: Array<Mount> = [];
     const promoted: Array<readonly [string, Env.Descriptor, string]> = [];
     for (const mount of App.mounts(input.app)) {
@@ -775,7 +778,7 @@ export const parse = (input: {
         }
         promoted.push([variable, slotDescriptor, `${mount.name}.${slot}`]);
         if (selector?.kind === "selector")
-          adopted.push([variable, slotDescriptor]);
+          adoptedProviderSettings.push([variable, slotDescriptor]);
         else open.push([slot, { ...slotDescriptor, variable }]);
         bindings.push([slot, { kind: "env", key: variable }]);
       }
@@ -810,7 +813,7 @@ export const parse = (input: {
       name,
       env: descriptors,
       automatic,
-      adopted,
+      adoptedProviderSettings,
       promoted: Arr.map(
         promoted,
         ([key, descriptor]) => [key, descriptor] as const,
@@ -1112,7 +1115,7 @@ export const manifest = (
       env: Rec.fromEntries([
         ...declaration.env,
         ...declaration.automatic,
-        ...declaration.adopted,
+        ...declaration.adoptedProviderSettings,
       ]),
       mounts: Rec.fromEntries(
         Arr.map(
