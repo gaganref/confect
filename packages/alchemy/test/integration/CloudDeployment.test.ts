@@ -465,7 +465,7 @@ it.effect(
   "applies custom domains, restores drift, replaces domains and resets on removal",
   () =>
     Effect.gen(function* () {
-      const fixture = mockClient();
+      const fixture = mockClient({ verificationTime: 200 });
       const deploy = makeHarness(
         fixture.layer,
         Layer.succeed(CommandRunner, {
@@ -497,7 +497,7 @@ it.effect(
         domain: "api.example.com",
         url: "https://api.example.com",
         canonicalUrl: "https://api.example.com",
-        verificationTime: null,
+        verificationTime: 200,
       });
       const second = yield* deploy(domain("api.example.com", true));
       expect(second).toEqual(first);
@@ -515,7 +515,7 @@ it.effect(
           domain: "new.example.com",
           url: "https://new.example.com",
           canonicalUrl: "https://new.example.com",
-          verificationTime: null,
+          verificationTime: 200,
         },
         urls: {
           convexCloudUrl: "https://new.example.com",
@@ -527,7 +527,7 @@ it.effect(
             domain: "new.example.com",
             requestDestination: "convexCloud",
             creationTime: 100,
-            verificationTime: null,
+            verificationTime: 200,
           },
         ],
       });
@@ -553,7 +553,7 @@ it.effect(
   "refuses a foreign replacement domain before deleting the current domain",
   () =>
     Effect.gen(function* () {
-      const fixture = mockClient();
+      const fixture = mockClient({ verificationTime: 200 });
       const deploy = makeHarness(
         fixture.layer,
         Layer.succeed(CommandRunner, {
@@ -596,14 +596,14 @@ it.effect(
             domain: "api.example.com",
             requestDestination: "convexCloud",
             creationTime: 100,
-            verificationTime: null,
+            verificationTime: 200,
           },
           {
             deploymentName: deployment.name,
             domain: "foreign.example.com",
             requestDestination: "convexCloud",
             creationTime: 100,
-            verificationTime: null,
+            verificationTime: 200,
           },
         ],
         urls: {
@@ -623,7 +623,7 @@ it.effect.each([
   "recovers an interrupted canonical update with retry=$retry existing=$existing",
   ({ retry, existing }) =>
     Effect.gen(function* () {
-      const fixture = mockClient();
+      const fixture = mockClient({ verificationTime: 200 });
       let loseResponse = true;
       const client = Layer.succeed(ConvexClient, {
         ...fixture.client,

@@ -7,6 +7,7 @@ import {
 import { Providers } from "@confect/alchemy/Providers";
 import { expect, it } from "@effect/vitest";
 import * as Provider from "alchemy/Provider";
+import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Array from "effect/Array";
@@ -455,4 +456,33 @@ it.effect("allows canonical owners for different destinations", () =>
     );
     expect(fixture.state.domains).toHaveLength(2);
   }),
+);
+
+it.effect(
+  "refuses canonical owners whose props resolve from Alchemy outputs",
+  () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const engine = yield* makeEngine(fixture.layer.pipe(providers));
+      const declarations = Effect.gen(function* () {
+        yield* CustomDomain.CustomDomain("One", {
+          ...props,
+          canonical: Output.literal(true),
+        });
+        yield* CustomDomain.CustomDomain("Two", {
+          ...props,
+          domain: "other.example.com",
+          canonical: Output.literal(true),
+        });
+        return {};
+      });
+      const result = yield* engine
+        .run(declarations, { apply: false })
+        .pipe(Effect.result);
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "ConflictingCanonicalDomains" },
+      });
+      expect(fixture.client.createCustomDomain).not.toHaveBeenCalled();
+    }),
 );
