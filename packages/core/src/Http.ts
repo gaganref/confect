@@ -91,7 +91,7 @@ type Addressable<Groups, G extends string> = {
     GroupEndpoints<Groups, G>,
     { readonly identifier: E }
   > extends { readonly path: infer P }
-    ? P extends `${string}:${string}`
+    ? P extends `${string}:${string}` | `${string}*${string}`
       ? never
       : E
     : never;
