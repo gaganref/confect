@@ -1,3 +1,5 @@
+import * as Cause from "effect/Cause";
+import * as Exit from "effect/Exit";
 import * as Array from "effect/Array";
 import { describe, expect, it } from "@effect/vitest";
 import {
@@ -50,7 +52,8 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
     "missing format",
     { name: "workpool", env: {}, mounts: {}, http: {}, digest: "sha256:child" },
   ],
-  ...[0, 2, "1"].map(
+  ...Array.map(
+    [0, 2, "1"],
     (format) => [`format ${format}`, { ...formatOne, format }] as const,
   ),
   ["extra root field", { ...formatOne, extra: true }],
@@ -95,15 +98,18 @@ describe("Backend", () => {
         const result = yield* Backend("Backend", {
           ...props,
           manifest: manifest as typeof formatOne,
-        }).pipe(Effect.result);
-        expect(Result.isFailure(result)).toBe(true);
-        if (Result.isFailure(result)) {
-          expect(result.failure).toMatchObject({
+        }).pipe(Effect.exit);
+        expect(Exit.isFailure(result)).toBe(true);
+        if (Exit.isFailure(result)) {
+          const defect = Cause.findDefect(result.cause);
+          expect(Result.isSuccess(defect)).toBe(true);
+          if (Result.isFailure(defect)) return;
+          expect(defect.success).toMatchObject({
             _tag: "UnsupportedManifestFormat",
             source: "confect/_generated/manifest.ts",
           });
-          expect(String(result.failure)).toContain("confect codegen");
-          expect(String(result.failure)).toContain("same release");
+          expect(String(defect.success)).toContain("confect codegen");
+          expect(String(defect.success)).toContain("same release");
         }
       }).pipe(Effect.provide([stack(), providers])),
   );

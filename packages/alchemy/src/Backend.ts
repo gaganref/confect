@@ -1,4 +1,4 @@
-import type * as Manifest from "@confect/core/Manifest";
+import * as Manifest from "@confect/core/Manifest";
 import type { Input } from "alchemy/Input";
 import * as Namespace from "alchemy/Namespace";
 import * as Output from "alchemy/Output";
@@ -166,12 +166,18 @@ const backend = (
   Namespace.push(
     id,
     Effect.gen(function* () {
-      const promoted =
+      const manifest =
         props.manifest === undefined
+          ? undefined
+          : yield* Effect.fromResult(
+              Manifest.decode(props.manifest, "confect/_generated/manifest.ts"),
+            ).pipe(Effect.orDie);
+      const promoted =
+        manifest === undefined
           ? {}
           : // The types refuse every setting this refuses, so reaching it means
             // they were bypassed: a defect, not a stack error.
-            yield* mountVariables(props.manifest, props.mounts ?? {}).pipe(
+            yield* mountVariables(manifest, props.mounts ?? {}).pipe(
               Effect.orDie,
             );
       const variables =
@@ -199,9 +205,7 @@ const backend = (
         },
         deployKey: props.deployKey,
         ...(props.cwd === undefined ? {} : { cwd: props.cwd }),
-        ...(props.manifest === undefined
-          ? {}
-          : { digest: props.manifest.digest }),
+        ...(manifest === undefined ? {} : { digest: manifest.digest }),
         prepare: { command: "confect", args: ["codegen"] },
       });
       return { code, environment, name: code.name, url: code.url };

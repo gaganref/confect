@@ -210,18 +210,6 @@ export class InvalidProviderEnv extends Schema.TaggedError<
   }
 }
 
-export class UnsupportedDescriptorFormat extends Schema.TaggedError<
-  UnsupportedDescriptorFormat,
-  { readonly brand: unique symbol }
->()("UnsupportedDescriptorFormat", {
-  mount: Schema.String,
-  format: Schema.Unknown,
-}) {
-  override get message(): string {
-    return `The mount "${this.mount}" mounts a component whose manifest has format ${stringify(this.format)}; this codegen reads format ${Manifest.FORMAT}. Regenerate the component with a matching @confect/cli.`;
-  }
-}
-
 export class RootMountEnv extends Schema.TaggedError<
   RootMountEnv,
   { readonly brand: unique symbol }
@@ -261,7 +249,7 @@ export type DeclarationError =
   | DuplicateDefinitionName
   | AuthForAnotherBackend
   | InvalidProviderEnv
-  | UnsupportedDescriptorFormat
+  | Manifest.UnsupportedManifestFormat
   | RootMountEnv
   | DerivedSlotCollision;
 
@@ -287,9 +275,6 @@ export interface ComponentImport {
   readonly componentName: string;
 }
 
-const isCurrentFormat = (descriptor: {
-  readonly format: number;
-}): descriptor is Manifest.Manifest => descriptor.format === Manifest.FORMAT;
 const plainDescriptor = (slot: Manifest.OpenSlot): Env.Descriptor =>
   slot.kind === "literals"
     ? { kind: slot.kind, values: slot.values, optional: slot.optional }
@@ -303,11 +288,12 @@ const plainDescriptor = (slot: Manifest.OpenSlot): Env.Descriptor =>
  */
 const slotsOf = (
   component: CoreMount.Data["component"],
+  descriptor: Manifest.Manifest | undefined,
 ): ReadonlyArray<readonly [string, Env.Descriptor]> =>
-  component.manifest !== undefined
+  descriptor !== undefined
     ? [
-        ...Rec.toEntries(component.manifest.env),
-        ...Arr.flatMap(Rec.values(component.manifest.mounts), ({ env }) =>
+        ...Rec.toEntries(descriptor.env),
+        ...Arr.flatMap(Rec.values(descriptor.mounts), ({ env }) =>
           Arr.map(
             Rec.values(env),
             (slot) => [slot.variable, plainDescriptor(slot)] as const,
@@ -411,15 +397,13 @@ export const parse = (input: {
           }),
         );
       }
-      const descriptor = mount.component.manifest;
-      if (descriptor !== undefined && !isCurrentFormat(descriptor)) {
-        return yield* Result.fail(
-          UnsupportedDescriptorFormat.make({
-            mount: mount.name,
-            format: descriptor.format,
-          }),
-        );
-      }
+      const descriptor =
+        mount.component.manifest === undefined
+          ? undefined
+          : yield* Manifest.decode(
+              mount.component.manifest,
+              component.importPath,
+            );
       const bindings: Array<readonly [string, Binding]> = [];
       for (const [slot, bound] of Rec.toEntries(mount.env ?? {})) {
         if (bound === undefined) continue;
@@ -455,7 +439,10 @@ export const parse = (input: {
         );
       }
       const open: Array<readonly [string, Manifest.OpenSlot]> = [];
-      for (const [slot, slotDescriptor] of slotsOf(mount.component)) {
+      for (const [slot, slotDescriptor] of slotsOf(
+        mount.component,
+        descriptor,
+      )) {
         if (Arr.some(bindings, ([bound]) => bound === slot)) continue;
         const variable = promotedName(mount.name, slot);
         if (!ENV_KEY.test(variable))

@@ -51,7 +51,8 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
     "missing format",
     { name: "workpool", env: {}, mounts: {}, http: {}, digest: "sha256:child" },
   ],
-  ...[0, 2, "1"].map(
+  ...Array.map(
+    [0, 2, "1"],
     (format) => [`format ${format}`, { ...formatOne, format }] as const,
   ),
   ["extra root field", { ...formatOne, extra: true }],
@@ -139,22 +140,15 @@ describe("Declaration", () => {
     const parsed = parseApp(app(shipped));
     assertIs(parsed, Result.isSuccess);
     expect(parsed.success.mounts[0]?.descriptor).toBe(shipped);
-    expect(parseApp(app({ ...shipped, format: 2 }))).toEqual(
-      Result.fail(
-        Declaration.UnsupportedDescriptorFormat.make({
-          mount: "pool",
-          format: 2,
-        }),
-      ),
-    );
-    expect(parseApp(app({ format: 2 }))).toEqual(
-      Result.fail(
-        Declaration.UnsupportedDescriptorFormat.make({
-          mount: "pool",
-          format: 2,
-        }),
-      ),
-    );
+    for (const manifest of [{ ...shipped, format: 2 }, { format: 2 }]) {
+      const refused = parseApp(app(manifest));
+      assertIs(refused, Result.isFailure);
+      expect(refused.failure).toMatchObject({
+        _tag: "UnsupportedManifestFormat",
+        source: "@convex-dev/workpool/convex.config.js",
+      });
+      expect(refused.failure.message).toContain("confect codegen");
+    }
   });
 
   it.each([

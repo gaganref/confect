@@ -1,3 +1,6 @@
+import * as Arr from "effect/Array";
+import * as Result from "effect/Result";
+import * as Schema from "effect/Schema";
 import type * as Redacted from "effect/Redacted";
 import type * as Env from "./Env.js";
 
@@ -14,53 +17,92 @@ export const FORMAT = 1;
  * uppercased; a nested child's open slot arrives already prefixed, as
  * `<MOUNT>_<CHILD>_<SLOT>`.
  */
-export type OpenSlot = Env.Descriptor & { readonly variable: string };
+const descriptorFields = { optional: Schema.Boolean };
+const descriptors = [
+  Schema.Struct({ kind: Schema.Literal("string"), ...descriptorFields }),
+  Schema.Struct({ kind: Schema.Literal("secret"), ...descriptorFields }),
+  Schema.Struct({
+    kind: Schema.Literal("literals"),
+    values: Schema.NonEmptyArray(Schema.String),
+    ...descriptorFields,
+  }),
+] as const;
+const Descriptor = Schema.Union(descriptors);
+export const OpenSlot = Schema.Union(
+  Arr.map(descriptors, (schema) =>
+    Schema.Struct({ ...schema.fields, variable: Schema.String }),
+  ),
+);
+export type OpenSlot = typeof OpenSlot.Type;
 
 /**
- * One mount the backend declares: its component's Convex name, its HTTP prefix
- * if any, and only the slots left open for the stack.
+ * One mount and the slots it leaves open for the deployment.
  */
-export interface MountEntry {
-  readonly component: string;
-  readonly httpPrefix?: string;
-  readonly env: Readonly<Record<string, OpenSlot>>;
+export const MountEntry = Schema.Struct({
+  component: Schema.String,
+  httpPrefix: Schema.optionalKey(Schema.String),
+  env: Schema.Record(Schema.String, OpenSlot),
+});
+export type MountEntry = typeof MountEntry.Type;
+
+/**
+ * One endpoint, identified by owner, group and endpoint name.
+ */
+export const Route = Schema.Struct({
+  method: Schema.String,
+  path: Schema.String,
+  owner: Schema.String,
+  group: Schema.String,
+  key: Schema.String,
+  digest: Schema.String,
+});
+export type Route = typeof Route.Type;
+
+/**
+ * The complete format 1 contract. Decode at every manifest import boundary.
+ * Unknown fields are refused, including within slots, mounts and routes.
+ */
+export const Manifest = Schema.Struct({
+  format: Schema.Literal(FORMAT),
+  name: Schema.String,
+  env: Schema.Record(Schema.String, Descriptor),
+  mounts: Schema.Record(Schema.String, MountEntry),
+  http: Schema.Record(
+    Schema.String,
+    Schema.Record(Schema.String, Schema.Record(Schema.String, Route)),
+  ),
+  digest: Schema.String,
+});
+export type Manifest = typeof Manifest.Type;
+
+export class UnsupportedManifestFormat extends Schema.TaggedError<
+  UnsupportedManifestFormat,
+  { readonly brand: unique symbol }
+>()("UnsupportedManifestFormat", {
+  source: Schema.String,
+  reason: Schema.String,
+}) {
+  override get message(): string {
+    return `The manifest at ${this.source} does not match format ${FORMAT}: ${this.reason}. Regenerate it with confect codegen and keep the component and host generators on the same release as the reader.`;
+  }
 }
 
 /**
- * One HTTP endpoint the backend serves, by its owner (`app`, a mount's name, or
- * a nested placement such as `relay/child`), its `HttpApi` group and endpoint
- * names, its full path, and the digest of the manifest that lists it.
+ * Decode a manifest without throwing for a malformed format or shape.
  */
-export interface Route {
-  readonly method: string;
-  readonly path: string;
-  readonly owner: string;
-  readonly group: string;
-  readonly key: string;
-  readonly digest: string;
-}
-
-/**
- * The shape of `confect/_generated/manifest.ts`: plain data with no imports,
- * which infra reads instead of backend code, and which a component ships so a
- * host's codegen can read it. `env` lists each variable with its kind, `mounts`
- * every mount with its open slots, `http` every `HttpApi` endpoint it serves,
- * nested placements included, and `digest` identifies the declaration inputs
- * and routes it was generated from.
- */
-export interface Manifest {
-  readonly format: typeof FORMAT;
-  readonly name: string;
-  readonly env: Readonly<Record<string, Env.Descriptor>>;
-  readonly mounts: Readonly<Record<string, MountEntry>>;
-  /**
-   * Routes by owner, then group, then endpoint.
-   */
-  readonly http: Readonly<
-    Record<string, Readonly<Record<string, Readonly<Record<string, Route>>>>>
-  >;
-  readonly digest: string;
-}
+export const decode = (
+  input: unknown,
+  source: string,
+): Result.Result<Manifest, UnsupportedManifestFormat> =>
+  Schema.decodeUnknownResult(Manifest, { onExcessProperty: "error" })(
+    input,
+  ).pipe(
+    // Validation has established this type. Keep the imported value's identity.
+    Result.map(() => input as Manifest),
+    Result.mapError((error) =>
+      UnsupportedManifestFormat.make({ source, reason: error.message }),
+    ),
+  );
 
 /**
  * Every route a manifest lists. A route from another build carries another
