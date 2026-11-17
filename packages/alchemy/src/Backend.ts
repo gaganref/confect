@@ -221,52 +221,68 @@ const normalize = (value: unknown): unknown => {
 };
 
 /**
- * Validate and encode one resolved record before the environment resource sees
- * any values. Deferred records keep every upstream edge on each written value.
+ * Each supplied slot keeps its own input edges. Only a selector also reads the
+ * settings tagged to it, so its required-settings check precedes the write.
  */
 const supplySettings = <E>(
   at: string,
   slots: Readonly<Record<string, Env.Descriptor>>,
-  values: Readonly<Record<string, unknown>>,
+  supplied: Readonly<Record<string, unknown>>,
   onMissing: (slot: string) => E,
 ) =>
   Effect.gen(function* () {
-    const settle = (resolved: Readonly<Record<string, unknown>>) =>
+    const normalized = Rec.map(supplied, normalize);
+    const entries: Array<[string, unknown]> = [];
+    const settle = (key: string, descriptor: Env.Descriptor, value: unknown) =>
       Effect.gen(function* () {
-        const written: Record<string, unknown> = Object.create(null);
-        for (const [key, descriptor] of Rec.toEntries(slots)) {
-          const value = Rec.has(resolved, key) ? resolved[key] : undefined;
-          if (missing(value)) {
-            if (!descriptor.optional) return yield* Effect.fail(onMissing(key));
-            continue;
-          }
-          if (descriptor.kind === "secret" && typeof value === "string")
-            return yield* InvalidMountSetting.make({
-              mount: at,
-              slot: key,
-              reason: "PlainSecret",
-            });
-          written[key] =
-            descriptor.kind === "providers"
-              ? yield* settleChoice(at, key, descriptor, slots, resolved, value)
-              : value;
+        if (missing(value)) {
+          if (!descriptor.optional) return yield* Effect.fail(onMissing(key));
+          return undefined;
         }
-        return written as Record<string, string | Redacted.Redacted<string>>;
+        if (descriptor.kind === "secret" && typeof value === "string")
+          return yield* InvalidMountSetting.make({
+            mount: at,
+            slot: key,
+            reason: "PlainSecret",
+          });
+        return value;
       });
-    const normalized = normalize(values);
-    if (!Output.isOutput(normalized))
-      return yield* settle(normalized as Readonly<Record<string, unknown>>);
-    const checked = normalized.pipe(
-      Output.mapEffect((resolved: Readonly<Record<string, unknown>>) =>
-        settle(resolved).pipe(Effect.orDie),
-      ),
-    );
-    return Rec.fromEntries(
-      Arr.map(Rec.keys(slots), (key) => [
-        key,
-        Output.map(checked, (resolved) => resolved[key]),
-      ]),
-    );
+    for (const [key, descriptor] of Rec.toEntries(slots)) {
+      const value = Rec.has(normalized, key) ? normalized[key] : undefined;
+      const checked = Output.isOutput(value)
+        ? value.pipe(
+            Output.mapEffect((resolved) =>
+              settle(key, descriptor, resolved).pipe(Effect.orDie),
+            ),
+          )
+        : yield* settle(key, descriptor, value);
+      if (checked !== undefined) entries.push([key, checked]);
+    }
+    const settings = Rec.fromEntries(entries);
+    for (const [key, descriptor] of Rec.toEntries(slots)) {
+      if (descriptor.kind !== "providers" || !Rec.has(settings, key)) continue;
+      const value = settings[key];
+      const tagged = Rec.filter(
+        settings,
+        (_, slot) => slots[slot]?.provider?.selector === key,
+      );
+      const check = (
+        choice: unknown,
+        resolved: Readonly<Record<string, unknown>>,
+      ) => settleChoice(at, key, descriptor, slots, resolved, choice);
+      const inputs = normalize({ value, tagged });
+      settings[key] = Output.isOutput(inputs)
+        ? inputs.pipe(
+            Output.mapEffect(
+              (resolved: {
+                readonly value: unknown;
+                readonly tagged: Readonly<Record<string, unknown>>;
+              }) => check(resolved.value, resolved.tagged).pipe(Effect.orDie),
+            ),
+          )
+        : yield* check(value, tagged);
+    }
+    return settings as Record<string, Variables[string]>;
   });
 
 export class InvalidMountSetting extends Schema.TaggedError<
