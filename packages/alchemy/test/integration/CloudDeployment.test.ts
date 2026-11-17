@@ -202,6 +202,8 @@ describe("cloud deployment lifecycle", () => {
     { option: "delay", updating: false },
     { option: "configRetry", updating: false },
     { option: "configLock", updating: false },
+    { option: "nestedRetry", updating: false },
+    { option: "nestedLock", updating: false },
   ] as const)(
     "refuses resolved invalid $option during an unresolved plan with updating=$updating",
     ({ option, updating }) =>
@@ -245,6 +247,12 @@ describe("cloud deployment lifecycle", () => {
               ...(invalid && option === "configLock"
                 ? { lock: Config.succeed({ deploymentName: "../../escape" }) }
                 : {}),
+              ...(invalid && option === "nestedRetry"
+                ? { retry: { maxAttempts: Config.succeed(0), delay: 100 } }
+                : {}),
+              ...(invalid && option === "nestedLock"
+                ? { lock: { deploymentName: Config.succeed("../../escape") } }
+                : {}),
               ...(invalid && option === "deploymentName"
                 ? { lock: { deploymentName: "../../escape" } }
                 : {}),
@@ -259,9 +267,9 @@ describe("cloud deployment lifecycle", () => {
         const detail = inspect(planned, { depth: null });
         expect(detail).toContain("EnvironmentVariablesInvalidOption");
         expect(detail).toContain(
-          option === "configRetry"
+          option === "configRetry" || option === "nestedRetry"
             ? "maxAttempts"
-            : option === "configLock"
+            : option === "configLock" || option === "nestedLock"
               ? "deploymentName"
               : option,
         );
