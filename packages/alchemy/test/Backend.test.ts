@@ -1431,6 +1431,40 @@ describe("Backend choices from outputs", () => {
     }
   }
 
+  it.effect(
+    "keeps a mount named automatic distinct from Backend.automatic",
+    () =>
+      Effect.gen(function* () {
+        const { result, fixture, pushes } = yield* apply(() => ({
+          manifest: {
+            ...formatOne,
+            mounts: {
+              automatic: {
+                component: "relay",
+                env: {
+                  TOKEN: {
+                    kind: "secret",
+                    optional: false,
+                    variable: "AUTOMATIC_TOKEN",
+                  },
+                },
+              },
+            },
+          },
+          mounts: { automatic: { TOKEN: "plain" } },
+        }));
+        expect(defectOf(result)).toMatchObject({
+          _tag: "InvalidMountSetting",
+          mount: "automatic",
+          slot: "TOKEN",
+          reason: "PlainSecret",
+        });
+        expect(String(defectOf(result))).toContain("Backend.mounts");
+        expect(fixture.state.environmentUpdates).toEqual([]);
+        expect(pushes).toEqual([]);
+      }),
+  );
+
   it.effect("directs a plain automatic secret to Backend.automatic", () =>
     Effect.gen(function* () {
       const { result, fixture, pushes } = yield* apply(() => ({
@@ -1689,7 +1723,10 @@ describe("Backend choices from outputs", () => {
               : { automatic: { TOKEN: input(form, "plain", upstream) } }),
           }));
           expect(defectOf(result)).toMatchObject({
-            _tag: "InvalidMountSetting",
+            _tag:
+              location === "automatic"
+                ? "InvalidAutomaticSetting"
+                : "InvalidMountSetting",
             slot: "TOKEN",
             reason: "PlainSecret",
           });
