@@ -69,6 +69,47 @@ it.each([false, true])(
   },
 );
 
+it.each([
+  "AutomaticSelector",
+  "AutomaticSetting",
+  "NestedSelector",
+  "OptionalNestedSelector",
+] as const)(
+  "refuses a hand-built invalid provider field at Env.make, %s",
+  (composition) => {
+    const choice = Env.providers({ ses: {} });
+    const nested = Env.providers({ inner: {} });
+    const field: Env.AnyField =
+      composition === "AutomaticSelector"
+        ? { ...choice, descriptor: { ...choice.descriptor, automatic: true } }
+        : {
+            ...choice,
+            groups: {
+              ses: {
+                SETTING:
+                  composition === "AutomaticSetting"
+                    ? Env.automatic(Env.string())
+                    : composition === "OptionalNestedSelector"
+                      ? Env.optional(nested)
+                      : nested,
+              },
+            },
+          };
+    expect(() => Env.make("host", { CHOICE: field })).toThrowError(
+      expect.objectContaining({
+        _tag: "InvalidEnvProviders",
+        reason:
+          composition === "OptionalNestedSelector"
+            ? "NestedSelector"
+            : composition,
+        ...(composition === "AutomaticSelector"
+          ? {}
+          : { provider: "ses", key: "SETTING" }),
+      }),
+    );
+  },
+);
+
 it("refuses nested provider selectors in typed declarations", () => {
   expect(() =>
     Env.providers({
