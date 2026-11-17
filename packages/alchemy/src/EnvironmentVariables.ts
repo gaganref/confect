@@ -381,6 +381,12 @@ export const provider = Effect.gen(function* () {
       const current = valueAt(observed, name);
       const wanted = desiredVariables?.[name];
       if (
+        current === undefined &&
+        desiredVariables !== undefined &&
+        !Rec.has(desiredVariables, name)
+      )
+        continue;
+      if (
         current !== undefined &&
         (desiredVariables === undefined ||
           (wanted !== undefined && !isResolved(wanted)))
