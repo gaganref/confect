@@ -85,7 +85,8 @@ type GroupEndpoints<Groups, G extends string> = HttpApiGroup.Endpoints<
 >;
 
 /**
- * The endpoints of group `G` whose path has no parameter, so it names one URL.
+ * The endpoints of group `G` whose path has no parameter or wildcard, so it
+ * names one URL.
  */
 type Addressable<Groups, G extends string> = {
   [E in GroupEndpoints<Groups, G>["identifier"]]: Extract<
@@ -102,10 +103,13 @@ type Addressable<Groups, G extends string> = {
  * The URL of one of the backend's own endpoints, from the site URL Convex gives
  * it. Inside a mount that URL already ends in the mount's full prefix, nested
  * mounts included, so a component reads its webhook or callback address without
- * a slot. Only an endpoint whose path has no parameter has one URL.
+ * a slot. Only an endpoint whose path has no parameter or wildcard has one
+ * URL.
  *
  * ```ts
- * const callback = yield * Http.url(EmailApi, "webhooks", "resend");
+ * const callback = Effect.gen(function* () {
+ *   return yield* Http.url(EmailApi, "webhooks", "resend");
+ * });
  * ```
  *
  * @stability unstable

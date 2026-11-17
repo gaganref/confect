@@ -68,14 +68,17 @@ Use `Http.url` with your backend's own API declaration to get an endpoint's publ
 
 ```ts
 import { Http } from "@confect/core";
+import * as Effect from "effect/Effect";
 import { Api } from "./http/NotesApi";
 
-export const firstNoteUrl = Http.url(Api, "notes", "getFirst");
+export const firstNoteUrl = Effect.gen(function* () {
+  return yield* Http.url(Api, "notes", "getFirst");
+});
 ```
 
 `Http.url` returns a `Config<string>` that you can yield in an Effect workflow. It reads Convex's built-in `CONVEX_SITE_URL`. Inside a mounted component, that URL already includes the full mount prefix, including nested mounts, so you do not need a separate URL setting.
 
-The group and endpoint names must exist in the API. TypeScript rejects an endpoint whose path contains a parameter because it has no single address.
+The group and endpoint names must exist in the API. TypeScript rejects an endpoint whose path contains a parameter or wildcard because it has no single address.
 
 ## OPTIONS requests
 

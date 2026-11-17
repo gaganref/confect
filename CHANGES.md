@@ -1185,8 +1185,8 @@ Upstream: planned; no linked proposal verified.
 Add `Http.url(Api, group, endpoint)` so a backend can register its own webhook
 or OAuth callback without a separate URL setting. Read Convex's built-in site
 URL and preserve its full mount prefix, including nested mounts. Check group
-and endpoint names against the API and reject parameterized paths at compile
-time. Join endpoint paths with or without a leading slash.
+and endpoint names against the API and reject paths with parameters or wildcards
+at compile time. Join endpoint paths with or without a leading slash.
 
 Changeset: `http-endpoint-url.md`.
 Upstream: planned; no linked proposal verified.
