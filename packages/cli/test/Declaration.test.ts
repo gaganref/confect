@@ -742,6 +742,24 @@ describe("Declaration", () => {
     expect(parsed.failure.message).toContain("_bulk");
   });
 
+  it("preserves legacy slot names under the existing derived-name rules", () => {
+    const Legacy = Component.make("ratelimiter", {
+      env: { _KEY: Schema.String },
+      client: (native: unknown) => native,
+    });
+    const parsed = parseApp(
+      App.make({
+        env: Env.make("host", {}),
+        components: [ratelimiter],
+        mounts: [Mount.make(Legacy, { name: "legacy" })],
+      }),
+    );
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.mounts[0]?.open).toEqual([
+      ["_KEY", { kind: "string", optional: false, variable: "LEGACY__KEY" }],
+    ]);
+  });
+
   it("preserves literal and secret slot kinds without a shipped manifest", () => {
     const component = Component.make("workpool", {
       env: {
