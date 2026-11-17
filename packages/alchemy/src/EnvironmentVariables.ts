@@ -122,7 +122,8 @@ const optionsForDiff = (
   olds: EnvironmentVariablesProps,
   news: Input<EnvironmentVariablesProps>,
 ) => {
-  if (!("variables" in news)) return { ...olds, desiredNames: undefined };
+  if (!("variables" in news))
+    return { ...olds, desiredNames: undefined, desiredVariables: undefined };
   return {
     driftPolicy: isResolved(news.driftPolicy)
       ? news.driftPolicy
@@ -132,6 +133,7 @@ const optionsForDiff = (
       : olds.unownedPolicy,
     lock: isResolved(news.lock) ? news.lock : olds.lock,
     retry: isResolved(news.retry) ? news.retry : olds.retry,
+    desiredVariables: news.variables,
     desiredNames:
       !Output.isExpr(news.variables) &&
       !Effect.isEffect(news.variables) &&
@@ -208,11 +210,25 @@ export const provider = Effect.gen(function* () {
     policy: EnvironmentVariablesProps["driftPolicy"],
     output: EnvironmentVariablesAttributes | undefined,
     observed: ConvexClient.EnvironmentVariables,
+    desired?: Input<EnvironmentVariablesProps["variables"]>,
   ) => {
     if (policy !== "error" || output === undefined) return Effect.void;
     for (const name of output.ownedNames) {
       const previous = valueAt(output.variables, name);
       const current = valueAt(observed, name);
+      const wanted =
+        Predicate.isReadonlyObject(desired) &&
+        !Output.isExpr(desired) &&
+        !Effect.isEffect(desired)
+          ? desired[name]
+          : undefined;
+      if (
+        current !== undefined &&
+        (typeof wanted === "string" || Redacted.isRedacted(wanted)) &&
+        Redacted.value(current) ===
+          (typeof wanted === "string" ? wanted : Redacted.value(wanted))
+      )
+        continue;
       if (previous === undefined && current === undefined) continue;
       if (
         previous === undefined ||
@@ -258,7 +274,12 @@ export const provider = Effect.gen(function* () {
           output.url,
           output.deployKey,
         );
-        yield* checkDrift(options.driftPolicy, output, observed);
+        yield* checkDrift(
+          options.driftPolicy,
+          output,
+          observed,
+          options.desiredVariables,
+        );
         yield* checkUnowned(
           options.unownedPolicy,
           output,
@@ -297,7 +318,7 @@ export const provider = Effect.gen(function* () {
         url,
         olds.deployKey,
       );
-      yield* checkDrift(olds.driftPolicy, output, observed);
+      yield* checkDrift(olds.driftPolicy, output, observed, olds.variables);
       yield* checkUnowned(
         olds.unownedPolicy,
         output,
@@ -342,7 +363,7 @@ export const provider = Effect.gen(function* () {
         news.url,
         news.deployKey,
       );
-      yield* checkDrift(news.driftPolicy, output, observed);
+      yield* checkDrift(news.driftPolicy, output, observed, news.variables);
       yield* checkUnowned(
         news.unownedPolicy,
         output,
