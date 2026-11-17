@@ -1571,6 +1571,7 @@ it.effect(
         ],
       });
       const reset = yield* deploy(domain("new.example.com", false));
+      assert("canonicalUrl" in reset);
       expect(reset.canonicalUrl).toBe(deployment.url);
       yield* deploy(domain("new.example.com", true));
       yield* deploy(Effect.succeed({}));
