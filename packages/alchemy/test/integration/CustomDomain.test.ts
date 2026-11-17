@@ -9,6 +9,7 @@ import {
 import { Providers } from "@confect/alchemy/Providers";
 import { expect, it } from "@effect/vitest";
 import * as Provider from "alchemy/Provider";
+import { StateStoreError } from "alchemy/State/State";
 import * as Output from "alchemy/Output";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
@@ -319,6 +320,7 @@ it.effect(
         failure: { _tag: "OwnedBySomeoneElse" },
       });
       yield* engine.run(resource(news), { adopt: true });
+      verify(fixture, news.domain);
       yield* engine.run(resource(news));
       expect(fixture.state.domains).toHaveLength(1);
       expect(fixture.state.domains[0]?.domain).toBe(news.domain);
@@ -570,5 +572,351 @@ it.effect(
           depth: null,
         }),
       ).not.toContain(token);
+    }),
+);
+
+it.effect.each([true, false])(
+  "keeps the old domain until its replacement verifies with canonical=%s",
+  (canonical) =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const snapshots: {
+        domains: string[];
+        live: string;
+        saved: string | undefined;
+        status: string | undefined;
+      }[] = [];
+      const assertCanonicalExists = () => {
+        const live =
+          fixture.state.canonicalUrls[props.deployment.url]?.convexCloudUrl ??
+          props.deployment.url;
+        expect(
+          live === props.deployment.url ||
+            Array.some(
+              fixture.state.domains,
+              (domain) => `https://${domain.domain}` === live,
+            ),
+        ).toBe(true);
+      };
+      const client = Layer.succeed(ConvexClient, {
+        ...fixture.client,
+        createCustomDomain: (name, input) =>
+          fixture.client
+            .createCustomDomain(name, input)
+            .pipe(Effect.tap(() => Effect.sync(assertCanonicalExists))),
+        deleteCustomDomain: (name, input) =>
+          fixture.client
+            .deleteCustomDomain(name, input)
+            .pipe(Effect.tap(() => Effect.sync(assertCanonicalExists))),
+        updateCanonicalUrl: (url, input) =>
+          fixture.client
+            .updateCanonicalUrl(url, input)
+            .pipe(Effect.tap(() => Effect.sync(assertCanonicalExists))),
+      });
+      const engine = yield* makeEngine(client.pipe(providers));
+      const snapshot = Effect.gen(function* () {
+        const rows = yield* engine.rows();
+        const urls = yield* fixture.client.getCanonicalUrls(
+          props.deployment.url,
+        );
+        const row = rows[0];
+        snapshots.push({
+          domains: Array.map(fixture.state.domains, (domain) => domain.domain),
+          live: urls.convexCloudUrl,
+          saved: row?.kind === "action" ? undefined : row?.attr?.canonicalUrl,
+          status: row?.status,
+        });
+      });
+      yield* engine.run(resource({ ...props, canonical }));
+      verify(fixture);
+      yield* engine.run(resource({ ...props, canonical }));
+      yield* snapshot;
+      const next = { ...props, domain: "new.example.com", canonical };
+      const renamed = yield* engine.run(resource(next)).pipe(Effect.result);
+      expect(renamed).toEqual(
+        Result.succeed({
+          url: "https://new.example.com",
+          canonicalUrl: canonical
+            ? "https://api.example.com"
+            : props.deployment.url,
+          verificationTime: null,
+        }),
+      );
+      yield* snapshot;
+      expect(fixture.client.deleteCustomDomain).not.toHaveBeenCalled();
+      const pending = yield* engine.run(resource(next)).pipe(Effect.result);
+      expect(pending).toEqual(renamed);
+      yield* snapshot;
+      expect(fixture.client.deleteCustomDomain).not.toHaveBeenCalled();
+      verify(fixture, next.domain);
+      const verified = yield* engine.run(resource(next));
+      expect(verified).toEqual({
+        url: "https://new.example.com",
+        canonicalUrl: canonical
+          ? "https://new.example.com"
+          : props.deployment.url,
+        verificationTime: 200,
+      });
+      yield* snapshot;
+      const oldUrl = canonical
+        ? "https://api.example.com"
+        : props.deployment.url;
+      const nextUrl = canonical
+        ? "https://new.example.com"
+        : props.deployment.url;
+      expect(snapshots).toEqual([
+        {
+          domains: [props.domain],
+          live: oldUrl,
+          saved: oldUrl,
+          status: "updated",
+        },
+        {
+          domains: [props.domain, next.domain],
+          live: oldUrl,
+          saved: oldUrl,
+          status: "replaced",
+        },
+        {
+          domains: [props.domain, next.domain],
+          live: oldUrl,
+          saved: oldUrl,
+          status: "replaced",
+        },
+        {
+          domains: [next.domain],
+          live: nextUrl,
+          saved: nextUrl,
+          status: "created",
+        },
+      ]);
+      expect(Array.join(engine.logs, "\n")).toContain(
+        "Keeping api.example.com until new.example.com verifies.",
+      );
+      expect(Array.join(engine.logs, "\n")).toContain(
+        "The replaced resource stays in state and its delete is retried on the next apply.",
+      );
+      yield* engine.run(resource(next));
+      expect(engine.plans.at(-1)?.[0]?.action).toBe("noop");
+    }),
+);
+
+it.effect("refreshes a changed live canonical URL in saved outputs", () =>
+  Effect.gen(function* () {
+    const fixture = mockClient();
+    const engine = yield* makeEngine(fixture.layer.pipe(providers));
+    yield* engine.run(resource());
+    yield* fixture.client.updateCanonicalUrl(props.deployment.url, {
+      requestDestination: props.requestDestination,
+      url: "https://manual.example.com",
+    });
+    const output = yield* engine.run(resource());
+    expect(engine.plans.at(-1)?.[0]?.action).toBe("update");
+    expect(output?.canonicalUrl).toBe("https://manual.example.com");
+    const rows = yield* engine.rows();
+    expect(rows).toMatchObject([
+      { attr: { canonicalUrl: "https://manual.example.com" } },
+    ]);
+    const again = yield* engine.run(resource());
+    expect(again).toEqual(output);
+    expect(engine.plans.at(-1)?.[0]?.action).toBe("noop");
+  }),
+);
+
+it.effect.each([true, false])(
+  "removes an adopted noncanonical domain with an external canonical match=%s",
+  (matches) =>
+    Effect.gen(function* () {
+      const fixture = mockClient({ verificationTime: 200 });
+      yield* fixture.client.createCustomDomain(props.deployment.name, props);
+      const url = matches
+        ? `https://${props.domain}`
+        : "https://manual.example.com";
+      yield* fixture.client.updateCanonicalUrl(props.deployment.url, {
+        requestDestination: props.requestDestination,
+        url,
+      });
+      const engine = yield* makeEngine(fixture.layer.pipe(providers));
+      yield* engine.run(resource(), { adopt: true });
+      const rows = yield* engine.rows();
+      expect(rows).toMatchObject([
+        { attr: { canonical: false, canonicalUrl: url } },
+      ]);
+      yield* engine.run(Effect.succeed({}));
+      expect(fixture.state.domains).toEqual([]);
+      const live = yield* fixture.client.getCanonicalUrls(props.deployment.url);
+      expect(live.convexCloudUrl).toBe(matches ? props.deployment.url : url);
+    }),
+);
+
+it.effect.each([
+  "canonical-before",
+  "canonical-response",
+  "state-write",
+  "delete-before",
+  "delete-response",
+] as const)(
+  "converges a verified replacement after %s failure without adoption",
+  (fault) =>
+    Effect.gen(function* () {
+      const fixture = mockClient({ verificationTime: 200 });
+      const next = { ...props, domain: "new.example.com", canonical: true };
+      let injected = false;
+      const assertCanonicalExists = () => {
+        const live =
+          fixture.state.canonicalUrls[props.deployment.url]?.convexCloudUrl ??
+          props.deployment.url;
+        expect(
+          live === props.deployment.url ||
+            Array.some(
+              fixture.state.domains,
+              (domain) => `https://${domain.domain}` === live,
+            ),
+        ).toBe(true);
+      };
+      const client = Layer.succeed(ConvexClient, {
+        ...fixture.client,
+        updateCanonicalUrl: (url, input) =>
+          Effect.gen(function* () {
+            if (
+              !injected &&
+              input.url === `https://${next.domain}` &&
+              fault === "canonical-before"
+            ) {
+              injected = true;
+              return yield* transportError("updateCanonicalUrl");
+            }
+            yield* fixture.client.updateCanonicalUrl(url, input);
+            assertCanonicalExists();
+            if (
+              !injected &&
+              input.url === `https://${next.domain}` &&
+              fault === "canonical-response"
+            ) {
+              injected = true;
+              return yield* transportError("updateCanonicalUrl");
+            }
+          }),
+        deleteCustomDomain: (name, input) =>
+          Effect.gen(function* () {
+            if (
+              !injected &&
+              input.domain === props.domain &&
+              fault === "delete-before"
+            ) {
+              injected = true;
+              return yield* transportError("deleteCustomDomain");
+            }
+            yield* fixture.client.deleteCustomDomain(name, input);
+            assertCanonicalExists();
+            if (
+              !injected &&
+              input.domain === props.domain &&
+              fault === "delete-response"
+            ) {
+              injected = true;
+              return yield* transportError("deleteCustomDomain");
+            }
+          }),
+      });
+      const engine = yield* makeEngine(client.pipe(providers), (store) => ({
+        ...store,
+        set: (request) =>
+          Effect.suspend(() => {
+            if (
+              !injected &&
+              fault === "state-write" &&
+              request.value.status === "replaced"
+            ) {
+              injected = true;
+              return Effect.fail(
+                new StateStoreError({
+                  message: "Injected replacement state write failure",
+                }),
+              );
+            }
+            return store.set(request);
+          }),
+      }));
+      yield* engine.run(resource({ ...props, canonical: true }));
+      const failed = yield* engine.run(resource(next)).pipe(Effect.result);
+      expect(Result.isFailure(failed)).toBe(true);
+      expect(injected).toBe(true);
+      assertCanonicalExists();
+      const output = yield* engine.run(resource(next));
+      expect(output).toEqual({
+        url: "https://new.example.com",
+        canonicalUrl: "https://new.example.com",
+        verificationTime: 200,
+      });
+      expect(fixture.state.domains).toMatchObject([{ domain: next.domain }]);
+      expect(fixture.state.domains).toHaveLength(1);
+      expect(fixture.client.createCustomDomain).toHaveBeenCalledTimes(2);
+      const rows = yield* engine.rows();
+      expect(rows).toMatchObject([
+        {
+          status: "created",
+          attr: {
+            domain: next.domain,
+            canonicalUrl: "https://new.example.com",
+          },
+        },
+      ]);
+      assertCanonicalExists();
+      yield* engine.run(resource(next));
+      expect(engine.plans.at(-1)?.[0]?.action).toBe("noop");
+    }),
+);
+
+it.effect.each([false, true])(
+  "hands canonical from A to B with B declared first=%s",
+  (bFirst) =>
+    Effect.gen(function* () {
+      const fixture = mockClient({ verificationTime: 200 });
+      let handover = false;
+      const client = Layer.succeed(ConvexClient, {
+        ...fixture.client,
+        getCanonicalUrls: (url) =>
+          Effect.gen(function* () {
+            const snapshot = yield* fixture.client.getCanonicalUrls(url);
+            if (handover) yield* Effect.yieldNow;
+            return snapshot;
+          }),
+        updateCanonicalUrl: (url, input) =>
+          Effect.gen(function* () {
+            if (handover && input.url === undefined) {
+              for (let index = 0; index < 5; index++) yield* Effect.yieldNow;
+            }
+            yield* fixture.client.updateCanonicalUrl(url, input);
+          }),
+      });
+      const engine = yield* makeEngine(client.pipe(providers));
+      const declarations = (bCanonical: boolean) =>
+        Effect.gen(function* () {
+          const entries = [
+            { id: "A", domain: props.domain, canonical: !bCanonical },
+            { id: "B", domain: "b.example.com", canonical: bCanonical },
+          ];
+          if (bFirst) entries.reverse();
+          for (const entry of entries)
+            yield* CustomDomain.CustomDomain(entry.id, {
+              ...props,
+              domain: entry.domain,
+              canonical: entry.canonical,
+            });
+          return {};
+        });
+      yield* engine.run(declarations(false));
+      handover = true;
+      yield* engine.run(declarations(true));
+      const urls = yield* fixture.client.getCanonicalUrls(props.deployment.url);
+      expect(urls.convexCloudUrl).toBe("https://b.example.com");
+      expect(fixture.state.domains).toHaveLength(2);
+      yield* engine.run(declarations(true));
+      const rows = yield* engine.rows();
+      expect(rows).toMatchObject([
+        { attr: { canonicalUrl: "https://b.example.com" } },
+        { attr: { canonicalUrl: "https://b.example.com" } },
+      ]);
     }),
 );
