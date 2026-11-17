@@ -588,7 +588,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
       url: string,
       key: Redacted.Redacted<string>,
       id: string,
-    ) {
+    ): Effect.fn.Return<LogStreamConfig, ConvexClientError> {
       const operation = "getLogStream";
       const response = yield* send(
         operation,
@@ -602,7 +602,7 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
     listLogStreams: Effect.fn("ConvexClient.listLogStreams")(function* (
       url: string,
       key: Redacted.Redacted<string>,
-    ) {
+    ): Effect.fn.Return<LogStreamConfig[], ConvexClientError> {
       const operation = "listLogStreams";
       const response = yield* send(
         operation,

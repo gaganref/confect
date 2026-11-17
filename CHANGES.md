@@ -1193,6 +1193,8 @@ mutation. Validate response IDs before they enter errors. The other four Convex
 kinds remain typed and fail as not switched on. Fake API and Alchemy engine tests
 cover lifecycle and secret rendering. Real-account delivery, event envelopes,
 retries, and cloud entitlements remain unproven.
+Keep the published log stream declarations valid for NodeNext consumers with
+full declaration checks.
 
 Changeset: `alchemy-log-stream.md`.
 Upstream: planned; no proposal submitted.
