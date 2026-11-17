@@ -145,6 +145,8 @@ export default App.make({
 });
 ```
 
+The names `app` and `docs` are reserved for the root app and docs page. The same rule deliberately applies to every mount, including a component's child mounts. Names are case-sensitive, so `App` and `DOCS` are accepted. A standalone `Mount.make` call rejects a reserved literal at compile time. In the inline form above, or when the result is typed as `Mount.Any` or placed in a `ReadonlyArray<Mount.Any>` literal, the name widens to `string` and compiles. Codegen rejects either reserved name with `ReservedMountName`. See [backend declarations](/server/backend-declaration) for the mount rules.
+
 Codegen writes `defineApp` and Convex's `app.use`:
 
 ```ts convex/convex.config.ts
@@ -532,6 +534,7 @@ A component's `confect/auth.ts` produces `InvalidConvexConfigError` with the rea
 | `NotADeclaration`        | `<file>` must default-export `<expected>`.                                                                                      |
 | `InvalidEnvKey`          | "`<key>`" is not a valid Convex environment variable name; use letters, digits and underscores, starting with a letter.         |
 | `InvalidMountName`       | "`<mount>`" is not a valid mount name; use letters, digits and underscores, starting with a letter or underscore.               |
+| `ReservedMountName`      | The mount name "`<mount>`" is reserved for the root app or docs page; choose another mount name.                                |
 | `ForeignEnvBinding`      | The mount "`<mount>`" binds `<slot>` to `<key>` of the "`<backend>`" env, but this backend's env is "`<expectedBackend>`".      |
 | `InvalidBinding`         | The mount "`<mount>`" binds `<slot>` to something other than a string or an entry of this backend's env.                        |
 | `UnknownComponentImport` | The mount "`<mount>`" must pass the default export of a component's convex.config module, imported directly in the declaration. |

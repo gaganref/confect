@@ -1155,6 +1155,19 @@ requirements when dev regenerates registration after a spec edit.
 Changeset: `require-function-middleware.md`.
 Upstream: planned; no linked proposal verified.
 
+### Reserved mount names
+
+A standalone `Mount.make` call rejects the literal mount names `app` and `docs`.
+Inline calls in `App.make` and calls typed as `Mount.Any` or placed in a
+`ReadonlyArray<Mount.Any>` literal compile with a widened name; declaration
+codegen rejects either reserved value. These names belong to the root app and
+docs page in the planned infrastructure manifest. The rule deliberately covers
+every mount, including child mounts. Names are case-sensitive, so `App` and
+`DOCS` are accepted. Generic wrappers must cast the name or pass a literal.
+Changeset: `reserve-mount-owner-names.md` is a major for core and CLI because
+existing mounts with either name must be renamed. Upstream: fork only, as the
+reservation supports the fork's infrastructure manifest.
+
 ### Declare a backend in `confect/`
 
 Add `Env`, `App`, `Auth`, `Http`, and `Manifest`. Generate Convex configuration,
@@ -1213,6 +1226,17 @@ labels still use each router's own API.
 Changeset: `mount-no-api.md`.
 Upstream: planned; no linked proposal verified.
 
+### Get an endpoint's own public URL
+
+Add `Http.url(Api, group, endpoint)` so a backend can register its own webhook
+or OAuth callback without a separate URL setting. Read Convex's built-in site
+URL and preserve its full mount prefix, including nested mounts. Check group
+and endpoint names against the API and reject paths with parameters or wildcards
+at compile time. Join endpoint paths with or without a leading slash.
+
+Changeset: `http-endpoint-url.md`.
+Upstream: planned; no linked proposal verified.
+
 ## Alchemy deployment
 
 ### Supply open mount settings from the deployment
@@ -1237,6 +1261,46 @@ behavior. The check compares manifests and does not roll back an already
 pushed deployment. Changeset: `deploy-manifest-health.md`.
 Upstream: not planned; the manifest handshake is a fork concept.
 
+### Show failed code push diagnostics
+
+Include bounded stdout and stderr tails in failed code pushes so operators can
+see Convex validation errors. Strip ANSI escapes and redact the runner's deploy
+key or self-hosted admin key, their URL-encoded and base64 forms, and Convex
+key-shaped values before constructing errors, causes, JSON, or logs. Credential
+needles require eight characters to avoid mangling ordinary diagnostics. Keep
+the real process prerequisites in the Windows regression test. Bound pipe
+draining to one second after CLI exit so inherited pipes cannot hang the push.
+Retain redacted output and the signal name when the CLI dies on a signal.
+Cover unpadded base64, base64url, lowercase percent escapes and embedded encoded
+keys at every byte alignment. Preserve text after JSON escapes and closing
+parentheses. Keep only the 8,192-character buffer, without an unused margin.
+Changeset: `alchemy-push-diagnostics.md`. Upstream: planned; no proposal submitted.
+
+### Expire temporary cloud deployments
+
+Add `expiresAt` to `Convex.Deployment` so Frame can create cloud dev backends
+with a deadline. Pass millisecond timestamps on create and update them in place.
+Clear an expiry only with explicit null; omission preserves the current expiry
+regardless of previous props. Refuse unsafe integer timestamps before cloud API
+calls. Ignore expiry changes in local mode without restarting the backend.
+Surface API refusals without replacement and document that expiry deletes data
+independently of Alchemy's retain policy. Show a configured, stable deadline.
+
+Changeset: `alchemy-deployment-expiry.md`.
+Upstream: planned; no proposal submitted.
+
+### Choose a cloud deployment's class
+
+Add `class` to `Convex.Deployment` so Frame stacks can choose a backend's size.
+Use the platform package's `DeploymentClass` type and update class changes
+in place, preserving the deployment and its data. Omitting the prop preserves
+Convex's creation default and leaves an existing deployment's class unchanged.
+Keep project, type, and region changes refused, and retain deployments on removal.
+Ignore class changes in local mode without restarting the backend.
+
+Changeset: `alchemy-deployment-class.md`.
+Upstream: planned; no proposal submitted.
+
 ### Deploy Convex through Alchemy
 
 Add the optional `@confect/alchemy` package for cloud projects, deployments, keys,
@@ -1248,6 +1312,15 @@ deployments by default. Include the pnpm launcher metadata refresh from the port
 Changeset: `add-alchemy-integration.md`.
 Upstream: port of [upstream #735](https://github.com/rjdellecese/confect/pull/735),
 which remains open.
+
+### Allow later Alchemy prereleases
+
+Peer Alchemy at `>=2.0.0-beta.85 <2.0.0` so applications can upgrade later
+prereleases without a fork release. Verify beta.85 and beta.86 with the package's
+typechecks and tests, and retain beta.86 as the workspace development pin.
+Check the published range with npm's semver parser, including later release
+candidates and the upper bound on other release lines.
+Changeset: `alchemy-peer-floor.md`. Upstream: planned; no proposal submitted.
 
 ### Run the same stack locally
 

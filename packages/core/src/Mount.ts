@@ -289,7 +289,8 @@ export const make = <
 >(
   component: C,
   options: {
-    readonly name: Name;
+    readonly name: Name &
+      (Extract<Name, "app" | "docs"> extends never ? unknown : never);
     readonly httpPrefix?: P;
   } & EnvField<C, B> &
     ArgsField<C, A> &
