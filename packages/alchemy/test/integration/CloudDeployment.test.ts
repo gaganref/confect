@@ -1567,6 +1567,45 @@ const logResources = (props: LogStream.LogStreamProps) =>
   });
 
 describe("log stream engine lifecycle", () => {
+  it.effect.each(["yielded", "effect", "computed redacted"] as const)(
+    "preserves the %s log stream constructor with URL checks",
+    (form) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(fixture.layer, noCommands);
+        const resources = Effect.gen(function* () {
+          const props = logConfigs[2];
+          if (form === "yielded") {
+            const resource = yield* Convex.LogStream;
+            const stream = yield* resource("Logs", props);
+            return { id: stream.id };
+          }
+          if (form === "effect") {
+            const stream = yield* Convex.LogStream(
+              "Logs",
+              Effect.succeed(props),
+            );
+            return { id: stream.id };
+          }
+          const project = yield* Convex.Project("UrlSource", {
+            teamId: 10,
+            name: "url-source",
+          });
+          const stream = yield* Convex.LogStream("Logs", {
+            ...props,
+            url: project.projectId.pipe(Output.map(() => props.url)),
+          });
+          return { id: stream.id };
+        });
+        const first = yield* deploy(resources);
+        expect(first.id).toBe("stream-1");
+        const stable = yield* deploy.plan(resources);
+        expect(stable.resources.Logs.action).toBe("noop");
+        expect(fixture.client.createLogStream).toHaveBeenCalledTimes(1);
+        expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+      }),
+  );
+
   it.effect.each(["create", "update"] as const)(
     "keeps a rejected computed URL out of %s state and plans",
     (operation) =>
@@ -1702,6 +1741,7 @@ describe("log stream engine lifecycle", () => {
     Effect.gen(function* () {
       const fixture = mockClient();
       const deploy = makeHarness(fixture.layer, noCommands);
+      const unsafeUrl = "http://user:made-up-url-password@127.0.0.1:9876/logs";
       const program = Effect.gen(function* () {
         const project = yield* Convex.Project("UrlSource", {
           teamId: 10,
@@ -1709,26 +1749,22 @@ describe("log stream engine lifecycle", () => {
         });
         const stream = yield* Convex.LogStream("Logs", {
           ...logConfigs[2],
-          url: project.projectId.pipe(
-            Output.map(
-              () => "http://user:made-up-url-password@127.0.0.1:9876/logs",
-            ),
-          ),
+          url: project.projectId.pipe(Output.map(() => unsafeUrl)),
         });
         return { id: stream.id };
       });
       const unresolved = yield* deploy.plan(program);
       expect(unresolved.resources.Logs.action).toBe("create");
-      const rejected = yield* deploy(program).pipe(Effect.result);
-      expect(rejected).toMatchObject({
-        _tag: "Failure",
-        failure: { _tag: "LogStreamUrlRequiresRedacted" },
-      });
-      const resolved = yield* deploy.plan(program).pipe(Effect.result);
-      expect(resolved).toMatchObject({
-        _tag: "Failure",
-        failure: { _tag: "LogStreamUrlRequiresRedacted" },
-      });
+      const rejected = yield* deploy(program).pipe(Effect.exit);
+      expect(Exit.isFailure(rejected)).toBe(true);
+      expect(inspect(rejected, { depth: null })).toContain(
+        "LogStreamUrlRequiresRedacted",
+      );
+      const resolved = yield* deploy.plan(program).pipe(Effect.exit);
+      expect(Exit.isFailure(resolved)).toBe(true);
+      expect(inspect(resolved, { depth: null })).toContain(
+        "LogStreamUrlRequiresRedacted",
+      );
       expect(fixture.client.listLogStreams).not.toHaveBeenCalled();
       expect(fixture.client.getLogStream).not.toHaveBeenCalled();
       expect(fixture.client.createLogStream).not.toHaveBeenCalled();

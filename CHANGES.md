@@ -1259,6 +1259,9 @@ Refuse credentialed plain webhook URLs with a tagged error that requests
 regressions cover interrupted requests, response loss, post-create ownership,
 normalization, and credential refusal. The guide describes the lost-response
 case that requires reapplying an interrupted change before reverting it.
+Check computed webhook URLs as they resolve, before Alchemy can checkpoint a
+plain credentialed value. Preserve the direct, yielded, and Effect-based
+constructors and permit computed redacted URLs.
 
 Changeset: `alchemy-log-stream.md`.
 Upstream: planned; no proposal submitted.

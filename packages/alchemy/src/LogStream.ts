@@ -1,10 +1,17 @@
 import { deepEqual, isResolved } from "alchemy/Diff";
+import type { InputProps } from "alchemy/Input";
+import * as Output from "alchemy/Output";
 import * as Array from "effect/Array";
 import * as Provider from "alchemy/Provider";
-import { Resource } from "alchemy/Resource";
+import {
+  Resource,
+  type ResourceClass,
+  type ResourceConstructor,
+} from "alchemy/Resource";
 import { Stack } from "alchemy/Stack";
 import { State } from "alchemy/State/State";
 import * as Effect from "effect/Effect";
+import * as Effectable from "effect/Effectable";
 import * as Layer from "effect/Layer";
 import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
@@ -48,7 +55,38 @@ export type LogStream = Resource<
   never,
   Providers
 >;
-export const LogStream = Resource<LogStream>("Convex.LogStream");
+const logStream = Resource<LogStream>("Convex.LogStream");
+
+// Validate computed URLs before Alchemy checkpoints their resolved values.
+export const LogStream: ResourceClass<LogStream> = Object.assign(
+  new Proxy(logStream, {
+    apply: <PropsReq>(
+      target: ResourceClass<LogStream>,
+      _this: unknown,
+      args:
+        | [methods: object]
+        | [
+            id: string,
+            props:
+              | InputProps<LogStreamProps>
+              | Effect.Effect<InputProps<LogStreamProps>, never, PropsReq>,
+          ],
+    ) => {
+      if (args.length === 1) return Object.assign(LogStream, args[0]);
+      const [id, props] = args;
+      return target(
+        id,
+        (Effect.isEffect(props) ? props : Effect.succeed(props)).pipe(
+          Effect.map(checkedProps),
+        ),
+      );
+    },
+  }),
+  Effectable.Prototype<Effect.Effect<ResourceConstructor<LogStream>>>({
+    label: "Resource<Convex.LogStream>",
+    evaluate: () => Effect.succeed(LogStream),
+  }),
+);
 
 export class LogStreamNotEnabled extends Schema.TaggedError<
   LogStreamNotEnabled,
@@ -113,6 +151,24 @@ const validateWebhookUrl = (value: string | Redacted.Redacted<string>) =>
         : Result.succeed(undefined),
     ),
   );
+
+type WebhookUrl = Extract<LogStreamProps, { readonly kind: "webhook" }>["url"];
+const checkedProps = <P extends InputProps<LogStreamProps>>(options: P): P =>
+  "url" in options && Output.isOutput(options.url)
+    ? {
+        ...options,
+        url: options.url.pipe(
+          Output.mapEffect((value: WebhookUrl | undefined) =>
+            value === undefined
+              ? Effect.succeed(value)
+              : Effect.fromResult(validateWebhookUrl(value)).pipe(
+                  Effect.orDie,
+                  Effect.as(value),
+                ),
+          ),
+        ),
+      }
+    : options;
 
 const normalizeTopics = (
   topics: readonly (typeof Topics)[number][] | null | undefined,

@@ -262,6 +262,8 @@ Use `kind: "sentry"` with a `Redacted` `dsn` and optional `tags` to opt an app i
 
 A plain webhook URL with a username or password fails with `LogStreamUrlRequiresRedacted` before any stream API call. The error does not print the URL. Wrap the entire URL in `Redacted`, including credentials in its path or query string. Those path and query credentials cannot be recognized automatically.
 
+The same check applies when a URL comes from another resource's output. It runs when that output resolves, before the URL enters state.
+
 Convex normalizes webhook URLs and sorts and deduplicates topics. A host-only URL and a URL containing `..` path segments are accepted without drift. Topic order and repeated topics do not affect readable comparisons.
 
 `axiom`, `sentry`, and `webhook` are enabled. The disabled kinds `datadog`, `postHogLogs`, `postHogErrorTracking`, and `s3Export` do not type-check as resource props. Listing streams still decodes all seven kinds. Every API key, DSN, and deploy key requires `Redacted`; plain strings fail to typecheck.
