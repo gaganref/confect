@@ -459,6 +459,76 @@ describe("Declaration", () => {
     );
   });
 
+  it.each([
+    ["GET", "/other"],
+    ["POST", "/ready"],
+    ["GET", "/ready"],
+  ])("refuses duplicate route identities even for %s %s", (method, path) => {
+    const first = {
+      method: "GET",
+      path: "/ready",
+      owner: "app",
+      group: "meta",
+      endpoint: "ready",
+    };
+    const catalogue = Declaration.routeCatalogue(
+      [first, { ...first, method, path }],
+      "sha256:host",
+    );
+    expect(catalogue).toMatchObject({
+      _tag: "Failure",
+      failure: {
+        _tag: "DuplicateRouteIdentity",
+        owner: "app",
+        group: "meta",
+        endpoint: "ready",
+        first: { method: "GET", path: "/ready" },
+        second: { method, path },
+      },
+    });
+  });
+
+  it("gives equally named nested mounts distinct owners under their parents", () => {
+    const route = {
+      method: "POST",
+      path: "/child/received",
+      owner: "child",
+      group: "hooks",
+      endpoint: "received",
+      digest: "sha256:child",
+    };
+    const component = Component.make("workpool", {
+      manifest: {
+        ...formatOne,
+        http: { child: { hooks: { received: route } } },
+      },
+      client: (native: unknown) => native,
+    });
+    const leaves = Declaration.routeLeaves(
+      [],
+      Array.map(["first", "second"], (name) =>
+        Mount.data(Mount.make(component, { name, httpPrefix: `/${name}` })),
+      ),
+    );
+    assertIs(leaves, Result.isSuccess);
+    expect(Array.map(leaves.success, ({ owner }) => owner)).toEqual([
+      "first/child",
+      "second/child",
+    ]);
+    const catalogue = Declaration.routeCatalogue(leaves.success, "sha256:host");
+    expect(catalogue).toMatchObject({
+      _tag: "Success",
+      success: {
+        "first/child": {
+          hooks: { received: { path: "/first/child/received" } },
+        },
+        "second/child": {
+          hooks: { received: { path: "/second/child/received" } },
+        },
+      },
+    });
+  });
+
   it("keeps an owner named constructor without changing inherited objects", () => {
     const leaf = {
       method: "GET",
