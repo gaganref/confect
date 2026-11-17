@@ -501,6 +501,15 @@ const writeRoutes = Effect.fnUntraced(function* (
   base: string | undefined,
 ) {
   if (base === undefined) return;
+  for (const mount of App.mounts(app)) {
+    if (
+      mount.httpPrefix !== undefined &&
+      mount.component.manifest === undefined
+    )
+      yield* logWarn(
+        `The mount "${mount.name}" has HTTP prefix "${mount.httpPrefix}" but its component ships no manifest. Its routes are omitted from the route catalogue.`,
+      );
+  }
   const current = yield* readManifest;
   const leaves = yield* Effect.fromResult(
     Declaration.routeLeaves(own, App.mounts(app)),
