@@ -18,6 +18,18 @@ import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
 import { inspect } from "node:util";
 import * as Record from "effect/Record";
+import * as Code from "@confect/alchemy/Code";
+import * as EnvironmentVariables from "@confect/alchemy/EnvironmentVariables";
+import * as UsageLimit from "@confect/alchemy/UsageLimit";
+import * as Provider from "alchemy/Provider";
+import * as FileSystem from "effect/FileSystem";
+import * as Path from "effect/Path";
+import { CommandRunner } from "../src/internal/CommandRunner";
+import { PushLock } from "../src/internal/PushLock";
+import { ConvexClient } from "@confect/alchemy/ConvexClient";
+import { makeEngine } from "./fixtures/Engine";
+import { mockClient } from "./fixtures/ConvexClient";
+import * as NodeServices from "./fixtures/NodeTestServices";
 
 const props = {
   deployment: {
@@ -820,5 +832,169 @@ describe("Backend provider selectors", () => {
           source: "confect/_generated/manifest.ts",
         });
       }),
+  );
+});
+
+describe("Backend choices from outputs", () => {
+  const manifest = {
+    ...formatOne,
+    env: {
+      EMAIL_PROVIDER: selector("ses", "resend"),
+      SES_KEY: setting("EMAIL_PROVIDER", "ses"),
+      RESEND_KEY: setting("EMAIL_PROVIDER", "resend"),
+    },
+  } as const;
+  const key = Redacted.make("output-test-key");
+  const limit: UsageLimit.UsageLimitProps = {
+    deployment: props.deployment,
+    metric: "functionCalls",
+    window: "month",
+    limit: 1,
+  };
+
+  /**
+   * Plan and apply a stack whose provider choice is an output of another
+   * resource. The fake prepare writes the health module codegen writes, the
+   * fake push records itself, and the fake client answers the health query.
+   */
+  const apply = (choice: unknown) =>
+    Effect.gen(function* () {
+      const node = yield* Layer.build(NodeServices.layer);
+      return yield* push(choice).pipe(Effect.provideContext(node));
+    }).pipe(Effect.scoped);
+  const push = (choice: unknown) =>
+    Effect.gen(function* () {
+      const fs = yield* FileSystem.FileSystem;
+      const path = yield* Path.Path;
+      const cwd = yield* fs.makeTempDirectoryScoped({
+        prefix: "confect-backend-output-",
+      });
+      const pushes: string[] = [];
+      const fixture = mockClient();
+      const client = Layer.succeed(ConvexClient, {
+        ...fixture.client,
+        runFunction: () => Effect.succeed(manifest.digest),
+      });
+      const runner = Layer.succeed(CommandRunner, {
+        prepare: () =>
+          Effect.gen(function* () {
+            pushes.push("prepare");
+            yield* fs.makeDirectory(path.join(cwd, "convex"), {
+              recursive: true,
+            });
+            yield* fs.writeFileString(
+              path.join(cwd, "convex", "confectHealth.ts"),
+              `export const digest = { handler: () => "${manifest.digest}" };\n`,
+            );
+          }).pipe(Effect.orDie),
+        deploy: () => Effect.sync(() => void pushes.push("deploy")),
+      });
+      const lock = Layer.succeed(PushLock, {
+        withLock: (_name, effect) => effect,
+      });
+      const engine = yield* makeEngine(
+        Layer.effect(
+          Providers,
+          Provider.collection([
+            UsageLimit.UsageLimit,
+            EnvironmentVariables.EnvironmentVariables,
+            Code.Code,
+          ]),
+        ).pipe(
+          Layer.provide(
+            Layer.mergeAll(
+              UsageLimit.layer,
+              EnvironmentVariables.layer,
+              Code.layer,
+            ),
+          ),
+          Layer.provide(
+            Layer.mergeAll(client, runner, lock, NodeServices.layer),
+          ),
+        ),
+      );
+      const result = yield* engine
+        .run(
+          Effect.gen(function* () {
+            const upstream = yield* UsageLimit.UsageLimit("Limit", limit);
+            const backend = yield* Backend("Backend", {
+              ...props,
+              cwd,
+              manifest,
+              env: {
+                // An output from untyped code reaches the boundary unchecked.
+                EMAIL_PROVIDER: Output.map(upstream.id, () => choice) as never,
+                SES_KEY: key,
+              },
+            });
+            return backend.url;
+          }),
+        )
+        .pipe(Effect.exit);
+      return { result, fixture, pushes };
+    }).pipe(Effect.scoped);
+
+  it.effect(
+    "encodes a choice output when it resolves, after the resource it depends on",
+    () =>
+      Effect.gen(function* () {
+        const { result, fixture, pushes } = yield* apply({
+          active: "ses",
+          standby: ["resend"],
+        });
+        expect(result).toEqual(Exit.succeed(props.deployment.url));
+        expect(fixture.client.createUsageLimit).toHaveBeenCalledTimes(1);
+        expect(
+          Record.map(fixture.state.variables, (value) => Redacted.value(value)),
+        ).toEqual({
+          EMAIL_PROVIDER: '{"active":"ses","standby":["resend"]}',
+          SES_KEY: "output-test-key",
+        });
+        expect(pushes).toEqual(["prepare", "deploy"]);
+      }),
+  );
+
+  it.effect.each([
+    ["an unknown provider", "sms", "EMAIL_PROVIDER", "InvalidChoice"],
+    ["a raw object", { name: "ses" }, "EMAIL_PROVIDER", "InvalidChoice"],
+    [
+      "a provider whose required setting is missing",
+      "resend",
+      "RESEND_KEY",
+      "Missing",
+    ],
+  ] as const)(
+    "fails the apply before the environment write when a choice output resolves to %s",
+    ([_, choice, slot, reason]) =>
+      Effect.gen(function* () {
+        const { result, fixture, pushes } = yield* apply(choice);
+        expect(defectOf(result)).toEqual(
+          InvalidMountSetting.make({ mount: "app", slot, reason }),
+        );
+        expect(
+          fixture.client.updateEnvironmentVariables,
+        ).not.toHaveBeenCalled();
+        expect(fixture.state.variables).toEqual({});
+        expect(pushes).toEqual([]);
+      }),
+  );
+
+  it.effect("keeps a choice output's dependency on its upstream resource", () =>
+    Effect.gen(function* () {
+      const upstream = yield* UsageLimit.UsageLimit("Limit", limit);
+      const backend = yield* Backend("Backend", {
+        ...props,
+        manifest,
+        env: {
+          EMAIL_PROVIDER: Output.map(upstream.id, () => "ses" as const),
+          SES_KEY: key,
+        },
+      });
+      const choice = backend.environment?.Props.variables["EMAIL_PROVIDER"];
+      expect(Output.isOutput(choice)).toBe(true);
+      expect(Record.keys(Output.resolveUpstream(choice))).toEqual([
+        upstream.FQN,
+      ]);
+    }).pipe(Effect.provide([stack(), providers])),
   );
 });
