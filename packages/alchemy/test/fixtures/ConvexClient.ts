@@ -10,6 +10,10 @@ import {
   ConvexClient,
   ConvexNotFound,
   ConvexConflict,
+  type CustomDomain,
+  type CustomDomainInput,
+  type CanonicalUrls,
+  type UpdateCanonicalUrlInput,
   ConvexApiError,
   type LogStreamConfig,
   type CreateLogStreamInput,
@@ -24,6 +28,8 @@ import {
   type UpdateProjectInput,
 } from "../../src/ConvexClient";
 import * as Option from "effect/Option";
+import * as String from "effect/String";
+import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Struct from "effect/Struct";
 
@@ -94,9 +100,16 @@ export const key = (overrides: Partial<DeployKey> = {}): DeployKey => ({
   ...overrides,
 });
 
-export const mockClient = (options: { readonly deployKey?: string } = {}) => {
+export const mockClient = (
+  options: {
+    readonly deployKey?: string;
+    readonly verificationTime?: number;
+  } = {},
+) => {
   const issuedKeys = new Map<string, number>();
   const state: {
+    domains: CustomDomain[];
+    canonicalUrls: Record<string, CanonicalUrls>;
     logStreams: Map<string, LogStreamConfig[]>;
     logStreamSecrets: Map<string, Redacted.Redacted<string>>;
     limits: UsageLimit[];
@@ -105,6 +118,8 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
     keys: DeployKey[];
     variables: Record<string, Redacted.Redacted<string>>;
   } = {
+    domains: [],
+    canonicalUrls: {},
     limits: [],
     projects: [],
     deployments: [],
@@ -117,6 +132,82 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
   const missing = () =>
     ConvexNotFound.make({ operation: "test", code: "HttpError", status: 404 });
   const client = {
+    listCustomDomains: vi.fn((name: string) =>
+      Effect.sync(() =>
+        Array.filter(state.domains, (domain) => domain.deploymentName === name),
+      ),
+    ),
+    createCustomDomain: vi.fn((name: string, input: CustomDomainInput) =>
+      Effect.suspend(() => {
+        if (
+          Array.some(
+            state.domains,
+            (domain) =>
+              domain.domain === input.domain &&
+              domain.requestDestination === input.requestDestination,
+          )
+        )
+          return Effect.fail(
+            ConvexConflict.make({
+              operation: "createCustomDomain",
+              code: "HttpError",
+              status: 409,
+            }),
+          );
+        state.domains.push({
+          ...input,
+          deploymentName: name,
+          creationTime: 100,
+          verificationTime: options.verificationTime ?? null,
+        });
+        return Effect.void;
+      }),
+    ),
+    deleteCustomDomain: vi.fn((name: string, input: CustomDomainInput) =>
+      Effect.suspend(() => {
+        const matches = (domain: CustomDomain) =>
+          domain.deploymentName === name &&
+          domain.domain === input.domain &&
+          domain.requestDestination === input.requestDestination;
+        if (!Array.some(state.domains, matches)) return Effect.fail(missing());
+        state.domains = Array.filter(
+          state.domains,
+          (domain) => !matches(domain),
+        );
+        return Effect.void;
+      }),
+    ),
+    getCanonicalUrls: vi.fn((url: string) =>
+      Effect.sync(
+        () =>
+          state.canonicalUrls[url] ?? {
+            convexCloudUrl: url,
+            convexSiteUrl: pipe(
+              url,
+              String.replace(".convex.cloud", ".convex.site"),
+            ),
+          },
+      ),
+    ),
+    updateCanonicalUrl: vi.fn((url: string, input: UpdateCanonicalUrlInput) =>
+      Effect.sync(() => {
+        const defaults = {
+          convexCloudUrl: url,
+          convexSiteUrl: pipe(
+            url,
+            String.replace(".convex.cloud", ".convex.site"),
+          ),
+        };
+        const field =
+          input.requestDestination === "convexCloud"
+            ? "convexCloudUrl"
+            : "convexSiteUrl";
+        state.canonicalUrls[url] = {
+          ...(state.canonicalUrls[url] ?? defaults),
+          [field]: input.url ?? defaults[field],
+        };
+      }),
+    ),
     listUsageLimits: vi.fn(() => Effect.sync(() => state.limits)),
     createUsageLimit: vi.fn((_url: string, input: UsageLimitInput) =>
       Effect.sync(() => {

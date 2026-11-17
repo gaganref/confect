@@ -67,6 +67,23 @@ export type EnvironmentVariables = Readonly<
   >
 >;
 
+export type CustomDomain = ManagementApi.PlatformCustomDomainResponse;
+export type CustomDomainInput = ManagementApi.PlatformDeleteCustomDomainArgs;
+export type CanonicalUrls = DeploymentApi.GetCanonicalUrlsResponse;
+export type UpdateCanonicalUrlInput = DeploymentApi.UpdateCanonicalUrlRequest;
+
+const CustomDomainSchema = Schema.Struct({
+  deploymentName: Schema.String,
+  domain: Schema.String,
+  requestDestination: Schema.Literals(["convexCloud", "convexSite"]),
+  creationTime: Schema.Finite,
+  verificationTime: Schema.Finite.pipe(Schema.NullOr, Schema.optionalKey),
+}) satisfies Schema.Schema<CustomDomain>;
+
+const CanonicalUrlsSchema = Schema.Struct({
+  convexCloudUrl: Schema.String,
+  convexSiteUrl: Schema.String,
+}) satisfies Schema.Schema<CanonicalUrls>;
 export type CreateLogStreamInput = LogStream.RedactInput<
   LogStream.ReadonlyDeep<DeploymentApi.CreateLogStreamArgs>
 >;
@@ -525,6 +542,62 @@ const make = Effect.fn("ConvexClient.make")(function* (options?: {
           errorMessage: result.errorMessage,
         });
       return result.value;
+    }),
+    listCustomDomains: Effect.fn("ConvexClient.listCustomDomains")(function* (
+      name: string,
+    ) {
+      const result = yield* management(
+        "listCustomDomains",
+        "GET",
+        `/deployments/${encodeURIComponent(name)}/custom_domains`,
+        Schema.Struct({ domains: Schema.Array(CustomDomainSchema) }),
+      );
+      return result.domains;
+    }),
+    createCustomDomain: Effect.fn("ConvexClient.createCustomDomain")(
+      (name: string, input: CustomDomainInput) =>
+        managementVoid(
+          "createCustomDomain",
+          "POST",
+          `/deployments/${encodeURIComponent(name)}/create_custom_domain`,
+          input,
+        ),
+    ),
+    deleteCustomDomain: Effect.fn("ConvexClient.deleteCustomDomain")(
+      (name: string, input: CustomDomainInput) =>
+        managementVoid(
+          "deleteCustomDomain",
+          "POST",
+          `/deployments/${encodeURIComponent(name)}/delete_custom_domain`,
+          input,
+        ),
+    ),
+    getCanonicalUrls: Effect.fn("ConvexClient.getCanonicalUrls")(function* (
+      url: string,
+    ) {
+      const origin = yield* deploymentUrl("getCanonicalUrls", url);
+      const authorization = yield* deploymentAuthorization;
+      const response = yield* send(
+        "getCanonicalUrls",
+        "GET",
+        `${origin}/get_canonical_urls`,
+        authorization,
+      );
+      return yield* decode("getCanonicalUrls", response, CanonicalUrlsSchema);
+    }),
+    updateCanonicalUrl: Effect.fn("ConvexClient.updateCanonicalUrl")(function* (
+      url: string,
+      input: UpdateCanonicalUrlInput,
+    ) {
+      const origin = yield* deploymentUrl("updateCanonicalUrl", url);
+      const authorization = yield* deploymentAuthorization;
+      yield* send(
+        "updateCanonicalUrl",
+        "POST",
+        `${origin}/update_canonical_url`,
+        authorization,
+        input,
+      );
     }),
     listUsageLimits: Effect.fn("ConvexClient.listUsageLimits")(function* (
       url: string,

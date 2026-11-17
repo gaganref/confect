@@ -4,6 +4,7 @@ import type * as Redacted from "effect/Redacted";
 import * as Layer from "effect/Layer";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 import * as Code from "./Code.js";
+import * as CustomDomain from "./CustomDomain.js";
 import * as ConvexClient from "./ConvexClient.js";
 import * as Deployment from "./Deployment.js";
 import * as DeployKey from "./DeployKey.js";
@@ -37,6 +38,7 @@ export const providers = (options?: {
       DeployKey.DeployKey,
       EnvironmentVariables.EnvironmentVariables,
       Code.Code,
+      CustomDomain.CustomDomain,
       LogStream.LogStream,
       UsageLimit.UsageLimit,
     ]),
@@ -58,6 +60,10 @@ export const providers = (options?: {
         ProviderLayer.dual(EnvironmentVariables.EnvironmentVariables, {
           live: () => EnvironmentVariables.layer,
           local: () => EnvironmentVariables.localLayer,
+        }),
+        ProviderLayer.dual(CustomDomain.CustomDomain, {
+          live: () => CustomDomain.layer,
+          local: () => CustomDomain.localLayer,
         }),
         ProviderLayer.dual(UsageLimit.UsageLimit, {
           live: () => UsageLimit.layer,

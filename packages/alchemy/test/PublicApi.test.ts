@@ -248,6 +248,28 @@ it("keeps automatic values out of Backend env", () => {
   void Confect.Backend("Notes", wrong);
 });
 
+it("exports CustomDomain with typed destinations and canonical URL outputs", () => {
+  expect(Convex.CustomDomain.Type).toBe("Convex.CustomDomain");
+  const props = {
+    deployment: { name: "notes", url: "https://notes.convex.cloud" },
+    domain: "api.example.com",
+    requestDestination: "convexCloud" as const,
+    canonical: true,
+  };
+  const resource = Convex.CustomDomain("Domain", props);
+  expectTypeOf<Effect.Success<typeof resource>["url"]>().toExtend<
+    Output.Output<string>
+  >();
+  expectTypeOf<Effect.Success<typeof resource>["canonicalUrl"]>().toExtend<
+    Output.Output<string>
+  >();
+  expectTypeOf<Effect.Success<typeof resource>["verificationTime"]>().toExtend<
+    Output.Output<number | null>
+  >();
+  // @ts-expect-error Only Convex destinations are accepted.
+  void Convex.CustomDomain("Invalid", { ...props, requestDestination: "web" });
+});
+
 it("types enabled log streams and rejects disabled kinds, plain secrets and foreign fields", () => {
   const target = {
     deploymentUrl: "https://happy-otter-123.convex.cloud",
