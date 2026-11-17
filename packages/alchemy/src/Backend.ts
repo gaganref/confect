@@ -291,9 +291,7 @@ const backend = (
       const promoted =
         manifest === undefined
           ? {}
-          : // The types refuse every setting this refuses, so reaching it means
-            // they were bypassed: a defect, not a stack error.
-            yield* mountVariables(manifest, props.mounts ?? {}).pipe(
+          : yield* mountVariables(manifest, props.mounts ?? {}).pipe(
               Effect.orDie,
             );
       const automatic =
