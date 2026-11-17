@@ -899,7 +899,7 @@ describe("Backend choices from outputs", () => {
             });
             yield* fs.writeFileString(
               path.join(cwd, "convex", "confectHealth.ts"),
-              `export const digest = { handler: () => "${formatOne.digest}" };\n`,
+              `export const digest = internalQueryGeneric({\n  handler: () => "${formatOne.digest}",\n});\n`,
             );
           }).pipe(Effect.orDie),
         deploy: () => Effect.sync(() => void pushes.push("deploy")),

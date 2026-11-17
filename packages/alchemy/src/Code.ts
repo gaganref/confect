@@ -24,9 +24,12 @@ export interface CodeProps {
   readonly cwd?: string;
   readonly prepare?: PrepareCommand;
   /**
-   * The digest of the manifest this push deploys. After every mount's `init`,
-   * still inside the push lock, the deploy asks the pushed code which digest it
-   * was generated with and fails when it answers nothing or another one.
+   * The digest of the manifest this push deploys. After `prepare` and before
+   * the push, the deploy reads the digest prepare wrote into `confectHealth.ts`
+   * and fails with `StaleManifest`, pushing nothing, when it differs. After
+   * every mount's `init`, still inside the push lock, it asks the pushed code
+   * which digest it was generated with and fails when it answers nothing or
+   * another one.
    */
   readonly manifestDigest?: string;
 }

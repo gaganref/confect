@@ -1,5 +1,7 @@
 import type { ProviderMode } from "alchemy/ProviderMode";
 import * as Effect from "effect/Effect";
+import * as FileSystem from "effect/FileSystem";
+import * as Option from "effect/Option";
 import * as Path from "effect/Path";
 import * as Redacted from "effect/Redacted";
 import * as Result from "effect/Result";
@@ -8,6 +10,7 @@ import type { CodeProps } from "../Code.js";
 import { ConvexClient } from "../ConvexClient.js";
 import { CommandRunner, type PushTarget } from "./CommandRunner.js";
 import * as Loopback from "./Loopback.js";
+import { functionsDirectory } from "./FunctionsDirectory.js";
 import * as MountInit from "./MountInit.js";
 import { PushLock } from "./PushLock.js";
 
@@ -33,7 +36,49 @@ export class HealthCheckFailed extends Schema.TaggedError<
   }
 }
 
+/**
+ * Prepare generated code for another manifest than the stack imported. Nothing
+ * was pushed.
+ */
+export class StaleManifest extends Schema.TaggedError<
+  StaleManifest,
+  { readonly brand: unique symbol }
+>()("StaleManifest", {
+  expected: Schema.String,
+  generated: Schema.optionalKey(Schema.String),
+}) {
+  override get message() {
+    const generated =
+      this.generated === undefined
+        ? "prepare wrote no manifest digest"
+        : `prepare generated manifest ${this.generated}`;
+    return `${generated}, but the stack imported manifest ${this.expected}, so nothing was pushed. Run confect codegen, commit the generated files and deploy again.`;
+  }
+}
+
 const HEALTH = "confectHealth:digest";
+
+const handler = /^\s*handler: \(\) => ("(?:[^"\\]|\\.)*"),$/m;
+
+/**
+ * The digest prepare wrote into the health module, which is what the push would
+ * deploy; none when the module is missing or unreadable.
+ */
+const generatedDigest = Effect.fn("Code.generatedDigest")(
+  function* (cwd: string) {
+    const fs = yield* FileSystem.FileSystem;
+    const path = yield* Path.Path;
+    const functions = yield* functionsDirectory(cwd);
+    const file = path.join(cwd, functions, "confectHealth.ts");
+    if (!(yield* fs.exists(file))) return Option.none<string>();
+    const contents = yield* fs.readFileString(file);
+    const found = handler.exec(contents);
+    return found === null
+      ? Option.none<string>()
+      : Schema.decodeOption(Schema.fromJsonString(Schema.String))(found[1]!);
+  },
+  Effect.orElseSucceed(Option.none<string>),
+);
 
 /**
  * Ask the pushed code which manifest digest codegen wrote into it, and fail
@@ -127,6 +172,19 @@ export const deploy = Effect.fn("Code.deploy")(function* (
     Effect.gen(function* () {
       if (props.prepare !== undefined)
         yield* runner.prepare(props.prepare, props.cwd);
+      if (props.manifestDigest !== undefined) {
+        const generated = yield* generatedDigest(
+          path.resolve(props.cwd ?? "."),
+        );
+        if (Option.getOrUndefined(generated) !== props.manifestDigest)
+          return yield* StaleManifest.make({
+            expected: props.manifestDigest,
+            ...Option.match(generated, {
+              onNone: () => ({}),
+              onSome: (digest) => ({ generated: digest }),
+            }),
+          });
+      }
       yield* runner.deploy(target, props.cwd);
       // WORKAROUND: Convex has no component `init` or install `args` in a
       // stable release, so each push runs every mount's `init` itself, inside

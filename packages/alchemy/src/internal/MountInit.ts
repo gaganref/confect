@@ -4,6 +4,7 @@ import * as Path from "effect/Path";
 import type * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
 import { ConvexClient, ConvexFunctionError } from "../ConvexClient.js";
+import { functionsDirectory } from "./FunctionsDirectory.js";
 
 export class MountInitFailed extends Schema.TaggedError<
   MountInitFailed,
@@ -29,26 +30,15 @@ const Steps = Schema.Array(
 
 const STEPS = "confectDeploy:steps";
 
-const ConvexJson = Schema.fromJsonString(
-  Schema.Struct({ functions: Schema.optional(Schema.String) }),
-);
-
 /**
- * Whether codegen wrote `confectDeploy.ts` into the backend's Convex directory,
- * which `convex.json` may move.
+ * Whether codegen wrote `confectDeploy.ts` into the backend's Convex directory.
  */
 const hasDeployModule = Effect.fn("MountInit.hasDeployModule")(function* (
   cwd: string,
 ) {
   const fs = yield* FileSystem.FileSystem;
   const path = yield* Path.Path;
-  const config = path.join(cwd, "convex.json");
-  const functions = (yield* fs.exists(config))
-    ? ((yield* fs
-        .readFileString(config)
-        .pipe(Effect.flatMap(Schema.decodeEffect(ConvexJson)))).functions ??
-      "convex")
-    : "convex";
+  const functions = yield* functionsDirectory(cwd);
   return yield* fs.exists(path.join(cwd, functions, "confectDeploy.ts"));
 });
 
