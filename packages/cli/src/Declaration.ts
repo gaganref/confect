@@ -84,6 +84,20 @@ export class InvalidEnvKey extends Schema.TaggedError<
   }
 }
 
+export class InvalidDerivedEnvKey extends Schema.TaggedError<
+  InvalidDerivedEnvKey,
+  { readonly brand: unique symbol }
+>()("InvalidDerivedEnvKey", {
+  mount: Schema.String,
+  slot: Schema.String,
+  variable: Schema.String,
+  reason: Schema.String,
+}) {
+  override get message(): string {
+    return `The mount "${this.mount}" derives ${this.variable} from slot ${this.slot}. ${this.reason} Rename the mount or slot.`;
+  }
+}
+
 export class InvalidMountName extends Schema.TaggedError<
   InvalidMountName,
   { readonly brand: unique symbol }
@@ -253,6 +267,7 @@ export class DuplicateRouteIdentity extends Schema.TaggedError<
 export type DeclarationError =
   | NotADeclaration
   | InvalidEnvKey
+  | InvalidDerivedEnvKey
   | InvalidMountName
   | ReservedMountName
   | ForeignEnvBinding
@@ -326,7 +341,7 @@ const slotsOf = (
 
 export const promotedName = (mount: string, slot: string): string =>
   String.toUpperCase(
-    `${pipe(mount, String.replace(/(?!^)([A-Z])/g, "_$1"))}_${slot}`,
+    `${pipe(mount, String.replace(/([a-z0-9])([A-Z])/g, "$1_$2"), String.replace(/([A-Z])([A-Z][a-z])/g, "$1_$2"))}_${slot}`,
   );
 
 /**
@@ -461,7 +476,15 @@ export const parse = (input: {
         if (Arr.some(bindings, ([bound]) => bound === slot)) continue;
         const variable = promotedName(mount.name, slot);
         if (!ENV_KEY.test(variable))
-          return yield* Result.fail(InvalidEnvKey.make({ key: variable }));
+          return yield* Result.fail(
+            InvalidDerivedEnvKey.make({
+              mount: mount.name,
+              slot,
+              variable,
+              reason:
+                "Use letters, digits and underscores, starting with a letter.",
+            }),
+          );
         const taken = Arr.some(descriptors, ([key]) => key === variable)
           ? Option.some(variable)
           : Option.map(

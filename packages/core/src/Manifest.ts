@@ -13,9 +13,8 @@ export const FORMAT = 1;
 /**
  * A slot a mount leaves open: its kind, and `variable`, the name the backend
  * declares it under. For an app that is the deployment's variable,
- * `<MOUNT>_<SLOT>` with camelCase mount names split at each capital and
- * uppercased; a nested child's open slot arrives already prefixed, as
- * `<MOUNT>_<CHILD>_<SLOT>`.
+ * `<MOUNT>_<SLOT>` with acronym-aware word boundaries and uppercasing; a nested
+ * child's open slot arrives already prefixed, as `<MOUNT>_<CHILD>_<SLOT>`.
  */
 const descriptorFields = { optional: Schema.Boolean };
 const descriptors = [
