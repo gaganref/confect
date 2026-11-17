@@ -1205,6 +1205,25 @@ describe("Backend choices from outputs", () => {
         expect(fixture.state.environmentUpdates).toEqual([]);
       }),
   );
+  it.effect(
+    "declares no environment resource for an omitted optional selector",
+    () =>
+      Effect.gen(function* () {
+        const { result, fixture, plans } = yield* apply(() => ({
+          manifest: {
+            ...formatOne,
+            env: { CHOICE: { ...selector("ses"), optional: true } },
+          },
+        }));
+        expect(result).toEqual(Exit.succeed(props.deployment.url));
+        expect(
+          Array.filter(plans[0]!, (node) =>
+            Str.endsWith("Environment")(node.fqn),
+          ),
+        ).toEqual([]);
+        expect(fixture.state.environmentUpdates).toEqual([]);
+      }),
+  );
   it.effect("keeps another selector's settings out of its plan edges", () =>
     Effect.gen(function* () {
       const { result, fixture, plans, planDependencies } = yield* apply(
