@@ -1193,6 +1193,17 @@ labels still use each router's own API.
 Changeset: `mount-no-api.md`.
 Upstream: planned; no linked proposal verified.
 
+### Get an endpoint's own public URL
+
+Add `Http.url(Api, group, endpoint)` so a backend can register its own webhook
+or OAuth callback without a separate URL setting. Read Convex's built-in site
+URL and preserve its full mount prefix, including nested mounts. Check group
+and endpoint names against the API and reject paths with parameters or wildcards
+at compile time. Join endpoint paths with or without a leading slash.
+
+Changeset: `http-endpoint-url.md`.
+Upstream: planned; no linked proposal verified.
+
 ## Alchemy deployment
 
 ### Send backend logs through Convex
@@ -1224,6 +1235,21 @@ A newer upstream platform snapshot deprecates these five endpoints in favour of
 
 Changeset: `alchemy-log-stream.md`.
 Upstream: planned; no proposal submitted.
+
+### Show failed code push diagnostics
+
+Include bounded stdout and stderr tails in failed code pushes so operators can
+see Convex validation errors. Strip ANSI escapes and redact the runner's deploy
+key or self-hosted admin key, their URL-encoded and base64 forms, and Convex
+key-shaped values before constructing errors, causes, JSON, or logs. Credential
+needles require eight characters to avoid mangling ordinary diagnostics. Keep
+the real process prerequisites in the Windows regression test. Bound pipe
+draining to one second after CLI exit so inherited pipes cannot hang the push.
+Retain redacted output and the signal name when the CLI dies on a signal.
+Cover unpadded base64, base64url, lowercase percent escapes and embedded encoded
+keys at every byte alignment. Preserve text after JSON escapes and closing
+parentheses. Keep only the 8,192-character buffer, without an unused margin.
+Changeset: `alchemy-push-diagnostics.md`. Upstream: planned; no proposal submitted.
 
 ### Expire temporary cloud deployments
 
