@@ -114,10 +114,10 @@ export const EnvironmentVariables: ResourceClass<EnvironmentVariables> =
                   ...options,
                   ...(options.retry === undefined
                     ? {}
-                    : { retry: checkedSafetyInput("retry", options.retry) }),
+                    : { retry: checkedRetry(options.retry) }),
                   ...(options.lock === undefined
                     ? {}
-                    : { lock: checkedSafetyInput("lock", options.lock) }),
+                    : { lock: checkedLock(options.lock) }),
                 }),
               ),
             ),
@@ -179,58 +179,101 @@ type SafetyOptions = {
   readonly lock?: EnvironmentVariablesProps["lock"];
 };
 
+const validateMaxAttempts = (
+  maxAttempts: number,
+): Result.Result<void, EnvironmentVariablesInvalidOption> =>
+  Number.isInteger(maxAttempts) && maxAttempts >= 1 && maxAttempts <= 10
+    ? Result.succeed(undefined)
+    : Result.fail(
+        EnvironmentVariablesInvalidOption.make({ option: "maxAttempts" }),
+      );
+
+const validateDelay = (
+  delay: Duration.Input,
+): Result.Result<Duration.Duration, EnvironmentVariablesInvalidOption> => {
+  const parsed = Duration.fromInput(delay);
+  return Option.isSome(parsed) &&
+    Duration.toMillis(parsed.value) >= 1 &&
+    Duration.toMillis(parsed.value) <= 10000
+    ? Result.succeed(parsed.value)
+    : Result.fail(EnvironmentVariablesInvalidOption.make({ option: "delay" }));
+};
+
+const validateDeploymentName = (
+  deploymentName: string,
+): Result.Result<void, EnvironmentVariablesInvalidOption> =>
+  /^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(deploymentName)
+    ? Result.succeed(undefined)
+    : Result.fail(
+        EnvironmentVariablesInvalidOption.make({ option: "deploymentName" }),
+      );
+
 const validateSafety = (
   options: Input<SafetyOptions>,
 ): Result.Result<
   Duration.Duration | undefined,
   EnvironmentVariablesInvalidOption
-> => {
-  let duration: Duration.Duration | undefined;
-  if (
-    "retry" in options &&
-    isResolved(options.retry) &&
-    options.retry !== undefined
-  ) {
-    const { maxAttempts, delay } = options.retry;
-    if (!Number.isInteger(maxAttempts) || maxAttempts < 1 || maxAttempts > 10)
-      return Result.fail(
-        EnvironmentVariablesInvalidOption.make({ option: "maxAttempts" }),
-      );
-    const parsed = Duration.fromInput(delay);
+> =>
+  Result.gen(function* () {
+    let duration: Duration.Duration | undefined;
     if (
-      Option.isNone(parsed) ||
-      Duration.toMillis(parsed.value) < 1 ||
-      Duration.toMillis(parsed.value) > 10000
+      "retry" in options &&
+      options.retry !== undefined &&
+      "maxAttempts" in options.retry &&
+      "delay" in options.retry
+    ) {
+      if (isResolved(options.retry.maxAttempts))
+        yield* validateMaxAttempts(options.retry.maxAttempts);
+      if (isResolved(options.retry.delay))
+        duration = yield* validateDelay(options.retry.delay);
+    }
+    if (
+      "lock" in options &&
+      options.lock !== undefined &&
+      "deploymentName" in options.lock &&
+      isResolved(options.lock.deploymentName)
     )
-      return Result.fail(
-        EnvironmentVariablesInvalidOption.make({ option: "delay" }),
-      );
-    duration = parsed.value;
-  }
-  if (
-    "lock" in options &&
-    isResolved(options.lock) &&
-    options.lock !== undefined &&
-    !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(options.lock.deploymentName)
-  )
-    return Result.fail(
-      EnvironmentVariablesInvalidOption.make({ option: "deploymentName" }),
-    );
-  return Result.succeed(duration);
-};
+      yield* validateDeploymentName(options.lock.deploymentName);
+    return duration;
+  });
 
-const checkedSafetyInput = <K extends keyof SafetyOptions>(
-  key: K,
-  input: Exclude<Input<SafetyOptions[K]>, undefined>,
-): Exclude<Input<SafetyOptions[K]>, undefined> => {
-  const check = (value: SafetyOptions[K]) =>
-    Effect.fromResult(validateSafety({ [key]: value })).pipe(
-      Effect.orDie,
-      Effect.as(value),
-    );
+const checkedInput = <A>(
+  input: Exclude<Input<A>, undefined>,
+  validate: (
+    value: A,
+  ) => Result.Result<unknown, EnvironmentVariablesInvalidOption>,
+): Exclude<Input<A>, undefined> => {
+  const check = (value: A) =>
+    Effect.fromResult(validate(value)).pipe(Effect.orDie, Effect.as(value));
   if (Config.isConfig(input)) return input.pipe(Config.mapEffect(check));
   if (Output.isExpr(input)) return input.pipe(Output.mapEffect(check));
   return input;
+};
+
+const checkedRetry = (
+  input: Exclude<Input<SafetyOptions["retry"]>, undefined>,
+): Exclude<Input<SafetyOptions["retry"]>, undefined> => {
+  if ("maxAttempts" in input && "delay" in input)
+    return {
+      ...input,
+      maxAttempts: checkedInput(input.maxAttempts, validateMaxAttempts),
+      delay: checkedInput(input.delay, validateDelay),
+    };
+  return checkedInput(input, (retry) => validateSafety({ retry }));
+};
+
+const checkedLock = (
+  input: Exclude<Input<SafetyOptions["lock"]>, undefined>,
+): Exclude<Input<SafetyOptions["lock"]>, undefined> => {
+  if ("deploymentName" in input)
+    return {
+      ...input,
+      deploymentName: checkedInput(
+        input.deploymentName,
+        validateDeploymentName,
+      ),
+    };
+  return checkedInput(input, (lock) => validateSafety({ lock }));
 };
 
 const ownershipConflict = (variableName: string) =>
