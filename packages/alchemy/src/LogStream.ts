@@ -6,6 +6,7 @@ import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
 import * as Redacted from "effect/Redacted";
 import * as Schema from "effect/Schema";
+import * as Struct from "effect/Struct";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
 
 import * as ConvexClient from "./ConvexClient.js";
@@ -30,8 +31,6 @@ export type LogStreamProps = StrictUnion<Config> & {
 export interface LogStreamAttributes {
   readonly id: string;
   readonly kind: LogStreamProps["kind"];
-  readonly lastWrite: LogStreamProps;
-  readonly readable: Redacted.Redacted<object>;
   readonly hmacSecret?: Redacted.Redacted<string>;
 }
 
@@ -107,11 +106,6 @@ const input = (props: LogStreamProps) => {
   }
 };
 
-const snapshot = (stream: ConvexClient.LogStreamConfig) => {
-  const { status: _, ...config } = Redacted.value(stream);
-  return Redacted.make(config);
-};
-
 const recover = (
   kind: LogStreamProps["kind"],
   ids: readonly string[],
@@ -123,16 +117,10 @@ const recover = (
     message: `${reason} Fix the stream or ownership record manually before continuing.`,
   });
 
-const validate = Effect.fn("LogStream.validate")(function* (
+const identify = Effect.fn("LogStream.identify")(function* (
   output: LogStreamAttributes,
   live: ConvexClient.LogStreamConfig,
 ) {
-  if (output.kind === "webhook" && !Redacted.isRedacted(output.hmacSecret))
-    return yield* recover(
-      output.kind,
-      [output.id],
-      "The create-time webhook HMAC is missing from state.",
-    );
   const config = Redacted.value(live);
   if (config.id !== output.id || config.logStreamType !== output.kind)
     return yield* recover(
@@ -140,11 +128,33 @@ const validate = Effect.fn("LogStream.validate")(function* (
       [output.id],
       "The response identifies a different log stream.",
     );
-  const hmacChanged =
-    config.logStreamType === "webhook" &&
-    output.hmacSecret !== undefined &&
-    config.hmacSecret !== Redacted.value(output.hmacSecret);
-  if (hmacChanged || !deepEqual(snapshot(live), output.readable))
+});
+
+const validate = Effect.fn("LogStream.validate")(function* (
+  props: LogStreamProps,
+  output: LogStreamAttributes,
+  live: ConvexClient.LogStreamConfig,
+) {
+  yield* identify(output, live);
+  const desired = yield* input(props);
+  const { id: _id, status: _status, ...config } = Redacted.value(live);
+  // Compare only fields Convex returns, excluding its generated webhook secret.
+  const expected =
+    desired.logStreamType === "axiom"
+      ? Struct.omit(desired, ["apiKey"])
+      : desired.logStreamType === "sentry"
+        ? Struct.omit(desired, ["dsn"])
+        : {
+            ...desired,
+            url: Redacted.isRedacted(desired.url)
+              ? Redacted.value(desired.url)
+              : desired.url,
+          };
+  const actual =
+    config.logStreamType === "webhook"
+      ? Struct.omit(config, ["hmacSecret"])
+      : config;
+  if (!deepEqual(expected, actual, { stripNullish: true }))
     return yield* LogStreamDrift.make({
       id: output.id,
       kind: output.kind,
@@ -152,6 +162,15 @@ const validate = Effect.fn("LogStream.validate")(function* (
         "A readable log stream field changed outside this resource. Restore it manually before continuing.",
     });
 });
+
+const attributes = (
+  live: ConvexClient.LogStreamConfig,
+): Pick<LogStreamAttributes, "hmacSecret"> => {
+  const config = Redacted.value(live);
+  return config.logStreamType === "webhook"
+    ? { hmacSecret: Redacted.make(config.hmacSecret) }
+    : {};
+};
 
 export const provider = Effect.gen(function* () {
   const client = yield* ConvexClient.ConvexClient;
@@ -164,16 +183,17 @@ export const provider = Effect.gen(function* () {
       .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
   });
   const observe = Effect.fn("LogStream.observe")(function* (
+    props: LogStreamProps,
     output: LogStreamAttributes,
   ) {
-    const live = yield* get(output.lastWrite, output.id);
+    const live = yield* get(props, output.id);
     if (live === undefined)
       return yield* recover(
         output.kind,
         [output.id],
         "The recorded log stream was deleted.",
       );
-    yield* validate(output, live);
+    yield* validate(props, output, live);
     return live;
   });
   const cold = Effect.fn("LogStream.cold")(function* (props: LogStreamProps) {
@@ -184,18 +204,31 @@ export const provider = Effect.gen(function* () {
     );
     const matches = Array.filter(
       streams,
-      (stream) => Redacted.value(stream).logStreamType === props.kind,
+      (stream) =>
+        Redacted.value(stream).logStreamType === props.kind &&
+        Redacted.value(stream).status.type !== "deleting",
     );
     if (matches.length > 0)
       return yield* recover(
         props.kind,
         Array.map(matches, (stream) => Redacted.value(stream).id),
-        "A stream of this kind exists without an ownership record.",
+        "A stream of this kind exists without an ownership record. Another resource in this stack may already manage this kind. A backend holds one stream per kind.",
       );
   });
   return {
-    diff: Effect.fn("LogStream.diff")(function* ({ news, output }) {
-      if (output !== undefined) yield* observe(output);
+    diff: Effect.fn("LogStream.diff")(function* ({ olds, news, output }) {
+      const kind = "kind" in news ? news.kind : undefined;
+      switch (kind) {
+        case "datadog":
+        case "postHogLogs":
+        case "postHogErrorTracking":
+        case "s3Export":
+          return yield* LogStreamNotEnabled.make({
+            kind,
+            message: "This log stream kind is not switched on.",
+          });
+      }
+      if (output !== undefined) yield* observe(olds, output);
       if (!isResolved(news)) return;
       yield* input(news);
       if (output === undefined) {
@@ -204,17 +237,17 @@ export const provider = Effect.gen(function* () {
       }
       if (
         news.kind !== output.kind ||
-        news.deploymentUrl !== output.lastWrite.deploymentUrl
+        news.deploymentUrl !== olds.deploymentUrl
       ) {
         yield* cold(news);
         return { action: "replace" };
       }
-      if (!deepEqual(news, output.lastWrite)) return { action: "update" };
+      if (!deepEqual(news, olds)) return { action: "update" };
     }),
     read: Effect.fn("LogStream.read")(function* ({ olds, output }) {
       if (output !== undefined) {
-        yield* observe(output);
-        return output;
+        const live = yield* observe(olds, output);
+        return { id: output.id, kind: output.kind, ...attributes(live) };
       }
       if (isResolved(olds)) yield* cold(olds);
       return undefined;
@@ -223,14 +256,21 @@ export const provider = Effect.gen(function* () {
       fqn,
       instanceId,
       news,
+      olds,
       output,
     }) {
       const config = yield* input(news);
       if (output !== undefined) {
-        yield* observe(output);
+        if (olds === undefined)
+          return yield* recover(
+            output.kind,
+            [output.id],
+            "The prior ownership props are missing.",
+          );
+        yield* observe(olds, output);
         if (
           news.kind !== output.kind ||
-          news.deploymentUrl !== output.lastWrite.deploymentUrl
+          news.deploymentUrl !== olds.deploymentUrl
         )
           return yield* recover(
             output.kind,
@@ -251,11 +291,11 @@ export const provider = Effect.gen(function* () {
             "Update succeeded but the stream could not be read.",
           );
         const updated = {
-          ...output,
-          lastWrite: news,
-          readable: snapshot(live),
+          id: output.id,
+          kind: output.kind,
+          ...attributes(live),
         };
-        yield* validate(updated, live);
+        yield* validate(news, updated, live);
         return updated;
       }
       yield* cold(news);
@@ -288,29 +328,21 @@ export const provider = Effect.gen(function* () {
           [created.id],
           "Create succeeded but the stream could not be read.",
         );
-      const attributes: LogStreamAttributes = {
+      const createdOutput: LogStreamAttributes = {
         id: created.id,
         kind: news.kind,
-        lastWrite: news,
-        readable: snapshot(live),
-        ...(created.logStreamType === "webhook"
-          ? { hmacSecret: Redacted.make(created.hmacSecret) }
-          : {}),
+        ...attributes(live),
       };
-      yield* validate(attributes, live);
-      yield* checkpointCreate(fqn, instanceId, news, attributes);
-      return attributes;
+      yield* validate(news, createdOutput, live);
+      yield* checkpointCreate(fqn, instanceId, news, createdOutput);
+      return createdOutput;
     }),
-    delete: Effect.fn("LogStream.delete")(function* ({ output }) {
-      const live = yield* get(output.lastWrite, output.id);
+    delete: Effect.fn("LogStream.delete")(function* ({ olds, output }) {
+      const live = yield* get(olds, output.id);
       if (live === undefined) return;
-      yield* validate(output, live);
+      yield* identify(output, live);
       yield* client
-        .deleteLogStream(
-          output.lastWrite.deploymentUrl,
-          output.lastWrite.deployKey,
-          output.id,
-        )
+        .deleteLogStream(olds.deploymentUrl, olds.deployKey, output.id)
         .pipe(Effect.catchTag("ConvexNotFound", () => Effect.void));
     }),
   } satisfies Provider.ProviderServiceInput<LogStream>;

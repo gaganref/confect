@@ -12,7 +12,9 @@ export type RedactInput<A> = A extends unknown
   ? {
       readonly [K in keyof A]: K extends SecretField
         ? Redacted.Redacted<string> | Exclude<A[K], string>
-        : A[K];
+        : K extends "url"
+          ? A[K] | Redacted.Redacted<string>
+          : A[K];
     }
   : never;
 export type ReadonlyDeep<A> = A extends object

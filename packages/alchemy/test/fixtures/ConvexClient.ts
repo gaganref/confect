@@ -276,7 +276,9 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
                 id,
                 status,
                 logStreamType: "webhook",
-                url: input.url,
+                url: Redacted.isRedacted(input.url)
+                  ? Redacted.value(input.url)
+                  : input.url,
                 format: input.format,
                 topics: input.topics ?? null,
                 hmacSecret: "made-up-hmac-secret",
@@ -340,7 +342,9 @@ export const mockClient = (options: { readonly deployKey?: string } = {}) => {
                   if (live.logStreamType === "webhook")
                     return Redacted.make({
                       ...live,
-                      url: input.url ?? live.url,
+                      url: Redacted.isRedacted(input.url)
+                        ? Redacted.value(input.url)
+                        : (input.url ?? live.url),
                       format: input.format ?? live.format,
                       ...(input.topics === undefined
                         ? {}
