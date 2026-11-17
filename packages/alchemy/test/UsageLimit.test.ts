@@ -335,3 +335,39 @@ it.effect(
       expect(error._tag).toBe("UnsupportedLocalUsageLimit");
     }),
 );
+
+it.effect.each([0, -5, 1.5, NaN, Infinity, Number.MAX_SAFE_INTEGER + 1])(
+  "rejects invalid limit %s in diff and reconcile before using the client",
+  (limit) =>
+    Effect.gen(function* () {
+      const mock = mockClient();
+      const services = yield* Layer.build(mock.layer);
+      const provider = yield* UsageLimit.provider.pipe(
+        Effect.provideContext(services),
+      );
+      const news = { ...props, limit };
+      const diff = yield* provider
+        .diff({
+          ...lifecycle,
+          oldBindings: [],
+          newBindings: [],
+          news,
+          olds: props,
+          output: undefined,
+        })
+        .pipe(Effect.result);
+      const reconcile = yield* provider
+        .reconcile({ ...lifecycle, news, olds: undefined, output: undefined })
+        .pipe(Effect.result);
+      expect(diff).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "InvalidUsageLimit" },
+      });
+      expect(reconcile).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "InvalidUsageLimit" },
+      });
+      expect(mock.client.listUsageLimits).not.toHaveBeenCalled();
+      expect(mock.client.createUsageLimit).not.toHaveBeenCalled();
+    }),
+);
