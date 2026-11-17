@@ -826,6 +826,9 @@ it.effect(
         deploymentName: "happy-otter-123",
         reason: "configuration",
       });
+      expect(error.message).toBe(
+        "Push lock for happy-otter-123 needs the PushLock service to be provided",
+      );
       expect(mock.client.listEnvironmentVariables).not.toHaveBeenCalled();
     }).pipe(Effect.provideService(ConvexClient, mock.client));
   },
