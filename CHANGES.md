@@ -1204,6 +1204,10 @@ key-shaped values before constructing errors, causes, JSON, or logs. Credential
 needles require eight characters to avoid mangling ordinary diagnostics. Keep
 the real process prerequisites in the Windows regression test. Bound pipe
 draining to one second after CLI exit so inherited pipes cannot hang the push.
+Retain redacted output and the signal name when the CLI dies on a signal.
+Cover unpadded base64, base64url, lowercase percent escapes and embedded encoded
+keys at every byte alignment. Preserve text after JSON escapes and closing
+parentheses. Keep only the 8,192-character buffer, without an unused margin.
 Changeset: `alchemy-push-diagnostics.md`. Upstream: planned; no proposal submitted.
 
 ### Deploy Convex through Alchemy
