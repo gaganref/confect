@@ -25,6 +25,19 @@ const read = <A>(config: Config.Config<A>, values: Record<string, string>) =>
   }).pipe(Effect.scoped);
 
 describe("Env", () => {
+  it.effect(
+    "marks an automatic field without changing how a handler reads it",
+    () =>
+      Effect.gen(function* () {
+        const staged = Env.make("host", { STAGE: Env.automatic(Env.string()) });
+        expect(Env.descriptors(staged)).toEqual([
+          ["STAGE", { kind: "string", optional: false, automatic: true }],
+        ]);
+        const stage = yield* read(staged.STAGE, { STAGE: "preview" });
+        expect(stage).toBe("preview");
+      }),
+  );
+
   it.each(["CONVEX_SITE_URL", "CONVEX_CLOUD_URL"])(
     "refuses the reserved slot %s when its key is widened",
     (key: string) => {

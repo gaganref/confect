@@ -90,7 +90,7 @@ layer(NodeServices.layer)("ManifestComposition", (it) => {
         yield* write(
           "child/confect/app.ts",
           `import { App, Env } from "@confect/core";
-export default App.make({ kind: "component", env: Env.make("child", { OPEN_SECRET: Env.secret(), REGION: Env.string() }) });
+export default App.make({ kind: "component", env: Env.make("child", { OPEN_SECRET: Env.secret(), REGION: Env.string(), STAGE: Env.automatic(Env.string()) }) });
 `,
         );
         yield* write(
@@ -219,12 +219,17 @@ export default App.make({
           path.join(root, "host/confect/_generated/manifest.ts"),
         )).module.default as {
           readonly digest: string;
+          readonly env: unknown;
           readonly mounts: unknown;
           readonly http: Record<
             string,
             Record<string, Record<string, { path: string; digest: string }>>
           >;
         };
+        expect(data.env).toEqual({
+          HOST_KEY: { kind: "secret", optional: false },
+          STAGE: { kind: "string", optional: false, automatic: true },
+        });
         expect(data.mounts).toEqual({
           relay: {
             component: "relay",
@@ -266,6 +271,10 @@ export default App.make({
           path.join(root, "relay/convex/confectHealth.ts"),
         );
         expect(componentHealth).toBe(false);
+        expect(relayConfig).toContain("STAGE: component.env.STAGE,");
+        expect(hostConfig).toContain("STAGE: app.env.STAGE,");
+        expect(hostConfig).toContain("STAGE: v.string(),");
+        expect(pipe(hostConfig, String.includes("RELAY_STAGE"))).toBe(false);
         expect(relayConfig).toContain("CHILD_OPEN_SECRET: v.string(),");
         expect(relayConfig).toContain('REGION: "eu-west-1",');
         expect(relayConfig).toContain(

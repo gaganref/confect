@@ -19,6 +19,7 @@ const manifest = {
     },
     PLATFORM_URL: { kind: "string", optional: true },
     WEBHOOK_SECRET: { kind: "secret", optional: true },
+    STAGE: { kind: "string", optional: false, automatic: true },
   },
   mounts: {
     email: {
@@ -214,6 +215,16 @@ describe("Manifest", () => {
       sms: {},
     };
     void [mounts, absent, missing, plain, unknown];
+  });
+
+  it("leaves automatic slots to the framework that installed them", () => {
+    const automatic: Manifest.Automatic<typeof manifest> = { STAGE: "staging" };
+    const supplied: Manifest.Values<typeof manifest> = {
+      ...required,
+      // @ts-expect-error An automatic slot is not the product's to supply.
+      STAGE: "staging",
+    };
+    void [automatic, supplied];
   });
 
   it("lists every route, and a route from another build is none of them", () => {

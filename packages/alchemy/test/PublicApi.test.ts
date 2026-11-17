@@ -216,3 +216,29 @@ it("checks secret types on a mount whose open slots are all optional", () => {
     mounts: { email: { KEY: Redacted.make("fixture-key") } },
   }).toExtend<Props>();
 });
+
+it("keeps automatic values out of Backend env", () => {
+  const staged = {
+    ...manifest,
+    env: {
+      ...manifest.env,
+      STAGE: { kind: "string", optional: false, automatic: true },
+    },
+  } as const;
+  const input = {
+    deployment: { name: "notes", url: "https://example.convex.cloud" },
+    deployKey: Redacted.make("fixture"),
+    manifest: staged,
+    env: {
+      URL: "https://example.edu",
+      TOKEN: Redacted.make("fixture"),
+      MODE: "log" as const,
+    },
+    mounts: { email: { KEY: Redacted.make("fixture") } },
+    automatic: { STAGE: "preview" },
+  };
+  void Confect.Backend("Notes", input);
+  const wrong = { ...input, env: { ...input.env, STAGE: "preview" } };
+  // @ts-expect-error Automatic slots belong in automatic, even through a variable.
+  void Confect.Backend("Notes", wrong);
+});

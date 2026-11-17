@@ -951,6 +951,83 @@ describe("Declaration", () => {
     );
   });
 
+  it("binds a child's automatic slot to the parent's own, declaring it once, and refuses an ordinary slot of that name", () => {
+    const child = {
+      format: 1,
+      sections: {},
+      name: "ratelimiter",
+      env: { STAGE: { kind: "string", optional: false, automatic: true } },
+      mounts: {},
+      http: {},
+      digest: "sha256:child",
+    } as const;
+    const Child = Component.make("ratelimiter", {
+      manifest: child,
+      client: (native: unknown) => native,
+    });
+    const parse = (env: Parameters<typeof App.make>[0]["env"]) =>
+      parseApp(
+        App.make({
+          env,
+          components: [ratelimiter],
+          mounts: [
+            Mount.make(Child, { name: "first" }),
+            Mount.make(Child, { name: "second" }),
+          ],
+        }),
+      );
+    const parsed = parse(Env.make("host", {}));
+    assertIs(parsed, Result.isSuccess);
+    expect(parsed.success.automatic).toEqual([
+      ["STAGE", { kind: "string", optional: false, automatic: true }],
+    ]);
+    expect(Array.map(parsed.success.mounts, ({ open }) => open)).toEqual([
+      [],
+      [],
+    ]);
+    expect(Declaration.convexConfig(parsed.success)).toContain(
+      "STAGE: app.env.STAGE,",
+    );
+    expect(parse(Env.make("host", { STAGE: Env.string() }))).toEqual(
+      Result.fail(
+        Declaration.AutomaticSlotConflict.make({
+          mount: "first",
+          slot: "STAGE",
+        }),
+      ),
+    );
+  });
+
+  it("accepts a host's own matching automatic slot and refuses another kind", () => {
+    const child = Component.make("ratelimiter", {
+      manifest: {
+        ...formatOne,
+        env: { STAGE: { kind: "string", optional: false, automatic: true } },
+      },
+      client: (native: unknown) => native,
+    });
+    const parse = (field: Env.AnyField) =>
+      parseApp(
+        App.make({
+          env: Env.make("host", { STAGE: field }),
+          components: [ratelimiter],
+          mounts: [Mount.make(child, { name: "child" })],
+        }),
+      );
+    const accepted = parse(Env.automatic(Env.string()));
+    assertIs(accepted, Result.isSuccess);
+    expect(accepted.success.automatic).toEqual([]);
+    expect(accepted.success.mounts[0]?.open).toEqual([]);
+    const refused = parse(Env.automatic(Env.secret()));
+    assertIs(refused, Result.isFailure);
+    expect(refused.failure).toMatchObject({
+      _tag: "AutomaticSlotConflict",
+      mount: "child",
+      slot: "STAGE",
+    });
+    expect(refused.failure.message).toContain("Env.automatic");
+  });
+
   it("refuses env on a root app's mount when types were bypassed", () => {
     const app: unknown = {
       ...App.make({ env: Env.make("host", {}), components: [ratelimiter] }),

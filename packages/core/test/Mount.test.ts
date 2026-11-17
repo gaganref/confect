@@ -302,6 +302,18 @@ describe("Mount.make", () => {
     void Mount.make(Relay, { ...n, env: { MODE: "live", LABEL: "x" } });
     // @ts-expect-error RULE manifest-literal: a constant must be one of the manifest's literals.
     void Mount.make(Relay, { ...n, env: { MODE: "smtp" } });
+    const Staged = Component.make("relay", {
+      manifest: {
+        ...manifest,
+        env: {
+          ...manifest.env,
+          STAGE: { kind: "string", optional: false, automatic: true },
+        },
+      },
+      client: (native: Native) => native,
+    });
+    // @ts-expect-error RULE manifest-automatic: an automatic slot is bound by codegen, never by a mount.
+    void Mount.make(Staged, { ...n, env: { STAGE: "x" } });
     // @ts-expect-error RULE manifest-unknown-slot: the manifest lists no SURPRISE slot.
     void Mount.make(Relay, { ...n, env: { MODE: "log", SURPRISE: "x" } });
     const Other = Component.make("relay", {

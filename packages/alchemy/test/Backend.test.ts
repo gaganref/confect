@@ -138,6 +138,70 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
 ];
 
 describe("Backend", () => {
+  it.effect("writes automatic values separately from application env", () =>
+    Effect.gen(function* () {
+      const manifest = {
+        ...formatOne,
+        env: { STAGE: { kind: "string", optional: false, automatic: true } },
+      } as const;
+      const backend = yield* Backend("Backend", {
+        ...props,
+        manifest,
+        automatic: { STAGE: "preview" },
+      });
+      expect(backend.environment?.Props.variables).toEqual({
+        STAGE: "preview",
+      });
+    }).pipe(Effect.provide([stack(), providers])),
+  );
+
+  it.effect.each([
+    ["undeclared", formatOne, { STAGE: "x" }, "STAGE", "NotAutomatic"],
+    [
+      "ordinary",
+      { ...formatOne, env: { LABEL: { kind: "string", optional: true } } },
+      { LABEL: "x" },
+      "LABEL",
+      "NotAutomatic",
+    ],
+    [
+      "missing",
+      {
+        ...formatOne,
+        env: { STAGE: { kind: "string", optional: false, automatic: true } },
+      },
+      {},
+      "STAGE",
+      "Missing",
+    ],
+  ] as const)(
+    "refuses %s automatic values before writing resources",
+    ([_, manifest, automatic, slot, reason]) =>
+      Effect.gen(function* () {
+        // The empty automatic type is {}, so an undeclared key also compiles without this boundary check.
+        const input = {
+          ...props,
+          manifest: manifest as typeof formatOne,
+          automatic,
+        };
+        const result = yield* Backend("Backend", input).pipe(Effect.exit);
+        expect(Exit.isFailure(result)).toBe(true);
+        if (Exit.isFailure(result)) {
+          const defect = Cause.findDefect(result.cause);
+          expect(Result.isSuccess(defect)).toBe(true);
+          if (Result.isSuccess(defect)) {
+            expect(defect.success).toMatchObject({
+              _tag: "InvalidAutomaticSetting",
+              slot,
+              reason,
+            });
+            expect(String(defect.success)).toContain("Backend.automatic");
+            expect(String(defect.success)).toContain("manifest.env");
+          }
+        }
+      }).pipe(Effect.provide([stack(), providers])),
+  );
+
   it.effect.each(invalidManifests)(
     "refuses a malformed manifest at Backend entry (%s)",
     ([_, manifest]) =>
