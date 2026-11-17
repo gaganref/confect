@@ -15,6 +15,7 @@ import * as String from "effect/String";
 import { pipe } from "effect/Function";
 import * as Array from "effect/Array";
 import * as Rec from "effect/Record";
+import * as FileSources from "./internal/FileSources.js";
 import * as PackagedSources from "./internal/PackagedSources.js";
 import * as Session from "./internal/Session.js";
 
@@ -469,7 +470,13 @@ const sourcesOf = (
   registry: SourceOptions,
   options: SourceOptions | undefined,
 ): SourceOptions => {
-  const sources = options?.sources ?? registry.sources;
+  // The registry's sources are the generated registry's, read from the
+  // module files; a layer's own are as the test passed them.
+  const sources =
+    options?.sources ??
+    (registry.sources === undefined
+      ? undefined
+      : FileSources.markAllFileRead(registry.sources));
   const componentRuntimes =
     options?.componentRuntimes ?? registry.componentRuntimes;
   return {

@@ -732,6 +732,43 @@ export function register(t: any, name: string) {
     );
 
     it.effect(
+      "refuses a session when a nested package.json the walk read gains a browser field since codegen",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* packagedProject([tool]);
+          yield* writePackage(project, "node-tool", plainExports, {
+            ...toolComponent("component", true),
+            "component/convex.config.js":
+              'import { defineComponent } from "convex/server";\nimport { name } from "../shared/name.js";\nexport default defineComponent(name);\n',
+            "shared/package.json": '{ "type": "module" }\n',
+            "shared/name.js": 'export const name = "tool";\n',
+          });
+          yield* project.run;
+          const testing = yield* project.read("confect/_generated/testing.ts");
+          expect(testing).toContain(
+            '{ file: "shared/package.json", digest: "sha256:',
+          );
+          // Convex's esbuild follows a browser redirect added after codegen.
+          yield* project.write(
+            "node_modules/node-tool/shared/package.json",
+            '{ "type": "module", "browser": { "./name.js": "./other.js" } }\n',
+          );
+          const generated = yield* importTesting(project);
+          const refused = yield* refusalOf(
+            generated.TestBackend.layer({ config: {} }),
+          );
+          expect(refused).toMatchObject({
+            _tag: "PackagedComponentChanged",
+            mount: "tool",
+            package: "node-tool",
+            file: "shared/package.json",
+            reason: "its bytes differ from the ones codegen read",
+          });
+        }).pipe(Effect.scoped),
+      { timeout: 60000 },
+    );
+
+    it.effect(
       "refuses a session when a convex.config.ts appears beside the recorded convex.config.js, which Convex would deploy instead",
       () =>
         Effect.gen(function* () {

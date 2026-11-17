@@ -25,6 +25,7 @@ import type {
 } from "../TestConfect.js";
 import { convexTest as kernelTest } from "./ConvexTest.js";
 import * as DriverWorld from "./DriverWorld.js";
+import { markAllFileRead } from "./FileSources.js";
 import * as MountedHttp from "./MountedHttp.js";
 import * as Redaction from "./Redaction.js";
 
@@ -245,7 +246,11 @@ export const registerKit = (
       name,
       kit.schema,
       kit.modules,
-      kit.sources === undefined ? undefined : { sources: kit.sources },
+      // A kit of schema and modules is the generated registry's, whose
+      // sources it read from the module files.
+      kit.sources === undefined
+        ? undefined
+        : { sources: markAllFileRead(kit.sources) },
     );
   } else {
     // Codegen accepts a kit whose exports it cannot list, such as CommonJS.

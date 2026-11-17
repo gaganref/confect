@@ -585,6 +585,136 @@ const typeOnly = (node: AstNode) =>
     ));
 
 /**
+ * The names CommonJS gives a module, through which code can load another.
+ */
+const moduleScopeNames = new Set(["require", "module", "exports"]);
+
+const isIdentifier = (value: unknown): boolean =>
+  isNode(value) && value.type === "Identifier";
+
+/**
+ * The keys of `node` that hold a name, not a reference: a property's key or
+ * member's property when not computed, a binding's own name, a label, an
+ * import's or export's external name.
+ */
+const nonReferenceKeys = (node: AstNode): ReadonlySet<string> => {
+  const computed = node["computed"] === true;
+  switch (node.type) {
+    case "MemberExpression":
+    case "OptionalMemberExpression":
+      return new Set(computed ? [] : ["property"]);
+    case "ObjectProperty":
+    case "ObjectMethod":
+    case "ClassProperty":
+    case "ClassMethod":
+    case "ClassPrivateProperty":
+    case "ClassPrivateMethod":
+    case "ClassAccessorProperty":
+      return new Set(computed ? [] : ["key"]);
+    case "ImportSpecifier":
+    case "ImportDefaultSpecifier":
+    case "ImportNamespaceSpecifier":
+      return new Set(["imported", "local"]);
+    case "ExportSpecifier":
+    case "ExportNamespaceSpecifier":
+    case "ExportDefaultSpecifier":
+      return new Set(["exported"]);
+    case "VariableDeclarator":
+      return new Set(isIdentifier(node["id"]) ? ["id"] : []);
+    case "FunctionDeclaration":
+    case "FunctionExpression":
+    case "ClassDeclaration":
+    case "ClassExpression":
+    case "TSEnumDeclaration":
+    case "TSEnumMember":
+    case "TSModuleDeclaration":
+      return new Set(["id"]);
+    case "CatchClause":
+      return new Set(isIdentifier(node["param"]) ? ["param"] : []);
+    case "TSParameterProperty":
+      return new Set(isIdentifier(node["parameter"]) ? ["parameter"] : []);
+    case "LabeledStatement":
+    case "BreakStatement":
+    case "ContinueStatement":
+      return new Set(["label"]);
+    default:
+      return new Set();
+  }
+};
+
+/**
+ * The names a program binds at module level, which a reference anywhere in it
+ * resolves to: its imports, variables, functions, classes, enums and
+ * namespaces. A binding in an inner scope is not among them, so a reference the
+ * walker cannot place stays free.
+ */
+const moduleBindings = (program: unknown): ReadonlySet<string> => {
+  const names = new Set<string>();
+  const addPattern = (pattern: unknown): void => {
+    if (!isNode(pattern)) return;
+    switch (pattern.type) {
+      case "Identifier":
+        if (Predicate.isString(pattern["name"])) names.add(pattern["name"]);
+        return;
+      case "ObjectPattern":
+        for (const property of (pattern[
+          "properties"
+        ] as ReadonlyArray<unknown>) ?? [])
+          addPattern(
+            isNode(property) && property.type === "RestElement"
+              ? property["argument"]
+              : isNode(property)
+                ? property["value"]
+                : undefined,
+          );
+        return;
+      case "ArrayPattern":
+        for (const element of (pattern["elements"] as ReadonlyArray<unknown>) ??
+          [])
+          addPattern(element);
+        return;
+      case "AssignmentPattern":
+        addPattern(pattern["left"]);
+        return;
+      case "RestElement":
+        addPattern(pattern["argument"]);
+        return;
+    }
+  };
+  const addStatement = (statement: unknown): void => {
+    if (!isNode(statement)) return;
+    switch (statement.type) {
+      case "ImportDeclaration":
+        for (const specifier of (statement[
+          "specifiers"
+        ] as ReadonlyArray<unknown>) ?? [])
+          if (isNode(specifier)) addPattern(specifier["local"]);
+        return;
+      case "VariableDeclaration":
+        for (const declarator of (statement[
+          "declarations"
+        ] as ReadonlyArray<unknown>) ?? [])
+          if (isNode(declarator)) addPattern(declarator["id"]);
+        return;
+      case "FunctionDeclaration":
+      case "ClassDeclaration":
+      case "TSEnumDeclaration":
+      case "TSModuleDeclaration":
+        addPattern(statement["id"]);
+        return;
+      case "ExportNamedDeclaration":
+      case "ExportDefaultDeclaration":
+        addStatement(statement["declaration"]);
+        return;
+    }
+  };
+  const body = isNode(program) ? program["body"] : undefined;
+  if (Array.isArray(body))
+    for (const statement of body) addStatement(statement);
+  return names;
+};
+
+/**
  * The module edges in a parsed component definition, failing closed: `None`
  * when the walker meets a node it does not know. Each form that can create a
  * runtime module edge is classified. An `import` or `export ... from`, unless
@@ -638,13 +768,16 @@ export const programImports = (
       }
       case "TSImportEqualsDeclaration": {
         if (node["importKind"] === "type") return;
-        // `import x = Alias.Path` names no module; a `require()` one does.
+        // A runtime import-equals is an edge, a `require()` one or an alias:
+        // `import loader = require` hides a `require` call behind a name.
         const reference = node["moduleReference"];
-        if (isNode(reference) && reference.type === "TSExternalModuleReference")
-          found.push({
-            specifier: literalOf(reference["expression"]),
-            dynamic: true,
-          });
+        found.push({
+          specifier:
+            isNode(reference) && reference.type === "TSExternalModuleReference"
+              ? literalOf(reference["expression"])
+              : "import-equals alias",
+          dynamic: true,
+        });
         return;
       }
       case "TSExternalModuleReference":
@@ -657,11 +790,19 @@ export const programImports = (
         if (isNode(node["meta"]) && node["meta"]["name"] === "import")
           found.push({ specifier: "import.meta", dynamic: true });
         return;
-      case "Identifier":
-        // `require` read anywhere may load a module at run time.
-        if (node["name"] === "require")
-          found.push({ specifier: "require", dynamic: true });
+      case "Identifier": {
+        // A free `require`, `module` or `exports`, read anywhere, may load a
+        // module at run time; only a module-level binding of the name makes
+        // it local.
+        const name = node["name"];
+        if (
+          Predicate.isString(name) &&
+          moduleScopeNames.has(name) &&
+          !bound.has(name)
+        )
+          found.push({ specifier: name, dynamic: true });
         return;
+      }
       default:
         if (typeDeclarations.has(node.type)) return;
         if (!edgelessNodes.has(node.type)) {
@@ -669,11 +810,18 @@ export const programImports = (
           return;
         }
     }
+    const skipped = nonReferenceKeys(node);
     for (const [key, child] of Record.toEntries(node)) {
-      if (erasedKeys.has(key)) continue;
+      if (erasedKeys.has(key) || skipped.has(key)) continue;
+      if (key === "params" && Array.isArray(child)) {
+        // A parameter's own name is a binding, not a reference.
+        visit(Array.filter(child, (param) => !isIdentifier(param)));
+        continue;
+      }
       if (Predicate.isObjectOrArray(child)) visit(child);
     }
   };
+  const bound = moduleBindings(program);
   visit(program);
   return known ? Option.some(found) : Option.none();
 };

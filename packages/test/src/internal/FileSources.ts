@@ -1,10 +1,13 @@
+import * as Rec from "effect/Record";
+
 /**
- * Marks a source read from a real file, which `Sources.fromFiles` and the
- * generated test registry give, rather than one a test wrote by hand. The
- * generated registry, which imports nothing from `@confect/test`, sets the same
- * key with `Symbol.for`.
+ * The sources read from real files: those `Sources.fromFiles` returns, the
+ * generated registry's, and the packaged reads. Module-private, so no reader a
+ * test writes can claim to be one. A source from another loaded copy of
+ * `@confect/test` is not a member either, so it is held to the strict rule,
+ * which refuses loudly (#159).
  */
-const FILE_READ = Symbol.for("@confect/kernel/fileSource");
+const fileReads = new WeakSet<() => Promise<string>>();
 
 /**
  * `read`, marked as read from a real file. The kernel leaves a module whose
@@ -13,11 +16,21 @@ const FILE_READ = Symbol.for("@confect/kernel/fileSource");
  */
 export const markFileRead = (
   read: () => Promise<string>,
-): (() => Promise<string>) =>
-  Object.assign(() => read(), { [FILE_READ]: true });
+): (() => Promise<string>) => {
+  const marked = () => read();
+  fileReads.add(marked);
+  return marked;
+};
 
 /**
- * Whether `read` is marked as read from a real file ({@link markFileRead}).
+ * Each of `sources`, marked as read from a real file ({@link markFileRead}).
+ */
+export const markAllFileRead = (
+  sources: Readonly<Record<string, () => Promise<string>>>,
+): Record<string, () => Promise<string>> => Rec.map(sources, markFileRead);
+
+/**
+ * Whether `read` was marked as read from a real file ({@link markFileRead}).
  */
 export const isFileRead = (read: () => Promise<string>): boolean =>
-  (read as unknown as Readonly<Record<symbol, unknown>>)[FILE_READ] === true;
+  fileReads.has(read);

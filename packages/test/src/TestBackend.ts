@@ -15,6 +15,7 @@ import {
   type PackagedRefusal,
   validateAll,
 } from "./internal/PackagedSources.js";
+import { markAllFileRead } from "./internal/FileSources.js";
 import { open, registerKit } from "./internal/Session.js";
 import {
   TestConfect,
@@ -402,7 +403,9 @@ export const make = <
           target: "kernel",
           httpMounts: app.httpMounts,
           ...(app.secrets === undefined ? {} : { secrets: app.secrets }),
-          ...(app.sources === undefined ? {} : { sources: app.sources }),
+          ...(app.sources === undefined
+            ? {}
+            : { sources: markAllFileRead(app.sources) }),
           ...((componentRuntimes ?? app.componentRuntimes) === undefined
             ? {}
             : {

@@ -1,5 +1,4 @@
-import * as Rec from "effect/Record";
-import { markFileRead } from "./internal/FileSources.js";
+import { markAllFileRead } from "./internal/FileSources.js";
 
 /**
  * Module sources the test kernel reads each module's `"use node"` directive
@@ -29,4 +28,4 @@ export type Sources = Readonly<Record<string, () => Promise<string>>>;
  * `sources` or a layer's `sources`.
  */
 export const fromFiles = (sources: Sources): Sources =>
-  Rec.map(sources, markFileRead);
+  markAllFileRead(sources);

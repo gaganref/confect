@@ -925,6 +925,28 @@ it.effect(
 );
 
 it.effect(
+  "on the kernel target, refuses a hand-written reader that forges the file-read mark",
+  () =>
+    Effect.gen(function* () {
+      const forged = Object.assign(() => Promise.resolve(""), {
+        [Symbol.for("@confect/kernel/fileSource")]: true,
+      });
+      const refused = yield* surfaceOn(
+        kitWithSources(runtimeModules, {
+          ...runtimeSources,
+          "./fixtures/runtime/plainNode.ts": forged,
+        }),
+      ).pipe(refusalOf);
+      expect(refused).toMatchObject({
+        _tag: "ModuleRuntime",
+        reason: "placeholderSource",
+        componentPath: "kit",
+        module: "plainNode",
+      });
+    }),
+);
+
+it.effect(
   "on the kernel target, leaves unregistered a module whose file Sources.fromFiles read has no import or export, as Convex leaves it out",
   () =>
     Effect.gen(function* () {

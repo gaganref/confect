@@ -38,6 +38,7 @@ export const cases = [
   "a TypeScript import-equals require",
   "a browser field redirecting a relative helper",
   "a directory import through a manifest",
+  "an import-equals alias of require",
 ] as const;
 
 export type Case = (typeof cases)[number];
@@ -731,6 +732,47 @@ export const corpus: ReadonlyArray<Fixture> = [
         "component/flags/main.js": "export const enabled = false;\n",
         "component/flags/browser.js": "export const enabled = true;\n",
       }),
+      ...innerPackage,
+    },
+  },
+  {
+    name: "a TypeScript definition that aliases require with import-equals and loads a helper with conditional exports through it",
+    covers: ["an import-equals alias of require"],
+    bundles: true,
+    confect: { unsupported: { tool: unread("config-imports") } },
+    mounts: [tool],
+    files: {
+      ...pkg("tool", toolExports("./component/convex.config.ts"), {
+        ...Rec.remove(
+          component("component", "tool"),
+          "component/convex.config.js",
+        ),
+        "component/convex.config.ts": Array.join(
+          [
+            'import { defineComponent } from "convex/server";',
+            'import inner from "inner/convex.config";',
+            "import loader = require;",
+            // Where no require exists, the load falls back, so both sides
+            // evaluate the definition; the walker must still see the edge.
+            "const flags = (() => {",
+            '  try { return loader("flags"); } catch { return { enabled: false }; }',
+            "})();",
+            'const component = defineComponent("tool");',
+            "if (flags.enabled) component.use(inner);",
+            "export default component;",
+            "",
+          ],
+          "\n",
+        ),
+      }),
+      "flags/package.json": {
+        name: "flags",
+        version: "1.0.0",
+        type: "module",
+        exports: { ".": { convex: "./on.js", default: "./off.js" } },
+      },
+      "flags/on.js": "export const enabled = true;\n",
+      "flags/off.js": "export const enabled = false;\n",
       ...innerPackage,
     },
   },

@@ -232,7 +232,12 @@ const run = async () => {
 
 const result = await run().catch((error) => {
   if (error instanceof Crash) return { bundles: false, reason: error.message };
-  throw error;
+  // A definition bundle that throws as a deployment evaluates it, such as one
+  // reading a `require` the isolate does not have, gives no tree either.
+  return {
+    bundles: false,
+    reason: `evaluating a definition threw: ${String(error)}`,
+  };
 });
 process.stdout.write(`${JSON.stringify(result)}\n`);
 process.exit(0);

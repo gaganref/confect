@@ -278,13 +278,12 @@ export default defineComponent("tool");
   );
 
   unit(
-    "reads a TypeScript import-equals of a module as a runtime require, and erases a type-only one, an alias and an import type",
+    "reads a TypeScript import-equals of a module as a runtime require, and erases a type-only one and an import type",
     () => {
       const imports =
         configImports(`import { defineComponent } from "convex/server";
 import flags = require("../helpers/flag.js");
 import type shapes = require("./shapes");
-import Alias = Namespace.Inner;
 type Remote = import("remote").Shape;
 let typed: import("typed").T;
 export default defineComponent("tool");
@@ -292,6 +291,44 @@ export default defineComponent("tool");
       expect(Option.getOrUndefined(imports)).toEqual([
         { specifier: "convex/server", dynamic: false },
         { specifier: "../helpers/flag.js", dynamic: true },
+      ]);
+    },
+  );
+
+  unit(
+    "reads a runtime import-equals alias as an edge, as it may name require",
+    () => {
+      const imports = configImports(`import loader = require;
+import Alias = Namespace.Inner;
+const flags = loader("flags");
+export default flags;
+`);
+      expect(Option.getOrUndefined(imports)).toEqual([
+        { specifier: "import-equals alias", dynamic: true },
+        { specifier: "import-equals alias", dynamic: true },
+      ]);
+    },
+  );
+
+  unit(
+    "reads a free require, module or exports in any position as an edge, and leaves a module-level binding of one alone",
+    () => {
+      const free = configImports(`const pick = [require][0];
+const name = module.id;
+function read() { return exports; }
+export default { pick, name, read, keyed: { require: 1 }.require };
+`);
+      expect(Option.getOrUndefined(free)).toEqual([
+        { specifier: "require", dynamic: true },
+        { specifier: "module", dynamic: true },
+        { specifier: "exports", dynamic: true },
+      ]);
+      const local = configImports(`const exports = {};
+function inner(module) { return module; }
+export default { exports, inner };
+`);
+      expect(Option.getOrUndefined(local)).toEqual([
+        { specifier: "module", dynamic: true },
       ]);
     },
   );

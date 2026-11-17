@@ -1252,21 +1252,17 @@ const mountModule =
  * `node:fs` and `URL` without naming their types, so the file compiles in an
  * app without `@types/node`.
  */
-const moduleSource = `// Each module's text, read from disk where the test runs, for the test kernel's "use node" check, marked as read from a file.
-const moduleSource = (path: string): (() => Promise<string>) =>
-  Object.assign(
-    (): Promise<string> =>
-      import(/* @vite-ignore */ String("node:fs/promises")).then(
-        (fs: { readonly readFile: (file: unknown, encoding: "utf8") => Promise<string> }) =>
-          fs.readFile(
-            new (globalThis as unknown as { readonly URL: new (input: string, base: string) => unknown }).URL(
-              path,
-              (import.meta as unknown as { readonly url: string }).url,
-            ),
-            "utf8",
-          ),
+const moduleSource = `// Each module's text, read from disk where the test runs, for the test kernel's "use node" check.
+const moduleSource = (path: string) => (): Promise<string> =>
+  import(/* @vite-ignore */ String("node:fs/promises")).then(
+    (fs: { readonly readFile: (file: unknown, encoding: "utf8") => Promise<string> }) =>
+      fs.readFile(
+        new (globalThis as unknown as { readonly URL: new (input: string, base: string) => unknown }).URL(
+          path,
+          (import.meta as unknown as { readonly url: string }).url,
+        ),
+        "utf8",
       ),
-    { [Symbol.for("@confect/kernel/fileSource")]: true },
   );`;
 
 /**
@@ -1461,6 +1457,27 @@ const generateTesting = Effect.fnUntraced(function* (
       if (path.dirname(directory) === directory) return Option.none<string>();
     }
   });
+  // Every file codegen reads to classify or resolve one packaged mount, read
+  // only through this recorder, which keeps each file's digest, so the
+  // registry checks each one again and no read can skip its digest.
+  const readRecorder = () => {
+    const digests = new Map<string, string>();
+    const bytes = (file: string) =>
+      fs.readFile(file).pipe(
+        Effect.tap((read) =>
+          Effect.sync(() => {
+            digests.set(
+              file,
+              `sha256:${createHash("sha256").update(read).digest("hex")}`,
+            );
+          }),
+        ),
+      );
+    const text = (file: string) =>
+      bytes(file).pipe(Effect.map((read) => textDecoder.decode(read)));
+    return { bytes, text, digests };
+  };
+  type ReadRecorder = ReturnType<typeof readRecorder>;
   // The plain file a relative import in `directory` names: the specifier as
   // written, or with one of the extensions esbuild tries when its caller sets
   // none, as Convex's definition bundling does (`sharedEsbuildOptions`,
@@ -1474,6 +1491,7 @@ const generateTesting = Effect.fnUntraced(function* (
     directory: string,
     specifier: string,
     root: string,
+    reads: ReadRecorder,
   ) {
     const base = path.resolve(directory, specifier);
     const exact = yield* fs.stat(base).pipe(Effect.option);
@@ -1505,7 +1523,7 @@ const generateTesting = Effect.fnUntraced(function* (
     ) {
       const manifest = path.join(at, "package.json");
       if (yield* fs.exists(manifest)) {
-        const fields = yield* fs.readFileString(manifest).pipe(
+        const fields = yield* reads.text(manifest).pipe(
           Effect.map(Schema.decodeUnknownOption(ManifestFields)),
           Effect.orElseSucceed(() => Option.none()),
         );
@@ -1525,12 +1543,13 @@ const generateTesting = Effect.fnUntraced(function* (
   const importGraph = Effect.fnUntraced(function* (
     definition: string,
     root: string,
+    reads: ReadRecorder,
   ) {
     const seen = new Set([definition]);
     const helpers: Array<string> = [];
     const pending = [definition];
     for (let file = pending.pop(); file !== undefined; file = pending.pop()) {
-      const source = yield* fs.readFileString(file).pipe(Effect.option);
+      const source = yield* reads.text(file).pipe(Effect.option);
       const edges = Option.flatMap(source, ConvexConfig.configImports);
       if (Option.isNone(edges)) return Option.none<ReadonlyArray<string>>();
       for (const entry of edges.value) {
@@ -1544,6 +1563,7 @@ const generateTesting = Effect.fnUntraced(function* (
           path.dirname(file),
           entry.specifier,
           root,
+          reads,
         );
         if (Option.isNone(target)) return Option.none<ReadonlyArray<string>>();
         if (!seen.has(target.value)) {
@@ -1613,11 +1633,11 @@ const generateTesting = Effect.fnUntraced(function* (
     }
     if (deploy.kind === "refused") return yield* unreadable(deploy.reason);
     const definition = yield* real(imported.import.path);
+    const reads = readRecorder();
     const digestOf = (file: string) =>
-      fs.readFile(file).pipe(
+      reads.bytes(file).pipe(
         Effect.mapBoth({
-          onSuccess: (bytes) =>
-            `sha256:${createHash("sha256").update(bytes).digest("hex")}`,
+          onSuccess: () => reads.digests.get(file) ?? "",
           onFailure: (error) => unreadable(`${error.message}.`),
         }),
       );
@@ -1646,7 +1666,7 @@ const generateTesting = Effect.fnUntraced(function* (
       );
     }
     const manifestFile = path.join(packageRoot, "package.json");
-    const manifest = yield* fs.readFileString(manifestFile).pipe(
+    const manifest = yield* reads.text(manifestFile).pipe(
       Effect.flatMap(Schema.decodeUnknownEffect(PackageManifest)),
       Effect.mapError((error) => unreadable(`${error.message}.`)),
     );
@@ -1665,19 +1685,25 @@ const generateTesting = Effect.fnUntraced(function* (
     // A definition that imports another package may mount what the deploy's
     // conditions pick there, which Node may not, so its import graph may reach
     // only `convex`, other definitions and its own package's files.
-    const helpers = yield* importGraph(definition, packageRoot);
-    if (Option.isNone(helpers))
+    const walked = yield* importGraph(definition, packageRoot, reads);
+    if (Option.isNone(walked))
       return yield* unsupported(name, packageName, "config-imports", imported);
-    const helperEntries: Array<string> = [];
-    for (const helper of helpers.value) {
-      const digest = yield* digestOf(helper);
-      helperEntries.push(
-        `{ file: ${quote(posix(path.relative(packageRoot, helper)))}, digest: ${quote(digest)} }`,
-      );
-    }
+    // Every other file the classification read: the files the walk reached
+    // and each manifest on the way up from them.
+    const helperEntries = Array.map(
+      Array.sort(
+        Array.filter(
+          [...reads.digests.keys()],
+          (file) => file !== definition && file !== manifestFile,
+        ),
+        Order.String,
+      ),
+      (file) =>
+        `{ file: ${quote(posix(path.relative(packageRoot, file)))}, digest: ${quote(reads.digests.get(file) ?? "")} }`,
+    );
     // Its exports, imports and main fields decide what a deploy resolves,
     // so any change to it refuses the session, at the same version too.
-    const manifestDigest = yield* digestOf(manifestFile);
+    const manifestDigest = reads.digests.get(manifestFile) ?? "";
     const step = `{ package: ${quote(packageName)}, ${manifest.version === undefined ? "" : `version: ${quote(manifest.version)}, `}manifest: ${quote(manifestDigest)}, file: ${quote(posix(path.relative(packageRoot, definition)))}, digest: ${quote(definitionDigest)}${Array.isArrayNonEmpty(helperEntries) ? `, helpers: [${Array.join(helperEntries, ", ")}]` : ""} }`;
     const chain = [...steps, step];
     const directory = path.dirname(definition);
@@ -2207,6 +2233,8 @@ const packageOf = (specifier: string, enclosing: string): string => {
 const ManifestFields = Schema.fromJsonString(
   Schema.Record(Schema.String, Schema.Unknown),
 );
+
+const textDecoder = new TextDecoder();
 
 const PackageManifest = Schema.fromJsonString(
   Schema.Struct({
