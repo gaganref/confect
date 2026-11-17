@@ -142,7 +142,7 @@ const makeHarness = (
   const plan = <A, E, R extends Providers | Stack.StackServices>(
     program: Effect.Effect<A, E, R>,
   ) => run(program, Effect.succeed);
-  return Object.assign(deploy, { plans, plan });
+  return Object.assign(deploy, { plans, plan, run });
 };
 
 describe("cloud deployment lifecycle", () => {
@@ -683,6 +683,84 @@ const logResources = (props: LogStream.LogStreamProps) =>
   });
 
 describe("log stream engine lifecycle", () => {
+  it.effect("refuses a hand edit between plan and apply before writing", () =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const deploy = makeHarness(fixture.layer, noCommands);
+      const props = logConfigs[0];
+      const first = yield* deploy(logResources(props));
+      const next = { ...props, datasetName: "next" };
+      const result = yield* deploy
+        .run(logResources(next), (plan) =>
+          Effect.gen(function* () {
+            expect(plan.resources.Logs.action).toBe("update");
+            const found = yield* fixture.client.getLogStream(
+              props.deploymentUrl,
+              props.deployKey,
+              first.id,
+            );
+            const live = Redacted.value(found);
+            if (live.logStreamType !== "axiom")
+              return yield* Effect.die("Expected Axiom fixture");
+            fixture.state.logStreams.set(props.deploymentUrl, [
+              Redacted.make({ ...live, datasetName: "hand-edited" }),
+            ]);
+            return yield* apply(plan);
+          }),
+        )
+        .pipe(Effect.result);
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "LogStreamDrift" },
+      });
+      expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+      expect(fixture.client.deleteLogStream).not.toHaveBeenCalled();
+      const messages: unknown[] = [];
+      const capture = Logger.make(({ message, logLevel }) => {
+        if (logLevel === "Warn") messages.push(message);
+      });
+      const retry = yield* deploy
+        .plan(logResources(next))
+        .pipe(Effect.provideService(Logger.CurrentLoggers, new Set([capture])));
+      expect(retry.resources.Logs.action).toBe("update");
+      expect(messages).toHaveLength(1);
+      expect(inspect(messages)).toContain(first.id);
+      expect(inspect(messages)).toContain("datasetName");
+      expect(inspect(messages)).not.toContain("hand-edited");
+      const refused = yield* deploy(logResources(next)).pipe(Effect.result);
+      expect(refused).toMatchObject({
+        _tag: "Failure",
+        failure: { _tag: "LogStreamDrift" },
+      });
+      expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+      yield* deploy(Effect.succeed({}));
+      expect(fixture.client.deleteLogStream).toHaveBeenCalledWith(
+        props.deploymentUrl,
+        props.deployKey,
+        first.id,
+      );
+    }),
+  );
+
+  it.effect.each([logConfigs[0], logConfigs[1]])(
+    "writes a secret-only $kind update once",
+    (props) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(fixture.layer, noCommands);
+        const first = yield* deploy(logResources(props));
+        const next =
+          props.kind === "axiom"
+            ? { ...props, apiKey: Redacted.make("made-up-next-api-key") }
+            : { ...props, dsn: Redacted.make("made-up-next-dsn") };
+        const updated = yield* deploy(logResources(next));
+        expect(updated.id).toBe(first.id);
+        expect(fixture.client.updateLogStream).toHaveBeenCalledTimes(1);
+        const stable = yield* deploy.plan(logResources(next));
+        expect(stable.resources.Logs.action).toBe("noop");
+      }),
+  );
+
   it.effect.each(["rejected", "response lost"] as const)(
     "finishes an interrupted update when the request was %s",
     (failure) =>

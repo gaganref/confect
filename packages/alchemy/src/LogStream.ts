@@ -2,9 +2,13 @@ import { deepEqual, isResolved } from "alchemy/Diff";
 import * as Array from "effect/Array";
 import * as Provider from "alchemy/Provider";
 import { Resource } from "alchemy/Resource";
+import { Stack } from "alchemy/Stack";
+import { State } from "alchemy/State/State";
 import * as Effect from "effect/Effect";
 import * as Layer from "effect/Layer";
+import * as Option from "effect/Option";
 import * as Redacted from "effect/Redacted";
+import * as Record from "effect/Record";
 import * as Schema from "effect/Schema";
 import * as Struct from "effect/Struct";
 import * as FetchHttpClient from "effect/http/FetchHttpClient";
@@ -132,16 +136,22 @@ const identify = Effect.fn("LogStream.identify")(function* (
     );
 });
 
-const validate = Effect.fn("LogStream.validate")(function* (
+const drift = (output: LogStreamAttributes) =>
+  LogStreamDrift.make({
+    id: output.id,
+    kind: output.kind,
+    message:
+      "Readable log stream fields differ from the previous and desired configuration. An earlier update may not have finished. If so, apply that same change again before reverting it. If the stream was edited outside the stack, restore those fields or change the stack to match.",
+  });
+
+const differences = Effect.fn("LogStream.differences")(function* (
   props: LogStreamProps,
-  output: LogStreamAttributes,
   live: ConvexClient.LogStreamConfig,
 ) {
-  yield* identify(output, live);
   const desired = yield* input(props);
   const { id: _id, status: _status, ...config } = Redacted.value(live);
   // Compare only fields Convex returns, excluding its generated webhook secret.
-  const expected =
+  const expected: Readonly<Record<string, unknown>> =
     desired.logStreamType === "axiom"
       ? Struct.omit(desired, ["apiKey"])
       : desired.logStreamType === "sentry"
@@ -152,17 +162,49 @@ const validate = Effect.fn("LogStream.validate")(function* (
               ? Redacted.value(desired.url)
               : desired.url,
           };
-  const actual =
+  const actual: Readonly<Record<string, unknown>> =
     config.logStreamType === "webhook"
       ? Struct.omit(config, ["hmacSecret"])
       : config;
-  if (!deepEqual(expected, actual, { stripNullish: true }))
-    return yield* LogStreamDrift.make({
-      id: output.id,
-      kind: output.kind,
-      message:
-        "A readable log stream field changed outside this resource. Restore it manually before continuing.",
-    });
+  return Array.filter(
+    Array.dedupe([...Record.keys(expected), ...Record.keys(actual)]),
+    (key) =>
+      !deepEqual(
+        { value: expected[key] },
+        { value: actual[key] },
+        { stripNullish: true },
+      ),
+  );
+});
+
+const validate = Effect.fn("LogStream.validate")(function* (
+  props: LogStreamProps,
+  output: LogStreamAttributes,
+  live: ConvexClient.LogStreamConfig,
+) {
+  yield* identify(output, live);
+  if ((yield* differences(props, live)).length > 0) return yield* drift(output);
+});
+
+const isClean = Effect.fn("LogStream.isClean")(function* (
+  fqn: string,
+  instanceId: string,
+) {
+  const stack = yield* Effect.serviceOption(Stack);
+  const state = yield* Effect.serviceOption(State);
+  if (Option.isNone(stack) || Option.isNone(state)) return false;
+  const store = yield* state.value;
+  const row = yield* store.get({
+    stack: stack.value.name,
+    stage: stack.value.stage,
+    fqn,
+  });
+  return (
+    row !== undefined &&
+    row.kind !== "action" &&
+    row.instanceId === instanceId &&
+    (row.status === "created" || row.status === "updated")
+  );
 });
 
 const attributes = (
@@ -195,7 +237,7 @@ export const provider = Effect.gen(function* () {
         [output.id],
         "The recorded log stream was deleted.",
       );
-    yield* validate(props, output, live);
+    yield* identify(output, live);
     return live;
   });
   const cold = Effect.fn("LogStream.cold")(function* (props: LogStreamProps) {
@@ -218,7 +260,13 @@ export const provider = Effect.gen(function* () {
       );
   });
   return {
-    diff: Effect.fn("LogStream.diff")(function* ({ olds, news, output }) {
+    diff: Effect.fn("LogStream.diff")(function* ({
+      fqn,
+      instanceId,
+      olds,
+      news,
+      output,
+    }) {
       const kind: unknown = "kind" in news ? news.kind : undefined;
       switch (kind) {
         case "datadog":
@@ -232,7 +280,16 @@ export const provider = Effect.gen(function* () {
       }
       const live =
         output === undefined ? undefined : yield* observe(olds, output);
-      if (!isResolved(news)) return;
+      const changed = live === undefined ? [] : yield* differences(olds, live);
+      if (!isResolved(news)) {
+        if (changed.length > 0) {
+          yield* Effect.logWarning(
+            `Log stream ${output?.id} differs in fields ${Array.join(changed, ", ")}. Apply will check for an unfinished update or an external edit.`,
+          );
+          return { action: "update" };
+        }
+        return;
+      }
       yield* input(news);
       if (output === undefined) {
         yield* cold(news);
@@ -245,6 +302,17 @@ export const provider = Effect.gen(function* () {
         yield* cold(news);
         return { action: "replace" };
       }
+      if (changed.length > 0 && live !== undefined) {
+        if (
+          (yield* differences(news, live)).length > 0 &&
+          (yield* isClean(fqn, instanceId))
+        )
+          return yield* drift(output);
+        yield* Effect.logWarning(
+          `Log stream ${output.id} differs in fields ${Array.join(changed, ", ")}. Apply will check for an unfinished update or an external edit.`,
+        );
+        return { action: "update" };
+      }
       if (
         !deepEqual(news, olds) ||
         (live !== undefined &&
@@ -255,6 +323,7 @@ export const provider = Effect.gen(function* () {
     read: Effect.fn("LogStream.read")(function* ({ olds, output }) {
       if (output !== undefined) {
         const live = yield* observe(olds, output);
+        yield* validate(olds, output, live);
         return { id: output.id, kind: output.kind, ...attributes(live) };
       }
       if (isResolved(olds)) yield* cold(olds);
@@ -285,7 +354,19 @@ export const provider = Effect.gen(function* () {
             [output.id],
             "A kind or deployment change needs replacement.",
           );
-        if (deepEqual(news, olds))
+        const desiredChanges = yield* differences(news, observed);
+        if (
+          desiredChanges.length > 0 &&
+          (yield* differences(olds, observed)).length > 0
+        )
+          return yield* drift(output);
+        const secretChanged =
+          news.kind === "axiom" && olds.kind === "axiom"
+            ? !deepEqual(news.apiKey, olds.apiKey)
+            : news.kind === "sentry" && olds.kind === "sentry"
+              ? !deepEqual(news.dsn, olds.dsn)
+              : false;
+        if (desiredChanges.length === 0 && !secretChanged)
           return { id: output.id, kind: output.kind, ...attributes(observed) };
         yield* client.updateLogStream(
           news.deploymentUrl,

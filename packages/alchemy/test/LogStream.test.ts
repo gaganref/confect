@@ -227,7 +227,7 @@ const observe = (
   }
 };
 
-it.effect.each(["diff", "read", "reconcile"] as const)(
+it.effect.each(["read", "reconcile"] as const)(
   "stops %s on a readable hand edit",
   (phase) =>
     withProvider((service, mock) =>
@@ -244,6 +244,8 @@ it.effect.each(["diff", "read", "reconcile"] as const)(
         mock.state.logStreams.set(target.deploymentUrl, [
           Redacted.make({ ...live, datasetName: "hand-edited" }),
         ]);
+        const planned = yield* diff(service, output);
+        expect(planned).toEqual({ action: "update" });
         const result = yield* observe(service, phase, output).pipe(
           Effect.result,
         );
