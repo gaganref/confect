@@ -4,6 +4,7 @@ import * as Schema from "effect/Schema";
 import * as Predicate from "effect/Predicate";
 import * as Result from "effect/Result";
 import * as SchemaAST from "effect/SchemaAST";
+import * as SchemaIssue from "effect/SchemaIssue";
 import type * as HttpApi from "effect/http-api/HttpApi";
 import * as HttpApiBuilder from "effect/http-api/HttpApiBuilder";
 import type * as HttpApiGroup from "effect/http-api/HttpApiGroup";
@@ -121,12 +122,21 @@ export const url = <
 ): Config.Config<string> => {
   const erased: App.Api = api;
   const groups = Record.values<string, HttpApiGroup.Top>(erased.groups);
-  const path = Option.getOrThrow(
-    Option.flatMap(
-      Array.findFirst(groups, ({ identifier }) => identifier === group),
-      ({ endpoints }) => Record.get(endpoints, endpoint),
-    ),
-  ).path;
+  const found = Option.flatMap(
+    Array.findFirst(groups, ({ identifier }) => identifier === group),
+    ({ endpoints }) => Record.get(endpoints, endpoint),
+  );
+  if (Option.isNone(found)) {
+    return Config.fail(
+      new Schema.SchemaError(
+        new SchemaIssue.InvalidValue(
+          { message: `No endpoint "${endpoint}" in HTTP group "${group}".` },
+          { group, endpoint },
+        ),
+      ),
+    );
+  }
+  const path = found.value.path;
   return Config.map(
     Config.schema(Schema.URLFromString, "CONVEX_SITE_URL"),
     (site) =>
