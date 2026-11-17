@@ -1195,8 +1195,11 @@ Upstream: planned; no linked proposal verified.
 
 ## Alchemy deployment
 
+### Opt into environment variable safety
+
 `EnvironmentVariables` can stop on owned-value drift or unrelated live names,
-adopt matching desired values even under a general adoption grant, share the
+adopt matching desired values with `adoptMatching` even under a general adoption
+grant, share the
 deployment's push lock, and retry a
 bounded number of write conflicts. All five options default to prior behavior.
 Plan checks compare against the stored snapshot before unresolved desired inputs

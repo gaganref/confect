@@ -483,7 +483,7 @@ it.effect.each([false, true])(
       );
       return yield* Effect.gen(function* () {
         const provider = yield* EnvironmentVariables.provider;
-        const news = { ...props, adopt: true };
+        const news = { ...props, adoptMatching: true };
         const found = yield* provider.read({
           ...lifecycle,
           olds: news,
@@ -520,7 +520,7 @@ it.effect("does not adopt a live name with a different value", () => {
     const error = yield* provider
       .reconcile({
         ...lifecycle,
-        news: { ...props, adopt: true },
+        news: { ...props, adoptMatching: true },
         olds: undefined,
         output: undefined,
       })

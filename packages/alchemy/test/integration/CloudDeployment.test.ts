@@ -141,7 +141,7 @@ describe("cloud deployment lifecycle", () => {
             url: "https://happy-otter-123.convex.cloud",
             deployKey: Redacted.make("plan-adoption-key"),
             variables: { MANAGED: Redacted.make("desired-adoption-secret") },
-            adopt: true,
+            adoptMatching: true,
           }).pipe(Effect.asVoid),
           true,
         ).pipe(Effect.exit);
@@ -278,7 +278,7 @@ describe("cloud deployment lifecycle", () => {
             yield* Convex.EnvironmentVariables("Environment", {
               url: "https://happy-otter-123.convex.cloud",
               deployKey: Redacted.make("prod:happy-otter-123|plan-test-key"),
-              adopt: true,
+              adoptMatching: true,
               variables: {
                 MANAGED: Redacted.make("owned-plan-secret"),
                 ...(add
@@ -363,7 +363,7 @@ describe("cloud deployment lifecycle", () => {
             deployKey: Redacted.make("test-key"),
             variables: { MANAGED: Redacted.make(value) },
             driftPolicy: "error",
-            adopt: true,
+            adoptMatching: true,
           }).pipe(Effect.asVoid);
         if (scenario !== "create")
           yield* deploy(resources("before-write-secret"));
@@ -489,7 +489,7 @@ describe("cloud deployment lifecycle", () => {
           deployKey: Redacted.make("test-key"),
           variables: { MANAGED: Redacted.make("desired-secret") },
           driftPolicy: "error",
-          adopt: true,
+          adoptMatching: true,
           unownedPolicy: "error",
           lock: { deploymentName: "happy-otter-123" },
           retry: { maxAttempts: 3, delay: "100 millis" },
@@ -527,7 +527,7 @@ describe("cloud deployment lifecycle", () => {
             url: "https://happy-otter-123.convex.cloud",
             deployKey: Redacted.make("test-key"),
             variables: { MANAGED: Redacted.make("desired-secret") },
-            adopt: true,
+            adoptMatching: true,
           }),
         ).pipe(Effect.exit);
         expect(Exit.isFailure(result)).toBe(true);
@@ -587,7 +587,7 @@ describe("cloud deployment lifecycle", () => {
             MANAGED: Redacted.make("matching-secret"),
             NEW: Redacted.make("new-secret"),
           },
-          adopt: true,
+          adoptMatching: true,
         }).pipe(Effect.asVoid);
         const failed = yield* deploy(resources).pipe(Effect.result);
         expect(Result.isFailure(failed)).toBe(true);

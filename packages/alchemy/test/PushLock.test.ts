@@ -180,7 +180,7 @@ describe("PushLock", () => {
             deployKey: Redacted.make("test-key"),
             variables: { MANAGED: Redacted.make("desired-secret") },
             driftPolicy: "error" as const,
-            adopt: true,
+            adoptMatching: true,
             unownedPolicy: "error" as const,
             lock: { deploymentName: "happy-otter-123" },
             retry: { maxAttempts: 3, delay: "100 millis" as const },

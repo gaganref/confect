@@ -37,7 +37,7 @@ export interface EnvironmentVariablesProps {
    * Adopt unowned desired names only when their live values match. Defaults to
    * false.
    */
-  readonly adopt?: boolean;
+  readonly adoptMatching?: boolean;
   /**
    * Refuse live names that are neither owned nor desired. Defaults to `ignore`.
    */
@@ -225,7 +225,9 @@ const optionsForDiff = (
     driftPolicy: isResolved(news.driftPolicy)
       ? news.driftPolicy
       : olds.driftPolicy,
-    adopt: isResolved(news.adopt) ? news.adopt : olds.adopt,
+    adoptMatching: isResolved(news.adoptMatching)
+      ? news.adoptMatching
+      : olds.adoptMatching,
     unownedPolicy: isResolved(news.unownedPolicy)
       ? news.unownedPolicy
       : olds.unownedPolicy,
@@ -357,7 +359,7 @@ export const provider = Effect.gen(function* () {
         output !== undefined &&
         (options.driftPolicy === "error" ||
           options.unownedPolicy === "error" ||
-          options.adopt === true)
+          options.adoptMatching === true)
       ) {
         const observed = yield* client.listEnvironmentVariables(
           output.url,
@@ -370,7 +372,7 @@ export const provider = Effect.gen(function* () {
           options.desiredVariables,
         );
         if (
-          options.adopt === true &&
+          options.adoptMatching === true &&
           Predicate.isReadonlyObject(options.desiredVariables) &&
           !Output.isExpr(options.desiredVariables) &&
           !Effect.isEffect(options.desiredVariables)
@@ -439,7 +441,7 @@ export const provider = Effect.gen(function* () {
       if (output !== undefined)
         return { ...output, deployKey: olds.deployKey, variables };
       if (Rec.keys(variables).length === 0) return undefined;
-      if (olds.adopt === true) {
+      if (olds.adoptMatching === true) {
         for (const [name, value] of Rec.toEntries(variables)) {
           if (
             Redacted.value(value) !==
@@ -482,7 +484,7 @@ export const provider = Effect.gen(function* () {
       const ownedNames = Rec.keys(news.variables);
       if (
         output === undefined &&
-        news.adopt !== true &&
+        news.adoptMatching !== true &&
         (yield* shouldAdopt(fqn))
       ) {
         const variables = select(observed, ownedNames);
@@ -501,7 +503,7 @@ export const provider = Effect.gen(function* () {
         const current = valueAt(observed, name);
         if (previousNames.includes(name) || current === undefined) continue;
         if (
-          news.adopt === true &&
+          news.adoptMatching === true &&
           Redacted.value(current) ===
             Redacted.value(redacted(news.variables[name]))
         ) {
@@ -511,7 +513,7 @@ export const provider = Effect.gen(function* () {
           return yield* ownershipConflict(name);
         }
       }
-      if (output === undefined && news.adopt === true) {
+      if (output === undefined && news.adoptMatching === true) {
         yield* checkpointCreate(fqn, instanceId, news, {
           url: news.url,
           deployKey: news.deployKey,
