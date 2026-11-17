@@ -274,6 +274,7 @@ export const provider = Effect.gen(function* () {
       return yield* PushLockError.make({
         deploymentName: options.lock.deploymentName,
         reason: "configuration",
+        missing: "PushLock",
       });
     return yield* lock.value.withLock(options.lock.deploymentName, attempt);
   });
