@@ -11,4 +11,4 @@ Move root mount settings from `Mount.make` to `Backend.mounts`. Root mounts hold
 - `App.make` refuses env bindings on a root app's mount.
 - A required component slot may remain open. The deployment must supply it through the generated manifest's mount settings.
 
-To migrate, remove `env` from root mounts, regenerate the backend, and pass the values through `Backend.mounts` by mount and slot name. Components may still bind their own child's slots to constants or their own env entries.
+To migrate, remove `env` from root mounts, regenerate the backend, and pass the values through `Backend.mounts` by mount and slot name. Variables written under the old names stay on the deployment until an operator removes them. Components may still bind their own child's slots to constants or their own env entries.

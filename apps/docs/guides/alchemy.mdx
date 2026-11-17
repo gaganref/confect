@@ -256,7 +256,9 @@ Effect.gen(function* () {
 
 The example assumes the host has only this mount's required slots. For a pool, replace the choice with `{ pool: ["ses", "resend"] }`. For a single provider, use `"resend"`. A selector declared by the root backend goes in `env` instead of `mounts`.
 
-`Manifest.Values` types the selector as `Env.ProviderChoice` over its declared names. `Backend` writes failover and pool objects as JSON strings. It refuses a named provider's unset required slot with `InvalidMountSetting` and reason `Missing`. The message names the slot and points to `Backend.mounts`, or `Backend.env` for a root selector. The type checker does not verify a standby provider's settings. The component decides how to use the choice at runtime.
+`Manifest.Values` types the selector as `Env.ProviderChoice` over its declared names. `Backend` checks and encodes each choice with the schema the component's handler decodes it with, so failover and pool objects reach the deployment as JSON strings. A choice the handler would refuse, such as an unknown name, an empty pool, an active provider repeated in standby, or an object of another shape, fails with `InvalidMountSetting` and reason `InvalidChoice` before `Backend` declares any resource. `Backend` also refuses a named provider's unset required slot with reason `Missing`. The message names the slot and points to `Backend.mounts`, or `Backend.env` for a root selector.
+
+Each setting belongs to the selector its manifest tag names, so two selectors that both offer `ses` are checked independently. A choice given as an Alchemy output keeps its dependency and is checked when it resolves. An invalid choice, or a missing required setting of a provider it names, fails the apply before the environment is written. The type checker does not verify a standby provider's settings. The component decides how to use the choice at runtime.
 
 ## Supply a mount's open settings
 
@@ -281,7 +283,11 @@ This example assumes the generated manifest declares only the `bulkEmail` mount'
 
 A mount with required open slots must appear. Optional slots and mounts with only optional slots can be omitted. Secret slots require `Redacted`, and literal slots accept only their declared values. `Manifest.Mounts<typeof manifest>` describes these settings without Alchemy inputs.
 
-If JavaScript bypasses the types, `InvalidMountSetting` reports `UnknownMount`, `NotOpen`, `Missing`, or `PlainSecret`. `Backend` treats these configuration refusals as defects so the stack's typed error channel stays unchanged. The standalone `mountVariables` helper returns the tagged error in its Effect error channel. Each reason explains the remedy. Use a listed mount, supply only open slots, provide required values, or wrap a secret with `Redacted.make`. `Backend` also refuses a malformed manifest with `UnsupportedManifestFormat` before declaring resources. Regenerate it with `confect codegen`, using the same release as the reader.
+If JavaScript bypasses the types, `InvalidMountSetting` reports `UnknownMount`, `NotOpen`, `Missing`, `PlainSecret`, or `InvalidChoice`. A secret given as an output is checked when it resolves. `Backend` treats these configuration refusals as defects so the stack's typed error channel stays unchanged. The standalone `mountVariables` helper returns the tagged error in its Effect error channel. Each reason explains the remedy. Use a listed mount, supply only open slots, provide required values, wrap a secret with `Redacted.make`, or name the providers a selector offers. `Backend` and `mountVariables` also refuse a malformed manifest with `UnsupportedManifestFormat` before declaring resources. Its `remedy` is `Upgrade` for a manifest of a later format, which needs newer Confect packages. Any other refusal is `Regenerate`. Run `confect codegen` on the same release as the reader.
+
+### Move root mount settings
+
+Root mounts no longer bind env. Move each value a root mount bound into `Backend.mounts`, under the mount and slot name. The derived variable names follow the mount, such as `BULK_EMAIL_RESEND_API_KEY`. Alchemy writes only the variables the manifest names. Variables written under the old names stay on the deployment until an operator removes them.
 
 ## Set a usage limit
 
@@ -518,9 +524,13 @@ A push outside Alchemy, such as `convex deploy` or `convex dev`, does not run `i
 
 When `Confect.Backend` receives a `manifest`, every push checks that the live code answers its digest. Codegen writes `convex/confectHealth.ts`, which exports the internal query `confectHealth:digest`. The query returns the final digest as a literal and imports no backend modules. Components do not receive this file.
 
-Alchemy calls the query after all mount initialization, before releasing the deployment's push lock. A missing query, a failed call, a non-string answer, or another digest fails the deployment with `HealthCheckFailed`. The diagnostic includes the expected digest and either the answered digest or the failure category. A health call has a 30-second limit. A timeout fails with `HealthCheckFailed` and detail `timeout`, then releases the push lock.
+Before the push, Alchemy reads the digest the prepare step wrote into `convex/confectHealth.ts`, or the Convex directory `convex.json` names. If it differs from the manifest the stack imported, or prepare wrote none, the deployment fails with `StaleManifest` and pushes nothing. No mount initialization runs. The error carries `expected`, the imported digest, and `generated`, the digest prepare wrote. Run `confect codegen`, commit the generated files, and deploy again.
 
-Run codegen before the stack imports its manifest. If the prepare step regenerates a different manifest, the live query answers the new digest and the deployment fails against the old imported digest. Reload the stack with the regenerated manifest and deploy again.
+After the push, Alchemy calls the query after all mount initialization, before releasing the deployment's push lock. A missing query, a failed call, a non-string answer, or another digest fails the deployment with `HealthCheckFailed`. The diagnostic includes the expected digest and either the answered digest or the failure category. A health call has a 30-second limit. A timeout fails with `HealthCheckFailed` and detail `timeout`, then releases the push lock.
+
+Run codegen before the stack imports its manifest, so the pre-push comparison passes. The health check after the push remains the last check. It catches code that changed between the comparison and the push. Convex reports a missing `confectHealth:digest` only as message text, so that failure's detail is the client error's tag, `ConvexFunctionError`. It usually means the deployed code predates the health function.
+
+`Convex.HealthCheckFailed` and `Convex.StaleManifest` are exported for stacks that match on the failure.
 
 For a standalone `Convex.Code`, pass `manifestDigest: manifest.digest` to enable the same check. A `Backend` without a manifest and a `Code` without a `manifestDigest` retain their existing behavior. The check proves agreement with the generated manifest, not a hash of every backend source byte. A failure does not undo the pushed code or mount initialization that already completed.
 

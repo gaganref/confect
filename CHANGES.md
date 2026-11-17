@@ -639,6 +639,13 @@ Derived variables split acronyms conventionally, and `InvalidDerivedEnvKey`
 names mounts that derive invalid or reserved variables. Every derived name also
 passes `Env.validateKey`, so `convex.SITE_URL` cannot override `CONVEX_SITE_URL`. Legacy slots preserve literals and
 secrets. Codegen reports each prefixed legacy mount whose routes are absent.
+The schema also checks what the manifest names. A provider tag's selector is a
+`providers` slot of its own record that offers the tag's provider. An open
+slot's variable is a valid, unreserved name. A route leaf repeats the owner,
+group and endpoint it sits under, and carries the root digest. Each refusal
+names the rule it broke. `UnsupportedManifestFormat` tells a reader of a later
+format to upgrade its Confect packages, and any other refusal to regenerate on
+the same release. `mountVariables` decodes its manifest as `Backend` does.
 Mount renames change derived variable names by design. Values live in the typed
 stack file. Changeset: `closed-manifest-format.md`, major for core, CLI and
 Alchemy. Upstream: not planned; generated deployment manifests are a fork concept.
@@ -647,9 +654,11 @@ Alchemy. Upstream: not planned; generated deployment manifests are a fork concep
 
 `Env.automatic(field)` marks a required value that a framework supplies.
 Codegen binds the slot through every parent under its own name and declares
-it at the root once. It never becomes an open mount setting. A parent may
-already declare the same automatic kind; an ordinary slot or another kind
-fails with `AutomaticSlotConflict` and a remedy. `Manifest.Values` omits
+it at the root once. It never becomes an open mount setting. Automatic slots
+of one name must agree on kind, values and optionality. An ordinary slot or
+another shape fails with `AutomaticSlotConflict`, whose `declaredBy` names the
+sibling mount that declares the other shape, or is absent when the backend
+itself does. The schema refuses an optional automatic slot. `Manifest.Values` omits
 these values and `Manifest.Automatic` types `Backend.automatic`. Backend
 refuses undeclared and missing automatic values at runtime, including the
 empty-type case that TypeScript accepts. The closed format 1 schema and its
@@ -660,16 +669,28 @@ framework-owned deployment values are fork concepts.
 ### Declare provider choices and their settings
 
 `Env.providers` declares a selector and each provider's ordinary optional
-slots with `provider: { name, required }` tags. Handlers decode one provider,
-a failover, or a nonempty pool and read only the named providers' settings.
-Unknown names, an active provider repeated in standby, empty pools, and
-missing required settings fail to decode. `Manifest.Values` types the
-choice; Backend writes object choices as JSON and refuses a named provider's
-missing required slot. Promoted slots retain their tags, acronym-aware names,
-and collision checks. Format 1 closes over the selector kind and tags, and
-the digest covers both. Standby settings are checked at runtime, not in
-types. Changeset: `provider-environment-choices.md`. Upstream: not planned;
-declarations and generated deployment manifests are fork concepts.
+slots with `provider: { selector, name, required }` tags. `selector` names the
+`providers` slot the setting belongs to in the same record. `Env.make` throws
+`DuplicateEnvKey` when a setting shares its name with another slot, a selector
+or another setting; a setting named like a slot or selector is also a type
+error. Handlers decode one provider, a failover, or a nonempty pool and read
+only the named providers' settings. Unknown names, an active provider repeated
+in standby, empty pools, and missing required settings fail to decode.
+`Manifest.Values` types the choice. Backend matches settings to a choice by
+selector and validates and encodes each choice with the handler's schema,
+`Env.providerChoice`. It refuses a choice the handler would refuse with
+`InvalidChoice` and a named provider's missing required slot before any
+resource is declared. A choice given as an output is checked when it resolves,
+before the environment write. Promoted slots keep acronym-aware names and
+collision checks, and their tags name the selector by its promoted name. A
+component that binds a child's selector to its own selector adopts the child's
+settings under its selector, when both offer the same providers. A constant
+choice promotes only the named providers' settings, as ordinary slots.
+`InvalidSelectorBinding` refuses any other binding. Format 1 closes over the
+selector kind and tags, and the digest covers both. Standby settings are
+checked at runtime, not in types. Changeset:
+`provider-environment-choices.md`. Upstream: not planned; declarations and
+generated deployment manifests are fork concepts.
 
 ### Ship a component manifest
 
@@ -1303,8 +1324,9 @@ Upstream: planned; no linked proposal verified.
 `Backend.mounts` takes each mount's open settings from the generated manifest
 and writes them under the manifest's derived variables. Required settings,
 secret values, and optional mounts retain their types. `InvalidMountSetting`
-reports unknown mounts, closed slots, missing required slots, and plain
-secrets. `Backend` converts these refusals to defects to preserve the documented
+reports unknown mounts, closed slots, missing required slots, plain
+secrets, and provider choices the component would refuse. A secret given as
+an output is checked when it resolves. `Backend` converts these refusals to defects to preserve the documented
 stack's typed error channel. Changeset: `root-mount-placement.md`.
 Upstream: not planned; manifest-driven mount settings are a fork concept.
 
@@ -1312,9 +1334,14 @@ Upstream: not planned; manifest-driven mount settings are a fork concept.
 
 Codegen writes the app's final manifest digest into the generated internal
 query `confectHealth:digest` in `convex/confectHealth.ts`. A manifest-backed
-`Backend` passes the expected digest to `Code`, which calls the query after all
-mount initialization and before releasing the push lock. Missing, failed,
-non-string, stale, or timed-out answers fail with `HealthCheckFailed`.
+`Backend` passes the expected digest to `Code`. After prepare and before the
+push, `Code` reads the digest prepare wrote into `confectHealth.ts`. When it
+differs, the deploy fails with `StaleManifest` and pushes nothing. After all
+mount initialization and before releasing the push lock, `Code` calls the
+query. Missing, failed, non-string, stale, or timed-out answers fail with
+`HealthCheckFailed`. Both errors are exported as `Convex.HealthCheckFailed`
+and `Convex.StaleManifest`. Convex reports a missing function only as message
+text, so that case keeps the client error's tag as its detail.
 The health call has a 30-second limit, with detail `timeout` on expiry. Plain `Code` can
 opt in with `manifestDigest`; deployments without an expected digest keep their prior
 behavior. The check compares manifests and does not roll back an already

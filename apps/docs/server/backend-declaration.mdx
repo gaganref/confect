@@ -302,7 +302,7 @@ export default {
 } as const;
 ```
 
-A declared component writes the same format 1 manifest. Package it with the component and pass it to `Component.make(name, { manifest, client })`. The host reads it without loading backend code. Format 1 is closed. Readers refuse wrong or missing fields, unknown fields and unknown slot kinds with `UnsupportedManifestFormat`, which names the file or import and advises `confect codegen`. Keep component and host generators on the same release as the reader. A shape change requires the next format number.
+A declared component writes the same format 1 manifest. Package it with the component and pass it to `Component.make(name, { manifest, client })`. The host reads it without loading backend code. Format 1 is closed. Readers refuse wrong or missing fields, unknown fields and unknown slot kinds with `UnsupportedManifestFormat`, which names the file or import. They also refuse a provider tag whose `selector` is not a `providers` slot of its own record offering the tag's provider, a malformed or reserved `variable`, a route leaf whose `owner`, `group` or `endpoint` differs from its keys, and a leaf `digest` that differs from the root digest. A manifest of a later format asks you to upgrade the Confect packages that read it; any other refusal asks you to regenerate with `confect codegen`. Keep component and host generators on the same release as the reader. A shape change requires the next format number.
 
 Extension data lives only in `sections`, including section names that match built-in fields. A section owns the format and JSON structure of its data. A component without a manifest preserves string literal unions and redacted schemas as literal and secret slots. Every other legacy schema becomes a string slot.
 
