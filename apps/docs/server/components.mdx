@@ -44,7 +44,7 @@ export default Component.make("counter", {
 });
 ```
 
-Use your component's client constructor in place of this identity client. Include the generated manifest in the published package. Its env descriptors replace hand-written `env` metadata on `Component.make`. The host's `Mount.make` reads required, optional, and literal slots from the manifest. Another manifest format fails at the `manifest` property and during host codegen.
+Use your component's client constructor in place of this identity client. Include the generated manifest in the published package. Its env descriptors replace hand-written `env` metadata on `Component.make`. The host's `Mount.make` reads required, optional, and literal slots from the manifest. The format is closed. Unknown fields, missing fields and unknown slot kinds fail host codegen with `UnsupportedManifestFormat`. The diagnostic names the import and asks you to regenerate with `confect codegen`. Keep component and host generators on the same release.
 
 With declared entries, codegen emits `defineComponent(name, { env: { ... } })` with their Convex validators. An empty env emits no options object. Keep a `name` in the enclosing `package.json`; the generated ID scope derives from the package name and the component directory's package-relative path.
 
@@ -539,6 +539,8 @@ A component's `confect/auth.ts` produces `InvalidConvexConfigError` with the rea
 | `InvalidBinding`         | The mount "`<mount>`" binds `<slot>` to something other than a string or an entry of this backend's env.                        |
 | `UnknownComponentImport` | The mount "`<mount>`" must pass the default export of a component's convex.config module, imported directly in the declaration. |
 | `AuthForAnotherBackend`  | confect/auth.ts declares auth for the "`<backend>`" backend, but confect/app.ts declares "`<expectedBackend>`".                 |
+
+`InvalidDerivedEnvKey` names a mount whose open slot derives an invalid deployment variable. Rename the mount or slot. `UnsupportedManifestFormat` is reported directly for a malformed manifest, before its slots or routes are read. `DuplicateRouteIdentity` refuses two catalogue entries with one owner, group and endpoint name.
 
 `NotADeclaration` expects `App.make(...)` in `confect/app.ts` and `Auth.make(app, ...)` in `confect/auth.ts`. Route failures are wrapped in `InvalidDeclarationError` too, with these reason texts:
 

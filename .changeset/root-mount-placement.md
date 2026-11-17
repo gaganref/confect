@@ -1,7 +1,7 @@
 ---
 "@confect/core": major
 "@confect/cli": major
-"@confect/alchemy": minor
+"@confect/alchemy": major
 ---
 
 Move root mount settings from `Mount.make` to `Backend.mounts`. Root mounts hold placement only, and open slots become derived deployment variables such as `BULK_EMAIL_RESEND_API_KEY`.

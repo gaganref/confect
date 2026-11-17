@@ -227,7 +227,7 @@ This example assumes the generated manifest declares only the `bulkEmail` mount'
 
 A mount with required open slots must appear. Optional slots and mounts with only optional slots can be omitted. Secret slots require `Redacted`, and literal slots accept only their declared values. `Manifest.Mounts<typeof manifest>` describes these settings without Alchemy inputs.
 
-If JavaScript bypasses the types, `InvalidMountSetting` reports `UnknownMount`, `NotOpen`, `Missing`, or `PlainSecret`. `Backend` treats these configuration refusals as defects so the stack's typed error channel stays unchanged. The standalone `mountVariables` helper returns the tagged error in its Effect error channel.
+If JavaScript bypasses the types, `InvalidMountSetting` reports `UnknownMount`, `NotOpen`, `Missing`, or `PlainSecret`. `Backend` treats these configuration refusals as defects so the stack's typed error channel stays unchanged. The standalone `mountVariables` helper returns the tagged error in its Effect error channel. Each reason explains the remedy. Use a listed mount, supply only open slots, provide required values, or wrap a secret with `Redacted.make`. `Backend` also refuses a malformed manifest with `UnsupportedManifestFormat` before declaring resources. Regenerate it with `confect codegen`, using the same release as the reader.
 
 ## Use plain Convex
 
@@ -306,7 +306,7 @@ A push outside Alchemy, such as `convex deploy` or `convex dev`, does not run `i
 
 When `Confect.Backend` receives a `manifest`, every push checks that the live code answers its digest. Codegen writes `convex/confectHealth.ts`, which exports the internal query `confectHealth:digest`. The query returns the final digest as a literal and imports no backend modules. Components do not receive this file.
 
-Alchemy calls the query after all mount initialization, before releasing the deployment's push lock. A missing query, a failed call, a non-string answer, or another digest fails the deployment with `HealthCheckFailed`. The diagnostic includes the expected digest and either the answered digest or the failure category. A successful push alone is insufficient.
+Alchemy calls the query after all mount initialization, before releasing the deployment's push lock. A missing query, a failed call, a non-string answer, or another digest fails the deployment with `HealthCheckFailed`. The diagnostic includes the expected digest and either the answered digest or the failure category. A health call has a 30-second limit. A timeout fails with `HealthCheckFailed` and detail `timeout`, then releases the push lock.
 
 Run codegen before the stack imports its manifest. If the prepare step regenerates a different manifest, the live query answers the new digest and the deployment fails against the old imported digest. Reload the stack with the regenerated manifest and deploy again.
 

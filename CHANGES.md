@@ -627,6 +627,21 @@ submitted.
 
 Manifest sections describe app functions in import-free data, including their middleware. Codegen rejects reserved keys and includes sections in the digest. Incremental spec edits update sections without a full rebuild. Changeset: `profile-manifest-sections.md`. Upstream: planned; no proposal submitted.
 
+### Close the format 1 contract
+
+Keep one manifest schema for codegen and Alchemy. `UnsupportedManifestFormat`
+refuses missing fields, unknown fields and unknown slot kinds before any slot
+or route access. Extensions live under `sections`, and route leaves use
+`endpoint`. Digests cover every emitted semantic field, source inputs, child
+digests and the CLI release, with sorted keys and LF source text.
+`DuplicateRouteIdentity` refuses catalogue entries with one identity.
+Derived variables split acronyms conventionally, and `InvalidDerivedEnvKey`
+names mounts that derive invalid variables. Legacy slots preserve literals and
+secrets. Codegen reports each prefixed legacy mount whose routes are absent.
+Mount renames change derived variable names by design. Values live in the typed
+stack file. Changeset: `closed-manifest-format.md`, major for core, CLI and
+Alchemy. Upstream: not planned; generated deployment manifests are a fork concept.
+
 ### Ship a component manifest
 
 Declared component codegen writes the same format 1 manifest as an app.
@@ -1255,7 +1270,8 @@ Codegen writes the app's final manifest digest into the generated internal
 query `confectHealth:digest` in `convex/confectHealth.ts`. A manifest-backed
 `Backend` passes the expected digest to `Code`, which calls the query after all
 mount initialization and before releasing the push lock. Missing, failed,
-non-string, or stale answers fail with `HealthCheckFailed`. Plain `Code` can
+non-string, stale, or timed-out answers fail with `HealthCheckFailed`.
+The health call has a 30-second limit, with detail `timeout` on expiry. Plain `Code` can
 opt in with `manifestDigest`; deployments without an expected digest keep their prior
 behavior. The check compares manifests and does not roll back an already
 pushed deployment. Changeset: `deploy-manifest-health.md`.

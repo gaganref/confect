@@ -108,9 +108,11 @@ Each mount names itself. Codegen pairs it with the listed definition whose `defi
 
 A root app's mounts are placement only. Leave their slots open and supply each stage's values through the deployment stack. `App.make` refuses a root mount that binds env, and codegen reports `RootMountEnv` if types were bypassed.
 
-A component may bind its child's slot to a constant or a compatible entry of its own env. Any slot may remain open, even a required one. Codegen promotes each open slot to `<MOUNT>_<SLOT>`. It inserts an underscore before each capital after the mount name's first character, then uppercases the name. Mount `bulkEmail` with slot `RESEND_API_KEY` becomes `BULK_EMAIL_RESEND_API_KEY`. A child's open slot can pass through several parents as `BULK_EMAIL_CHILD_RESEND_API_KEY`.
+A component may bind its child's slot to a constant or a compatible entry of its own env. Any slot may remain open, even a required one. Codegen promotes each open slot to `<MOUNT>_<SLOT>`. It splits lowercase-to-uppercase and digit-to-uppercase boundaries, and the last capital of an acronym before a lowercase letter, then uppercases the name. For example, `HTTPServer`, `myHTTPClient` and `s3Bucket` become `HTTP_SERVER`, `MY_HTTP_CLIENT` and `S3_BUCKET`. Mount `bulkEmail` with slot `RESEND_API_KEY` becomes `BULK_EMAIL_RESEND_API_KEY`. A child's open slot can pass through several parents as `BULK_EMAIL_CHILD_RESEND_API_KEY`.
 
-A derived name that duplicates a declared variable or another open slot fails with `DerivedSlotCollision`. For example, mounts `aB` and `a_b` both promote `TOKEN` to `A_B_TOKEN`. Rename a mount or slot to resolve the collision. `httpPrefix` reserves the mounted Convex component's routes.
+A derived name that duplicates a declared variable or another open slot fails with `DerivedSlotCollision`. For example, mounts `aB` and `a_b` both promote `TOKEN` to `A_B_TOKEN`. Rename a mount or slot to resolve the collision. `httpPrefix` reserves the mounted Convex component's routes. A name such as `_bulk` that derives a variable without a leading letter fails with `InvalidDerivedEnvKey`, which names the mount and slot.
+
+Renaming a mount changes its derived deployment variable names. The values live in your stack file, typed by the generated manifest. Regenerate the manifest and update the stack's mount settings together.
 
 The [generated test registry](/guides/testing) discovers a mounted Convex component's test kit at `<package>/testing`, then `<package>/test`, unless the component's descriptor names one with `testing`. Mounts do not accept a `testing` option.
 
@@ -298,7 +300,9 @@ export default {
 } as const;
 ```
 
-A declared component writes the same format 1 manifest. Package it with the component and pass it to `Component.make(name, { manifest, client })`. The host reads that descriptor without loading the component's backend code. A manifest with another format fails at the `manifest` property in TypeScript and fails codegen with advice to regenerate the component using a matching CLI. Keep component and host generators on the same release.
+A declared component writes the same format 1 manifest. Package it with the component and pass it to `Component.make(name, { manifest, client })`. The host reads it without loading backend code. Format 1 is closed. Readers refuse wrong or missing fields, unknown fields and unknown slot kinds with `UnsupportedManifestFormat`, which names the file or import and advises `confect codegen`. Keep component and host generators on the same release as the reader. A shape change requires the next format number.
+
+Extension data lives only in `sections`, including section names that match built-in fields. A section owns the format and JSON structure of its data. A component without a manifest preserves string literal unions and redacted schemas as literal and secret slots. Every other legacy schema becomes a string slot.
 
 `Manifest.Values` types the values a deployment supplies. A missing required variable, a plain string for a secret, and a value outside a literal's values fail to typecheck; optional variables may be omitted:
 
@@ -316,11 +320,11 @@ const values: Manifest.Values<typeof manifest> = {
 
 `Manifest.Mounts<typeof manifest>` types the settings supplied under each mount's name. It includes only slots left open, with each slot's kind, optionality, and derived deployment variable in `manifest.mounts`. A mount with a required open slot must be supplied. Use [`Backend.mounts`](/guides/alchemy#supply-a-mounts-open-settings) to send those settings to their derived variables.
 
-`http` lists `HttpApi` endpoints by owner, group, and endpoint name. An app's own endpoints use owner `app`. A mounted component's endpoints use its mount name, and nested owners include each placement, such as `relay/child`. Every leaf carries `method`, the full prefixed `path`, `owner`, `group`, `endpoint`, and the final manifest `digest`. Mounts without an HTTP prefix contribute no served routes. Generated documentation pages have no endpoint name and are omitted.
+`http` lists `HttpApi` endpoints by owner, group, and endpoint name. An app's own endpoints use owner `app`. A mounted component's endpoints use its mount name, and nested owners include each placement, such as `relay/child`. Every leaf carries `method`, the full prefixed `path`, `owner`, `group`, `endpoint`, and the final manifest `digest`. Mounts without an HTTP prefix contribute no served routes. Generated documentation pages have no endpoint name and are omitted. A prefixed mount whose component ships no manifest contributes no routes, and codegen prints one note for that mount. Repeated owner, group and endpoint identities fail with `DuplicateRouteIdentity`; nested mounts under different parents have different owners.
 
 `Manifest.RouteOf<typeof manifest>` is the union of these leaves. When a manifest keeps its digest as a literal, a leaf from a different digest fails that type. Infrastructure can read `manifest.http.bulkEmail.webhooks.resend` without importing backend modules.
 
-`digest` covers the route catalogue as well as files that `env.ts`, `app.ts` or `auth.ts` imports from your project, the `convex` version, and the generator format. A route edit changes the digest on every leaf. Codegen writes the manifest before it validates anything else, and removes it when the declaration fails, so a stale manifest never outlives the declaration it came from.
+`digest` covers every semantic field of the emitted manifest, including `sections`, plus the source fingerprint, mounted component digests, the `convex` version, the generator format and the `@confect/cli` version. Only the root digest and route-leaf digests are excluded. Object keys are sorted recursively, and source text uses LF line endings so CRLF inputs give the same digest. A dependency's exported slot change or child digest change also changes the host digest. Codegen writes the manifest before other validation and removes it when declaration generation fails.
 
 Declared apps also receive `convex/confectHealth.ts`. Its internal query `confectHealth:digest` returns the final manifest digest. [`Confect.Backend`](/guides/alchemy#verify-the-deployed-manifest) uses that answer to check the live deployment after mount initialization. The generated query imports no backend code. A component has no health query. The root group name `confectHealth` is reserved for this generated file; nested groups may use the name.
 
@@ -346,7 +350,7 @@ export default App.make({
 
 Declared app codegen writes `sections: { tags: { format: 1, functions: { "notes:list": "notes:list" } } }` in `confect/_generated/manifest.ts`. `describe` runs on every registered function, whether a profile, a raw builder or a library's own builder made it. It receives the registered `path`, the `spec` and its group and function `middleware`. A backend with no functions still writes each declared section, with no functions. Callbacks run after specs load, including in `confect dev`, where spec edits update section data and the digest. Importing a spec never runs them. A component writes its descriptor without function sections, so it runs no `describe`, `summarize` or `check`; only `generate` and `verify` run for it.
 
-Section data contributes to the digest, so declaring, removing or changing a section changes it, and so does a function joining or leaving a section. Each section declares a stable `owner` string. Codegen refuses a key `App.make` declares twice and the keys `name`, `env`, `http`, `digest`, `__proto__`, `constructor` and `prototype`. Callbacks must preserve their inputs.
+Section data contributes to the digest, so declaring, removing or changing a section changes it, and so does a function joining or leaving a section. Each section declares a stable `owner` string. Codegen refuses a key `App.make` declares twice. Section names live under `sections` and may match built-in field names. Callbacks must preserve their inputs.
 
 A function spec that carries `manifestSections` fails codegen with `InvalidDeclarationError`. The error names the spec file and the function, and says to declare the sections on `App.make` instead. A profile's `extend` throws at the call when its config carries a `manifest` option, and `.middleware` throws on a spec that carries `manifestSections`, with the same advice. An implementation that imports a `_generated` file no declared section writes fails with that file's name and the same advice, at the import.
 
