@@ -155,7 +155,7 @@ it("types Backend env from the manifest without executing resources", () => {
   ).toExtend<Effect.Effect<unknown, unknown, unknown>>();
 });
 
-it("types all log stream kinds and rejects plain secrets and foreign fields", () => {
+it("types enabled log streams and rejects disabled kinds, plain secrets and foreign fields", () => {
   const target = {
     deploymentUrl: "https://happy-otter-123.convex.cloud",
     deployKey: Redacted.make("made-up-deploy-key"),
@@ -201,10 +201,6 @@ it("types all log stream kinds and rejects plain secrets and foreign fields", ()
         "https://user:made-up-password@logs.example.test/made-up-token",
       ),
     },
-    datadog,
-    s3,
-    { ...target, kind: "postHogLogs" as const, apiKey: secret },
-    { ...target, kind: "postHogErrorTracking" as const, apiKey: secret },
   ])
     expectTypeOf(props).toExtend<Convex.LogStreamProps>();
   const stream = Convex.LogStream("Logs", axiom);
@@ -217,26 +213,30 @@ it("types all log stream kinds and rejects plain secrets and foreign fields", ()
   void Convex.LogStream("PlainAxiom", { ...axiom, apiKey: "plain" });
   // @ts-expect-error Sentry DSNs must be Redacted.
   void Convex.LogStream("PlainSentry", { ...sentry, dsn: "plain" });
-  // @ts-expect-error Datadog API keys must be Redacted, even before the kind is enabled.
-  void Convex.LogStream("PlainDatadog", { ...datadog, ddApiKey: "plain" });
-  // @ts-expect-error S3 access key IDs must be Redacted.
-  void Convex.LogStream("PlainS3Id", { ...s3, accessKeyId: "plain" });
-  // @ts-expect-error S3 secret access keys must be Redacted.
-  void Convex.LogStream("PlainS3Key", { ...s3, secretAccessKey: "plain" });
-  const plainPostHog = {
+  void Convex.LogStream("DisabledDatadog", {
+    ...datadog,
+    // @ts-expect-error Disabled kinds are rejected on the kind property.
+    kind: "datadog",
+  });
+  void Convex.LogStream("DisabledS3", {
+    ...s3,
+    // @ts-expect-error Disabled kinds are rejected on the kind property.
+    kind: "s3Export",
+  });
+  void Convex.LogStream("DisabledPostHogLogs", {
     ...target,
-    kind: "postHogLogs" as const,
-    apiKey: "plain",
-  };
-  // @ts-expect-error PostHog tokens must be Redacted.
-  void Convex.LogStream("PlainPostHog", plainPostHog);
-  const plainPostHogErrors = {
+    apiKey: secret,
+    // @ts-expect-error Disabled kinds are rejected on the kind property.
+    kind: "postHogLogs",
+  });
+  void Convex.LogStream("DisabledPostHogErrors", {
     ...target,
-    kind: "postHogErrorTracking" as const,
-    apiKey: "plain",
-  };
-  // @ts-expect-error PostHog error tracking tokens must be Redacted.
-  void Convex.LogStream("PlainPostHogErrors", plainPostHogErrors);
+    apiKey: secret,
+    // @ts-expect-error Disabled kinds are rejected on the kind property.
+    kind: "postHogErrorTracking",
+  });
+  void Convex.LogStream("EnabledSentry", sentry);
+  void Convex.LogStream("EnabledWebhook", webhook);
   const foreign = { ...axiom, dsn: secret };
   // @ts-expect-error Foreign fields fail even when passed through a variable.
   void Convex.LogStream("Foreign", foreign);

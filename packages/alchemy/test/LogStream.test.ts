@@ -521,7 +521,7 @@ it.effect(
           Redacted.make({ ...live, hmacSecret: "made-up-rotated-hmac" }),
         ]);
         const planned = yield* diff(service, output, webhook);
-        expect(planned).toBeUndefined();
+        expect(planned).toEqual({ action: "update" });
         const read = yield* service.read({
           ...lifecycle,
           olds: webhook,
@@ -547,6 +547,9 @@ it.effect(
         expect(output.hmacSecret && Redacted.value(output.hmacSecret)).toBe(
           "made-up-hmac-secret",
         );
+        expect(mock.client.updateLogStream).not.toHaveBeenCalled();
+        const stable = yield* diff(service, reconciled, webhook);
+        expect(stable).toBeUndefined();
       }),
     ),
 );

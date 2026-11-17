@@ -683,11 +683,19 @@ const logResources = (props: LogStream.LogStreamProps) =>
 
 describe("log stream engine lifecycle", () => {
   it.effect(
-    "refreshes a rotated HMAC through a noop plan and still destroys",
+    "refreshes a rotated HMAC through an update without writing to the stream",
     () =>
       Effect.gen(function* () {
         const fixture = mockClient();
-        const deploy = makeHarness(fixture.layer, noCommands);
+        const persisted: Record<
+          string,
+          Record<string, Record<string, ResourceState>>
+        > = {};
+        const deploy = makeHarness(fixture.layer, noCommands, false, persisted);
+        const messages: string[] = [];
+        const capture = Logger.make(({ message, cause }) => {
+          messages.push(inspect([message, cause], { depth: null }));
+        });
         const props = logConfigs[2];
         const first = yield* deploy(logResources(props));
         const found = yield* fixture.client.getLogStream(
@@ -701,13 +709,60 @@ describe("log stream engine lifecycle", () => {
         fixture.state.logStreams.set(props.deploymentUrl, [
           Redacted.make({ ...live, hmacSecret: "made-up-rotated-hmac" }),
         ]);
-        const refreshed = yield* deploy(logResources(props));
-        expect(deploy.plans.at(-1)?.resources.Logs.action).toBe("noop");
+        fixture.client.createLogStream.mockClear();
+        const planned = yield* deploy.plan(logResources(props));
+        expect(planned.resources.Logs.action).toBe("update");
+        const refreshed = yield* deploy(logResources(props)).pipe(
+          Effect.provideService(Logger.CurrentLoggers, new Set([capture])),
+        );
+        expect(deploy.plans.at(-1)?.resources.Logs.action).toBe("update");
         expect(Redacted.isRedacted(refreshed.hmacSecret)).toBe(true);
         expect(
           refreshed.hmacSecret && Redacted.value(refreshed.hmacSecret),
         ).toBe("made-up-rotated-hmac");
+        expect(fixture.client.createLogStream).not.toHaveBeenCalled();
         expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+        expect(fixture.client.deleteLogStream).not.toHaveBeenCalled();
+        const stable = yield* deploy.plan(logResources(props));
+        expect(stable.resources.Logs.action).toBe("noop");
+        const shown = Array.join(
+          [
+            inspect([deploy.plans, first, refreshed, persisted, messages], {
+              depth: null,
+            }),
+            // oxlint-disable-next-line effecttsgo/global-json-in-effect, effecttsgo/prefer-schema-over-json -- Exercise the public JSON.stringify rendering exactly.
+            JSON.stringify([
+              deploy.plans,
+              first,
+              refreshed,
+              persisted,
+              messages,
+            ]),
+            ...Array.flatMap(deploy.plans, (plan) => [
+              ...formatYamlLines(plan),
+              ...Array.flatMap(Record.values(plan.resources), (node) =>
+                node.action === "create" ||
+                node.action === "update" ||
+                node.action === "replace"
+                  ? (formatDeclaredPropertyYaml(
+                      node.state?.props,
+                      node.props,
+                      node.action,
+                    )?.lines ?? [])
+                  : formatYamlLines(node.state?.attr),
+              ),
+            ]),
+          ],
+          "\n",
+        );
+        for (const secret of [
+          "made-up-hmac-secret",
+          "made-up-rotated-hmac",
+          "made-up-webhook-password",
+          "made-up-webhook-token",
+          "made-up-engine-deploy-key",
+        ])
+          expect(shown).not.toContain(secret);
         yield* deploy(Effect.succeed({}));
         expect(fixture.client.deleteLogStream).toHaveBeenCalledWith(
           props.deploymentUrl,
@@ -734,10 +789,6 @@ describe("log stream engine lifecycle", () => {
       fixture.state.logStreams.set(props.deploymentUrl, [
         Redacted.make({ ...live, hmacSecret: "made-up-rotated-hmac" }),
       ]);
-      const next = yield* deploy(logResources(props));
-      expect(next.id).toBe(first.id);
-      expect(deploy.plans.at(-1)?.resources.Logs.action).toBe("noop");
-      expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
       yield* deploy(Effect.succeed({}));
       expect(fixture.client.deleteLogStream).toHaveBeenCalledWith(
         props.deploymentUrl,
@@ -823,45 +874,47 @@ describe("log stream engine lifecycle", () => {
   );
 
   it.effect(
-    "rejects a disabled kind during plan with unresolved deployment outputs",
+    "refuses an untyped disabled kind before stream API calls on first apply",
     () =>
       Effect.gen(function* () {
         const fixture = mockClient();
         const deploy = makeHarness(fixture.layer, noCommands);
-        const planned = yield* deploy
-          .plan(
-            Effect.gen(function* () {
-              const project = yield* Convex.Project("Project", {
-                teamId: 10,
-                name: "example",
-              });
-              const deployment = yield* Convex.Deployment("Deployment", {
-                projectId: project.projectId,
-                type: "prod",
-              });
-              const key = yield* Convex.DeployKey("Key", {
-                deploymentName: deployment.name,
-              });
-              yield* Convex.LogStream("Logs", {
-                kind: "datadog",
-                deploymentUrl: deployment.url,
-                deployKey: key.deployKey,
-                ddApiKey: Redacted.make("made-up-disabled-token"),
-                siteLocation: "US1",
-                ddTags: [],
-              });
-            }),
-          )
-          .pipe(Effect.result);
+        const planned = yield* deploy(
+          Effect.gen(function* () {
+            const project = yield* Convex.Project("Project", {
+              teamId: 10,
+              name: "example",
+            });
+            const deployment = yield* Convex.Deployment("Deployment", {
+              projectId: project.projectId,
+              type: "prod",
+            });
+            const key = yield* Convex.DeployKey("Key", {
+              deploymentName: deployment.name,
+            });
+            yield* Convex.LogStream("Logs", {
+              kind: "datadog",
+              deploymentUrl: deployment.url,
+              deployKey: key.deployKey,
+              ddApiKey: Redacted.make("made-up-disabled-token"),
+              siteLocation: "US1",
+              ddTags: [],
+            });
+          }),
+        ).pipe(Effect.result);
         expect(Result.isFailure(planned)).toBe(true);
         if (Result.isFailure(planned))
           expect(planned.failure).toMatchObject({
             _tag: "LogStreamNotEnabled",
             kind: "datadog",
           });
-        expect(fixture.client.createProject).not.toHaveBeenCalled();
-        expect(fixture.client.createDeployment).not.toHaveBeenCalled();
-        expect(fixture.client.createDeployKey).not.toHaveBeenCalled();
+        expect(fixture.client.createProject).toHaveBeenCalledTimes(1);
+        expect(fixture.client.createDeployment).toHaveBeenCalledTimes(1);
+        expect(fixture.client.createDeployKey).toHaveBeenCalledTimes(1);
+        expect(fixture.client.listLogStreams).not.toHaveBeenCalled();
+        expect(fixture.client.getLogStream).not.toHaveBeenCalled();
+        expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+        expect(fixture.client.deleteLogStream).not.toHaveBeenCalled();
         expect(fixture.client.createLogStream).not.toHaveBeenCalled();
       }),
   );
