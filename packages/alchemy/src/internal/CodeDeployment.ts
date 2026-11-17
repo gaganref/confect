@@ -48,10 +48,11 @@ export class StaleManifest extends Schema.TaggedError<
   expected: Schema.String,
   reason: Schema.Literals(["DifferentDigest", "NotGenerated"]),
   generated: Schema.optionalKey(Schema.String),
+  path: Schema.optionalKey(Schema.String),
 }) {
   override get message() {
     return this.reason === "NotGenerated"
-      ? `The health module is not as codegen writes it, so nothing was pushed. Do not edit or format convex/confectHealth.ts; regenerate it with confect codegen.`
+      ? `The health module ${this.path ?? "at the configured functions directory"} is not as codegen writes it, so nothing was pushed. Do not edit or format the file; regenerate it with confect codegen. The CLI that generates it and the Alchemy package that reads it must be on the same Confect release.`
       : `prepare generated manifest ${this.generated}, but the stack imported manifest ${this.expected}, so nothing was pushed. Run confect codegen, commit the generated files and deploy again.`;
   }
 }
@@ -68,11 +69,18 @@ const generatedDigest = Effect.fn("Code.generatedDigest")(
     const path = yield* Path.Path;
     const functions = yield* functionsDirectory(cwd);
     const file = path.join(cwd, functions, "confectHealth.ts");
-    if (!(yield* fs.exists(file))) return Option.none<string>();
-    const contents = yield* fs.readFileString(file);
-    return HealthModule.read(contents);
+    const digest = yield* fs
+      .readFileString(file)
+      .pipe(
+        Effect.map(HealthModule.read),
+        Effect.orElseSucceed(Option.none<string>),
+      );
+    return { path: file, digest };
   },
-  Effect.orElseSucceed(Option.none<string>),
+  Effect.orElseSucceed(() => ({
+    path: undefined,
+    digest: Option.none<string>(),
+  })),
 );
 
 /**
@@ -168,12 +176,13 @@ export const deploy = Effect.fn("Code.deploy")(function* (
       if (props.prepare !== undefined)
         yield* runner.prepare(props.prepare, props.cwd);
       if (props.manifestDigest !== undefined) {
-        const generated = yield* generatedDigest(
+        const { path: file, digest: generated } = yield* generatedDigest(
           path.resolve(props.cwd ?? "."),
         );
         if (Option.getOrUndefined(generated) !== props.manifestDigest)
           return yield* StaleManifest.make({
             expected: props.manifestDigest,
+            ...(file === undefined ? {} : { path: file }),
             reason: Option.isNone(generated)
               ? "NotGenerated"
               : "DifferentDigest",

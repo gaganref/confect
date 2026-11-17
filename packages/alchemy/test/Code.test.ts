@@ -243,6 +243,7 @@ describe("Code", () => {
         assertIs(result, Result.isFailure);
         expect(result.failure).toEqual(
           StaleManifest.make({
+            path: path.join(cwd, "convex", "confectHealth.ts"),
             expected: "sha256:built",
             reason,
             ...(reason === "DifferentDigest" && generated !== undefined
@@ -253,7 +254,7 @@ describe("Code", () => {
         expect(result.failure.message).toContain(
           reason === "DifferentDigest"
             ? "Run confect codegen, commit the generated files and deploy again."
-            : "Do not edit or format convex/confectHealth.ts; regenerate it with confect codegen.",
+            : "Do not edit or format the file; regenerate it with confect codegen.",
         );
       }).pipe(Effect.scoped),
   );

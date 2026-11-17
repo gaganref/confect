@@ -25,7 +25,7 @@ export const digest = internalQueryGeneric({
  * endings. Any edit, extra text, or missing module reads as not generated.
  */
 export const read = (contents: string): Option.Option<string> => {
-  const normalized = String.replace(/\r\n?/g, "\n")(contents);
+  const normalized = String.replace(/\r\n/g, "\n")(contents);
   const found = /^  handler: \(\) => ("(?:[^"\\]|\\.)*"),$/m.exec(normalized);
   return found === null
     ? Option.none()
