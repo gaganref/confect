@@ -222,6 +222,54 @@ describe("Http", () => {
     void refused;
   });
 
+  it("refuses wildcard and parameterized addresses at every prefix", () => {
+    const wildcards = HttpApi.make("wildcards").add(
+      HttpApiGroup.make("webhooks").add(
+        HttpApiEndpoint.get("any", "*"),
+        HttpApiEndpoint.get("files", "/files/*"),
+      ),
+    );
+    const groupWildcard = HttpApi.make("groupWildcard").add(
+      HttpApiGroup.make("webhooks")
+        .add(HttpApiEndpoint.get("resend", "/resend"))
+        .prefix("/files/*"),
+    );
+    const apiWildcard = HttpApi.make("apiWildcard")
+      .add(
+        HttpApiGroup.make("webhooks").add(
+          HttpApiEndpoint.get("resend", "/resend"),
+        ),
+      )
+      .prefix("/files/*");
+    const groupParameter = HttpApi.make("groupParameter").add(
+      HttpApiGroup.make("webhooks")
+        .add(HttpApiEndpoint.get("resend", "/resend"))
+        .prefix("/files/:id"),
+    );
+    const apiParameter = HttpApi.make("apiParameter")
+      .add(
+        HttpApiGroup.make("webhooks").add(
+          HttpApiEndpoint.get("resend", "/resend"),
+        ),
+      )
+      .prefix("/files/:id");
+    const refused = () => [
+      // @ts-expect-error A bare wildcard names no single URL.
+      Http.url(wildcards, "webhooks", "any"),
+      // @ts-expect-error An endpoint wildcard names no single URL.
+      Http.url(wildcards, "webhooks", "files"),
+      // @ts-expect-error A group prefix wildcard names no single URL.
+      Http.url(groupWildcard, "webhooks", "resend"),
+      // @ts-expect-error An API prefix wildcard names no single URL.
+      Http.url(apiWildcard, "webhooks", "resend"),
+      // @ts-expect-error A group prefix parameter names no single URL.
+      Http.url(groupParameter, "webhooks", "resend"),
+      // @ts-expect-error An API prefix parameter names no single URL.
+      Http.url(apiParameter, "webhooks", "resend"),
+    ];
+    void refused;
+  });
+
   it("lists the app's own routes and docs page", () => {
     expect(Http.routes(app, declare("/context-metadata", "/docs"))).toEqual(
       Result.succeed([
