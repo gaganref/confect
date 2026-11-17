@@ -216,6 +216,18 @@ const invalidManifests: ReadonlyArray<readonly [string, unknown]> = [
 ];
 
 describe("Backend", () => {
+  it.effect.each([{}, { TOKEN: { kind: "string" as const, optional: true } }])(
+    "does not declare environment ownership when env is omitted and no value is required (%j)",
+    (env) =>
+      Effect.gen(function* () {
+        const backend = yield* Backend("Backend", {
+          ...props,
+          manifest: { ...formatOne, env },
+        });
+        expect(backend.environment).toBeUndefined();
+      }).pipe(Effect.provide([stack(), providers])),
+  );
+
   it.effect("writes automatic values separately from application env", () =>
     Effect.gen(function* () {
       const manifest = {
