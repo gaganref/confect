@@ -145,6 +145,160 @@ const makeHarness = (
 };
 
 describe("cloud deployment lifecycle", () => {
+  it.effect(
+    "sets, clears with null, sets again, and retains expiry on resource removal",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(
+          fixture.layer,
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () => Effect.void,
+          }),
+        );
+        const resources = (
+          expiry: Pick<Deployment.DeploymentProps, "expiresAt">,
+        ) =>
+          Effect.gen(function* () {
+            const deployment = yield* Convex.Deployment("Deployment", {
+              projectId: 1,
+              type: "dev",
+              reference: "example",
+              class: "s256",
+              ...expiry,
+            });
+            return { name: deployment.name, expiresAt: deployment.expiresAt };
+          });
+        const created = yield* deploy(
+          resources({ expiresAt: 1_800_000_000_000 }),
+        );
+        expect(created).toEqual({
+          name: "happy-otter-123",
+          expiresAt: 1_800_000_000_000,
+        });
+        const extended = yield* deploy(
+          resources({ expiresAt: 1_800_003_600_000 }),
+        );
+        expect(extended).toEqual({
+          name: "happy-otter-123",
+          expiresAt: 1_800_003_600_000,
+        });
+        const omitted = yield* deploy(resources({}));
+        expect(omitted).toEqual(extended);
+        expect(fixture.client.updateDeployment).toHaveBeenCalledTimes(1);
+        const cleared = yield* deploy(resources({ expiresAt: null }));
+        expect(cleared).toEqual({ name: "happy-otter-123", expiresAt: null });
+        expect(fixture.client.updateDeployment).toHaveBeenLastCalledWith(
+          "happy-otter-123",
+          {
+            reference: "example",
+            expiresAt: null,
+          },
+        );
+        const reset = yield* deploy(
+          resources({ expiresAt: 1_800_007_200_000 }),
+        );
+        expect(reset).toEqual({
+          name: "happy-otter-123",
+          expiresAt: 1_800_007_200_000,
+        });
+        yield* deploy(Effect.succeed({}));
+        expect(fixture.state.deployments).toEqual([
+          expect.objectContaining({
+            name: "happy-otter-123",
+            expiresAt: 1_800_007_200_000,
+          }),
+        ]);
+        expect(fixture.client.createDeployment).toHaveBeenCalledTimes(1);
+        expect(fixture.client.deleteDeployment).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect.each(["create", "update"] as const)(
+    "surfaces a production expiry API refusal on %s",
+    (operation) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const refusal = ConvexApiError.make({
+          operation:
+            operation === "create" ? "createDeployment" : "updateDeployment",
+          code: "HttpError",
+          status: 400,
+        });
+        const client = Layer.succeed(ConvexClient, {
+          ...fixture.client,
+          createDeployment: (projectId, input) =>
+            input.type === "prod" && input.expiresAt != null
+              ? Effect.fail(refusal)
+              : fixture.client.createDeployment(projectId, input),
+          updateDeployment: (name, input) =>
+            input.expiresAt != null
+              ? Effect.fail(refusal)
+              : fixture.client.updateDeployment(name, input),
+        });
+        const deploy = makeHarness(
+          client,
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () => Effect.void,
+          }),
+        );
+        const resources = (
+          expiry: Pick<Deployment.DeploymentProps, "expiresAt">,
+        ) =>
+          Effect.gen(function* () {
+            const deployment = yield* Convex.Deployment("Deployment", {
+              projectId: 1,
+              type: "prod",
+              reference: "example",
+              ...expiry,
+            });
+            return { name: deployment.name };
+          });
+        if (operation === "update") yield* deploy(resources({}));
+        const result = yield* deploy(
+          resources({ expiresAt: 1_800_000_000_000 }),
+        ).pipe(Effect.result);
+        expect(result).toEqual(Result.fail(refusal));
+        expect(fixture.client.deleteDeployment).not.toHaveBeenCalled();
+      }),
+  );
+
+  it.effect(
+    "resizes a declared deployment in place and retains it on removal",
+    () =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const deploy = makeHarness(
+          fixture.layer,
+          Layer.succeed(CommandRunner, {
+            prepare: () => Effect.void,
+            deploy: () => Effect.void,
+          }),
+        );
+        const resources = (
+          deploymentClass: NonNullable<Deployment.DeploymentProps["class"]>,
+        ) =>
+          Effect.gen(function* () {
+            const deployment = yield* Convex.Deployment("Deployment", {
+              projectId: 1,
+              type: "dev",
+              reference: "example",
+              class: deploymentClass,
+            });
+            return { name: deployment.name, class: deployment.class };
+          });
+        const created = yield* deploy(resources("s16"));
+        expect(created).toEqual({ name: "happy-otter-123", class: "s16" });
+        const resized = yield* deploy(resources("s256"));
+        expect(resized).toEqual({ name: "happy-otter-123", class: "s256" });
+        yield* deploy(Effect.succeed({}));
+        expect(fixture.client.createDeployment).toHaveBeenCalledTimes(1);
+        expect(fixture.client.deleteDeployment).not.toHaveBeenCalled();
+      }),
+  );
+
   it.effect.each([false, true])(
     "cleans an interrupted create with retry=%s",
     (retry) =>
