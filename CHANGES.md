@@ -1232,7 +1232,9 @@ with explicit adoption. Reject invalid limit values before API calls and keep
 one limit per metric, window and type on a deployment. Refuse ambiguous
 adoption with the matching IDs. Replace only when the deployment name changes
 and update URL-only changes in place. The spec lists units without mapping each
-metric to one. Concurrent first declarations can still create duplicate triples.
+metric to one. Concurrent first declarations can still create duplicate triples. Save create
+outputs for replacing generations too, so a failed final state write resumes
+without adoption.
 
 Changeset: `alchemy-usage-limit.md`.
 Upstream: planned; no linked proposal verified.
