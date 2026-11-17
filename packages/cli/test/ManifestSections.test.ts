@@ -9,6 +9,7 @@ import {
 } from "@confect/core";
 import { describe, expect, it } from "@effect/vitest";
 import {
+  check,
   collect,
   declared,
   refuseSpecSections,
@@ -400,4 +401,40 @@ describe("ManifestSections", () => {
       });
     },
   );
+
+  it("hands a section named like an Object.prototype member only its own history", () => {
+    const seen: Array<readonly [string, unknown]> = [];
+    const registry = Result.getOrThrow(
+      collect(
+        Arr.map(["constructor", "__proto__", "toString"], (key) => ({
+          key,
+          section: {
+            ...section,
+            check: (_: unknown, previous: unknown) => {
+              seen.push([key, previous]);
+              return { errors: [], notes: [] };
+            },
+          },
+        })),
+        [],
+      ),
+    );
+    check(registry, {});
+    expect(seen).toEqual([
+      ["constructor", undefined],
+      ["__proto__", undefined],
+      ["toString", undefined],
+    ]);
+    seen.length = 0;
+    const history = Record.fromEntries([
+      ["constructor", { format: 1, kept: "constructor" }],
+      ["__proto__", { format: 1, kept: "__proto__" }],
+    ]);
+    check(registry, history);
+    expect(seen).toEqual([
+      ["constructor", { format: 1, kept: "constructor" }],
+      ["__proto__", { format: 1, kept: "__proto__" }],
+      ["toString", undefined],
+    ]);
+  });
 });

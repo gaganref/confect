@@ -164,8 +164,27 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
             "confect/_generated/manifest.ts",
             `export default ${stringify({ ...previous, env: { CHOICE: choice, KEY: { ...descriptor, unknown: true } } })} as const;`,
           );
-          const refused = yield* project.provide(readPrevious);
+          const messages: string[] = [];
+          const capture = Effect.provideService(
+            Console.Console,
+            Object.assign(Object.create(console), {
+              log: (...args: readonly string[]) => messages.push(...args),
+            }),
+          );
+          const refused = yield* project.provide(readPrevious).pipe(capture);
           expect(refused).toEqual({});
+          const warnings = Array.filter(
+            messages,
+            String.includes("manifest history starts fresh"),
+          );
+          expect(warnings).toHaveLength(1);
+          expect(warnings[0]).toContain("confect/_generated/manifest.ts");
+          expect(warnings[0]).toContain("unknown");
+          yield* fs.remove(`${project.root}/confect/_generated/manifest.ts`);
+          messages.length = 0;
+          const absent = yield* project.provide(readPrevious).pipe(capture);
+          expect(absent).toEqual({});
+          expect(messages).toEqual([]);
         }).pipe(Effect.scoped),
     );
 
@@ -2302,6 +2321,45 @@ layer(Layer.mergeAll(NodePath.layer, NodeFileSystem.layer))(
               String.includes("omitted from the route catalogue"),
             ),
           ).toBe(true);
+        }).pipe(Effect.scoped),
+      { timeout: 30000 },
+    );
+
+    it.effect(
+      "changes the manifest digest when the installed CLI release changes",
+      () =>
+        Effect.gen(function* () {
+          const project = yield* declarationProject;
+          const fs = yield* FileSystem.FileSystem;
+          const CliPackage = Schema.fromJsonString(
+            Schema.Struct({ name: Schema.Literal("@confect/cli") }),
+          );
+          // Codegen reads its own package.json for its release.
+          const release = (version: string) =>
+            Effect.provideService(FileSystem.FileSystem, {
+              ...fs,
+              readFileString: (file, encoding) =>
+                fs
+                  .readFileString(file, encoding)
+                  .pipe(
+                    Effect.map((contents) =>
+                      Option.isSome(Schema.decodeOption(CliPackage)(contents))
+                        ? `{ "name": "@confect/cli", "version": "${version}" }`
+                        : contents,
+                    ),
+                  ),
+            });
+          const generatedDigest = (version: string) =>
+            project.run.pipe(
+              release(version),
+              Effect.andThen(project.read("confect/_generated/manifest.ts")),
+              Effect.map(digestOf),
+            );
+          const before = yield* generatedDigest("0.0.0-before");
+          const again = yield* generatedDigest("0.0.0-before");
+          const after = yield* generatedDigest("0.0.0-after");
+          expect(again).toBe(before);
+          expect(after).not.toBe(before);
         }).pipe(Effect.scoped),
       { timeout: 30000 },
     );
