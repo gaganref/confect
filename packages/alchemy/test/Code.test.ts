@@ -128,10 +128,8 @@ describe("Code", () => {
         const cwd = yield* fs.makeTempDirectoryScoped({
           prefix: "confect-health-path-",
         });
-        yield* fs.writeFileString(
-          path.join(cwd, "convex.json"),
-          yield* serialize({ functions }),
-        );
+        const config = yield* serialize({ functions });
+        yield* fs.writeFileString(path.join(cwd, "convex.json"), config);
         const calls: string[] = [];
         const services = yield* Layer.build(recorder(calls));
         const result = yield* deploy({
