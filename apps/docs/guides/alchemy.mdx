@@ -185,19 +185,27 @@ export default Alchemy.Stack(
 );
 ```
 
+If you set Axiom's `ingestUrl`, use one of its public ingest base URLs:
+
+- `https://api.axiom.co`.
+- `https://us-east-1.aws.edge.axiom.co`.
+- `https://eu-central-1.aws.edge.axiom.co`.
+
+The upstream backend source lists these three URLs. Other URLs are unverified. A wrong URL returns a plain HTTP error from Convex.
+
 For a deployment declared in the same stack, pass `deployment.url` and `key.deployKey` instead. The deploy key must authorize log stream operations. A supplied deployment key does not require a management token. Keep the Alchemy state and its backups protected, as with deploy keys.
 
-Use `kind: "sentry"` with a `Redacted` `dsn` and optional `tags` to opt an app into Sentry. Use `kind: "webhook"` with `url`, `format` (`"json"` or `"jsonl"`), and optional `topics` for a webhook. Its `hmacSecret` output is `Redacted`; keep it in protected configuration for the webhook receiver. Omit `topics` to subscribe to all topics.
+Use `kind: "sentry"` with a `Redacted` `dsn` and optional `tags` to opt an app into Sentry. Use `kind: "webhook"` with `url`, `format` (`"json"` or `"jsonl"`), and optional `topics` for a webhook. A URL that embeds a credential must be passed as `Redacted`, for example `Redacted.make("https://user:password@logs.example.com/token")`. Its `hmacSecret` output is `Redacted` and refreshes from Convex on provider reads and reconciliation. Keep it in protected configuration for the webhook receiver. Omit `topics` to subscribe to all topics.
 
 All seven kinds are typed. `axiom`, `sentry`, and `webhook` are switched on. `datadog`, `postHogLogs`, `postHogErrorTracking`, and `s3Export` fail with `LogStreamNotEnabled`, which names the kind. Every API key, DSN, S3 credential, and deploy key requires `Redacted`; plain strings fail to typecheck.
 
-Change a field or connector secret to update the stream in place. Removing an optional field clears it. A changed `kind` or `deploymentUrl` replaces the stream. Removing the resource deletes its stream; a stream already absent during removal is fine.
+Change a field or connector secret to update the stream in place. Removing an optional field clears it. A changed `kind` or `deploymentUrl` replaces the stream. Removing the resource deletes its owned stream even after an external edit. A stream already absent during removal is fine. A stream still listed as `deleting` does not block creation of another stream of that kind.
 
 If the replacement destination already has a stream of that kind, the plan stops before it changes either stream. Resolve the destination's ownership manually before continuing.
 
-Keep one resource per kind on a deployment. A readable field edited outside the stack stops the plan with `LogStreamDrift`. Restore that field manually before continuing. Status changes alone do not count as drift. Write-only credentials cannot be checked for external changes because Convex does not return them.
+Keep one resource per kind on a deployment. A readable field edited outside the stack stops the plan with `LogStreamDrift`. Restore that field manually before continuing. Status changes and webhook HMAC rotations do not count as drift. Write-only credentials cannot be checked for external changes because Convex does not return them.
 
-A deleted stream, an existing stream without an ownership record, or a missing webhook HMAC stops the plan with `LogStreamRecoveryRequired`. Restore the protected state or resolve the remote stream manually before continuing. The resource never adopts an existing stream, even with Alchemy adoption enabled, and never silently recreates a deleted one. Reading a webhook HMAC from Convex does not recover a lost create-time secret in state.
+A deleted stream or an existing stream without an ownership record stops the plan with `LogStreamRecoveryRequired`. Restore the protected state or resolve the remote stream manually before continuing. The resource never adopts an existing stream, even with Alchemy adoption enabled, and never silently recreates a deleted one.
 
 The lifecycle is tested against a fake Convex API through Alchemy plan and apply. The following remain unproven on a real account:
 

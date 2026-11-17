@@ -1187,14 +1187,22 @@ Upstream: planned; no linked proposal verified.
 `Convex.LogStream` lets a stack own an Axiom, Sentry, or webhook log stream on a
 Convex deployment. Connector secrets require `Redacted`, and secret changes
 update the existing stream. Kind or deployment changes replace it. Readable
-external edits, remote deletion, lost ownership, and a lost webhook HMAC stop
-the plan. An occupied replacement destination also stops the plan before any
-mutation. Validate response IDs before they enter errors. The other four Convex
+external edits, remote deletion, and lost ownership stop the plan. An occupied
+replacement destination also stops the plan before any mutation. Validate response IDs before they enter errors. The other four Convex
 kinds remain typed and fail as not switched on. Fake API and Alchemy engine tests
 cover lifecycle and secret rendering. Real-account delivery, event envelopes,
 retries, and cloud entitlements remain unproven.
 Keep the published log stream declarations valid for NodeNext consumers with
 full declaration checks.
+
+Use previous props for drift checks and keep only stream identity and the live
+redacted webhook HMAC in attributes. Redacted webhook URLs protect embedded
+credentials across plans and state. Ignore streams still deleting after removal,
+and allow owned deletion despite readable drift. Check disabled kinds before
+unresolved props in diffs and explain that sibling resources can contend for
+one stream per kind. Add secret recovery and delete-race regressions.
+A newer upstream platform snapshot deprecates these five endpoints in favour of
+`/integrations`, which the installed 0.1.11 does not have, so that move is a follow-up.
 
 Changeset: `alchemy-log-stream.md`.
 Upstream: planned; no proposal submitted.
