@@ -79,7 +79,7 @@ export const makeEngine = Effect.fn("Test.makeEngine")(function* (
                     {
                       resources: Record.map(plan.resources, (node) => ({
                         action: node.action,
-                        props: node.props,
+                        props: "props" in node ? node.props : undefined,
                         state: node.state,
                       })),
                       output: plan.output,
