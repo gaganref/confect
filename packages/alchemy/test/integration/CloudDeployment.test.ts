@@ -1567,6 +1567,56 @@ const logResources = (props: LogStream.LogStreamProps) =>
   });
 
 describe("log stream engine lifecycle", () => {
+  it.effect.each(["create", "update"] as const)(
+    "keeps a rejected computed URL out of %s state and plans",
+    (operation) =>
+      Effect.gen(function* () {
+        const fixture = mockClient();
+        const persisted: Record<
+          string,
+          Record<string, Record<string, ResourceState>>
+        > = {};
+        const deploy = makeHarness(fixture.layer, noCommands, false, persisted);
+        const safe = { ...logConfigs[2], url: "http://127.0.0.1:9876/logs" };
+        if (operation === "update") yield* deploy(logResources(safe));
+        const unsafeUrl =
+          "http://made-up-user:made-up-computed-password@127.0.0.1:9876/logs";
+        const resources = Effect.gen(function* () {
+          const project = yield* Convex.Project("UrlSource", {
+            teamId: 10,
+            name: "url-source",
+          });
+          const stream = yield* Convex.LogStream("Logs", {
+            ...safe,
+            url: project.projectId.pipe(Output.map(() => unsafeUrl)),
+          });
+          return { id: stream.id };
+        });
+        const messages: string[] = [];
+        const capture = Logger.make(({ message, cause }) => {
+          messages.push(inspect([message, cause], { depth: null }));
+        });
+        const result = yield* deploy(resources).pipe(
+          Effect.exit,
+          Effect.provideService(Logger.CurrentLoggers, new Set([capture])),
+        );
+        expect(Exit.isFailure(result)).toBe(true);
+        expect(inspect(result, { depth: null })).toContain(
+          "LogStreamUrlRequiresRedacted",
+        );
+        const shown = inspect([persisted, deploy.plans, messages, result], {
+          depth: null,
+        });
+        expect(shown).not.toContain("made-up-computed-password");
+        expect(shown).not.toContain("made-up-user");
+        expect(fixture.client.createLogStream).toHaveBeenCalledTimes(
+          operation === "create" ? 0 : 1,
+        );
+        expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+        expect(fixture.client.deleteLogStream).not.toHaveBeenCalled();
+      }),
+  );
+
   it.effect(
     "asks for another deploy after a deleting stream causes a conflict",
     () =>
