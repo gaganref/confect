@@ -45,13 +45,16 @@ const checkHealth = Effect.fn("Code.checkHealth")(function* (
   expected: string,
 ) {
   const client = yield* ConvexClient;
-  const answer = yield* client
-    .runFunction(url, key, HEALTH, {})
-    .pipe(
-      Effect.mapError((error) =>
-        HealthCheckFailed.make({ expected, detail: error._tag }),
-      ),
-    );
+  const answer = yield* client.runFunction(url, key, HEALTH, {}).pipe(
+    Effect.mapError((error) =>
+      HealthCheckFailed.make({ expected, detail: error._tag }),
+    ),
+    Effect.timeoutOrElse({
+      duration: "30 seconds",
+      orElse: () =>
+        Effect.fail(HealthCheckFailed.make({ expected, detail: "timeout" })),
+    }),
+  );
   if (typeof answer !== "string")
     return yield* HealthCheckFailed.make({ expected, detail: "not a string" });
   if (answer !== expected)
