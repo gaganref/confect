@@ -103,6 +103,15 @@ export class ConflictingCanonicalDomains extends Schema.TaggedError<
 
 const validateCanonicalOwner = Effect.fn("CustomDomain.validateCanonicalOwner")(
   function* (fqn: string, props: Partial<CustomDomainProps>) {
+    const stack = yield* Effect.serviceOption(Stack);
+    if (Option.isNone(stack)) return;
+    const declared = stack.value.resources[fqn];
+    if (
+      declared === undefined ||
+      (isResolved(declared.Props.canonical) &&
+        declared.Props.canonical !== true)
+    )
+      return;
     if (
       props.canonical !== true ||
       props.deployment === undefined ||
@@ -110,8 +119,6 @@ const validateCanonicalOwner = Effect.fn("CustomDomain.validateCanonicalOwner")(
       props.domain === undefined
     )
       return;
-    const stack = yield* Effect.serviceOption(Stack);
-    if (Option.isNone(stack)) return;
     for (const resource of Record.values(stack.value.resources)) {
       if (resource.Type !== CustomDomain.Type || resource.FQN === fqn) continue;
       let other: Input<CustomDomainProps> = resource.Props;

@@ -1480,7 +1480,7 @@ it.effect.each([false, true])(
         expect.arrayContaining([
           expect.objectContaining({
             fqn: "Old",
-            status: "created",
+            status: "updated",
             attr: expect.objectContaining({ canonicalUrl: oldUrl }),
           }),
           expect.objectContaining({ fqn: "Deployment", status: "created" }),
