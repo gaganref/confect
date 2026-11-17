@@ -47,7 +47,9 @@ const Tags = Schema.Record(Schema.String, Schema.String).pipe(
   Schema.NullOr,
   Schema.optionalKey,
 );
-const base = { id: Schema.String, status: Status };
+// IDs enter recovery errors, so reject response text outside this bounded alphabet.
+const Id = Schema.String.check(Schema.isPattern(/^[A-Za-z0-9_+/-]{1,128}$/));
+const base = { id: Id, status: Status };
 const Inclusion = Schema.Literals(["included", "excluded"]);
 const TableSelection = Schema.Union([
   Schema.Literal("excluded"),
@@ -131,7 +133,7 @@ export const Config = Schema.Union([
 export const Created = Schema.Union([
   Schema.Struct({
     logStreamType: Schema.Literal("webhook"),
-    id: Schema.String,
+    id: Id,
     hmacSecret: Schema.String,
   }),
   Schema.Struct({
@@ -143,6 +145,6 @@ export const Created = Schema.Union([
       "postHogErrorTracking",
       "s3Export",
     ]),
-    id: Schema.String,
+    id: Id,
   }),
 ]) satisfies Schema.Schema<ReadonlyDeep<DeploymentApi.CreateLogStreamResponse>>;

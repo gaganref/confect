@@ -15,6 +15,7 @@ import type * as HttpClientRequest from "effect/http/HttpClientRequest";
 import * as HttpClientResponse from "effect/http/HttpClientResponse";
 import { inspect } from "node:util";
 import * as Arr from "effect/Array";
+import * as Str from "effect/String";
 
 const token = Redacted.make("management-secret-for-tests");
 const deployKey = Redacted.make("deployment-secret-for-tests");
@@ -758,6 +759,49 @@ const webhookStream = {
 } as const;
 
 describe("log stream client", () => {
+  it.effect.each([
+    "",
+    Str.repeat(129)("x"),
+    "made-up-response-secret\n",
+    "<private>",
+  ])("rejects an unsafe stream ID without exposing the response", (id) => {
+    const body = { ...webhookStream, id };
+    const http = mockHttp([
+      Response.json(body),
+      Response.json(body),
+      Response.json([body]),
+    ]);
+    return Effect.gen(function* () {
+      const services = yield* Layer.build(
+        clientLayer.pipe(Layer.provide(http.layer)),
+      );
+      return yield* Effect.gen(function* () {
+        const client = yield* ConvexClient.ConvexClient;
+        const operations: readonly Effect.Effect<
+          unknown,
+          ConvexClient.ConvexClientError
+        >[] = [
+          client.createLogStream(deploymentUrl, deployKey, {
+            logStreamType: "webhook",
+            url: webhookStream.url,
+            format: "jsonl",
+          }),
+          client.getLogStream(deploymentUrl, deployKey, "stream-1"),
+          client.listLogStreams(deploymentUrl, deployKey),
+        ];
+        for (const operation of operations) {
+          const result = yield* operation.pipe(Effect.result);
+          expect(result).toMatchObject({
+            _tag: "Failure",
+            failure: { _tag: "ConvexApiError", code: "InvalidResponse" },
+          });
+          yield* expectSecretSafe(result, "made-up-response-secret");
+          yield* expectSecretSafe(result, webhookStream.hmacSecret);
+        }
+      }).pipe(Effect.provideContext(services));
+    });
+  });
+
   it.effect(
     "uses deployment log stream contracts and redacts returned secrets",
     () => {

@@ -205,8 +205,10 @@ export const provider = Effect.gen(function* () {
       if (
         news.kind !== output.kind ||
         news.deploymentUrl !== output.lastWrite.deploymentUrl
-      )
+      ) {
+        yield* cold(news);
         return { action: "replace" };
+      }
       if (!deepEqual(news, output.lastWrite)) return { action: "update" };
     }),
     read: Effect.fn("LogStream.read")(function* ({ olds, output }) {

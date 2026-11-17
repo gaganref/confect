@@ -510,6 +510,38 @@ const logResources = (props: LogStream.LogStreamProps) =>
   });
 
 describe("log stream engine lifecycle", () => {
+  it.effect.each([
+    { ...logConfigs[1] },
+    { ...logConfigs[0], deploymentUrl: "https://other-backend.convex.cloud" },
+  ])("stops a replacement plan when its destination is already owned", (next) =>
+    Effect.gen(function* () {
+      const fixture = mockClient();
+      const deploy = makeHarness(fixture.layer, noCommands);
+      const other = makeHarness(fixture.layer, noCommands);
+      const first = yield* deploy(logResources(logConfigs[0]));
+      const occupied = yield* other(logResources(next));
+      const result = yield* deploy(logResources(next)).pipe(Effect.result);
+      expect(result).toMatchObject({
+        _tag: "Failure",
+        failure: {
+          _tag: "LogStreamRecoveryRequired",
+          kind: next.kind,
+          ids: [occupied.id],
+        },
+      });
+      expect(deploy.plans).toHaveLength(1);
+      expect(fixture.client.deleteLogStream).not.toHaveBeenCalled();
+      expect(fixture.client.updateLogStream).not.toHaveBeenCalled();
+      expect(fixture.client.createLogStream).toHaveBeenCalledTimes(2);
+      const original = yield* fixture.client.getLogStream(
+        logTarget.deploymentUrl,
+        logTarget.deployKey,
+        first.id,
+      );
+      expect(Redacted.value(original).id).toBe(first.id);
+    }),
+  );
+
   it.effect.each(logConfigs)(
     "creates, keeps, updates and removes $kind through plan and apply",
     (props) =>
