@@ -153,9 +153,10 @@ const argumentValidation = HttpRouter.add(
       }),
     );
     const defect = Exit.isFailure(exit) ? Cause.squash(exit.cause) : undefined;
+    const tagged = yield* Routes.isArgumentValidationFailure(defect);
     return yield* HttpServerResponse.json({
       message: defect instanceof Error ? defect.message : null,
-      tagged: Routes.isArgumentValidationFailure(defect),
+      tagged,
     });
   }).pipe(Effect.orDie),
 );

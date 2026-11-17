@@ -648,11 +648,14 @@ validation failure only by its message, `ArgumentValidationError: ` on the real
 backend and `Validator error:` under convex-test. The route's ctx reads it at
 its nested `runQuery`, `runMutation` and `runAction` and dies with a
 `Routes.ArgumentValidationFailure` there, which answers Effect's empty 400 and
-which `Routes.isArgumentValidationFailure` checks for. Only that boundary can
-make one. Its type is exported and its constructor is not, and the check is by
-identity, so a product error answers 500 whatever its message, shape or
-prototype. A local-backend lane case pins
-the real prefix.
+which `Routes.isArgumentValidationFailure` checks for as an effect. Only that
+boundary can make one. Its type is exported and its constructor is not, and
+the check is by membership in the request's own set of refusals, made and
+dropped with the request, so a product error answers 500 whatever its
+message, shape or prototype, and so does a marker kept from another request.
+A local-backend lane case pins the real prefix. Under convex-test, whose
+validator errors are plain `Error`s, a called function's own error that starts
+`Validator error:` cannot be told from a refusal and also answers 400.
 `HttpRouter.make`'s `api` takes one api or a list, and today's generated
 `convex/http.ts` is unchanged. Changeset: `route-specs-serve.md`. Upstream:
 fork only, as route specs are a fork addition.
