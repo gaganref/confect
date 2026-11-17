@@ -945,6 +945,37 @@ it.effect(
     }),
 );
 
+it("exports each public module and no path under internal/, so no import reaches the file-read mark", () => {
+  const manifest = createRequire(import.meta.url)("../package.json") as {
+    readonly exports: Readonly<Record<string, unknown>>;
+  };
+  expect(Rec.keys(manifest.exports)).toEqual([
+    ".",
+    "./Sources",
+    "./TestBackend",
+    "./TestConfect",
+    "./Vite",
+    "./setup",
+    "./package.json",
+  ]);
+  // Node's own resolver, from inside the package, which resolves its own
+  // name; a wildcard export would map the doubled slash into dist/internal.
+  const probe = spawnSync(
+    process.execPath,
+    [
+      "--input-type=module",
+      "--no-deprecation",
+      "-e",
+      'for (const specifier of ["@confect/test//internal/FileSources", "@confect/test/internal/FileSources"]) { try { console.log(import.meta.resolve(specifier)); } catch (error) { console.log(error.code); } }',
+    ],
+    { cwd: fileURLToPath(new URL("..", import.meta.url)), encoding: "utf8" },
+  );
+  expect(pipe(probe.stdout, Str.trim, Str.split("\n"))).toEqual([
+    "ERR_PACKAGE_PATH_NOT_EXPORTED",
+    "ERR_PACKAGE_PATH_NOT_EXPORTED",
+  ]);
+});
+
 it.effect(
   "on the kernel target, leaves unregistered a module whose file Sources.fromFiles read has no import or export, as Convex leaves it out",
   () =>
