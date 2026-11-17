@@ -394,7 +394,7 @@ const entrySchema = (
 ): ((key: string) => Schema.Top | undefined) | undefined => {
   if (Predicate.hasProperty(schema, "fields")) {
     const fields = schema.fields as Readonly<Record<string, Schema.Top>>;
-    return (key) => fields[key];
+    return (key) => (Rec.has(fields, key) ? fields[key] : undefined);
   }
   if (SchemaAST.isObjects(schema.ast) && Predicate.hasProperty(schema, "value"))
     return () => schema.value as Schema.Top;

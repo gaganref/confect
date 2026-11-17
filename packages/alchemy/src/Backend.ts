@@ -129,7 +129,10 @@ const automaticVariables = (
         );
     }
     for (const [slot, descriptor] of Rec.toEntries(manifest.env)) {
-      if (descriptor.automatic === true && missing(supplied[slot]))
+      if (
+        descriptor.automatic === true &&
+        missing(Rec.has(supplied, slot) ? supplied[slot] : undefined)
+      )
         return yield* Result.fail(
           InvalidAutomaticSetting.make({ slot, reason: "Missing" }),
         );
@@ -171,7 +174,7 @@ const settleChoice = (
         other.provider?.selector === key &&
         other.provider.required &&
         named.includes(other.provider.name) &&
-        missing(supplied[slot])
+        missing(Rec.has(supplied, slot) ? supplied[slot] : undefined)
       )
         return yield* InvalidMountSetting.make({
           mount: at,
@@ -228,9 +231,9 @@ const supplySettings = <E>(
   Effect.gen(function* () {
     const settle = (resolved: Readonly<Record<string, unknown>>) =>
       Effect.gen(function* () {
-        const written: Record<string, unknown> = {};
+        const written: Record<string, unknown> = Object.create(null);
         for (const [key, descriptor] of Rec.toEntries(slots)) {
-          const value = resolved[key];
+          const value = Rec.has(resolved, key) ? resolved[key] : undefined;
           if (missing(value)) {
             if (!descriptor.optional) return yield* Effect.fail(onMissing(key));
             continue;
@@ -322,7 +325,7 @@ export const mountVariables = (
         });
     }
     for (const [mount, entry] of Rec.toEntries(manifest.mounts)) {
-      const supplied = mounts[mount] ?? {};
+      const supplied = Rec.has(mounts, mount) ? mounts[mount]! : {};
       for (const slot of Rec.keys(supplied)) {
         if (!Rec.has(entry.env, slot))
           return yield* InvalidMountSetting.make({
